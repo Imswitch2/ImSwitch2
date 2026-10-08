@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "description": "This manager hands its whole managerProperties dict to a driver; the driver's own keys are not listed here.",
   "properties": {
     "binwidth_ps": {
       "description": "Histogram bin width in picoseconds.",
@@ -23,7 +24,7 @@
       ]
     },
     "click_channel": {
-      "description": "TimeTagger input channel receiving photon clicks.",
+      "description": "The photon input, read only when the setup has no ``timeTagger`` block (a negative number selects the falling edge). With the block it is ignored, with a log line naming it.",
       "type": [
         "integer",
         "number",
@@ -35,8 +36,16 @@
         "code:required"
       ]
     },
+    "click_role": {
+      "description": "Role on the ``timeTagger`` block whose input receives the photon clicks. The resolved channel shows as the read-only ``click_channel`` parameter.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
     "click_trigger": {
-      "description": "Trigger threshold in volts for the photon-click channel.",
+      "description": "Trigger threshold in volts for the photon input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -79,7 +88,7 @@
       ]
     },
     "line_channel": {
-      "description": "TimeTagger input channel receiving the per-line marker.",
+      "description": "The line-clock input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -91,8 +100,16 @@
         "code:required"
       ]
     },
+    "line_role": {
+      "description": "Role whose input receives the scan's line clock; the pixel markers are generated from its edges.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
     "line_trigger": {
-      "description": "Trigger threshold in volts for the per-line marker channel.",
+      "description": "Trigger threshold in volts for the line-clock input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -128,7 +145,7 @@
       ]
     },
     "start_channel": {
-      "description": "TimeTagger input channel receiving the TCSPC start (sync) signal.",
+      "description": "The laser-sync input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -140,8 +157,16 @@
         "code:required"
       ]
     },
+    "start_role": {
+      "description": "Role whose input receives the TCSPC start (laser sync).",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
     "start_trigger": {
-      "description": "Trigger threshold in volts for the TCSPC start/sync channel.",
+      "description": "Trigger threshold in volts for the laser-sync input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -168,7 +193,7 @@
       ]
     },
     "trigger_levels": {
-      "description": "Backward-compatible dict mapping channel-number-as-string to trigger threshold in volts.  Used only to seed the per-role ``click_trigger`` / ``start_trigger`` / ``line_trigger`` defaults.  Direct per-role fields take precedence.",
+      "description": "Dict mapping channel-number-as-string to trigger threshold in volts, seeding the three ``*_trigger`` defaults. Read only without a ``timeTagger`` block.",
       "x-imswitch-kind": "object",
       "x-imswitch-source": [
         "code:default:object",
@@ -187,9 +212,5 @@
     "SwabianTimeTaggerManager",
     "DetectorManager"
   ],
-  "x-imswitch-unresolved-reads": [
-    "tl.get(str(self._click_ch), 0.5) (line 96; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._line_ch), 0.5) (line 102; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._start_ch), 0.5) (line 99; sub-key of 'trigger_levels' is not a literal)"
-  ]
+  "x-imswitch-open-passthrough": true
 }

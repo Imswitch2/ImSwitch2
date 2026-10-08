@@ -79,11 +79,14 @@ def test_the_coverage_the_plan_is_built_on(report):
     # useMockOnFailure. 213: LeicaDMIZPositionerManager's shared-hardware
     # calibCsvPath boundary read. 215 after open-loop positioner reference
     # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope.
-    assert report.keys == 215
+    # 218: SwabianTimeTaggerManager's click_role / start_role / line_role,
+    # the roles it reads on the setup's shared timeTagger block.
+    assert report.keys == 218
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 153
+    # 156: the three Swabian role properties, each with a default.
+    assert report.optional == 156
     assert report.refs == 14
     assert report.none_default_only == 31
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
@@ -95,7 +98,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # Cobolt scanResumeSettleMs, PI runtime_timeout_ms, and Leica stand
     # availableCubes are now documented by their cards.
     # NidaqPositionerManager.defaultReferenceVoltage is now documented too.
-    assert (report.docs_agree, report.docs_documented) == (135, 135)
+    # 138: the three Swabian role properties have their own rows.
+    assert (report.docs_agree, report.docs_documented) == (138, 138)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -103,7 +107,8 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 93: AAAOTF's useMockOnFailure is read with a bool default.
     # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
     # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
-    assert report.typed_by_code == 96
+    # 99: the three Swabian role properties default to strings.
+    assert report.typed_by_code == 99
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -119,12 +124,15 @@ def test_the_tree_has_no_uncertain_requiredness_today(report):
     assert report.uncertain_keys == []
 
 
-def test_the_only_unresolved_reads_are_dynamic_sub_keys(report):
-    """SwabianTimeTagger indexes trigger_levels by a channel number computed at
-    runtime. Reported, never guessed -- and never silently dropped."""
-    assert len(report.unresolved) == 3
-    assert all(item.startswith("SwabianTimeTaggerManager: tl.get(str(self._") for item in report.unresolved)
-    assert all("sub-key of 'trigger_levels'" in item for item in report.unresolved)
+def test_the_tree_has_no_unresolved_reads_today(report):
+    """SwabianTimeTagger used to index trigger_levels by a channel number
+    computed at runtime in __init__, the three reads the extractor reported
+    as unresolved rather than guessed. The card's channels now live on the
+    setup's timeTagger block; the legacy trigger_levels fallback moved into
+    a helper the extractor follows for its literal keys only, so nothing is
+    reported. Not a rule -- a fact about the tree, so a future one is
+    noticed."""
+    assert report.unresolved == []
 
 
 def test_no_writes_masquerade_as_reads(report):

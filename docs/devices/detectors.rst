@@ -538,31 +538,50 @@ Swabian Instruments TimeTagger for FLIM (fluorescence-lifetime imaging).
 Fits a lifetime per pixel from TCSPC histograms during an NI-DAQ-driven
 scan.
 
+The card itself is described once, in the setup's top-level ``timeTagger``
+block (see :doc:`../setupinfo-reference`): which input carries the photons,
+the laser sync and the scan's line clock, with their trigger levels, edge
+signs, dead times and delays. The block is loaded into one shared
+``TimeTaggerManager`` that this detector, any second time-resolved detector
+and the scripting facade all use. The detector only names the *roles* it
+reads.
+
 **Setup JSON**
 
 .. code-block:: json
 
+    "timeTagger": {
+        "photonsChannel": -1,
+        "photonsTriggerV": -0.25,
+        "laserSyncChannel": 2,
+        "laserSyncTriggerV": 0.5,
+        "lineClockChannel": 3,
+        "lineClockTriggerV": 0.5
+    },
     "detectors": {
         "FLIM": {
             "managerName": "SwabianTimeTaggerManager",
             "managerProperties": {
-                "click_channel": 1,
-                "start_channel": 2,
-                "line_channel": 3,
+                "click_role": "photons",
+                "start_role": "laser_sync",
+                "line_role": "line_clock",
                 "binwidth_ps": 32,
                 "t0_ps": 0,
                 "min_counts_per_pixel": 20,
                 "fit_method": "moment",
                 "laser_rep_rate_mhz": 80.0,
-                "click_trigger": 0.5,
-                "start_trigger": 0.5,
-                "line_trigger": 0.5,
-                "trigger_levels": { "1": 0.5, "2": 0.5, "3": 0.5 },
                 "enabled": true
             },
             "forAcquisition": true
         }
     }
+
+A setup **without** a ``timeTagger`` block still works: the detector then
+builds a private card manager from the legacy ``click_channel`` /
+``start_channel`` / ``line_channel`` and ``*_trigger`` properties listed at
+the end of the table, and logs, once at startup, the equivalent block to
+move them into. Put the card in the block as soon as a script or a second
+consumer needs it.
 
 **managerProperties**
 
@@ -574,18 +593,18 @@ scan.
      - Type
      - Default
      - Meaning
-   * - ``click_channel``
-     - int
-     - **required**
-     - TimeTagger input channel receiving photon clicks.
-   * - ``start_channel``
-     - int
-     - **required**
-     - TimeTagger input channel receiving the TCSPC start (sync) signal.
-   * - ``line_channel``
-     - int
-     - **required**
-     - TimeTagger input channel receiving the per-line marker.
+   * - ``click_role``
+     - str
+     - ``"photons"``
+     - Role on the ``timeTagger`` block whose input receives the photon clicks. The resolved channel shows as the read-only ``click_channel`` parameter.
+   * - ``start_role``
+     - str
+     - ``"laser_sync"``
+     - Role whose input receives the TCSPC start (laser sync).
+   * - ``line_role``
+     - str
+     - ``"line_clock"``
+     - Role whose input receives the scan's line clock; the pixel markers are generated from its edges.
    * - ``n_bins``
      - int
      - one laser period
@@ -610,26 +629,44 @@ scan.
      - float
      - ``80.0``
      - Laser repetition rate in MHz.  Used by the phasor fit to set ω = 2π·f_rep.  The Swabian ``Flim`` API does not expose the rate, so it must be supplied here; measure it once with ``scripts/diagnostics/measure_laser_rep_rate.py`` if unsure.
-   * - ``click_trigger``
-     - float
-     - ``trigger_levels[str(click_channel)]`` or ``0.5``
-     - Trigger threshold in volts for the photon-click channel.
-   * - ``start_trigger``
-     - float
-     - ``trigger_levels[str(start_channel)]`` or ``0.5``
-     - Trigger threshold in volts for the TCSPC start/sync channel.
-   * - ``line_trigger``
-     - float
-     - ``trigger_levels[str(line_channel)]`` or ``0.5``
-     - Trigger threshold in volts for the per-line marker channel.
-   * - ``trigger_levels``
-     - dict
-     - ``{}``
-     - Backward-compatible dict mapping channel-number-as-string to trigger threshold in volts.  Used only to seed the per-role ``click_trigger`` / ``start_trigger`` / ``line_trigger`` defaults.  Direct per-role fields take precedence.
    * - ``enabled``
      - bool
      - ``true``
      - If ``false`` the manager is constructed but ``initiateScan`` is a no-op.
+   * - ``click_channel``
+     - int
+     - legacy, **required** without a ``timeTagger`` block
+     - The photon input, read only when the setup has no ``timeTagger`` block (a negative number selects the falling edge). With the block it is ignored, with a log line naming it.
+   * - ``start_channel``
+     - int
+     - legacy, **required** without a ``timeTagger`` block
+     - The laser-sync input, read only without a ``timeTagger`` block.
+   * - ``line_channel``
+     - int
+     - legacy, **required** without a ``timeTagger`` block
+     - The line-clock input, read only without a ``timeTagger`` block.
+   * - ``click_trigger``
+     - float
+     - legacy, ``trigger_levels[str(click_channel)]`` or ``0.5``
+     - Trigger threshold in volts for the photon input, read only without a ``timeTagger`` block.
+   * - ``start_trigger``
+     - float
+     - legacy, ``trigger_levels[str(start_channel)]`` or ``0.5``
+     - Trigger threshold in volts for the laser-sync input, read only without a ``timeTagger`` block.
+   * - ``line_trigger``
+     - float
+     - legacy, ``trigger_levels[str(line_channel)]`` or ``0.5``
+     - Trigger threshold in volts for the line-clock input, read only without a ``timeTagger`` block.
+   * - ``trigger_levels``
+     - dict
+     - legacy, ``{}``
+     - Dict mapping channel-number-as-string to trigger threshold in volts, seeding the three ``*_trigger`` defaults. Read only without a ``timeTagger`` block.
+
+The three ``*_trigger`` detector *parameters* exist with either
+configuration: they show the card's current trigger levels for the chosen
+roles and write a new value through to the card. A write is refused, with a
+log line, while a scan holds the card, and the parameter then shows the
+card's real value again.
 
 **Lifetime fitting**
 
@@ -703,18 +740,29 @@ multidimensional output support is implemented.
 * ``nidaqManager`` — required.  The manager connects to its
   ``sigScanBuilt``, ``sigScanStarted`` and ``sigScanDone`` signals to
   align FLIM acquisition with the scan timeline.
+* ``timeTaggerManager`` — the shared card, built from the setup's
+  ``timeTagger`` block; ``None`` without the block, in which case the
+  detector builds a private one (see above). From scan preparation until
+  the final frame has landed the detector *holds* the card: trigger-level,
+  delay and dead-time changes from any consumer are refused meanwhile.
 
-**Vendor library**
+**Vendor library and mock**
 
-The Swabian ``TimeTagger`` Python package is imported at module top
-inside a ``try/except ImportError`` (``TimeTagger.Flim`` and
-``TimeTagger.createTimeTagger`` are pulled in the same block), so the
-manager is still constructed without it and logs an error.  There is no
-mock.  With ``enabled: true``, preparing a scan raises ``RuntimeError``
-when the library is missing or when ``createTimeTagger()`` fails; the
-failure is reported to the NI-DAQ manager and the whole scan is rolled
-back before it starts.  To keep the detector in a setup that has no FLIM
-hardware, set ``"enabled": false``.
+The Swabian ``TimeTagger`` Python package comes from the vendor installer
+and is imported by ``TimeTaggerManager``, not by this detector. Without it,
+or with no card on the USB, the card manager logs an error at startup and
+the application starts; with ``enabled: true``, preparing a scan then
+raises ``RuntimeError``, the failure is reported to the NI-DAQ manager and
+the whole scan is rolled back before it starts. To keep the detector in a
+setup that has no FLIM hardware, set ``"enabled": false`` — or, on a
+simulated rig (``nidaq.simulation`` true), set ``"simulation": true`` in
+the ``timeTagger`` block to use the in-process mock card
+(``imswitch.imcontrol.model.interfaces.timetagger_mock``). The mock
+currently counts (rates, test signal, conditioning) and completes scans
+with an empty histogram; a photon and scan-edge signal model follows in the
+next Lifetime 2.0 phase. ``useMockOnFailure`` falls back to the mock when
+the card cannot be opened, but only while the NI-DAQ is simulated too: a
+rig never images a missing card as zeros.
 
 **Source**
 

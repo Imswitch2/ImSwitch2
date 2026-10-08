@@ -594,6 +594,83 @@ class TeensyPulseInfo:
 
 
 @dataclass(frozen=True)
+class TimeTaggerInfo:
+    """One Swabian Time Tagger card, shared by every detector and script
+    that uses it.
+
+    Channels are named by *role*; the FLIM detector and the scripting facade
+    speak roles, so re-cabling the card is one edit here. A negative channel
+    number selects the falling edge of that input, the Swabian convention
+    (a SPAD's NIM pulse is triggered on its falling edge, so ``-1``).
+    Consumed by ``imswitch.imcontrol.model.managers.TimeTaggerManager``.
+    """
+    serial: Optional[str] = None
+    """ Serial number of the card to open; ``None`` = the first card found. """
+
+    simulation: bool = False
+    """ Use the in-process mock instead of a card, whether or not the
+    vendor library is installed. """
+
+    useMockOnFailure: bool = False
+    """ Fall back to the mock when the vendor library is missing or the card
+    cannot be opened -- only honoured while ``nidaq.simulation`` is also
+    true. On a rig a missing card stays a hard error that rolls the scan
+    back, so a cabling fault is never silently imaged as zeros. (The
+    default differs from ``TeensyPulseInfo`` on purpose.) """
+
+    photonsChannel: int = 1
+    """ Input carrying the single-photon detector pulses. """
+
+    photonsTriggerV: float = 0.5
+    """ Trigger threshold in volts for the photon input. Inputs are 50 ohm;
+    trigger range is +/-2.5 V. """
+
+    photonsDeadtimePs: int = 0
+    """ Dead time applied to the photon input, in picoseconds; ``0`` = the
+    card's minimum. Set it to the detector's own dead time to suppress
+    ringing and double counts. """
+
+    laserSyncChannel: int = 2
+    """ Input carrying the laser sync (the TCSPC reference). """
+
+    laserSyncTriggerV: float = 0.5
+    """ Trigger threshold in volts for the laser sync input. """
+
+    lineClockChannel: int = 3
+    """ Input carrying the scan's line clock (``scan.lineClockLine``). """
+
+    lineClockTriggerV: float = 0.5
+    """ Trigger threshold in volts for the line clock input. An NI DO line
+    drives about 1-1.5 V into the card's 50 ohm input, so stay well below
+    that. """
+
+    lineClockDelayPs: int = 0
+    """ Delay applied to the line clock (and the frame clock) in picoseconds,
+    to line the Time Tagger image up with the APD/PMT image. Positive when
+    the galvo lags the commanded position. """
+
+    frameClockChannel: Optional[int] = None
+    """ Input carrying the scan's frame-start clock, if cabled; ``None`` =
+    not cabled. """
+
+    frameClockTriggerV: float = 0.5
+    """ Trigger threshold in volts for the frame clock input. """
+
+    stedPulseChannel: Optional[int] = None
+    """ Input carrying a photodiode on the STED beam, if cabled, for the
+    STED-to-excitation delay readout; ``None`` = not cabled. """
+
+    stedPulseTriggerV: float = 0.5
+    """ Trigger threshold in volts for the STED photodiode input. """
+
+    filterSyncByPhotons: bool = False
+    """ Enable the card's conditional filter so only the first laser sync
+    after each photon is transmitted. Needed on a Time Tagger 20 or Ultra
+    with a sync at tens of MHz. The TCSPC direction then reverses (start =
+    photon, click = sync); the FLIM detector handles that. """
+
+
+@dataclass(frozen=True)
 class PyroServerInfo:
     name: Optional[str] = 'ImSwitchServer'
     host: Optional[str] = '127.0.0.1'
@@ -694,6 +771,12 @@ class SetupInfo:
     teensyPulse: Optional[TeensyPulseInfo] = field(default_factory=lambda: None)
     """ Teensy / Arduino pulse generator settings.  ``None`` = no
     Teensy in this setup.  See :class:`TeensyPulseInfo`. """
+
+    timeTagger: Optional[TimeTaggerInfo] = field(default_factory=lambda: None)
+    """ Swabian Time Tagger settings. ``None`` = no card in this setup (a
+    ``SwabianTimeTaggerManager`` detector then builds a private one from its
+    own channel properties, with a deprecation warning). See
+    :class:`TimeTaggerInfo`. """
 
     pyroServerInfo: PyroServerInfo = field(default_factory=PyroServerInfo)
 

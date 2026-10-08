@@ -26,6 +26,7 @@ class TestMasterControllerShutdown:
         setup.microscopeStand = None
         setup.scan = None
         setup.teensyPulse = None
+        setup.timeTagger = None
         return setup
 
     @pytest.fixture
@@ -109,6 +110,51 @@ class TestMasterControllerShutdown:
 
         # Verify finalize was called
         mock_pulse_gen.finalize.assert_called_once()
+
+    def test_closeEvent_finalizes_time_tagger_after_the_detectors(self, master_controller):
+        """The FLIM detector must drop its Flim before the card is freed."""
+        order = []
+        master_controller.detectorsManager = Mock(
+            finalize=Mock(side_effect=lambda: order.append('detectors')),
+            activeAcquisitionLeases=Mock(return_value=()),
+            faultedAcquisitionDetectors=Mock(return_value=()),
+        )
+        master_controller.timeTaggerManager = Mock(
+            finalize=Mock(side_effect=lambda: order.append('timeTagger')),
+        )
+        master_controller.recordingManager = Mock(endRecording=Mock())
+        master_controller.scanExecutionCoordinator = Mock(
+            activeToken=None, activeRunToken=None
+        )
+
+        master_controller.closeEvent()
+
+        assert order == ['detectors', 'timeTagger']
+
+    def test_unresolved_detector_fault_also_blocks_the_time_tagger(
+            self, master_controller):
+        """Freeing the card under a detector that may still be reading it is
+        as unsafe as finalizing the NI-DAQ: both wait for the retry."""
+        detector_manager = Mock(finalize=Mock())
+        detector_manager.activeAcquisitionLeases.return_value = ()
+        detector_manager.faultedAcquisitionDetectors.side_effect = [
+            ("FLIM",),
+            ("FLIM",),
+        ]
+        detector_manager.retryStop.side_effect = RuntimeError("still stuck")
+        time_tagger = Mock(finalize=Mock())
+        master_controller.detectorsManager = detector_manager
+        master_controller.timeTaggerManager = time_tagger
+        master_controller.recordingManager = Mock(
+            endRecording=Mock(), finalize=Mock()
+        )
+        master_controller.scanExecutionCoordinator = Mock(
+            activeToken=None, activeRunToken=None
+        )
+
+        assert master_controller.closeEvent() is False
+
+        time_tagger.finalize.assert_not_called()
 
     def test_closeEvent_finalizes_trigger_scope_manager(self, master_controller):
         """Test that closeEvent finalizes triggerScopeManager (non-MultiManager)."""

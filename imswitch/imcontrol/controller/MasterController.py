@@ -45,11 +45,25 @@ class MasterController:
                 self.__setupInfo.teensyPulse
             )
 
+        # Swabian Time Tagger: one card shared by every time-resolved
+        # detector and by scripts. Built only when the setup declares it;
+        # a SwabianTimeTaggerManager detector without the block builds a
+        # private one from its own properties (deprecated path).
+        self.timeTaggerManager = None
+        if getattr(self.__setupInfo, 'timeTagger', None) is not None:
+            from imswitch.imcontrol.model.managers.TimeTaggerManager import (
+                TimeTaggerManager,
+            )
+            self.timeTaggerManager = TimeTaggerManager(
+                self.__setupInfo.timeTagger, self.__setupInfo, self.nidaqManager
+            )
+
         lowLevelManagers = {
             'nidaqManager': self.nidaqManager,
             #'pulseStreamerManager' : self.pulseStreamerManager,
             'pulseGeneratorManager': self.pulseGeneratorManager,
-            'rs232sManager': self.rs232sManager
+            'rs232sManager': self.rs232sManager,
+            'timeTaggerManager': self.timeTaggerManager,
         }
 
         if self.__setupInfo.triggerScope:
@@ -146,18 +160,22 @@ class MasterController:
         # instances. This ordering is also the retry scope: a manager object
         # that already finalized successfully is skipped, while False/raising
         # finalizers remain pending on the next close attempt.
+        # timeTaggerManager comes after detectorsManager: the FLIM detector
+        # must have stopped its worker and dropped its Flim before the card
+        # is freed.
         manager_attrs = [
             'detectorsManager', 'lasersManager', 'positionersManager',
             'rotatorsManager', 'flipMirrorsManager', 'recordingManager',
             'slmsManager', 'nidaqManager', 'rs232sManager',
             'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
-            'scanManager',
+            'scanManager', 'timeTaggerManager',
         ]
         unsafeWhileActive = {
             'detectorsManager',
             'recordingManager',
             'nidaqManager',
             'scanManager',
+            'timeTaggerManager',
         }
         pendingUnsafeManagers = {
             attrName

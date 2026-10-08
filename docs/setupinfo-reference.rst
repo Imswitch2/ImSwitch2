@@ -590,6 +590,7 @@ documented below with full field lists and examples:
 * `flipMirrors`_
 * `triggerScope`_
 * `teensyPulse`_
+* `timeTagger`_
 * `pyroServerInfo`_
 * `smartMicroscopyModes`_ (and its two companion sections)
 * `processing`_ (ImProcess)
@@ -1025,6 +1026,52 @@ Key fields:
 :doc:`how-to/wire-teensy`
 
 
+timeTagger
+----------
+
+Optional :class:`TimeTaggerInfo` object. **Required to use a Swabian Time
+Tagger** (the ``SwabianTimeTaggerManager`` FLIM detector, and the Time
+Tagger diagnostics from scripts). One block describes the one card; its
+inputs are named by *role* and every consumer refers to the roles, so
+re-cabling the card is one edit here. A negative channel number selects the
+falling edge of that input (a SPAD's NIM pulse: ``-1``). Inputs are 50 Ω,
+trigger range ±2.5 V; an NI DO line drives about 1–1.5 V into 50 Ω, so keep
+the clock thresholds well below that.
+
+Key fields:
+
+* ``serial`` (str or null): the card to open; ``null`` = the first card found
+* ``simulation`` (bool): use the in-process mock instead of a card (default ``false``)
+* ``useMockOnFailure`` (bool): fall back to the mock when the library is missing or the card cannot be opened — honoured **only while** ``nidaq.simulation`` **is also true**; on a rig a missing card stays a hard error that rolls the scan back (default ``false``, unlike ``teensyPulse``)
+* ``photonsChannel`` / ``photonsTriggerV`` / ``photonsDeadtimePs``: the single-photon detector input (defaults ``1`` / ``0.5`` / ``0``)
+* ``laserSyncChannel`` / ``laserSyncTriggerV``: the laser sync, the TCSPC reference (defaults ``2`` / ``0.5``)
+* ``lineClockChannel`` / ``lineClockTriggerV`` / ``lineClockDelayPs``: the scan's ``scan.lineClockLine`` (defaults ``3`` / ``0.5`` / ``0``); the delay also applies to the frame clock
+* ``frameClockChannel`` / ``frameClockTriggerV``: the scan's frame-start clock, if cabled (default ``null`` = not cabled)
+* ``stedPulseChannel`` / ``stedPulseTriggerV``: a photodiode on the STED beam, if cabled (default ``null``)
+* ``filterSyncByPhotons`` (bool): enable the card's conditional filter so only the first sync after each photon is transmitted — needed on a Time Tagger 20 or Ultra with a sync at tens of MHz; the TCSPC direction then reverses (default ``false``)
+
+**Example**:
+
+.. code-block:: json
+
+   "timeTagger": {
+       "photonsChannel": -1,
+       "photonsTriggerV": -0.25,
+       "photonsDeadtimePs": 50000,
+       "laserSyncChannel": 2,
+       "lineClockChannel": 3,
+       "lineClockTriggerV": 0.5
+   }
+
+**Required devices**: a ``SwabianTimeTaggerManager`` detector that names the
+roles (``click_role``, ``start_role``, ``line_role``), see
+:doc:`devices/detectors`. A detector *without* this block keeps working from
+its legacy ``click_channel`` / ``start_channel`` / ``line_channel``
+properties and logs the equivalent block to move them into.
+
+**See also**: :class:`TimeTaggerInfo`
+
+
 pyroServerInfo
 --------------
 
@@ -1246,6 +1293,10 @@ references, and what fails silently if references are missing or incorrect.
      - None (standalone serial device)
      - None
      - Falls back to mock if ``useMockOnFailure: true``; hard failure otherwise
+   * - ``timeTagger``
+     - A ``SwabianTimeTaggerManager`` detector (names the roles)
+     - None by name: the detector's ``click_role`` / ``start_role`` / ``line_role`` must be roles the block configures
+     - A missing card logs an error at startup and rolls every FLIM scan back; the mock only with ``simulation: true`` or (``useMockOnFailure`` and ``nidaq.simulation``)
    * - ``slms``
      - None (manager constructs per device)
      - None (each SLM is independent)

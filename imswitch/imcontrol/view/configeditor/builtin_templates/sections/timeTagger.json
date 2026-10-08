@@ -1,0 +1,25 @@
+{
+  "section": true,
+  "key": "timeTagger",
+  "group": "system",
+  "display": "Swabian Time Tagger",
+  "summary": "One Swabian Time Tagger card shared by the FLIM detector and scripts. Inputs are named by role; a negative channel number selects the falling edge of that input.",
+  "fields": [
+    {"key": "serial",              "label": "Serial",                 "type": "text",  "default": "null",  "req": false, "grp": "Basic",      "tip": "Serial number of the card to open. null = the first card found.", "opts": []},
+    {"key": "simulation",          "label": "Simulation",             "type": "bool",  "default": false,   "req": false, "grp": "Basic",      "tip": "Use the in-process mock instead of a card.", "opts": []},
+    {"key": "useMockOnFailure",    "label": "Mock on failure",        "type": "bool",  "default": false,   "req": false, "grp": "Basic",      "tip": "Fall back to the mock when the card cannot be opened. Only honoured while nidaq.simulation is also true; on a rig a missing card stays a hard error.", "opts": []},
+    {"key": "photonsChannel",      "label": "Photons channel",        "type": "int",   "default": 1,       "req": false, "grp": "Photons",    "tip": "Input carrying the single-photon detector pulses. Negative = falling edge (a SPAD's NIM pulse: -1).", "opts": []},
+    {"key": "photonsTriggerV",     "label": "Photons trigger (V)",    "type": "float", "default": 0.5,     "req": false, "grp": "Photons",    "tip": "Trigger threshold. Inputs are 50 ohm; range +/-2.5 V.", "opts": []},
+    {"key": "photonsDeadtimePs",   "label": "Photons dead time (ps)", "type": "int",   "default": 0,       "req": false, "grp": "Photons",    "tip": "Dead time on the photon input; 0 = the card's minimum. Set to the detector's own dead time against ringing and double counts.", "opts": []},
+    {"key": "laserSyncChannel",    "label": "Laser sync channel",     "type": "int",   "default": 2,       "req": false, "grp": "Laser sync", "tip": "Input carrying the laser sync (TCSPC reference).", "opts": []},
+    {"key": "laserSyncTriggerV",   "label": "Laser sync trigger (V)", "type": "float", "default": 0.5,     "req": false, "grp": "Laser sync", "tip": "Trigger threshold for the sync input.", "opts": []},
+    {"key": "lineClockChannel",    "label": "Line clock channel",     "type": "int",   "default": 3,       "req": false, "grp": "Scan clocks","tip": "Input carrying scan.lineClockLine.", "opts": []},
+    {"key": "lineClockTriggerV",   "label": "Line clock trigger (V)", "type": "float", "default": 0.5,     "req": false, "grp": "Scan clocks","tip": "An NI DO line drives about 1-1.5 V into the 50 ohm input: stay well below that.", "opts": []},
+    {"key": "lineClockDelayPs",    "label": "Line clock delay (ps)",  "type": "int",   "default": 0,       "req": false, "grp": "Scan clocks","tip": "Delay on the line (and frame) clock to align the Time Tagger image with the APD/PMT image. Positive when the galvo lags.", "opts": []},
+    {"key": "frameClockChannel",   "label": "Frame clock channel",    "type": "int",   "default": null,    "req": false, "grp": "Scan clocks","tip": "Input carrying scan.frameStartClockLine, if cabled. Empty = not cabled.", "opts": []},
+    {"key": "frameClockTriggerV",  "label": "Frame clock trigger (V)","type": "float", "default": 0.5,     "req": false, "grp": "Scan clocks","tip": "Trigger threshold for the frame clock input.", "opts": []},
+    {"key": "stedPulseChannel",    "label": "STED pulse channel",     "type": "int",   "default": null,    "req": false, "grp": "Optional",   "tip": "Input carrying a photodiode on the STED beam, if cabled. Empty = not cabled.", "opts": []},
+    {"key": "stedPulseTriggerV",   "label": "STED pulse trigger (V)", "type": "float", "default": 0.5,     "req": false, "grp": "Optional",   "tip": "Trigger threshold for the STED photodiode input.", "opts": []},
+    {"key": "filterSyncByPhotons", "label": "Filter sync by photons", "type": "bool",  "default": false,   "req": false, "grp": "Advanced",   "tip": "Enable the card's conditional filter: only the first laser sync after each photon is transmitted. Needed on a Time Tagger 20 or Ultra with a sync at tens of MHz. The TCSPC direction then reverses (start = photon, click = sync).", "opts": []}
+  ]
+}

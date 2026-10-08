@@ -78,6 +78,18 @@ Detectors
        ``docs/advanced_scan_triggered_recording_audit.md`` (not part of the
        published documentation) audits this manager's mock/real
        triggered-recording paths.
+   * - ``SwabianTimeTaggerManager``
+     - ``MockTimeTaggerApi`` / ``MockTimeTagger``
+       (``imswitch.imcontrol.model.interfaces.timetagger_mock``) — a stand-in
+       for the vendor ``TimeTagger`` module and the card it opens, held by
+       the shared ``TimeTaggerManager`` (the setup's ``timeTagger`` block).
+     - ``"simulation": true`` in the ``timeTagger`` block; or
+       ``"useMockOnFailure": true`` there when the library or card is
+       missing, honoured only while ``nidaq.simulation`` is also true.
+     - Counting only, for now: per-input rates, the card's test signal,
+       trigger levels, dead times, delays and the conditional filter are
+       modelled; ``Flim`` completes a scan with an empty histogram. A
+       photon and scan-edge signal model follows (Lifetime 2.0, phase 1c).
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic
        scan-shaped samples in place.

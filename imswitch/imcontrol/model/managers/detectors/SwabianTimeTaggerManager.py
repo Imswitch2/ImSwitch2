@@ -1,3 +1,4 @@
+import json
 import math
 import numpy as np
 import threading
@@ -5,6 +6,10 @@ import time
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.SetupInfo import TimeTaggerInfo
+from imswitch.imcontrol.model.managers.TimeTaggerManager import (
+    ROLES, TimeTaggerBusyError, TimeTaggerError, TimeTaggerManager,
+)
 from imswitch.imcontrol.model.timeresolved import (
     TimeResolvedDetectorMixin,
     TimeResolvedScanConfig,
@@ -20,18 +25,14 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, DetectorNumberParameter, DetectorListParameter,
     scanPixelSizesToZYX, _EMPTY_CHUNK)
 
-try:
-    import TimeTagger
-    from TimeTagger import Flim, createTimeTagger
-    _TIMETAGGER_AVAILABLE = True
-except ImportError:
-    TimeTagger = None
-    Flim = None
-    createTimeTagger = None
-    _TIMETAGGER_AVAILABLE = False
-
-
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
+
+#: Detector properties that described the card before the setup-level
+#: ``timeTagger`` block existed. Read only when that block is absent.
+_LEGACY_CARD_PROPS = frozenset({
+    'click_channel', 'start_channel', 'line_channel',
+    'click_trigger', 'start_trigger', 'line_trigger', 'trigger_levels',
+})
 
 
 #: A TCSPC window shorter than this fraction of the laser period is warned
@@ -50,57 +51,66 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     """
     TimeTagger FLIM detector. Returns fitted fluorescence lifetime per pixel.
 
-    Channel and TCSPC settings are exposed as detector parameters and can be
-    changed between scans via the GUI or setParameter(). Changes take effect
-    on the next initiateScan() call.
+    The card itself is the setup's shared ``TimeTaggerManager`` (the
+    ``timeTagger`` block): it owns the connection, the channel *roles* and
+    their conditioning. This detector only says which roles it uses --
+    ``click_role`` (default ``photons``), ``start_role`` (``laser_sync``) and
+    ``line_role`` (``line_clock``) -- and builds its ``Flim`` on it. The
+    resolved channels show as read-only parameters; the trigger-level
+    parameters write through to the card between scans.
 
-    Required config properties:
-      click_channel, start_channel, line_channel
+    Setups without a ``timeTagger`` block keep working: the detector builds a
+    private card manager from its own ``click_channel`` / ``start_channel`` /
+    ``line_channel`` and trigger properties and logs the equivalent block
+    (deprecated; the block is where a second consumer or a script finds the
+    card).
 
     Optional config properties:
-      n_bins (default 64), binwidth_ps (default 32),
+      click_role, start_role, line_role (role names, see above),
+      n_bins (default: one laser period), binwidth_ps (default 32),
       min_counts_per_pixel (default 20), fit_method (default 'moment'),
       laser_rep_rate_mhz (default 80.0; used by phasor fit to set ω),
-      trigger_levels (dict {channel_str: volts}, used only to seed
-        click_trigger / start_trigger / line_trigger defaults),
-      enabled (default True)
+      t0_ps (default 0), enabled (default True)
+
+    Legacy config properties (used only without a ``timeTagger`` block):
+      click_channel, start_channel, line_channel,
+      click_trigger / start_trigger / line_trigger,
+      trigger_levels (dict {channel_str: volts}, seeds the trigger defaults)
 
     Pixel markers are generated internally via EventGenerator using
     auto-assigned virtual channel IDs — no physical channels are consumed.
     """
 
-    def __init__(self, detectorInfo, name, nidaqManager, **_lowLevelManagers):
+    def __init__(self, detectorInfo, name, nidaqManager, timeTaggerManager=None,
+                 **_lowLevelManagers):
         self._logger = initLogger(self, instanceName=name)
-
-        if not _TIMETAGGER_AVAILABLE:
-            self._logger.error(
-                'TimeTagger Python library not found. Install it from the Swabian Instruments '
-                'software package. SwabianTimeTaggerManager will not function.'
-            )
-
+        self._instanceName = name
 
         self._detectorInfo = detectorInfo
         self._nidaqManager = nidaqManager
         props = getattr(detectorInfo, 'managerProperties', {}) or {}
 
         self._enabled = bool(props.get('enabled', True))
-        tl = props.get('trigger_levels', {}) or {}
+
+        self._click_role = str(props.get('click_role', 'photons'))
+        self._start_role = str(props.get('start_role', 'laser_sync'))
+        self._line_role = str(props.get('line_role', 'line_clock'))
+        if timeTaggerManager is not None:
+            self._timeTagger = timeTaggerManager
+            self._ownsTimeTagger = False
+            legacy = sorted(_LEGACY_CARD_PROPS.intersection(props))
+            if legacy:
+                self._logger.info(
+                    f'The setup has a timeTagger block, so these detector '
+                    f'properties are ignored: {", ".join(legacy)}. Channels '
+                    f'and trigger levels come from the block\'s roles.'
+                )
+        else:
+            self._timeTagger = self._buildPrivateTimeTagger(props, nidaqManager)
+            self._ownsTimeTagger = True
 
         # Internal state — always kept in sync with parameters via setParameter()
-        self._click_ch = int(props['click_channel'])
-        self._start_ch = int(props['start_channel'])
-        self._line_ch = int(props['line_channel'])
-        # Trigger levels keyed by role — defaults pulled from the trigger_levels
-        # dict (keyed by channel number string) for backward compatibility.
-        self._click_trigger = float(
-            props.get('click_trigger', tl.get(str(self._click_ch), 0.5))
-        )
-        self._start_trigger = float(
-            props.get('start_trigger', tl.get(str(self._start_ch), 0.5))
-        )
-        self._line_trigger = float(
-            props.get('line_trigger', tl.get(str(self._line_ch), 0.5))
-        )
+        self._resolveRoles(publish=False)
         self._binwidth_ps = int(props.get('binwidth_ps', 32))
         self._laser_rep_rate_mhz = float(props.get('laser_rep_rate_mhz', 80.0))
         # The histogram window and the laser period are one physical fact
@@ -126,17 +136,28 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._accum_sum: np.ndarray | None = None    # (Ny, Nx) float64, sum of valid lifetimes
         self._accum_count: np.ndarray | None = None  # (Ny, Nx) int32, number of valid scans per pixel
 
+        roleOptions = list(ROLES)
         parameters = {
-            # --- Channel routing ---
+            # --- Channel routing: roles are chosen here, channels are what
+            # the card's block maps them to ---
+            'click_role': DetectorListParameter(
+                group='Channels', value=self._click_role,
+                options=roleOptions, editable=True),
+            'start_role': DetectorListParameter(
+                group='Channels', value=self._start_role,
+                options=roleOptions, editable=True),
+            'line_role': DetectorListParameter(
+                group='Channels', value=self._line_role,
+                options=roleOptions, editable=True),
             'click_channel': DetectorNumberParameter(
                 group='Channels', value=self._click_ch,
-                valueUnits='ch', editable=True),
+                valueUnits='ch', editable=False),
             'start_channel': DetectorNumberParameter(
                 group='Channels', value=self._start_ch,
-                valueUnits='ch', editable=True),
+                valueUnits='ch', editable=False),
             'line_channel': DetectorNumberParameter(
                 group='Channels', value=self._line_ch,
-                valueUnits='ch', editable=True),
+                valueUnits='ch', editable=False),
             # --- Trigger levels (one per named channel role) ---
             'click_trigger': DetectorNumberParameter(
                 group='Trigger Levels', value=self._click_trigger,
@@ -174,7 +195,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 options=['off', 'on'], editable=True),
         }
 
-        self._tt = None
         self._flim = None
         self._flim_lock = threading.Lock()
         # End-of-scan acknowledgements are indexed by the worker generation
@@ -191,7 +211,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._ev_pix_begin = None
         self._ev_pix_end = None
         self._scan = {}
-        self._isMock = False  # True when hardware connection failed
 
         self.acquisition = False
         self._image_display = np.zeros((1, 64, 64), dtype=np.float32)
@@ -239,7 +258,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 self._ev_pix_begin = None
                 self._ev_pix_end = None
                 self._flim = None
-                self._tt = None
+            self._releaseCard()
         except Exception as e:
             self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
         if hasattr(super(), '__del__'):
@@ -251,19 +270,17 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
     def setParameter(self, name, value):
         """Update a parameter and mirror it into the corresponding internal attr."""
+        if name in ('click_channel', 'start_channel', 'line_channel'):
+            # Read-only: the channel is whatever the card's block maps the
+            # role to. Re-publish the resolved value instead of taking one.
+            self.parameters[name].value = getattr(self, f'_{name[:-8]}_ch')
+            return self.parameters
         super().setParameter(name, value)
-        if name == 'click_channel':
-            self._click_ch = int(value)
-        elif name == 'start_channel':
-            self._start_ch = int(value)
-        elif name == 'line_channel':
-            self._line_ch = int(value)
-        elif name == 'click_trigger':
-            self._click_trigger = float(value)
-        elif name == 'start_trigger':
-            self._start_trigger = float(value)
-        elif name == 'line_trigger':
-            self._line_trigger = float(value)
+        if name in ('click_role', 'start_role', 'line_role'):
+            setattr(self, f'_{name}', str(value))
+            self._resolveRoles()
+        elif name in ('click_trigger', 'start_trigger', 'line_trigger'):
+            self._writeTriggerLevel(name[:-8], float(value))
         elif name == 'n_bins':
             self._n_bins = int(value)
         elif name == 'binwidth_ps':
@@ -283,6 +300,112 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 self._accum_sum = None
                 self._accum_count = None
         return self.parameters
+
+    # ------------------------------------------------------------------ #
+    # The shared card: roles, trigger levels, scan hold                    #
+    # ------------------------------------------------------------------ #
+
+    def _buildPrivateTimeTagger(self, props, nidaqManager):
+        """Compatibility: no ``timeTagger`` block, channels on the detector."""
+        tl = props.get('trigger_levels', {}) or {}
+        # Resolved again from the roles once the card exists.
+        self._click_ch = int(props['click_channel'])
+        self._start_ch = int(props['start_channel'])
+        self._line_ch = int(props['line_channel'])
+        info = TimeTaggerInfo(
+            photonsChannel=self._click_ch,
+            photonsTriggerV=float(
+                props.get('click_trigger', tl.get(str(self._click_ch), 0.5))
+            ),
+            laserSyncChannel=self._start_ch,
+            laserSyncTriggerV=float(
+                props.get('start_trigger', tl.get(str(self._start_ch), 0.5))
+            ),
+            lineClockChannel=self._line_ch,
+            lineClockTriggerV=float(
+                props.get('line_trigger', tl.get(str(self._line_ch), 0.5))
+            ),
+        )
+        # The roles must be the three the legacy properties describe.
+        self._click_role, self._start_role, self._line_role = (
+            'photons', 'laser_sync', 'line_clock'
+        )
+        block = {
+            'photonsChannel': info.photonsChannel,
+            'photonsTriggerV': info.photonsTriggerV,
+            'laserSyncChannel': info.laserSyncChannel,
+            'laserSyncTriggerV': info.laserSyncTriggerV,
+            'lineClockChannel': info.lineClockChannel,
+            'lineClockTriggerV': info.lineClockTriggerV,
+        }
+        self._logger.warning(
+            'This setup has no top-level "timeTagger" block; the Time Tagger '
+            'is configured from this detector\'s click/start/line properties '
+            '(deprecated). Move them to the block so scripts and other '
+            'consumers can find the card: "timeTagger": '
+            + json.dumps(block)
+        )
+        return TimeTaggerManager(info, nidaqManager=nidaqManager)
+
+    def _resolveRoles(self, publish=True):
+        """Mirror the roles' channels and trigger levels into the attributes
+        the scan code reads and, unless ``publish`` is false (before the base
+        class has its parameters), into the read-only parameters."""
+        tt = self._timeTagger
+        resolved = {}
+        for which, role in (('click', self._click_role),
+                            ('start', self._start_role),
+                            ('line', self._line_role)):
+            try:
+                resolved[which] = tt.channelInfo(role)
+            except TimeTaggerError as error:
+                raise ValueError(
+                    f'{self._instanceName}: {which}_role {role!r} is not a '
+                    f'configured Time Tagger role: {error}'
+                ) from None
+        self._click_ch = resolved['click'].channel
+        self._start_ch = resolved['start'].channel
+        self._line_ch = resolved['line'].channel
+        self._click_trigger = resolved['click'].trigger_v
+        self._start_trigger = resolved['start'].trigger_v
+        self._line_trigger = resolved['line'].trigger_v
+        if publish:
+            params = self.parameters
+            for which in ('click', 'start', 'line'):
+                if f'{which}_channel' in params:
+                    params[f'{which}_channel'].value = resolved[which].channel
+                if f'{which}_trigger' in params:
+                    params[f'{which}_trigger'].value = resolved[which].trigger_v
+
+    def _writeTriggerLevel(self, which, voltage):
+        """A trigger-level parameter writes through to the card; refused
+        while a scan holds it, in which case the parameter shows the card's
+        real value again."""
+        role = getattr(self, f'_{which}_role')
+        try:
+            self._timeTagger.setTriggerLevel(role, voltage)
+        except TimeTaggerBusyError as error:
+            self._logger.warning(str(error))
+        except TimeTaggerError as error:
+            self._logger.error(
+                f'Could not set the {which} trigger level on the card: {error}'
+            )
+        self._resolveRoles()
+
+    def _releaseCard(self):
+        try:
+            self._timeTagger.endScanHold(self.name)
+        except Exception:
+            pass
+
+    @property
+    def timeTagger(self):
+        """The shared card manager this detector acquires through."""
+        return self._timeTagger
+
+    @property
+    def _isMock(self):
+        return bool(getattr(self._timeTagger, 'isMock', False))
 
     # ------------------------------------------------------------------ #
     # Scan lifecycle                                                        #
@@ -402,11 +525,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             }
         if not self._enabled:
             return
-        if not _TIMETAGGER_AVAILABLE:
-            raise RuntimeError(
-                'TimeTagger library is unavailable for an enabled scan '
-                'participant'
-            )
 
         Nx, Ny, S, outer_axes, outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
         self._validate_time_resolved_scan_shape(outer_axes, outer_dims)
@@ -450,29 +568,28 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         )
         self._shape = (Ny, Nx)
 
+        tt = self._timeTagger
         try:
-            if self._tt is None:
-                self._tt = createTimeTagger()
-                self._isMock = False
-        except Exception as error:
-            self._isMock = True
+            tt.ensureConnected()
+        except TimeTaggerError as error:
             with self._flim_lock:
                 self._flim = None
-            raise RuntimeError('createTimeTagger() failed') from error
+            raise RuntimeError('Time Tagger is not available') from error
 
+        # Conditioning (trigger levels, dead times, delays, the filter) is
+        # the card manager's and was applied at connect; from here until the
+        # final frame has landed the card is held so nothing changes it.
+        tt.beginScanHold(self.name)
         try:
-            self._tt.setTriggerLevel(self._click_ch, self._click_trigger)
-            self._tt.setTriggerLevel(self._start_ch, self._start_trigger)
-            self._tt.setTriggerLevel(self._line_ch, self._line_trigger)
             # Shift click-channel timestamps so the IRF peak lands at t=0.
             # A negative delay moves photon timestamps earlier by t0_ps,
             # placing the IRF peak at histogram bin 0.
-            self._tt.setInputDelay(self._click_ch, -self._t0_ps)
+            tt.tagger.setInputDelay(self._click_ch, -self._t0_ps)
 
             self._create_virtual_pixel_pulses()
             with self._flim_lock:
-                self._flim = Flim(
-                    self._tt,
+                self._flim = tt.api.Flim(
+                    tt.tagger,
                     start_channel=self._start_ch,
                     click_channel=self._click_ch,
                     pixel_begin_channel=self._ev_pix_begin.getChannel(),
@@ -486,6 +603,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 self._flim = None
             self._ev_pix_begin = None
             self._ev_pix_end = None
+            self._releaseCard()
             raise RuntimeError('TimeTagger FLIM setup failed') from error
 
         tot_scan_time_s = float(scanInfoDict.get('tot_scan_time_s', 0.0))
@@ -523,6 +641,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._activeScanGeneration = None
             with self._flim_lock:
                 self._flim = None
+            self._releaseCard()
             self._reportScanBuildFailure('prepare', error)
 
     def _reportScanBuildFailure(self, stage, error):
@@ -549,11 +668,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
         # No output_channel argument — the API auto-assigns virtual channel IDs
         # that are guaranteed not to collide with any physical channel.
-        self._ev_pix_begin = TimeTagger.EventGenerator(
-            self._tt, int(self._line_ch), begin_pattern
+        tt = self._timeTagger
+        self._ev_pix_begin = tt.api.EventGenerator(
+            tt.tagger, int(self._line_ch), begin_pattern
         )
-        self._ev_pix_end = TimeTagger.EventGenerator(
-            self._tt, int(self._line_ch), end_pattern
+        self._ev_pix_end = tt.api.EventGenerator(
+            tt.tagger, int(self._line_ch), end_pattern
         )
 
     def startScan(self):
@@ -681,6 +801,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 self._flim = None
             self._ev_pix_begin = None
             self._ev_pix_end = None
+            self._releaseCard()
             self.acquisition = False
             acknowledge()
             return
@@ -758,6 +879,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             callbacks = self._finishAcks.pop(generation, ())
             self._completedFinalFrameGenerations.add(generation)
             self._finishedScanGenerations.add(generation)
+        # The final frame has landed: the card may be reconditioned again.
+        self._releaseCard()
         for acknowledge in callbacks:
             try:
                 acknowledge()
@@ -779,6 +902,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         with self._finishAckLock:
             callbacks = self._finishAcks.pop(generation, ())
             self._finishedScanGenerations.add(generation)
+        self._releaseCard()
         for acknowledge in callbacks:
             try:
                 acknowledge()
@@ -944,6 +1068,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             metadata = {
                 "detector_name": self.name,
                 "backend": "SwabianTimeTaggerManager",
+                "time_tagger": self._timeTagger.metadata(),
+                "click_role": self._click_role,
+                "start_role": self._start_role,
+                "line_role": self._line_role,
                 "click_channel": int(self._click_ch),
                 "start_channel": int(self._start_ch),
                 "line_channel": int(self._line_ch),
@@ -1105,6 +1233,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         else:
             self._preparedScanGeneration = None
             self._activeScanGeneration = None
+            self._releaseCard()
         finally:
             self._newFrameReady = True
 
