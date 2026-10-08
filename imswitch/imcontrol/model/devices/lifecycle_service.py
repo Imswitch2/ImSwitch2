@@ -141,6 +141,11 @@ class DeviceLifecycleService:
                     continue
                 if lifecycle is None:
                     continue
+                if getattr(lifecycle, "hardware_id", None) is None and callable(
+                        getattr(lifecycle, "bindHardwareId", None)):
+                    # A default (backend-holder) lifecycle: its physical
+                    # device is whatever the graph derived for the manager.
+                    lifecycle.bindHardwareId(hardware_id)
                 if (
                     not hasattr(lifecycle, "hardware_id")
                     or not hasattr(lifecycle, "capabilities")

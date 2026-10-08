@@ -6,6 +6,7 @@ from __future__ import annotations
 import threading
 from typing import List, Optional
 
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin, backend_attribute
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.SetupInfo import TeensyPulseInfo  # re-export
 
@@ -21,7 +22,7 @@ from .PulseGeneratorManager import (
 __all__ = ['TeensyPulseManager', 'TeensyPulseInfo']
 
 
-class TeensyPulseManager(PulseGeneratorManager):
+class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
     """Drives a Teensy / Arduino pulse generator.
 
     On construction, tries to open the configured port via
@@ -62,9 +63,17 @@ class TeensyPulseManager(PulseGeneratorManager):
         self._running = False
         self._running_lock = threading.RLock()
 
+    #: The serial driver, read from the backend holder: a reconnect replaces it.
+    _driver = backend_attribute()
+
     def _open_driver(self, info: TeensyPulseInfo):
-        # Lazy import so test environments without pyserial can still
-        # import this module — only the mock path is exercised there.
+        """Open the driver through the backend holder.
+
+        No port means no device: a configured mock when ``useMockOnFailure``
+        is set (the hardware-free setups), a configuration error otherwise.
+        A port that cannot be opened leaves the pulse generator not connected
+        until it is reconnected from Hardware status (a mock on the opt-in).
+        """
         from imswitch.imcontrol.model.interfaces.teensypulse import (
             MockTeensyPulseDriver,
             TeensyPulseDriver,
@@ -74,43 +83,32 @@ class TeensyPulseManager(PulseGeneratorManager):
             if not info.useMockOnFailure:
                 raise RuntimeError(
                     'TeensyPulseInfo.port is empty and useMockOnFailure is '
-                    'False — refusing to construct manager'
+                    'false: configure a port, or useMockOnFailure=true for a mock'
                 )
-            self.__logger.warning(
-                'No Teensy port configured; using MockTeensyPulseDriver'
-            )
+            self.__logger.info('No Teensy port configured; using MockTeensyPulseDriver')
+
+        def make_mock():
             return MockTeensyPulseDriver(
                 n_channels=info.mockNChannels,
                 min_pulse_us=info.mockMinPulseUs,
                 max_steps=info.mockMaxSteps,
             )
 
-        try:
+        def open_real():
             driver = TeensyPulseDriver(port=info.port, baud=info.baud)
             self.__logger.info(
-                f'Connected to Teensy on {info.port} '
+                f'Teensy pulse generator on {info.port} '
                 f'({driver.capabilities.protocol_version}, '
                 f'n_channels={driver.capabilities.n_channels})'
             )
             return driver
-        except Exception as e:
-            if not info.useMockOnFailure:
-                raise
-            self.__logger.warning(
-                f'Failed to open Teensy on {info.port}: {e}; '
-                f'falling back to MockTeensyPulseDriver'
-            )
-            # Distinguishes this fallback from a configured (empty-port) mock.
-            self._mock_fallback = True
-            return MockTeensyPulseDriver(
-                n_channels=info.mockNChannels,
-                min_pulse_us=info.mockMinPulseUs,
-                max_steps=info.mockMaxSteps,
-            )
 
-    # ------------------------------------------------------------------
-    # Capability properties — derived from the connected driver.
-    # ------------------------------------------------------------------
+        return self._installBackend(
+            open_real, make_mock,
+            label=f'Teensy pulse generator {info.port or "(no port)"}',
+            configured_mock=not info.port,
+            use_mock_on_failure=bool(info.useMockOnFailure),
+        )
 
     @property
     def jitter_ns(self) -> int:

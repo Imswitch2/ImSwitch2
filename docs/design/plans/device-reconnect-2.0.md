@@ -392,3 +392,38 @@ porting the ten lifecycles (R-4) is cheaper once the holder exists.
   leaving the device absent. The Settings widget still lists an absent
   detector (greying it is R-3 with the camera managers).
 
+**R-3 (done 2026-10-08, first adopters).**
+- `BackendHolder` + `DeviceManagerStatusMixin._installBackend(open_real,
+  make_mock, label=, configured_mock=, use_mock_on_failure=, transient=,
+  connect_on_startup=, close=)`: applies §4.0; a real device that is not
+  there gets an *absent stand-in* whose every use raises
+  `DeviceNotConnectedError`, so call sites keep `self._stage` /
+  `self._camera` / `self._driver` unchanged. `backend_attribute` is the
+  descriptor for that attribute (always the holder's current backend).
+  `backendIsReal` replaces every stored mock flag.
+- `BackendLifecycle` (`devices/lifecycle.py`) is the default lifecycle of
+  a manager with a holder -- the §4.2 template: safe state (best effort) →
+  `_replaceBackend()` → `_lifecycleReinitialise()` → safe state (verified);
+  connect / disconnect for a transient device; a detector's replacement
+  runs in `DetectorsManager.detectorLifecycleMaintenance` (bound through
+  `_bindDetectorLifecycleHost`). The service binds its `hardware_id` from
+  the graph (`bindHardwareId`), so no descriptor declaration is needed:
+  the supervisor's default descriptor (`kind:name`) is the physical device.
+- Adopted: Kinesis stage, Kinesis rotator (`RotatorManager` now carries
+  the status mixin; `isSimulated` = not `backendIsReal`), Standa (libximc's
+  virtual controller and an unloaded library count as not connected),
+  Teensy pulse (`TeensyPulseInfo.useMockOnFailure` default False; no port
+  = configured mock when the opt-in is set), ThorCam TSI.
+- A `MOCK_` serial is a configured mock, opened by the manager's own
+  factory (tests monkeypatch that factory).
+- **Cameras keep a mock when absent** (ThorCam: `useMockOnFailure`
+  defaults to True) -- the one exception to P-2: a `DetectorManager` needs
+  the sensor size at construction and only the camera knows it. The
+  reconnect replaces the mock with the real camera. The sensor-size change
+  on that reconnect is handled by TIS; ThorCam re-applies its defaults and
+  re-arms (R-4 polish: `_setFullShape`).
+- Still on the old fallback: Photometrics, AV, PiCam, Hamamatsu SLMs,
+  Cobolt-new, ESP32 LED, PulseStreamer, PyMicroscope, Swabian, and the
+  vendor `rs232devices` managers (ESP32, GRBL, SQUID, KDC101) -- next
+  adopters, same pattern.
+

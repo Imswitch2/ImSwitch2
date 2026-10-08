@@ -222,6 +222,8 @@ class TestMaterialize:
             "dllLocation": "text", "flushFrameLimit": "int",
             # The SDK ring depth, declared when the audit made it settable.
             "frameBufferDepth": "int",
+            # Reconnect 2.0: the fallback mock is an explicit (here: default) opt-in.
+            "useMockOnFailure": "bool",
         }
         assert props["cameraSerial"]["nullable"] is True
         assert props["cameraSerial"]["tip"].startswith("Camera serial number")

@@ -1,5 +1,6 @@
 """Manager for Thorlabs MLS203 Kinesis XY motorized stages."""
 
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
 
@@ -39,8 +40,24 @@ class KinesisStageManager(PositionerManager):
             positionerInfo.managerProperties
         )
 
-        self._stage = self._getStageObj(self._snr, self._scale, self._is_rack_system)
+        properties = positionerInfo.managerProperties
+        is_mock = str(self._snr).upper().startswith('MOCK')
+        open_stage = lambda: self._getStageObj(self._snr, self._scale, self._is_rack_system)
+        self._installBackend(
+            open_stage,
+            # A MOCK_ serial is a configured mock, opened by the same factory
+            # (which returns the mock for it); the fallback mock is separate.
+            open_stage if is_mock else (
+                lambda: self._getMockStageObj(self._snr, self._scale, self._is_rack_system)),
+            label=f'Kinesis stage {self._snr}',
+            configured_mock=is_mock,
+            use_mock_on_failure=bool(properties.get('useMockOnFailure', False)),
+            transient=bool(getattr(positionerInfo, 'transient', False)),
+            connect_on_startup=bool(getattr(positionerInfo, 'connectOnStartup', False)),
+        )
 
+        if not self.backendHolder.backend:
+            return                      # not connected: nothing to home or read
         if home_on_init:
             self.__logger.info(f'Homing Kinesis stage {self._snr}')
             for axis in self.axes:
@@ -146,30 +163,31 @@ class KinesisStageManager(PositionerManager):
             )
         return scale
 
+    #: The driver, read from the backend holder: a reconnect replaces it.
+    _stage = backend_attribute()
+
     def _getStageObj(self, snr: str, scale: str, is_rack_system: bool):
-        """Instantiate the stage driver with real-then-mock fallback."""
-        try:
-            from imswitch.imcontrol.model.interfaces.kinesisstage import KinesisStage
-            stage = KinesisStage(snr, scale=scale, is_rack_system=is_rack_system)
-            self.__logger.info(f'Initialized Thorlabs Kinesis stage {snr}')
-            self._setConnected("Kinesis stage initialized")
-        except Exception as e:
-            self.__logger.warning(
-                f'Failed to initialize Kinesis stage {snr} (real hardware): {e}'
-            )
-            self.__logger.warning('Loading mock Kinesis stage for headless operation')
-            from imswitch.imcontrol.model.interfaces.kinesisstage import MockKinesisStage
-            stage = MockKinesisStage(snr, scale=scale, is_rack_system=is_rack_system)
-            self._setConnectionError(
-                e,
-                summary="Kinesis stage initialization failed; mock fallback active",
-                mock_active=True,
-            )
+        """Open the real stage driver; raises when the hardware is absent.
+        The backend holder decides what happens then (not connected, or a
+        mock on ``useMockOnFailure``)."""
+        if str(snr).upper().startswith('MOCK'):
+            return self._getMockStageObj(snr, scale, is_rack_system)
+        from imswitch.imcontrol.model.interfaces.kinesisstage import KinesisStage
+        stage = KinesisStage(snr, scale=scale, is_rack_system=is_rack_system)
+        self.__logger.info(f'Initialized Thorlabs Kinesis stage {snr}')
         return stage
+
+    @staticmethod
+    def _getMockStageObj(snr: str, scale: str, is_rack_system: bool):
+        from imswitch.imcontrol.model.interfaces.kinesisstage import MockKinesisStage
+        return MockKinesisStage(snr, scale=scale, is_rack_system=is_rack_system)
+
+    def _lifecycleReinitialise(self) -> None:
+        self._update_position()
 
     def finalize(self) -> None:
         """Close the stage connection."""
-        self._stage.close()
+        self.backendHolder.close(suppress_errors=False)
         self._setFinalizedStatus()
 
 

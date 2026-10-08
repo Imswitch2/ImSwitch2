@@ -26,6 +26,14 @@
         "example:integer"
       ]
     },
+    "useMockOnFailure": {
+      "description": "Optional, default ``false``: install a simulation when the library or controller cannot be opened, instead of leaving the mount not connected (the default: the error shows in Hardware status, Reconnect brings it back). libximc's own virtual controller (opened when no controller is found) counts as not connected.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
     "ximcLibLocation": {
       "description": "Filesystem path to the bundled XIMC vendor library.  Often a network drive — if the path becomes unreachable the manager falls back to the mock.",
       "x-imswitch-kind": "string",

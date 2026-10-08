@@ -3,6 +3,7 @@
 Supports Zelux, Kiralux, and Quantalux cameras via thorlabs_tsi_sdk.
 """
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter
 )
@@ -43,6 +44,9 @@ class ThorCamTSIManager(DetectorManager):
         self._flushFrameLimit = int(props.get('flushFrameLimit', 256))
         from imswitch.imcontrol.model.interfaces.thorcamera_tsi import DEFAULT_FRAME_BUFFER_DEPTH
         self._frameBufferDepth = int(props.get('frameBufferDepth', DEFAULT_FRAME_BUFFER_DEPTH))
+        # An absent camera keeps a mock until reconnected (a detector needs
+        # its sensor size at construction); see _initCamera.
+        self.__dict__['_useMockOnFailure'] = bool(props.get('useMockOnFailure', True))
         
         # Get default values
         default_exposure_us = defaults.get('exposure_us', 50000)
@@ -137,41 +141,42 @@ class ThorCamTSIManager(DetectorManager):
         self._camera.arm(buffer_size=self._frameBufferDepth)
         self.__logger.info(f"Initialized {model}, serial: {self._camera.serial}")
     
+    #: The SDK camera, read from the backend holder: a reconnect replaces it.
+    _camera = backend_attribute()
+
     def _initCamera(self, serial, dll_location):
-        """Initialize camera with fallback to mock."""
-        # Mock fallback: serial starts with "MOCK_" or import fails
+        """Open the camera through the backend holder.
+
+        A ``MOCK_`` serial configures the mock. A real camera that is absent
+        keeps a mock until it is reconnected -- the one exception to the
+        "not connected, never a mock" rule: a detector needs its sensor size
+        at construction, and only the camera knows it. The reconnect
+        replaces the mock with the real camera.
+        """
         if serial is not None:
             serial = str(serial)
-        use_mock = serial is not None and serial.startswith("MOCK_")
-        
-        if not use_mock:
-            try:
-                from imswitch.imcontrol.model.interfaces.thorcamera_tsi import (
-                    ThorTSICamera
-                )
-                camera = ThorTSICamera(serial=serial, dll_directory=dll_location)
-                self._setConnected("Thorlabs TSI camera initialized")
-                return camera
-            except (ImportError, RuntimeError, ValueError) as e:
-                self.__logger.warning(
-                    f"Failed to initialize Thorlabs TSI camera: {e}. "
-                    f"Loading mock camera."
-                )
-                self._setConnectionError(
-                    e,
-                    summary="Thorlabs TSI camera initialization failed; mock fallback active",
-                    mock_active=True,
-                )
-                use_mock = True
-        
-        # Load mock
-        from imswitch.imcontrol.model.interfaces.thorcamera_tsi import (
-            MockThorTSICamera
+
+        def open_real():
+            from imswitch.imcontrol.model.interfaces.thorcamera_tsi import ThorTSICamera
+            return ThorTSICamera(serial=serial, dll_directory=dll_location)
+
+        def make_mock():
+            from imswitch.imcontrol.model.interfaces.thorcamera_tsi import MockThorTSICamera
+            return MockThorTSICamera(serial=serial)
+
+        return self._installBackend(
+            open_real, make_mock,
+            label=f'Thorlabs TSI camera {serial}',
+            configured_mock=serial is not None and serial.startswith("MOCK_"),
+            use_mock_on_failure=self.__dict__.get('_useMockOnFailure', True),
+            close=lambda camera: camera.dispose(),
         )
-        camera = MockThorTSICamera(serial=serial)
-        if serial is not None and serial.startswith("MOCK_"):
-            self._setMockActive("Mock camera configured")
-        return camera
+
+    def _lifecycleReinitialise(self):
+        """After the camera was replaced: ImSwitch-owned settings back on
+        the new camera, armed and idle."""
+        self._applyDefaults()
+        self._camera.arm(buffer_size=self._frameBufferDepth)
     
     def _applyDefaults(self):
         """Apply default parameter values to hardware."""
@@ -404,7 +409,11 @@ class ThorCamTSIManager(DetectorManager):
         """Cleanup: disarm and dispose camera."""
         super().finalize()
         self.__logger.debug("Finalizing ThorCam TSI manager...")
-        if self._camera is not None:
+        holder = self.backendHolder
+        if holder is not None:
+            holder.close(suppress_errors=False)
+            self._setFinalizedStatus()
+        elif self._camera is not None:
             self._camera.dispose()
             self._camera = None
     

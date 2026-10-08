@@ -1,4 +1,5 @@
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from .RotatorManager import RotatorManager
 
 
@@ -17,28 +18,38 @@ class StandaRotatorManager(RotatorManager):
         self._steps_per_turn = rotatorInfo.managerProperties['stepsPerTurn']
         self._microsteps_per_step = rotatorInfo.managerProperties['microstepsPerStep']
 
-        self._motor = self._getMotorObj(self._device_id, self._lib_loc, self._steps_per_turn, self._microsteps_per_step)
-        
-        self.get_pos()
+        properties = rotatorInfo.managerProperties
+        self._installBackend(
+            lambda: self._getMotorObj(self._device_id, self._lib_loc,
+                                      self._steps_per_turn, self._microsteps_per_step),
+            lambda: self._getMockMotorObj(self._lib_loc),
+            label=f'Standa motor {self._device_id}',
+            use_mock_on_failure=bool(properties.get('useMockOnFailure', False)),
+            transient=bool(getattr(rotatorInfo, 'transient', False)),
+            connect_on_startup=bool(getattr(rotatorInfo, 'connectOnStartup', False)),
+        )
+        if self.backendHolder.backend:
+            self.get_pos()
 
     def readPosition(self):
         """ Fresh position in degrees (waits until the motor has stopped). """
         self.get_pos()
         return self._position
 
+    #: The driver, read from the backend holder: a reconnect replaces it.
+    _motor = backend_attribute()
+
     @property
     def isSimulated(self) -> bool:
-        """ True for the mock fallback, and for libximc's virtual controller
-        (opened silently when no controller is found) or a library that did
-        not load: none of them moves a real mount. """
-        motor = getattr(self, '_motor', None)
-        return bool(
-            getattr(self, '_mock_fallback', False)
-            or motor is None
-            or type(motor).__name__.startswith('Mock')
-            or getattr(motor, 'emulated', False)
-            or not getattr(motor, '_imported', True)
-        )
+        """ True unless a real controller is connected: a mock, an absent
+        device, and also libximc's virtual controller (opened silently when
+        no controller is found) or a library that did not load -- none of
+        them moves a real mount. """
+        if not self.backendIsReal:
+            return True
+        motor = self._motor
+        return bool(getattr(motor, 'emulated', False)
+                    or not getattr(motor, '_imported', True))
 
     def get_info(self):
         info = self._motor.test_info()
@@ -73,21 +84,28 @@ class StandaRotatorManager(RotatorManager):
         self._motor.set_sync_in_settings(abs_pos_deg, rel_shift, enabled)
 
     def _getMotorObj(self, device_id, lib_loc, steps_per_turn, microsteps_per_step):
-        try:
-            from imswitch.imcontrol.model.interfaces.standamotor import StandaMotor
-            motor = StandaMotor(device_id, lib_loc, steps_per_turn, microsteps_per_step)
-            self.__logger.info(f'Initialized Standa motor {device_id}')
-        except Exception:
-            self.__logger.warning(f'Failed to initialize Standa motor {device_id}, loading mocker')
-            self.__logger.warning(f'Check if the lib_loc in the setupFileName json is available (network drive)') #eventually move this file to a local drive. Need to adjust all .json s
-            from imswitch.imcontrol.model.interfaces.standamotor import MockStandaMotor
-            motor = MockStandaMotor(lib_loc)
-            # A fallback, not a configured mock: status shows it as an error.
-            self._mock_fallback = True
+        """Open the real motor; raises when the library or controller is
+        absent (check that ``ximcLibLocation`` is reachable -- often a
+        network drive)."""
+        from imswitch.imcontrol.model.interfaces.standamotor import StandaMotor
+        motor = StandaMotor(device_id, lib_loc, steps_per_turn, microsteps_per_step)
+        if not getattr(motor, '_imported', True):
+            motor.close()
+            raise RuntimeError(f'pyximc did not load from {lib_loc!r}')
+        self.__logger.info(f'Initialized Standa motor {device_id}')
         return motor
 
+    @staticmethod
+    def _getMockMotorObj(lib_loc):
+        from imswitch.imcontrol.model.interfaces.standamotor import MockStandaMotor
+        return MockStandaMotor(lib_loc)
+
+    def _lifecycleReinitialise(self) -> None:
+        self.get_pos()
+
     def close(self):
-        self._motor.close()
+        self.backendHolder.close(suppress_errors=False)
+        self._setFinalizedStatus()
 
 
 # Copyright (C) 2020-2023 ImSwitch developers

@@ -590,7 +590,7 @@ class TeensyPulseInfo:
     purely a convenience for scripts to refer to ``pinMap['laser488']``
     rather than hardcoded integers. """
 
-    useMockOnFailure: bool = True
+    useMockOnFailure: bool = False
     """ Fall back to the in-process mock if the port can't be opened.
     Set False to make a missing device a hard failure. """
 

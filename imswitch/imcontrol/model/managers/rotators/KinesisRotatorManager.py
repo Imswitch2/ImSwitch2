@@ -1,6 +1,7 @@
 """Manager for Thorlabs K10CR1 Kinesis rotation mounts."""
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from .RotatorManager import RotatorManager
 
 
@@ -26,8 +27,24 @@ class KinesisRotatorManager(RotatorManager):
         self._units_per_dg = rotatorInfo.managerProperties.get('unitsPerDegree', 136533.33)
         home_on_init = rotatorInfo.managerProperties.get('homeOnInit', False)
 
-        self._motor = self._getMotorObj(self._snr, self._units_per_dg)
+        properties = rotatorInfo.managerProperties
+        is_mock = str(self._snr).upper().startswith('MOCK')
+        open_motor = lambda: self._getMotorObj(self._snr, self._units_per_dg)
+        self._installBackend(
+            open_motor,
+            # A MOCK_ serial is a configured mock, opened by the same factory
+            # (which returns the mock for it); the fallback mock is separate.
+            open_motor if is_mock else (
+                lambda: self._getMockMotorObj(self._snr, self._units_per_dg)),
+            label=f'Kinesis rotator {self._snr}',
+            configured_mock=is_mock,
+            use_mock_on_failure=bool(properties.get('useMockOnFailure', False)),
+            transient=bool(getattr(rotatorInfo, 'transient', False)),
+            connect_on_startup=bool(getattr(rotatorInfo, 'connectOnStartup', False)),
+        )
 
+        if not self.backendHolder.backend:
+            return                      # not connected: nothing to home or read
         if home_on_init:
             self.__logger.info(f'Homing Kinesis rotator {self._snr}')
             self._motor.home()
@@ -60,9 +77,8 @@ class KinesisRotatorManager(RotatorManager):
         self._update_position()
         return self._position
 
-    @property
-    def isSimulated(self) -> bool:
-        return type(getattr(self, '_motor', None)).__name__.startswith('Mock')
+    #: The driver, read from the backend holder: a reconnect replaces it.
+    _motor = backend_attribute()
 
     def _update_position(self) -> None:
         """Read current encoder position and convert to degrees."""
@@ -70,25 +86,26 @@ class KinesisRotatorManager(RotatorManager):
         self._position = raw_pos / self._units_per_dg
 
     def _getMotorObj(self, snr: str, units_per_dg: float):
-        """Instantiate the motor driver with real-then-mock fallback."""
-        try:
-            from imswitch.imcontrol.model.interfaces.kinesisrotator import KinesisMotor
-            motor = KinesisMotor(snr, units_per_dg)
-            self.__logger.info(f'Initialized Thorlabs Kinesis rotator {snr}')
-        except Exception as e:
-            self.__logger.warning(
-                f'Failed to initialize Kinesis rotator {snr} (real hardware): {e}'
-            )
-            self.__logger.warning('Loading mock Kinesis motor for headless operation')
-            from imswitch.imcontrol.model.interfaces.kinesisrotator import MockKinesisMotor
-            motor = MockKinesisMotor(snr, units_per_dg)
-            # A fallback, not a configured mock: status shows it as an error.
-            self._mock_fallback = True
+        """Open the real motor driver; raises when the hardware is absent."""
+        if str(snr).upper().startswith('MOCK'):
+            return self._getMockMotorObj(snr, units_per_dg)
+        from imswitch.imcontrol.model.interfaces.kinesisrotator import KinesisMotor
+        motor = KinesisMotor(snr, units_per_dg)
+        self.__logger.info(f'Initialized Thorlabs Kinesis rotator {snr}')
         return motor
+
+    @staticmethod
+    def _getMockMotorObj(snr: str, units_per_dg: float):
+        from imswitch.imcontrol.model.interfaces.kinesisrotator import MockKinesisMotor
+        return MockKinesisMotor(snr, units_per_dg)
+
+    def _lifecycleReinitialise(self) -> None:
+        self._update_position()
 
     def finalize(self) -> None:
         """Close the motor connection."""
-        self._motor.close()
+        self.backendHolder.close(suppress_errors=False)
+        self._setFinalizedStatus()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

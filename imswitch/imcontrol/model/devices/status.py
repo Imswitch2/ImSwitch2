@@ -112,6 +112,78 @@ class DeviceManagerStatusMixin:
         raise DeviceNotConnectedError(
             f"{getattr(self, 'name', type(self).__name__)}: {what} refused, {summary}")
 
+    # ------------------------------------------------------- backend holder
+    def _installBackend(self, open_real, make_mock=None, *, label=None, **rules):
+        """Open this manager's backend through a :class:`BackendHolder` and
+        return it. ``open_real()`` raises when the hardware is absent;
+        ``make_mock()`` builds the simulation (used only for a configured
+        mock or the ``use_mock_on_failure`` opt-in). Rules:
+        ``configured_mock``, ``use_mock_on_failure``, ``transient``,
+        ``connect_on_startup``, ``close(backend)``.
+
+        A real device that is not there gets an absent stand-in: every use
+        raises :class:`DeviceNotConnectedError`. The manager is then
+        reconnectable through its default lifecycle (``_replaceBackend``),
+        and may override ``_lifecycleSafeState`` / ``_lifecycleReinitialise``.
+        """
+        label = label or getattr(self, "name", type(self).__name__)
+        holder = BackendHolder(self, label=label, open_real=open_real,
+                               make_mock=make_mock, **rules)
+        self.__dict__["_backendHolder"] = holder
+        return holder.open()
+
+    @property
+    def backendHolder(self):
+        return self.__dict__.get("_backendHolder")
+
+    @property
+    def backendIsReal(self) -> bool:
+        """Whether the current backend is real hardware (never a latch)."""
+        holder = self.backendHolder
+        return bool(holder is not None and holder.real)
+
+    def _replaceBackend(self) -> bool:
+        """Close the current backend and open the real one again; the
+        default reconnect. Returns whether real hardware is now connected."""
+        holder = self.backendHolder
+        if holder is None:
+            raise RuntimeError(f"{type(self).__name__} has no backend holder")
+        return holder.reopen()
+
+    def _lifecycleSafeState(self, *, verified: bool):
+        """Put the device in its safe state around a reconnect; return the
+        errors found (only read when ``verified``)."""
+        return []
+
+    def _lifecycleReinitialise(self) -> None:
+        """Re-apply what the device must know after its backend was
+        replaced (settings, a fresh position read)."""
+
+    def getDeviceLifecycle(self):
+        """The default lifecycle of a manager with a backend holder:
+        reconnect, plus connect / disconnect for a transient device. The
+        service binds its hardware id from the device graph."""
+        holder = self.backendHolder
+        if holder is None:
+            return None
+        lifecycle = self.__dict__.get("_backendLifecycle")
+        if lifecycle is None:
+            from .lifecycle import BackendLifecycle
+            lifecycle = BackendLifecycle(self)
+            host = self.__dict__.get("_detectorLifecycleHost")
+            if host is not None:
+                lifecycle.bindDetectors(host)
+            self.__dict__["_backendLifecycle"] = lifecycle
+        return lifecycle
+
+    def _bindDetectorLifecycleHost(self, detectorsManager, detectorName) -> None:
+        """Called by ``DetectorsManager`` for every detector: a detector's
+        backend replacement must run in its maintenance window."""
+        self.__dict__["_detectorLifecycleHost"] = detectorsManager
+        lifecycle = self.__dict__.get("_backendLifecycle")
+        if lifecycle is not None:
+            lifecycle.bindDetectors(detectorsManager)
+
     def statusSnapshot(self):
         """(connection, mode, summary, details, failure_kind), consistent."""
         snapshot = self.__dict__.get("_deviceStatusSnapshot")
@@ -180,6 +252,154 @@ class DeviceManagerStatusMixin:
             summary=summary or "Hardware device not found",
             failure_kind=DeviceFailureKind.DEVICE_NOT_FOUND,
         )
+
+
+class _AbsentBackend:
+    """Stands in for the backend of a real device that is not connected:
+    every use raises :class:`DeviceNotConnectedError`, so a manager's call
+    sites need no "is it there" checks. Closing it is a no-op."""
+
+    def __init__(self, manager, label: str) -> None:
+        self.__dict__["_manager"] = manager
+        self.__dict__["_label"] = label
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        if name in ("close", "dispose", "finalize", "disconnect", "stop"):
+            return lambda *a, **k: None
+        manager = self.__dict__["_manager"]
+        summary = getattr(manager, "connectionStatusSummary", None) or "not connected"
+        raise DeviceNotConnectedError(
+            f"{self.__dict__['_label']}: {name} refused, {summary}")
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return f"<absent backend of {self.__dict__['_label']}>"
+
+
+class backend_attribute:
+    """Descriptor for the manager attribute that holds the backend
+    (``_stage``, ``_camera``, ``_driver``): it always reads the holder's
+    *current* backend, so a reconnect that replaced it needs no bookkeeping
+    at the call sites. Before a holder exists it behaves like a plain
+    attribute."""
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return self
+        holder = obj.__dict__.get("_backendHolder")
+        if holder is not None:
+            return holder.backend
+        return obj.__dict__.get(self._name)
+
+    def __set__(self, obj, value):
+        holder = obj.__dict__.get("_backendHolder")
+        if holder is not None:
+            holder.backend = value
+            holder.real = holder.real and value is not None
+        else:
+            obj.__dict__[self._name] = value
+
+
+class BackendHolder:
+    """What opens a manager's backend, and how to open it again.
+
+    One per manager (``DeviceManagerStatusMixin._installBackend``). Holds
+    the two openers and the close call, applies the mode rules of
+    ``docs/design/plans/device-reconnect-2.0.md`` §4.0, and gives every
+    manager that uses it a reconnect (and, for a transient device, connect
+    and disconnect) without code of its own.
+    """
+
+    def __init__(self, manager, *, label, open_real, make_mock=None,
+                 configured_mock=False, use_mock_on_failure=False,
+                 transient=False, connect_on_startup=False, close=None) -> None:
+        self.manager = manager
+        self.label = label
+        self.open_real = open_real
+        self.make_mock = make_mock
+        self.configured_mock = bool(configured_mock)
+        self.use_mock_on_failure = bool(use_mock_on_failure)
+        self.transient = bool(transient)
+        self.connect_on_startup = bool(connect_on_startup)
+        self._close = close
+        self.backend = None
+        self.real = False
+
+    # ---------------------------------------------------------- opening
+    def open(self):
+        """The startup open (§4.0, first column)."""
+        if self.configured_mock:
+            self.backend, self.real = self._mock(), False
+            self.manager._setMockActive(f"{self.label}: mock configured")
+            return self.backend
+        if self.transient and not self.connect_on_startup:
+            self.backend, self.real = _AbsentBackend(self.manager, self.label), False
+            self.manager._setAbsent(f"{self.label} not connected -- connect it in Hardware status")
+            return self.backend
+        return self._openReal(attempt="startup")
+
+    def reopen(self) -> bool:
+        """Close whatever is installed and open the real backend again.
+        Returns whether real hardware is now connected."""
+        self.close(suppress_errors=True)
+        self._openReal(attempt="reconnect")
+        return self.real
+
+    def disconnect(self) -> None:
+        self.close(suppress_errors=False)
+        self.backend, self.real = _AbsentBackend(self.manager, self.label), False
+        self.manager._setAbsent(f"{self.label} disconnected")
+
+    def close(self, *, suppress_errors: bool) -> None:
+        backend, self.backend = self.backend, None
+        self.real = False
+        if backend is None or isinstance(backend, _AbsentBackend):
+            return
+        try:
+            if self._close is not None:
+                self._close(backend)
+            else:
+                for name in ("close", "dispose", "finalize"):
+                    method = getattr(backend, name, None)
+                    if callable(method):
+                        method()
+                        break
+        except Exception:
+            if not suppress_errors:
+                raise
+
+    def _openReal(self, *, attempt: str):
+        try:
+            backend = self.open_real()
+        except Exception as exc:
+            if self.use_mock_on_failure and self.make_mock is not None:
+                self.backend, self.real = self._mock(), False
+                self.manager._setConnectionError(
+                    exc, summary=f"{self.label} failed at {attempt}; mock fallback active",
+                    mock_active=True)
+            else:
+                self.backend, self.real = _AbsentBackend(self.manager, self.label), False
+                if self.manager.runtimeMode is DeviceRuntimeMode.MOCK:
+                    # An opt-in mock from an earlier failure is gone now.
+                    self.manager._deviceRuntimeMode = DeviceRuntimeMode.REAL
+                self.manager._setConnectionError(
+                    exc, summary=f"{self.label} not connected")
+            return self.backend
+        self.backend, self.real = backend, True
+        self.manager._setConnected(f"{self.label} connected")
+        return backend
+
+    def _mock(self):
+        if self.make_mock is None:
+            raise RuntimeError(f"{self.label}: no mock available")
+        return self.make_mock()
 
 
 def device_usable(manager) -> bool:

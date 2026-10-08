@@ -1,9 +1,10 @@
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
 from abc import ABC, abstractmethod
 
 from typing import Dict, List
 
 
-class RotatorManager(ABC):
+class RotatorManager(DeviceManagerStatusMixin, ABC):
     """ Abstract base class for managers that control rotators. Each type of
     rotator corresponds to a manager derived from this class. """
 
@@ -60,8 +61,11 @@ class RotatorManager(ABC):
 
     @property
     def isSimulated(self) -> bool:
-        """ True when the manager fell back to a simulated device (hardware
-        absent). Calibration runs refuse simulated rotators. """
+        """ True unless real hardware is connected now (a configured mock,
+        an absent device, a fallback). Calibration runs refuse simulated
+        rotators. Managers with a backend holder get it for free. """
+        if self.backendHolder is not None:
+            return not self.backendIsReal
         return False
 
     def finalize(self) -> None:

@@ -780,6 +780,10 @@ plugin's class instead of this one, and a warning in the log says so; see
      - int
      - ``256``
      - Most frames drained from the SDK's queue in one flush before acquisition restarts; raise it if stale frames survive a restart on a fast camera.
+   * - ``useMockOnFailure``
+     - bool
+     - ``true``
+     - When the camera cannot be opened, a mock camera stands in until **Reconnect** in Hardware status replaces it with the real one (a detector needs its sensor size at construction, so an absent camera cannot be left without a backend). ``false`` makes a missing camera a startup error.
    * - ``defaults``
      - dict
      - ``{}``

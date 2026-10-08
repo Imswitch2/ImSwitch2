@@ -77,7 +77,7 @@ class _ElliptecRotatorLifecycle:
         )
 
 
-class ElliptecRotatorManager(DeviceManagerStatusMixin, RotatorManager):
+class ElliptecRotatorManager(RotatorManager):
     """Rotator manager for Thorlabs ELL14/ELL14K multidrop mounts.
 
     Each configured mount remains an independent logical/physical rotator in

@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 157,
-    "docs_documented": 157,
-    "keys": 237,
+    "docs_agree": 161,
+    "docs_documented": 161,
+    "keys": 241,
     "managers": 66,
     "none_default_only": 38,
     "none_only": 16,
-    "optional": 171,
+    "optional": 175,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
-    "typed_by_code": 114,
-    "typed_with_docs": 181,
-    "typed_with_examples": 149,
+    "typed_by_code": 118,
+    "typed_with_docs": 185,
+    "typed_with_examples": 153,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 61,
@@ -314,7 +314,7 @@
         "RotatorManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 1
     },
     "KinesisStageManager": {
@@ -324,7 +324,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 6,
+      "properties": 7,
       "required": 1
     },
     "LEDMatrixManager": {
@@ -619,7 +619,7 @@
         "RotatorManager"
       ],
       "overridden": false,
-      "properties": 4,
+      "properties": 5,
       "required": 4
     },
     "SwabianTimeTaggerManager": {
@@ -659,7 +659,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 6,
+      "properties": 7,
       "required": 0
     },
     "ThorlabsMFFManager": {
