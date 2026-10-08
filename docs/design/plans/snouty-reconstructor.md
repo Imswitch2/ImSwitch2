@@ -197,6 +197,11 @@ friction.
 D.1-D.3 are implemented in `imswitch/improcess/reconstructors/snouty`
 and `imswitch/improcess/reconstructors/snouty_projections`.
 
+* **D.4 — Deconvolution.** `snouty_deconvolution` ports the Richardson–Lucy
+  path of Deconvolution_GUI (sheared sampling operator + effective light-sheet
+  kernel) as a third sibling on the same pipeline scaffolding, NumPy and CuPy.
+  **Implemented (2026-10-08).**
+
 ### Wiring into the registry
 
 Two lines in `imswitch/improcess/reconstructors/__init__.py`:

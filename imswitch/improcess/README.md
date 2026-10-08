@@ -245,7 +245,7 @@ now; entry-point discovery is a future item):
 
 - Reconstructors — [`reconstructors/__init__.py`](reconstructors/__init__.py)
   `_AVAILABLE_RECONSTRUCTOR_CLASSES`:
-  `monalisa`, `snouty`, `view-only`, `snouty-projections`, `widefield-starss`.
+  `monalisa`, `snouty`, `snouty-projections`, `snouty-deconvolution`, `view-only`, `widefield-starss`, …
 - Processors — [`processors/__init__.py`](processors/__init__.py)
   `_AVAILABLE_PROCESSOR_CLASSES`:
   `colocalization`, `drift-correct`, `frc`, `multicolor-apply`,

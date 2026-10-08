@@ -450,6 +450,7 @@ view-only               Reconstructor  Pass-through; raw frames wrapped as a res
 widefield-starss        Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
 snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
 snouty-projections      Reconstructor  Fast SNOUTY projection-preview stack
+snouty-deconvolution    Reconstructor  Richardson-Lucy deconvolution through the SNOUTY scan geometry
 smlm-localizer          Reconstructor  SMLM localization table from camera frame stacks
 beadrec                 Reconstructor  Raster bead reconstruction from a camera frame stream
 tiling-mosaic           Reconstructor  Offline assembly and refinement of saved tiling datasets
@@ -489,6 +490,43 @@ table-to-localizations  Processor      Promote a points table to localizations w
 (classic)*.  It has no parameter panel of its own: it is what ``monalisa``
 runs when its *Reconstruction method* is ``MoNaLISA``, so pick ``monalisa``
 instead.
+
+SNOUTY deconvolution
+====================
+
+``snouty-deconvolution`` is the SNOUTY deskew's model-based sibling. The
+deskew re-grids the camera voxels onto the sample grid; the deconvolution
+fits a sample volume on that same grid whose blur with the effective
+light-sheet kernel, read along the tilted scan geometry, reproduces the raw
+stack (Richardson-Lucy with the sheared sampling operator and its exact
+adjoint). It is the ``Deconvolve`` path of the Deconvolution_GUI tool as an
+ImProcess plugin; the two agree on the forward model and the update, and the
+port also re-zeroes the adjoint canvas every iteration, which the original
+did not.
+
+The parameter panel is the deskew panel plus a *Deconvolution* group:
+
+* **Iterations** of the multiplicative update (10 by default).
+* **Detection NA**, **Wavelength**, **Immersion index** and **PSF size**
+  generate a Richards & Wolf PSF at the output voxel size; **PSF file** loads
+  a 3D TIFF instead.
+* **Confined sheet FWHM**, **Read-out sheet FWHM** and **Background sheet
+  ratio** describe the illumination sheet in the camera focal plane; the
+  effective kernel is the PSF multiplied by that sheet, cropped at **Kernel
+  clip factor** of its peak and normalised to unit sum, so the estimate comes
+  out in camera intensity units.
+* **Normalisation clip** floors the normalisation volume at that fraction of
+  its maximum, which keeps voxels the camera barely sees from exploding.
+* **Gradient consent** splits the data into two binomial halves and only
+  accepts an update where both agree on its direction, a noise-robust
+  stopping heuristic.
+
+*Device* picks the NumPy or the CuPy backend; both run the same code. The
+result is a ``SnoutyResult`` on exactly the deskew grid, so it lines up with a
+deskewed volume of the same recording voxel for voxel and the multicolor
+processors accept it unchanged. Expect a CPU run of a few hundred camera
+frames to take a minute or two per ten iterations; the GPU path is tens of
+times faster.
 
 Processor categories and compatibility
 ======================================

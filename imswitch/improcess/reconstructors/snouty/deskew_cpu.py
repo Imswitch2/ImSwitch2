@@ -8,6 +8,24 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 
 
+def build_deskew_transform(c_px: float, alpha_rad: float, dy: float, vx: float) -> np.ndarray:
+    """Camera-index to sample-voxel matrix ``M`` for a tilted light sheet.
+
+    Data are indexed ``(cam_y, plane, cam_x)`` after the transpose in
+    ``process_stack``; ``M @ (cam_y, plane, cam_x)`` is the continuous sample
+    coordinate ``(z, y, x)`` in output voxels. The camera row axis is the tilted
+    one, the scan step advances along sample ``y``, and camera columns map to
+    sample ``x`` untouched. The SNOUTY deconvolution reconstructor builds its
+    forward model on this same matrix so its volume lands on the deskew grid.
+    """
+    T = np.array([
+        [c_px * np.sin(alpha_rad), 0.0, 0.0],
+        [c_px * np.cos(alpha_rad), dy,  0.0],
+        [0.0,                      0.0, c_px],
+    ])
+    return T / vx
+
+
 class DeskewProcessorCPU:
     """
     CPU fallback of DeskewProcessorGPU.
@@ -39,12 +57,7 @@ class DeskewProcessorCPU:
                        max(0.0, x_dist / 2.355)]
 
     def _build_transform(self) -> np.ndarray:
-        T = np.array([
-            [self.c_px * np.sin(self.alpha), 0.0,     0.0],
-            [self.c_px * np.cos(self.alpha), self.dy, 0.0],
-            [0.0,                            0.0,     self.c_px],
-        ])
-        return T / self.vx
+        return build_deskew_transform(self.c_px, self.alpha, self.dy, self.vx)
 
     def _scatter_indices(self, data_shape: tuple, out_shape: tuple):
         """Return (flat_idx, mask) for scatter into *out_shape* canvas.

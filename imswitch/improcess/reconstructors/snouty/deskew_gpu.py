@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .deskew_cpu import build_deskew_transform
+
 # Guard CuPy imports — module must load on non-CUDA systems
 try:
     import cupy as cp
@@ -75,12 +77,7 @@ class DeskewProcessorGPU:
                        max(0.0, x_dist / 2.355)]
 
     def _build_transform(self) -> np.ndarray:
-        T = np.array([
-            [self.c_px * np.sin(self.alpha), 0.0,     0.0],
-            [self.c_px * np.cos(self.alpha), self.dy, 0.0],
-            [0.0,                            0.0,     self.c_px],
-        ])
-        return T / self.vx
+        return build_deskew_transform(self.c_px, self.alpha, self.dy, self.vx)
 
     def _flat_scatter_indices_and_weights(self, data_shape: tuple, out_shape: tuple):
         cache_key = (data_shape, out_shape)

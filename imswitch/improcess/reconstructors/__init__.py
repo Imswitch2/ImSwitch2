@@ -20,6 +20,7 @@ from .monalisa import MonalisaReconstructor
 from .snouty import SnoutyReconstructor
 from .view_only import ViewOnlyReconstructor
 from .snouty_projections import SnoutyProjectionsReconstructor
+from .snouty_deconvolution import SnoutyDeconvolutionReconstructor
 from .widefield_starss import WidefieldStarssReconstructor
 from .smlm import SmlmLocalizer
 from .beadrec import BeadRecReconstructor
@@ -34,6 +35,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'snouty': SnoutyReconstructor,
     'view-only': ViewOnlyReconstructor,
     'snouty-projections': SnoutyProjectionsReconstructor,
+    'snouty-deconvolution': SnoutyDeconvolutionReconstructor,
     'widefield-starss': WidefieldStarssReconstructor,
     'smlm-localizer': SmlmLocalizer,
     'beadrec': BeadRecReconstructor,

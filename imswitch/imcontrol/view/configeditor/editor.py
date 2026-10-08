@@ -276,6 +276,7 @@ IMPROCESS_RECONSTRUCTOR_FALLBACK = [
     "monalisa-legacy",
     "smlm-localizer",
     "snouty",
+    "snouty-deconvolution",
     "snouty-projections",
     "tiling-mosaic",
     "time-lapse",
