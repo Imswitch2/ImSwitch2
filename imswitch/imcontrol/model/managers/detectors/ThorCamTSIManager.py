@@ -172,6 +172,11 @@ class ThorCamTSIManager(DetectorManager):
             close=lambda camera: camera.dispose(),
         )
 
+    def _lifecycleProbe(self):
+        """Check: the camera's model and serial (Hardware status -> Check)."""
+        camera = self._camera
+        return f'{camera.model} serial {camera.serial} answers'
+
     def _lifecycleReinitialise(self):
         """After the camera was replaced: ImSwitch-owned settings back on
         the new camera, armed and idle."""

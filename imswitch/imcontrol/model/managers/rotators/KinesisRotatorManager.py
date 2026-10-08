@@ -102,6 +102,11 @@ class KinesisRotatorManager(RotatorManager):
     def _lifecycleReinitialise(self) -> None:
         self._update_position()
 
+    def _lifecycleProbe(self):
+        """Check: a fresh position read (Hardware status -> Check)."""
+        self._update_position()
+        return f'Kinesis rotator {self._snr} answers: {self._position:.2f} deg'
+
     def finalize(self) -> None:
         """Close the motor connection."""
         self.backendHolder.close(suppress_errors=False)

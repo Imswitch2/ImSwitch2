@@ -185,6 +185,12 @@ class KinesisStageManager(PositionerManager):
     def _lifecycleReinitialise(self) -> None:
         self._update_position()
 
+    def _lifecycleProbe(self):
+        """Check: a fresh position read (Hardware status -> Check)."""
+        self._update_position()
+        position = ', '.join(f'{axis} {self.position[axis]:.2f}' for axis in self.axes)
+        return f'Kinesis stage {self._snr} answers: {position}'
+
     def finalize(self) -> None:
         """Close the stage connection."""
         self.backendHolder.close(suppress_errors=False)

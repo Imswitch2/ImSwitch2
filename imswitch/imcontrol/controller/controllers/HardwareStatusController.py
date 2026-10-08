@@ -9,6 +9,7 @@ _BUSY_TEXT = {
     DeviceLifecycleAction.RECONNECT: "Reconnecting device…",
     DeviceLifecycleAction.CONNECT: "Connecting device…",
     DeviceLifecycleAction.DISCONNECT: "Disconnecting device…",
+    DeviceLifecycleAction.PROBE: "Checking device…",
 }
 
 
@@ -45,6 +46,7 @@ class HardwareStatusController(ImConWidgetController):
         self._widget.sigReconnectRequested.connect(self.reconnect)
         self._widget.sigConnectRequested.connect(self.connect)
         self._widget.sigDisconnectRequested.connect(self.disconnect)
+        self._widget.sigProbeRequested.connect(self.probe)
         lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
         if lifecycleService is not None and hasattr(lifecycleService, 'addStatusListener'):
             # Instrument faults arrive on run / poller threads.
@@ -69,6 +71,7 @@ class HardwareStatusController(ImConWidgetController):
             reconnectableHardwareIds=actionable[DeviceLifecycleAction.RECONNECT],
             connectableHardwareIds=actionable[DeviceLifecycleAction.CONNECT],
             disconnectableHardwareIds=actionable[DeviceLifecycleAction.DISCONNECT],
+            probeableHardwareIds=actionable[DeviceLifecycleAction.PROBE],
         )
 
     def reconnect(self, hardware_id):
@@ -79,6 +82,9 @@ class HardwareStatusController(ImConWidgetController):
 
     def disconnect(self, hardware_id):
         self._start(hardware_id, DeviceLifecycleAction.DISCONNECT)
+
+    def probe(self, hardware_id):
+        self._start(hardware_id, DeviceLifecycleAction.PROBE)
 
     def _start(self, hardware_id, action):
         verb = action.value.capitalize()

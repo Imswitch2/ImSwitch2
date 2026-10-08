@@ -436,3 +436,35 @@ porting the ten lifecycles (R-4) is cheaper once the holder exists.
   ESP32 LED laser calls `self._rs232manager._squid` -- a latent bug (an
   ESP32Manager has no `_squid`); not touched.
 
+**R-4 (2026-10-08) -- decided narrower than planned.** `BackendLifecycle`
+(R-3) *is* the template, and every new manager gets it by using the
+holder. Of the ten existing lifecycles, the ones the service needs on the
+shared hook protocol are on it: CoolLED and Leica (R-1), and Märzhäuser --
+whose reconnect the R-1 transport path had started to bypass (an
+RS232-backed device on a reopenable port goes through the port), so its
+position re-sync after a reopen was being skipped; it now has
+`_lifecycleSafeState` / `_onTransportReconnected`, and its own `reconnect()`
+reuses them (`test_reconnect_through_the_shared_port_resyncs_the_stage_too`).
+The rig-validated bespoke lifecycles -- PI, Hamamatsu (two cameras,
+`_replacingThread`), TIS (sensor-size change), both Cobolts, Thorlabs MFF,
+Elliptec (its bus already fans out over its addresses), instruments -- are
+**kept as they are**: porting them onto the holder is a refactor with no
+behaviour gain, their tests pin their orchestration (MFF's tests drive
+`_connect` / `_device` directly), and that is where regressions would come
+from. Rule going forward: a manager with a reopenable transport contributes
+hooks, not a lifecycle; a manager with its own backend uses the holder.
+
+**R-5 (done 2026-10-08).** `probe` is a service action
+(`DeviceLifecycleService.probe`, in `_TRANSITIONS`): serialised and
+ownership-checked like a transition, never taking the acquisition gate (a
+check replaces nothing, so it is allowed during a scan). `BackendLifecycle`
+offers it when the manager has `_lifecycleProbe()` (a cheap identity /
+status query returning a one-line summary); transport-backed devices probe
+through each manager's hook. Hooks on MPB (`GETSN`), Kinesis stage /
+rotator and Standa (a fresh position read), ThorCam TSI (model + serial),
+Teensy (protocol version). CoolLED and the legacy Cobolt keep their own.
+Hardware status: a **Check** button beside Reconnect, shown only for
+devices that can be probed. The optional periodic check (Q-1) is not
+built: off by default was the proposal, and nothing on the rig has asked
+for it yet.
+

@@ -103,6 +103,11 @@ class StandaRotatorManager(RotatorManager):
     def _lifecycleReinitialise(self) -> None:
         self.get_pos()
 
+    def _lifecycleProbe(self):
+        """Check: a fresh position read (Hardware status -> Check)."""
+        self.get_pos()
+        return f'Standa motor {self._device_id} answers: {self._position:.2f} deg'
+
     def close(self):
         self.backendHolder.close(suppress_errors=False)
         self._setFinalizedStatus()

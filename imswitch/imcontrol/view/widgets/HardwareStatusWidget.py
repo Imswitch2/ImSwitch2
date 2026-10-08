@@ -197,6 +197,7 @@ class HardwareStatusWidget(Widget):
     sigReconnectRequested = QtCore.Signal(object)
     sigConnectRequested = QtCore.Signal(object)
     sigDisconnectRequested = QtCore.Signal(object)
+    sigProbeRequested = QtCore.Signal(object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -208,6 +209,7 @@ class HardwareStatusWidget(Widget):
         self._reconnectableHardwareIds = set()
         self._connectableHardwareIds = set()
         self._disconnectableHardwareIds = set()
+        self._probeableHardwareIds = set()
         self._reconnectBusy = False
 
         self.operationLabel = QtWidgets.QLabel("")
@@ -221,6 +223,10 @@ class HardwareStatusWidget(Widget):
         self.disconnectButton = QtWidgets.QPushButton("Disconnect")
         self.disconnectButton.setEnabled(False)
         self.disconnectButton.clicked.connect(self._requestDisconnect)
+        self.probeButton = QtWidgets.QPushButton("Check")
+        self.probeButton.setEnabled(False)
+        self.probeButton.setToolTip("Ask the device whether it is still there (nothing is replaced).")
+        self.probeButton.clicked.connect(self._requestProbe)
         self.refreshButton = QtWidgets.QPushButton("Refresh")
         self.refreshButton.clicked.connect(self.sigRefreshRequested)
 
@@ -259,6 +265,7 @@ class HardwareStatusWidget(Widget):
 
         top = QtWidgets.QHBoxLayout()
         top.addWidget(self.operationLabel, 1)
+        top.addWidget(self.probeButton)
         top.addWidget(self.connectButton)
         top.addWidget(self.disconnectButton)
         top.addWidget(self.reconnectButton)
@@ -270,11 +277,13 @@ class HardwareStatusWidget(Widget):
         layout.addWidget(detailsGroup)
 
     def setStatuses(self, statuses, reconnectableHardwareIds=(),
-                    connectableHardwareIds=(), disconnectableHardwareIds=()) -> None:
+                    connectableHardwareIds=(), disconnectableHardwareIds=(),
+                    probeableHardwareIds=()) -> None:
         selected_key = self._selectedStatusKey()
         self._reconnectableHardwareIds = set(reconnectableHardwareIds)
         self._connectableHardwareIds = set(connectableHardwareIds)
         self._disconnectableHardwareIds = set(disconnectableHardwareIds)
+        self._probeableHardwareIds = set(probeableHardwareIds)
         expanded = self._expandedCategories()
 
         self._statuses = list(statuses)
@@ -368,9 +377,25 @@ class HardwareStatusWidget(Widget):
             return
         self.sigDisconnectRequested.emit(status.hardware_id)
 
+    def _requestProbe(self) -> None:
+        status = self._statusByKey.get(self._selectedStatusKey())
+        if status is None or self._reconnectBusy:
+            return
+        if status.hardware_id not in self._probeableHardwareIds:
+            return
+        self.sigProbeRequested.emit(status.hardware_id)
+
     def _updateReconnectButton(self) -> None:
         status = self._statusByKey.get(self._selectedStatusKey())
         absent = status is not None and status.mode is DeviceRuntimeMode.ABSENT
+        canProbe = (
+            status is not None
+            and status.hardware_id in self._probeableHardwareIds
+            and not absent
+        )
+        self.probeButton.setVisible(status is not None
+                                    and status.hardware_id in self._probeableHardwareIds)
+        self.probeButton.setEnabled(bool(canProbe and not self._reconnectBusy))
         canConnect = (
             status is not None
             and status.hardware_id in self._connectableHardwareIds

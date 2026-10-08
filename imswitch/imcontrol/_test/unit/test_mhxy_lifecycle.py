@@ -187,3 +187,37 @@ def test_reconnect_waits_for_a_move_in_flight():
     reconnector.join(5)
     assert order == ['move done', 'reopen']
     assert results[0].success
+
+
+def test_reconnect_through_the_shared_port_resyncs_the_stage_too():
+    """Reconnect 2.0 R-1 routed an RS232-backed device through its port; the
+    stage's own lifecycle was bypassed, and without transport hooks its
+    position sync after the reopen was skipped. The hooks restore it."""
+    from imswitch.imcontrol.model.devices.graph import DeviceDescriptorSpec, DeviceRole
+
+    class _Port(Transport):
+        def getDeviceDescriptorSpec(self):
+            return DeviceDescriptorSpec(role=DeviceRole.RESOURCE)
+
+    transport = _Port()
+    manager = stage(transport)
+    master = _master()
+    master.positionersManager = _Group({'XY': manager})
+    master.rs232sManager = _Group({'serial': transport})      # the port is in the graph
+    service = DeviceLifecycleService(master, DeviceSupervisor(master))
+    hardware_id = manager.getDeviceLifecycle().hardware_id
+    assert service.transportOf(hardware_id) is not None       # the transport path
+    transport.reply = '7 8'
+    transport.commands.clear()
+    result = service.reconnect(hardware_id)
+    assert result.success, result
+    assert transport.reopens == 1
+    assert transport.commands == ['?pos']                     # re-synced, nothing moved
+    assert manager.position == {'X': 7, 'Y': 8}
+    assert manager.connectionState is DeviceConnectionState.CONNECTED
+
+    transport.open_ok = False
+    result = service.reconnect(hardware_id)
+    assert not result.success and manager.positionSynced is False
+    with pytest.raises(Exception):
+        manager.move(1, 'X')                                   # motion disabled

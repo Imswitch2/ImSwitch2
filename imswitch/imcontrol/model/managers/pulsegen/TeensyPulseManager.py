@@ -110,6 +110,12 @@ class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
             use_mock_on_failure=bool(info.useMockOnFailure),
         )
 
+    def _lifecycleProbe(self):
+        """Check: the firmware's protocol version (Hardware status -> Check)."""
+        capabilities = self._driver.capabilities
+        return (f'Teensy answers: protocol {capabilities.protocol_version}, '
+                f'{capabilities.n_channels} channels')
+
     @property
     def jitter_ns(self) -> int:
         return self._JITTER_NS

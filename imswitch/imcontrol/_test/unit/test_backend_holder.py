@@ -205,3 +205,67 @@ def test_a_detector_replacement_runs_in_the_maintenance_window():
     camera._bindDetectorLifecycleHost(_Detectors(), 'cam')
     assert camera.getDeviceLifecycle().reconnect().success
     assert events == [('enter', 'cam'), ('clear', 'cam'), ('exit', 'cam')]
+
+
+# ------------------------------------------------------------- probe (R-5)
+def test_probe_asks_the_device_and_updates_its_status_without_replacing_it():
+    stage = _Stage('xy')
+    assert not stage.getDeviceLifecycle().capabilities.probe
+
+    class _Probing(_Stage):
+        def _lifecycleProbe(self):
+            return f'stage {self.serial} answers: {self._stage.position:.1f}'
+
+    probing = _Probing('xy')
+    lifecycle = probing.getDeviceLifecycle()
+    assert lifecycle.capabilities.probe
+    driver = probing._stage
+    result = lifecycle.probe()
+    assert result.success and result.summary == 'stage A answers: 0.0'
+    assert probing._stage is driver                        # nothing replaced
+    assert probing.connectionStatusSummary == 'stage A answers: 0.0'
+
+    probing._stage.position = float('nan')
+    probing._lifecycleProbe = lambda: (_ for _ in ()).throw(OSError('no reply'))
+    result = lifecycle.probe()
+    assert not result.success and 'did not answer' in result.summary
+    assert probing.connectionState is DeviceConnectionState.ERROR
+
+    absent = _Probing('xy', present=False)
+    result = absent.getDeviceLifecycle().probe()
+    assert not result.success and 'not connected' in result.summary
+
+
+def test_the_service_offers_check_and_never_takes_the_acquisition_gate_for_it():
+    from imswitch.imcontrol.model.devices.acquisition_gate import get_acquisition_gate
+
+    class _Probing(_Stage):
+        def _lifecycleProbe(self):
+            return 'answers'
+
+    stage = _Probing('xy')
+    service = _service(xy=stage)
+    hardware_id = HardwareDeviceId('positioner', 'positioner:xy')
+    assert service.canPerform(hardware_id, DeviceLifecycleAction.PROBE)
+    assert service.getActionableHardwareIds(DeviceLifecycleAction.PROBE) == (hardware_id,)
+    with get_acquisition_gate().maintenance('a scan is running'):
+        result = service.probe(hardware_id)                # a check is allowed meanwhile
+    assert result.success and result.action is DeviceLifecycleAction.PROBE
+
+
+def test_a_transport_backed_device_probes_through_its_managers():
+    from imswitch.imcontrol._test.unit.test_device_lifecycle import (
+        FIRST_ID, _HookedManager, _ReopenableTransport, _transport_rig,
+    )
+
+    class _Probing(_HookedManager):
+        def _lifecycleProbe(self):
+            return 'unit SN 42 answers'
+
+    transport = _ReopenableTransport()
+    first = _Probing(FIRST_ID, name='first')
+    service = _transport_rig(transport, first)
+    assert service.canPerform(FIRST_ID, DeviceLifecycleAction.PROBE)
+    result = service.probe(FIRST_ID)
+    assert result.success and result.summary == 'unit SN 42 answers'
+    assert transport.reconnects == 0                        # a check reopens nothing

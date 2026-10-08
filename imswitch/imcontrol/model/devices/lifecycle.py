@@ -164,7 +164,8 @@ class BackendLifecycle:
         holder = self._manager.backendHolder
         transient = bool(holder is not None and holder.transient)
         return DeviceLifecycleCapabilities(
-            connect=transient, disconnect=transient, reconnect=True)
+            connect=transient, disconnect=transient, reconnect=True,
+            probe=callable(getattr(self._manager, "_lifecycleProbe", None)))
 
     def bindHardwareId(self, hardware_id) -> None:
         self.hardware_id = hardware_id
@@ -278,7 +279,26 @@ class BackendLifecycle:
         return tuple(d for d in self._ids() if d.kind == "laser")
 
     def probe(self):
-        raise DeviceLifecycleNotSupportedError("Probe is not available for this device.")
+        """A manager's ``_lifecycleProbe()`` -- a cheap identity / status
+        query returning a one-line summary, raising on failure -- with the
+        status updated either way. Nothing is replaced."""
+        probe = getattr(self._manager, "_lifecycleProbe", None)
+        if not callable(probe):
+            raise DeviceLifecycleNotSupportedError("Probe is not available for this device.")
+        with self._lock:
+            manager = self._manager
+            label = manager.backendHolder.label
+            if not manager.backendIsReal:
+                return self._result(DeviceLifecycleAction.PROBE, False,
+                                    f"{label}: {manager.connectionStatusSummary or 'not connected'}")
+            try:
+                summary = probe()
+            except Exception as exc:
+                manager._setConnectionError(exc, summary=f"{label} did not answer")
+                return self._result(DeviceLifecycleAction.PROBE, False,
+                                    f"{label} did not answer", str(exc))
+            manager._setConnected(summary or f"{label} answered")
+            return self._result(DeviceLifecycleAction.PROBE, True, summary or f"{label} answered")
 
     def shutdown(self):
         raise DeviceLifecycleNotSupportedError("Devices shut down with ImSwitch.")

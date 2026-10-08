@@ -170,6 +170,14 @@ class MPBLaserManager(LaserManager):
                 f'MPB laser {self._mpbName}: {what} refused, '
                 f'{self.connectionStatusSummary or "not connected"}')
 
+    def _lifecycleProbe(self):
+        """Check: the unit's serial number (Hardware status -> Check)."""
+        if self._isMock:
+            return f'MPB laser {self._mpbName}: mock'
+        self._requireUnit('check')
+        serial = str(self._queryRequired('GETSN')).split('>')[-1].strip()
+        return f'MPB laser SN {serial} answers'
+
     # Transport hooks (DeviceLifecycleService): the port was, or is about to
     # be, reopened in place.
     def _lifecycleSafeState(self, *, verified: bool):

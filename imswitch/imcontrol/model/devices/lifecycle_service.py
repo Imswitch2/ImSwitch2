@@ -24,28 +24,66 @@ from .lifecycle import (
 class _TransportBackedLifecycle:
     """The lifecycle of a device that has no adapter of its own but uses a
     transport that can be reopened in place. ``reconnect`` is never called
-    on it: the service runs the transport reconnect instead."""
+    on it: the service runs the transport reconnect instead. ``probe`` asks
+    each of its managers' ``_lifecycleProbe()`` (a cheap identity query)."""
 
-    capabilities = DeviceLifecycleCapabilities(reconnect=True)
-
-    def __init__(self, hardware_id) -> None:
+    def __init__(self, hardware_id, managers=()) -> None:
         self.hardware_id = hardware_id
+        self._managers = tuple(managers)
+
+    @property
+    def capabilities(self) -> DeviceLifecycleCapabilities:
+        return DeviceLifecycleCapabilities(
+            reconnect=True,
+            probe=any(callable(getattr(m, "_lifecycleProbe", None)) for m in self._managers))
 
     def reconnect(self):
         raise DeviceLifecycleNotSupportedError(
             "A transport-backed reconnect runs through the lifecycle service.")
 
+    def probe(self):
+        summaries, errors = [], []
+        for manager in self._managers:
+            probe = getattr(manager, "_lifecycleProbe", None)
+            if not callable(probe):
+                continue
+            name = getattr(manager, "name", type(manager).__name__)
+            try:
+                summaries.append(probe() or f"{name} answered")
+                setter = getattr(manager, "_setConnected", None)
+                if callable(setter):
+                    setter(summaries[-1])
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+                setter = getattr(manager, "_setConnectionError", None)
+                if callable(setter):
+                    setter(exc, summary=f"{name} did not answer")
+        if not summaries and not errors:
+            raise DeviceLifecycleNotSupportedError("Probe is not available for this device.")
+        return DeviceLifecycleResult(
+            hardware_id=self.hardware_id, action=DeviceLifecycleAction.PROBE,
+            success=not errors,
+            summary="; ".join(errors) if errors else "; ".join(summaries),
+            details="; ".join(summaries) if errors and summaries else None,
+            affected_device_ids=tuple(
+                DeviceId(getattr(m, "_deviceKind", self.hardware_id.category), m.name)
+                for m in self._managers if getattr(m, "name", None) is not None),
+        )
+
     def connect(self):
         raise DeviceLifecycleNotSupportedError("Not supported.")
 
-    disconnect = probe = shutdown = connect
+    disconnect = shutdown = connect
 
 
-#: Runtime transitions the service runs (probe and shutdown are not offered).
+#: Actions the service runs (shutdown is not offered). ``probe`` is a check
+#: that replaces nothing: it is serialised and ownership-checked like a
+#: transition, but never takes the acquisition gate.
 _TRANSITIONS = (
     DeviceLifecycleAction.CONNECT,
     DeviceLifecycleAction.DISCONNECT,
     DeviceLifecycleAction.RECONNECT,
+    DeviceLifecycleAction.PROBE,
 )
 
 
@@ -185,7 +223,13 @@ class DeviceLifecycleService:
                 # No adapter of its own, but a transport that can be reopened
                 # in place: reconnect is the transport's, with the managers'
                 # re-initialisation hooks.
-                lifecycle = _TransportBackedLifecycle(hardware_id)
+                managers = []
+                for source_id in source_ids:
+                    try:
+                        managers.append(self._supervisor.getManager(source_id))
+                    except KeyError:
+                        continue
+                lifecycle = _TransportBackedLifecycle(hardware_id, managers)
 
             handles[hardware_id] = DeviceHandle(
                 hardware_id=hardware_id,
@@ -362,6 +406,11 @@ class DeviceLifecycleService:
         """Disconnect a device so it can be unplugged (a transient instrument)."""
         return self._transition(hardware_id, DeviceLifecycleAction.DISCONNECT)
 
+    def probe(self, hardware_id) -> DeviceLifecycleResult:
+        """Check a device: a cheap identity / status query that updates its
+        status without replacing anything."""
+        return self._transition(hardware_id, DeviceLifecycleAction.PROBE)
+
     def _transition(self, hardware_id, action) -> DeviceLifecycleResult:
         """One runtime transition, with the same rules for every action:
         declared capability, shutdown refusal, per-device lock, and -- for
@@ -400,6 +449,8 @@ class DeviceLifecycleService:
             # guarded by their reservation instead), so a lifecycle may
             # declare affectsAcquisition = False and skip the gate.
             affectsAcquisition = bool(getattr(lifecycle, "affectsAcquisition", True))
+            if action is DeviceLifecycleAction.PROBE:
+                affectsAcquisition = False       # a check replaces nothing
             try:
                 with self._ownDevices(hardware_id, handle, verb):
                     result = self._runLifecycle(lifecycle, verb, hardware_id, affectsAcquisition)

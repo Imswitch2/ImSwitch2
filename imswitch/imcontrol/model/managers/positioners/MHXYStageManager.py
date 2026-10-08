@@ -25,25 +25,22 @@ class _MHXYLifecycle:
     connect = disconnect = probe = shutdown = _unsupported
 
     def reconnect(self):
+        """Direct use; the service reopens the shared port itself and calls
+        the manager's transport hooks (every device on the port with it)."""
         manager = self._manager
         with manager._operation(reconnect=True):
             manager.positionSynced = False
+            real = False
             try:
-                if not manager._rs232Manager.reconnectTransport():
-                    raise RuntimeError('Could not reopen the configured serial port.')
-                manager._usingMockFallback = False
-                if not manager.syncPositionFromHardware():
-                    raise RuntimeError('Stage did not return a valid XY position after reconnect.')
-            except Exception as exc:
-                manager._setConnectionError(
-                    exc, summary='Marzhauser reconnect failed; motion disabled',
-                    mock_active=getattr(manager._rs232Manager, 'runtimeMode', None)
-                    is DeviceRuntimeMode.MOCK,
-                )
+                real = bool(manager._rs232Manager.reconnectTransport())
+            except Exception:
+                real = False
+            errors = manager._onTransportReconnected(real, _locked=True)
+            if errors:
                 return DeviceLifecycleResult(
                     hardware_id=self.hardware_id, action=DeviceLifecycleAction.RECONNECT,
                     success=False, summary='Marzhauser reconnect failed; motion disabled',
-                    details=str(exc), affected_device_ids=(DeviceId('positioner', manager.name),),
+                    details='; '.join(errors), affected_device_ids=(DeviceId('positioner', manager.name),),
                 )
             return DeviceLifecycleResult(
                 hardware_id=self.hardware_id, action=DeviceLifecycleAction.RECONNECT,
@@ -232,6 +229,34 @@ class MHXYStageManager(PositionerManager):
         if callable(getattr(self._rs232Manager, 'reconnectTransport', None)):
             return self._lifecycle
         return None
+
+    # Transport hooks (DeviceLifecycleService §4.3): the shared port was
+    # reopened in place; the stage must trust no position until it has read
+    # one back.
+    def _lifecycleSafeState(self, *, verified: bool):
+        return []                       # a stage does not move by itself
+
+    def _onTransportReconnected(self, real: bool, *, _locked: bool = False):
+        """Re-synchronise the XY frame from the hardware; the errors found,
+        if any. Exclusive against moves like a reconnect is."""
+        if not _locked:
+            with self._operation(reconnect=True):
+                return self._onTransportReconnected(real, _locked=True)
+        self.positionSynced = False
+        try:
+            if not real:
+                raise RuntimeError('Could not reopen the configured serial port.')
+            self._usingMockFallback = False
+            if not self.syncPositionFromHardware():
+                raise RuntimeError('Stage did not return a valid XY position after reconnect.')
+        except Exception as exc:
+            self._setConnectionError(
+                exc, summary='Marzhauser reconnect failed; motion disabled',
+                mock_active=getattr(self._rs232Manager, 'runtimeMode', None)
+                is DeviceRuntimeMode.MOCK,
+            )
+            return [str(exc)]
+        return []
 
 
     def getDeviceDescriptorSpec(self):

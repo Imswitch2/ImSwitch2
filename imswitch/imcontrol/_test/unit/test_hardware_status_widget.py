@@ -283,3 +283,22 @@ def test_connect_and_disconnect_buttons_follow_the_selected_device(qtbot):
 
     widget.tree.setCurrentItem(_find_child(widget, "Camera"))
     assert not widget.connectButton.isVisible()       # cameras do not offer it
+
+
+def test_check_button_appears_only_for_devices_that_can_be_probed(qtbot):
+    widget = HardwareStatusWidget(None)
+    qtbot.addWidget(widget)
+    widget.show()
+    laser = _status("laser", "MPB", DeviceConnectionState.CONNECTED, DeviceRuntimeMode.REAL)
+    camera = _status("detector", "Camera", DeviceConnectionState.CONNECTED, DeviceRuntimeMode.REAL)
+    probes = []
+    widget.sigProbeRequested.connect(probes.append)
+    widget.setStatuses([laser, camera], probeableHardwareIds=(laser.hardware_id,))
+    widget.tree.setCurrentItem(_find_child(widget, "MPB"))
+    assert widget.probeButton.isVisible() and widget.probeButton.isEnabled()
+    qtbot.mouseClick(widget.probeButton, QtCore.Qt.LeftButton)
+    assert probes == [laser.hardware_id]
+    widget.tree.setCurrentItem(_find_child(widget, "Camera"))
+    assert not widget.probeButton.isVisible()
+    widget.setReconnectBusy(True, "Checking device…")
+    assert not widget.probeButton.isEnabled()
