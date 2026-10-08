@@ -151,7 +151,7 @@
     "Image",
     "Laser",
     "Scan",
-    "FLIMHist"
+    "Lifetime"
   ],
   "processing": {
     "graphPanel": false,

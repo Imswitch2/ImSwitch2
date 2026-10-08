@@ -97,6 +97,10 @@ class CommunicationChannel(SignalInterface):
     sigRemoveItemFromVb = Signal(object)  # (item)
     sigSetVisibleLayers = Signal(object)  # (detectorNameTuple) — Snouty setup switching
     sigSetConfig = Signal(str)  # (configName) — Snouty setup switching
+    # Named, stable viewer layers for products that update in place (the
+    # Lifetime widget's lifetime / intensity / overlay images).
+    sigUpsertStaticLayer = Signal(str, np.ndarray, object, object)  # (name, image, scale, options: colormap/rgb/contrast_limits)
+    sigRemoveStaticLayer = Signal(str)  # (name)
 
     # Recording events.
     sigRecordingStarted = Signal()

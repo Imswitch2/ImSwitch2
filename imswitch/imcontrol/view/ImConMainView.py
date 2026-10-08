@@ -725,7 +725,8 @@ _DOCK_DISPLAY_NAMES = {
     'AlignXY': 'Rotational Alignment Tool',
     'ULenses': 'uLenses Tool',
     'FFT': 'FFT Tool',
-    'FLIMHist': 'FLIM Lifetime Histogram',
+    'Lifetime': 'Lifetime (FLIM / STED)',
+    'FLIMHist': 'FLIM Lifetime Histogram',  # alias of Lifetime
     'FlipMirror': 'Flip Mirrors',
     'Watcher': 'File Watcher',
     'Tiling': 'Tiling',
@@ -765,6 +766,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'MotCorr':       _DockInfo(name='Motorized Correction Collar',   yPosition=1),
     'SLMs':          _DockInfo(name='SLMs',                          yPosition=2),
     'Scan':          _DockInfo(name='Scan',                          yPosition=2),
+    'Lifetime':      _DockInfo(name='Lifetime (FLIM / STED)',        yPosition=2),
     'RotationScan':  _DockInfo(name='RotationScan',                  yPosition=2),
     'BeadRec':       _DockInfo(name='Bead Rec',                      yPosition=3),
     'AlignmentLine': _DockInfo(name='Alignment Tool',                yPosition=3),

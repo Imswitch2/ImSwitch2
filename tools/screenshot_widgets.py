@@ -270,17 +270,22 @@ def _populate_fft(w) -> None:
     w.updatePosLines(0.5, n, n)
 
 
-def _populate_flim_hist(w) -> None:
-    """Push a synthetic lifetime distribution into the histogram."""
+def _populate_lifetime(w) -> None:
+    """A decay, a bimodal lifetime distribution and the card's roles."""
     import numpy as np
     rng = np.random.default_rng(0)
+    t = (np.arange(391) + 0.5) * 0.032
+    decay = 4000 * np.exp(-np.clip(t - 0.5, 0, None) / 2.5) * (t > 0.5) + 2.0
+    w.updateDecay(t, rng.poisson(decay), peak_ns=0.5, background_per_bin=2.0,
+                  direction='forward', tau_ns=2.5, binwidth_ps=32)
     # Bimodal: a slow (~3.5 ns) and a fast (~1.2 ns) population.
-    sample = np.concatenate([
-        rng.normal(3.5, 0.4, 4000),
-        rng.normal(1.2, 0.2, 2000),
-    ])
-    sample = sample[sample > 0]
-    w.updateHistogram(sample.astype(np.float32))
+    sample = np.concatenate([rng.normal(3.5, 0.4, 4000), rng.normal(1.2, 0.2, 2000)])
+    w.updateLifetimeHistogram(sample[sample > 0].astype(np.float32))
+    w.updatePhasor(0.42, 0.47)
+    w.setRoles(['photons', 'laser_sync', 'line_clock', 'frame_clock'])
+    w.updateRates({'photons': 1.2e6, 'laser_sync': 80e6, 'line_clock': 0.0, 'frame_clock': 0.0})
+    w.setStatusStrip('● photons 1.20 Mcps   ● laser_sync 80.00 Mcps   ● line_clock 0 cps   '
+                     '● frame_clock 0 cps   pile-up max 2 %   overflows 0   [mock]')
 
 
 def _populate_beadrec(w) -> None:
@@ -380,7 +385,8 @@ POPULATORS = {
     "FocusLockWidget": _populate_focuslock,
     "RotatorWidget": _populate_rotator,
     "FFTWidget": _populate_fft,
-    "FLIMHistWidget": _populate_flim_hist,
+    "LifetimeWidget": _populate_lifetime,
+    "FLIMHistWidget": _populate_lifetime,
     "BeadRecWidget": _populate_beadrec,
     "AlignmentLineWidget": _populate_alignment_line,
     "AlignAverageWidget": _populate_align_average,

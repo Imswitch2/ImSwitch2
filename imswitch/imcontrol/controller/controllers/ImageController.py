@@ -44,6 +44,8 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._commChannel.sigAddItemToVb.connect(self.addItemToVb)
         self._commChannel.sigRemoveItemFromVb.connect(self.removeItemFromVb)
         self._commChannel.sigMemorySnapAvailable.connect(self.memorySnapAvailable)
+        self._commChannel.sigUpsertStaticLayer.connect(self.upsertStaticLayer)
+        self._commChannel.sigRemoveStaticLayer.connect(self.removeStaticLayer)
         self._commChannel.sigSetExposure.connect(lambda t: self.setExposure(t))
 
         # Connect ModuleCommunicationChannel signals if available
@@ -126,6 +128,18 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._widget.addStaticLayer(name, image)
         if self._shouldResetView:
             self.adjustFrame(image.shape, instantResetView=True)
+
+    def upsertStaticLayer(self, name, image, scale=None, options=None):
+        """Create or update a named product layer (Lifetime widget)."""
+        options = dict(options or {})
+        self._widget.upsertStaticLayer(
+            name, image, scale=scale, colormap=options.get('colormap'),
+            rgb=bool(options.get('rgb', False)),
+            contrast_limits=options.get('contrast_limits'),
+        )
+
+    def removeStaticLayer(self, name):
+        self._widget.removeStaticLayer(name)
 
     def liveReconResultAvailable(self, name, image, scale):
         """ Adds live reconstruction result to widget. """

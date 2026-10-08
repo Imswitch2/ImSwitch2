@@ -269,8 +269,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self.__pixel_sizes = [1, 1]
 
         # Latest aggregated TCSPC decay (summed over valid pixels) and the
-        # global lifetime fit. Consumed by FLIMHistController's decay-histogram
-        # mode. None until the first valid frame is processed.
+        # global lifetime fit, kept for scripts; the Lifetime widget reads
+        # LiveProducts instead. None until the first valid frame is processed.
         self._last_decay_counts: np.ndarray | None = None
         self._last_t_axis_ns: np.ndarray | None = None
         self._last_global_tau_ns: float = 0.0

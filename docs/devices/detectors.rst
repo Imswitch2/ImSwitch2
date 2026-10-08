@@ -747,7 +747,7 @@ located by ``argmax``.  Each fit then compensates for the resulting
 
 In addition to the per-pixel lifetime image, the worker also emits the
 aggregated decay and a global τ fit (using the same method) for the
-``FLIMHistWidget`` decay view.
+Lifetime widget's decay view (:doc:`../gui`).
 
 **Time-resolved workflow products**
 
@@ -780,18 +780,15 @@ explicit product capture is enabled for a scan with active outer axes
 such as ``z`` or time, the manager raises a clear error until
 multidimensional output support is implemented.
 
-**FLIM histogram widget modes**
+**The Lifetime widget**
 
-``FLIMHistWidget`` has two display modes selectable from the toolbar:
-
-* ``Lifetime dist.`` — histogram of per-pixel fitted lifetimes (ns).
-  The red marker is the mean of the displayed distribution.  Switching
-  fit methods changes both the bars (because each pixel's τ is
-  recomputed) and the marker.
-* ``Decay`` — aggregated TCSPC photon-arrival histogram across all
-  valid pixels.  The bars are independent of fit method (raw photon
-  counts vs. arrival time); only the red global-τ marker moves when
-  the method changes.  Useful for sanity-checking the fit itself.
+``Lifetime`` in ``availableWidgets`` (``FLIMHist`` in older setup files)
+shows this detector's products live: the aggregated decay with the IRF
+peak and background, the histogram of the per-pixel lifetimes, the phasor,
+the lifetime or intensity image or an intensity-weighted overlay as a
+viewer layer, the pile-up map, and the shared card's signals; its Run and
+Live buttons run the Scan widget's scan through the same workflow the
+scripts use. See :doc:`../gui`.
 
 **Low-level dependencies**
 

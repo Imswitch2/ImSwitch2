@@ -183,13 +183,73 @@ class ImageWidget(QtWidgets.QWidget):
     def addStaticLayer(self, name, im, scale=None):
         kwargs = dict(rgb=False, name=name, blending='additive')
         if scale is not None:
-            sc = tuple(scale)
-            if len(sc) < im.ndim:
-                sc = (1.0,) * (im.ndim - len(sc)) + sc
-            elif len(sc) > im.ndim:
-                sc = sc[-im.ndim:]
-            kwargs['scale'] = sc
+            kwargs['scale'] = self._fitScale(scale, im.ndim)
         self.napariViewer.add_image(im, **kwargs)
+
+    @staticmethod
+    def _fitScale(scale, ndim):
+        sc = tuple(float(s) for s in scale)
+        if len(sc) < ndim:
+            sc = (1.0,) * (ndim - len(sc)) + sc
+        elif len(sc) > ndim:
+            sc = sc[-ndim:]
+        return sc
+
+    def upsertStaticLayer(self, name, im, scale=None, colormap=None, rgb=False,
+                          contrast_limits=None):
+        """Create the named layer, or update its data in place.
+
+        ``addStaticLayer`` makes a *new* layer on every call (napari then
+        suffixes ``[1]``, ``[2]``...); live products that arrive once a
+        second need one stable layer per name instead. ``rgb`` layers take a
+        ``(..., 3)`` image. A layer whose ndim or kind changed is recreated.
+        """
+        im = np.asarray(im)
+        spatial_ndim = im.ndim - 1 if rgb else im.ndim
+        sc = self._fitScale(scale, spatial_ndim) if scale is not None else None
+        layer = self._findLayerByName(name)
+        if layer is not None:
+            kind_changed = bool(getattr(layer, 'rgb', False)) != bool(rgb)
+            ndim_changed = getattr(layer.data, 'ndim', None) != im.ndim
+            if kind_changed or ndim_changed:
+                self._removeProtectedLayer(layer)
+                layer = None
+        if layer is None:
+            kwargs = dict(rgb=bool(rgb), name=name,
+                          blending='additive' if not rgb else 'translucent')
+            if sc is not None:
+                kwargs['scale'] = sc
+            if colormap is not None and not rgb:
+                kwargs['colormap'] = colormap
+            if contrast_limits is not None and not rgb:
+                kwargs['contrast_limits'] = tuple(float(v) for v in contrast_limits)
+            return self.napariViewer.add_image(im, **kwargs)
+        if sc is not None:
+            try:
+                layer.scale = sc
+            except Exception:
+                pass
+        layer.data = im
+        if not rgb:
+            try:
+                if colormap is not None:
+                    layer.colormap = colormap
+                if contrast_limits is not None:
+                    layer.contrast_limits = tuple(float(v) for v in contrast_limits)
+            except Exception:
+                pass
+        return layer
+
+    def removeStaticLayer(self, name):
+        """Remove the named layer; a missing one is not an error."""
+        layer = self._findLayerByName(name)
+        if layer is None:
+            return False
+        self._removeProtectedLayer(layer)
+        return True
+
+    def hasStaticLayer(self, name):
+        return self._findLayerByName(name) is not None
 
     def getCurrentImageName(self):
         return self.napariViewer.active_layer.name

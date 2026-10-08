@@ -1,8 +1,8 @@
 # Lifetime 2.0 — Swabian Time Tagger, calibration tutorials, and a Lifetime widget
 
-Status: **revision 4** — in implementation. P1a, P1b, P1c, P2 and P3 are
-done, all on the single branch `feat/lifetime-2-0` (one commit per phase);
-P4 is next. The
+Status: **revision 4** — in implementation. P1a, P1b, P1c, P2, P3 and P4
+are done, all on the single branch `feat/lifetime-2-0` (one commit per
+phase); P5 is next. The
 second external review (§15, "External review 2": eleven items against the
 P1/P2 code) is folded into the P3 branch. Revision 4 folds in the first external review
 (§15, "External review 1"): four of its eight items changed code already
@@ -766,13 +766,21 @@ Roadmap M9 carries the card-side note. *Rig check (open)*: 07 edge
 count/period vs design; 08 skew < offset and last frame closes; 09 shift →
 0 after delay.
 
-**P4 — Lifetime widget v1 (depends on P1 and P2).** FLIM and Tau STED
-panels, Signals panel (facade-backed, worker-threaded), status strip, footer
-with the worker-thread Run path and Stop, `ImageWidget` upsert/remove/RGB
-layer API, intensity-weighted overlay, (g, s) readout, FLIMHist alias.
-`docs/gui.rst` section replaces the FLIMHist one. Live views need P1c's
-`LiveProducts`; the frame role (P3) is not required.
-*Rig check*: live τ overlay on a reference dye; preflight green.
+**P4 — Lifetime widget v1 (depends on P1 and P2).** *Done on
+`feat/lifetime-2-0`.* `LifetimeWidget` / `LifetimeController` with the
+FLIM, Tau STED and Signals panels, the decay plot, status strip and footer;
+the worker-thread Run/Live path through `TimeResolvedScanWorkflow` (session
+configured inside the run only; Stop = `sigAbortScan` + event; accumulate
+sums scans, lifetime intensity-weighted); `ImageWidget.upsertStaticLayer` /
+`removeStaticLayer` (RGB included) behind `sigUpsertStaticLayer` /
+`sigRemoveStaticLayer`; the intensity-weighted overlay; the (g, s) readout;
+`save_products` shared with the workflows; the FLIMHist alias (old files
+removed); `docs/gui.rst` section. Deferred to P5 as planned: the gated-STED
+panel, gate layers, presets and the STED-pulse marker. Not done: the
+`_test/ui` widget test (the UI boot tests hang in the development
+container; the widget, controller and shipped-setup smoke are unit tests
+on `qapp` instead).
+*Rig check (open)*: live τ overlay on a reference dye; preflight green.
 
 **P5 — Gated STED panel, shared io, products v2.** Gate table with
 `reference`, regions, presets, gate layers, ratio image, STED-pulse marker

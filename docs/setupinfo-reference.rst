@@ -521,7 +521,8 @@ Available widget names (case-sensitive):
 * Event-triggered and smart microscopy: ``EtSTED``, ``EtMonalisa``,
   ``EtSnouty``, ``SetupModes``, ``SetupStatus``
 * Analysis tools: ``BeadRec``, ``AlignAverage``, ``AlignXY``,
-  ``AlignmentLine``, ``ULenses``, ``FFT``, ``FLIMHist``
+  ``AlignmentLine``, ``ULenses``, ``FFT``, ``Lifetime`` (``FLIMHist`` is
+  its alias)
 * Scripting: ``Console``, ``Watcher``
 
 ``SLM`` and ``BFTimelapse`` have no default dock position: they appear only

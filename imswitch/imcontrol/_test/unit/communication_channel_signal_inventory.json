@@ -71,6 +71,21 @@
     ]
   },
   {
+    "name": "sigUpsertStaticLayer",
+    "args": [
+      "str",
+      "np.ndarray",
+      "object",
+      "object"
+    ]
+  },
+  {
+    "name": "sigRemoveStaticLayer",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigRecordingStarted",
     "args": []
   },

@@ -190,35 +190,47 @@ class TimeResolvedScanWorkflow:
         products: TimeResolvedScanProducts,
         params: TimeResolvedWorkflowParams,
     ) -> dict[str, Path]:
-        output_paths: dict[str, Path] = {}
-        if not (params.save_h5 or params.save_npz or params.save_tiff):
-            return output_paths
-
-        folder = self._resolve_save_folder(params)
-        folder.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%H%M%S")
-        prefix = f"{params.measurement_name}_{stamp}"
-
-        if params.save_h5:
-            output_paths["h5"] = _save_h5(
-                products,
-                folder / f"{prefix}.h5",
-                workflow_name=params.measurement_name,
-                gates=params.gates,
-            )
-        if params.save_npz:
-            output_paths["npz"] = _save_npz(products, folder / f"{prefix}.npz")
-        if params.save_tiff:
-            output_paths.update(_save_tiffs(products, folder, prefix))
-
-        return output_paths
+        return save_products(products, params)
 
     @staticmethod
     def _resolve_save_folder(params: TimeResolvedWorkflowParams) -> Path:
-        if params.save_folder is not None:
-            return Path(params.save_folder)
-        root = resolve_measurements_root(params.measurements_root)
-        return root / time.strftime("%Y_%m_%d")
+        return resolve_save_folder(params)
+
+
+def resolve_save_folder(params: TimeResolvedWorkflowParams) -> Path:
+    """``params.save_folder``, else today's folder under the measurements root."""
+    if params.save_folder is not None:
+        return Path(params.save_folder)
+    root = resolve_measurements_root(params.measurements_root)
+    return root / time.strftime("%Y_%m_%d")
+
+
+def save_products(
+    products: TimeResolvedScanProducts,
+    params: TimeResolvedWorkflowParams,
+) -> dict[str, Path]:
+    """Write the products the way a workflow run does (HDF5, NPZ, TIFFs as
+    ``params`` select), so the Lifetime widget's Save and a script produce
+    identical files. Returns ``{kind: path}``."""
+    output_paths: dict[str, Path] = {}
+    if not (params.save_h5 or params.save_npz or params.save_tiff):
+        return output_paths
+    folder = resolve_save_folder(params)
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%H%M%S")
+    prefix = f"{params.measurement_name}_{stamp}"
+    if params.save_h5:
+        output_paths["h5"] = _save_h5(
+            products,
+            folder / f"{prefix}.h5",
+            workflow_name=params.measurement_name,
+            gates=params.gates,
+        )
+    if params.save_npz:
+        output_paths["npz"] = _save_npz(products, folder / f"{prefix}.npz")
+    if params.save_tiff:
+        output_paths.update(_save_tiffs(products, folder, prefix))
+    return output_paths
 
 
 class BinnedPhotonArrivalWorkflow(TimeResolvedScanWorkflow):
