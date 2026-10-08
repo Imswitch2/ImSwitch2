@@ -1,8 +1,8 @@
 # Unleashing the scanner: one scan model, engines that say what they can do
 
-**Status:** Plan, draft 6, for review. The direction is agreed (Lenny,
-2026-10-08: "that sounds like what we're aiming for"). Draft 6 answers the
-third review round, on draft 5. Nothing is implemented.
+**Status:** Plan, draft 7. The direction is agreed (Lenny, 2026-10-08:
+"that sounds like what we're aiming for"), and the review is closed with
+draft 7's amendments: proceed to M0 (§9). Nothing is implemented.
 **Date:** 2026-10-08
 **Branch:** `docs/scan-engines-expert-scan`, off `feat/simple-point-scan`
 (56ef43f0, which carries the scan cloak and the Advanced scan-freeze work).
@@ -16,6 +16,22 @@ File references are to this branch.
 - **(b)** Add a further layer, ExpertScan, for more complicated patterns: the
   Snouty multi-scan RESOLFT schemes, and arbitrary curves such as a circle or
   a spiral.
+
+## Changes since draft 6: the fourth review round, closing (2026-10-08)
+
+The review accepted draft 6's fixes, answered the four open questions and
+asked for three corrections, after which it closes. All are in §9. In
+short:
+
+- `on_timeout` defaults to `fail`;
+- policy documents are versioned, immutable once published, recorded, and
+  refused when unknown;
+- preparation keys have units, semantics and three states, with an explicit
+  legacy rule;
+- hardware without deadlines is judged per compiled program;
+- `strict-v1` requires exact edges;
+- deadlines have an overrun rule;
+- the legacy fallback applies only to recognized legacy Advanced files.
 
 ## Changes since draft 5: the third review round (2026-10-08)
 
@@ -554,14 +570,34 @@ the trigger arrives. The model therefore splits the timeline at each wait:
   - **The realized schedule and conformance include the stage:** every
     preparation transition, with its start, duration and device, is checked
     like any other event.
-  - A device with no declared preparation time has none. One that needs it
-    and has none is shown as "preparation unknown" (§2.8), not given a
-    guess.
+  - **The device key `preparation`** has precise semantics and units.
+    - It is the time from the engine's output transition that requests the
+      device's state (the line's edge, or the command) until the device is
+      **ready**, meaning it delivers that state as specified: a shutter
+      fully open, a laser emitting at its set level.
+    - It is in seconds.
+  - **It has three states, never inferred from absence:**
+
+    | Value | Meaning | Effect |
+    |---|---|---|
+    | `"notRequired"` | The device is ready at the transition | No preparation |
+    | `{"durationS": 0.004}` | Known duration | Prepared for that long |
+    | `"unknown"` | Required, but not known | Every program that needs this device after a barrier is refused as "preparation unknown" (§2.8) |
+
+  - **An absent key is not zero.** In a setup with a `scanEngines` section
+    (the new format), an absent key on a device kind that can need
+    preparation (shutters, gated lasers) reads as `"unknown"`.
+  - **The legacy rule is explicit:** `legacy-preparation-v1`. In a setup
+    without a `scanEngines` section, every device without the key is
+    `"notRequired"`. That is exactly what ImSwitch does today. The rule
+    names itself as the value's source in the recorded metadata, so it is
+    never mistaken for a measured zero.
+  - Positioners need no key: their preparation is their `Motion`.
 - **Timeout.** `timeout_s` with `on_timeout`:
-  - `fail` ends the run as failed, with the reason;
-  - `continue` releases the barrier without the trigger, runs the gated
-    step, and records the release as a timeout in the run log and the
-    metadata.
+  - **`fail`, the default,** ends the run as failed, with the reason;
+  - **`continue`** releases the barrier without the trigger and runs the
+    gated step. It is used only when selected explicitly. The run log and
+    the metadata record that this step ran without its trigger.
 
   Skipping the gated step (no data for it) is not offered. It needs recorded
   spans for missing events in the layout, which can come with event-driven
@@ -642,10 +678,12 @@ program names its timing policy, a named and versioned document (§2.8):
     gap may not close, pulses may not start to overlap, no event may leave
     its step, and a `stationary` event may not leave its stationary
     interval.
+  - **Every edge must be exact too,** markers and clocks included.
   - What is not representable is refused, with the representable neighbours
     offered ("18 µs is not on the NI-DAQ's 10 µs grid: 10 µs or 20 µs").
-  - Edge rounding (½ grid step at most) applies only to events whose edges
-    may round: markers and clocks. That bound is derived, not chosen.
+  - Rounding is never part of `strict-v1`. A policy that permits it is
+    another, explicitly named policy. The ½-grid-step bound describes the
+    error of nearest-grid rounding; it does not authorize rounding.
 - **A policy may allow deviations,** for example a duration tolerance for a
   preset. It states each tolerance with its unit and its rationale, has a
   version, and is recorded with the acquisition. There is no built-in
@@ -662,10 +700,27 @@ step, still accumulates.
   tolerance otherwise.
 - **Where the engine can, iterations are scheduled against absolute
   deadlines.** Iteration *k* of a loop starts at `t₀ + k × requested
-  period`, rounded once from the segment start rather than accumulated. The
-  error then stays within ½ grid step and does not grow. Engines that
-  repeat a fixed sequence (a pulse generator's repeat count) cannot do this;
-  for them the period must be exact.
+  period`, rounded once from the segment start rather than accumulated.
+  - **The overrun rule:** the start-time error stays bounded only if every
+    iteration, preparation and motion included, fits before the next
+    deadline. The compiler validates that for every iteration. An iteration
+    that would overrun is refused, with the iteration and the overrun.
+  - An iteration is never truncated, and the next one never starts late, to
+    make a deadline.
+  - **External waits begin a new timing segment.** Deadlines restart from
+    the release. No wall-clock schedule is kept across an external trigger,
+    because none can be.
+- **Hardware without deadlines is judged on the compiled program, not
+  refused wholesale.** Such hardware repeats a fixed sequence: a pulse
+  generator's repeat count, a waveform played N times.
+  - A tolerant policy may still change pulses while the repeat period stays
+    exact.
+  - A changed period is acceptable only if the policy explicitly permits
+    both its error per repeat and its accumulated error over the requested
+    repeat count.
+  - Otherwise that program is refused, with the calculated errors ("period
+    +4 µs per repeat, +4.1 ms over 1024 repeats; policy `strict-v1` permits
+    none").
 - **The schedule reports the timing error over the whole run:** the largest
   deviation of any scheduled time and the deviation at the end of the run,
   accounting for every independently rounded interval. The bound of ½ grid
@@ -701,9 +756,13 @@ Today's designers already realize, and the policy documents exactly how:
 - **The realized schedule is derived.** It is shown and recorded with the
   acquisition, but never written back into the program.
 - **The policy is persisted with the scan** (`timingPolicy`), not inferred
-  from its shape. A scan file without it is a legacy file and loads as
-  `advanced-compatible-v1`. Advanced saves write the key, an additive
-  field.
+  from its shape.
+  - **A recognized legacy Advanced file without a policy uses
+    `advanced-compatible-v1`.** Recognized means it parses as today's
+    Advanced scan-state format, with its analog and digital dicts.
+  - **A new-format program without a policy, or with a malformed one, is
+    refused.** It does not silently gain compatibility exemptions.
+  - Advanced saves write the key, as an additive field.
 - **The Advanced panel shows the realized dwell beside the requested one**
   ("4.025 ms, runs as 4.03 ms"). It does not replace the field's value.
 - **Enabling a new option migrates the scan to `strict-v1` visibly.** The
@@ -793,6 +852,20 @@ neighbour") applies to every number this plan uses:
 - **The resolved values and their sources are recorded with the
   acquisition:** each number, its unit, and where it came from (engine
   capability, device key, policy and version, or derivation).
+
+**Policy documents.**
+
+- **Versioned, validated data beside the scan model:** one file per
+  version, with a schema.
+- **Tests pin each version's behaviour:** what it accepts, what it refuses,
+  with which message.
+- **A published version is immutable.** A change is a new version.
+- **Presets reference a policy by identifier and version, or bundle one,**
+  in the same schema.
+- **An acquisition records the policy's identifier and its resolved
+  contents.**
+- **An unknown identifier or version is refused.** Another policy is never
+  substituted.
 
 ---
 
@@ -1214,7 +1287,7 @@ designed:
 
 | Phase | Content | Behaviour change | Checked by |
 |---|---|---|---|
-| M0 | `ScanProgram` with `Motion`, per-device stationarity and `during`, `Wait`, `Separation` and `DetectorBinding`; logical states and their mapping (§2.6a); the interpreter with segments and input traces (§2.4); `RealizedSchedule` with `strict-v1` and `advanced-compatible-v1` as versioned policy documents, repeat periods and absolute deadlines, and the run-wide error report (§2.6); preparation stages (§2.4); number provenance (§2.8); `layout_for` (§2.5); the Advanced dicts ↔ program adapter (every existing window `during: 'any'`; requested values, realized schedule and `timingPolicy` kept apart); **Beta goldens captured first** | none | Qt-free tests. **Advanced-shaped programs:** the interpreter reproduces the Beta goldens (or Beta stays a compile path, §2.7); `layout_for` equals `build_advanced_scan_layouts`; the realized schedule equals what today's designers play; load → preview → save → reload of legacy files gives identical requested values, waveforms and schedule. **Strict cases:** 6-24 µs on 10 µs refused with 10/20 µs offered; a non-representable separation or period refused with its neighbours; a closing gap refused; an offset transition under a stationary window refused; a rounded wait repeated N times reported as run-wide error, or held by deadlines. **Preparation:** pulses and triggers keep their scheduled times after a wait; the preparation transitions are in the schedule. **Unknowns:** a missing capability is reported as unknown, never defaulted. The resolved numbers and their sources are recorded |
+| M0 | `ScanProgram` with `Motion`, per-device stationarity and `during`, `Wait`, `Separation` and `DetectorBinding`; logical states and their mapping (§2.6a); the interpreter with segments and input traces (§2.4); `RealizedSchedule` with `strict-v1` and `advanced-compatible-v1` as versioned, schema-validated policy documents (§2.8), repeat periods and absolute deadlines, and the run-wide error report (§2.6); preparation stages (§2.4); number provenance (§2.8); `layout_for` (§2.5); the Advanced dicts ↔ program adapter (every existing window `during: 'any'`; requested values, realized schedule and `timingPolicy` kept apart); **Beta goldens captured first** | none | Qt-free tests. **Advanced-shaped programs:** the interpreter reproduces the Beta goldens (or Beta stays a compile path, §2.7); `layout_for` equals `build_advanced_scan_layouts`; the realized schedule equals what today's designers play; load → preview → save → reload of legacy files gives identical requested values, waveforms and schedule. **Strict cases:** 6-24 µs on 10 µs refused with 10/20 µs offered; a non-representable separation or period refused with its neighbours; a closing gap refused; an offset transition under a stationary window refused; a rounded wait repeated N times reported as run-wide error, or held by deadlines. **Preparation:** pulses and triggers keep their scheduled times after a wait; the preparation transitions are in the schedule. **Unknowns:** a missing capability is reported as unknown, never defaulted; preparation `"unknown"` refuses; legacy setups resolve preparation through `legacy-preparation-v1`, recorded as the source. **Policies:** an unknown policy identifier or version is refused; a new-format program without a valid policy is refused; each published policy version is pinned by its own tests. **Deadlines:** an iteration that would overrun its deadline is refused. The resolved numbers and their sources are recorded |
 | M1 | `scan_engine` plugin kind under `imswitch.pluginapi.experimental`; `NidaqScanEngine`; **an independent in-process step engine** (its own compiled plan of tables and an event list, executed on a worker thread against a clock it advances, logging what it did); capabilities and the feasibility report; Advanced and Simple grey out from it; refusals for channels no engine owns, and a setup error for channels two engines claim; `ttlActiveLevel` through every path that drives a line (§2.6a); registry resolution for `pulse_generator` | Greyed parts; refusals instead of silent drops (§10) | Goldens; "Advanced as today"; an analog-only mock setup. The conformance suite on both engines: prepare, detector readiness (a mock camera triggered by the step engine's TTL events), start, stop (also during a wait), failure, completion. Trigger handling against independently specified arrival traces: on time, early-release and ignored-trigger mutants caught, `fail` and `continue` timeouts. The step engine's log against the interpreter |
 | M2 | Advanced: per-axis order (forward, serpentine, interleave *k*), intra-pixel moves as `offset` events (Guillaume's fields, every line step, hold or ramp, refused on swept axes and when they do not fit the stationary interval, §2.2). **Index-mapped assembly** in APD and PMT (windows placed by their index tuple, not reshaped in acquisition order). Camera frame streams with the interleaved layout | New options, off by default; saved intra-pixel scans start to do what they say | **Through the real mock detector and recording path.** An interleaved acquisition of the deterministic mock sample must give the same assembled image as the forward scan. The recorded file's layout must place every frame and pixel at its true coordinates, read back through the layout reader and the SNOUTY restack. The offsets appear in the AO trace per phase |
 | M3 | Expert panel: loops, drives (composite axes), phases, timeline, waits, presets (MS-RESOLFT first), the report and the realized schedule beside the editor; `PulseGeneratorScanEngine` on the extended pulse-generator contract (§5.3) | New panel | Mock APD and mock camera; layouts read by the SNOUTY reconstructor; the Teensy mock against the interpreter, refusals included (§5.3) |
@@ -1254,36 +1327,31 @@ designed:
 
 ---
 
-## 9. Open points for this review
+## 9. Review status
 
-**Answered in the third review round:**
+**Closed** (the reviewer, on draft 6, with the amendments below made in
+draft 7): proceed to M0.
+
+**Answered in the fourth review round:**
 
 | # | Point | Answer | Where |
 |---|---|---|---|
-| 1 | `scanEngines` setup section | Accepted; channel ownership must be unambiguous, and overlapping claims are a setup error | §3.1, §5.0, M1 |
-| 2 | Composite axes Expert only | Accepted | §4 |
-| 3 | What M2 refuses | Accepted as the first supported subset; "make it stepped" is offered only when the device and the engine can step | §3.2 |
-| 4 | Re-gridding needs raw measurements | Accepted; the reduction is recorded explicitly | §6 |
-| 5 | `ttlActiveLevel` | Accepted; one mapping for scan output, manual control, waiting, stopping and failure cleanup | §2.6a, M1 |
-| 6 | The compatibility exception | Accepted, with the preservation rules: requested, realized and policy kept apart and persisted; visible migration; the load-save-reload test | §2.6 |
-| 7 | A 1 % default duration tolerance | Rejected: no tolerance without a justified source. `strict-v1` is exact; deviations only through a named, versioned policy | §2.6, §2.8 |
+| 1 | `on_timeout` | `fail` or `continue`, default `fail`. `continue` must be selected explicitly and records that the gated step ran without its trigger. Skipping stays deferred (M6) | §2.4 |
+| 2 | Policy files | Versioned, validated data beside the scan model; tests pin each version; published versions immutable; presets reference or bundle a policy in the same schema; the identifier and resolved contents are recorded; unknown versions are refused, never substituted | §2.8 |
+| 3 | Preparation keys | Units and precise semantics (what starts the delay, what "ready" means); three states (not required, known, required but unknown); an absent key is not zero; existing behaviour kept by an explicit legacy rule, `legacy-preparation-v1` | §2.4 |
+| 4 | Hardware without absolute deadlines | Not refused wholesale: the compiled program is judged. An exact repeat period with changed pulses, or a changed period whose per-repeat and accumulated errors the policy explicitly permits; otherwise refused with the calculated errors | §2.6 |
 
-**Still open:**
+**Corrections in draft 7:**
 
-1. **`on_timeout: fail | continue`.** The review's recommendation for this
-   point did not come through in the pasted text. As proposed, `skip` waits
-   for recorded spans of missing events (M6).
-2. **The policy documents themselves:**
-   - where `strict-v1` and `advanced-compatible-v1` live (proposed: beside
-     the model, as versioned, documented data with a test that pins each
-     version);
-   - how a preset ships its own policy.
-3. **The device keys for preparation** (§2.4): a shutter's opening delay, a
-   laser's enable-to-emission delay. They are new optional keys on those
-   devices; without them a device has no preparation.
-4. **Engines that cannot schedule against deadlines** (§2.6) need exact
-   periods even under a tolerant policy. Is that acceptable, or should such
-   a policy be refused on them outright?
+- **`strict-v1` requires exact edges,** markers and clocks too. Rounding
+  belongs to a separately named policy. The ½-step bound describes
+  rounding; it does not authorize it.
+- **Absolute deadlines have an overrun rule.** Every iteration, preparation
+  and motion included, must fit before the next deadline. Nothing is
+  truncated or started late. External waits begin a new segment.
+- **The legacy fallback is format-specific.** A recognized legacy Advanced
+  file without a policy uses `advanced-compatible-v1`. A new-format program
+  without a valid policy is refused.
 
 ---
 
