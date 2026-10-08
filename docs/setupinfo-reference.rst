@@ -338,7 +338,10 @@ Key fields:
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and
   ``move_time`` / ``settle_time`` (the fast-axis ramp and rest inside each
   pixel dwell, 2 ms each by default); a dwell not longer than
-  ``move_time + settle_time`` is refused.
+  ``move_time + settle_time`` is refused. The scan panels also read
+  ``phase_delay`` and ``d3step_delay`` (µs) and ``dwell_ms``, the dwell they
+  open with when their own default does not suit the rig (the Advanced panel
+  opens at 0.02 ms, made for galvos; a stepped stage needs more).
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
@@ -1266,9 +1269,12 @@ See the bundled example configurations in
 * ``example_no_hardware.json`` — mock devices, no physical hardware
 * ``example_mock.json`` — minimal mock camera + positioner
 * ``example_monalisa.json`` — MoNaLISA (parallelized RESOLFT) microscope:
-  two Hamamatsu cameras, stage scanning with ``BetaScanDesigner``
-* ``example_sted.json`` — STED microscope with galvo scanning
-* ``example_coolLED.json`` — CoolLED illumination system
+  two Hamamatsu cameras, stage scanning with ``BetaScanDesigner`` on the
+  ``Advanced`` panel
+* ``example_sted.json`` — STED microscope with galvo scanning on the
+  ``Advanced`` panel
+* ``example_coolLED.json`` — CoolLED illumination system, LEDs gated by the
+  NI-DAQ during stepped scans on the ``Advanced`` panel
 * ``example_kiralux_teensy.json`` — Thorlabs Kiralux camera + Teensy pulse generator
 * ``example_snouty_smart_modes.json`` — mock flip-mirror beam path with setup
   modes and `smartMicroscopyModes`_; no hardware

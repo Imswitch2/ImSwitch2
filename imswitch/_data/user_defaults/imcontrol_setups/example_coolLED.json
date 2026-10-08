@@ -139,12 +139,13 @@
         }
     },
     "scan": {
-        "scanWidgetType": "Base",
+        "scanWidgetType": "Advanced",
         "scanDesigner": "BetaScanDesigner",
         "scanDesignerParams": {
-            "return_time": 0.01
+            "return_time": 0.01,
+            "dwell_ms": 10
         },
-        "TTLCycleDesigner": "BetaTTLCycleDesigner",
+        "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
         "TTLCycleDesignerParams": {},
         "sampleRate": 100000
     },

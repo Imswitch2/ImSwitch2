@@ -3,7 +3,7 @@
   "device": {
     "managerName": "ThorCamTSIManager",
     "managerProperties": {
-      "cameraPixelSizeUm": null,
+      "cameraPixelSizeUm": 1.5,
       "cameraSerial": "example",
       "defaults": {
         "exposure_us": 1,
