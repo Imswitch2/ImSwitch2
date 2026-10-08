@@ -422,3 +422,21 @@ def test_transport_failure_in_a_setting_or_action_faults_the_session():
     with pytest.raises(TransportError):
         session.run_action('zero', confirm_dark=True)
     assert session.faulted
+
+
+def test_a_dark_pax_reading_is_a_valid_reading_not_a_bad_packet():
+    """Rig, 2026-10-08: with the laser off the PAX reported DOP -0.217 and
+    power -7.1e-11 W; both were refused as 'outside range', so the first
+    read of a script failed instead of saying it was dark."""
+    inst, rm = _pax(_pax_packet(az=0.0, el=0.0, dop=-0.217277, power=-7.10615e-11))
+    session = InstrumentSession('pax1', ThorlabsPAX1000Driver(
+        'M01012314', update_bound_s=0.0, update_period_s=0.0, resource_manager_factory=rm))
+    session.connect()
+    result = session.sample_window(session.open_window(allow_unverified=True), 2, 1.0)
+    assert result.complete and not result.invalid
+    assert result.samples[0].values['dop'] == pytest.approx(-0.217277)
+    # A malformed value is still invalid.
+    inst.answers['SENS:DATA:LAT?'] = _pax_packet(dop=float('nan'))
+    result = session.sample_window(session.open_window(allow_unverified=True), 1, 0.3)
+    assert not result.samples and 'dop' in result.invalid[0].reason
+
