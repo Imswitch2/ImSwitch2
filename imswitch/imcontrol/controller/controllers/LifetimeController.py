@@ -34,6 +34,12 @@ from typing import Optional
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.cancellation import (
+    CancelToken,
+    OperationCancelled,
+    clearCurrentCancelToken,
+    setCurrentCancelToken,
+)
 from imswitch.imcontrol.model.timeresolved import (
     PILEUP_WARN,
     GateSpec,
@@ -209,6 +215,12 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._layers: set = set()
         self._worker: Optional[threading.Thread] = None
         self._stopEvent = threading.Event()
+        #: The cancel token of the diagnostic running on the worker (sweep,
+        #: scope, pre-flight, save): Stop and shutdown request it to stop.
+        self._cardToken: Optional[CancelToken] = None
+        #: The parameters of the run that produced ``_lastProducts``: Save
+        #: writes those gates, not whatever the table says now.
+        self._lastRunParams = None
         self._live = False
         self._overflowsSeen = 0
         self._pileupMax = 0.0
@@ -629,9 +641,14 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._renderGateLayers(wanted)
         if widget.pileupMapCheck.isChecked() and widget.getMode() == 'Tau STED':
             dwell_s = float((metadata or {}).get('dwell_s', 0.0) or 0.0)
-            rep_hz = float(widget.getSetting('rep_rate_mhz')) * 1e6
+            # Accumulated intensities span that many scans' worth of pulses;
+            # the rate is the acquisition's, not the widget's current field.
+            frames = int((metadata or {}).get('frames_accumulated', 1) or 1)
+            rep_hz = float((metadata or {}).get('laser_rep_rate_mhz', 0.0) or 0.0) * 1e6
+            if rep_hz <= 0:
+                rep_hz = float(widget.getSetting('rep_rate_mhz')) * 1e6
             if dwell_s > 0 and rep_hz > 0:
-                self._upsertLayer('pile-up', pileup_fraction(intensity, rep_hz, dwell_s),
+                self._upsertLayer('pile-up', pileup_fraction(intensity, rep_hz, dwell_s * frames),
                                   colormap='inferno', contrast_limits=(0.0, 0.1))
                 wanted.add(self._layerName('pile-up'))
         for name in list(self._layers):
@@ -712,7 +729,8 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
                     collected.append(result.products)
                 if collected:
                     products = combine_products(collected)
-                    self._invokeOnControllerThread(partial(self._onRunProducts, products))
+                    self._invokeOnControllerThread(
+                        partial(self._onRunProducts, products, snapshot['params']))
                 if not self._live:
                     break
         except Exception as exc:  # reported on the GUI thread
@@ -720,10 +738,16 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         finally:
             self._invokeOnControllerThread(partial(self._onRunFinished, error))
 
-    def _onRunProducts(self, products: TimeResolvedScanProducts):
+    def _onRunProducts(self, products: TimeResolvedScanProducts, params=None):
         if self._closed:
             return
         self._lastProducts = products
+        self._lastRunParams = params
+        if params is not None and params.gates:
+            products.metadata['gates_configured'] = [
+                dict(name=g.name, start_ns=g.start_ns, stop_ns=g.stop_ns, reference=g.reference)
+                for g in params.gates
+            ]
         self._pileupMax = float(products.pileup_max or (products.metadata or {}).get('pileup_max', 0.0) or 0.0)
         self._render(products.intensity, products.lifetime_ns, products.decay_counts,
                      products.t_axis_ns, peak_ns=(products.metadata or {}).get('peak_time_ns'),
@@ -735,10 +759,13 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             self._pooledLifetimes.append(np.asarray(products.lifetime_ns, dtype=np.float32).ravel())
             self._renderHistogram()
         n = int((products.metadata or {}).get('frames_accumulated', 1) or 1)
+        valid = bool((products.metadata or {}).get('frame_valid', True))
         self._widget.setFooterStatus(
             f'{"live" if self._live else "run"}: {n} scan{"s" if n != 1 else ""}, '
             f'global τ {float(products.global_tau_ns or 0.0):.2f} ns, '
-            f'{int(np.asarray(products.decay_counts).sum()):,} photons')
+            f'{int(np.asarray(products.decay_counts).sum()):,} photons'
+            + ('' if valid else '  -- FRAME INVALID: the card did not close it or dropped tags'),
+            error=not valid)
 
     def _onRunFinished(self, error):
         if self._closed:
@@ -753,6 +780,7 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
 
     def _onStop(self):
         self._stopEvent.set()
+        self._cancelCardCall()
         if self._workerBusy():
             try:
                 self._commChannel.sigAbortScan.emit()
@@ -766,21 +794,38 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             self._widget.setFooterStatus(f'busy; {what} must wait for the run', error=True)
             return
 
+        token = CancelToken()
+        self._cardToken = token
+
         def body():
             error = None
+            setCurrentCancelToken(token)   # Stop / shutdown reach the card's waits
             try:
                 function()
+            except OperationCancelled as exc:
+                error = exc
             except Exception as exc:
                 error = exc
             finally:
+                clearCurrentCancelToken()
                 self._invokeOnControllerThread(partial(self._onCardCallFinished, what, error))
         self._worker = threading.Thread(target=body, name='LifetimeCard', daemon=True)
+        self._widget.setRunning(True)        # Stop cancels the diagnostic too
         self._widget.setFooterStatus(f'{what}…')
         self._worker.start()
+
+    def _cancelCardCall(self):
+        token = self._cardToken
+        if token is not None:
+            try:
+                token.requestStop()
+            except Exception:
+                pass
 
     def _onCardCallFinished(self, what: str, error):
         if self._closed:
             return
+        self._widget.setRunning(False)
         if error is not None:
             self._logger.warning(f'{what} failed: {error}')
             self._widget.setFooterStatus(f'{what}: {error}', error=True)
@@ -805,7 +850,11 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
                 folder = getter()
             except Exception:
                 folder = None
-        params = replace(self._runParams(), save_h5=True, save_tiff=True, save_folder=folder)
+        # The gates (and fit) that produced these images, not the table's
+        # current state: the file must describe what was measured.
+        base = self._lastRunParams if self._lastRunParams is not None else self._runParams()
+        params = replace(base, save_h5=True, save_tiff=True, save_folder=folder,
+                         measurement_name=str(self._widget.nameEdit.text() or base.measurement_name))
 
         def body():
             paths = save_products(products, params)
@@ -957,26 +1006,46 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
     # Shutdown                                                             #
     # ------------------------------------------------------------------ #
 
+    #: How long shutdown waits for a run or a diagnostic to drain.
+    CLOSE_JOIN_S = 5.0
+
     def closeEvent(self):
+        """Stop everything this controller runs and say whether it drained.
+
+        A diagnostic (sweep, scope, pre-flight) owns the card's calibration
+        transaction while it runs, so it is cancelled cooperatively (the
+        facade's waits poll a cancel token) and joined; a run is aborted
+        and joined. Returns ``False`` while a worker is still alive, so
+        the card is not finalized under it.
+        """
         self._closed = True
         self._stopEvent.set()
+        self._cancelCardCall()
         if self._card is not None:
             try:
                 self._card.stopHealthSampling()
             except Exception:
                 pass
         worker = self._worker
+        drained = True
         if worker is not None and worker.is_alive():
             try:
                 self._commChannel.sigAbortScan.emit()
             except Exception:
                 pass
-            worker.join(2.0)
+            worker.join(self.CLOSE_JOIN_S)
+            if worker.is_alive():
+                drained = False
+                self._logger.error(
+                    f'Lifetime worker {worker.name} is still running after '
+                    f'{self.CLOSE_JOIN_S:g} s; the Time Tagger must not be freed under it'
+                )
         if self._connectedDetector is not None:
             try:
                 self._connectedDetector.sigTimeResolvedProducts.disconnect(self._onLiveProducts)
             except Exception:
                 pass
+        return drained
 
 
 #: ``FLIMHist`` in a setup file resolves to the Lifetime controller.

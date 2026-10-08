@@ -408,3 +408,92 @@ def test_combine_products_sums_gate_images_and_version_2_fields():
     out = combine_products([a, b])
     assert np.all(out.gate_images['g'] == 3)
     assert out.overflows == 3 and out.pileup_max == 0.2 and out.frames_accumulated == 2
+
+
+# --------------------------------------------------------------------------- #
+# Review round 3                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_shutdown_cancels_a_running_diagnostic_and_reports_a_worker_that_will_not_stop(rig, qtbot):
+    from imswitch.imcommon.model.cancellation import cancellableSleep
+    controller = rig.controller
+    controller.CLOSE_JOIN_S = 0.3
+    # A cooperative diagnostic (the facade's waits poll the cancel token).
+    controller._runOnWorker(lambda: cancellableSleep(30.0), 'sweeping')
+    qtbot.waitUntil(lambda: controller._workerBusy(), timeout=2000)
+    assert controller.closeEvent() is True, 'cancelled and drained'
+    assert not controller._workerBusy()
+
+    # One that ignores cancellation: shutdown must not report success.
+    rig2 = rig
+    rig2.controller._closed = False
+    release = threading.Event()
+    rig2.controller._runOnWorker(lambda: release.wait(10.0), 'stuck')
+    qtbot.waitUntil(lambda: rig2.controller._workerBusy(), timeout=2000)
+    assert rig2.controller.closeEvent() is False, 'still alive: the card must not be freed'
+    release.set()
+    qtbot.waitUntil(lambda: not rig2.controller._workerBusy(), timeout=5000)
+
+
+def test_stop_cancels_a_diagnostic(rig, qtbot):
+    from imswitch.imcommon.model.cancellation import cancellableSleep
+    controller, widget = rig.controller, rig.widget
+    controller._runOnWorker(lambda: cancellableSleep(30.0), 'sweeping')
+    qtbot.waitUntil(lambda: controller._workerBusy(), timeout=2000)
+    widget.stopButton.click()
+    qtbot.waitUntil(lambda: not controller._workerBusy(), timeout=5000)
+    qtbot.waitUntil(lambda: 'cancelled' in widget.footerStatus.text(), timeout=2000)
+
+
+def test_save_writes_the_gates_of_the_acquisition_not_the_table(rig, qtbot, monkeypatch, tmp_path):
+    import imswitch.imcontrol.model.workflows.time_resolved as tr_module
+    controller, detector, widget, comm = rig.controller, rig.detector, rig.widget, rig.comm
+    widget.setMode('Gated STED')
+    widget.setGates([dict(name='early', start_ns=0.0, stop_ns=1.0, reference='absolute')])
+    products = _products()
+    products.gate_images = {'early': products.intensity}
+    detector.final = products
+    facade = SimpleNamespace(time_resolved=_facade_detector(detector),
+                             scan=SimpleNamespace(run_once=lambda timeout_s=None: None))
+    monkeypatch.setattr(controller, '_buildFacade', lambda name: facade)
+    widget.runButton.click()
+    qtbot.waitUntil(lambda: widget.runButton.isEnabled(), timeout=5000)
+    # The gate is edited after the acquisition, then Save.
+    widget.setGates([dict(name='early', start_ns=5.0, stop_ns=6.0, reference='absolute')])
+    widget.setMode('FLIM')
+    saved = {}
+
+    def fake_save(products, params):
+        saved['params'] = params
+        return {}
+    monkeypatch.setattr(tr_module, 'save_products', fake_save)
+    comm.folder = str(tmp_path)
+    widget.saveButton.click()
+    qtbot.waitUntil(lambda: 'params' in saved, timeout=5000)
+    gate = saved['params'].gates[0]
+    assert (gate.start_ns, gate.stop_ns) == (0.0, 1.0), 'what was measured, not the table'
+    assert saved['params'].save_folder == str(tmp_path)
+    assert controller._lastProducts.metadata['gates_configured'][0]['stop_ns'] == 1.0
+
+
+def test_pileup_map_uses_the_accumulated_exposure(rig, qtbot):
+    widget, comm, detector = rig.widget, rig.comm, rig.detector
+    widget.setMode('Tau STED')
+    widget.pileupMapCheck.setChecked(True)
+    one = _products()
+    ten = _products()
+    ten.intensity = one.intensity * 10
+    ten.metadata = dict(one.metadata, frames_accumulated=10, laser_rep_rate_mhz=80.0)
+    rig.controller._onRunProducts(one)
+    single = comm.layers['FLIM › pile-up'][0].copy()
+    rig.controller._onRunProducts(ten)
+    accumulated = comm.layers['FLIM › pile-up'][0]
+    np.testing.assert_allclose(accumulated, single, rtol=1e-5)
+
+
+def test_an_invalid_frame_is_said_so_in_the_footer(rig):
+    products = _products()
+    products.metadata['frame_valid'] = False
+    rig.controller._onRunProducts(products)
+    assert 'FRAME INVALID' in rig.widget.footerStatus.text()

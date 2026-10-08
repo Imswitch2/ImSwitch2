@@ -368,7 +368,38 @@ its FLIM view.
   **Stop** aborts the scan. A script's product session is never touched:
   a run that overlaps one is refused.
 * **name** and **Save** -- write the last result (HDF5 and TIFFs, as a
-  workflow would) into the Recording widget's folder.
+  workflow would) into the Recording widget's folder, with the gates and
+  fit of the acquisition that produced it, not the table's current state.
+  A frame the card never closed, or one with dropped tags, is marked
+  ``FRAME INVALID`` in the footer and ``frame_valid = False`` in the file.
+
+.. image:: ./images/auto/LifetimeWidget.png
+   :align: center
+   :width: 600px
+
+The FLIM view: the decay with the IRF peak, the lifetime histogram and the
+phasor readout.
+
+.. image:: ./images/auto/LifetimeWidget-gated.png
+   :align: center
+   :width: 600px
+
+The Gated STED view: the gate table, the regions on the decay, the preset
+and the STED-pulse marker.
+
+.. image:: ./images/auto/LifetimeWidget-tau.png
+   :align: center
+   :width: 600px
+
+The Tau STED view: lifetime against intensity per pixel and the pile-up map
+toggle.
+
+.. image:: ./images/auto/LifetimeWidget-signals.png
+   :align: center
+   :width: 600px
+
+The Signals view: live rates and trigger levels per role, and the pre-flight
+checklist.
 
 
 Hardware control

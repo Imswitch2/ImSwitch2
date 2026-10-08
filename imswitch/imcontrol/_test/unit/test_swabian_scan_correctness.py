@@ -220,6 +220,7 @@ def test_a_frame_the_card_never_closes_falls_back_after_the_grace_period(caplog)
         _TTFlimWorker.FINAL_FRAME_GRACE_S = 2.0
     _, live = _final(frames)
     assert live.metadata["frame_closed_by_card"] is False
+    assert live.metadata["frame_valid"] is False, "a partial buffer is not a measurement"
     assert "did not close the last frame" in caplog.text
 
 
@@ -237,6 +238,11 @@ def test_intensity_preview_carries_no_lifetime():
     assert len(live) == 1 and isinstance(live[0], LiveProducts)
     assert live[0].lifetime_ns is None
     assert live[0].intensity.shape == (NY, NX) and live[0].intensity.sum() > 0
+    # The card reports counts per second; the preview shows counts: the
+    # uniform sample's 1 Mcps over the 100 us dwell is about 100 photons,
+    # and the pile-up 100 of 8000 pulses.
+    assert 60 < live[0].intensity.mean() < 140
+    assert 0.005 < live[0].pileup_max < 0.03
     assert live[0].metadata["preview"] == "intensity"
     assert det.parameters["live_fit_period_s"].value == 0.0
 
@@ -287,3 +293,25 @@ def test_the_enabled_parameter_keeps_the_detector_out_of_a_scan():
     _build(nidaq, det)
     assert det._preparedScanGeneration is not None and card.scanHeld
     assert set(det.pixel_marker_channels()) == {"pixel_begin", "pixel_end"}
+
+
+def test_settings_edited_during_a_scan_do_not_relabel_its_products():
+    from imswitch.imcontrol.model.timeresolved import TimeResolvedScanConfig
+    nidaq, card, det = _rig()
+    token = det.configureTimeResolvedProducts(TimeResolvedScanConfig(), owner="t")
+    _build(nidaq, det)
+    # Edits after the scan was prepared belong to the next scan.
+    det.setParameter("fit_method", "phasor")
+    det.setParameter("binwidth_ps", 64)
+    det.setParameter("background_rate_hz", 5000.0)
+    worker, frames = _run_worker(det, done_before_run=True, complete_after_polls=1)
+    products = det.getLastTimeResolvedProducts()
+    assert products.metadata["fit_method"] == "moment"
+    assert products.metadata["binwidth_ps"] == 32
+    assert products.metadata["background_rate_hz"] == 0.0
+    assert products.background_rate_hz == 0.0
+    assert products.metadata["frame_valid"] is True
+    det.clearTimeResolvedProducts(token)
+    # The next scan takes the edits.
+    _build(nidaq, det)
+    assert det._scan["fit_method"] == "phasor" and det._scan["binwidth_ps"] == 64

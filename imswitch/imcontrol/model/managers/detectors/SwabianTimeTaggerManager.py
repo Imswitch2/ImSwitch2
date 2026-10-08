@@ -730,6 +730,17 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             direction=direction,
             period_ps=period_ps,
             scan_info=dict(scanInfoDict),
+            # The acquisition's own copy of the settings. The worker and the
+            # products read these, never the live parameters, so an edit
+            # during the scan reaches the next scan and cannot relabel this
+            # one's metadata (fit, bins, t0, background).
+            n_bins=int(self._n_bins),
+            binwidth_ps=int(self._binwidth_ps),
+            fit_method=str(self._fit_method),
+            min_counts_per_pixel=int(self._min_counts_per_pixel),
+            laser_rep_rate_mhz=float(self._laser_rep_rate_mhz),
+            t0_ps=int(self._t0_ps),
+            background_rate_hz=float(self._background_rate_hz),
         )
         self._shape = (Ny, Nx)
 
@@ -1325,6 +1336,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 np.array(stored, copy=True) if config.capture_cube else None
             )
             frame = dict(extra_metadata or {})
+            snapshot = dict(self._scan or {})
             gate_images = compute_gate_images(
                 cube_counts, t_axis_ns, config.gates, peak_time_ns=peak_time_ns
             )
@@ -1342,12 +1354,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 "click_trigger_v": float(self._click_trigger),
                 "start_trigger_v": float(self._start_trigger),
                 "line_trigger_v": float(self._line_trigger),
-                "n_bins": int(self._n_bins),
-                "binwidth_ps": int(self._binwidth_ps),
-                "t0_ps": int(self._t0_ps),
-                "fit_method": str(self._fit_method),
-                "laser_rep_rate_mhz": float(self._laser_rep_rate_mhz),
-                "min_counts_per_pixel": int(self._min_counts_per_pixel),
+                "n_bins": int(snapshot.get("n_bins", self._n_bins)),
+                "binwidth_ps": int(snapshot.get("binwidth_ps", self._binwidth_ps)),
+                "t0_ps": int(snapshot.get("t0_ps", self._t0_ps)),
+                "fit_method": str(snapshot.get("fit_method", self._fit_method)),
+                "laser_rep_rate_mhz": float(snapshot.get("laser_rep_rate_mhz", self._laser_rep_rate_mhz)),
+                "min_counts_per_pixel": int(snapshot.get("min_counts_per_pixel", self._min_counts_per_pixel)),
                 "peak_bin": int(peak_bin),
                 "peak_time_ns": float(peak_time_ns),
                 "scan_info": dict(self._scan.get("scan_info", {})),
@@ -1558,6 +1570,10 @@ class _TTFlimWorker(Worker):
     # scan.  The worker also wakes immediately when signal_done() is called
     # (sigScanDone path), so the final frame is never delayed.
     LIVE_PREVIEW_S = 1.0
+    # Filled from the acquisition snapshot in run(); defaults for a worker
+    # asked for a preview before that.
+    _rep_rate_mhz = 80.0
+    _background_rate_hz = 0.0
     STALL_MAX = 10  # consecutive live-preview ticks with no data → ~10 s
     #: Tick while waiting for the card to close the frame, and without live
     #: fits (intensity previews only).
@@ -1587,26 +1603,31 @@ class _TTFlimWorker(Worker):
         try:
             Nx = int(self._m._scan['Nx'])
             Ny = int(self._m._scan['Ny'])
-            n_bins = int(self._m._n_bins)
-            binwidth_ps = int(self._m._binwidth_ps)
-            fit_method = str(self._m._fit_method)
-            min_counts = int(self._m._min_counts_per_pixel)
-            expected_shape = (Nx * Ny, n_bins)
             scan = self._m._scan
+            # The acquisition's snapshot (initiateScan), not the live
+            # parameters: an edit during the scan waits for the next one.
+            n_bins = int(scan.get('n_bins', self._m._n_bins))
+            binwidth_ps = int(scan.get('binwidth_ps', self._m._binwidth_ps))
+            fit_method = str(scan.get('fit_method', self._m._fit_method))
+            min_counts = int(scan.get('min_counts_per_pixel', self._m._min_counts_per_pixel))
+            self._rep_rate_mhz = float(scan.get('laser_rep_rate_mhz', self._m._laser_rep_rate_mhz))
+            self._background_rate_hz = float(scan.get('background_rate_hz', self._m._background_rate_hz))
+            t0_ps = int(scan.get('t0_ps', self._m._t0_ps))
+            expected_shape = (Nx * Ny, n_bins)
             self._direction = str(scan.get('direction', 'forward'))
             period_ps = float(scan.get('period_ps', 0.0)) or (
-                1e6 / max(1e-9, float(self._m._laser_rep_rate_mhz))
+                1e6 / max(1e-9, self._rep_rate_mhz)
             )
             self._period_ns = period_ps / 1000.0
             self._dwell_s = float(scan.get('dwell_s', 0.0))
             self._binwidth_ps = binwidth_ps
             # Reverse mode applies t0 as a circular roll (see initiateScan).
             self._t0_roll_bins = (
-                int(round(self._m._t0_ps / binwidth_ps)) % n_bins
+                int(round(t0_ps / binwidth_ps)) % n_bins
                 if self._direction == 'reverse' and n_bins else 0
             )
             self._background_per_bin = background_per_bin(
-                self._m._background_rate_hz, self._dwell_s, binwidth_ps,
+                self._background_rate_hz, self._dwell_s, binwidth_ps,
                 period_ps,
             )
             self._pileup_warned = False
@@ -1626,7 +1647,7 @@ class _TTFlimWorker(Worker):
             # Phasor needs the laser repetition period, NOT the histogram window.
             # The Flim API doesn't expose the rep rate, so take it from the
             # user-supplied parameter. Default 80 MHz is the most common Ti:Sa rate.
-            rep_rate_hz = max(1.0, float(self._m._laser_rep_rate_mhz)) * 1e6
+            rep_rate_hz = max(1.0, float(self._rep_rate_mhz)) * 1e6
             T_rep_s = 1.0 / rep_rate_hz
             omega = 2.0 * np.pi / T_rep_s
             t_s = oriented_axis_ns.astype(np.float64) * 1e-9
@@ -1775,10 +1796,14 @@ class _TTFlimWorker(Worker):
         if getter is None:
             return
         try:
-            intensity = np.asarray(getter(), dtype=np.float32).reshape(Ny, Nx)
+            # Flim.getCurrentFrameIntensity() is counts per second (the
+            # counts divided by the pixel's integration time); the preview
+            # shows counts, like every other frame.
+            rate = np.asarray(getter(), dtype=np.float32).reshape(Ny, Nx)
         except Exception:
             self._logger.exception('getCurrentFrameIntensity() raised.')
             return
+        intensity = rate * np.float32(self._dwell_s)
         n_bins = int(t_axis.size)
         live = LiveProducts(
             intensity=intensity,
@@ -1789,7 +1814,7 @@ class _TTFlimWorker(Worker):
             global_tau_ns=0.0,
             peak_time_ns=0.0,
             background_per_bin=float(self._background_per_bin),
-            pileup_max=float(pileup_fraction(intensity, max(1.0, float(self._m._laser_rep_rate_mhz)) * 1e6, self._dwell_s).max()) if intensity.size else 0.0,
+            pileup_max=float(pileup_fraction(intensity, max(1.0, float(self._rep_rate_mhz)) * 1e6, self._dwell_s).max()) if intensity.size else 0.0,
             tcspc_direction=self._direction,
             frame_index=0,
             is_final=False,
@@ -1921,15 +1946,20 @@ class _TTFlimWorker(Worker):
                 f'not trustworthy. Lower the tag rate (conditional filter, '
                 f'dead time) or the excitation power.'
             )
+        closed = bool(getattr(self, '_frame_closed_by_card', False)) if is_final else None
+        # A final frame the card never closed is a partial buffer: missing
+        # markers, not a measurement. It is published so the user sees
+        # something, but marked invalid like an overflowed one.
+        frame_valid = overflows == 0 and (closed is None or closed)
         frame_metadata = {
             "overflows": int(overflows),
-            "frame_valid": overflows == 0,
-            "frame_closed_by_card": bool(getattr(self, '_frame_closed_by_card', False)) if is_final else None,
+            "frame_valid": bool(frame_valid),
+            "frame_closed_by_card": closed,
             "pattern_offset_ps": int(self._m._scan.get('pattern_offset_ps', 0)),
             "tcspc_direction": self._direction,
             "laser_period_ns": float(self._period_ns),
             "dwell_s": float(self._dwell_s),
-            "background_rate_hz": float(self._m._background_rate_hz),
+            "background_rate_hz": float(self._background_rate_hz),
             "background_per_bin": float(self._background_per_bin),
             "pileup_max": pileup_max,
             "t0_roll_bins": int(self._t0_roll_bins),

@@ -282,10 +282,68 @@ def _populate_lifetime(w) -> None:
     sample = np.concatenate([rng.normal(3.5, 0.4, 4000), rng.normal(1.2, 0.2, 2000)])
     w.updateLifetimeHistogram(sample[sample > 0].astype(np.float32))
     w.updatePhasor(0.42, 0.47)
+    for key, value in dict(fit_method='moment', min_counts=20, rep_rate_mhz=80.0, binwidth_ps=32,
+                           n_bins=391, t0_ps=1300, background_hz=2000.0, tau_min_ns=0.5,
+                           tau_max_ns=5.0).items():
+        w.setSetting(key, value)
+    w.updateLifetimeHistogram(sample[sample > 0].astype(np.float32))
+    w.setDetectors(['FLIM'], 'FLIM')
     w.setRoles(['photons', 'laser_sync', 'line_clock', 'frame_clock'])
     w.updateRates({'photons': 1.2e6, 'laser_sync': 80e6, 'line_clock': 0.0, 'frame_clock': 0.0})
     w.setStatusStrip('● photons 1.20 Mcps   ● laser_sync 80.00 Mcps   ● line_clock 0 cps   '
                      '● frame_clock 0 cps   pile-up max 2 %   overflows 0   [mock]')
+
+
+def _lifetime_variant_gated(w) -> None:
+    """The Gated STED view with the shipped preset loaded as regions."""
+    w.setMode('Gated STED')
+    w.setGates([dict(name='early', start_ns=0.5, stop_ns=2.5, reference='peak'),
+                dict(name='late', start_ns=2.5, stop_ns=8.0, reference='peak')])
+    w.setPresets(['sted_early_late', 'detection_window'])
+    w.ratioCheck.setChecked(True)
+    w.setStedMarker(0.8)
+    w.setGateStatus('preset sted_early_late: 2 gate(s), applied on the next Run.')
+
+
+def _lifetime_variant_tau(w) -> None:
+    import numpy as np
+    rng = np.random.default_rng(1)
+    w.setMode('Tau STED')
+    intensity = rng.gamma(4.0, 60.0, 3000)
+    tau = np.where(rng.random(3000) < 0.6, rng.normal(2.5, 0.25, 3000), rng.normal(1.0, 0.15, 3000))
+    w.updateScatter(intensity, tau)
+    w.pileupMapCheck.setChecked(True)
+
+
+def _lifetime_variant_signals(w) -> None:
+    w.setMode('Signals')
+    w.setTriggerLevel('photons', -0.25)
+    w.setTriggerLevel('laser_sync', 0.5)
+    w.setTriggerLevel('line_clock', 0.5)
+    w.setTriggerLevel('frame_clock', 0.5)
+    w.updateRates({'photons': 1.2e6, 'laser_sync': 80e6, 'line_clock': 0.0, 'frame_clock': 0.0},
+                  direction='forward', filter_on=False, overflows=0)
+    w.setPreflight([
+        ('ok', 'FLIM pre-flight: green with warnings'),
+        ('ok', '[ok]   card connected: Time Tagger X (mock), MOCK-000001'),
+        ('ok', '[ok]   laser sync rate matches laser_rep_rate_mhz: 80.0000 MHz'),
+        ('ok', '[ok]   TCSPC window spans the laser period: 391 x 32 ps = 12.51 ns'),
+        ('warn', '[WARN] background_rate_hz is 0: measure it (tutorial 03)'),
+        ('ok', '[ok]   photon rate 1.20 Mcps, pile-up 1.5 % at 100 us dwell'),
+        ('skipped', '[skip] line clock edges: needs a scan (tutorial 07)'),
+        ('skipped', '[skip] last frame closes: needs a scan (tutorial 08)'),
+    ])
+
+
+#: Extra captures per widget: ``<WidgetName>-<variant>.png`` after the base
+#: image, each applied on top of the populated widget.
+_VARIANTS = {
+    "LifetimeWidget": (
+        ("gated", _lifetime_variant_gated),
+        ("tau", _lifetime_variant_tau),
+        ("signals", _lifetime_variant_signals),
+    ),
+}
 
 
 def _populate_beadrec(w) -> None:
@@ -583,6 +641,14 @@ def _capture_one(name: str) -> int:
         widget = _instantiate(target)
         _populate(widget, name)
         _grab(widget, out)
+        for variant, apply in _VARIANTS.get(name, ()):
+            try:
+                apply(widget)
+                app.processEvents()
+                _grab(widget, OUT_DIR / f"{name}-{variant}.png")
+                print(f"  wrote {_display_path(OUT_DIR / f'{name}-{variant}.png')}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  skip {name}-{variant}: {type(exc).__name__}: {exc}")
         widget.deleteLater()
         app.processEvents()
         print(f"  wrote {_display_path(out)}")

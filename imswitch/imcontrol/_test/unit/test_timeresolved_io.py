@@ -63,6 +63,7 @@ def test_h5_round_trip_keeps_version_2_fields_and_resolved_gates(tmp_path):
         assert h5['time_tagger'].attrs['model'] == 'Time Tagger X (mock)'
         assert h5['background'].attrs['rate_hz'] == 2000.0
         assert h5['irf'].attrs['fwhm_ns'] == 0.35
+        assert h5.attrs['frame_valid'] == True  # noqa: E712 (h5py bool)
 
     loaded = load_products(path)
     assert loaded.format_version == FORMAT_VERSION

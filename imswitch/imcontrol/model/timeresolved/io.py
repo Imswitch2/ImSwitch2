@@ -162,6 +162,7 @@ def save_h5(
         h5.attrs["overflows"] = int(products.overflows)
         h5.attrs["pileup_max"] = float(products.pileup_max)
         h5.attrs["background_rate_hz"] = float(products.background_rate_hz)
+        h5.attrs["frame_valid"] = bool(metadata.get("frame_valid", True))
 
         scan = h5.create_group("scan")
         scan.attrs["metadata_json"] = _metadata_json(metadata.get("scan_info", {}))

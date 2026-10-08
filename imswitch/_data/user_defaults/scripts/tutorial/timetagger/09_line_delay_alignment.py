@@ -52,6 +52,7 @@ delay0 = tt.channels()['line_clock'].delay_ps
 # command). On a real card this call does nothing and the rig's own skew is
 # what the first run measures.
 tt.set_mock_fault('line_delay_ps', -2 * dwell_ps)
+applied = False
 
 
 def flimImage(label):
@@ -107,13 +108,19 @@ try:
         print()
 
     if APPLY and shift != 0:
+        applied = True
         print(f'Applied: lineClockDelayPs = {new_delay} until restart; keep it with')
         print(f'  "lineClockDelayPs": {new_delay}  in the timeTagger block.')
     else:
-        if shift != 0:
-            tt.set_delay('line_clock', delay0)
         print(f'Not applied (APPLY is False): lineClockDelayPs stays {delay0}.')
 finally:
+    # Whatever happened (a Stop during the second run included), the
+    # temporary delay comes off again unless it was explicitly applied.
     tt.set_mock_fault('line_delay_ps', None)
+    if not applied:
+        try:
+            tt.set_delay('line_clock', delay0)
+        except Exception as error:
+            print(f'Could not restore lineClockDelayPs = {delay0}: {error}')
     helpers.restoreFlimEnabled(DETECTOR, flimWas)
     api.imcontrol.loadScanParamsFromFile(backup)

@@ -1120,3 +1120,27 @@ encodes (a positive delay moves the markers later, so it cancels an *early*
 clock). The mock now models lateness = fault + card delay + pattern offset;
 the worker test cancels a late clock with a negative delay and a new test
 an early clock with a positive one.
+
+### External review 3 (seven items against the branch through P5; fixed on the branch)
+
+1. **Shutdown could free the card under a calibration** — fixed: a card
+   diagnostic runs with its own `CancelToken` (the facade's waits poll it),
+   Stop and `closeEvent` request it, and `closeEvent` joins and returns
+   `False` while a worker is still alive; the Stop button is live during a
+   diagnostic.
+2. **Save relabelled gates** — fixed: the run's parameters travel with its
+   products; Save writes those gates and fit, and `gates_configured` goes
+   into the products' metadata.
+3. **Incomplete frames marked valid** — fixed: `frame_valid` is false when the
+   card never closed a final frame; the footer says `FRAME INVALID` and the
+   HDF5 root carries `frame_valid`.
+4. **Preview rates read as counts** — fixed: the preview multiplies
+   `getCurrentFrameIntensity` by the dwell; the mock returns counts per
+   second like the card.
+5. **Mutable metadata during a scan** — fixed: `initiateScan` snapshots fit,
+   bins, bin width, rep rate, t0 and background into the scan record; the
+   worker and the products read the snapshot only.
+6. **Tutorial 09 left its delay** — fixed: restored in `finally` unless
+   applied.
+7. **Accumulated pile-up map** — fixed: exposure is dwell × scans summed, at
+   the acquisition's rep rate.

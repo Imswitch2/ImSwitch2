@@ -367,16 +367,21 @@ class LifetimeWidget(Widget):
     # ------------------------------------------------------------------ #
 
     def _onModeToggled(self, mode):
+        self._applyMode(mode)
+        self.sigModeChanged.emit(mode)
+
+    def _applyMode(self, mode):
         self._modeStack.setCurrentIndex(MODES.index(mode))
         self._settingsGroup.setVisible(mode != 'Signals')
-        self.sigModeChanged.emit(mode)
+        # The gate regions belong to the Gated STED view.
+        for region in self._regions:
+            region.setVisible(mode == 'Gated STED')
 
     def setMode(self, mode: str):
         if mode not in MODES:
             mode = 'FLIM'
         self.modeButtons[mode].setChecked(True)
-        self._modeStack.setCurrentIndex(MODES.index(mode))
-        self._settingsGroup.setVisible(mode != 'Signals')
+        self._applyMode(mode)
 
     def getMode(self) -> str:
         return next((m for m, b in self.modeButtons.items() if b.isChecked()), 'FLIM')
@@ -612,6 +617,7 @@ class LifetimeWidget(Widget):
                                          brush=pg.mkBrush(*colour, 50),
                                          pen=pg.mkPen(*colour, width=1.2))
             region.setZValue(-10)
+            region.setVisible(self.getMode() == 'Gated STED')
             region.sigRegionChangeFinished.connect(lambda r=region, i=row: self._onRegionDragged(i, r))
             self._decayPlot.addItem(region)
             self._regions.append(region)
@@ -705,6 +711,7 @@ class LifetimeWidget(Widget):
             fmt = QtGui.QTextCharFormat()
             fmt.setForeground(QtGui.QColor(colours.get(status, 'grey')))
             cursor.insertText(line + '\n', fmt)
+        cursor.movePosition(QtGui.QTextCursor.Start)
         self.signalsText.setTextCursor(cursor)
 
 

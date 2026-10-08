@@ -1063,7 +1063,12 @@ class Flim(_Measurement):
         return _FlimFrameInfo(self.getCurrentFrame(), 1)
 
     def getCurrentFrameIntensity(self):
-        return self.getCurrentFrame().sum(axis=1).astype(np.uint32)
+        """Counts per second per pixel: the counts divided by the pixel's
+        integration time, as the vendor's ``Flim`` reports it."""
+        counts = self.getCurrentFrame().sum(axis=1).astype(np.float64)
+        _ny, _nx, dwell_ps, _offset = self._geometry()
+        dwell_s = dwell_ps * 1e-12
+        return (counts / dwell_s if dwell_s > 0 else counts).astype(np.float64)
 
     def getFramesAcquired(self):
         self._polls += 1
