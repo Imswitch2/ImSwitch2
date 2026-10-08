@@ -1049,6 +1049,8 @@ Key fields:
 * ``frameClockChannel`` / ``frameClockTriggerV``: the scan's frame-start clock, if cabled (default ``null`` = not cabled)
 * ``stedPulseChannel`` / ``stedPulseTriggerV``: a photodiode on the STED beam, if cabled (default ``null``)
 * ``filterSyncByPhotons`` (bool): enable the card's conditional filter so only the first sync after each photon is transmitted — needed on a Time Tagger 20 or Ultra with a sync at tens of MHz; the TCSPC direction then reverses (default ``false``)
+* ``mockSample`` (str): what the mock card images with ``simulation`` on — ``"beads_two_lifetimes"`` (default), ``"uniform"`` or ``"gradient"``
+* ``mockFaults`` (dict): faults the mock reproduces for the debugging tutorials, e.g. ``{"missing_line_clock": true}``, ``{"line_delay_ps": 1200}``, ``{"wrong_sync_polarity": true}``, ``{"dead_photons": true}``, ``{"laser_rep_rate_mhz": 40}``, ``{"model": "Time Tagger 20"}``
 
 **Example**:
 
@@ -1335,6 +1337,8 @@ Hardware-free scan setups (simulated NI-DAQ, see :doc:`mock-infrastructure`):
 * ``mock_scan_setup.json`` — mock camera, MoNaLISA scan, for the
   record-and-reconstruct loop
 * ``galvo_apd_mock_scan_setup.json`` — APD with an Advanced galvo scan
+* ``galvo_flim_mock_scan_setup.json`` — the same plus a simulated Swabian
+  Time Tagger and a FLIM detector (see `timeTagger`_)
 * ``hamamatsu_mock_scan_setup.json`` — mock Hamamatsu camera triggered by a
   Base scan
 * ``mixed_hamamatsu_apd_mock_scan_setup.json`` — mock Hamamatsu camera and

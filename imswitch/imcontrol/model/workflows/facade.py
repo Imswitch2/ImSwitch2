@@ -270,20 +270,34 @@ class TimeResolvedDetectorFacade:
         finally:
             self._detectorsManager.release(handle)
 
-    def configure(self, config: TimeResolvedScanConfig) -> None:
-        self._detector.configureTimeResolvedProducts(config)
+    def configure(self, config: TimeResolvedScanConfig,
+                  owner: str | None = None) -> str | None:
+        """Open a product session; returns its token (see the contract)."""
+        if owner is None:
+            return self._detector.configureTimeResolvedProducts(config)
+        return self._detector.configureTimeResolvedProducts(config, owner)
 
     def wait_for_final(
         self,
         timeout_s: float | None = None,
+        owner: str | None = None,
     ) -> TimeResolvedScanProducts:
-        return self._detector.waitForFinalTimeResolvedProducts(timeout_s)
+        if owner is None:
+            return self._detector.waitForFinalTimeResolvedProducts(timeout_s)
+        return self._detector.waitForFinalTimeResolvedProducts(timeout_s, owner)
 
     def get_last(self, copy: bool = True) -> TimeResolvedScanProducts | None:
         return self._detector.getLastTimeResolvedProducts(copy=copy)
 
-    def clear(self) -> None:
-        self._detector.clearTimeResolvedProducts()
+    def clear(self, owner: str | None = None) -> None:
+        if owner is None:
+            self._detector.clearTimeResolvedProducts()
+        else:
+            self._detector.clearTimeResolvedProducts(owner)
+
+    def session_owner(self) -> str | None:
+        probe = getattr(self._detector, "timeResolvedSessionOwner", None)
+        return probe() if callable(probe) else None
 
     def capabilities(self) -> dict:
         return self._detector.timeResolvedCapabilities()

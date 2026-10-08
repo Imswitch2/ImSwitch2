@@ -3,6 +3,7 @@
   "device": {
     "managerName": "SwabianTimeTaggerManager",
     "managerProperties": {
+      "background_rate_hz": 1.5,
       "binwidth_ps": 1,
       "cameraPixelSizeUm": null,
       "click_channel": 1,

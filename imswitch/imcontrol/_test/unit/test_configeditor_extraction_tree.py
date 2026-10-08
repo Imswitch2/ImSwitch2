@@ -81,14 +81,20 @@ def test_the_coverage_the_plan_is_built_on(report):
     # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope.
     # 218: SwabianTimeTaggerManager's click_role / start_role / line_role,
     # the roles it reads on the setup's shared timeTagger block.
-    assert report.keys == 218
+    # 219: its background_rate_hz.
+    assert report.keys == 219
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
-    assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
+    # 59: SwabianTimeTagger's three channels are read only without a
+    # timeTagger block, so the schema no longer requires them.
+    assert report.required == 59, "57 under the guard-aware rule, plus RS232Manager's port and recv_termination"
     # 156: the three Swabian role properties, each with a default.
-    assert report.optional == 156
+    # 157: Swabian background_rate_hz. 160: its click/start/line_channel are
+    # optional now (a setup with a timeTagger block has none of them).
+    assert report.optional == 160
     assert report.refs == 14
-    assert report.none_default_only == 31
+    # 34: the three Swabian legacy channels are now read with a None default.
+    assert report.none_default_only == 34
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -99,7 +105,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # availableCubes are now documented by their cards.
     # NidaqPositionerManager.defaultReferenceVoltage is now documented too.
     # 138: the three Swabian role properties have their own rows.
-    assert (report.docs_agree, report.docs_documented) == (138, 138)
+    # 139: Swabian background_rate_hz.
+    assert (report.docs_agree, report.docs_documented) == (139, 139)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -108,7 +115,9 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
     # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
     # 99: the three Swabian role properties default to strings.
-    assert report.typed_by_code == 99
+    # 100: Swabian background_rate_hz defaults to a float. 97: the three
+    # legacy Swabian channels lost their code-typed (int) required reads.
+    assert report.typed_by_code == 97
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys

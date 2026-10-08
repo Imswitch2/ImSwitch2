@@ -9,17 +9,28 @@ from typing import Any
 import numpy as np
 
 
+GATE_REFERENCES = ("peak", "absolute")
+
+
 @dataclass(frozen=True)
 class GateSpec:
     """One time gate in nanoseconds.
 
     Gate intervals are interpreted as ``start_ns <= t < stop_ns`` by the shared
-    processing helpers.
+    processing helpers. ``reference`` says what the bounds are measured
+    from: ``"absolute"`` (the default, and what every existing script and
+    saved file means) is the histogram's own time axis; ``"peak"`` is the
+    IRF peak of the decay the gate is applied to, so a STED preset survives
+    a change of ``t0``. New presets and the Lifetime widget ask for
+    ``"peak"`` explicitly; the default never changes an old script's image.
+    :func:`resolve_gates` turns peak-relative gates into absolute ones once
+    the peak is known.
     """
 
     name: str
     start_ns: float
     stop_ns: float
+    reference: str = "absolute"
 
     def __post_init__(self) -> None:
         name = str(self.name).strip()
@@ -37,6 +48,13 @@ class GateSpec:
             )
         object.__setattr__(self, "start_ns", start)
         object.__setattr__(self, "stop_ns", stop)
+        reference = str(self.reference).strip().lower()
+        if reference not in GATE_REFERENCES:
+            raise ValueError(
+                f"Gate {name!r} reference must be one of {GATE_REFERENCES}, "
+                f"not {self.reference!r}"
+            )
+        object.__setattr__(self, "reference", reference)
 
 
 @dataclass(frozen=True)
@@ -109,6 +127,40 @@ class TimeResolvedScanProducts:
     global_tau_ns: float
     metadata: dict[str, Any]
     is_final: bool
+
+
+@dataclass
+class LiveProducts:
+    """What a time-resolved detector publishes while a scan runs.
+
+    Small by design: the per-pixel cube never travels here (a 512x512x391
+    cube is hundreds of megabytes per tick), so a widget on the GUI thread
+    can take every one of these. ``is_final`` marks the frame the card
+    closed; everything before it is a preview of the same frame filling up.
+    """
+
+    intensity: np.ndarray
+    """ Photon counts per pixel, ``(Ny, Nx)``. """
+    lifetime_ns: np.ndarray | None
+    """ Fitted lifetime per pixel in ns, ``0`` where below threshold; ``None``
+    when no fit ran on this tick. """
+    decay_counts: np.ndarray
+    """ The aggregated decay over valid pixels, forward time. """
+    t_axis_ns: np.ndarray
+    """ Bin centres of ``decay_counts``, forward time, ns. """
+    gate_images: dict[str, np.ndarray]
+    global_tau_ns: float
+    peak_time_ns: float
+    """ Where the IRF peak sits on ``t_axis_ns``. """
+    background_per_bin: float
+    """ Flat background subtracted from every pixel's histogram, counts per
+    bin per pixel (``0`` when none). """
+    pileup_max: float
+    """ Highest photons-per-excitation-pulse fraction of any pixel. """
+    tcspc_direction: str
+    frame_index: int
+    is_final: bool
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def copy_time_resolved_products(

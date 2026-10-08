@@ -669,6 +669,18 @@ class TimeTaggerInfo:
     with a sync at tens of MHz. The TCSPC direction then reverses (start =
     photon, click = sync); the FLIM detector handles that. """
 
+    mockSample: str = "beads_two_lifetimes"
+    """ What the mock card images when ``simulation`` is on: one of
+    ``"beads_two_lifetimes"`` (1.5 ns and 4.0 ns beads on a dim background),
+    ``"uniform"`` (2.5 ns everywhere) or ``"gradient"`` (1 to 5 ns across
+    the field). Ignored with a real card. """
+
+    mockFaults: Dict[str, Any] = field(default_factory=dict)
+    """ Faults the mock card reproduces, for the debugging tutorials:
+    ``{"missing_line_clock": true}``, ``{"line_delay_ps": 1200}``,
+    ``{"wrong_sync_polarity": true}``, ``{"dead_photons": true}``,
+    ``{"laser_rep_rate_mhz": 40}``. Ignored with a real card. """
+
 
 @dataclass(frozen=True)
 class PyroServerInfo:

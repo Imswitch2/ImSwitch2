@@ -1,20 +1,20 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 46,
-    "docs_agree": 140,
-    "docs_documented": 140,
-    "keys": 220,
+    "constrained": 44,
+    "docs_agree": 141,
+    "docs_documented": 141,
+    "keys": 221,
     "managers": 62,
-    "none_default_only": 31,
+    "none_default_only": 34,
     "none_only": 16,
-    "optional": 158,
+    "optional": 162,
     "reads_any": 57,
     "refs": 15,
-    "required": 62,
-    "typed_by_code": 99,
-    "typed_with_docs": 164,
-    "typed_with_examples": 134,
+    "required": 59,
+    "typed_by_code": 97,
+    "typed_with_docs": 165,
+    "typed_with_examples": 132,
     "uncertain": 0,
     "unresolved_reads": 0,
     "with_keys": 57,
@@ -604,8 +604,8 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 18,
-      "required": 3
+      "properties": 19,
+      "required": 0
     },
     "TISManager": {
       "category": "detectors",

@@ -86,10 +86,21 @@ Detectors
      - ``"simulation": true`` in the ``timeTagger`` block; or
        ``"useMockOnFailure": true`` there when the library or card is
        missing, honoured only while ``nidaq.simulation`` is also true.
-     - Counting only, for now: per-input rates, the card's test signal,
-       trigger levels, dead times, delays and the conditional filter are
-       modelled; ``Flim`` completes a scan with an empty histogram. A
-       photon and scan-edge signal model follows (Lifetime 2.0, phase 1c).
+     - Yes. A ``SignalModel`` behind the card has two regimes: a *parked
+       beam* (a photon rate with one lifetime, an IRF, dark counts and
+       afterpulsing, the sync at its rep rate) for the device-level
+       tutorials, and *scanning*, where the shared ``TimeTaggerManager``
+       feeds the card the scan designer's own ``line_clock`` and
+       ``frame_start_clock`` waveforms as edge timestamps at
+       ``sigScanBuilt`` and ``Flim`` draws a Poisson TCSPC cube from the
+       sample's rate and lifetime maps (``timeTagger.mockSample``: beads
+       with two lifetimes, uniform, or a gradient). Trigger levels and
+       polarity, dead time, the card's USB tag budget (overflows) and the
+       conditional filter (which reverses the TCSPC direction) are
+       modelled; ``timeTagger.mockFaults`` breaks the line clock, delays
+       it, flips the sync polarity, kills the photons or changes the rep
+       rate or the card model on purpose. Analytic or seeded: no thread,
+       no wall clock.
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic
        scan-shaped samples in place.
@@ -255,6 +266,10 @@ Ready-to-use hardware-free setup files, all under
   galvo/piezo axes and ``NidaqLaserManager`` lasers on a simulated NI-DAQ,
   for designing, running and recording Advanced (galvo-designer) scans,
   including single-axis scans.
+* ``galvo_flim_mock_scan_setup.json`` — the same, plus a simulated Swabian
+  Time Tagger (``timeTagger.simulation``) and a ``SwabianTimeTaggerManager``
+  FLIM detector on it: a lifetime scan runs, fits and records end to end
+  with no hardware, imaging two bead populations of 1.5 ns and 4.0 ns.
 
 Treat "null AO/DO channels" (no physical scan output built) and "fake
 ``Dev1/...`` detector input names" (manager configuration placeholders only,

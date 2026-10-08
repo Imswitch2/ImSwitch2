@@ -1,52 +1,253 @@
 """In-process stand-in for the Swabian ``TimeTagger`` Python module.
 
 ``MockTimeTaggerApi`` quacks like the vendor module (``createTimeTagger``,
-``freeTimeTagger``, measurement classes) and ``MockTimeTagger`` like the
-card object it returns, for the subset ImSwitch uses. This first cut models
-*counting only*: every channel has a configurable rate, the built-in test
-signal, a trigger level and a dead time, and the measurements report those
-rates. ``EventGenerator`` and ``Flim`` exist so a scan on a simulated rig
-completes with an empty histogram instead of failing; a photon and
-scan-edge signal model (the second phase of the Lifetime 2.0 plan) replaces
-them with real synthetic data.
+``freeTimeTagger``, the measurement classes) and ``MockTimeTagger`` like the
+card it returns, for the subset ImSwitch uses. Behind them sits a
+``SignalModel`` that says what every input *sees*, in two regimes:
 
-Nothing here runs a thread: rates are analytic, so results are exact and
-tests are deterministic.
+* **parked beam** -- no scan running: a photon rate with one lifetime, an
+  IRF, dark counts and afterpulsing, the laser sync at its rep rate. This is
+  what the device-level tutorials (trigger levels, dark counts, rep rate,
+  bandwidth, IRF) measure.
+* **scanning** -- line and frame edges loaded from the scan designer's own
+  TTL arrays (``load_scan_edges``), and a synthetic sample (``MockSample``:
+  a photon-rate map and a lifetime map) from which ``Flim`` draws a Poisson
+  TCSPC cube, pixel by pixel.
+
+Everything is analytic or sampled from a seeded generator when a measurement
+is read: no thread, no wall clock, so results are exact and tests are
+deterministic. Trigger levels, edge signs, dead times, the card's tag budget
+(overflows) and the conditional filter (which reverses the TCSPC direction)
+are modelled because the tutorials teach exactly those; ``faults`` lets a
+tutorial break the signal on purpose.
 """
 
 from __future__ import annotations
 
+import math
 import threading
-from typing import Dict, Iterable, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import numpy as np
+from scipy.special import erfc
 
 #: The card's own test signal, roughly what a Time Tagger 20 produces.
 TEST_SIGNAL_RATE_HZ = 850_000.0
 
 CHANNEL_UNUSED = -134217728  # TimeTagger.CHANNEL_UNUSED
 
+#: USB tag budgets per card model, tags per second (round numbers from the
+#: vendor's specifications; the Ultra depends on the host).
+TAG_BUDGET_PER_MODEL = {
+    "Time Tagger 20": 8.5e6,
+    "Time Tagger Ultra": 65e6,
+    "Time Tagger X": 1.0e9,
+}
+
+
+# --------------------------------------------------------------------------- #
+# The physics                                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def decay_shape(t_ns: np.ndarray, lifetime_ns, t0_ns: float, irf_fwhm_ns: float,
+                period_ns: float, n_wraps: int = 3) -> np.ndarray:
+    """A mono-exponential decay through a Gaussian IRF, wrapped on the period.
+
+    The exponentially modified Gaussian, evaluated at the bin centres ``t_ns``
+    (forward time) for a lifetime (scalar or array broadcastable against the
+    leading axes), with the tails of the previous ``n_wraps`` periods folded
+    in: at 80 MHz a 4 ns decay is still 4 % of its peak when the next pulse
+    arrives. Normalised to unit sum over the bins it is given.
+    """
+
+    tau = np.asarray(lifetime_ns, dtype=np.float64)[..., None]
+    sigma = max(1e-6, float(irf_fwhm_ns) / 2.354820045)
+    t = np.asarray(t_ns, dtype=np.float64)
+    total = np.zeros(np.broadcast_shapes(tau.shape, t.shape), dtype=np.float64)
+    for wrap in range(n_wraps + 1):
+        x = t + wrap * float(period_ns) - float(t0_ns)
+        arg = (sigma / tau - x / sigma) / math.sqrt(2.0)
+        with np.errstate(over="ignore", invalid="ignore"):
+            emg = (0.5 / tau) * np.exp(0.5 * (sigma / tau) ** 2 - x / tau) * erfc(arg)
+        total += np.where(np.isfinite(emg), emg, 0.0)
+    norm = total.sum(axis=-1, keepdims=True)
+    return np.where(norm > 0, total / np.maximum(norm, 1e-300), 0.0)
+
+
+@dataclass
+class MockSample:
+    """What the parked beam, or each scan pixel, is looking at."""
+
+    name: str
+    rate_map: Callable[[int, int], np.ndarray]
+    """ ``(ny, nx) -> detected photon rate per pixel in Hz``. """
+    lifetime_map: Callable[[int, int], np.ndarray]
+    """ ``(ny, nx) -> lifetime per pixel in ns``. """
+    parked_rate_hz: float = 500e3
+    parked_lifetime_ns: float = 2.5
+
+
+def _uniform_sample() -> MockSample:
+    return MockSample(
+        "uniform",
+        lambda ny, nx: np.full((ny, nx), 1.0e6),
+        lambda ny, nx: np.full((ny, nx), 2.5),
+    )
+
+
+def _gradient_sample() -> MockSample:
+    return MockSample(
+        "gradient",
+        lambda ny, nx: np.full((ny, nx), 1.0e6),
+        lambda ny, nx: np.tile(np.linspace(1.0, 5.0, max(1, nx)), (ny, 1)),
+    )
+
+
+def _beads_sample() -> MockSample:
+    """Two bead populations (1.5 ns and 4.0 ns) on a dim background."""
+
+    def _maps(ny, nx):
+        rng = np.random.default_rng(12345)
+        yy, xx = np.mgrid[0:ny, 0:nx]
+        rate = np.full((ny, nx), 50e3)
+        tau = np.full((ny, nx), 3.0)
+        n_beads = max(2, (ny * nx) // 200)
+        sigma = max(1.0, min(ny, nx) / 24)
+        for k in range(n_beads):
+            cy, cx = rng.uniform(0, ny), rng.uniform(0, nx)
+            blob = np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * sigma ** 2))
+            rate += 3.0e6 * blob
+            tau = np.where(blob > 0.3, 1.5 if k % 2 == 0 else 4.0, tau)
+        return rate, tau
+
+    cache: Dict[tuple, tuple] = {}
+
+    def _rate(ny, nx):
+        if (ny, nx) not in cache:
+            cache[(ny, nx)] = _maps(ny, nx)
+        return cache[(ny, nx)][0]
+
+    def _tau(ny, nx):
+        if (ny, nx) not in cache:
+            cache[(ny, nx)] = _maps(ny, nx)
+        return cache[(ny, nx)][1]
+
+    return MockSample("beads_two_lifetimes", _rate, _tau)
+
+
+SAMPLE_PRESETS: Dict[str, Callable[[], MockSample]] = {
+    "uniform": _uniform_sample,
+    "gradient": _gradient_sample,
+    "beads_two_lifetimes": _beads_sample,
+}
+
+
+@dataclass
+class SignalModel:
+    """What the card's inputs see. Channels are physical input numbers."""
+
+    photon_channel: int = 1
+    sync_channel: int = 2
+    line_channel: int = 3
+    frame_channel: Optional[int] = None
+    sample: MockSample = field(default_factory=_beads_sample)
+    rep_rate_hz: float = 80e6
+    sync_jitter_ps: float = 20.0
+    irf_fwhm_ps: float = 350.0
+    t0_ps: float = 1000.0
+    """ Where the IRF peak sits after the sync, forward time. """
+    dark_rate_hz: float = 2000.0
+    afterpulse_fraction: float = 0.02
+    """ Afterpulses as a fraction of detected photons, flat over the period. """
+    pulse_amplitude_v: Dict[int, float] = field(default_factory=dict)
+    """ Per input: a SPAD's NIM pulse is about -0.5 V, a DAQ line about
+    +1.2 V into 50 ohm. Defaults are filled in per role. """
+    model: str = "Time Tagger X"
+    """ Sets the USB tag budget (``TAG_BUDGET_PER_MODEL``). The default is
+    the card that takes an unfiltered 80 MHz sync without overflowing, so
+    the shipped mock setup images cleanly in forward mode; the bandwidth
+    tutorial switches to a Time Tagger 20 through the ``model`` fault. """
+    seed: int = 0
+    faults: Dict[str, Any] = field(default_factory=dict)
+    """ ``missing_line_clock``, ``line_delay_ps``, ``wrong_sync_polarity``,
+    ``dead_photons``, ``laser_rep_rate_mhz`` (an override), ``model`` (a
+    card model from ``TAG_BUDGET_PER_MODEL``, for its tag budget). """
+
+    def __post_init__(self):
+        amps = {
+            abs(self.photon_channel): -0.5,
+            abs(self.sync_channel): 0.8,
+            abs(self.line_channel): 1.2,
+        }
+        if self.frame_channel is not None:
+            amps[abs(self.frame_channel)] = 1.2
+        for ch, amp in amps.items():
+            self.pulse_amplitude_v.setdefault(ch, amp)
+        if self.faults.get("wrong_sync_polarity"):
+            self.pulse_amplitude_v[abs(self.sync_channel)] = -0.8
+        override = self.faults.get("laser_rep_rate_mhz")
+        if override:
+            self.rep_rate_hz = float(override) * 1e6
+        model = self.faults.get("model")
+        if model:
+            self.model = str(model)
+
+    @property
+    def period_ps(self) -> float:
+        return 1e12 / self.rep_rate_hz
+
+    @property
+    def tag_budget(self) -> float:
+        return TAG_BUDGET_PER_MODEL.get(self.model, 8.5e6)
+
+    @classmethod
+    def from_info(cls, info) -> "SignalModel":
+        """Build from a ``TimeTaggerInfo`` (roles, sample, faults)."""
+        preset = SAMPLE_PRESETS.get(getattr(info, "mockSample", "") or "", _beads_sample)
+        return cls(
+            photon_channel=int(info.photonsChannel),
+            sync_channel=int(info.laserSyncChannel),
+            line_channel=int(info.lineClockChannel),
+            frame_channel=(int(info.frameClockChannel)
+                           if info.frameClockChannel is not None else None),
+            sample=preset(),
+            faults=dict(getattr(info, "mockFaults", {}) or {}),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# The card                                                                     #
+# --------------------------------------------------------------------------- #
+
 
 class MockTimeTagger:
-    """The card object. ``rates_hz`` seeds what each physical input sees."""
+    """The card object."""
 
     def __init__(self, serial: Optional[str] = None,
-                 rates_hz: Optional[Dict[int, float]] = None,
-                 model: str = "Time Tagger 20 (mock)"):
+                 model: Optional[SignalModel] = None,
+                 rates_hz: Optional[Dict[int, float]] = None):
         self._serial = serial or "MOCK-000001"
-        self._model = model
+        self._model = model or SignalModel()
+        #: Explicit per-input rates override the signal model (test hook).
         self._rates: Dict[int, float] = {int(k): float(v)
                                          for k, v in (rates_hz or {}).items()}
         self._triggerLevels: Dict[int, float] = {}
         self._inputDelays: Dict[int, int] = {}
         self._deadtimes: Dict[int, int] = {}
         self._testSignal: Dict[int, bool] = {}
-        self._conditionalFilter = ([], [])
+        self._conditionalFilter: tuple = ([], [])
         self._overflows = 0
         self._freed = False
         self._lock = threading.Lock()
-        #: Every measurement object created against this card, so a test can
-        #: check that nothing is left behind.
+        self._rng = np.random.default_rng(self._model.seed)
+        #: Scan edges by physical input, picoseconds, and the scan's duration.
+        self._edges: Dict[int, np.ndarray] = {}
+        self._scan_duration_s = 0.0
+        #: Virtual channel id -> EventGenerator, for Flim to find its markers.
+        self._generators: Dict[int, "EventGenerator"] = {}
+        #: Every measurement object created against this card.
         self.measurements: List[object] = []
 
     # -- identity -------------------------------------------------------- #
@@ -55,10 +256,14 @@ class MockTimeTagger:
         return self._serial
 
     def getModel(self):
-        return self._model
+        return f"{self._model.model} (mock)"
 
     def getConfiguration(self):
-        return {"serial": self._serial, "model": self._model, "mock": True}
+        return {"serial": self._serial, "model": self.getModel(), "mock": True}
+
+    @property
+    def signal_model(self) -> SignalModel:
+        return self._model
 
     # -- conditioning ---------------------------------------------------- #
 
@@ -98,6 +303,13 @@ class MockTimeTagger:
     def getConditionalFilterFiltered(self):
         return list(self._conditionalFilter[1])
 
+    @property
+    def filterOn(self) -> bool:
+        trig, filt = self._conditionalFilter
+        m = self._model
+        return (abs(m.photon_channel) in {abs(c) for c in trig}
+                and abs(m.sync_channel) in {abs(c) for c in filt})
+
     def getOverflowsAndClear(self):
         with self._lock:
             n, self._overflows = self._overflows, 0
@@ -106,22 +318,161 @@ class MockTimeTagger:
     def getOverflows(self):
         return self._overflows
 
-    # -- the signal seen on a channel ------------------------------------ #
+    # -- the signal seen on an input ------------------------------------- #
 
     def setChannelRate(self, channel: int, rate_hz: float) -> None:
-        """Test hook: what the input is receiving, in counts per second."""
+        """Test hook: pin what an input receives, bypassing the model."""
         self._rates[int(channel)] = float(rate_hz)
 
+    def _trigger_factor(self, channel: int) -> float:
+        """How much of an input's pulses the comparator sees: a sigmoid
+        plateau between a small threshold and the pulse amplitude, zero for
+        the wrong polarity."""
+        ch = abs(int(channel))
+        amp = self._model.pulse_amplitude_v.get(ch)
+        if amp is None:
+            return 1.0
+        trig = self._triggerLevels.get(ch, 0.5)
+        if trig == 0.0 or (trig > 0) != (amp > 0):
+            return 0.0
+        a, v = abs(amp), abs(trig)
+        return float(1 / (1 + math.exp(-(a - v) / 0.05)) * 1 / (1 + math.exp(-(v - 0.05) / 0.02)))
+
+    def _deadtime_factor(self, channel: int, rate_hz: float) -> float:
+        dead_s = self._deadtimes.get(int(channel), 0) * 1e-12
+        return 1.0 / (1.0 + rate_hz * dead_s)
+
+    def _raw_rate(self, channel: int) -> float:
+        """The pulses arriving at an input, before the comparator."""
+        ch = int(channel)
+        m = self._model
+        if ch in self._rates:
+            return self._rates[ch]
+        if abs(ch) == abs(m.photon_channel):
+            if m.faults.get("dead_photons"):
+                return 0.0
+            return m.sample.parked_rate_hz * (1 + m.afterpulse_fraction) + m.dark_rate_hz
+        if abs(ch) == abs(m.sync_channel):
+            return m.rep_rate_hz
+        edges = self._edges.get(abs(ch))
+        if edges is not None and self._scan_duration_s > 0:
+            return len(edges) / self._scan_duration_s
+        return 0.0
+
     def channelRate(self, channel: int) -> float:
-        channel = int(channel)
-        if self._testSignal.get(abs(channel), False):
+        """What the card counts on an input, after trigger level, dead time,
+        the test signal and the conditional filter."""
+        ch = int(channel)
+        if self._testSignal.get(abs(ch), False):
             return TEST_SIGNAL_RATE_HZ
-        return self._rates.get(channel, 0.0)
+        if ch in self._rates:
+            return self._rates[ch]  # pinned by a test: no comparator model
+        m = self._model
+        rate = self._raw_rate(ch) * self._trigger_factor(ch)
+        rate *= self._deadtime_factor(ch, rate)
+        if abs(ch) == abs(m.sync_channel) and self.filterOn:
+            # Only the first sync after each photon is transmitted.
+            rate = min(rate, self.channelRate(m.photon_channel))
+        return rate
+
+    def transmittedRate(self) -> float:
+        """All tags the USB link must carry per second."""
+        m = self._model
+        channels = {abs(m.photon_channel), abs(m.sync_channel), abs(m.line_channel)}
+        if m.frame_channel is not None:
+            channels.add(abs(m.frame_channel))
+        return sum(self.channelRate(c) for c in channels)
+
+    def _budget_factor(self, duration_s: float) -> float:
+        """Fraction of tags that survive the link; counts overflows as it goes."""
+        total = self.transmittedRate()
+        budget = self._model.tag_budget
+        if total <= budget:
+            return 1.0
+        lost_blocks = int((total - budget) * max(duration_s, 1e-3) / 1e5) + 1
+        with self._lock:
+            self._overflows += lost_blocks
+        return budget / total
 
     def addOverflows(self, n: int) -> None:
         """Test hook: pretend the USB link dropped ``n`` blocks."""
         with self._lock:
             self._overflows += int(n)
+
+    # -- scan edges ------------------------------------------------------ #
+
+    def load_scan_edges(self, edges_ps: Dict[int, Iterable[float]],
+                        duration_s: float) -> None:
+        """Edge timestamps per physical input for the scan about to run."""
+        self._edges = {}
+        for channel, edges in edges_ps.items():
+            arr = np.asarray(list(edges), dtype=np.int64)
+            if abs(int(channel)) == abs(self._model.line_channel) \
+                    and self._model.faults.get("missing_line_clock"):
+                arr = arr[:0]
+            self._edges[abs(int(channel))] = arr
+        self._scan_duration_s = float(duration_s)
+
+    def clear_scan_edges(self) -> None:
+        self._edges = {}
+        self._scan_duration_s = 0.0
+
+    def edges(self, channel: int) -> np.ndarray:
+        return self._edges.get(abs(int(channel)), np.zeros(0, dtype=np.int64))
+
+    # -- histograms ------------------------------------------------------ #
+
+    def _direction_for(self, start_channel: int, click_channel: int) -> Optional[str]:
+        """``'forward'``, ``'reverse'``, ``'garbage'`` (forward slots with the
+        filter on: each click is measured against the previous photon's
+        sync), or ``None`` (not a photon/sync pair)."""
+        m = self._model
+        p, s = abs(m.photon_channel), abs(m.sync_channel)
+        start, click = abs(int(start_channel)), abs(int(click_channel))
+        if (start, click) == (s, p):
+            return "garbage" if self.filterOn else "forward"
+        if (start, click) == (p, s):
+            return "reverse"
+        return None
+
+    def expected_histogram(self, start_channel: int, click_channel: int,
+                           binwidth_ps: int, n_bins: int,
+                           photons: np.ndarray, lifetime_ns: np.ndarray,
+                           background: np.ndarray) -> np.ndarray:
+        """Expected counts per bin for ``photons`` with ``lifetime_ns`` on the
+        histogram's own axis (what the card returns), for any leading shape."""
+        direction = self._direction_for(start_channel, click_channel)
+        t_raw_ns = (np.arange(n_bins) + 0.5) * binwidth_ps * 1e-3
+        photons = np.asarray(photons, dtype=np.float64)[..., None]
+        background = np.asarray(background, dtype=np.float64)[..., None]
+        flat = np.full(t_raw_ns.shape, 1.0 / n_bins)
+        if direction is None:
+            return np.zeros(photons.shape[:-1] + (n_bins,))
+        if direction == "garbage":
+            return (photons + background) * flat
+        m = self._model
+        period_ns = m.period_ps * 1e-3
+        delay_ns = self._inputDelays.get(m.photon_channel, 0) * 1e-3
+        if direction == "forward":
+            # A photon delay moves the peak: setInputDelay(photons, -t0).
+            t_forward = t_raw_ns - delay_ns
+            shape = decay_shape(t_forward, lifetime_ns, m.t0_ps * 1e-3,
+                                m.irf_fwhm_ps * 1e-3, period_ns)
+            # The window may be shorter than the period: a truncated decay.
+            inside = (t_raw_ns < period_ns).astype(float)
+            shape = shape * inside
+            total = shape.sum(axis=-1, keepdims=True)
+            return photons * shape + background * flat * (total > 0)
+        # Reverse: t' = T_rep - t, early photons sit near the end. A window
+        # longer than the period sees the next period's copy; shorter, it
+        # loses the peak, which is the point the tutorial makes.
+        t_forward = (period_ns - t_raw_ns) % period_ns
+        shape = decay_shape(t_forward, lifetime_ns, m.t0_ps * 1e-3,
+                            m.irf_fwhm_ps * 1e-3, period_ns)
+        return photons * shape + background * flat
+
+    def sample_counts(self, expected: np.ndarray) -> np.ndarray:
+        return self._rng.poisson(np.clip(expected, 0, None)).astype(np.uint32)
 
     # -- lifecycle ------------------------------------------------------- #
 
@@ -131,6 +482,11 @@ class MockTimeTagger:
 
     def _free(self):
         self._freed = True
+
+
+# --------------------------------------------------------------------------- #
+# Measurements                                                                 #
+# --------------------------------------------------------------------------- #
 
 
 class _Measurement:
@@ -168,6 +524,10 @@ class _Measurement:
     def getCaptureDuration(self):
         return self._capture_ps
 
+    @property
+    def _duration_s(self) -> float:
+        return self._capture_ps * 1e-12 if self._capture_ps else 1.0
+
 
 class Countrate(_Measurement):
     def __init__(self, tagger, channels: Iterable[int]):
@@ -175,6 +535,7 @@ class Countrate(_Measurement):
         self._channels = [int(c) for c in channels]
 
     def getData(self):
+        self._tagger._budget_factor(self._duration_s)
         return np.array([self._tagger.channelRate(c) for c in self._channels],
                         dtype=np.float64)
 
@@ -204,8 +565,42 @@ class Counter(_Measurement):
         return np.arange(self._n_values, dtype=np.int64) * self._binwidth
 
 
+class Histogram(_Measurement):
+    """Parked-beam TCSPC histogram between two inputs."""
+
+    def __init__(self, tagger, click_channel, start_channel, binwidth=1000,
+                 n_bins=1000):
+        super().__init__(tagger)
+        self.click_channel = int(click_channel)
+        self.start_channel = int(start_channel)
+        self.binwidth = int(binwidth)
+        self.n_bins = int(n_bins)
+
+    def getIndex(self):
+        return np.arange(self.n_bins, dtype=np.int64) * self.binwidth
+
+    def getData(self):
+        tagger = self._tagger
+        m = tagger._model
+        duration = self._duration_s
+        factor = tagger._budget_factor(duration)
+        photons = tagger.channelRate(m.photon_channel) * duration * factor
+        if m.faults.get("dead_photons"):
+            photons = 0.0
+        dark = tagger._raw_rate(m.photon_channel) - m.sample.parked_rate_hz * (1 + m.afterpulse_fraction)
+        background = (max(0.0, dark) + m.sample.parked_rate_hz * m.afterpulse_fraction) \
+            * tagger._trigger_factor(m.photon_channel) * duration * factor
+        signal = max(0.0, photons - background)
+        expected = tagger.expected_histogram(
+            self.start_channel, self.click_channel, self.binwidth, self.n_bins,
+            np.array(signal), np.array(m.sample.parked_lifetime_ns),
+            np.array(background),
+        )
+        return tagger.sample_counts(expected).astype(np.int64)
+
+
 class EventGenerator(_Measurement):
-    """Records the marker pattern a detector asks for; emits nothing yet."""
+    """Markers from a pattern on every edge of a trigger input."""
 
     _next_virtual = 1000
 
@@ -216,13 +611,20 @@ class EventGenerator(_Measurement):
         self.pattern = np.asarray(pattern, dtype=np.int64).copy()
         EventGenerator._next_virtual += 1
         self._channel = EventGenerator._next_virtual
+        tagger._generators[self._channel] = self
 
     def getChannel(self):
         return self._channel
 
 
 class Flim(_Measurement):
-    """A FLIM frame with no photons in it. Shapes match the vendor class."""
+    """A FLIM frame drawn from the sample, pixel by pixel.
+
+    The image geometry is what the markers say: one row per edge on the
+    pixel-begin generator's trigger input, one column per pattern entry.
+    No edges (the line clock not cabled, or the ``missing_line_clock``
+    fault) means an empty frame -- the "image is all zeros" symptom.
+    """
 
     def __init__(self, tagger, start_channel, click_channel,
                  pixel_begin_channel, n_pixels, n_bins, binwidth,
@@ -239,22 +641,81 @@ class Flim(_Measurement):
         self.n_pixels = int(n_pixels)
         self.n_bins = int(n_bins)
         self.binwidth = int(binwidth)
+        self._frame: Optional[np.ndarray] = None
         self._frames_acquired = 0
 
+    def getIndex(self):
+        return np.arange(self.n_bins, dtype=np.int64) * self.binwidth
+
+    def _geometry(self):
+        gen = self._tagger._generators.get(self.pixel_begin_channel)
+        if gen is None:
+            return 0, 0, 0.0, 0
+        edges = self._tagger.edges(gen.trigger_channel)
+        ny = len(edges)
+        nx = len(gen.pattern)
+        dwell_ps = float(gen.pattern[1] - gen.pattern[0]) if nx > 1 else 0.0
+        offset_ps = int(gen.pattern[0]) if nx else 0
+        return ny, nx, dwell_ps, offset_ps
+
+    def _render(self) -> np.ndarray:
+        tagger = self._tagger
+        m = tagger._model
+        frame = np.zeros((self.n_pixels, self.n_bins), dtype=np.uint32)
+        ny, nx, dwell_ps, offset_ps = self._geometry()
+        if ny == 0 or nx == 0 or dwell_ps <= 0:
+            return frame
+        n_used = min(self.n_pixels, ny * nx)
+        ny_used = n_used // nx
+        if ny_used == 0:
+            return frame
+        dwell_s = dwell_ps * 1e-12
+
+        rate = np.asarray(m.sample.rate_map(ny_used, nx), dtype=np.float64)
+        tau = np.asarray(m.sample.lifetime_map(ny_used, nx), dtype=np.float64)
+        # The line delay: a late line clock starts the markers late, so each
+        # pixel samples a later position -- the image shifts. The fault adds
+        # a delay the card does not know about; a configured input delay or
+        # a pattern offset moves the markers the other way and cancels it.
+        delay_ps = (float(m.faults.get("line_delay_ps", 0))
+                    - tagger._inputDelays.get(m.line_channel, 0)
+                    - tagger._inputDelays.get(-m.line_channel, 0)
+                    - offset_ps)
+        shift = int(round(delay_ps / dwell_ps)) if dwell_ps else 0
+        if shift:
+            rate = np.roll(rate, -shift, axis=1)
+            tau = np.roll(tau, -shift, axis=1)
+
+        factor = tagger._trigger_factor(m.photon_channel)
+        factor *= tagger._budget_factor(self._tagger._scan_duration_s or dwell_s * n_used)
+        if m.faults.get("dead_photons"):
+            factor = 0.0
+        photons = rate * dwell_s * factor
+        background = (m.dark_rate_hz + rate * m.afterpulse_fraction) * dwell_s * factor
+        expected = tagger.expected_histogram(
+            self.start_channel, self.click_channel, self.binwidth, self.n_bins,
+            photons, tau, background,
+        )
+        counts = tagger.sample_counts(expected).reshape(ny_used * nx, self.n_bins)
+        frame[:ny_used * nx] = counts
+        return frame
+
     def getCurrentFrame(self):
-        return np.zeros((self.n_pixels, self.n_bins), dtype=np.uint32)
+        if self._frame is None:
+            self._frame = self._render()
+            if self._frame.any() or self._geometry()[0]:
+                self._frames_acquired = 1
+        return self._frame.copy()
 
     def getReadyFrame(self):
         return self.getCurrentFrame()
 
     def getCurrentFrameIntensity(self):
-        return np.zeros(self.n_pixels, dtype=np.uint32)
+        return self.getCurrentFrame().sum(axis=1).astype(np.uint32)
 
     def getFramesAcquired(self):
+        self.getCurrentFrame()
         return self._frames_acquired
-
-    def getIndex(self):
-        return np.arange(self.n_bins, dtype=np.int64) * self.binwidth
 
 
 class MockTimeTaggerApi:
@@ -268,18 +729,23 @@ class MockTimeTaggerApi:
     CHANNEL_UNUSED = CHANNEL_UNUSED
     Countrate = Countrate
     Counter = Counter
+    Histogram = Histogram
     EventGenerator = EventGenerator
     Flim = Flim
 
     def __init__(self, rates_hz: Optional[Dict[int, float]] = None,
-                 model: str = "Time Tagger 20 (mock)"):
+                 model: Optional[SignalModel] = None):
         self._rates = dict(rates_hz or {})
         self._model = model
         self.created: List[MockTimeTagger] = []
 
+    @classmethod
+    def from_info(cls, info) -> "MockTimeTaggerApi":
+        return cls(model=SignalModel.from_info(info))
+
     def createTimeTagger(self, serial: Optional[str] = None):
-        tagger = MockTimeTagger(serial=serial, rates_hz=self._rates,
-                                model=self._model)
+        tagger = MockTimeTagger(serial=serial, model=self._model,
+                                rates_hz=self._rates)
         self.created.append(tagger)
         return tagger
 
@@ -293,11 +759,17 @@ class MockTimeTaggerApi:
 
 __all__ = [
     "CHANNEL_UNUSED",
+    "SAMPLE_PRESETS",
+    "TAG_BUDGET_PER_MODEL",
     "TEST_SIGNAL_RATE_HZ",
     "Counter",
     "Countrate",
     "EventGenerator",
     "Flim",
+    "Histogram",
+    "MockSample",
     "MockTimeTagger",
     "MockTimeTaggerApi",
+    "SignalModel",
+    "decay_shape",
 ]

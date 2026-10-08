@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, Optional
@@ -152,8 +153,12 @@ class TimeResolvedScanWorkflow:
             if measurement_name is not None:
                 params = replace(params, measurement_name=measurement_name)
 
-            detector.clear()
-            detector.configure(params.to_scan_config())
+            # This run owns the detector's product session: a second run
+            # that overlaps is refused at configure, before it touches the
+            # scan, and its cleanup cannot erase this run's state.
+            token = f"{params.measurement_name}-{uuid.uuid4().hex[:8]}"
+            detector.clear()  # an unowned leftover; an owned one stays put
+            detector.configure(params.to_scan_config(), owner=token)
 
             acquire = acquisition or self.acquisition
             if acquire is None:
@@ -164,13 +169,15 @@ class TimeResolvedScanWorkflow:
                 if acquire is not None:
                     acquire()
 
-                products = detector.wait_for_final(timeout_s=params.timeout_s)
+                products = detector.wait_for_final(
+                    timeout_s=params.timeout_s, owner=token
+                )
             finally:
                 # Product capture is armed for this run only. Left armed, every
                 # later scan would copy products and compute gates, and the
                 # Swabian backend would reject any later z/t scan as an
                 # unsupported outer axis until something cleared it.
-                detector.clear()
+                detector.clear(owner=token)
         output_paths = self._save(products, params)
         return TimeResolvedWorkflowResult(
             products=products,
@@ -341,8 +348,14 @@ def _save_h5(
             ds = gates_group.create_dataset(key, data=image)
             ds.attrs["gate_name"] = name
             if name in gate_specs:
-                ds.attrs["start_ns"] = float(gate_specs[name].start_ns)
-                ds.attrs["stop_ns"] = float(gate_specs[name].stop_ns)
+                spec = gate_specs[name]
+                ds.attrs["start_ns"] = float(spec.start_ns)
+                ds.attrs["stop_ns"] = float(spec.stop_ns)
+                ds.attrs["reference"] = str(spec.reference)
+                peak = metadata.get("peak_time_ns")
+                if spec.reference == "peak" and peak is not None:
+                    ds.attrs["resolved_start_ns"] = float(spec.start_ns) + float(peak)
+                    ds.attrs["resolved_stop_ns"] = float(spec.stop_ns) + float(peak)
 
         fit = h5.create_group("fit")
         fit.attrs["method"] = str(metadata.get("fit_method", ""))

@@ -45,9 +45,15 @@ def test_section_fields_are_exactly_the_dataclass_fields():
 
 
 def test_section_defaults_match_the_dataclass_defaults():
-    expected = {f.name: f.default for f in dataclasses.fields(TimeTaggerInfo)}
+    expected = {
+        f.name: (f.default if f.default is not dataclasses.MISSING
+                 else f.default_factory())
+        for f in dataclasses.fields(TimeTaggerInfo)
+    }
     for field in _section()["fields"]:
         value = _default_value(field.get("default", ""), field.get("type", "text"))
+        if field.get("type") == "json" and isinstance(value, str):
+            value = json.loads(value)
         assert value == expected[field["key"]], field["key"]
 
 

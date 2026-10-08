@@ -133,6 +133,8 @@ class _MockTimeResolved:
     def __init__(self, recorder: _Recorder) -> None:
         self._r = recorder
         self._config = TimeResolvedScanConfig()
+        self._owner: Optional[str] = None
+        self._armed = False
         self._canned_products: Optional[TimeResolvedScanProducts] = None
         self._last_products: Optional[TimeResolvedScanProducts] = None
 
@@ -140,15 +142,29 @@ class _MockTimeResolved:
         self._canned_products = copy_time_resolved_products(products)
         self._last_products = copy_time_resolved_products(products)
 
-    def configure(self, config: TimeResolvedScanConfig) -> None:
+    def configure(self, config: TimeResolvedScanConfig,
+                  owner: str | None = None) -> str | None:
         self._r.record("time_resolved.configure", (config,))
+        if self._owner is not None and owner != self._owner:
+            raise RuntimeError(
+                f"time-resolved products are owned by another run ({self._owner})"
+            )
         self._config = config
+        self._owner = owner
+        self._armed = True
+        return owner
+
+    def session_owner(self) -> str | None:
+        return self._owner if self._armed else None
 
     def wait_for_final(
         self,
         timeout_s: float | None = None,
+        owner: str | None = None,
     ) -> TimeResolvedScanProducts:
         self._r.record("time_resolved.wait_for_final", (timeout_s,))
+        if owner is not None and self._owner is not None and owner != self._owner:
+            raise RuntimeError("time-resolved products are owned by another run")
         if self._canned_products is None:
             raise RuntimeError("No canned time-resolved products configured")
         self._last_products = copy_time_resolved_products(self._canned_products)
@@ -160,8 +176,12 @@ class _MockTimeResolved:
             return copy_time_resolved_products(self._last_products)
         return self._last_products
 
-    def clear(self) -> None:
+    def clear(self, owner: str | None = None) -> None:
         self._r.record("time_resolved.clear")
+        if self._armed and self._owner is not None and owner != self._owner:
+            return
+        self._armed = False
+        self._owner = None
         self._last_products = None
 
     def capabilities(self) -> dict:

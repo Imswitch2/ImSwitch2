@@ -1,12 +1,12 @@
 # Lifetime 2.0 — Swabian Time Tagger, calibration tutorials, and a Lifetime widget
 
-Status: Proposed — **revision 3**, after two review rounds (each round: one
-independent measurement-physics / vendor-API review and one architecture
-review, both verified against the code). Nothing is implemented. Both
-round-2 reviewers judged P1a ready to start now and P1b ready once the items
-they named were written down; this revision writes them down. §12 lists the
-decisions still open; §13 the rig facts the plan needs; §15 logs what each
-round changed and why.
+Status: **revision 4** — in implementation. P1a and P1b are on their
+branches; P1c is in progress. Revision 4 folds in the first external review
+(§15, "External review 1"): four of its eight items changed code already
+written (product-session ownership, the hold's lifetime and calibration
+exclusivity, a single overflow owner, the gate default), the other four
+change P2/P3 as recorded in §3.2, §4 and §15. §12 lists the decisions still
+open; §13 the rig facts the plan needs.
 
 Scope in one sentence: turn today's single-purpose FLIM detector into a
 Time-Tagger subsystem — a shared device layer that exposes the card's
@@ -257,14 +257,29 @@ Responsibilities:
 - **TCSPC direction** is derived: `filterSyncByPhotons` ⇒ `'reverse'`
   (Flim slots swap per the vocabulary table; the time axis is mirrored in
   processing, §3.2) else `'forward'`. In metadata and on the strip.
-- **Scan hold** (the lock that matters): the FLIM detector calls
-  `beginScanHold()` in `initiateScan` and `endScanHold()` on scan done,
-  abort and build-failure rollback. While held, conditioning writes and the
-  facade's `rep_rate()` are **refused** with a clear error. Measurement
-  objects themselves run concurrently on the card and are not serialised.
-  Ordering rule: `_onScanBuilt` runs synchronously inside
+- **Scan hold and calibration transaction** (the two exclusive holds):
+  the FLIM detector calls `beginScanHold()` in `initiateScan` and
+  `endScanHold()` only when its final frame has been drained (the final
+  frame acknowledgement), on abort, on stop and on build-failure rollback —
+  never at scan-done, which the detector deliberately outlives. While held,
+  conditioning writes are **refused**. A calibration (`rep_rate()`'s
+  temporary divider and filter, a trigger sweep) runs inside
+  `calibrationTransaction(owner)`: it is refused while a scan holds the
+  card, only its owner may condition meanwhile, and `beginScanHold()` is
+  refused for its duration — so a scan can never start on temporary
+  settings, and preparation rolls the scan back with the reason. The
+  transaction is released on any exception, `OperationCancelled` included.
+  Measurement objects themselves run concurrently on the card and are not
+  serialised. Ordering rule: `_onScanBuilt` runs synchronously inside
   `NidaqManager.runScan` under its finalize lock, so the manager never waits
   on anything nidaq-side while holding its own lock.
+- **Overflows have one owner.** The card's counter is read-and-clear, so
+  exactly one place reads it: `overflows()` on the manager adds it to a
+  monotonic total. Every consumer keeps its own baseline against that
+  total: the detector takes one when it prepares a scan and marks a frame
+  invalid if the total moved; the health look reports the delta since its
+  own previous look. A health read between an overflow and a frame's
+  finalisation can therefore never hide it from the frame (tested).
 - **Health**: a slow background `Counter` feeds `health()` (per-role rates,
   overflow delta, pile-up fraction, direction, model, serial, mock flag) and
   `sigHealth`; sampling is **off by default in tests** (opt-in) to avoid
@@ -303,6 +318,21 @@ controller.
   periodic histogram); the sync channel's delay is never touched, and the
   photon delay is never used for `t0` in this mode (delaying the start by
   `+d` makes photons with `t' < d` land after their chosen sync and vanish).
+  **Gating (external review, item 4):** the vendor documents that with the
+  conditional filter the transmitted sync and photon timestamps can be
+  reordered — on a Time Tagger 20 a photon-to-sync difference can come out
+  negative — and that `setInputDelay` may select a *hardware* delay on
+  Ultra/X, which acts before the filter and changes which sync survives.
+  Pairs the card already discarded cannot be recovered by a wider window
+  or a roll. Reverse mode is therefore implemented but **experimental until
+  an acceptance test passes on the rig**: tutorial 05 compares a reverse
+  histogram against the forward one taken with the filter off and a
+  divided sync (same peak position within a bin, same global τ within 3 %,
+  no counts at negative forward times), on a stated vendor SDK version;
+  the delay policy is *software delay only on the photon channel in forward
+  mode, no delay on any filtered channel in reverse mode, `setDelayHardware`
+  never*. The mock does not reproduce the reordering, so the mock only
+  proves the software path.
 - `processing.oriented_axis()` is an axis *transform* `t = T_rep − t'` with
   the sub-bin offset carried explicitly (12 500 ps / 32 ps = 390.625 bins),
   not `np.flip`. Fits, gates, the decay plot and `t0` always read forward
@@ -324,26 +354,38 @@ controller.
   A pile-up map and its max per frame; thresholds 5 % (warn) / 10 % (red).
   In reverse mode pile-up favours the *later* photon (apparent τ longer), the
   opposite of forward; the checklist says which.
-- **Peak-relative gates**: `GateSpec.reference ∈ {'peak', 'absolute'}`
-  (default `'peak'`), so STED presets survive a `t0` change.
+- **Peak-relative gates**: `GateSpec.reference ∈ {'peak', 'absolute'}`.
+  The **default stays `'absolute'`**: an existing script's
+  `GateSpec("early", 0.5, 2.5)` and every saved file keep meaning what they
+  meant. New presets and the widget ask for `'peak'` explicitly, so STED
+  presets survive a `t0` change without changing anyone else's images.
 
 **Frames, markers, delays:**
 
 - **One frame path.** `Flim` closes a frame after `n_pixels` pixel ends with
   or without `frame_begin_channel`; the worker always reads with
-  `getReadyFrameEx()` and detects the final frame by `getFramesAcquired()`
-  advancing after `sigScanDone` (with a timeout). The frame role, when
-  configured, adds **resync** after a lost marker. There is no frame-end
-  input on `Flim`; if the last frame does not close on the rig,
-  `finish_after_outputframe=1` is the one-shot fallback. (The designer's
-  `frame_end_clock` rises inside the last pixel and is useless here.)
+  `getReadyFrameEx()`. The final frame is detected by **count, not by
+  order**: the worker records `getFramesAcquired()` when the scan is armed
+  and waits for it to reach baseline + expected frames, whether the last
+  pixel completes before or after `sigScanDone` arrives (both orders
+  tested, P3). The frame role, when configured, adds **resync** after a
+  lost marker. There is no frame-end input on `Flim`, and
+  `finish_after_outputframe` only stops after a *completed* frame — it is
+  not a way to force an incomplete one closed; a last frame that does not
+  close on the rig is a marker-count bug to find with tutorial 08, not
+  something to paper over. (The designer's `frame_end_clock` rises inside
+  the last pixel and is useless here.)
 - **Marker collision and skew.** The designer raises `frame_start_clock` on
   the same DAQ sample as line 0's edge; two DO lines, two cables and two
   comparators add ns-scale skew on top of the card's channel calibration.
   So the pixel pattern starts at `pixelPatternOffsetPs` (default 10 000 ps,
   ≪ any dwell) rather than at 0, and tutorial 08 measures the real
-  frame→line skew with `Histogram(click=line, start=frame)` and asserts
-  |skew| < offset. `pixel_end = begin + period − 1 ps` stays.
+  frame→line skew **signed**: a `Histogram` only sees clicks *after* the
+  start, so with line 0 ahead of the frame edge it would miss the pair and
+  measure the next line. The tutorial adds a known delay to the line
+  channel (larger than any plausible skew), measures the frame→line
+  difference, subtracts the added delay, and asserts |skew| < offset; both
+  signs are tested on the mock. `pixel_end = begin + period − 1 ps` stays.
 - **Line delay mechanism.** Positive `lineClockDelayPs = D` is applied as a
   pattern offset on the line role (keeps the raw line channel visible to
   tutorials) and as `setInputDelay(frame_clock, +D)` on the frame role (it
@@ -490,8 +532,8 @@ next to the script.
 | 04 | `04_laser_sync.py` | Rep rate and period by the §3.3 procedure; jitter with the card-floor and N-period caveats; missing pulses; why the phasor fit needs the rate. | `setEventDivider`, `Countrate`, `TimeDifferences` | `laser_rep_rate_mhz` |
 | 05 | `05_bandwidth_and_the_filter.py` | Tag budget per model; overflows with an unfiltered sync; enable the filter, watch overflows stop — and the decay reverse; what `tcspc_direction` means; the window-≥-period rule; why the divider is not a remedy. | `getOverflowsAndClear`, `setConditionalFilter` | `filterSyncByPhotons` |
 | 06 | `06_irf_and_t0.py` | Zero the existing photon delay, histogram photons vs sync (direction-aware), IRF FWHM, peak position → `t0` (delay in forward mode, roll in reverse), derived peak target; what a truncated window looks like in each direction; IRF sample notes (emission filter out, SPAD colour shift, or a τ ≪ IRF dye). Saves the IRF. | `Histogram`, `setInputDelay` | `t0_ps`, `peakTargetNs`, `binwidth_ps`/`n_bins` suggestion, IRF |
-| 07 | `07_line_clock_during_a_scan.py` | `runScanAndWait` in a thread while counting line edges, sweeping the line trigger level and measuring the period: edges = Ny (and *only* Ny when S > 1 — gap 4 made visible), period = line + flyback; jitter; design-vs-measured table. | `Counter`, `TimeDifferences`, `setTriggerLevel`, `loadScanParamsFromFile` | `lineClockTriggerV` |
-| 08 | `08_frame_clock_and_pixel_markers.py` | Frame trigger sweep; `Histogram(click=line, start=frame)` → frame→line skew (design 0; assert |skew| < `pixelPatternOffsetPs`); build the detector's pixel pattern; check the last pixel end lands before the next line edge; `Scope` trace of frame/line/pixel-begin for one line; **last-frame-closes check** via `getFramesAcquired()`. | `Histogram`, `Scope`, `EventGenerator`, `Flim` | `frameClockTriggerV`, `pixelPatternOffsetPs` |
+| 07 | `07_line_clock_during_a_scan.py` | Runs the configured scan **with the FLIM detector deselected** (so no scan hold is taken) while counting line edges and measuring the period: edges = Ny (and *only* Ny when S > 1 — gap 4 made visible), period = line + flyback; jitter; design-vs-measured table. The line trigger level is swept **between** runs inside a `calibrationTransaction`; the chosen value is temporary until `APPLY = True` writes it to the block. | `Counter`, `TimeDifferences`, `setTriggerLevel`, `loadScanParamsFromFile` | `lineClockTriggerV` |
+| 08 | `08_frame_clock_and_pixel_markers.py` | Frame trigger sweep between runs (as in 07); signed frame→line skew via a known added line delay (§3.2; design 0; assert |skew| < `pixelPatternOffsetPs`); build the detector's pixel pattern; check the last pixel end lands before the next line edge; `Scope` trace of frame/line/pixel-begin for one line; **last-frame-closes check**: `getFramesAcquired()` reaches baseline + 1 whether the last pixel ends before or after scan-done. | `Histogram`, `Scope`, `EventGenerator`, `Flim` | `frameClockTriggerV`, `pixelPatternOffsetPs` |
 | 09 | `09_line_delay_alignment.py` | Run a scan; compare the TimeTagger intensity image with the known truth: on the mock, the sample map (with an injected `line_delay_ps` fault); on the rig, the APD image (the mock APD is spatially constant). Cross-correlate → pixels → ps → `lineClockDelayPs`; apply; re-run; shift → 0. Starts from `phase_delay × scan_time_step`. | pattern offset / `setInputDelay`, Flim intensity | `lineClockDelayPs` |
 | 10 | `10_flim_preflight.py` | Runs `tt.preflight()`: rep rate matches config (by procedure), window spans a period (hard in reverse), no overflows in 2 s, pile-up max < 5 %, background fraction, line edges = Ny, frame leads pixel 0 by the offset, direction consistent with filter, last frame closes. The same checklist the Signals panel shows. | all | — |
 | 11 | `11_binned_photon_arrivals.py` | (existing, re-headed) | `Flim` cube | — |
@@ -603,7 +645,12 @@ setup uses it).
 - The detector lease is the WORKFLOW lease the workflow's `acquisition_lease`
   already takes; the controller takes no second one. RECORDING and WORKFLOW
   leases coexist by design, so the widget does not refuse Run during a
-  recording.
+  recording. **Product capture is a session with an owner** (external
+  review, item 1): the workflow opens it with a run token at configure, a
+  second run that overlaps is refused at configure — before it touches the
+  scan — and `clear(token)` from anyone but the owner is a no-op, so the
+  widget's Run and a script's workflow cannot reconfigure or clean up under
+  each other. Tested with two overlapping workflows.
 - State persisted (gates, presets, mode, display options, accumulate N) via
   `StatefulComponentMixin`. Device conditioning is setup-file state, never
   widget state (never restore hardware-active state).
@@ -870,6 +917,47 @@ FWHM, fallback 1.5 ns**.
 ---
 
 ## 15. Review log
+
+### External review 1 → revision 4 (during implementation)
+
+Eight items, reviewed against the repository and the vendor documentation.
+Dispositions:
+
+1. **Product configuration needs exclusive ownership** — done in P1c:
+   `configureTimeResolvedProducts(config, owner)` returns a session token,
+   a second owner is refused, `clear(owner)` is owner-specific, the workflow
+   uses a run token; `TimeResolvedDetectorFacade` and the mock facade pass
+   it through. Test: two overlapping workflows (§5.2).
+2. **Final-frame detection must accept an already-completed frame** — P3
+   text corrected (§3.2): baseline at arming, wait for baseline + expected
+   count, both orders tested; `finish_after_outputframe` no longer claimed
+   as a fallback.
+3. **The hold ends too early; calibration must exclude scans** — the P1b
+   code already released the hold at the final-frame acknowledgement, not
+   at scan-done; §3.1 now says so. `calibrationTransaction(owner)` added in
+   P1c: refused under a scan hold, refuses `beginScanHold` while open,
+   owner-only conditioning, released on any exception. Tested.
+4. **Reverse mode needs a model-specific delay policy** — §3.2 gating added:
+   reverse mode is experimental until the rig acceptance test in tutorial 05
+   passes on a stated SDK version; delay policy stated (software delay only
+   on the photon channel in forward mode, none on filtered channels in
+   reverse, never `setDelayHardware`); the mock proves the software path
+   only.
+5. **Overflow accounting needs a single owner** — done in P1c:
+   `TimeTaggerManager.overflows()` is the one reader of the read-and-clear
+   counter and keeps a monotonic total; the detector's frame validity and
+   the health look each keep a baseline. Test: a health read between an
+   overflow and frame finalisation.
+6. **The skew measurement cannot establish signed skew** — §3.2 / tutorial
+   08 corrected: a known added line delay, subtracted afterwards, both signs
+   tested.
+7. **Trigger-sweep tutorials contradict the scan hold** — tutorials 07/08
+   now run the scan with the FLIM detector deselected (no hold is taken)
+   and sweep thresholds between runs inside a calibration transaction;
+   temporary settings vs `APPLY = True` persisted settings distinguished.
+8. **Changing the gate default silently changes existing scripts** — done:
+   the default stays `'absolute'`; `'peak'` is requested explicitly by new
+   presets and the widget.
 
 ### Round 2 → revision 3
 

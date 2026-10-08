@@ -3,6 +3,20 @@
   "additionalProperties": true,
   "description": "This manager hands its whole managerProperties dict to a driver; the driver's own keys are not listed here.",
   "properties": {
+    "background_rate_hz": {
+      "description": "Dark counts plus afterpulsing of the photon detector, in Hz, measured with the laser blocked. Flat over the laser period, it is subtracted from every pixel's histogram before fitting or gating (it pulls the moment towards half the period and the phasor towards the origin). ``0`` = no subtraction. Also a runtime parameter.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
     "binwidth_ps": {
       "description": "Histogram bin width in picoseconds.",
       "type": [
@@ -25,15 +39,11 @@
     },
     "click_channel": {
       "description": "The photon input, read only when the setup has no ``timeTagger`` block (a negative number selects the falling edge). With the block it is ignored, with a log line naming it.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:int()",
-        "code:required"
+        "code:optional(get)",
+        "docs:integer"
       ]
     },
     "click_role": {
@@ -89,15 +99,11 @@
     },
     "line_channel": {
       "description": "The line-clock input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:int()",
-        "code:required"
+        "code:optional(get)",
+        "docs:integer"
       ]
     },
     "line_role": {
@@ -146,15 +152,11 @@
     },
     "start_channel": {
       "description": "The laser-sync input, read only without a ``timeTagger`` block.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:int()",
-        "code:required"
+        "code:optional(get)",
+        "docs:integer"
       ]
     },
     "start_role": {
@@ -201,11 +203,6 @@
       ]
     }
   },
-  "required": [
-    "click_channel",
-    "line_channel",
-    "start_channel"
-  ],
   "title": "SwabianTimeTaggerManager managerProperties",
   "type": "object",
   "x-imswitch-classes": [

@@ -21,9 +21,13 @@ the card, so the FLIM detector builds its own ``Flim`` through ``api`` and
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
+
+from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.SetupInfo import TimeTaggerInfo
 
@@ -76,18 +80,62 @@ class ChannelInfo:
         return "falling" if self.channel < 0 else "rising"
 
 
-class TimeTaggerManager:
+@dataclass(frozen=True)
+class TimeTaggerHealth:
+    """One look at the card: what every role is counting, right now."""
+
+    rates_hz: Dict[str, float]
+    """ Counts per second per role (the sync's, with the filter on, is the
+    photon rate by construction: see ``sync_rate_label``). """
+    overflows: int
+    """ USB overflows since the previous look; any number above zero means
+    frames read meanwhile are missing tags. """
+    tcspc_direction: str
+    filter_on: bool
+    sync_rate_label: str
+    """ ``"sync"`` or ``"sync (filtered)"``. """
+    model: str
+    serial: str
+    is_mock: bool
+    connected: bool
+    sampled_at: float
+    """ ``time.monotonic()`` of the look. """
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rates_hz": dict(self.rates_hz),
+            "overflows": int(self.overflows),
+            "tcspc_direction": self.tcspc_direction,
+            "filter_on": bool(self.filter_on),
+            "sync_rate_label": self.sync_rate_label,
+            "model": self.model,
+            "serial": self.serial,
+            "is_mock": bool(self.is_mock),
+            "connected": bool(self.connected),
+        }
+
+
+class TimeTaggerManager(SignalInterface):
     """See the module docstring.
 
     ``setupInfo`` and ``nidaqManager`` are optional so a detector can build a
     private instance from its own properties (the compatibility path for
     setups without a ``timeTagger`` block) and so tests can construct one
     bare. With a ``nidaqManager``, the mock fallback is honoured only while
-    the NI-DAQ is simulated too.
+    the NI-DAQ is simulated too, and the mock card is fed the scan's line
+    and frame edges from every scan the NI-DAQ builds.
     """
+
+    #: A ``TimeTaggerHealth``, from the background sampler (off unless
+    #: ``startHealthSampling`` is called) or from ``health()``.
+    sigHealth = Signal(object)
+
+    #: How long one health look integrates the count rates.
+    HEALTH_INTEGRATION_S = 0.2
 
     def __init__(self, info: TimeTaggerInfo, setupInfo=None, nidaqManager=None,
                  api=None):
+        super().__init__()
         self.__logger = initLogger(self)
         self._info = info
         self._setupInfo = setupInfo
@@ -98,7 +146,16 @@ class TimeTaggerManager:
         self._connectError: Optional[Exception] = None
         self._lock = threading.RLock()
         self._holders: set = set()
+        self._calibrationOwner: Optional[str] = None
+        #: Monotonic USB-overflow total. The card's counter is read-and-clear,
+        #: so exactly one place reads it; everyone else takes snapshots.
+        self._overflowTotal = 0
+        self._healthOverflowSeen = 0
         self._finalized = False
+
+        self._samplerThread: Optional[threading.Thread] = None
+        self._samplerStop = threading.Event()
+        self._lastHealth: Optional[TimeTaggerHealth] = None
 
         self._channels: Dict[str, ChannelInfo] = {}
         for role, (chField, trigField, deadField, delayField) in ROLE_FIELDS.items():
@@ -114,6 +171,13 @@ class TimeTaggerManager:
             )
 
         self.connect()
+
+        scanBuilt = getattr(nidaqManager, "sigScanBuilt", None)
+        if scanBuilt is not None and hasattr(scanBuilt, "connect"):
+            # Connected before any detector's own slot (the detectors are
+            # built after the low-level managers), so the mock card knows
+            # the scan's edges before a Flim is built on it.
+            scanBuilt.connect(self._onScanBuilt)
 
     # ------------------------------------------------------------------ #
     # Connection                                                           #
@@ -197,12 +261,49 @@ class TimeTaggerManager:
         self._connectError = error
         return False
 
-    @staticmethod
-    def _mockApi():
+    def _mockApi(self):
         from imswitch.imcontrol.model.interfaces.timetagger_mock import (
             MockTimeTaggerApi,
         )
-        return MockTimeTaggerApi()
+        return MockTimeTaggerApi.from_info(self._info)
+
+    # ------------------------------------------------------------------ #
+    # Feeding the mock the scan's edges                                    #
+    # ------------------------------------------------------------------ #
+
+    def _onScanBuilt(self, scanInfoDict, signalDict, _devices=None):
+        """Hand the designed line/frame clocks to the mock card as edge
+        timestamps. A real card sees the real cables; nothing to do."""
+        if not self._isMock or self._tagger is None:
+            return
+        loader = getattr(self._tagger, "load_scan_edges", None)
+        if loader is None:
+            return
+        try:
+            ttl = (signalDict or {}).get("TTLCycleSignalsDict", {}) or {}
+            sampleRate = float(
+                getattr(getattr(self._setupInfo, "scan", None), "sampleRate", 0) or 0
+            )
+            if sampleRate <= 0:
+                sampleRate = float((scanInfoDict or {}).get("sample_rate", 0) or 0)
+            if sampleRate <= 0:
+                return
+            edges = {}
+            samplesTotal = 0
+            for role, key in (("line_clock", "line_clock"),
+                              ("frame_clock", "frame_start_clock")):
+                if not self.hasRole(role):
+                    continue
+                wave = ttl.get(key)
+                if wave is None:
+                    continue
+                wave = np.asarray(wave).astype(np.int8, copy=False)
+                samplesTotal = max(samplesTotal, int(wave.size))
+                rising = np.flatnonzero(np.diff(wave, prepend=0) == 1)
+                edges[abs(self.channel(role))] = (rising / sampleRate * 1e12).astype(np.int64)
+            loader(edges, samplesTotal / sampleRate)
+        except Exception:
+            self.__logger.exception("Could not feed the scan's edges to the mock card")
 
     def ensureConnected(self):
         """Raise ``TimeTaggerError`` unless the card is open (retrying once)."""
@@ -305,17 +406,23 @@ class TimeTaggerManager:
                 filtered=[self.channel("laser_sync")],
             )
 
-    def _checkWritable(self, what: str):
+    def _checkWritable(self, what: str, owner: Optional[str] = None):
         if self._holders:
             holders = ", ".join(sorted(self._holders))
             raise TimeTaggerBusyError(
                 f"Cannot change the Time Tagger {what} while a scan holds the "
                 f"card ({holders}); wait for the scan to end."
             )
+        if self._calibrationOwner is not None and owner != self._calibrationOwner:
+            raise TimeTaggerBusyError(
+                f"Cannot change the Time Tagger {what}: a calibration "
+                f"({self._calibrationOwner}) owns the card's conditioning."
+            )
 
-    def setTriggerLevel(self, role: str, voltage: float) -> None:
+    def setTriggerLevel(self, role: str, voltage: float, *,
+                        owner: Optional[str] = None) -> None:
         with self._lock:
-            self._checkWritable("trigger level")
+            self._checkWritable("trigger level", owner)
             info = self.channelInfo(role)
             self.tagger.setTriggerLevel(info.channel, float(voltage))
             self._channels[role] = ChannelInfo(
@@ -323,9 +430,10 @@ class TimeTaggerManager:
                 info.deadtime_ps, info.delay_ps,
             )
 
-    def setDelay(self, role: str, delay_ps: int) -> None:
+    def setDelay(self, role: str, delay_ps: int, *,
+                 owner: Optional[str] = None) -> None:
         with self._lock:
-            self._checkWritable("input delay")
+            self._checkWritable("input delay", owner)
             info = self.channelInfo(role)
             self.tagger.setInputDelay(info.channel, int(delay_ps))
             self._channels[role] = ChannelInfo(
@@ -333,9 +441,10 @@ class TimeTaggerManager:
                 info.deadtime_ps, int(delay_ps),
             )
 
-    def setDeadtime(self, role: str, deadtime_ps: int) -> None:
+    def setDeadtime(self, role: str, deadtime_ps: int, *,
+                    owner: Optional[str] = None) -> None:
         with self._lock:
-            self._checkWritable("dead time")
+            self._checkWritable("dead time", owner)
             info = self.channelInfo(role)
             self.tagger.setDeadtime(info.channel, int(deadtime_ps))
             self._channels[role] = ChannelInfo(
@@ -348,8 +457,20 @@ class TimeTaggerManager:
     # ------------------------------------------------------------------ #
 
     def beginScanHold(self, owner: str) -> None:
-        """A detector is about to acquire: refuse conditioning until released."""
+        """A detector is about to acquire: refuse conditioning until released.
+
+        Held from scan preparation until the detector has drained its final
+        frame (or torn down), not until scan-done. Refused while a
+        calibration transaction owns the card: a scan must not start on
+        temporary settings.
+        """
         with self._lock:
+            if self._calibrationOwner is not None:
+                raise TimeTaggerBusyError(
+                    f"The Time Tagger is held by a calibration "
+                    f"({self._calibrationOwner}); the scan cannot start until "
+                    f"it is finished."
+                )
             self._holders.add(str(owner))
 
     def endScanHold(self, owner: str) -> None:
@@ -359,6 +480,162 @@ class TimeTaggerManager:
     @property
     def scanHeld(self) -> bool:
         return bool(self._holders)
+
+    @property
+    def calibrationOwner(self) -> Optional[str]:
+        return self._calibrationOwner
+
+    def calibrationTransaction(self, owner: str):
+        """Own the card's conditioning for a calibration, exclusively.
+
+        While the context is held no scan can take a hold (preparation is
+        refused and rolled back), and only the owner may change trigger
+        levels, delays or dead times -- ``rep_rate()``'s temporary divider
+        and filter changes live inside one of these. Refused while a scan
+        holds the card. Always released, also when the body raises or the
+        script is cancelled (``OperationCancelled`` is a ``BaseException``).
+        """
+        manager = self
+
+        class _Transaction:
+            def __enter__(self_):
+                with manager._lock:
+                    if manager._holders:
+                        holders = ", ".join(sorted(manager._holders))
+                        raise TimeTaggerBusyError(
+                            f"Cannot calibrate the Time Tagger while a scan "
+                            f"holds the card ({holders})."
+                        )
+                    if manager._calibrationOwner is not None:
+                        raise TimeTaggerBusyError(
+                            f"Another calibration ({manager._calibrationOwner}) "
+                            f"owns the Time Tagger."
+                        )
+                    manager._calibrationOwner = str(owner)
+                return manager
+
+            def __exit__(self_, *exc):
+                with manager._lock:
+                    if manager._calibrationOwner == str(owner):
+                        manager._calibrationOwner = None
+                return False
+
+        return _Transaction()
+
+    # ------------------------------------------------------------------ #
+    # Overflows                                                            #
+    # ------------------------------------------------------------------ #
+
+    def overflows(self) -> int:
+        """The monotonic USB-overflow total, after polling the card once.
+
+        The card's own counter is read-and-clear, so this is the one place
+        that reads it. Consumers (a frame's validity, the health strip)
+        keep their own baseline and compare: one consumer can never hide an
+        overflow from another.
+        """
+        with self._lock:
+            tagger = self._tagger
+            if tagger is not None:
+                try:
+                    self._overflowTotal += int(tagger.getOverflowsAndClear())
+                except Exception:
+                    self.__logger.exception("Could not read the overflow counter")
+            return self._overflowTotal
+
+    # ------------------------------------------------------------------ #
+    # Health                                                               #
+    # ------------------------------------------------------------------ #
+
+    def health(self, integration_s: Optional[float] = None) -> TimeTaggerHealth:
+        """One look at every role's count rate and the overflow counter.
+
+        Blocks for ``integration_s`` (default ``HEALTH_INTEGRATION_S``) on a
+        real card; call it from a worker thread, never from a GUI slot.
+        """
+        integration = float(integration_s if integration_s is not None
+                            else self.HEALTH_INTEGRATION_S)
+        connected = self.connected
+        rates: Dict[str, float] = {}
+        overflows = 0
+        if connected:
+            api, tagger = self._api, self._tagger
+            roles = list(self._channels)
+            try:
+                rate = api.Countrate(tagger, [self._channels[r].channel for r in roles])
+                rate.startFor(int(max(0.001, integration) * 1e12))
+                rate.waitUntilFinished()
+                data = np.asarray(rate.getData(), dtype=np.float64)
+                rates = {r: float(v) for r, v in zip(roles, data)}
+            except Exception:
+                self.__logger.exception("Health sample failed")
+            total = self.overflows()
+            overflows = total - self._healthOverflowSeen
+            self._healthOverflowSeen = total
+        filterOn = bool(self._info.filterSyncByPhotons)
+        health = TimeTaggerHealth(
+            rates_hz=rates,
+            overflows=overflows,
+            tcspc_direction=self.tcspcDirection,
+            filter_on=filterOn,
+            sync_rate_label="sync (filtered)" if filterOn else "sync",
+            model=self.model,
+            serial=self.serial,
+            is_mock=self._isMock,
+            connected=connected,
+            sampled_at=time.monotonic(),
+        )
+        self._lastHealth = health
+        return health
+
+    @property
+    def lastHealth(self) -> Optional[TimeTaggerHealth]:
+        return self._lastHealth
+
+    def startHealthSampling(self, period_s: float = 2.0, callback=None) -> None:
+        """Sample ``health()`` every ``period_s`` from a background thread.
+
+        Each sample is emitted on ``sigHealth`` (a queued Qt signal: a GUI
+        consumer receives it on its own thread through the event loop) and
+        handed to ``callback`` on the sampler thread itself, for consumers
+        without an event loop. Off by default (and in tests): a widget that
+        wants a live strip turns it on; ``finalize`` and
+        ``stopHealthSampling`` join it.
+        """
+        with self._lock:
+            if self._samplerThread is not None and self._samplerThread.is_alive():
+                return
+            self._samplerStop.clear()
+            thread = threading.Thread(
+                target=self._sampleLoop,
+                args=(max(0.05, float(period_s)), callback),
+                name="TimeTaggerHealth", daemon=True,
+            )
+            self._samplerThread = thread
+            thread.start()
+
+    def _sampleLoop(self, period_s: float, callback) -> None:
+        while not self._samplerStop.is_set():
+            try:
+                look = self.health()
+                self.sigHealth.emit(look)
+                if callback is not None:
+                    callback(look)
+            except Exception:
+                self.__logger.exception("Health sampler failed")
+            self._samplerStop.wait(period_s)
+
+    def stopHealthSampling(self, timeout_s: float = 2.0) -> bool:
+        """Stop the sampler and wait for it. Returns whether it is gone."""
+        thread = self._samplerThread
+        self._samplerStop.set()
+        if thread is None:
+            return True
+        thread.join(timeout_s)
+        alive = thread.is_alive()
+        if not alive:
+            self._samplerThread = None
+        return not alive
 
     # ------------------------------------------------------------------ #
     # Metadata, lifecycle                                                  #
@@ -386,7 +663,13 @@ class TimeTaggerManager:
         }
 
     def finalize(self) -> bool:
-        """Free the card. Idempotent; a failure is logged and reported."""
+        """Free the card. Idempotent; a failure is logged and reported.
+
+        The health sampler is stopped first: nothing may still be reading
+        the card when it is freed."""
+        if not self.stopHealthSampling():
+            self.__logger.error("Health sampler did not stop; not freeing the card")
+            return False
         with self._lock:
             self._finalized = True
             tagger, api = self._tagger, self._api
@@ -403,6 +686,7 @@ class TimeTaggerManager:
 
 __all__ = [
     "ChannelInfo",
+    "TimeTaggerHealth",
     "ROLES",
     "ROLE_FIELDS",
     "TimeTaggerBusyError",

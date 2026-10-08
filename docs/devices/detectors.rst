@@ -629,6 +629,10 @@ consumer needs it.
      - float
      - ``80.0``
      - Laser repetition rate in MHz.  Used by the phasor fit to set ω = 2π·f_rep.  The Swabian ``Flim`` API does not expose the rate, so it must be supplied here; measure it once with ``scripts/diagnostics/measure_laser_rep_rate.py`` if unsure.
+   * - ``background_rate_hz``
+     - float
+     - ``0.0``
+     - Dark counts plus afterpulsing of the photon detector, in Hz, measured with the laser blocked. Flat over the laser period, it is subtracted from every pixel's histogram before fitting or gating (it pulls the moment towards half the period and the phasor towards the origin). ``0`` = no subtraction. Also a runtime parameter.
    * - ``enabled``
      - bool
      - ``true``
@@ -667,6 +671,38 @@ configuration: they show the card's current trigger levels for the chosen
 roles and write a new value through to the card. A write is refused, with a
 log line, while a scan holds the card, and the parameter then shows the
 card's real value again.
+
+**TCSPC direction**
+
+With ``filterSyncByPhotons`` off in the ``timeTagger`` block (the default)
+the histogram runs *forward*: the laser sync starts it and the photon stops
+it, and ``t0_ps`` is applied as a delay on the photon channel. With the
+card's conditional filter on, only the first sync after each photon reaches
+the PC, so the histogram must run in *reverse*: the photon starts it and
+the sync stops it. The detector swaps the ``Flim`` channels, mirrors the
+time axis on the laser period so every fit, gate and plot still reads
+forward time, applies ``t0_ps`` as a circular roll (a delay on the photon
+channel would drop the earliest photons here), and refuses to prepare a
+scan whose window is shorter than one laser period, because in reverse
+mode a short window cuts the *peak* off, not the tail. Reverse mode is
+pending an acceptance test on a real card (the Lifetime 2.0 plan, §3.2):
+the vendor documents that filtered and compensated timestamps can be
+reordered on some models, which the mock does not reproduce.
+
+**Live products and frame validity**
+
+Every frame the worker publishes (a preview each second, then the final
+one) is also emitted as a ``LiveProducts`` on the detector's
+``sigTimeResolvedProducts`` signal: intensity, lifetime, the aggregated
+decay in forward time, the gate images of the open product session, the
+peak position, the background per bin, the worst per-pixel pile-up
+fraction, and metadata. It never carries the per-pixel cube. The pile-up
+fraction (photons per excitation pulse, from the *configured* rep rate) is
+warned about above 5 %. USB overflows are counted by the card manager
+against a baseline taken when the scan was prepared; a frame read after
+the count moved carries ``overflows`` and ``frame_valid: false`` in its
+metadata, with an error in the log, and its lifetimes are not to be
+trusted.
 
 **Lifetime fitting**
 
@@ -757,10 +793,13 @@ the whole scan is rolled back before it starts. To keep the detector in a
 setup that has no FLIM hardware, set ``"enabled": false`` — or, on a
 simulated rig (``nidaq.simulation`` true), set ``"simulation": true`` in
 the ``timeTagger`` block to use the in-process mock card
-(``imswitch.imcontrol.model.interfaces.timetagger_mock``). The mock
-currently counts (rates, test signal, conditioning) and completes scans
-with an empty histogram; a photon and scan-edge signal model follows in the
-next Lifetime 2.0 phase. ``useMockOnFailure`` falls back to the mock when
+(``imswitch.imcontrol.model.interfaces.timetagger_mock``). The mock card
+images a synthetic sample (``timeTagger.mockSample``) through a Poisson
+TCSPC model with an IRF, dark counts and afterpulsing, takes its line and
+frame edges from the scan designer's own TTL waveforms, and reproduces
+trigger levels, dead time, the card's tag budget (overflows) and the
+conditional filter; ``timeTagger.mockFaults`` breaks the signal on purpose
+for the debugging tutorials. ``useMockOnFailure`` falls back to the mock when
 the card cannot be opened, but only while the NI-DAQ is simulated too: a
 rig never images a missing card as zeros.
 

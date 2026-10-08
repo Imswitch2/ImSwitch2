@@ -11,11 +11,18 @@ from imswitch.imcontrol.model.managers.TimeTaggerManager import (
     ROLES, TimeTaggerBusyError, TimeTaggerError, TimeTaggerManager,
 )
 from imswitch.imcontrol.model.timeresolved import (
+    PILEUP_WARN,
+    LiveProducts,
     TimeResolvedDetectorMixin,
     TimeResolvedScanConfig,
     TimeResolvedScanProducts,
+    background_per_bin,
     compute_gate_images,
     copy_time_resolved_products,
+    orient_cube,
+    pileup_fraction,
+    roll_to_peak,
+    subtract_background,
 )
 from imswitch.imcontrol.model.timeresolved.fitting import (
     fit_exp1, fit_moment, fit_phasor,
@@ -48,6 +55,10 @@ def histogram_bins_for_period(binwidth_ps, laser_rep_rate_mhz) -> int:
 
 
 class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
+    #: ``LiveProducts`` for every frame the worker publishes (previews and the
+    #: final frame), emitted on the manager's thread; never carries the cube.
+    sigTimeResolvedProducts = Signal(object)
+
     """
     TimeTagger FLIM detector. Returns fitted fluorescence lifetime per pixel.
 
@@ -131,6 +142,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._t0_ps = int(props.get('t0_ps', 0))
         self._min_counts_per_pixel = int(props.get('min_counts_per_pixel', 20))
         self._fit_method = str(props.get('fit_method', 'moment'))
+        # Dark counts and afterpulsing of the photon detector, flat over the
+        # laser period: measured with the laser blocked and subtracted from
+        # every pixel's histogram before fitting. 0 = no subtraction.
+        self._background_rate_hz = float(props.get('background_rate_hz', 0.0))
         self._warnIfWindowTruncatesTheDecay()
         self._accumulate_mode = False
         self._accum_sum: np.ndarray | None = None    # (Ny, Nx) float64, sum of valid lifetimes
@@ -189,6 +204,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             'laser_rep_rate_mhz': DetectorNumberParameter(
                 group='Fitting', value=self._laser_rep_rate_mhz,
                 valueUnits='MHz', editable=True),
+            # --- Background ---
+            'background_rate_hz': DetectorNumberParameter(
+                group='Background', value=self._background_rate_hz,
+                valueUnits='Hz', editable=True),
             # --- Accumulation ---
             'accumulate_mode': DetectorListParameter(
                 group='Accumulation', value='off',
@@ -233,6 +252,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
         self._tr_config = TimeResolvedScanConfig()
         self._tr_enabled = False
+        self._tr_owner: str | None = None
+        self._frame_index = -1
         self._tr_last_products: TimeResolvedScanProducts | None = None
         self._tr_final_event = threading.Event()
         self._tr_lock = threading.Lock()
@@ -294,6 +315,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         elif name == 'laser_rep_rate_mhz':
             self._laser_rep_rate_mhz = float(value)
             self._warnIfWindowTruncatesTheDecay()
+        elif name == 'background_rate_hz':
+            self._background_rate_hz = max(0.0, float(value))
         elif name == 'accumulate_mode':
             self._accumulate_mode = (str(value).lower() == 'on')
             if not self._accumulate_mode:
@@ -308,10 +331,21 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     def _buildPrivateTimeTagger(self, props, nidaqManager):
         """Compatibility: no ``timeTagger`` block, channels on the detector."""
         tl = props.get('trigger_levels', {}) or {}
+        # Optional in the schema (a setup with a timeTagger block has none
+        # of them), required here: without the block they are the card.
+        click_channel = props.get('click_channel')
+        start_channel = props.get('start_channel')
+        line_channel = props.get('line_channel')
+        if click_channel is None or start_channel is None or line_channel is None:
+            raise ValueError(
+                f'{self._instanceName}: without a top-level "timeTagger" block, '
+                f'click_channel, start_channel and line_channel are required '
+                f'in managerProperties'
+            )
         # Resolved again from the roles once the card exists.
-        self._click_ch = int(props['click_channel'])
-        self._start_ch = int(props['start_channel'])
-        self._line_ch = int(props['line_channel'])
+        self._click_ch = int(click_channel)
+        self._start_ch = int(start_channel)
+        self._line_ch = int(line_channel)
         info = TimeTaggerInfo(
             photonsChannel=self._click_ch,
             photonsTriggerV=float(
@@ -556,6 +590,25 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 f'Estimated samples_per_pixel ~= {pixel_period_s / scan_time_step:.3f}'
             )
 
+        tt = self._timeTagger
+        direction = tt.tcspcDirection
+        period_ps = 1e6 / max(1e-9, float(self._laser_rep_rate_mhz))
+        window_ps = self._n_bins * self._binwidth_ps
+        if direction == 'reverse' and window_ps < period_ps:
+            # Reverse mode (the card's conditional filter: start = photon,
+            # click = sync) measures t' = T_rep - t, so the earliest photons
+            # sit at the END of the window. A window shorter than the period
+            # cuts the peak off, not the tail -- a hard refusal, not a warning.
+            raise RuntimeError(
+                f'TCSPC window {window_ps / 1000:.2f} ns ({self._n_bins} bins x '
+                f'{self._binwidth_ps} ps) is shorter than the {period_ps / 1000:.2f} '
+                f'ns laser period at {self._laser_rep_rate_mhz:g} MHz. In reverse '
+                f'mode (filterSyncByPhotons) the window must span at least one '
+                f'period: declare n_bins >= '
+                f'{histogram_bins_for_period(self._binwidth_ps, self._laser_rep_rate_mhz)} '
+                f'or leave it undeclared.'
+            )
+
         self._scan = dict(
             Nx=Nx, Ny=Ny,
             n_pixels_total=Nx * Ny,
@@ -564,11 +617,13 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             # share a timestamp, TimeTagger's edge ordering can drop or
             # reorder the end edge — Flim's pixel index then stalls mid-line.
             pixel_width_ps=pixel_period_ps - 1,
+            dwell_s=pixel_period_s,
+            direction=direction,
+            period_ps=period_ps,
             scan_info=dict(scanInfoDict),
         )
         self._shape = (Ny, Nx)
 
-        tt = self._timeTagger
         try:
             tt.ensureConnected()
         except TimeTaggerError as error:
@@ -579,19 +634,36 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         # Conditioning (trigger levels, dead times, delays, the filter) is
         # the card manager's and was applied at connect; from here until the
         # final frame has landed the card is held so nothing changes it.
-        tt.beginScanHold(self.name)
         try:
-            # Shift click-channel timestamps so the IRF peak lands at t=0.
-            # A negative delay moves photon timestamps earlier by t0_ps,
-            # placing the IRF peak at histogram bin 0.
-            tt.tagger.setInputDelay(self._click_ch, -self._t0_ps)
+            tt.beginScanHold(self.name)
+        except TimeTaggerBusyError as error:
+            with self._flim_lock:
+                self._flim = None
+            raise RuntimeError(str(error)) from error
+        # Overflows are counted against this baseline: any frame of this scan
+        # read after the total has moved is missing tags.
+        self._scan['overflow_baseline'] = tt.overflows()
+        try:
+            if direction == 'forward':
+                # Shift click-channel timestamps so the IRF peak lands at
+                # t=0. A negative delay moves photon timestamps earlier by
+                # t0_ps, placing the IRF peak at histogram bin 0.
+                tt.tagger.setInputDelay(self._click_ch, -self._t0_ps)
+                flim_start, flim_click = self._start_ch, self._click_ch
+            else:
+                # Reverse: the photon starts the histogram and the sync stops
+                # it. A delay on the photon channel would drop the earliest
+                # photons here (they would land after their chosen sync), so
+                # t0 is applied as a circular roll in the worker instead.
+                tt.tagger.setInputDelay(self._click_ch, 0)
+                flim_start, flim_click = self._click_ch, self._start_ch
 
             self._create_virtual_pixel_pulses()
             with self._flim_lock:
                 self._flim = tt.api.Flim(
                     tt.tagger,
-                    start_channel=self._start_ch,
-                    click_channel=self._click_ch,
+                    start_channel=flim_start,
+                    click_channel=flim_click,
                     pixel_begin_channel=self._ev_pix_begin.getChannel(),
                     pixel_end_channel=self._ev_pix_end.getChannel(),
                     n_pixels=int(self._scan['n_pixels_total']),
@@ -616,7 +688,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._logger.info(
             f'TimeTagger prepared: click={self._click_ch}@{self._click_trigger}V, '
             f'start={self._start_ch}@{self._start_trigger}V, '
-            f'line={self._line_ch}@{self._line_trigger}V, n_bins={self._n_bins}, '
+            f'line={self._line_ch}@{self._line_trigger}V, {direction} TCSPC, '
+            f'n_bins={self._n_bins}, '
             f'binwidth={self._binwidth_ps}ps, fit={self._fit_method}, '
             f'Nx={Nx}, Ny={Ny}, pixel_period={pixel_period_ps}ps, '
             f'scan_time={tot_scan_time_s:.3f}s '
@@ -913,7 +986,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
     def _on_frame_ready(self, intensity_img, lifetime_img, is_final: bool,
                         decay_counts, t_axis_ns, global_tau_ns: float,
-                        scanGeneration=None):
+                        scanGeneration=None, live=None):
         if scanGeneration is None:
             scanGeneration = self._activeScanGeneration
         if (scanGeneration is not None
@@ -930,6 +1003,14 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._last_decay_counts = decay_counts
         self._last_t_axis_ns = t_axis_ns
         self._last_global_tau_ns = float(global_tau_ns)
+        if is_final:
+            self._frame_index += 1
+        if live is not None:
+            live.frame_index = self._frame_index + (0 if is_final else 1)
+            # Queued from the worker and re-emitted here, on the manager's
+            # thread, so a consumer never sees a frame out of order with the
+            # display frame it belongs to.
+            self.sigTimeResolvedProducts.emit(live)
 
         if self._accumulate_mode:
             if is_final:
@@ -984,7 +1065,18 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             "model": "Time Tagger",
         }
 
-    def configureTimeResolvedProducts(self, config: TimeResolvedScanConfig) -> None:
+    def configureTimeResolvedProducts(
+        self,
+        config: TimeResolvedScanConfig,
+        owner: str | None = None,
+    ) -> str | None:
+        with self._tr_lock:
+            current = self._tr_owner
+            if self._tr_enabled and current is not None and current != owner:
+                raise RuntimeError(
+                    f"{self.name}: time-resolved products are owned by another "
+                    f"run ({current}); wait for it to finish or clear its session"
+                )
         if not isinstance(config, TimeResolvedScanConfig):
             config = TimeResolvedScanConfig(
                 capture_cube=bool(getattr(config, "capture_cube", False)),
@@ -1008,13 +1100,27 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         with self._tr_lock:
             self._tr_config = config
             self._tr_enabled = True
+            self._tr_owner = owner
             self._tr_last_products = None
             self._tr_final_event.clear()
+        return owner
+
+    def timeResolvedSessionOwner(self) -> str | None:
+        with self._tr_lock:
+            return self._tr_owner if self._tr_enabled else None
 
     def waitForFinalTimeResolvedProducts(
         self,
         timeout_s: float | None = None,
+        owner: str | None = None,
     ) -> TimeResolvedScanProducts:
+        with self._tr_lock:
+            current = self._tr_owner
+        if owner is not None and current is not None and current != owner:
+            raise RuntimeError(
+                f"{self.name}: time-resolved products are owned by another "
+                f"run ({current})"
+            )
         if not self._tr_final_event.wait(timeout=timeout_s):
             raise TimeoutError("Timed out waiting for final time-resolved products")
         products = self.getLastTimeResolvedProducts(copy=True)
@@ -1033,10 +1139,20 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 return copy_time_resolved_products(products)
             return products
 
-    def clearTimeResolvedProducts(self) -> None:
+    def clearTimeResolvedProducts(self, owner: str | None = None) -> None:
         with self._tr_lock:
+            current = self._tr_owner
+            if self._tr_enabled and current is not None and current != owner:
+                # Another run's session: its own cleanup will clear it. A
+                # caller without a token never wipes an owned session.
+                self._logger.debug(
+                    f"clearTimeResolvedProducts({owner!r}) ignored: the session "
+                    f"is owned by {current!r}"
+                )
+                return
             self._tr_config = TimeResolvedScanConfig()
             self._tr_enabled = False
+            self._tr_owner = None
             self._tr_last_products = None
             self._tr_final_event.clear()
 
@@ -1052,6 +1168,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         peak_bin: int,
         peak_time_ns: float,
         is_final: bool,
+        extra_metadata: dict | None = None,
     ) -> None:
         with self._tr_lock:
             if not self._tr_enabled:
@@ -1064,10 +1181,13 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             cube_for_storage = (
                 np.array(cube_counts, copy=True) if config.capture_cube else None
             )
-            gate_images = compute_gate_images(cube_counts, t_axis_ns, config.gates)
+            gate_images = compute_gate_images(
+                cube_counts, t_axis_ns, config.gates, peak_time_ns=peak_time_ns
+            )
             metadata = {
                 "detector_name": self.name,
                 "backend": "SwabianTimeTaggerManager",
+                **(extra_metadata or {}),
                 "time_tagger": self._timeTagger.metadata(),
                 "click_role": self._click_role,
                 "start_role": self._start_role,
@@ -1280,8 +1400,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
 class _TTFlimWorker(Worker):
     # intensity, lifetime, is_final, decay_counts, t_axis_ns, global_tau_ns,
-    # scan generation
-    sigFrameReady = Signal(object, object, bool, object, object, float, int)
+    # scan generation, LiveProducts
+    sigFrameReady = Signal(object, object, bool, object, object, float, int,
+                           object)
     sigTerminated = Signal(int)
     sigFinished = Signal()
 
@@ -1317,16 +1438,43 @@ class _TTFlimWorker(Worker):
             fit_method = str(self._m._fit_method)
             min_counts = int(self._m._min_counts_per_pixel)
             expected_shape = (Nx * Ny, n_bins)
+            scan = self._m._scan
+            self._direction = str(scan.get('direction', 'forward'))
+            period_ps = float(scan.get('period_ps', 0.0)) or (
+                1e6 / max(1e-9, float(self._m._laser_rep_rate_mhz))
+            )
+            self._period_ns = period_ps / 1000.0
+            self._dwell_s = float(scan.get('dwell_s', 0.0))
+            self._binwidth_ps = binwidth_ps
+            # Reverse mode applies t0 as a circular roll (see initiateScan).
+            self._t0_roll_bins = (
+                int(round(self._m._t0_ps / binwidth_ps)) % n_bins
+                if self._direction == 'reverse' and n_bins else 0
+            )
+            self._background_per_bin = background_per_bin(
+                self._m._background_rate_hz, self._dwell_s, binwidth_ps
+            )
+            self._pileup_warned = False
+            self._overflow_baseline = int(scan.get('overflow_baseline', 0))
+            self._overflows_warned = False
 
-            t_axis = (np.arange(n_bins, dtype=np.float32) + 0.5) * binwidth_ps * 1e-12
-            t_axis_f64 = t_axis.astype(np.float64)[None, None, :]
+            # The histogram's own axis (bin centres), then the forward-time
+            # axis the fits and the user see: identical in forward mode,
+            # mirrored on the laser period in reverse mode.
+            raw_axis_ns = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-3
+            _, oriented_axis_ns = orient_cube(
+                np.zeros((1, 1, n_bins), dtype=np.float32), raw_axis_ns,
+                self._direction, period_ns=self._period_ns,
+            )
+            t_axis = (oriented_axis_ns * 1e-9).astype(np.float32)
+            t_axis_f64 = oriented_axis_ns.astype(np.float64)[None, None, :] * 1e-9
             # Phasor needs the laser repetition period, NOT the histogram window.
             # The Flim API doesn't expose the rep rate, so take it from the
             # user-supplied parameter. Default 80 MHz is the most common Ti:Sa rate.
             rep_rate_hz = max(1.0, float(self._m._laser_rep_rate_mhz)) * 1e6
             T_rep_s = 1.0 / rep_rate_hz
             omega = 2.0 * np.pi / T_rep_s
-            t_s = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-12
+            t_s = oriented_axis_ns.astype(np.float64) * 1e-9
             cos_table = np.cos(omega * t_s)
             sin_table = np.sin(omega * t_s)
 
@@ -1410,12 +1558,28 @@ class _TTFlimWorker(Worker):
     def _emit_frame(self, cube, t_axis, t_axis_f64, fit_method,
                     omega, cos_table, sin_table, min_counts, rep_rate_hz,
                     *, is_final=False):
+        # Into forward time: reverse mode measured T_rep - t, so the bin
+        # order flips (the axis was mirrored once in run()); then t0 as a
+        # roll where a channel delay is not allowed.
+        if self._direction == 'reverse':
+            cube = cube[..., ::-1]
+            if self._t0_roll_bins:
+                cube = roll_to_peak(cube, peak_bin=self._t0_roll_bins,
+                                    target_bin=0)
+        raw_counts = cube
+
         # Pre-pass: intensity image + aggregated decay over valid pixels.
         # The aggregated decay drives IRF peak detection — every fitter is
         # then shifted by t_peak so the reported τ is referenced from the
         # rising edge of the laser pulse, not from t=0 of the histogram.
-        intensity = cube.sum(axis=2).astype(np.float32)
+        intensity = raw_counts.sum(axis=2).astype(np.float32)
         valid_mask = intensity >= min_counts
+
+        # Dark counts and afterpulsing are flat over the period; they pull
+        # the moment towards T_rep / 2 and the phasor towards the origin, so
+        # they come off every histogram before anything is fitted or gated.
+        cube = subtract_background(raw_counts, self._background_per_bin)
+
         if valid_mask.any():
             decay_counts = cube[valid_mask].sum(axis=0).astype(np.float32)
         else:
@@ -1423,6 +1587,17 @@ class _TTFlimWorker(Worker):
 
         peak_bin = int(np.argmax(decay_counts)) if decay_counts.sum() > 0 else 0
         t_peak = float(t_axis[peak_bin])
+
+        pileup = pileup_fraction(intensity, rep_rate_hz, self._dwell_s)
+        pileup_max = float(pileup.max()) if pileup.size else 0.0
+        if pileup_max > PILEUP_WARN and not self._pileup_warned:
+            self._pileup_warned = True
+            self._logger.warning(
+                f'Pile-up: the brightest pixel detects {100 * pileup_max:.1f} % '
+                f'of the laser pulses (above {100 * PILEUP_WARN:.0f} %). The '
+                f'histogram favours the {"later" if self._direction == "reverse" else "earlier"} '
+                f'photon of a pair there; lower the excitation power.'
+            )
 
         if fit_method == 'phasor':
             lifetime = fit_phasor(
@@ -1459,6 +1634,27 @@ class _TTFlimWorker(Worker):
         else:
             global_tau_ns = 0.0
         t_axis_ns = (t_axis * 1e9).astype(np.float32)
+        peak_time_ns = t_peak * 1e9
+        overflows = max(0, self._m._timeTagger.overflows() - self._overflow_baseline)
+        if overflows and not self._overflows_warned:
+            self._overflows_warned = True
+            self._logger.error(
+                f'The Time Tagger reported {overflows} USB overflow(s) during '
+                f'this scan: the frame is missing tags and its lifetimes are '
+                f'not trustworthy. Lower the tag rate (conditional filter, '
+                f'dead time) or the excitation power.'
+            )
+        frame_metadata = {
+            "overflows": int(overflows),
+            "frame_valid": overflows == 0,
+            "tcspc_direction": self._direction,
+            "laser_period_ns": float(self._period_ns),
+            "dwell_s": float(self._dwell_s),
+            "background_rate_hz": float(self._m._background_rate_hz),
+            "background_per_bin": float(self._background_per_bin),
+            "pileup_max": pileup_max,
+            "t0_roll_bins": int(self._t0_roll_bins),
+        }
 
         self._m._store_time_resolved_products(
             cube_counts=cube,
@@ -1468,8 +1664,30 @@ class _TTFlimWorker(Worker):
             t_axis_ns=t_axis_ns,
             global_tau_ns=float(global_tau_ns),
             peak_bin=peak_bin,
-            peak_time_ns=t_peak * 1e9,
+            peak_time_ns=peak_time_ns,
             is_final=is_final,
+            extra_metadata=frame_metadata,
+        )
+
+        tr_config = self._m._tr_config if self._m._tr_enabled else None
+        live = LiveProducts(
+            intensity=intensity.astype(np.float32),
+            lifetime_ns=(lifetime * 1e9).astype(np.float32),
+            decay_counts=decay_counts,
+            t_axis_ns=t_axis_ns,
+            gate_images=(
+                compute_gate_images(cube, t_axis_ns, tr_config.gates,
+                                    peak_time_ns=peak_time_ns)
+                if tr_config is not None and tr_config.gates else {}
+            ),
+            global_tau_ns=float(global_tau_ns),
+            peak_time_ns=float(peak_time_ns),
+            background_per_bin=float(self._background_per_bin),
+            pileup_max=pileup_max,
+            tcspc_direction=self._direction,
+            frame_index=0,
+            is_final=bool(is_final),
+            metadata=frame_metadata,
         )
 
         self.sigFrameReady.emit(
@@ -1480,6 +1698,7 @@ class _TTFlimWorker(Worker):
             t_axis_ns,
             float(global_tau_ns),
             self.scanGeneration,
+            live,
         )
 
     def _global_tau_ns(self, decay_counts, t_axis, t_axis_f64,
