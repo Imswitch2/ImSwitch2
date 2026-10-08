@@ -218,9 +218,12 @@ def test_qt_objects_python_still_owns_are_handed_to_cpp_before_exit(qapp):
 
     stray = QtCore.QObject()
     assert sip.ispyowned(stray)
+    # Whether pytest-qt's application wrapper is Python-owned depends on how
+    # the fixture created it; what matters is that disowning leaves it alone.
+    appOwnedBefore = sip.ispyowned(qapp)
     try:
         applaunch.disownQtObjects(qapp)
         assert not sip.ispyowned(stray)
-        assert sip.ispyowned(qapp)
+        assert sip.ispyowned(qapp) == appOwnedBefore
     finally:
         sip.transferback(stray)
