@@ -52,6 +52,7 @@ def _run_launch_app(*, finalizationAllowed=True):
             patch.object(applaunch.ostools, 'restartSoftware', _record('restart')), \
             patch.object(applaunch.sys, 'exit', _record('sys.exit')), \
             patch.object(applaunch.os, '_exit', _record('os._exit')), \
+            patch.object(applaunch, 'disownQtObjects', lambda app, logger=None: log.append('disown')), \
             patch.object(shutdownState, 'hardwareFinalizationAllowed',
                          return_value=finalizationAllowed):
         with pytest.raises(_NeverReturns):
@@ -60,7 +61,7 @@ def _run_launch_app(*, finalizationAllowed=True):
 
 
 def test_without_a_request_the_app_just_exits():
-    assert _run_launch_app() == ['shutdown', 'sys.exit:0']
+    assert _run_launch_app() == ['shutdown', 'disown', 'sys.exit:0']
 
 
 def test_the_restart_happens_after_the_modules_have_shut_down():
@@ -207,3 +208,19 @@ def test_a_failed_exec_exits_cleanly_instead_of_crashing():
         with pytest.raises(_NeverReturns):
             applaunch.launchApp(app, Mock(), [])
     assert log == ['shutdown', 'restart-attempt', 'sys.exit:0']
+
+
+def test_qt_objects_python_still_owns_are_handed_to_cpp_before_exit(qapp):
+    """PyQt5's atexit hook destroys every Python-owned QObject in hash order,
+    which segfaulted ImSwitch after a clean shutdown; disowning them makes the
+    hook skip them."""
+    from qtpy import QtCore, sip
+
+    stray = QtCore.QObject()
+    assert sip.ispyowned(stray)
+    try:
+        applaunch.disownQtObjects(qapp)
+        assert not sip.ispyowned(stray)
+        assert sip.ispyowned(qapp)
+    finally:
+        sip.transferback(stray)
