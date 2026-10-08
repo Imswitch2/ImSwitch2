@@ -7,11 +7,11 @@ class FLIMHistController(LiveUpdatedController):
     """Drives FLIMHistWidget: turns each incoming detector frame into a
     histogram of valid per-pixel lifetimes.
 
-    SwabianTimeTaggerManager writes fitted lifetimes (in seconds) into
-    ``_image_display`` and zeros out any pixel whose intensity fell below
-    ``min_counts_per_pixel``.  We squeeze the broadcast (1, Ny, Nx) frame,
-    drop the zero pixels, convert seconds → nanoseconds and hand the flat
-    array to the widget.
+    SwabianTimeTaggerManager writes fitted lifetimes, already converted to
+    nanoseconds, into ``_image_display`` and zeros out any pixel whose
+    intensity fell below ``min_counts_per_pixel``.  We squeeze the broadcast
+    (1, Ny, Nx) frame, drop the zero pixels and hand the flat array to the
+    widget.
 
     The widget is detector-agnostic — if it's enabled for a non-FLIM
     detector it will simply show whatever > 0 values appear, which is

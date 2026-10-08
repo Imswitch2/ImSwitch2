@@ -160,10 +160,17 @@ class TimeResolvedScanWorkflow:
                 scan = getattr(self.facade, "scan", None)
                 if scan is not None and callable(getattr(scan, "run_once", None)):
                     acquire = lambda: scan.run_once(timeout_s=params.timeout_s)
-            if acquire is not None:
-                acquire()
+            try:
+                if acquire is not None:
+                    acquire()
 
-            products = detector.wait_for_final(timeout_s=params.timeout_s)
+                products = detector.wait_for_final(timeout_s=params.timeout_s)
+            finally:
+                # Product capture is armed for this run only. Left armed, every
+                # later scan would copy products and compute gates, and the
+                # Swabian backend would reject any later z/t scan as an
+                # unsupported outer axis until something cleared it.
+                detector.clear()
         output_paths = self._save(products, params)
         return TimeResolvedWorkflowResult(
             products=products,

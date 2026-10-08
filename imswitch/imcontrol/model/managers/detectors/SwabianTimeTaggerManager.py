@@ -12,6 +12,9 @@ from imswitch.imcontrol.model.timeresolved import (
     compute_gate_images,
     copy_time_resolved_products,
 )
+from imswitch.imcontrol.model.timeresolved.fitting import (
+    fit_exp1, fit_moment, fit_phasor,
+)
 from .._scan_execution import PARTICIPANTS_KEY
 from .DetectorManager import (
     ChunkPayload, DetectorManager, DetectorNumberParameter, DetectorListParameter,
@@ -1143,88 +1146,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
 
 # --------------------------------------------------------------------------- #
-# Lifetime fit helpers — pure numpy, no Qt                                     #
-# --------------------------------------------------------------------------- #
-
-def _fit_moment(cube, t_axis, peak_bin: int = 0):
-    """
-    Mean photon arrival time (1st moment of the histogram).
-    For an exp decay starting at t_peak the measured mean equals
-    t_peak + τ, so we subtract t_peak. Fastest method, still biased by
-    background and IRF width but no model required.
-    Returns (intensity, lifetime) both shape (Ny, Nx).
-    """
-    intensity = cube.sum(axis=2)
-    numer = (cube * t_axis[None, None, :]).sum(axis=2)
-    lifetime = np.zeros_like(intensity, dtype=np.float32)
-    good = intensity > 0
-    t_peak = float(t_axis[int(peak_bin)]) if 0 <= peak_bin < len(t_axis) else 0.0
-    lifetime[good] = (numer[good] / intensity[good]) - t_peak
-    return intensity.astype(np.float32), lifetime
-
-
-def _fit_phasor(cube, binwidth_ps, n_bins, laser_rep_rate_mhz):
-    """
-    Phasor / Fourier method for single-exponential lifetime.
-    Uses the supplied laser repetition rate to set ω = 2π·f_rep.
-    Returns tau = s / (omega * g) where g and s are the cosine and sine
-    projections of the normalised histogram onto the first harmonic.
-
-    Same speed as moment. Assumes single-exponential decay; gives the
-    phase lifetime which is a useful proxy even for multi-exponential samples.
-    Returns (intensity, lifetime) both shape (Ny, Nx).
-    """
-    intensity = cube.sum(axis=2).astype(np.float32)
-
-    T_rep_s = 1.0 / (max(1.0, float(laser_rep_rate_mhz)) * 1e6)
-    omega = 2.0 * np.pi / T_rep_s
-    t_s = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-12
-
-    h = cube.astype(np.float64) / intensity.clip(1).astype(np.float64)[:, :, None]
-
-    g = (h * np.cos(omega * t_s)[None, None, :]).sum(axis=2)
-    s = (h * np.sin(omega * t_s)[None, None, :]).sum(axis=2)
-
-    denom = omega * g
-    lifetime = np.where(np.abs(denom) > 1e-30, s / denom, 0.0).astype(np.float32)
-    return intensity, lifetime
-
-
-def _fit_exp1(cube, t_axis):
-    """
-    Vectorised weighted log-linear single-exponential fit.
-    Minimises sum_k w_k * (log h_k - a - b*t_k)^2 with w_k = sqrt(h_k)
-    (Poisson weighting). Returns tau = -1/slope from the fitted slope b.
-
-    Slower than moment/phasor but correct for clean mono-exponential decays.
-    Returns (intensity, lifetime) both shape (Ny, Nx).
-    """
-    intensity = cube.sum(axis=2).astype(np.float32)
-    h = cube.astype(np.float64)
-    t = t_axis.astype(np.float64)[None, None, :]   # (1, 1, n_bins)
-
-    # Weights: sqrt(h), zero where h == 0
-    w = np.sqrt(np.where(h > 0, h, 0.0))
-    log_h = np.where(h > 0, np.log(h), 0.0)       # log(0) replaced with 0, masked by w
-
-    # Weighted normal equations for [intercept, slope]
-    sw   = w.sum(axis=2)
-    swt  = (w * t).sum(axis=2)
-    swt2 = (w * t ** 2).sum(axis=2)
-    swlh  = (w * log_h).sum(axis=2)
-    swtlh = (w * t * log_h).sum(axis=2)
-
-    det = sw * swt2 - swt ** 2
-    with np.errstate(invalid='ignore', divide='ignore'):
-        slope = np.where(np.abs(det) > 1e-30,
-                         (sw * swtlh - swt * swlh) / det,
-                         0.0)
-
-    lifetime = np.where(slope < 0, (-1.0 / slope).astype(np.float32), 0.0)
-    return intensity, lifetime.astype(np.float32)
-
-
-# --------------------------------------------------------------------------- #
 # Background worker                                                            #
 # --------------------------------------------------------------------------- #
 
@@ -1375,12 +1296,12 @@ class _TTFlimWorker(Worker):
         t_peak = float(t_axis[peak_bin])
 
         if fit_method == 'phasor':
-            lifetime = self._fit_phasor_cached(
+            lifetime = fit_phasor(
                 cube, intensity, omega, cos_table, sin_table, t_peak)
         elif fit_method == 'exp1':
-            lifetime = self._fit_exp1_cached(cube, t_axis_f64, peak_bin)
+            lifetime = fit_exp1(cube, t_axis_f64, peak_bin)
         else:
-            _, lifetime = _fit_moment(cube, t_axis, peak_bin)
+            _, lifetime = fit_moment(cube, t_axis, peak_bin)
 
         lifetime[intensity < min_counts] = 0.0
         lifetime[~np.isfinite(lifetime)] = 0.0
@@ -1444,69 +1365,13 @@ class _TTFlimWorker(Worker):
             t_s = t_axis.astype(np.float64)
             cos_t = np.cos(omega * t_s)
             sin_t = np.sin(omega * t_s)
-            tau_s = self._fit_phasor_cached(
+            tau_s = fit_phasor(
                 cube1, intensity1, omega, cos_t, sin_t, t_peak)
         elif fit_method == 'exp1':
-            tau_s = self._fit_exp1_cached(cube1, t_axis_f64, peak_bin)
+            tau_s = fit_exp1(cube1, t_axis_f64, peak_bin)
         else:
-            _, tau_s = _fit_moment(cube1, t_axis, peak_bin)
+            _, tau_s = fit_moment(cube1, t_axis, peak_bin)
         tau_ns = float(tau_s[0, 0]) * 1e9
         if not np.isfinite(tau_ns) or tau_ns <= 0:
             return 0.0
         return tau_ns
-
-    def _fit_phasor_cached(self, cube, intensity, omega, cos_table, sin_table,
-                           t_peak: float):
-        """Phasor fit with IRF offset compensation.
-
-        Projects onto cos/sin of the original time axis, then rotates the
-        (g, s) phasor by −ω·t_peak.  With the e^{+iωt} convention used
-        below (P = g + i·s = ⟨e^{+iωt}⟩) and a shifted decay
-        h_meas(t) = h_true(t − t_peak), we have P_meas = e^{+iω·t_peak}·P_true,
-        so P_true = e^{−iω·t_peak}·P_meas, i.e.
-            g_true = g·cos(φ) + s·sin(φ),
-            s_true = s·cos(φ) − g·sin(φ),  with φ = ω·t_peak.
-        τ = s_true / (ω · g_true).
-        """
-        h = cube.astype(np.float64) / intensity.clip(1).astype(np.float64)[:, :, None]
-        g = (h * cos_table[None, None, :]).sum(axis=2)
-        s = (h * sin_table[None, None, :]).sum(axis=2)
-
-        phi = omega * t_peak
-        cphi, sphi = np.cos(phi), np.sin(phi)
-        g_true = g * cphi + s * sphi
-        s_true = s * cphi - g * sphi
-
-        denom = omega * g_true
-        with np.errstate(invalid='ignore', divide='ignore'):
-            lifetime = np.where(np.abs(denom) > 1e-30, s_true / denom, 0.0)
-        return lifetime.astype(np.float32)
-
-    def _fit_exp1_cached(self, cube, t_axis_f64, peak_bin: int):
-        """Exp1 fit, restricted to bins ≥ peak_bin with t-axis shifted so
-        the IRF peak is at t=0. This removes the IRF rising edge from the
-        fit, which otherwise tilts the slope."""
-        n_bins = t_axis_f64.shape[-1]
-        k0 = max(0, min(int(peak_bin), n_bins - 2))
-        sub_cube = cube[..., k0:]
-        # Shift so peak lands at t=0; keeps the fit anchored to the decay only.
-        t = (t_axis_f64[..., k0:] - t_axis_f64[..., k0:k0 + 1])
-        h = sub_cube.astype(np.float64)
-
-        w = np.sqrt(np.where(h > 0, h, 0.0))
-        log_h = np.where(h > 0, np.log(h), 0.0)
-
-        sw   = w.sum(axis=2)
-        swt  = (w * t).sum(axis=2)
-        swt2 = (w * t ** 2).sum(axis=2)
-        swlh  = (w * log_h).sum(axis=2)
-        swtlh = (w * t * log_h).sum(axis=2)
-
-        det = sw * swt2 - swt ** 2
-        with np.errstate(invalid='ignore', divide='ignore'):
-            slope = np.where(np.abs(det) > 1e-30,
-                            (sw * swtlh - swt * swlh) / det,
-                            0.0)
-
-        lifetime = np.where(slope < 0, (-1.0 / slope).astype(np.float32), 0.0)
-        return lifetime.astype(np.float32)

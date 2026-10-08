@@ -13,7 +13,7 @@ Implemented so far:
 - Detector-neutral photon-arrival, gated-STED, and tau-STED workflows.
 - HDF5/NPZ/TIFF output for workflow products.
 - Default user scripts under
-  `imswitch/_data/user_defaults/scripts/timeresolved/`.
+  `imswitch/_data/user_defaults/scripts/workflows/timeresolved/`.
 
 Still pending:
 
@@ -498,7 +498,7 @@ Compression:
 
 Add an example under:
 
-`imswitch/_data/user_defaults/scripts/timeresolved/`
+`imswitch/_data/user_defaults/scripts/workflows/timeresolved/`
 
 Example:
 
