@@ -63,8 +63,10 @@ class SpotDetectionOptions:
             raise ValueError("min_distance_px must be > 0 when provided")
         if float(self.min_distance_fraction) <= 0:
             raise ValueError("min_distance_fraction must be > 0")
-        if str(self.refinement_method) not in ("max","cog"):
-            raise ValueError("refinement_method must be 'max' or 'cog'")
+        if str(self.refinement_method) not in ("max","cog","gaussian"):
+            raise ValueError(
+                "refinement_method must be 'max', 'cog' or 'gaussian'"
+            )
         if int(self.refinement_window_px) < 0:
             raise ValueError("refinement_window_px must be >= 0")
         if self.max_spots is not None and int(self.max_spots) <= 0:

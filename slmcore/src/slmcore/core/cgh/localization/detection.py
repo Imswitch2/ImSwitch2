@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.ndimage import gaussian_filter,maximum_filter
+from scipy.optimize import least_squares
 
 from .model import DetectedSpots,SpotDetectionOptions
 
@@ -225,18 +226,23 @@ def _local_maxima(processed,threshold_rel,min_distance,max_spots):
 
 
 def _refine_positions(image,positions,method,window):
-    """Refine detected maxima, vectorizing all full-sized interior patches."""
+    """Refine local-maxima positions inside a small image window.
+
+    ``max`` keeps pixel precision, ``cog`` computes a background-subtracted
+    center of gravity, and ``gaussian`` fits an axis-aligned 2D Gaussian plus a
+    constant background. Full-size Gaussian windows are fitted together with a
+    small batched Gauss-Newton solver; truncated border windows retain the
+    scalar bounded SciPy fit. Both paths fall back to CoG on unreliable fits.
+    """
     if window <= 0 or positions.shape[1] == 0:
         return np.array(positions,dtype=np.float64,copy=True)
 
     image = np.asarray(image,dtype=np.float64)
     h,w = image.shape
-    count = positions.shape[1]
     refined = np.array(positions,dtype=np.float64,copy=True)
 
     centers_x = np.floor(positions[0]).astype(np.int64)
     centers_y = np.floor(positions[1]).astype(np.int64)
-
     interior = (
         (centers_x - window >= 0)
         & (centers_x + window < w)
@@ -266,14 +272,16 @@ def _refine_positions(image,positions,method,window):
             refined[0,interior_indices] = cx + offsets[ix]
             refined[1,interior_indices] = cy + offsets[iy]
         else:
+            # CoG is both the final result for ``cog`` and the robust initial /
+            # fallback center for Gaussian fitting.
             minima = np.min(patches,axis=(1,2),keepdims=True)
             weights = patches - minima
             totals = np.sum(weights,axis=(1,2))
-            valid = totals > 0
+            cog_valid = np.isfinite(totals) & (totals > 0)
 
-            if np.any(valid):
-                weights_valid = weights[valid]
-                totals_valid = totals[valid]
+            if np.any(cog_valid):
+                weights_valid = weights[cog_valid]
+                totals_valid = totals[cog_valid]
                 dx = np.sum(
                     weights_valid * offsets[None,None,:],
                     axis=(1,2),
@@ -283,14 +291,32 @@ def _refine_positions(image,positions,method,window):
                     axis=(1,2),
                 ) / totals_valid
 
-                valid_indices = interior_indices[valid]
+                valid_indices = interior_indices[cog_valid]
                 refined[0,valid_indices] = centers_x[valid_indices] + dx
                 refined[1,valid_indices] = centers_y[valid_indices] + dy
 
+            if method == "gaussian":
+                patch_x1 = cx - window
+                patch_y1 = cy - window
+                initial_local = np.column_stack((
+                    refined[0,interior_indices] - patch_x1,
+                    refined[1,interior_indices] - patch_y1,
+                ))
+                fitted_local,fit_valid = _refine_patches_gaussian(
+                    patches,initial_local,
+                )
+                if np.any(fit_valid):
+                    fitted_indices = interior_indices[fit_valid]
+                    refined[0,fitted_indices] = (
+                        patch_x1[fit_valid] + fitted_local[fit_valid,0]
+                    )
+                    refined[1,fitted_indices] = (
+                        patch_y1[fit_valid] + fitted_local[fit_valid,1]
+                    )
+
     # Border patches have variable shapes. They are uncommon for ordinary
-    # localization crops, so retaining the scalar reference implementation for
-    # only those points keeps exact edge semantics without slowing the common
-    # case.
+    # localization crops, so the scalar path keeps exact edge semantics without
+    # penalizing the large regular arrays that benefit from batching.
     for index in np.flatnonzero(~interior):
         x0,y0 = positions[:,index]
         x1 = max(0,int(np.floor(x0)) - window)
@@ -305,20 +331,275 @@ def _refine_positions(image,positions,method,window):
             iy,ix = np.unravel_index(int(np.argmax(patch)),patch.shape)
             refined[:,index] = (x1 + ix,y1 + iy)
             continue
-        weights = patch - float(np.min(patch))
-        total = float(np.sum(weights))
-        if total <= 0:
-            refined[:,index] = (x0,y0)
-            continue
-        yy,xx = np.meshgrid(
-            np.arange(y1,y2,dtype=np.float64),
-            np.arange(x1,x2,dtype=np.float64),
-            indexing="ij",
+
+        fallback = _refine_patch_cog(
+            patch,x1=x1,y1=y1,default=(x0,y0),
         )
-        refined[0,index] = float(np.sum(xx * weights) / total)
-        refined[1,index] = float(np.sum(yy * weights) / total)
+        if method == "gaussian":
+            gaussian = _refine_patch_gaussian(
+                patch,x1=x1,y1=y1,initial=fallback,
+            )
+            refined[:,index] = fallback if gaussian is None else gaussian
+        else:
+            refined[:,index] = fallback
 
     return refined
+
+
+def _refine_patches_gaussian(patches,initial,max_iterations=5):
+    """Fit equal-sized Gaussian patches together with batched Gauss-Newton.
+
+    Parameters are ``background, log(amplitude), x, y, log(sigma_x),
+    log(sigma_y)``. Log-parameterizing positive quantities avoids the overhead
+    of a generic bounded optimizer while keeping amplitude and widths physical.
+    Invalid or non-improving fits are flagged for the caller to keep its CoG
+    fallback.
+    """
+    patches = np.asarray(patches,dtype=np.float64)
+    initial = np.asarray(initial,dtype=np.float64)
+    if patches.ndim != 3:
+        raise ValueError("Gaussian patch batch must have shape (n, y, x)")
+
+    count,height,width = patches.shape
+    centers = np.array(initial,dtype=np.float64,copy=True)
+    valid = np.zeros(count,dtype=bool)
+    if count == 0 or min(height,width) < 3 or height * width < 9:
+        return centers,valid
+    if initial.shape != (count,2):
+        raise ValueError("Gaussian initial centers must have shape (n, 2)")
+
+    data = patches.reshape(count,-1)
+    minimum = np.min(patches,axis=(1,2))
+    maximum = np.max(patches,axis=(1,2))
+    amplitude = maximum - minimum
+    valid = (
+        np.isfinite(amplitude)
+        & (amplitude > 0)
+        & np.all(np.isfinite(initial),axis=1)
+    )
+    if not np.any(valid):
+        return centers,valid
+
+    yy,xx = np.meshgrid(
+        np.arange(height,dtype=np.float64),
+        np.arange(width,dtype=np.float64),
+        indexing="ij",
+    )
+    xx = xx.reshape(1,-1)
+    yy = yy.reshape(1,-1)
+
+    sigma0 = max(0.75,0.20 * float(max(width,height)))
+    sigma_max = max(1.0,2.0 * float(max(width,height)))
+    signal_scale = np.maximum.reduce((
+        amplitude,
+        np.abs(maximum),
+        np.abs(minimum),
+        np.ones(count,dtype=np.float64),
+    ))
+
+    parameters = np.empty((count,6),dtype=np.float64)
+    parameters[:,0] = minimum
+    parameters[:,1] = np.log(np.maximum(amplitude,1e-12))
+    parameters[:,2] = np.clip(initial[:,0],0.0,width - 1.0)
+    parameters[:,3] = np.clip(initial[:,1],0.0,height - 1.0)
+    parameters[:,4] = np.log(sigma0)
+    parameters[:,5] = np.log(sigma0)
+
+    min_log_sigma = np.log(0.30)
+    max_log_sigma = np.log(sigma_max)
+    max_log_amplitude = np.log(np.maximum(4.0 * signal_scale,amplitude))
+    background_min = minimum - 2.0 * signal_scale
+    background_max = maximum + 2.0 * signal_scale
+    initial_sse = None
+
+    for _ in range(max(1,int(max_iterations))):
+        background = parameters[:,0:1]
+        fitted_amplitude = np.exp(parameters[:,1:2])
+        center_x = parameters[:,2:3]
+        center_y = parameters[:,3:4]
+        sigma_x = np.exp(parameters[:,4:5])
+        sigma_y = np.exp(parameters[:,5:6])
+
+        delta_x = xx - center_x
+        delta_y = yy - center_y
+        norm_x = delta_x / sigma_x
+        norm_y = delta_y / sigma_y
+        gaussian = fitted_amplitude * np.exp(
+            -0.5 * (norm_x * norm_x + norm_y * norm_y)
+        )
+        residual = background + gaussian - data
+        if initial_sse is None:
+            initial_sse = np.sum(residual * residual,axis=1)
+
+        jacobian = np.stack((
+            np.ones_like(gaussian),
+            gaussian,
+            gaussian * delta_x / (sigma_x * sigma_x),
+            gaussian * delta_y / (sigma_y * sigma_y),
+            gaussian * norm_x * norm_x,
+            gaussian * norm_y * norm_y,
+        ),axis=2)
+        jacobian_t = np.transpose(jacobian,(0,2,1))
+        normal = jacobian_t @ jacobian
+        gradient = np.einsum("npi,np->ni",jacobian,residual)
+
+        # A small scale-aware LM term keeps the tiny 6x6 systems invertible on
+        # noisy or nearly flat patches without materially changing good fits.
+        diagonal = np.diagonal(normal,axis1=1,axis2=2)
+        damping = 1e-4 * (np.mean(diagonal,axis=1) + 1e-12)
+        diag_indices = np.arange(6)
+        normal[:,diag_indices,diag_indices] += damping[:,None]
+
+        try:
+            step = np.linalg.solve(normal,-gradient[...,None])[...,0]
+        except np.linalg.LinAlgError:
+            step = np.einsum(
+                "nij,nj->ni",np.linalg.pinv(normal),-gradient,
+            )
+        step = np.where(np.isfinite(step),step,0.0)
+
+        # Limit a single iteration from jumping across the small local window.
+        # Width/amplitude steps are in log-space.
+        step[:,1] = np.clip(step[:,1],-1.0,1.0)
+        step[:,2:4] = np.clip(step[:,2:4],-1.0,1.0)
+        step[:,4:6] = np.clip(step[:,4:6],-0.5,0.5)
+        parameters += step
+
+        parameters[:,0] = np.clip(
+            parameters[:,0],background_min,background_max,
+        )
+        parameters[:,1] = np.clip(
+            parameters[:,1],np.log(1e-12),max_log_amplitude,
+        )
+        parameters[:,2] = np.clip(parameters[:,2],-0.5,width - 0.5)
+        parameters[:,3] = np.clip(parameters[:,3],-0.5,height - 0.5)
+        parameters[:,4] = np.clip(
+            parameters[:,4],min_log_sigma,max_log_sigma,
+        )
+        parameters[:,5] = np.clip(
+            parameters[:,5],min_log_sigma,max_log_sigma,
+        )
+
+    background = parameters[:,0:1]
+    fitted_amplitude = np.exp(parameters[:,1:2])
+    center_x = parameters[:,2:3]
+    center_y = parameters[:,3:4]
+    sigma_x = np.exp(parameters[:,4:5])
+    sigma_y = np.exp(parameters[:,5:6])
+    gaussian = fitted_amplitude * np.exp(
+        -0.5 * (
+            ((xx - center_x) / sigma_x) ** 2
+            + ((yy - center_y) / sigma_y) ** 2
+        )
+    )
+    final_sse = np.sum((background + gaussian - data) ** 2,axis=1)
+
+    valid &= (
+        np.all(np.isfinite(parameters),axis=1)
+        & np.isfinite(final_sse)
+        & (final_sse <= initial_sse * (1.0 + 1e-9))
+    )
+    centers[:,0] = parameters[:,2]
+    centers[:,1] = parameters[:,3]
+    return centers,valid
+
+def _refine_patch_cog(patch,*,x1,y1,default):
+    """Return a background-subtracted CoG center for one local patch."""
+    patch = np.asarray(patch,dtype=np.float64)
+    if patch.size == 0:
+        return np.asarray(default,dtype=np.float64)
+    weights = patch - float(np.min(patch))
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0:
+        return np.asarray(default,dtype=np.float64)
+    yy,xx = np.meshgrid(
+        np.arange(y1,y1 + patch.shape[0],dtype=np.float64),
+        np.arange(x1,x1 + patch.shape[1],dtype=np.float64),
+        indexing="ij",
+    )
+    return np.asarray((
+        float(np.sum(xx * weights) / total),
+        float(np.sum(yy * weights) / total),
+    ),dtype=np.float64)
+
+
+def _refine_patch_gaussian(patch,*,x1,y1,initial):
+    """Fit an axis-aligned 2D Gaussian center, returning ``None`` on failure."""
+    patch = np.asarray(patch,dtype=np.float64)
+    if patch.ndim != 2 or min(patch.shape) < 3 or patch.size < 9:
+        return None
+
+    minimum = float(np.min(patch))
+    maximum = float(np.max(patch))
+    amplitude = maximum - minimum
+    if not np.isfinite(amplitude) or amplitude <= 0:
+        return None
+
+    height,width = patch.shape
+    yy,xx = np.meshgrid(
+        np.arange(height,dtype=np.float64),
+        np.arange(width,dtype=np.float64),
+        indexing="ij",
+    )
+    initial = np.asarray(initial,dtype=np.float64)
+    x0 = float(np.clip(initial[0] - x1,0.0,width - 1.0))
+    y0 = float(np.clip(initial[1] - y1,0.0,height - 1.0))
+
+    # A one-pixel sigma is a stable generic starting point for the small local
+    # windows used here. Bounds intentionally allow broader spots while keeping
+    # the center inside the measured patch.
+    sigma0 = max(0.75,0.20 * float(max(width,height)))
+    sigma_max = max(1.0,2.0 * float(max(width,height)))
+    signal_scale = max(amplitude,abs(maximum),abs(minimum),1.0)
+
+    def residual(parameters):
+        background,amp,cx,cy,sigma_x,sigma_y = parameters
+        model = background + amp * np.exp(
+            -0.5 * (
+                ((xx - cx) / sigma_x) ** 2
+                + ((yy - cy) / sigma_y) ** 2
+            )
+        )
+        return (model - patch).ravel()
+
+    lower = np.asarray((
+        minimum - 2.0 * signal_scale,
+        0.0,
+        -0.5,
+        -0.5,
+        0.30,
+        0.30,
+    ),dtype=np.float64)
+    upper = np.asarray((
+        maximum + 2.0 * signal_scale,
+        max(4.0 * signal_scale,amplitude),
+        width - 0.5,
+        height - 0.5,
+        sigma_max,
+        sigma_max,
+    ),dtype=np.float64)
+    guess = np.asarray((
+        minimum,amplitude,x0,y0,sigma0,sigma0,
+    ),dtype=np.float64)
+
+    try:
+        fit = least_squares(
+            residual,
+            guess,
+            bounds=(lower,upper),
+            method="trf",
+            max_nfev=100,
+        )
+    except (ValueError,FloatingPointError,RuntimeError):
+        return None
+
+    if not fit.success or not np.all(np.isfinite(fit.x)):
+        return None
+    _,fitted_amplitude,cx,cy,sigma_x,sigma_y = fit.x
+    if fitted_amplitude <= 0 or sigma_x <= 0 or sigma_y <= 0:
+        return None
+
+    return np.asarray((x1 + cx,y1 + cy),dtype=np.float64)
 
 
 def _sample_bilinear(image,positions):

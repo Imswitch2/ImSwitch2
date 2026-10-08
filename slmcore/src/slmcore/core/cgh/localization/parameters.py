@@ -133,25 +133,25 @@ LOCALIZATION_PARAMS = MappingProxyType({
     ),
 
     # ------------------------------------------------------------------
-    # Advanced spot-center refinement
+    # Spot-center refinement
     # ------------------------------------------------------------------
     "focus_localization_method":ParamSpec(
-        "cog",str,choices=("max","cog"),editor=EditorKind.COMBO_BOX,
+        "cog",str,choices=("max","cog","gaussian"),editor=EditorKind.COMBO_BOX,
         label="Spot center method",
         tooltip=(
-            "Subpixel center refinement after peak detection. CoG uses a local "
-            "center of gravity; Max uses the brightest pixel in the refinement window."
+            "Center refinement after peak detection. CoG uses a local "
+            "center of gravity; Gaussian fits an elliptical 2D Gaussian plus "
+            "background; Max uses the brightest pixel in the refinement window."
         ),
-        display_level=ParamDisplayLevel.ADVANCED,
     ),
     "focus_search_window_px":ParamSpec(
         2,int,min_value=0,step=1,editor=EditorKind.SPIN_BOX,
         label="Center refinement window (px)",
         tooltip=(
             "Half-width of the local window used to refine each detected spot "
-            "center. Zero disables local center refinement."
+            "center. Zero disables local center refinement. Gaussian fitting "
+            "falls back to CoG if the local fit is not reliable."
         ),
-        display_level=ParamDisplayLevel.ADVANCED,
     ),
     "spot_min_distance_fraction":ParamSpec(
         0.35,float,min_value=0.05,max_value=1.0,step=0.05,decimals=2,
