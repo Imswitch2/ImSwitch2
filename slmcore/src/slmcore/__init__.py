@@ -29,6 +29,7 @@ from .application import (
     FOVCalibrationService,
     FOVCalibrationState,
     FOVMappingRuntimeContext,
+    FOVMappingRuntimePreview,
     FOVMappingRuntimeService,
     GeometryCalibrationContext,
     GeometryCalibrationPayload,
@@ -98,6 +99,7 @@ from .core.engine.section import (
 from .core.engine.state import GroupTopology
 from .core.engine.transition import GroupStateDelta,SectionStateTransition
 from .core.measurement import ImageMeasurement
+from .core.transform2d import FittedTransform2D,fit_transform2d
 from .setup import (
     SLM_SETUP_FILE_SCHEMA_VERSION,
     SLMDefinition,
@@ -151,7 +153,9 @@ __all__ = [
     "ObservationPlaneService",
     "EditablePositionReferenceGeometry",
     "FOVMappingCorrection",
+    "FittedTransform2D",
     "FOVMappingRuntimeContext",
+    "FOVMappingRuntimePreview",
     "FOVMappingRuntimeService",
     "FOVCorrectionConfigState",
     "GeometryCalibrationContext",
@@ -226,6 +230,7 @@ __all__ = [
     "TargetPresentationField",
     "TargetPresentationFieldKind",
     "create_split_section_geometries",
+    "fit_transform2d",
     "load_slm_setup_file",
     "register_aberration",
     "register_cgh_algorithm",

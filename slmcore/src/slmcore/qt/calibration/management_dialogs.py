@@ -223,7 +223,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
     sigFovCalibrationRequested = QtCore.Signal(str,str)
     sigFovSetDefaultRequested = QtCore.Signal(str,str,str)
     sigFovDeleteRequested = QtCore.Signal(str,str,str)
-    sigFovRefitRequested = QtCore.Signal(str,str,str,int)
+    sigFovRefitRequested = QtCore.Signal(str,str,str,str,object)
     sigFovUpdateRequested = QtCore.Signal(str,str,str,object)
     sigFovRenameRequested = QtCore.Signal(str,str,str,str)
     sigSlmChanged = QtCore.Signal(str)
@@ -618,11 +618,11 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
             self.fov_inspector,"%s / %s" % (self.mapping_name,correction.name)
         )
 
-    def _request_fov_refit(self,degree: int) -> None:
+    def _request_fov_refit(self,model: str,degree) -> None:
         name=self._selected_fov()
         if name:
             self.sigFovRefitRequested.emit(
-                self.section_key,self.mapping_name,name,int(degree)
+                self.section_key,self.mapping_name,name,str(model),degree
             )
 
     def set_fov_refit_preview(self,correction) -> None:

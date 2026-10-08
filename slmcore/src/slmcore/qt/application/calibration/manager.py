@@ -628,7 +628,9 @@ class CalibrationManager(QtCore.QObject):
                 dialog.sigFitCenterRequested.connect(lambda key=section_key:self._fov_fit_center(key))
                 dialog.sigResetFromFitRequested.connect(lambda key=section_key:self._fov_reset_fit(key))
                 dialog.sigFitCandidateRequested.connect(
-                    lambda degree,key=section_key:self._fov_fit_candidate(key,degree)
+                    lambda model,degree,key=section_key:self._fov_fit_candidate(
+                        key,model,degree
+                    )
                 )
                 dialog.sigSaveRequested.connect(
                     lambda name,default,key=section_key:self._fov_save(key,name,default)
@@ -749,11 +751,17 @@ class CalibrationManager(QtCore.QObject):
             getattr(service,method)(section_key,state.mapping_name); self._render_fov_state(section_key)
         except Exception as error: self._fov_error(section_key,error)
 
-    def _fov_fit_candidate(self,section_key: str,degree: int) -> None:
+    def _fov_fit_candidate(
+        self,section_key: str,model: str,degree: int | None,
+    ) -> None:
         service=self.controller.fov_calibration_service; state=service.state(section_key)
         if state is None: return
         try:
-            service.fit_candidate(section_key,state.mapping_name,degree=int(degree)); self._render_fov_state(section_key)
+            service.fit_candidate(
+                section_key,state.mapping_name,model=str(model),
+                degree=2 if degree is None else int(degree),
+            )
+            self._render_fov_state(section_key)
         except Exception as error: self._fov_error(section_key,error)
 
     def _fov_save(self,section_key: str,name: str,set_default: bool) -> None:
@@ -804,13 +812,15 @@ class CalibrationManager(QtCore.QObject):
         self.controller.fov_calibration_service.discard(section_key)
         self._fov_dialogs.pop(section_key,None)
 
-    @QtCore.Slot(str,str,str,int)
+    @QtCore.Slot(str,str,str,str,object)
     def _management_refit_fov(
-        self,section_key: str,mapping_name: str,name: str,degree: int,
+        self,section_key: str,mapping_name: str,name: str,
+        model: str,degree,
     ) -> None:
         try:
             correction=self.controller.mapping_service.refit_fov_correction(
-                section_key,mapping_name,name,degree=int(degree),
+                section_key,mapping_name,name,model=str(model),
+                degree=None if degree is None else int(degree),
             )
             if self._management_dialog is not None:
                 self._management_dialog.set_fov_refit_preview(correction)

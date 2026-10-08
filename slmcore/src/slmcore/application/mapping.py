@@ -119,18 +119,27 @@ class MappingService:
         return renamed
 
     def refit_fov_correction(
-        self,section_key: str,mapping_name: str,name: str,*,degree: int,
+        self,section_key: str,mapping_name: str,name: str,*,
+        model: str | None=None,degree: int | None=None,
     ) -> FOVMappingCorrection:
         """Refit one saved correction from its persisted source samples.
 
-        This is intentionally acquisition-free: the persisted sample positions
-        and displacements are the fit history.  The returned correction is not
-        saved until the caller explicitly overwrites the record.
+        The saved sample positions/displacements are model-independent fit
+        history, so a correction can be refit as Translation, Rigid, Affine or
+        Polynomial without reacquisition.  The returned correction is not saved
+        until the caller explicitly overwrites the record.
         """
         current=self.load_fov_correction(section_key,mapping_name,name)
+        model=current.model if model is None else str(model)
+        if degree is None:
+            degree=current.degree if current.degree is not None else 2
         provenance=dict(current.provenance or {})
         provenance["refit_from_saved_samples"]={
-            "name":current.name,"previous_degree":current.degree,
+            "name":current.name,
+            "previous_model":current.model,
+            "previous_degree":current.degree,
+            "new_model":str(model),
+            "new_degree":int(degree) if str(model).lower()=="polynomial" else None,
         }
         return FOVMappingCorrection.fit(
             name=current.name,slm_serial=current.slm_serial,
@@ -138,8 +147,8 @@ class MappingService:
             base_mapping_signature=current.base_mapping_signature,
             ideal_positions_kxy=current.sample_positions_kxy,
             total_displacements_kxy=current.sample_displacements_kxy,
-            model=current.model,degree=int(degree),detector_name=current.detector_name,
-            provenance=provenance,
+            model=model,degree=int(degree),
+            detector_name=current.detector_name,provenance=provenance,
         )
 
     def delete_fov_correction(

@@ -1,4 +1,4 @@
-"""Persistent smooth FOV mapping-correction fields."""
+"""Persistent FOV correction fields layered on a named base mapping."""
 
 from __future__ import annotations
 
@@ -11,11 +11,22 @@ from typing import Any,Mapping
 import numpy as np
 from scipy.spatial import ConvexHull,QhullError
 
+from ..transform2d import (
+    FittedTransform2D,
+    TRANSFORM_POLYNOMIAL,
+    fit_transform2d,
+    fitted_polynomial_transform,
+    normalize_transform_model,
+)
+
 
 def _freeze_points(value: Any,name: str) -> np.ndarray:
     array = np.asarray(value,dtype=np.float64)
     if array.ndim != 2 or array.shape[0] != 2:
         raise ValueError(f"{name} must have shape (2, N)")
+    # FOV calibration deliberately retains a stronger workflow-level minimum
+    # than some mathematical transform models require.  A persistent spatial
+    # calibration should be backed by at least three sampled positions.
     if array.shape[1] < 3:
         raise ValueError(f"{name} must contain at least three samples")
     if not np.all(np.isfinite(array)):
@@ -33,25 +44,13 @@ def _freeze_mapping(value: Mapping[str,Any] | None) -> Mapping[str,Any]:
     return MappingProxyType(deepcopy(dict(value)))
 
 
-def _polynomial_terms(x: np.ndarray,y: np.ndarray,degree: int) -> np.ndarray:
-    columns = [np.ones_like(x),x,y]
-    if degree >= 2:
-        columns.extend((x*x,x*y,y*y))
-    if degree >= 3:
-        for total in range(3,degree+1):
-            for px in range(total,-1,-1):
-                py = total-px
-                columns.append((x**px)*(y**py))
-    return np.column_stack(columns)
-
-
 @dataclass(frozen=True)
 class FOVMappingCorrection:
-    """Persistent smooth correction layered on a named base mapping.
+    """Persistent continuous correction layered on a named base mapping.
 
-    The field maps ideal normalized Fourier coordinates to the displacement
-    applied after target resolution and before transient position feedback.
-    Source samples are retained so saved corrections can be inspected/refit.
+    The workflow-specific object owns provenance, sample coverage, and mapping
+    compatibility.  The actual continuous mathematics is delegated to the
+    unit-agnostic :class:`FittedTransform2D` shared with reference feedback.
     """
 
     name: str
@@ -61,14 +60,8 @@ class FOVMappingCorrection:
     base_mapping_signature: str
     sample_positions_kxy: np.ndarray
     sample_displacements_kxy: np.ndarray
-    coefficients_kxy: np.ndarray
-    normalization_center_kxy: np.ndarray
-    normalization_scale_kxy: np.ndarray
-    model: str = "polynomial"
-    degree: int = 2
+    transform: FittedTransform2D
     detector_name: str | None = None
-    rms_residual_kxy: float = 0.0
-    max_residual_kxy: float = 0.0
     provenance: Mapping[str,Any] = field(default_factory=dict)
     created_at: str = ""
 
@@ -77,63 +70,31 @@ class FOVMappingCorrection:
         serial = str(self.slm_serial or "").strip()
         section = str(self.section_key or "").strip()
         mapping = str(self.mapping_name or "").strip()
-        model = str(self.model or "polynomial").strip().lower()
-        degree = int(self.degree)
         if not name:
             raise ValueError("FOV mapping correction name cannot be empty")
         if not serial or not section or not mapping:
             raise ValueError("FOV mapping correction requires SLM serial, section and mapping")
-        if model != "polynomial":
-            raise ValueError(f"Unsupported FOV mapping correction model: {model}")
-        if degree < 1 or degree > 3:
-            raise ValueError("Polynomial degree must be between 1 and 3")
-
         samples = _freeze_points(self.sample_positions_kxy,"sample_positions_kxy")
         displacements = _freeze_points(
             self.sample_displacements_kxy,"sample_displacements_kxy"
         )
         if samples.shape != displacements.shape:
             raise ValueError("FOV mapping correction sample arrays must have matching shapes")
-        center = np.asarray(self.normalization_center_kxy,dtype=np.float64).reshape(-1)
-        scale = np.asarray(self.normalization_scale_kxy,dtype=np.float64).reshape(-1)
-        if center.shape != (2,) or scale.shape != (2,):
-            raise ValueError("FOV normalization center/scale must have shape (2,)")
-        if not np.all(np.isfinite(center)) or not np.all(np.isfinite(scale)):
-            raise ValueError("FOV normalization contains non-finite values")
-        if np.any(scale <= 0):
-            raise ValueError("FOV normalization scale must be > 0")
-        center = np.array(center,copy=True); center.setflags(write=False)
-        scale = np.array(scale,copy=True); scale.setflags(write=False)
-
-        coeff = np.asarray(self.coefficients_kxy,dtype=np.float64)
-        expected_terms = _polynomial_terms(np.zeros(1),np.zeros(1),degree).shape[1]
-        if coeff.shape != (2,expected_terms):
-            raise ValueError(
-                "FOV polynomial coefficients must have shape (2, %d)" % expected_terms
-            )
-        if not np.all(np.isfinite(coeff)):
-            raise ValueError("FOV coefficients contain non-finite values")
-        coeff = np.array(coeff,copy=True); coeff.setflags(write=False)
-        rms = float(self.rms_residual_kxy)
-        maximum = float(self.max_residual_kxy)
-        if not np.isfinite(rms) or rms < 0 or not np.isfinite(maximum) or maximum < 0:
-            raise ValueError("FOV fit residuals must be finite and >= 0")
+        transform = self.transform
+        if not isinstance(transform,FittedTransform2D):
+            raise TypeError("FOV mapping correction transform must be a FittedTransform2D")
 
         object.__setattr__(self,"name",name)
         object.__setattr__(self,"slm_serial",serial)
         object.__setattr__(self,"section_key",section)
         object.__setattr__(self,"mapping_name",mapping)
-        object.__setattr__(self,"base_mapping_signature",str(self.base_mapping_signature or "").strip())
+        object.__setattr__(
+            self,"base_mapping_signature",str(self.base_mapping_signature or "").strip()
+        )
         object.__setattr__(self,"sample_positions_kxy",samples)
         object.__setattr__(self,"sample_displacements_kxy",displacements)
-        object.__setattr__(self,"coefficients_kxy",coeff)
-        object.__setattr__(self,"normalization_center_kxy",center)
-        object.__setattr__(self,"normalization_scale_kxy",scale)
-        object.__setattr__(self,"model",model)
-        object.__setattr__(self,"degree",degree)
+        object.__setattr__(self,"transform",transform)
         object.__setattr__(self,"detector_name",str(self.detector_name or "").strip() or None)
-        object.__setattr__(self,"rms_residual_kxy",rms)
-        object.__setattr__(self,"max_residual_kxy",maximum)
         object.__setattr__(self,"provenance",_freeze_mapping(self.provenance))
         object.__setattr__(self,"created_at",str(self.created_at or datetime.now().isoformat()))
 
@@ -159,43 +120,55 @@ class FOVMappingCorrection:
         )
         if positions.shape != displacements.shape:
             raise ValueError("FOV correction fit samples must have matching shapes")
-        degree = int(degree)
-        model = str(model or "polynomial").strip().lower()
-        if model != "polynomial":
-            raise ValueError(f"Unsupported FOV mapping correction model: {model}")
-        center = np.mean(positions,axis=1)
-        span = np.ptp(positions,axis=1)
-        scale = np.where(span > 1e-12,0.5*span,1.0)
-        normalized = (positions-center[:,None])/scale[:,None]
-        design = _polynomial_terms(normalized[0],normalized[1],degree)
-        if design.shape[0] < design.shape[1]:
-            raise ValueError(
-                "Not enough position samples for polynomial degree %d: need at least %d"
-                % (degree,design.shape[1])
-            )
-        coefficients,_,rank,_ = np.linalg.lstsq(design,displacements.T,rcond=None)
-        if int(rank) < design.shape[1]:
-            raise ValueError("FOV mapping correction samples are rank-deficient for this fit")
-        coefficients = coefficients.T
-        fitted = (design @ coefficients.T).T
-        residual = displacements-fitted
-        magnitude = np.linalg.norm(residual,axis=0)
+        model = normalize_transform_model(model)
+        transform = fit_transform2d(
+            positions,displacements,model=model,polynomial_degree=int(degree),
+        )
         return cls(
             name=name,slm_serial=slm_serial,section_key=section_key,
             mapping_name=mapping_name,base_mapping_signature=base_mapping_signature,
             sample_positions_kxy=positions,
             sample_displacements_kxy=displacements,
-            coefficients_kxy=coefficients,
-            normalization_center_kxy=center,
-            normalization_scale_kxy=scale,
-            model=model,degree=degree,detector_name=detector_name,
-            rms_residual_kxy=float(np.sqrt(np.mean(magnitude*magnitude))),
-            max_residual_kxy=float(np.max(magnitude)),
+            transform=transform,detector_name=detector_name,
             provenance=dict(provenance or {}),
         )
 
     def with_name(self,name: str) -> "FOVMappingCorrection":
         return replace(self,name=str(name))
+
+    @property
+    def model(self) -> str:
+        return self.transform.model
+
+    @property
+    def degree(self) -> int | None:
+        """Polynomial degree, or ``None`` for non-polynomial models.
+
+        Kept as a compatibility-facing property because existing FOV callers
+        historically accessed ``correction.degree`` directly.
+        """
+        return self.transform.polynomial_degree
+
+    @property
+    def rms_residual_kxy(self) -> float:
+        return self.transform.rms_residual
+
+    @property
+    def max_residual_kxy(self) -> float:
+        return self.transform.max_residual
+
+    @property
+    def coefficients_kxy(self) -> np.ndarray | None:
+        """Legacy compatibility accessor for polynomial corrections."""
+        return self.transform.coefficients
+
+    @property
+    def normalization_center_kxy(self) -> np.ndarray | None:
+        return self.transform.normalization_center
+
+    @property
+    def normalization_scale_kxy(self) -> np.ndarray | None:
+        return self.transform.normalization_scale
 
     @property
     def sample_count(self) -> int:
@@ -210,20 +183,11 @@ class FOVMappingCorrection:
         return float(hull.volume)  # 2D ConvexHull.volume is polygon area.
 
     def evaluate(self,ideal_positions_kxy: Any) -> np.ndarray:
-        positions = np.asarray(ideal_positions_kxy,dtype=np.float64)
-        if positions.ndim != 2 or positions.shape[0] != 2:
-            raise ValueError("ideal_positions_kxy must have shape (2, N)")
-        if not np.all(np.isfinite(positions)):
-            raise ValueError("ideal_positions_kxy contains non-finite values")
-        normalized = (
-            positions-self.normalization_center_kxy[:,None]
-        )/self.normalization_scale_kxy[:,None]
-        design = _polynomial_terms(normalized[0],normalized[1],self.degree)
-        return (design @ self.coefficients_kxy.T).T
+        """Evaluate the fitted displacement field at ideal kxy positions."""
+        return self.transform.displacement(ideal_positions_kxy)
 
     def corrected_positions(self,ideal_positions_kxy: Any) -> np.ndarray:
-        ideal = np.asarray(ideal_positions_kxy,dtype=np.float64)
-        return ideal+self.evaluate(ideal)
+        return self.transform.apply(ideal_positions_kxy)
 
     def coverage_extrapolation(
         self,ideal_positions_kxy: Any,*,tolerance_fraction: float=0.005,
@@ -247,6 +211,7 @@ class FOVMappingCorrection:
         return outside,maximum,tolerance
 
     def to_dict(self) -> dict[str,Any]:
+        """Serialize the current schema-v2 correction payload."""
         return {
             "name":self.name,
             "slm_serial":self.slm_serial,
@@ -255,14 +220,8 @@ class FOVMappingCorrection:
             "base_mapping_signature":self.base_mapping_signature,
             "sample_positions_kxy":self.sample_positions_kxy.tolist(),
             "sample_displacements_kxy":self.sample_displacements_kxy.tolist(),
-            "coefficients_kxy":self.coefficients_kxy.tolist(),
-            "normalization_center_kxy":self.normalization_center_kxy.tolist(),
-            "normalization_scale_kxy":self.normalization_scale_kxy.tolist(),
-            "model":self.model,
-            "degree":self.degree,
+            "transform":self.transform.to_dict(),
             "detector_name":self.detector_name,
-            "rms_residual_kxy":self.rms_residual_kxy,
-            "max_residual_kxy":self.max_residual_kxy,
             "provenance":deepcopy(dict(self.provenance)),
             "created_at":self.created_at,
         }
@@ -271,7 +230,36 @@ class FOVMappingCorrection:
     def from_dict(cls,data: Mapping[str,Any]) -> "FOVMappingCorrection":
         if not isinstance(data,Mapping):
             raise TypeError("FOV mapping correction data must be a mapping")
-        return cls(**dict(data))
+        values = dict(data)
+        values["transform"] = FittedTransform2D.from_dict(values["transform"])
+        return cls(**values)
+
+    @classmethod
+    def from_v1_dict(cls,data: Mapping[str,Any]) -> "FOVMappingCorrection":
+        """Load the former polynomial-only schema without rewriting the file.
+
+        V1 stored polynomial coefficients directly on the FOV correction.  The
+        migration simply wraps those exact coefficients/normalization values in
+        the shared transform representation, preserving the saved field exactly.
+        The next explicit save writes schema v2.
+        """
+        if not isinstance(data,Mapping):
+            raise TypeError("FOV mapping correction data must be a mapping")
+        values = dict(data)
+        model = str(values.pop("model","polynomial") or "polynomial").strip().lower()
+        if model != TRANSFORM_POLYNOMIAL:
+            raise ValueError(f"Unsupported schema-v1 FOV model: {model}")
+        degree = int(values.pop("degree",2))
+        transform = fitted_polynomial_transform(
+            degree=degree,
+            coefficients=values.pop("coefficients_kxy"),
+            normalization_center=values.pop("normalization_center_kxy"),
+            normalization_scale=values.pop("normalization_scale_kxy"),
+            rms_residual=float(values.pop("rms_residual_kxy",0.0)),
+            max_residual=float(values.pop("max_residual_kxy",0.0)),
+        )
+        values["transform"] = transform
+        return cls(**values)
 
 
 __all__ = ["FOVMappingCorrection"]

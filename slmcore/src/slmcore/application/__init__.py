@@ -9,7 +9,7 @@ from .configuration import (
 from .control_mode import SLMControlMode
 from .fov_calibration import FOVCalibrationService,FOVCalibrationState
 from .fov_mapping_runtime import (
-    FOVMappingRuntimeContext,FOVMappingRuntimeService,
+    FOVMappingRuntimeContext,FOVMappingRuntimePreview,FOVMappingRuntimeService,
 )
 from .geometry_calibration import (
     GeometryCalibrationContext,GeometryCalibrationPayload,GeometryCalibrationService,
@@ -39,6 +39,7 @@ __all__ = [
     "FOVCalibrationService",
     "FOVCalibrationState",
     "FOVMappingRuntimeContext",
+    "FOVMappingRuntimePreview",
     "FOVMappingRuntimeService",
     "GeometryCalibrationContext",
     "GeometryCalibrationPayload",

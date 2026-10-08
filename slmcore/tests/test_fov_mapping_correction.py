@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import numpy as np
 
 from slmcore import (
@@ -405,3 +406,77 @@ def test_mapping_service_renames_fov_correction_preserving_fit(tmp_path):
     restored = service.load_fov_correction("sec_0","100x","field B")
     np.testing.assert_allclose(restored.coefficients_kxy,original.coefficients_kxy)
     np.testing.assert_allclose(restored.sample_positions_kxy,original.sample_positions_kxy)
+
+
+def test_fov_store_schema_v2_wraps_shared_transform(tmp_path):
+    workspace=SLMWorkspace(tmp_path)
+    correction=_calibration("schema v2")
+    path=workspace.fov_mapping_correction_store.save(correction)
+    payload=json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["version"]==2
+    assert payload["correction"]["transform"]["model"]=="polynomial"
+    assert payload["correction"]["transform"]["polynomial_degree"]==2
+    assert "coefficients_kxy" not in payload["correction"]
+
+
+def test_fov_store_loads_v1_polynomial_and_rewrites_only_on_explicit_save(tmp_path):
+    workspace=SLMWorkspace(tmp_path)
+    store=workspace.fov_mapping_correction_store
+    original=_calibration("legacy field")
+    path=store.save(original)
+    legacy={
+        "name":original.name,
+        "slm_serial":original.slm_serial,
+        "section_key":original.section_key,
+        "mapping_name":original.mapping_name,
+        "base_mapping_signature":original.base_mapping_signature,
+        "sample_positions_kxy":original.sample_positions_kxy.tolist(),
+        "sample_displacements_kxy":original.sample_displacements_kxy.tolist(),
+        "coefficients_kxy":original.coefficients_kxy.tolist(),
+        "normalization_center_kxy":original.normalization_center_kxy.tolist(),
+        "normalization_scale_kxy":original.normalization_scale_kxy.tolist(),
+        "model":"polynomial",
+        "degree":original.degree,
+        "detector_name":original.detector_name,
+        "rms_residual_kxy":original.rms_residual_kxy,
+        "max_residual_kxy":original.max_residual_kxy,
+        "provenance":dict(original.provenance),
+        "created_at":original.created_at,
+    }
+    path.write_text(json.dumps({"version":1,"correction":legacy}),encoding="utf-8")
+
+    restored=store.load("SER123","sec_0","100x","legacy field")
+    assert restored.model=="polynomial"
+    assert restored.degree==2
+    np.testing.assert_allclose(restored.evaluate(_grid(4)),original.evaluate(_grid(4)))
+    # Loading migrates in memory and does not mutate a user's saved file.
+    assert json.loads(path.read_text(encoding="utf-8"))["version"]==1
+
+    store.save(restored,overwrite=True)
+    assert json.loads(path.read_text(encoding="utf-8"))["version"]==2
+
+
+def test_saved_fov_samples_can_be_refit_across_shared_transform_models(tmp_path):
+    from slmcore import MappingService,SLMIdentity
+
+    workspace=SLMWorkspace(tmp_path)
+    service=MappingService(
+        workspace.mapping_store,workspace.fov_mapping_correction_store,
+        lambda:SLMIdentity("slm","SER123"),
+    )
+    original=_calibration("field A")
+    service.save_fov_correction(original)
+
+    for model in ("translation","rigid","affine"):
+        refit=service.refit_fov_correction("sec_0","100x","field A",model=model)
+        assert refit.model==model
+        assert refit.degree is None
+        np.testing.assert_allclose(refit.sample_positions_kxy,original.sample_positions_kxy)
+        np.testing.assert_allclose(refit.sample_displacements_kxy,original.sample_displacements_kxy)
+
+    polynomial=service.refit_fov_correction(
+        "sec_0","100x","field A",model="polynomial",degree=3,
+    )
+    assert polynomial.model=="polynomial"
+    assert polynomial.degree==3

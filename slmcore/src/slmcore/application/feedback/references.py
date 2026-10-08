@@ -19,6 +19,12 @@ from ...core.cgh.feedback import (
     resolve_reference_correspondence,
 )
 from ...core.cgh.localization import LocalizationResult,localization_site_masks
+from ...core.transform2d import (
+    TRANSFORM_AFFINE,TRANSFORM_POLYNOMIAL,TRANSFORM_RIGID,TRANSFORM_TRANSLATION,
+    fit_transform2d,fitted_matrix_transform,fitted_polynomial_transform,
+    minimum_points_for_transform,normalize_polynomial_degree,
+    polynomial_term_count as _shared_polynomial_term_count,
+)
 from ...workspace.position_reference_store import (
     PositionReferenceLifetime,PositionReferenceRecord,PositionReferenceStore,
 )
@@ -33,10 +39,10 @@ _EDITABLE_POSITION_REFERENCE_LOCK_FIELDS = frozenset({
     "period_x_px","period_y_px","rotation_deg","lattice_angle_deg",
 })
 _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT = "per_spot"
-_POSITION_REFERENCE_CORRECTION_MODE_TRANSLATION = "translation"
-_POSITION_REFERENCE_CORRECTION_MODE_RIGID = "rigid"
-_POSITION_REFERENCE_CORRECTION_MODE_AFFINE = "affine"
-_POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL = "polynomial"
+_POSITION_REFERENCE_CORRECTION_MODE_TRANSLATION = TRANSFORM_TRANSLATION
+_POSITION_REFERENCE_CORRECTION_MODE_RIGID = TRANSFORM_RIGID
+_POSITION_REFERENCE_CORRECTION_MODE_AFFINE = TRANSFORM_AFFINE
+_POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL = TRANSFORM_POLYNOMIAL
 _POSITION_REFERENCE_CORRECTION_MODES = frozenset({
     _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT,
     _POSITION_REFERENCE_CORRECTION_MODE_TRANSLATION,
@@ -71,10 +77,9 @@ def _normalize_position_reference_correction_mode(value: Any) -> str:
 
 
 def _normalize_position_reference_polynomial_degree(value: Any) -> int:
-    degree = int(2 if value is None else value)
-    if degree not in (2,3,4):
-        raise ValueError("Position-reference polynomial degree must be 2, 3, or 4")
-    return degree
+    return normalize_polynomial_degree(
+        2 if value is None else value,allow_legacy_linear=False,
+    )
 
 
 def _normalize_affine_transform(value: Any) -> tuple[tuple[float,...],...] | None:
@@ -746,12 +751,9 @@ class PositionReferenceService(FeedbackComponent):
     ) -> tuple[np.ndarray,np.ndarray | None]:
         """Convert raw saved-reference errors into the selected correction field.
 
-        ``per_spot`` preserves the historical behavior. ``translation`` fits one
-        common detector-space shift, ``rigid`` fits translation + rotation, and
-        ``affine`` fits one general linear displacement field. ``polynomial`` fits
-        a detector-space polynomial displacement field of selectable total degree
-        2, 3, or 4. Constrained models are sampled at every registered lattice
-        site, so individual sites cannot move independently.
+        ``per_spot`` preserves the historical independent-site behavior.  Every
+        continuous mode delegates to the same unit-agnostic transform engine
+        used by FOV calibration, but is fitted here in detector-pixel space.
         """
         raw_reference = np.asarray(raw_reference_positions,dtype=np.float64)
         if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT:
@@ -766,64 +768,51 @@ class PositionReferenceService(FeedbackComponent):
         matched,_inferred,_resolved = localization_site_masks(localization)
         matched_count = int(np.count_nonzero(matched))
         displacement = raw_reference-measured
-
-        if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_TRANSLATION:
-            if matched_count < 1:
-                raise RuntimeError(
-                    "Translation reference correction requires at least one matched spot."
-                )
-            common_error = np.mean(displacement[:,matched],axis=1)
-            return measured+common_error[:,None],None
-
-        if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_RIGID:
-            if matched_count < 2:
-                raise RuntimeError(
-                    "Rigid reference correction requires at least two matched spots."
-                )
-            desired_registered = registered+displacement
-            transform = _fit_rigid_matrix(
-                registered[:,matched],desired_registered[:,matched],
-            )
-            mapped_registered = _apply_affine_matrix(transform,registered)
-            rigid_error = mapped_registered-registered
-            return measured+rigid_error,None
-
-        if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL:
-            degree = selection.polynomial_degree
-            minimum_points = _polynomial_term_count(degree)
-            if matched_count < minimum_points:
-                raise RuntimeError(
-                    "Polynomial reference correction degree %d requires at least %d "
-                    "matched spots; got %d."
-                    % (degree,minimum_points,matched_count)
-                )
-            polynomial = _fit_polynomial_displacement(
-                registered[:,matched],displacement[:,matched],degree=degree,
-            )
-            smooth_error = _apply_polynomial_displacement(polynomial,registered)
-            return measured+smooth_error,None
-
-        transform = (
-            None
-            if selection.affine_transform is None
-            else np.asarray(selection.affine_transform,dtype=np.float64)
+        degree = selection.polynomial_degree
+        manual_affine = (
+            selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_AFFINE
+            and selection.affine_transform is not None
         )
-        if transform is None:
-            if int(np.count_nonzero(matched)) < 3:
-                raise RuntimeError(
-                    "Affine reference correction requires at least three matched spots."
+        if not manual_affine:
+            minimum_points = minimum_points_for_transform(
+                selection.correction_mode,degree,
+            )
+            if matched_count < minimum_points:
+                model_label = selection.correction_mode.replace("_"," ").title()
+                suffix = (
+                    " degree %d" % degree
+                    if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL
+                    else ""
                 )
-            desired_registered = registered + (raw_reference-measured)
-            transform = _fit_affine_matrix(
-                registered[:,matched],desired_registered[:,matched],
+                raise RuntimeError(
+                    "%s reference correction%s requires at least %d matched spots; got %d."
+                    % (model_label,suffix,minimum_points,matched_count)
+                )
+
+        transform = None
+        if manual_affine:
+            # The affine editor stores its matrix directly.  Wrap it in the same
+            # shared transform value object so evaluation semantics stay common.
+            transform = fitted_matrix_transform(
+                TRANSFORM_AFFINE,
+                np.asarray(selection.affine_transform,dtype=np.float64),
+            )
+        else:
+            transform = fit_transform2d(
+                registered[:,matched],displacement[:,matched],
+                model=selection.correction_mode,
+                polynomial_degree=degree,
             )
 
-        mapped_registered = _apply_affine_matrix(transform,registered)
-        affine_error = mapped_registered-registered
+        smooth_error = transform.displacement(registered)
+        affine_matrix = (
+            np.asarray(transform.matrix,dtype=np.float64)
+            if transform.model == TRANSFORM_AFFINE else None
+        )
         # analyze_position() expects an effective detector-space reference and
         # converts (reference - measured) to the SLM correction. Adding the
-        # shared constrained error to each measured point retains that API.
-        return measured+affine_error,transform
+        # shared continuous error to each measured point retains that API.
+        return measured+smooth_error,affine_matrix
 
     def _position_reference_create_reason(self,section_key: str) -> str:
         status = self._runtime.get_section_feedback_status(section_key)
@@ -912,43 +901,19 @@ def _localization_is_resolved(localization: LocalizationResult) -> bool:
 def _fit_rigid_matrix(source: np.ndarray,target: np.ndarray) -> np.ndarray:
     source = np.asarray(source,dtype=np.float64)
     target = np.asarray(target,dtype=np.float64)
-    if source.shape != target.shape or source.ndim != 2 or source.shape[0] != 2:
-        raise ValueError("Rigid point arrays must share shape (2, N)")
-    if source.shape[1] < 2:
-        raise ValueError("At least two points are required for a rigid fit")
-    source_center = np.mean(source,axis=1)
-    target_center = np.mean(target,axis=1)
-    source_zero = source-source_center[:,None]
-    target_zero = target-target_center[:,None]
-    if float(np.linalg.norm(source_zero)) < 1e-12:
-        raise ValueError("Rigid source points are degenerate")
-    covariance = target_zero@source_zero.T
-    u,_singular_values,vt = np.linalg.svd(covariance)
-    rotation = u@vt
-    if float(np.linalg.det(rotation)) < 0.0:
-        u[:,-1] *= -1.0
-        rotation = u@vt
-    translation = target_center-rotation@source_center
-    return np.column_stack([rotation,translation])
+    transform = fit_transform2d(
+        source,target-source,model=TRANSFORM_RIGID,
+    )
+    return np.asarray(transform.matrix,dtype=np.float64)
 
 
 def _fit_affine_matrix(source: np.ndarray,target: np.ndarray) -> np.ndarray:
     source = np.asarray(source,dtype=np.float64)
     target = np.asarray(target,dtype=np.float64)
-    if source.shape != target.shape or source.ndim != 2 or source.shape[0] != 2:
-        raise ValueError("Affine point arrays must share shape (2, N)")
-    if source.shape[1] < 3:
-        raise ValueError("At least three points are required for an affine fit")
-    design = np.column_stack([
-        source.T,np.ones(source.shape[1],dtype=np.float64),
-    ])
-    coefficients,_,rank,_ = np.linalg.lstsq(design,target.T,rcond=None)
-    if int(rank) < 3:
-        raise ValueError("Affine reference fit is rank-deficient")
-    transform = coefficients.T
-    if abs(float(np.linalg.det(transform[:,:2]))) < 1e-12:
-        raise ValueError("Affine reference fit is singular")
-    return transform
+    transform = fit_transform2d(
+        source,target-source,model=TRANSFORM_AFFINE,
+    )
+    return np.asarray(transform.matrix,dtype=np.float64)
 
 
 def _apply_affine_matrix(transform: np.ndarray,positions: np.ndarray) -> np.ndarray:
@@ -963,61 +928,23 @@ def _apply_affine_matrix(transform: np.ndarray,positions: np.ndarray) -> np.ndar
 
 def _polynomial_term_count(degree: int) -> int:
     degree = _normalize_position_reference_polynomial_degree(degree)
-    return (degree+1)*(degree+2)//2
-
-
-def _polynomial_design(
-    positions: np.ndarray,
-    *,
-    center: np.ndarray,
-    scale: np.ndarray,
-    degree: int,
-) -> np.ndarray:
-    points = np.asarray(positions,dtype=np.float64)
-    if points.ndim != 2 or points.shape[0] != 2:
-        raise ValueError("Polynomial positions must have shape (2, N)")
-    degree = _normalize_position_reference_polynomial_degree(degree)
-    normalized = (points-center[:,None])/scale[:,None]
-    x,y = normalized
-    terms = [np.ones(points.shape[1],dtype=np.float64)]
-    for total_degree in range(1,degree+1):
-        for y_power in range(total_degree+1):
-            x_power = total_degree-y_power
-            terms.append((x**x_power)*(y**y_power))
-    return np.column_stack(terms)
+    return _shared_polynomial_term_count(degree)
 
 
 def _fit_polynomial_displacement(
     source: np.ndarray,displacement: np.ndarray,*,degree: int=2,
 ) -> tuple[np.ndarray,np.ndarray,np.ndarray,int]:
-    source = np.asarray(source,dtype=np.float64)
-    displacement = np.asarray(displacement,dtype=np.float64)
     degree = _normalize_position_reference_polynomial_degree(degree)
-    if (
-        source.shape != displacement.shape
-        or source.ndim != 2
-        or source.shape[0] != 2
-    ):
-        raise ValueError("Polynomial point arrays must share shape (2, N)")
-    term_count = _polynomial_term_count(degree)
-    if source.shape[1] < term_count:
-        raise ValueError(
-            "At least %d points are required for a degree-%d polynomial fit"
-            % (term_count,degree)
-        )
-    center = np.mean(source,axis=1)
-    scale = np.ptp(source,axis=1)
-    if np.any(scale <= 1e-12):
-        raise ValueError("Polynomial reference fit has degenerate coordinates")
-    design = _polynomial_design(
-        source,center=center,scale=scale,degree=degree,
+    transform = fit_transform2d(
+        source,displacement,model=TRANSFORM_POLYNOMIAL,
+        polynomial_degree=degree,
     )
-    coefficients,_,rank,_ = np.linalg.lstsq(design,displacement.T,rcond=None)
-    if int(rank) < term_count:
-        raise ValueError("Polynomial reference fit is rank-deficient")
-    # Store output as 2 x terms. Coordinates are normalized before fitting to
-    # avoid poor conditioning from high powers of detector-pixel coordinates.
-    return coefficients.T,center,scale,degree
+    return (
+        np.asarray(transform.coefficients,dtype=np.float64),
+        np.asarray(transform.normalization_center,dtype=np.float64),
+        np.asarray(transform.normalization_scale,dtype=np.float64),
+        int(transform.polynomial_degree),
+    )
 
 
 def _apply_polynomial_displacement(
@@ -1026,25 +953,17 @@ def _apply_polynomial_displacement(
 ) -> np.ndarray:
     coefficients,center,scale,degree = polynomial
     degree = _normalize_position_reference_polynomial_degree(degree)
-    matrix = np.asarray(coefficients,dtype=np.float64)
-    term_count = _polynomial_term_count(degree)
-    if matrix.shape != (2,term_count):
-        raise ValueError(
-            "Polynomial coefficients must have shape (2, %d)" % term_count
-        )
-    design = _polynomial_design(
-        positions,
-        center=np.asarray(center,dtype=np.float64).reshape(2),
-        scale=np.asarray(scale,dtype=np.float64).reshape(2),
-        degree=degree,
+    transform = fitted_polynomial_transform(
+        degree=degree,coefficients=coefficients,
+        normalization_center=center,normalization_scale=scale,
     )
-    return matrix@design.T
+    return transform.displacement(positions)
 
 
 def _fit_quadratic_displacement(
     source: np.ndarray,displacement: np.ndarray,
 ) -> tuple[np.ndarray,np.ndarray,np.ndarray,int]:
-    """Backward-compatible degree-2 wrapper for the experimental helper."""
+    """Backward-compatible degree-2 wrapper around the shared transform engine."""
     return _fit_polynomial_displacement(source,displacement,degree=2)
 
 
@@ -1052,5 +971,5 @@ def _apply_quadratic_displacement(
     polynomial: tuple[np.ndarray,np.ndarray,np.ndarray,int],
     positions: np.ndarray,
 ) -> np.ndarray:
-    """Backward-compatible degree-2 wrapper for the experimental helper."""
+    """Backward-compatible degree-2 wrapper around the shared transform engine."""
     return _apply_polynomial_displacement(polynomial,positions)

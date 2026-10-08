@@ -14,7 +14,7 @@ from ..core.calibration.fov_mapping_correction import FOVMappingCorrection
 from ..core.engine.device import SLMIdentity
 
 _logger = logging.getLogger(__name__)
-_VERSION = 1
+_VERSION = 2
 
 
 class FOVMappingCorrectionStore:
@@ -171,6 +171,11 @@ class FOVMappingCorrectionStore:
         if not isinstance(payload,dict):
             raise ValueError("FOV mapping-correction file must contain an object")
         version = int(payload.get("version",0))
+        if version == 1:
+            # Schema v1 stored polynomial coefficients directly on the FOV
+            # correction.  Migrate in memory only; the next explicit save emits
+            # schema v2 with the shared transform payload.
+            return FOVMappingCorrection.from_v1_dict(payload["correction"])
         if version != _VERSION:
             raise ValueError(f"Unsupported FOV mapping-correction version: {version}")
         return FOVMappingCorrection.from_dict(payload["correction"])

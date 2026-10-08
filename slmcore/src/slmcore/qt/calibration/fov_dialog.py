@@ -11,8 +11,29 @@ from ..measurement.localization_view import MeasurementLocalizationView
 from ..cgh.session_views import PositionCorrectionView,PositionReferenceView
 
 
+def _transform_label(correction) -> str:
+    model=str(getattr(correction,"model","") or "").strip().lower()
+    if model=="polynomial":
+        degree=getattr(correction,"degree",None)
+        if degree==1:
+            return "Polynomial 1 (legacy)"
+        return "Polynomial %s" % (degree if degree is not None else "—")
+    return model.title() or "Transform"
+
+
+def _populate_transform_models(combo: QtWidgets.QComboBox) -> None:
+    combo.addItem("Translation","translation")
+    combo.addItem("Rigid","rigid")
+    combo.addItem("Affine","affine")
+    combo.addItem("Polynomial","polynomial")
+
+
+def _populate_polynomial_degrees(combo: QtWidgets.QComboBox) -> None:
+    combo.addItem("2",2); combo.addItem("3",3); combo.addItem("4",4)
+
+
 class SavedFOVCorrectionView(QtWidgets.QWidget):
-    """Read/modify view for one persisted polynomial FOV correction.
+    """Read/modify view for one persisted continuous FOV correction.
 
     The persisted source samples are retained by ``FOVMappingCorrection`` so a
     saved correction can be inspected and refit without returning to image
@@ -20,7 +41,7 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
     derived from those saved samples.
     """
 
-    sigRefitRequested=QtCore.Signal(int)
+    sigRefitRequested=QtCore.Signal(str,object)
     sigSaveUpdateRequested=QtCore.Signal()
     sigRenameRequested=QtCore.Signal(str)
 
@@ -35,16 +56,20 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
         root.addWidget(self.summary)
 
         controls=QtWidgets.QHBoxLayout()
-        controls.addWidget(QtWidgets.QLabel("Polynomial degree:"))
-        self.degree_combo=QtWidgets.QComboBox()
-        self.degree_combo.addItem("Linear (1)",1)
-        self.degree_combo.addItem("Quadratic (2)",2)
-        self.degree_combo.addItem("Cubic (3)",3)
+        controls.addWidget(QtWidgets.QLabel("Transform:"))
+        self.model_combo=QtWidgets.QComboBox(); _populate_transform_models(self.model_combo)
+        controls.addWidget(self.model_combo)
+        self.degree_label=QtWidgets.QLabel("Order:")
+        controls.addWidget(self.degree_label)
+        self.degree_combo=QtWidgets.QComboBox(); _populate_polynomial_degrees(self.degree_combo)
         controls.addWidget(self.degree_combo)
-        self.refit_button=QtWidgets.QPushButton("Refit saved samples")
-        self.refit_button.clicked.connect(
-            lambda:self.sigRefitRequested.emit(int(self.degree_combo.currentData()))
+        self.model_combo.setToolTip(
+            "Refit the retained FOV samples as Translation, Rigid, Affine, or Polynomial."
         )
+        self.model_combo.currentIndexChanged.connect(self._refit_options_changed)
+        self.degree_combo.currentIndexChanged.connect(self._refit_options_changed)
+        self.refit_button=QtWidgets.QPushButton("Refit saved samples")
+        self.refit_button.clicked.connect(self._request_refit)
         controls.addWidget(self.refit_button)
         self.save_update_button=QtWidgets.QPushButton("Save update")
         self.save_update_button.clicked.connect(self.sigSaveUpdateRequested.emit)
@@ -59,7 +84,7 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
         self.preview_label.setWordWrap(True); root.addWidget(self.preview_label)
 
         tabs=QtWidgets.QTabWidget(); root.addWidget(tabs,1)
-        self.field_view=PositionCorrectionView(); tabs.addTab(self.field_view,"Polynomial field")
+        self.field_view=PositionCorrectionView(); tabs.addTab(self.field_view,"Transform field")
         self.samples_view=PositionCorrectionView(); tabs.addTab(self.samples_view,"Saved samples")
 
     @property
@@ -76,11 +101,15 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
             self.summary.setText("No saved FOV correction selected.")
             self.field_view.clear(); self.samples_view.clear(); self.save_update_button.setEnabled(False)
             return
-        index=self.degree_combo.findData(int(correction.degree))
-        if index>=0:self.degree_combo.setCurrentIndex(index)
+        model_index=self.model_combo.findData(str(correction.model))
+        if model_index>=0:self.model_combo.setCurrentIndex(model_index)
+        if correction.degree is not None:
+            degree_index=self.degree_combo.findData(int(correction.degree))
+            if degree_index>=0:self.degree_combo.setCurrentIndex(degree_index)
+        self._model_changed()
         self.summary.setText(
-            "%s · %s%s\n%d samples · RMS %.6g kxy · max %.6g kxy · coverage %.6g\nCreated: %s" % (
-                correction.name,compatibility or "Saved",
+            "%s · %s · %s%s\n%d samples · RMS %.6g kxy · max %.6g kxy · coverage %.6g\nCreated: %s" % (
+                correction.name,_transform_label(correction),compatibility or "Saved",
                 " · Default" if is_default else "",
                 correction.sample_count,correction.rms_residual_kxy,
                 correction.max_residual_kxy,correction.coverage_area,
@@ -91,7 +120,7 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
             correction.sample_positions_kxy,correction.sample_displacements_kxy
         )
         self._show_field(correction)
-        self.preview_label.setText("Saved polynomial fit (degree %d)." % correction.degree)
+        self.preview_label.setText("Saved %s fit." % _transform_label(correction))
         self.save_update_button.setEnabled(False)
 
     def set_preview(self,correction) -> None:
@@ -102,11 +131,26 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
             self.save_update_button.setEnabled(False); return
         self._show_field(correction)
         self.preview_label.setText(
-            "Preview refit: degree %d · RMS %.6g kxy · max %.6g kxy" % (
-                correction.degree,correction.rms_residual_kxy,correction.max_residual_kxy
+            "Preview refit: %s · RMS %.6g kxy · max %.6g kxy" % (
+                _transform_label(correction),correction.rms_residual_kxy,
+                correction.max_residual_kxy,
             )
         )
         self.save_update_button.setEnabled(True)
+
+    def _model_changed(self) -> None:
+        polynomial=str(self.model_combo.currentData() or "")=="polynomial"
+        self.degree_label.setVisible(polynomial); self.degree_combo.setVisible(polynomial)
+
+    def _refit_options_changed(self,*_args) -> None:
+        self._model_changed()
+        if self._preview is not None:
+            self.set_preview(None)
+
+    def _request_refit(self) -> None:
+        model=str(self.model_combo.currentData() or "polynomial")
+        degree=int(self.degree_combo.currentData()) if model=="polynomial" else None
+        self.sigRefitRequested.emit(model,degree)
 
     def _show_field(self,correction) -> None:
         samples=np.asarray(correction.sample_positions_kxy,dtype=np.float64)
@@ -145,7 +189,7 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
     sigSquareStraightRequested=QtCore.Signal()
     sigFitCenterRequested=QtCore.Signal()
     sigResetFromFitRequested=QtCore.Signal()
-    sigFitCandidateRequested=QtCore.Signal(int)
+    sigFitCandidateRequested=QtCore.Signal(str,object)
     sigSaveRequested=QtCore.Signal(str,bool)
     sigGeometryCalibrationRequested=QtCore.Signal(str)
 
@@ -272,11 +316,22 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
 
         fit_box=QtWidgets.QGroupBox("FOV correction"); fit_layout=QtWidgets.QVBoxLayout(fit_box)
         fit_layout.setContentsMargins(8,8,8,8); fit_layout.setSpacing(5)
-        fit_row=QtWidgets.QHBoxLayout(); fit_row.setSpacing(6); fit_row.addWidget(QtWidgets.QLabel("Polynomial degree:"))
-        self.degree_combo=QtWidgets.QComboBox(); self.degree_combo.addItem("Quadratic (2)",2)
-        self.degree_combo.addItem("Linear (1)",1); self.degree_combo.addItem("Cubic (3)",3)
+        fit_row=QtWidgets.QHBoxLayout(); fit_row.setSpacing(6)
+        fit_row.addWidget(QtWidgets.QLabel("Transform:"))
+        self.model_combo=QtWidgets.QComboBox(); _populate_transform_models(self.model_combo)
+        self.model_combo.setCurrentIndex(self.model_combo.findData("polynomial"))
+        fit_row.addWidget(self.model_combo)
+        self.degree_label=QtWidgets.QLabel("Order:"); fit_row.addWidget(self.degree_label)
+        self.degree_combo=QtWidgets.QComboBox(); _populate_polynomial_degrees(self.degree_combo)
         fit_row.addWidget(self.degree_combo); self.fit_button=QtWidgets.QPushButton("Fit candidate")
-        self.fit_button.clicked.connect(lambda:self.sigFitCandidateRequested.emit(int(self.degree_combo.currentData())))
+        self.model_combo.setToolTip(
+            "Translation: common shift; Rigid: shift + rotation; Affine: adds scale/shear; "
+            "Polynomial: nonlinear field."
+        )
+        self.degree_combo.setToolTip("Polynomial total order (2, 3, or 4).")
+        self.model_combo.currentIndexChanged.connect(self._fit_options_changed)
+        self.degree_combo.currentIndexChanged.connect(self._fit_options_changed)
+        self.fit_button.clicked.connect(self._emit_fit_candidate)
         fit_row.addWidget(self.fit_button); fit_row.addStretch(1); fit_layout.addLayout(fit_row)
         self.candidate_label=QtWidgets.QLabel("No FOV candidate fitted."); self.candidate_label.setWordWrap(True)
         fit_layout.addWidget(self.candidate_label)
@@ -313,7 +368,7 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
         self.observation_combo.currentIndexChanged.connect(self._observation_changed)
         self.method_combo.currentIndexChanged.connect(self._method_changed)
         self.configure_observation_planes(observation_planes,current_observation_plane)
-        self._method_changed()
+        self._method_changed(); self._fit_model_changed()
         self.set_editable_enabled(False); self.save_button.setEnabled(False)
 
     @property
@@ -337,6 +392,23 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
     @property
     def geometry_locks(self) -> dict[str,bool]:
         return {key:bool(box.isChecked()) for key,box in self._geometry_lock_boxes.items()}
+
+    def _fit_model_changed(self) -> None:
+        polynomial=str(self.model_combo.currentData() or "")=="polynomial"
+        self.degree_label.setVisible(polynomial); self.degree_combo.setVisible(polynomial)
+
+    def _fit_options_changed(self,*_args) -> None:
+        self._fit_model_changed()
+        # Prevent saving a candidate fitted with options that no longer match
+        # the selector.  The service candidate remains harmlessly cached until
+        # the next fit; the UI requires an explicit refit before Save.
+        if hasattr(self,"candidate_label") and self.save_button.isEnabled():
+            self.clear_candidate()
+
+    def _emit_fit_candidate(self) -> None:
+        model=str(self.model_combo.currentData() or "polynomial")
+        degree=int(self.degree_combo.currentData()) if model=="polynomial" else None
+        self.sigFitCandidateRequested.emit(model,degree)
 
     def configure_observation_planes(self,names: Sequence[str],current: str | None) -> None:
         self.observation_combo.blockSignals(True); self.observation_combo.clear()
@@ -375,9 +447,10 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
         if correction is None: self.clear_candidate(); return
         self.correction_view.set_data(correction.sample_positions_kxy,correction.sample_displacements_kxy)
         self.candidate_label.setText(
-            "%d samples · RMS %.6g kxy · max %.6g kxy · coverage %.6g"
-            % (correction.sample_count,correction.rms_residual_kxy,
-               correction.max_residual_kxy,correction.coverage_area)
+            "%s · %d samples · RMS %.6g kxy · max %.6g kxy · coverage %.6g"
+            % (_transform_label(correction),correction.sample_count,
+               correction.rms_residual_kxy,correction.max_residual_kxy,
+               correction.coverage_area)
         )
         self.save_button.setEnabled(True)
 
