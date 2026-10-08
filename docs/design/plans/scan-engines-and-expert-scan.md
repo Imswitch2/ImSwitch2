@@ -1,558 +1,585 @@
-# Scan engines and ExpertScan
+# Unleashing the scanner: one scan model, engines that say what they can do
 
-**Status:** Exploration, draft 1, for review. Nothing is implemented.
+**Status:** Exploration, draft 2, for review. Nothing is implemented.
 **Date:** 2026-10-08
 **Branch:** `docs/scan-engines-expert-scan`, off `feat/simple-point-scan`
 (56ef43f0, which carries the scan cloak and the Advanced scan-freeze work).
-
-**The two questions (Lenny, 2026-10-08):**
-
-- **(a)** Can the Advanced scan, and SimplePointScan with it, run on scan
-  hardware other than the NI-DAQ, such as the TriggerScope or a Teensy scan
-  generator? For a scanner that takes only analog signals and no digital
-  TTL, can the TTL parameters be greyed out?
-- **(b)** Can there be a further layer, ExpertScan, for more complicated
-  patterns, such as the Snouty multi-scan RESOLFT sequences or arbitrary
-  curves like a circle or a spiral?
-
 File references are to this branch.
 
----
+**Asked (Lenny, 2026-10-08):**
 
-## 0. The answer in brief
+- **(a)** Run the Advanced scan, and SimplePointScan with it, on other scan
+  hardware than the NI-DAQ: the TriggerScope, a Teensy scan generator. For a
+  scanner that only takes analog signals, grey out the TTL parameters.
+- **(b)** Add a further layer, ExpertScan, for more complicated patterns: the
+  Snouty multi-scan RESOLFT schemes, and arbitrary curves such as a circle or
+  a spiral.
 
-**(a) Yes, in three levels.** The first two are software only.
+## Changes since draft 1 (Lenny's review, 2026-10-08)
 
-1. **One engine seam.** The scan controllers call the NI-DAQ manager
-   directly in about ten places. Behind one interface, the Advanced scan
-   runs on whatever engine the setup names. On the NI-DAQ, nothing changes.
-2. **Engines say what they can do** (capabilities). Advanced and Simple
-   build their controls from that.
-   - No digital lines means the TTL parts are greyed out, with the reason.
-   - A scan an engine cannot run is refused, with the reason. This is the
-     same representable-subset pattern the scan cloak already uses.
-3. **The real limit is the firmware.**
-   - The TriggerScope's Snouty firmware runs six fixed routines and plays no
-     waveform tables. Advanced on a TriggerScope therefore means a stepped
-     raster with cameras.
-   - The Teensy's v4 firmware is digital only, with 256 steps. It is a pulse
-     engine and cannot drive a galvo.
-   - A generic step-table firmware would lift both limits. That is firmware
-     work, optional, and last (§2.7).
+1. **The firmware follows the model, not the other way round.** The
+   TriggerScope is specific to the lab. Its six fixed routines, and the
+   raster's shared TTL window, show how far the firmware got, not what
+   scanning should be.
 
-**(b) Yes, but "ExpertScan" covers two different things.**
-
-- **Trajectories** (circle, spiral, Lissajous, point lists, any curve) are
-  continuous. They need a streaming engine, which today means the NI-DAQ.
-  They also need a data path that is not a raster: measurements plus their
-  coordinates, gridded into an image for display.
-- **Sequence programs** (pLS-RESOLFT and its relatives) are stepped: nested
-  loops of DAC steps, pulse sequences and camera exposures. They run on any
-  engine that can step. The six TriggerScope panels are presets of one such
-  program.
-
-**Recommended order:**
-
-1. G1, the engine seam.
-2. G2, capabilities and greying out.
-3. E1, trajectories on the NI-DAQ. The mock APD can already image a spiral,
-   because it samples its synthetic sample at the waveform's positions.
-4. E2, sequence programs.
-5. G3, the TriggerScope engine.
-6. F, firmware.
+   Draft 1 compiled scans onto those routines when the shapes matched. That
+   is dropped as a design goal. The model is defined first. Then an *engine
+   protocol* is defined, which the TriggerScope firmware is reprogrammed to
+   (§5). The six routines stay only as long as their panels do.
+2. **The model is the centre, and it is unleashed** (§1, §2):
+   - interleaved orders (1, 3, 5, 2, 4, 6: the cycles and planes of OPM
+     RESOLFT and of the SNOUTY de-interlacer);
+   - intra-pixel steps beside line steps (Guillaume's work, half ported);
+   - custom axes that combine devices;
+   - the rest of what a scan can be.
+3. **The capability model stays and gets sharper.** For each feature of a
+   scan, the engine says whether it runs it natively, emulated, or not at
+   all, and what would change that. The panels show exactly that (§3).
 
 ---
 
-## 1. What the code does today
+## 0. In brief
 
-### 1.1 The Advanced and SimplePointScan path
+- **One scan model** (`ScanProgram`), Qt-free, in the vocabulary of the
+  acquisition-order spec (draft 4):
+  - nested **loops** (outermost first), separate from the **devices** they
+    drive;
+  - each device's position is an affine function of the loop counters, or a
+    table;
+  - a **step timeline** inside each innermost step: pulses, analog levels,
+    positioner micro-moves, detector windows, waits;
+  - **phases** generalise line steps to any loop level;
+  - loops can be **stepped or swept**, and **trajectories** cover free
+    curves.
+
+  Interleaving, multi-sheet RESOLFT, serpentine, composite axes and
+  intra-pixel moves are then not special features. They are ordinary values
+  of the model.
+- **One meaning, many executors.** A Python reference interpreter turns a
+  program into the exact timeline of what every device does. It is used to:
+  - densify step programs for the NI-DAQ;
+  - simulate the engine for every mock setup;
+  - act as the conformance oracle for firmware: a TriggerScope or Teensy
+    running the engine protocol must produce the same timeline.
+- **Engines declare capabilities.** Compiling a program for an engine gives
+  a **feasibility report**: each feature the program uses is native,
+  emulated (with its cost) or impossible (with the reason and the remedy).
+  The panels grey out options from that report, and the run refuses from
+  it. There is one authority.
+- **Three panels on one model:**
+  - **Simple:** the cloak over Advanced, unchanged.
+  - **Advanced:** the raster editor it is today, plus interleaved axis order
+    and intra-pixel moves.
+  - **Expert:** the whole model: loops, composite axes, phases, step
+    timeline, trajectories.
+- **Recommended first steps:**
+  1. M0, the model, the interpreter and the Advanced ↔ program adapter.
+  2. M1, the engine seam and capabilities.
+  3. M2, interleave and intra-pixel moves in Advanced on the NI-DAQ.
+  4. M3, the Expert panel.
+  5. M4, the engine protocol and new TriggerScope firmware.
+
+---
+
+## 1. What the scanner should be able to say
+
+### 1.1 Interleaved orders: loops are not axes
+
+**The scheme.** MS-RESOLFT on an OPM visits one axis in two nested loops:
 
 ```
-widget ──► analog + digital dicts
-             │
-             ├─ ScanDesigner (scan.scanDesigner: Galvo / Beta)
-             │     └► scanSignalsDict {positioner: volts[n]}  + ScanInfoContract
-             ├─ TTLCycleDesigner (scan.TTLCycleDesigner)
-             │     └► TTLCycleSignalsDict {device: bool[n]} + line/frame clocks
-             └─ coordinator.arm ──► NidaqManager.runScan
-                    AO + DO tasks, one clock (100 kHz)
-                    APD / PMT open their own NI counter / AI tasks in the
-                    sigScanBuilt slot, started by ao/StartTrigger
+for cycle in range(cycles):          # outer
+    for plane in range(planes):      # inner
+        position index = cycles * plane + cycle
 ```
 
-- **One clock, everything pre-sampled.** The arrays have equal length at
-  `scan.sampleRate`. The NI-DAQ refuses any rate other than 100 kHz
-  (`NidaqManager.py:523-535`).
-- **Volts.** Designers build waveforms in volts through `conversionFactor`
-  (`GalvoScanDesigner.py:264-295`), checked against `minVolt`/`maxVolt`
-  (`basesignaldesigners.py:129-191`).
-- **The scan description is a raster.** `ScanInfoContract` holds pixel
-  counts per axis, samples per pixel, line and frame, and the fast-axis pixel
-  count (`basesignaldesigners.py:307-385`). About twenty readers rely on it:
-  APD, PMT, TimeTagger, RecordingManager, the acquisition layouts and
-  `scan_frame`.
-- **Point detectors are NI-DAQ detectors.** They open their own tasks, read
-  the timer clock and arm on `ao/StartTrigger` (`APDManager.py:1211-1219`,
-  `PMTManager.py:1086-1094`). They cannot follow another engine.
-- **Where the controllers touch the NI-DAQ:**
-  - `basecontrollers.py:443-465`: creates the coordinator and relays the
-    built, started, done and build-failed signals.
-  - `basecontrollers.py:1673`: `resolveScanTTLDevices`.
-  - `basecontrollers.py:1698`: `coordinator.arm`, which calls `runScan`
-    (`_scan_execution.py:384-396`).
-  - `ScanControllerAdvanced.py:160`: the progress bar.
-  - The shared coordinator is stored on the NI-DAQ manager object
-    (`_scan_execution.py:674-704`).
-- **Already engine-neutral:**
-  - `ScanExecutionCoordinator.armWithStarter` (`_scan_execution.py:398-481`),
-    which the TriggerScope panels use.
-  - The run and iteration tokens, and the `finishScan` barrier.
-- **Analog-only already runs on the NI-DAQ:** the DO task is skipped
-  (`NidaqManager.py:1395`).
+With 2 cycles and 3 planes this visits 0, 2, 4, then 1, 3, 5. That is
+Lenny's 1, 3, 5, 2, 4, 6, counted from 1.
 
-### 1.2 TriggerScope
+**Where it lives today:**
 
-- **Link.** ASCII over RS-232, at about 50 ms per parameter write
-  (`TriggerScopeManager.py:73, 115`). The firmware is not in the repository;
-  it is the Snouty `TriggerSwitch_0.1.ino`
-  (`docs/triggerscope_firmware_quirks.md`).
-- **No waveform tables.** `ScanManagerTriggerScope.runScan(params,
-  scan_type)` uploads named scalar parameters for one of six routines and
-  then sends the routine's command (`ScanManagerTriggerScope.py:60-112`).
-  The routines are `RASTER_SCAN`, `pLS-RESOLFT_SCAN`,
-  `pLS-RESOLFT-Multicolor_SCAN`, `galvo_Detection_SCAN`, `multicolor_SCAN`
-  and `LS-XY-RESOLFT_SCAN`.
-- **`RASTER_SCAN`:**
-  - Stepped, point by point, up to 4 dimensions, each given as start, length
-    and step in volts.
-  - One shared pulse window: the firmware fires TTL lines 0-3 together and
-    ignores the per-line rows (quirks §1).
-  - The axis loop includes the endpoint, which the controller compensates
-    for (`TriggerScopeRasterController.py:21-43`).
-- **The RESOLFT routines:**
-  - On, off and readout pulses, DAC ramps and time-lapse delays.
-  - Loop order is time, then cycle, then readout plane.
-  - The exact order inside a step is known only from the firmware source.
-- **Detectors:** cameras only, by TTL. APD, PMT and TimeTagger cannot take
-  part.
-- **No abort:** a started iteration always finishes.
-- **A second lifecycle.** None of its controllers is a `SuperScanController`.
-  `_triggerscope_scan_lifecycle.py` (612 lines) re-implements run
-  reservation, repeat, stop and external requests on the same coordinator.
-  Four controllers repeat the same 17-key parameter block.
-- **One scan manager per setup** (`MasterController.py:90-112`). An Advanced
-  NI-DAQ scan and a TriggerScope scan cannot coexist in one setup.
+- **The TriggerScope pLS-RESOLFT routine** drives one device from two loops:
+  the *cycle* scan and the *RO* scan "apply to the same device"
+  (`docs/gui.rst:1003-1006`). With an RO step of `cycles × cycle step`,
+  the result is the interleave above.
+- **The SNOUTY reconstructor** undoes it. `restack_interleaved`
+  (`improcess/reconstructors/snouty/restack.py`) reads the `cycle` and
+  `plane` loops from the acquisition layout (`snouty/metadata.py:31-80`).
+  It refuses a layout whose plane loop is not immediately inside the cycle
+  loop.
 
-### 1.3 Teensy
+**The general rule.** The acquisition-order spec (§3.1 and its MS-RESOLFT
+row, `z = cycles·plane + cycle`) already states it: loops are chronological
+counters, and a device position is an affine map of them. A raster is the
+identity map. An interleave is a two-loop map onto one device. Serpentine is
+a traversal rule. An explicit permutation (bit-reversed, random) is a table.
 
-- **Base class.** `PulseGeneratorManager` declares honest capabilities:
-  channels, minimum pulse, jitter, trigger input, analog
-  (`PulseGeneratorManager.py:73-110`). A sequence step holds a duration plus
-  the state of every channel.
-- **What it can do.** `TeensyPulseManager` with the v4 firmware:
-  - 16 digital lines and 1 µs resolution.
-  - Sequences of up to 256 steps (`SEQ,<n>,<reps>`, then `<dur_us>,<bitmask>`
-    lines), with one outer repeat.
-  - No analog output and no trigger input.
-  - STOP is checked between steps, with up to 16 ms latency.
-- **Who uses it.** Only `PulseGeneratorLaserManager` and the snap trigger.
-  No scan uses it, although `ARCHITECTURE.md:186` lists scan controllers as
-  consumers.
+### 1.2 Composite axes: one loop, several devices
+
+One loop counter can drive several devices, each with its own coefficient
+and offset. Examples:
+
+- an oblique scan (a galvo and a piezo together);
+- a stage scan with a de-scanning galvo;
+- a tilt that follows a translation.
+
+Each device keeps its own limits (range, `vel_max`, `acc_max`, voltage),
+scaled by its coefficient. Two loops may drive the same device, as in §1.1;
+their contributions add.
+
+### 1.3 Phases: line steps at any level
+
+**Today.** A *line step* repeats each fast line `n_linesteps` times, each
+time with its own TTL enables, pulse windows and analog power.
+
+**Generalised,** this is a *phase loop* that can sit at any level:
+
+| Level | Meaning |
+|---|---|
+| Pixel | Pixel-interleaved multicolor |
+| Line | Today's line steps |
+| Frame | Frame-interleaved |
+| Volume | Volume-interleaved |
+
+Each phase sets device states and offsets. The layout already has a
+non-positional loop kind for it, `condition`.
+
+### 1.4 The step timeline, with intra-pixel moves
+
+Inside every innermost step (a pixel, a camera exposure) there is a timeline
+of the step's dwell, which may differ per phase. It holds:
+
+- TTL windows, as Advanced has them now;
+- analog levels (laser power, a modulator) and ramps;
+- **positioner micro-moves:** a device offset by Δ µm during a window;
+- detector windows (gate, exposure, trigger);
+- waits for an external trigger;
+- marker outputs (line and frame clocks).
+
+**The intra-pixel moves were designed, and half ported.** Guillaume's
+commit `1dcbbe2af` (2026-06-12) added positioners as devices in the
+"Advanced Line Program". The panel holds per-line-step start, end and step
+µm. `BetaScanDesigner` added the offsets to the scan waveform as square
+windows inside each pixel, tiled along the line.
+
+Only the widget half came to ImSwitch2 (`feebad5ec`): the fields are
+serialized and forwarded (`ScanControllerAdvanced.py:364-375`), but no
+designer reads them. The designer half is on upstream `testalab_scanDev`
+and uses only the first enabled line step.
+
+As Lenny says, this is easy where steps last milliseconds (stepped axes,
+`BetaScanDesigner`) and hard on a galvo sweep. The capability report says so
+per axis (§3).
+
+### 1.5 Stepped or swept, and free trajectories
+
+**A loop is stepped or swept:**
+
+- **Stepped:** hold a position during each step.
+- **Swept:** move continuously, with flyback or turnaround, as the
+  smooth-galvo fast axis does today.
+
+Interleaving, intra-pixel moves and per-step waits need stepped loops. A
+swept loop needs a streaming engine.
+
+**Free trajectories** (circle, spiral, Lissajous, a curve from a file or
+from a few lines of Python) are the swept case with no loop structure: a
+path, and measurement windows along it.
+
+### 1.6 Time, triggers and detectors
+
+- **Time:** time-lapse loops with intervals; waits between loops (the
+  RESOLFT delay after a DAC step); steps released by an external trigger.
+- **Detectors:** each detector binds to the events that produce its data.
+  The **acquisition layout follows from the program's loops**, so a
+  recording describes its own interleave and the SNOUTY reconstructor needs
+  no widget values.
+- **Later:** event-driven branches (EtSnouty starting a program on a
+  detected event), adaptive orders, and multi-engine scans.
 
 ---
 
-## 2. (a) The Advanced scan beyond the NI-DAQ
+## 2. The scan model
 
-### 2.1 Three levels
-
-| Level | What | Firmware? | Result |
-|---|---|---|---|
-| G1 seam | Controllers talk to a `ScanEngine`, not to the NI-DAQ manager | no | Nothing visible; prepares everything else |
-| G2 capabilities | Engines declare what they can do; the panels grey out what is missing and refuse what cannot run | no | The analog-only case answered. Silent failures (§7) become messages |
-| G3 engines | TriggerScope (stepped raster, cameras); Teensy (pulse programs) | no | Advanced runs on the TriggerScope where the firmware allows it |
-| F firmware | One generic step-table firmware for Teensy-class boards | yes | Any stepped scan on the TriggerScope or a Teensy with DACs; abort |
-
-### 2.2 The engine seam (G1)
+### 2.1 Shape (sketch)
 
 ```python
-class ScanEngine(SignalInterface):
-    sigScanBuilt = Signal(object, object, object)   # scanInfo, program, devices
-    sigScanStarted = Signal()
-    sigScanDone = Signal()
-    sigScanBuildFailed = Signal(str)
+@dataclass(frozen=True)
+class Loop:
+    id: str                       # 'cycle', 'plane', 'y', 'x', 'phase', 'time'
+    kind: str                     # acquisition-layout loop kind
+    count: int
+    mode: str = 'stepped'         # or 'swept'
+    traversal: str = 'forward'    # 'reverse', 'serpentine' (parity loops below)
+    parity_loops: tuple = ()
 
-    name: str                                      # 'nidaq', 'triggerscope', ...
+@dataclass(frozen=True)
+class DeviceDrive:
+    device: str                   # positioner name
+    offset_um: float
+    weights_um: Mapping[str, float] = field(default_factory=dict)
+    # loop id -> µm per count; or a table:
+    table_um: Optional[Sequence[float]] = None   # explicit positions per visit
 
-    def capabilities(self) -> 'EngineCapabilities': ...
-    def refusal(self, program) -> str: ...         # '' when it can run it
-    def run(self, program, scanInfoDict): ...      # the coordinator's starter
-    def abort(self) -> bool: ...                   # False: the iteration finishes
+@dataclass(frozen=True)
+class TimelineEvent:
+    device: str
+    kind: str                     # 'ttl', 'level', 'offset', 'detector', 'wait', 'marker'
+    start_s: float
+    end_s: float
+    value: float | None = None    # level (%, V), offset (µm)
+    phases: Optional[frozenset] = None           # None: every phase
+
+@dataclass(frozen=True)
+class ScanProgram:
+    loops: tuple[Loop, ...]       # outermost first
+    drives: tuple[DeviceDrive, ...]
+    step_s: float                 # dwell of the innermost step
+    timeline: tuple[TimelineEvent, ...]
+    phases: tuple[Phase, ...] = ()               # the phase loop's per-phase states
+    waits: tuple[LoopWait, ...] = ()             # time between iterations of a loop
+    park: Mapping[str, float] = field(default_factory=dict)
+    detectors: tuple[DetectorBinding, ...] = ()
+    trajectory: Optional[Trajectory] = None      # §1.5: free path instead of loops
 ```
 
-- **`NidaqScanEngine`** wraps `NidaqManager`: `run` is `runScan(signalDict,
-  scanInfoDict)`, and the signals are relayed.
-  - `SuperScanController` talks only to `self._scanEngine`.
-  - `coordinator.arm` becomes `armWithStarter(engine.run, ...)`.
-  - The coordinator is held by the master, not by the NI-DAQ manager.
-- **Which engine.** A new optional key, `scan.engine` (default `"nidaq"`),
-  names it. Every device the scan drives must belong to that engine. The
-  channel already says which engine a device belongs to:
-  - `Dev…/` is the NI-DAQ;
-  - `Triggerscope/DAC<n>` and `Triggerscope/TTL<n>` are the TriggerScope;
-  - the `teensyPulse.pinMap` names the Teensy's lines.
-- **A device on another engine** is greyed out in the tables, with the
-  reason. If it is selected anyway, the scan is refused: "405 is wired to
-  the TriggerScope; this setup scans with the NI-DAQ." This replaces the
-  silent drop in §7.
-- **Detectors say which engine they need:**
-  - APD and PMT need the NI-DAQ.
-  - A camera needs any engine with a trigger line for it.
-  - The TimeTagger needs an engine that gives it a line clock and the scan
-    signals.
+**Positions are in µm and times in seconds.** Volts, sample rates and table
+formats belong to the engines and their compilers, never to the program.
 
-  A participant the engine cannot serve is refused.
-- **The rule from SimplePointScan holds** (Lenny, 2026-09-25): on the NI-DAQ
-  the Advanced scan behaves as it does today. The waveform goldens and the
-  "Advanced as today" tests guard it.
+### 2.2 Examples in the model
 
-### 2.3 Capabilities (G2)
+- **Advanced raster with 2 line steps:**
+  - loops `y` (count Ny), `phase` (count 2, at line level), `x` (count Nx,
+    swept);
+  - drives X ← x and Y ← y;
+  - timeline: a TTL window per laser per phase.
+
+  This is exactly today's dicts.
+- **MS-RESOLFT (2 cycles × 3 planes):**
+  - loops `time` (n, with an interval), `cycle` (2), `plane` (3), all
+    stepped;
+  - drive RO ← `{cycle: dy, plane: 2·dy}`;
+  - timeline: on pulse, wait, off pulse, wait, readout pulse with the
+    camera exposure.
+
+  The layout's `cycle`/`plane` loops are what the reconstructor reads.
+- **An oblique composite:**
+  - loop `s` (N, stepped);
+  - drives GalvoY ← `{s: a}` and PiezoZ ← `{s: b}`.
+- **A Beta scan with an intra-pixel move:**
+  - loops `y` and `x` (stepped, dwell 5 ms);
+  - timeline event `offset` on Z, +0.2 µm during 2-4 ms, phase 1 only.
+- **A spiral:** `trajectory` (a sampled path in µm) with measurement windows
+  every 20 µs.
+
+### 2.3 The reference interpreter
+
+`interpret(program) -> Timeline` expands a program into absolute,
+time-ordered device actions:
+
+- `t, device, value` for every position change, edge and level;
+- the measurement windows, each with its loop indices and coordinates.
+
+It is the meaning of the model, and it is used in three places:
+
+1. **Densifying for streaming engines** (the NI-DAQ): sample the timeline at
+   the engine's rate.
+2. **Simulating an engine** for mock setups. The mock APD's `mockSample`
+   then images any program, interleaved and composite included.
+3. **Conformance:** a firmware engine replays a program in a logging mode,
+   and its log must equal the interpreter's timeline (to its timing
+   resolution).
+
+**Advanced keeps its own designers for what it does today.**
+
+- `GalvoScanDesigner`'s swept fast axis (turnaround, flyback, `vel_max`) is
+  not re-derived. A swept loop compiles through the existing designer, so
+  today's waveforms stay byte-identical (the goldens).
+- The interpreter covers stepped loops, timelines, phases, composites and
+  trajectories.
+- Merging the two is a later question, not a prerequisite.
+
+---
+
+## 3. Capabilities and the feasibility report
+
+### 3.1 What an engine declares
 
 ```python
 @dataclass(frozen=True)
 class EngineCapabilities:
-    analog_channels: Mapping[str, tuple]  # channel -> (min V, max V)
-    digital_lines: tuple                  # lines the engine can drive
-    timing: frozenset                     # {'stream', 'steps', 'routines'}
-    sample_rate_hz: float | None          # for 'stream'
-    max_samples: int | None
-    max_steps: int | None                 # for 'steps'
-    min_pulse_s: float
-    pulse_windows_per_step: int | None    # None: any
-    detector_inputs: frozenset            # {'counter', 'ai'}
-    camera_trigger_lines: tuple
-    abort_mid_iteration: bool
-    trigger_in: bool
-    trigger_out: bool
+    name: str
+    analog: Mapping[str, AnalogOut]        # channel -> range, resolution, settle
+    digital: tuple                         # drivable lines
+    streaming: Optional[Streaming]         # rate, max samples, chunked or whole
+    stepping: Optional[Stepping]           # min step, timing resolution, max loops
+                                           # nested, max table entries, max events
+                                           # per step, waits, trigger in
+    detector_inputs: frozenset             # 'counter', 'ai'
+    triggers_out: tuple                    # camera / marker lines
+    abort: str                             # 'none', 'between-steps', 'immediate'
 ```
 
-The `timing` values:
+**Which engine drives a device** is named by the device's channel:
 
-- **`stream`:** arbitrary sampled waveforms on one clock, as on the NI-DAQ.
-- **`steps`:** a value per step plus a pulse timeline inside each step,
-  played by the board on its own.
-- **`routines`:** fixed firmware programs that take parameters.
+- `Dev…/` is the NI-DAQ;
+- `Triggerscope/…` is the TriggerScope;
+- the `teensyPulse.pinMap` names the Teensy's lines.
 
-| | NI-DAQ | TriggerScope (Snouty firmware) | Teensy (v4 firmware) |
-|---|---|---|---|
-| timing | stream (steps by densifying) | routines | steps (digital only) |
-| analog | AO channels of the board | 16 DAC (setup-declared) | none |
-| digital | DO lines (`Dev…`) | 16 TTL | 16 |
-| limits | 100 kHz, RAM | 4 raster dims, 1 merged window, µs fields `uint16` | 256 steps, 1 µs |
-| detectors | counters, AI, camera triggers | camera triggers | camera triggers |
-| abort mid-iteration | no (today) | no | between steps |
-| trigger in | yes | no | no |
+A program whose devices sit on two engines needs multi-engine sync (§5.3).
+Until then it is refused, with the reason.
 
-The NI-DAQ row is not yet complete: these are the properties the code uses
-today.
+### 3.2 Feasibility, per feature
 
-### 2.4 Greying out (the analog-only question)
+Compiling a program for an engine returns, for every feature it uses, one of
+three answers:
 
-**The rule.** The widget asks the engine and the setup what is available and
-greys out the rest, with the reason as a tooltip and a one-line note. The
-controller checks again before every run, because a rule enforced in one
-place is not enforced. The refusal is the authority; the greying is a
-courtesy.
+| Answer | Example |
+|---|---|
+| **Native** | The NI-DAQ plays a swept X; a step engine evaluates the affine positions on board |
+| **Emulated, at a cost** | The NI-DAQ densifies a 5 ms-dwell stepped scan: "62 M samples per channel, 0.5 GB, uploaded in 1.2 s" |
+| **Impossible, with the reason and the remedy** | "X is swept by a galvo: an interleaved order needs stepped positions. Make X stepped (`smoothScan: false`)." / "The TriggerScope firmware does not run step programs: needs the engine-protocol firmware (§5.2)." / "405 is on the TriggerScope, the scan runs on the NI-DAQ: needs multi-engine sync." |
 
-| Missing | Advanced panel | SimplePointScan | Note shown |
-|---|---|---|---|
-| Any digital line the engine can drive (analog-only scanner, or no TTL device in the setup) | Line-step TTL rows, *#Line repeats*, the Advanced Line Program (timing windows, Sequence builder, locks), pulse editors, *Include TTL* in the plot | Laser palette and channel lanes hidden; one implicit channel | "This scanner has no digital lines: the scan does not switch lasers. Set them in the Laser panel." |
-| More than one pulse window per step (TriggerScope raster) | Timing windows limited to one; Sequence builder off | unchanged (Simple uses whole-pixel pulses) | "The TriggerScope fires all armed lasers in one window." |
-| Streaming (a steps-only engine) | Positioner rows shown as stepped; vel_max rule hidden; a smooth sweep is refused | Overview planner uses the stepped time model | "This scanner steps; it cannot sweep." |
-| Analog power for a laser | Power column hidden (already today, `ScanControllerAdvanced.py:119-125`) | Channel power hidden (P3) | — |
-| Point-detector inputs | APD/PMT not offered as participants | Not available: SimplePointScan needs a point detector the engine reads; refused at startup with that reason | — |
+The features: swept loop, stepped loop, interleave/affine map, explicit
+table, composite drive, phase loop at each level, timeline events by kind
+(and their number per step), waits, external trigger, trajectory, each
+detector kind, abort.
 
-**On the NI-DAQ, "analog only" means a setup with no TTL device.** Today the
-Advanced panel then shows an empty TTL table. It would show the greyed parts
-and the note instead.
+### 3.3 What the panels do with it
 
-### 2.5 The TriggerScope engine for the Advanced scan (G3)
-
-- **No designer change is needed.** When every scanned axis is stepped, the
-  Advanced dicts already are a compact step program: the loops are the axes
-  (count, start and step, µm to V), each device has its pulse windows per
-  pixel, plus the line steps.
-  `advanced_dicts_to_step_program(analog, digital, setup)` would be a pure
-  function.
-- **It compiles to `RASTER_SCAN` when the scan is representable:**
-  - at most 4 axes, all stepped;
-  - one pulse window, with the firmware's merged lines 0-3 said in the note;
-  - one line pass;
-  - cameras only;
-  - a dwell the firmware accepts.
-
-  The endpoint compensation moves from `TriggerScopeRasterController` into
-  the compiler.
-- **Anything else is refused with the reason,** for example: "The
-  TriggerScope runs a stepped raster with one pulse window; this scan has 2
-  line passes."
-- **It runs through `SuperScanController`,** so the code does not get a
-  third copy of the lifecycle. The six existing TriggerScope panels keep
-  their path until G4 or E2 (§3.4).
-- **Testing needs a simulated TriggerScope.** None exists:
-  `TriggerScopeManager` has no simulation mode, and the tests use fakes. The
-  simulation would accept parameters and answer "Scan done" after the
-  routine's computed duration.
-
-### 2.6 Teensy
-
-- **As shipped, it is a digital-only step engine.** It can run the Advanced
-  TTL timeline only when that timeline compresses into at most 256 steps per
-  repetition. A per-pixel cycle repeated for every pixel compresses; most
-  line-step and window combinations do too.
-- **It cannot drive galvos** (there is no DAC).
-- **It cannot follow an NI-DAQ scan's clock** (there is no trigger input).
-  A Teensy-gated laser on an NI-DAQ Advanced scan therefore needs firmware
-  work (F2).
-- **What it is useful for without firmware work:** pulse programs with no
-  moving axes, such as camera and laser switching cycles on a widefield
-  RESOLFT setup. That is an Expert sequence program with zero axes (E2).
-- **A "Teensy scan generator" with analog outputs** would be a Teensy 4.1
-  plus external DACs. That is roughly what a TriggerScope 4 is (to be
-  checked on the Snouty board). It is F1.
-
-### 2.7 Firmware (F, optional and last)
-
-- **F1, a generic step-table program for Teensy-class boards.**
-  - Upload per-step DAC values or ramps, a per-step pulse timeline
-    (run-length coded) and nested loop counts.
-  - The board runs on its own, reports progress and checks STOP between
-    steps.
-  - It extends the Teensy v4 `SEQ` format with DAC columns.
-  - Then the TriggerScope and a Teensy with DACs run any step program, the
-    six routines become presets, and there is an abort.
-  - It needs someone to own the firmware (the Snouty firmware lives outside
-    this repository) and rig time.
-- **F2, multi-engine sync.** The NI-DAQ sample clock or start trigger goes
-  to a Teensy or TriggerScope trigger input. Then one scan can span two
-  engines, for example NI-DAQ galvos with TriggerScope piezo steps, or
-  Teensy-gated lasers on an NI-DAQ scan.
+- **Each control maps to the feature it would use.** An impossible feature
+  greys out its control, with the reason as the tooltip. An emulated one
+  shows its cost.
+- **The TTL question from draft 1** becomes one row: an analog-only scanner
+  declares no digital lines. The TTL parts (line-step TTL rows, the Advanced
+  Line Program, pulse editors, the plot's TTL option) are then greyed, with
+  "This scanner has no digital lines: the scan does not switch lasers. Set
+  them in the Laser panel." SimplePointScan hides its laser channels.
+- **One authority.** The run compiles again and refuses from the same report,
+  because a rule enforced in one place is not enforced. The greying is the
+  courtesy.
+- **Hardware → What this setup can scan…** shows the report for the setup's
+  engines: every feature, native, emulated or impossible, and why. It
+  answers "what can this rig do" before anyone builds a scan.
 
 ---
 
-## 3. (b) ExpertScan
+## 4. The panels
 
-### 3.1 Two things under one name
-
-| | Trajectories | Sequence programs |
+| Panel | Edits | Engine path |
 |---|---|---|
-| What moves | Positions as continuous functions of time; detectors sample along the path | Nested loops; each loop steps a device; the innermost step plays a pulse sequence and triggers the camera |
-| Examples | Circle, spiral (Archimedean, constant linear speed), Lissajous, rosette, point list or curve from a file, multi-ROI | pLS-RESOLFT (time, then cycle, then readout plane: on, off, readout pulses), multicolor, GalvoDetection, LS-XY-RESOLFT |
-| Engine | Streaming (the NI-DAQ) | Any engine that can step (NI-DAQ densified, TriggerScope routines, later F1) |
-| Detectors | Point detectors (also cameras, one exposure per event) | Cameras (point detectors on the NI-DAQ) |
-| Data | Measurements plus coordinates, gridded for display (§3.5) | Frames per step, a layout like today's TriggerScope geometry (time × cycle × readout) |
+| **SimplePointScan** | Overview / acquisition, as today | Cloak over Advanced, unchanged |
+| **Advanced** | The raster, as today, plus: per-axis order (forward, serpentine, interleave *k*), intra-pixel moves (the half-ported line program, finished) | Today's designers for today's features (goldens unchanged); the new features through the program compiler; refused on a swept axis with the reason |
+| **Expert** (`scanWidgetType: "Expert"`) | The whole model: a loops table (kind, count, stepped/swept, traversal, wait); a drives matrix (device × loop weights, offsets, tables); a phase table; a step-timeline editor (Advanced's sequence builder grown to positions, levels, detectors, waits); trajectory patterns | The program compiler; the feasibility report beside the editor |
 
-### 3.2 The panel, and how it relates to Advanced and Simple
+**Expert also has:**
 
-- **A new panel type,** `scanWidgetType: "Expert"`, with its own controller
-  on `SuperScanController` (one lifecycle) and the same engine seam.
-- **The Advanced scan is not rebuilt on Expert;** it stays as it is.
-  - In what they can express, Simple is a subset of Advanced, and Advanced a
-    subset of Expert.
-  - Expert could later open Advanced scan files as its raster pattern; that
-    is not needed at first.
-- **The Expert panel has:**
-  - a pattern picker;
-  - a parameter form generated from the pattern's `param_spec`, the same
-    principle as the ImProcess workflow editor;
-  - a preview: the XY path drawn inside the scanners' limits, time traces
-    for each axis, and pulse rows. It reuses the Advanced panel's graph;
-  - a limits readout: peak speed and acceleration against `vel_max` and
-    `acc_max`, the voltage span, the duration and the sample count;
-  - Live, Start and Stop, as on `ScanCloakView`.
-- **A simple cloak over Expert** later (for example a "Simple RESOLFT"
-  panel) fits the existing `ScanCloak` bases.
+- **Presets:** MS-RESOLFT (cycles × planes), pLS-RESOLFT multicolor,
+  LS-XY-RESOLFT, a Beta raster with an intra-pixel move, a circle and a
+  spiral.
+- **Pattern plugins** (built-in and drop-in, `param_spec` forms) that
+  generate programs or trajectories.
+- **A preview:** the path, per-device traces and the timeline, with the
+  limits readout: peak speed and acceleration against `vel_max` and
+  `acc_max`, voltage span, duration and samples.
 
-### 3.3 Patterns as plugins
+**Relationships:**
 
-```python
-class ScanPattern(ABC):
-    id = 'spiral'
-    title = 'Spiral'
-    kind = 'trajectory'                      # or 'sequence'
-
-    def param_spec(self) -> list: ...
-    def build(self, params, limits) -> 'Trajectory | StepProgram': ...
-```
-
-- **Built-in and drop-in patterns.** Drop-ins use the same discovery as the
-  ImProcess drop-in plugins: a `.py` file in a folder.
-- **An arbitrary curve** is a `script` pattern: a few lines of Python
-  returning position arrays, in the spirit of the ImProcess Python step.
-- **A `Trajectory`** (µm and seconds) holds:
-  - the sample rate and the positions per axis;
-  - measurement windows (sample ranges, each to a measurement index);
-  - pulse tracks per device.
-- **The compiler adds** the ramp in from rest and the ramp out to the park
-  position, within `vel_max` and `acc_max`.
-- **The compiler converts and checks.** It converts µm to V through
-  `conversionFactor`, then checks the voltage range, `vel_max` and `acc_max`
-  (by finite differences on the sampled path), the sample count and the
-  engine. A failed check is refused with the reason, in the same wording as
-  the Galvo designer's `vel_max` refusal (P0).
-
-### 3.4 Sequence programs and the TriggerScope panels
-
-**A `StepProgram` holds:**
-
-- loops, outermost first, as (name, count, device ramps `{device: (start,
-  step)}`);
-- the time-lapse loop and its delay;
-- the pulse sequence of the innermost step, as (device, start, duration)
-  entries;
-- the camera exposure window;
-- delays: after a DAC step, between cycles.
-
-**The six TriggerScope routines are fixed step programs.** For example,
-pLS-RESOLFT is:
-
-- loops: time (`timeLapsePoints`, `timeLapseDelayUs`), then cycle
-  (`cycleSteps` on the readout device), then readout plane (`roSteps`);
-- each step: on, `delayAfterOn`, off, `delayAfterOff`, readout plus camera,
-  `delayAfterRo`.
-
-**Where a step program runs:**
-
-- **On the stock TriggerScope firmware** only if it has the shape of one of
-  the routines. It is then compiled to that routine's parameters; otherwise
-  it is refused with the difference. This is the cloak's
-  representable-subset pattern again.
-- **On the NI-DAQ** any step program runs, densified into samples.
-
-**What follows from that:**
-
-- The Expert presets are the programs today's panels run.
-- The six panels, their 612-line lifecycle and the repeated parameter blocks
-  could later retire (this is the alternative to G4).
-- EtSnouty would ask for an Expert preset run instead of emitting
-  `sigRunScanTriggerScopePLSRMulticolor`.
-- A RESOLFT program could also run on an NI-DAQ rig.
-
-**Prerequisite:** read the firmware source. The pulse order inside the
-RESOLFT routines is only there.
-
-### 3.5 Data from trajectories
-
-- **Point detectors need a stream mode.** They assemble rasters today
-  (reshaping by `scan_samples`). A trajectory needs one value per
-  measurement window (counts summed) plus each window's coordinates (the
-  mean commanded position).
-- **Live display.** The measurements are gridded onto a display grid: the
-  pattern's bounding box and a pixel size, as a weighted 2-D histogram (sum
-  divided by count). Empty bins show as empty. The grid is published as a
-  `ScanFrame` with its `FrameGeometry`, so the viewer overlay and region
-  drawing from SimplePointScan work on it.
-- **Recording.** The gridded image is a reconstruction; the measurements and
-  their coordinates are the data. The acquisition-order spec (draft 4)
-  already calls spiral and Lissajous scans *tabulated geometry*: a
-  coordinate table per sample. The proposal:
-  - HDF5 and Zarr store the measurement stream, its coordinate table and the
-    gridded image;
-  - OME-TIFF stores the gridded image only, with provenance saying it was
-    gridded from a trajectory.
-
-  This is a decision for Lenny (Q4).
-- **Testable on the mock.** The mock APD's `mockSample` samples the
-  synthetic sample at the waveform's positions. A spiral images the sample
-  on the mock with no new simulation, so E1 can be tested headless, like the
-  overview correlation test.
-- **Cameras on a trajectory.** An exposure that integrates a circle (ring
-  illumination, circular scanning) is one event per exposure (premise d of
-  the spec): one frame per exposure, nothing to grid.
-- **Commanded is not actual.** A galvo driven around a fast circle lags and
-  loses amplitude. The `vel_max`/`acc_max` checks catch only the gross case.
-  At first the coordinates are the commanded path, shifted by the phase
-  delay. Measured positions (a galvo position-feedback AI channel) are a
-  later option.
+- Expressiveness: Simple ⊂ Advanced ⊂ Expert.
+- Advanced scan files open in Expert. The reverse holds when the program is
+  Advanced-shaped; otherwise the scan opens on the Expert page with the
+  reason (the cloak's rule).
+- A simple cloak over Expert, for example "Simple RESOLFT", fits the
+  existing `ScanCloak` bases.
+- All three panels run on `SuperScanController`: one lifecycle.
 
 ---
 
-## 4. Phases
+## 5. Engines
 
-| Phase | Content | Behaviour change | How it is checked |
+### 5.1 NI-DAQ (streaming)
+
+- **Native:** swept loops (today's designers), clocked counters and AI,
+  camera and marker lines.
+- **Emulated:** everything stepped, by densifying the interpreter's
+  timeline at 100 kHz. That is cheap for ms dwells on small scans and costly
+  for large ones. The report states the cost. Chunked streaming
+  (regeneration) for long programs is a later engine capability, not a
+  model change.
+- **Not possible:** external-trigger waits. The counters need a clock.
+- **Seam:**
+  - `NidaqScanEngine` wraps `NidaqManager.runScan`.
+  - The controllers stop calling the NI-DAQ manager directly: the relays at
+    `basecontrollers.py:443-465`, `:1673` and `:1698`, and the progress bar
+    at `ScanControllerAdvanced.py:160`.
+  - The coordinator is held by the master and armed through
+    `armWithStarter(engine.run, …)`.
+
+### 5.2 The engine protocol: step engines, and the TriggerScope rewritten to it
+
+**A small, versioned serial protocol for boards that step,** derived from
+the model and not from today's firmware:
+
+- **Upload:**
+  - loops (count, wait), with the drives as affine weights per DAC channel
+    (the board evaluates `offset + Σ weight × counter`, which is cheap and
+    has no tables);
+  - optional explicit tables per drive;
+  - the step timeline as an event list per phase (start µs, end µs, line or
+    DAC, value);
+  - the trigger-in policy.
+- **Run:** autonomous. Progress messages (`STEP i/n`) go up the link, and
+  STOP is checked between steps.
+- **Introspection:** `*CAPS?` returns the capabilities (§3.1): DAC count and
+  range, TTL count, timing resolution, limits. The engine reports what the
+  connected board says, as the Teensy v4 `*IDN?` already does.
+- **Conformance:** a log mode replays the run's timeline for comparison with
+  the interpreter (§2.3). The Python interpreter running behind the protocol
+  is also the simulated board for mock setups and tests.
+
+**The TriggerScope** gets a new firmware implementing this protocol (Lenny:
+"worst case reprogram the TriggerScope firmware"). The six old routines
+remain only while the old panels exist. EtSnouty then starts an Expert
+program instead of `sigRunScanTriggerScopePLSRMulticolor`.
+
+**The Teensy:**
+
+- Its v4 pulse firmware is the digital subset of the protocol: `SEQ` steps
+  are one timeline with no drives, at most 256 steps.
+- A Teensy with DACs (a "scan generator") implements the whole protocol,
+  roughly what a TriggerScope 4 board already is (to check on the Snouty
+  board).
+- As shipped, a Teensy can run pulse programs with no moving axes.
+
+### 5.3 Several engines in one scan (later)
+
+One engine starts the others: the NI-DAQ start trigger or sample clock goes
+to a board's trigger input. Then one program can span engines, for example
+NI-DAQ galvos with TriggerScope piezo steps, or Teensy-gated lasers on an
+NI-DAQ scan.
+
+The program needs no change; the compiler splits it. This needs `trigger
+in` on the step engines, which is part of the protocol.
+
+---
+
+## 6. Data
+
+- **The layout comes from the loops.** The implemented acquisition-layout
+  contract (`imcommon/model/acquisition_layout.py`) already has the loop
+  kinds the model needs (`scan_x/y/z`, `cycle`, `plane`, `time`,
+  `condition`, `repeat`) and serpentine traversal. A program emits its
+  layout directly: no per-panel geometry code, and no reconstructor that has
+  to trust widget values.
+- **Two gaps in the layout:**
+  - A layout loop names one `device`; a composite drive needs a list.
+  - General affine maps and tables need the spec's weights and explicit
+    order. Until then, an interleave is described as `cycle` and `plane`
+    loops, as now.
+- **Trajectories** produce measurements plus coordinates. The display grids
+  them, as a weighted 2-D histogram published as a `ScanFrame`. Recording
+  stores the measurements and coordinates (the spec's *tabulated geometry*)
+  plus the gridded image. Draft 1 §3.5 still holds; the question is Q4.
+
+---
+
+## 7. Phases
+
+| Phase | Content | Behaviour change | Checked by |
 |---|---|---|---|
-| G1 | Engine seam; `NidaqScanEngine`; the coordinator held by the master | none | Existing suites, the waveform goldens, the cloak contract tests |
-| G2 | Capabilities; greying out in Advanced and Simple; refusals for devices on another engine; analog-only | Greyed parts; refusals instead of silent drops | An analog-only mock setup; "Advanced as today" |
-| E1 | Expert trajectories on the NI-DAQ: pattern API, circle, spiral, Lissajous, point list; compiler and checks; APD/PMT stream mode; gridded live display | New panel only | Mock APD spiral images the sample (correlation), refusal tests, limit tests |
-| E2 | Expert sequence programs on the NI-DAQ (densified); the RESOLFT presets | New panel only | Golden pulse timelines per preset |
-| G3 | TriggerScope engine: Advanced stepped raster, Expert presets compiled to the routines | New engine | Simulated TriggerScope; then a rig |
-| E3 | Recording trajectories (after Q4) | Recording gains a stream layout | Round trip HDF5/Zarr; OME gridded |
-| G4 | TriggerScope panels become Expert presets, or move onto `SuperScanController` | Panels change | Rig (Snouty) |
-| F1/F2 | Step-table firmware; multi-engine sync | Firmware | Rig |
+| M0 | `ScanProgram`, the reference interpreter, the Advanced dicts ↔ program adapter (round trip, as the cloak contract) | none | Qt-free tests; Advanced-shaped programs densify to today's waveforms for stepped scans |
+| M1 | Engine seam (`NidaqScanEngine`), capabilities, feasibility report; Advanced and Simple grey out from it; refusals for devices on another engine | Greyed parts; refusals instead of silent drops (§9) | Goldens; "Advanced as today"; an analog-only mock setup |
+| M2 | Advanced: per-axis order (interleave) and intra-pixel moves (port the designer half through the interpreter; stepped axes only) | New options, off by default | Mock: an interleaved Z stack restacks to the true order; an intra-pixel offset appears in the AO trace |
+| M3 | Expert panel: loops, drives, phases, timeline, presets (MS-RESOLFT first), report | New panel | Mock APD and mock camera; layouts read by the SNOUTY reconstructor |
+| M4 | Engine protocol spec, simulated step engine (the interpreter behind the protocol), TriggerScope firmware rewrite (lab side), TriggerScope engine | New engine | Conformance logs; then a rig |
+| M5 | Trajectories (circle, spiral, Lissajous, script), APD/PMT measurement mode, gridded display | New pattern kind | Mock APD images the sample along a spiral |
+| M6 | Trajectory recording, multi-engine sync, event-driven programs | — | — |
 
 ---
 
-## 5. Risks
+## 8. Risks
 
-- **NI-DAQ assumptions are spread** (§1.1): the 100 kHz clock, volts and the
-  `Dev` filter. G1 keeps them inside the NI-DAQ engine. Stream engines can
-  still take the designers' sampled volts. Step engines get the step
-  program, not waveforms.
-- **The scan description stays a raster.** Trajectories carry their own
-  geometry. Every reader of `img_dims` and `scan_samples` must not assume a
-  raster when the scan is a trajectory. That is about twenty places, listed
-  by the G1 audit.
-- **The TriggerScope firmware is outside the repository.** What happens
-  inside a routine is not visible here.
-- **No engine aborts mid-iteration today.** Long trajectories (a Lissajous
-  with many periods) inherit "Stop ends after the iteration". SimplePointScan
-  keeps that rule anyway. A hardware abort is the next step on
-  `perf/advanced-scan-freeze`; it would become an engine capability.
-- **Galvo dynamics on fast curves** (§3.5).
+- **Two definitions of a swept scan.** `GalvoScanDesigner` keeps the swept
+  case and the interpreter does the rest. They meet where a program mixes a
+  swept loop with phases or timeline events. The adapter must prove that
+  today's Advanced scans come out byte-identical, and a mixed program that
+  neither path can build exactly is refused, not approximated.
+- **The raster scan description has about twenty readers** (APD, PMT,
+  TimeTagger, recording, layouts, `scan_frame`). Programs that are not
+  raster-shaped need those readers to take the program's layout instead.
+  That is the larger part of M3/M5.
+- **Densifying long stepped scans on the NI-DAQ** can be large. The report
+  states the cost; chunked streaming is the fix.
+- **Firmware is a second code base.** The protocol keeps it small: no scan
+  types, only loops, drives and events. The interpreter is its test oracle.
+- **No engine aborts mid-iteration today.** The protocol adds STOP between
+  steps; the NI-DAQ abort is the open step on `perf/advanced-scan-freeze`.
+- **Galvo dynamics on fast curves.** The commanded path is not the actual
+  path. The coordinates are commanded at first; measured positions come
+  later.
 
 ---
 
-## 6. Questions for Lenny
+## 9. Questions for Lenny
 
-1. **Teensy.** Which hardware is the "Teensy scan generator": the existing v4
-   pulse firmware (digital only), or a board with DACs, like a TriggerScope?
-   Is firmware work in scope, and who owns the Snouty TriggerScope firmware?
-2. **TriggerScope with Advanced.** Is a stepped raster with cameras enough?
-   Point detectors on a TriggerScope rig need NI-DAQ counters started by the
-   TriggerScope, which is F2.
-3. **ExpertScan priority.** Trajectories first (circle and spiral, NI-DAQ,
-   point detectors), or sequence programs first (RESOLFT, cameras,
-   TriggerScope)?
+1. **Teensy.** Is the "Teensy scan generator" a board with DACs that would
+   run the whole engine protocol, or the existing pulse Teensy (the digital
+   subset)?
+2. **Point detectors on step engines.** Does a TriggerScope rig need
+   APD/PMT data, which means the NI-DAQ counting started by the board (multi
+   engine, M6), or cameras only for now?
+3. **Order after M1.** Is M2 (interleave and intra-pixel in Advanced) first,
+   or M3 (Expert with MS-RESOLFT), or M5 (trajectories)?
 4. **Trajectory data.** Store the measurements, their coordinates and a
    gridded image in HDF5/Zarr, or the gridded image only?
-5. **The six TriggerScope panels.** Should they eventually become Expert
-   presets (retiring the panels and their lifecycle), or stay, with Expert
-   beside them?
-6. **Engine choice.** Is one engine per setup (`scan.engine`) enough for now?
-   Two engines in one scan waits for F2.
-7. **The Snouty firmware.** May it change: per-line pulse windows in
-   `RASTER_SCAN`, STOP, a table command?
+5. **Guillaume's intra-pixel model** (offset windows per line step) for M2:
+   keep it as he designed it, or go straight to the timeline's per-phase
+   `offset` events, which also allow ramps and more than one line step?
+6. **The firmware.** Who writes the TriggerScope firmware against the
+   protocol? It decides how small the protocol must stay.
 
 ---
 
-## 7. Found on the way (not fixed)
+## 10. Found on the way (not fixed)
 
 - **A laser on a non-NI-DAQ line silently never fires in an NI-DAQ scan.**
-  `getTTLDevices` lists every laser with a `digitalLine`
-  (`SetupInfo.py:753-769`), so the Advanced TTL table offers it.
-  `runScan` skips any line without `Dev` in it, with no message
-  (`NidaqManager.py:1254`). G2 turns this into a refusal.
+  `getTTLDevices` lists it (`SetupInfo.py:753`), so the Advanced TTL table
+  offers it, but `runScan` skips any line without `Dev` in it, with no
+  message (`NidaqManager.py:1254`).
 - **A TTL-only NI-DAQ scan with point detectors would hang on hardware.**
-  With no AO task, the DO task and the detectors' input tasks wait on
-  `ao/StartTrigger`, which never fires (`NidaqManager.py:1394-1402`,
-  `APDManager.py:1216`). Advanced always has AO for its scanned axes, so it
-  does not reach this today.
-- **`ScanManagerBase.makeFullScan` would store a tuple as the TTL signal
-  dict** with the Advanced TTL designer, which returns `(dict, scanInfo)`
-  for a full scan (`ScanManagerBase.py:153`, `ScanManagerAdvanced.py:73`,
+  With no AO task, the DO task and the detectors wait on `ao/StartTrigger`
+  (`NidaqManager.py:1394-1402`, `APDManager.py:1216`). Advanced always has
+  AO for its scanned axes, so it does not reach this today.
+- **The intra-pixel positioner fields are dead.** They are serialized and
+  forwarded (`ScanControllerAdvanced.py:364-375`), but the designer half
+  (`BetaScanDesigner`, upstream `testalab_scanDev`, `1dcbbe2af`) was never
+  ported, so the option does nothing.
+- **`ScanManagerBase.makeFullScan` would store the Advanced TTL designer's
+  `(dict, scanInfo)` tuple as the TTL signal dict** (`ScanManagerBase.py:153`,
   `AdvancedScanTTLCycleDesigner.py:331`). It is unreachable today: the
   Advanced controller builds its designers itself.
-- **"Intra-pixel positioners movement"** is serialized and forwarded
-  (`ScanControllerAdvanced.py:364-375`), but no designer reads it.
 - **`ScanManagerAdvanced.getTTLCyclePreview*`** has no callers.
 - **`ARCHITECTURE.md:186`** names scan controllers as pulse-generator
   consumers; none is.
+
+---
+
+## Appendix: today's hardware, in short (from draft 1)
+
+- **NI-DAQ:**
+  - one 100 kHz clock (`NidaqManager.py:523-535`);
+  - waveforms in volts through `conversionFactor`;
+  - point detectors own NI counter and AI tasks started by `ao/StartTrigger`
+    (`APDManager.py:1211-1219`);
+  - no mid-iteration abort.
+- **TriggerScope:**
+  - Snouty firmware outside the repository, ASCII over RS-232, about 50 ms
+    per parameter;
+  - six fixed routines with scalar parameters and no tables; `RASTER_SCAN`
+    fires TTL 0-3 in one window;
+  - cameras only, no abort;
+  - its controllers re-implement the scan lifecycle
+    (`_triggerscope_scan_lifecycle.py`, 612 lines).
+- **Teensy v4 pulse firmware:** 16 digital lines, 1 µs, 256-step sequences
+  with one outer repeat, no DAC, no trigger in, STOP between steps. No scan
+  uses it.
