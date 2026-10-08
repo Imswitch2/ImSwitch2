@@ -524,9 +524,10 @@ The parameter panel is the deskew panel plus a *Deconvolution* group:
 *Device* picks the NumPy or the CuPy backend; both run the same code. The
 result is a ``SnoutyResult`` on exactly the deskew grid, so it lines up with a
 deskewed volume of the same recording voxel for voxel and the multicolor
-processors accept it unchanged. Expect a CPU run of a few hundred camera
-frames to take a minute or two per ten iterations; the GPU path is tens of
-times faster.
+processors accept it unchanged. On the CPU a 200-frame stack of 400 x 300
+pixels at 200 nm voxels takes about five seconds per ten iterations and
+under 2 GB of RAM; the cost scales with the output canvas, which the FFT
+pads by the kernel size, and the GPU path is faster still.
 
 Processor categories and compatibility
 ======================================

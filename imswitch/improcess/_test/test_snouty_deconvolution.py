@@ -431,6 +431,50 @@ class TestReconstructor:
         assert result.data.shape[0] == 2
         assert result.axis_labels == ["T", "Z", "Y", "X"]
 
+    def test_recorded_layout_drives_timepoints_restack_and_progress(self, tmp_path):
+        """A declared time x cycle x plane layout outranks the widget, as for the deskew,
+        and the progress total counts the recorded timepoints."""
+        from imswitch.imcommon.model.acquisition_layout import (
+            ACQUISITION_LAYOUT_SCHEMA,
+            PAYLOAD_DETECTOR_FRAME_STREAM,
+            AcquisitionLayout,
+            AcquisitionLoop,
+            encode_acquisition_layout,
+        )
+
+        layout = AcquisitionLayout(
+            schema=ACQUISITION_LAYOUT_SCHEMA,
+            payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+            detector="Cam",
+            storage_axes=("frame", "detector_y", "detector_x"),
+            event_loops=(
+                AcquisitionLoop("time", "time", 2),
+                AcquisitionLoop("cycle", "cycle", 2),
+                AcquisitionLoop("plane", "plane", 2),
+            ),
+            scan_source="TriggerScopeScanController",
+        )
+        rng = np.random.RandomState(3)
+        stack = rng.rand(8, 16, 16).astype(np.float32) * 100.0 + DEFAULT_PARAMS["camera_offset"] + 1.0
+        path = tmp_path / "recorded.h5"
+        with h5py.File(path, "w") as handle:
+            dataset = handle.create_dataset("data", data=stack)
+            handle.attrs["Detector:Cam:Camera pixel size"] = 0.1
+            dataset.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+            dataset.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+        data_obj = DataObj(str(path), "recorded")
+
+        params = self._params(n_timepoints=1, cycles=1, planes_in_cycle=1, iterations=2)
+        context = _Context()
+        result = SnoutyDeconvolutionReconstructor().process(data_obj, params, context)
+
+        assert result.data.ndim == 4
+        assert result.data.shape[0] == 2
+        assert not np.array_equal(result.data[0], result.data[1])
+        assemble = [r for r in context.reports if r[0] == "assemble"]
+        assert [(r[1], r[2]) for r in assemble] == [(1, 4), (2, 4), (3, 4), (4, 4)]
+        assert assemble[-1][3].startswith("Timepoint 2/2")
+
     def test_bad_geometry_is_rejected_before_any_work(self, data_obj):
         with pytest.raises(ValueError, match="alpha_deg"):
             SnoutyDeconvolutionReconstructor().process(data_obj, self._params(alpha_deg=0.0))
