@@ -29,6 +29,7 @@ class ImageWidget(QtWidgets.QWidget):
         self.imgLayers = {}
         self._liveSourceRegistrations = {}
         self._layerRegistrationBaselines = {}
+        self._transformRegistrationOverlayConfigured = False
         # Napari emits layer-list events in the middle of live-layer
         # recreation. Suppress those transient events so a persistent logical
         # source registration is not mistaken for a real source deletion.
@@ -139,6 +140,7 @@ class ImageWidget(QtWidgets.QWidget):
     def _registrationTargetsChanged(self, event=None):
         if self._suspendRegistrationTargetSignals:
             return
+        self._updateTransformRegistrationOverlay()
         self.sigTransformRegistrationTargetsChanged.emit()
 
     def _on_ndisplay_changed(self, event=None):
@@ -293,6 +295,7 @@ class ImageWidget(QtWidgets.QWidget):
             None if target_scale is None else tuple(float(v) for v in target_scale),
         )
         self._applyLiveSourceRegistration(str(detectorName))
+        self._updateTransformRegistrationOverlay()
 
     def clearLiveSourceRegistration(self, detectorName):
         detectorName = str(detectorName)
@@ -300,6 +303,7 @@ class ImageWidget(QtWidgets.QWidget):
         layer = self.imgLayers.get(detectorName)
         if layer is not None and layer in self.napariViewer.layers:
             layer.affine = np.eye(int(layer.ndim) + 1)
+        self._updateTransformRegistrationOverlay()
 
     def _applyLiveSourceRegistration(self, detectorName):
         entry = self._liveSourceRegistrations.get(str(detectorName))
@@ -338,6 +342,7 @@ class ImageWidget(QtWidgets.QWidget):
         )
         registration = self._embedPlaneAffine(world, int(layer.ndim))
         layer.affine = registration @ baseline
+        self._updateTransformRegistrationOverlay()
 
     def _clearLayerTargetRegistration(self, target):
         layer = self._findLayerForRegistrationTarget(target)
@@ -345,10 +350,89 @@ class ImageWidget(QtWidgets.QWidget):
             layer_id = target.get("layer_id") if isinstance(target, dict) else None
             if layer_id is not None:
                 self._layerRegistrationBaselines.pop(int(layer_id), None)
+            self._updateTransformRegistrationOverlay()
             return
         entry = self._layerRegistrationBaselines.pop(id(layer), None)
         if entry is not None:
             layer.affine = entry[1]
+        self._updateTransformRegistrationOverlay()
+
+    def _transformRegistrationTextOverlay(self):
+        """Return napari's viewer-anchored text overlay when available.
+
+        ImSwitch currently pins napari 0.7.x, where ``viewer.text_overlay`` is
+        the public compatibility accessor.  Keep the newer canvas path as a
+        harmless fallback so this warning does not become an upgrade blocker.
+        """
+        overlay = getattr(self.napariViewer, 'text_overlay', None)
+        if overlay is not None:
+            return overlay
+        canvas = getattr(self.napariViewer, 'canvas', None)
+        overlays = getattr(canvas, 'overlays', None)
+        if overlays is None:
+            return None
+        try:
+            return overlays.text
+        except (AttributeError, KeyError):
+            try:
+                return overlays['text']
+            except (KeyError, TypeError):
+                return None
+
+    def _activeTransformRegistrationLabels(self):
+        """Return concise labels for registrations currently owned by this viewer."""
+        labels = [
+            f"Live: {name}"
+            for name in sorted(self._liveSourceRegistrations)
+        ]
+
+        stale = []
+        static_labels = []
+        for layer_id, (layer_ref, _baseline) in self._layerRegistrationBaselines.items():
+            layer = layer_ref()
+            if layer is None or layer not in self.napariViewer.layers:
+                stale.append(layer_id)
+                continue
+            static_labels.append(f"Layer: {getattr(layer, 'name', 'image')}")
+        for layer_id in stale:
+            self._layerRegistrationBaselines.pop(layer_id, None)
+        labels.extend(sorted(static_labels))
+        return labels
+
+    @staticmethod
+    def _formatTransformRegistrationOverlay(labels):
+        labels = tuple(str(label) for label in labels if str(label))
+        if not labels:
+            return ""
+        return "DISPLAY TRANSFORM ACTIVE\n" + "\n".join(labels)
+
+    def _updateTransformRegistrationOverlay(self):
+        """Keep an always-in-view warning synchronized with display registration.
+
+        This is deliberately a *viewer canvas* warning rather than a layer or
+        image annotation: it stays visible while panning/zooming, like napari's
+        scale bar, and names the affected layer/source when only part of the
+        viewer is transformed.  The warning follows the actual ImageWidget
+        registration state, not the Transform Calibration checkbox.
+        """
+        overlay = self._transformRegistrationTextOverlay()
+        if overlay is None:
+            return
+        text = self._formatTransformRegistrationOverlay(
+            self._activeTransformRegistrationLabels()
+        )
+        if not self._transformRegistrationOverlayConfigured:
+            try:
+                overlay.position = 'top_left'
+                overlay.color = 'yellow'
+                overlay.font_size = 14
+            except (AttributeError, TypeError, ValueError):
+                # Text/visibility are the important compatibility contract;
+                # styling differs slightly across napari releases.
+                pass
+            self._transformRegistrationOverlayConfigured = True
+        overlay.text = text
+        overlay.visible = bool(text)
 
     def _findLayerForRegistrationTarget(self, target):
         if not isinstance(target, dict):

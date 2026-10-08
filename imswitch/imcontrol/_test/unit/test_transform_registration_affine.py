@@ -25,3 +25,10 @@ def test_plane_affine_is_unchanged_for_2d_layer():
         [[1.0, 0.2, 4.0], [-0.1, 0.9, -3.0], [0.0, 0.0, 1.0]]
     )
     np.testing.assert_allclose(ImageWidget._embedPlaneAffine(plane, 2), plane)
+
+
+def test_transform_registration_overlay_text_names_affected_targets():
+    assert ImageWidget._formatTransformRegistrationOverlay([]) == ""
+    assert ImageWidget._formatTransformRegistrationOverlay(
+        ["Live: CAM", "Layer: reference"]
+    ) == "DISPLAY TRANSFORM ACTIVE\nLive: CAM\nLayer: reference"
