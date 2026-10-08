@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 161,
-    "docs_documented": 161,
-    "keys": 241,
+    "docs_agree": 164,
+    "docs_documented": 164,
+    "keys": 244,
     "managers": 66,
     "none_default_only": 38,
     "none_only": 16,
-    "optional": 175,
+    "optional": 178,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
-    "typed_by_code": 118,
-    "typed_with_docs": 185,
-    "typed_with_examples": 153,
+    "typed_by_code": 121,
+    "typed_with_docs": 188,
+    "typed_with_examples": 156,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 61,
@@ -97,7 +97,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 2
     },
     "BSC203StageManager": {
@@ -491,7 +491,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 1
     },
     "PiCamManager": {
@@ -501,7 +501,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 4,
+      "properties": 5,
       "required": 3
     },
     "PiezoconceptZManager": {

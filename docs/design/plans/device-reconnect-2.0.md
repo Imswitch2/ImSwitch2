@@ -422,8 +422,17 @@ porting the ten lifecycles (R-4) is cheaper once the holder exists.
   reconnect replaces the mock with the real camera. The sensor-size change
   on that reconnect is handled by TIS; ThorCam re-applies its defaults and
   re-arms (R-4 polish: `_setFullShape`).
-- Still on the old fallback: Photometrics, AV, PiCam, Hamamatsu SLMs,
-  Cobolt-new, ESP32 LED, PulseStreamer, PyMicroscope, Swabian, and the
-  vendor `rs232devices` managers (ESP32, GRBL, SQUID, KDC101) -- next
-  adopters, same pattern.
+- Batch 2 (same day): Photometrics, Allied Vision and PiCam on the holder
+  (camera rule as ThorCam; `DetectorManager._lifecycleReinitialise` replays
+  every editable parameter on the new camera); the vendor `rs232devices`
+  managers ESP32, GRBL and SQUID on the holder with `reconnectTransport` /
+  `disconnectTransport`, so the ESP32 / GRBL / SQUID stages and lasers
+  reconnect through the R-1 transport path. GRBL and SQUID used to abort
+  startup when their board was missing; they are now not connected until
+  reconnected (GRBL re-programs the board on reconnect).
+- Still bespoke: Hamamatsu SLMs (DLL + serial scan of their own), KDC101
+  (`device_active` flag), Cobolt-new (own lifecycle; R-4 port), PulseStreamer
+  and PyMicroscope (a missing low-level manager / SDK, latched), Swabian.
+  ESP32 LED laser calls `self._rs232manager._squid` -- a latent bug (an
+  ESP32Manager has no `_squid`); not touched.
 

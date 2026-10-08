@@ -1,6 +1,7 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from .DetectorManager import DetectorManager, DetectorAction, DetectorNumberParameter, DetectorListParameter
 
 
@@ -28,7 +29,17 @@ class AVManager(DetectorManager):
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
 
-        self._camera = self._getAVObj(detectorInfo.managerProperties['cameraListIndex'])
+        cameraId = detectorInfo.managerProperties['cameraListIndex']
+        self._installBackend(
+            lambda: self._getAVObj(cameraId),
+            self._getMockAVObj,
+            label=f'Allied Vision camera {cameraId}',
+            configured_mock=str(cameraId).strip().lower().startswith('mock'),
+            # A detector needs its sensor size at construction: an absent
+            # camera keeps a mock until a reconnect replaces it.
+            use_mock_on_failure=bool(
+                detectorInfo.managerProperties.get('useMockOnFailure', True)),
+        )
 
         model = self._camera.model
         self._running = False
@@ -170,35 +181,24 @@ class AVManager(DetectorManager):
     def openPropertiesDialog(self):
         self._camera.openPropertiesGUI()
 
+    #: The Vimba camera, read from the backend holder: a reconnect replaces it.
+    _camera = backend_attribute()
+
+    @staticmethod
+    def _getMockAVObj():
+        from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
+        return MockCameraTIS()
+
     def _getAVObj(self, cameraId):
-        if str(cameraId).lower() == 'mock':
-            # Asked for by name (cameraListIndex "mock"): no real camera to try,
-            # and nothing to warn about.
-            from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
-            camera = MockCameraTIS()
+        """Open the real camera (or the mock for ``cameraListIndex: mock``);
+        raises when it cannot be opened."""
+        if str(cameraId).strip().lower().startswith('mock'):
+            camera = self._getMockAVObj()
             self.__logger.info(f'Initialized mock camera, model: {camera.model}')
             return camera
-        try:
-            from imswitch.imcontrol.model.interfaces.avcamera import CameraAV
-            self.__logger.debug(f'Trying to initialize Allied Vision camera {cameraId}')
-            camera = CameraAV(cameraId)
-            self._setConnected("Allied Vision camera initialized")
-        except Exception as e:
-            self.__logger.warning(
-                f'Failed to initialize AV camera {cameraId}, loading TIS mocker: {e}',
-                exc_info=True
-            )
-            from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
-            camera = MockCameraTIS()
-            if str(cameraId).strip().lower().startswith("mock"):
-                self._setMockActive("Mock camera configured")
-            else:
-                self._setConnectionError(
-                    e,
-                    summary="Allied Vision camera initialization failed; mock fallback active",
-                    mock_active=True,
-                )
-        
+        from imswitch.imcontrol.model.interfaces.avcamera import CameraAV
+        self.__logger.debug(f'Trying to initialize Allied Vision camera {cameraId}')
+        camera = CameraAV(cameraId)
         self.__logger.info(f'Initialized camera, model: {camera.model}')
         return camera
 

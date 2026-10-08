@@ -1,6 +1,7 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import backend_attribute
 from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter
 )
@@ -39,7 +40,17 @@ class PhotometricsManager(DetectorManager):
         self.__chunkFrameSize = 1
         self.__logger = initLogger(self, instanceName=name)
 
-        self._camera = self._getCameraObj(detectorInfo.managerProperties['cameraListIndex'])
+        cameraId = detectorInfo.managerProperties['cameraListIndex']
+        self._installBackend(
+            lambda: self._getCameraObj(cameraId),
+            self._getMockCameraObj,
+            label=f'Photometrics camera {cameraId}',
+            configured_mock=str(cameraId).lower() == 'mock',
+            # A detector needs its sensor size at construction: an absent
+            # camera keeps a mock until a reconnect replaces it.
+            use_mock_on_failure=bool(
+                detectorInfo.managerProperties.get('useMockOnFailure', True)),
+        )
         self._binning = 1
 
         fullShape = self._camera.sensor_size
@@ -223,41 +234,33 @@ class PhotometricsManager(DetectorManager):
         elif readoutPort == 2:
             self.setParameter('Readout port', 'Dynamic range')
 
+    #: The PVCAM camera, read from the backend holder: a reconnect replaces it.
+    _camera = backend_attribute()
+
     def finalize(self):
-        self._camera.close()
+        self.backendHolder.close(suppress_errors=False)
+        self._setFinalizedStatus()
+
+    @staticmethod
+    def _getMockCameraObj():
+        # A stand-in that answers the PVCAM surface this manager reads.
+        from imswitch.imcontrol.model.interfaces.photometrics_mock import MockPhotometrics
+        return MockPhotometrics()
 
     def _getCameraObj(self, cameraId):
-        from imswitch.imcontrol.model.interfaces.photometrics_mock import MockPhotometrics
-
+        """Open the real camera (or the mock for ``cameraListIndex: mock``);
+        raises when no camera is found."""
         if str(cameraId).lower() == 'mock':
-            camera = MockPhotometrics()
+            camera = self._getMockCameraObj()
             self.__logger.info(f'Initialized camera, model: {camera.name}')
             return camera
-        try:
-            from pyvcam import pvc
-            from pyvcam.camera import Camera
+        from pyvcam import pvc
+        from pyvcam.camera import Camera
 
-            pvc.init_pvcam()
-            self.__logger.debug(f'Trying to initialize Photometrics camera {cameraId}')
-            camera = next(Camera.detect_camera())
-            camera.open()
-            self._setConnected("Photometrics camera initialized")
-        except Exception as e:
-            # A stand-in that answers the PVCAM surface this manager reads.
-            # The Hamamatsu mock that used to be substituted here answered none
-            # of it, so the fallback raised one line later and took the whole
-            # imcontrol module down with it.
-            self.__logger.warning(
-                f'Failed to initialize Photometrics camera {cameraId}, loading mocker: {e}',
-                exc_info=True
-            )
-            camera = MockPhotometrics()
-            self._setConnectionError(
-                e,
-                summary="Photometrics camera initialization failed; mock fallback active",
-                mock_active=True,
-            )
-
+        pvc.init_pvcam()
+        self.__logger.debug(f'Trying to initialize Photometrics camera {cameraId}')
+        camera = next(Camera.detect_camera())
+        camera.open()
         self.__logger.info(f'Initialized camera, model: {camera.name}')
         return camera
 

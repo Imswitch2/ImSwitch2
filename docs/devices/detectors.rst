@@ -230,8 +230,11 @@ so that a recording made from it cannot be mistaken for a real camera's.
    * - ``avcam``
      - dict
      - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup; the mock accepts and ignores them.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``true``: when the camera cannot be opened, a mock camera stands in until **Reconnect** in Hardware status replaces it with the real one (a detector needs its sensor size at construction, so an absent camera cannot be left without a backend). ``false`` makes a missing camera a startup error.
 
-Both fields are **required**; no defaults.
+``cameraListIndex`` and ``avcam`` are **required**; no defaults.
 
 **Low-level dependencies**
 
@@ -448,6 +451,9 @@ Photometrics cameras driven via the ``pyvcam`` (PVCAM) SDK.
    * - ``Photometrics``
      - dict (optional)
      - Dictionary of detector-parameter names (e.g. ``"Set exposure time"``) → values applied via ``setParameter`` after the camera is opened.  If the key is absent no defaults are pushed.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``true``: when the camera cannot be opened, a mock camera stands in until **Reconnect** in Hardware status replaces it with the real one (a detector needs its sensor size at construction, so an absent camera cannot be left without a backend). ``false`` makes a missing camera a startup error.
 
 ``cameraListIndex`` is **required**; ``Photometrics`` is optional and
 the code checks ``if 'Photometrics' in detectorInfo.managerProperties``
@@ -512,8 +518,11 @@ Raspberry-Pi camera reached over a network socket (host/port).
    * - ``picam``
      - dict
      - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``true``: when the camera cannot be opened, a mock camera stands in until **Reconnect** in Hardware status replaces it with the real one (a detector needs its sensor size at construction, so an absent camera cannot be left without a backend). ``false`` makes a missing camera a startup error.
 
-All three fields are **required**; no defaults.
+``host``, ``port`` and ``picam`` are **required**; no defaults.
 
 **Low-level dependencies**
 

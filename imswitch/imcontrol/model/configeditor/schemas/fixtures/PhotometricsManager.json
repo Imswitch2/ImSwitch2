@@ -5,7 +5,8 @@
     "managerProperties": {
       "Photometrics": {},
       "cameraListIndex": 1,
-      "cameraPixelSizeUm": null
+      "cameraPixelSizeUm": null,
+      "useMockOnFailure": true
     }
   }
 }

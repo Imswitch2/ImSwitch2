@@ -5,7 +5,8 @@
     "managerProperties": {
       "avcam": {},
       "cameraListIndex": "example",
-      "cameraPixelSizeUm": 1.5
+      "cameraPixelSizeUm": 1.5,
+      "useMockOnFailure": true
     }
   }
 }
