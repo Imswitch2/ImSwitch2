@@ -1,8 +1,8 @@
 # Unleashing the scanner: one scan model, engines that say what they can do
 
-**Status:** Plan, draft 3, for review. The direction is agreed (Lenny,
-2026-10-08: "that sounds like what we're aiming for"). Nothing is
-implemented.
+**Status:** Plan, draft 4, for review. The direction is agreed (Lenny,
+2026-10-08: "that sounds like what we're aiming for"). Draft 4 answers a
+review of draft 3. Nothing is implemented.
 **Date:** 2026-10-08
 **Branch:** `docs/scan-engines-expert-scan`, off `feat/simple-point-scan`
 (56ef43f0, which carries the scan cloak and the Advanced scan-freeze work).
@@ -16,6 +16,31 @@ File references are to this branch.
 - **(b)** Add a further layer, ExpertScan, for more complicated patterns: the
   Snouty multi-scan RESOLFT schemes, and arbitrary curves such as a circle or
   a spiral.
+
+## Changes since draft 3: the review (2026-10-08)
+
+The review accepted the direction and asked for the contracts behind it to
+be defined before implementation, above all before a plugin API is
+published. Every finding was checked against the code and holds:
+
+- `BetaScanDesigner` puts its move and settle inside each dwell;
+- `PulseStep` is digital only;
+- `run()` has no trigger policy;
+- the Teensy floors ns to µs;
+- `build_advanced_scan_layouts` carries per-detector masks, pulse counts
+  and spans.
+
+| # | Finding | Change | Where |
+|---|---|---|---|
+| 1 (P1) | "Stepped" does not say how devices move, so the Beta waveforms cannot be reproduced | `Motion`: transition shape, move and settle, placement (inside or extending the dwell), line return, origin and restore. Stationary interval; limits on the combined output; offsets are motions. The Beta goldens are captured first; if they cannot be matched exactly, Beta stays a compile path | §2.1, §2.2, §2.7, M0 |
+| 2 (P1) | External waits contradict an absolute timeline | Segments with barriers; `interpret(program, inputs)` with an input trace; conformance re-interprets with the logged releases; outputs during a wait, timeout, stop during a wait | §2.4, §5.2 |
+| 3 (P1) | Layouts must come from measurement events, not loops | `DetectorBinding` in M0; `layout_for(program, binding)` must equal `build_advanced_scan_layouts`; the arm-time frame-count check stays, fed from the same bindings | §2.5, §6, M0 |
+| 4 (P1) | M2 needs detector assembly | Index-mapped assembly in APD and PMT moves into M2. Acceptance goes through the real mock detector and recording path: interleaved equals forward on the deterministic mock sample, and the recorded coordinates are right | §2.5, M2 |
+| 5 (P2) | The pulse-generator interface cannot supply the capabilities | The adapter is limited to a stated digital subset; the contract gains `max_sequence_steps`, `timing_resolution_ns`, `max_repeats` and `run(trigger=…)`; refusals are tested | §5.3 |
+| 6 (P2) | Timing quantization needs a policy | `RealizedSchedule` from every compile, with a declared acceptance policy. Preview, acquisition and metadata use it | §2.6 |
+| 7 (P2) | The second engine comes too late | An independent in-process step engine in M1, not the interpreter: its own plan, its own executor, its log checked against the interpreter. The API stays experimental until M3 | §2.7, §5.0, M1 |
+| — | Trajectory gridding needs units | Count rate (sum counts over sum realized integration time); NaN for unvisited; a coverage channel; the assumptions stated | §6, M4 |
+| — | Multi-engine sync is understated | A start trigger is not a clock; wait propagation; coordinated stop. Model compatibility is a hypothesis until designed | §5.4, M6 |
 
 ## Changes since draft 2: the decisions (Lenny, 2026-10-08)
 
@@ -248,12 +273,26 @@ class Loop:
     parity_loops: tuple = ()
 
 @dataclass(frozen=True)
+class Motion:                     # how a device gets from one position to the next (§2.2)
+    transition: str = 'smooth'    # 'jump', 'linear', 'smooth' (Beta's ramp)
+    move_s: float = 0.0           # duration of a transition
+    settle_s: float = 0.0         # rest after it before the device counts as stationary
+    placement: str = 'in-step'    # 'in-step': at the end of the step, inside the dwell
+                                  # (Beta); 'between-steps': extends the step instead
+    return_s: float = 0.0         # end of a loop pass back to its first position (Beta's
+                                  # return_time); serpentine traversal skips it
+    origin: str = 'captured'      # positions relative to the one captured before the
+                                  # scan (Beta's axis_position_before_scan), or 'absolute'
+    restore: str = 'captured'     # where the device ends: 'captured', 'park', 'hold'
+
+@dataclass(frozen=True)
 class DeviceDrive:
     device: str                   # positioner name
     offset_um: float
     weights_um: Mapping[str, float] = field(default_factory=dict)
     # loop id -> µm per count; or a table:
     table_um: Optional[Sequence[float]] = None   # explicit positions per visit
+    motion: Motion = Motion()     # filled from the device's setup when not given
 
 @dataclass(frozen=True)
 class TimelineEvent:
@@ -266,13 +305,33 @@ class TimelineEvent:
     phases: Optional[frozenset] = None           # None: every phase
 
 @dataclass(frozen=True)
+class Wait:                       # §2.4
+    at: str                       # 'step' / a loop id: before each iteration of it
+    trigger: str                  # input line, or 'time' for a fixed interval
+    timeout_s: Optional[float]    # None: wait until stopped
+    on_timeout: str = 'fail'      # 'fail' or 'skip'
+    hold: str = 'idle'            # outputs while waiting: 'idle' (TTL low, levels
+                                  # off, positions held) or 'hold' (as before the wait)
+
+@dataclass(frozen=True)
+class DetectorBinding:            # §2.5
+    detector: str
+    events: str                   # which timeline 'detector' events it takes (by id)
+    per_step: int = 1             # events per step it takes part in
+    phases: Optional[frozenset] = None           # phases it takes part in
+    window: str = 'event'         # 'event' (the event's window) or 'step' (the
+                                  # stationary interval of the step)
+    assembly: str = 'stream'      # 'stream' (a frame per event, cameras) or
+                                  # 'image' (windows placed by index, point detectors)
+
+@dataclass(frozen=True)
 class ScanProgram:
     loops: tuple[Loop, ...]       # outermost first
     drives: tuple[DeviceDrive, ...]
     step_s: float                 # dwell of the innermost step
     timeline: tuple[TimelineEvent, ...]
     phases: tuple[Phase, ...] = ()               # the phase loop's per-phase states
-    waits: tuple[LoopWait, ...] = ()             # time between iterations of a loop
+    waits: tuple[Wait, ...] = ()
     park: Mapping[str, float] = field(default_factory=dict)
     detectors: tuple[DetectorBinding, ...] = ()
     trajectory: Optional[Trajectory] = None      # §1.5: free path instead of loops
@@ -281,61 +340,199 @@ class ScanProgram:
 **Positions are in µm and times in seconds.** Volts, sample rates and table
 formats belong to the engines and their compilers, never to the program.
 
-### 2.2 Examples in the model
+### 2.2 How devices move: stepped is not enough
+
+A position per step does not say how the device gets there. Today's
+`BetaScanDesigner` already answers that, and its answer becomes the model's
+`Motion`:
+
+- **Inside the dwell.** The fast axis ramps to the next pixel with a smooth
+  ramp of `move_time` and then rests for `settle_time`, both at the end of
+  every dwell window. The rest of the dwell is stationary. A dwell no longer
+  than the two together is refused (`BetaScanDesigner.py:246-263`).
+- **Between lines,** each axis returns to its first position in
+  `return_time` (`:265`, `:303`, `:336`, `:359`).
+- **Relative to where the scan started.** Positions are offsets from
+  `axis_position_before_scan`, the position captured just before the scan
+  (`:158-239`). Parking and restoring follow from that.
+
+What the model fixes, so an engine cannot read it two ways:
+
+- **Each step has a stationary interval.** With `placement: in-step` it is
+  `[0, step_s − move_s − settle_s)`. With `between-steps` it is the whole
+  step, and the motion is added between steps.
+- **Every timeline event must lie inside the stationary interval** of its
+  step: pulses, detector windows and offsets alike. The exception is an
+  event declared `during: motion`, for fly-by acquisition.
+- **An offset is a motion too.** Holding Z at +0.2 µm during 2-4 ms means a
+  transition up, a settle, the hold, a transition back and a settle, each
+  with the device's own `move_s` and `settle_s`.
+- **Limits apply to the combined output.** The device's realized position
+  is the loop drive, plus its offsets, plus every transition. Range,
+  `vel_max`, `acc_max` and volts are checked on that, not on each part.
+
+So "make the axis stepped" is necessary but not sufficient for an
+intra-pixel move. The feasibility report checks that the offset, with its
+transitions, fits the stationary interval within the device's limits:
+"The Z offset needs 2.4 ms with its moves and settles; the stationary part
+of this 5 ms dwell is 1.5 ms."
+
+### 2.3 Examples in the model
 
 - **Advanced raster with 2 line steps:**
   - loops `y` (count Ny), `phase` (count 2, at line level), `x` (count Nx,
     swept);
   - drives X ← x and Y ← y;
-  - timeline: a TTL window per laser per phase.
+  - timeline: a TTL window per laser per phase;
+  - bindings: each detector with its line-step mask and pulse count.
 
   This is exactly today's dicts.
 - **MS-RESOLFT (2 cycles × 3 planes):**
   - loops `time` (n, with an interval), `cycle` (2), `plane` (3), all
     stepped;
-  - drive RO ← `{cycle: dy, plane: 2·dy}`;
+  - drive RO ← `{cycle: dy, plane: 2·dy}`, with the stage's motion;
   - timeline: on pulse, wait, off pulse, wait, readout pulse with the
-    camera exposure.
+    camera exposure;
+  - binding: the camera, one frame per step.
 
-  The layout's `cycle`/`plane` loops are what the reconstructor reads.
+  The camera's layout carries the `cycle` and `plane` loops the
+  reconstructor reads.
 - **An oblique composite:**
   - loop `s` (N, stepped);
   - drives GalvoY ← `{s: a}` and PiezoZ ← `{s: b}`.
 - **A Beta scan with intra-pixel moves:**
-  - loops `y`, `phase` (2, line level) and `x` (stepped, dwell 5 ms);
-  - timeline events `offset` on Z: +0.2 µm held during 2-4 ms in phase 0,
-    and a ramp from 0 to +0.4 µm over 1-5 ms in phase 1.
+  - loops `y`, `phase` (2, line level) and `x` (stepped, dwell 5 ms, move
+    0.5 ms, settle 0.5 ms);
+  - timeline events `offset` on Z: +0.2 µm held during 1.0-2.5 ms in phase
+    0, and a ramp from 0 to +0.4 µm over 0.5-3.5 ms in phase 1. Both lie
+    inside the 4 ms stationary interval.
 
   Guillaume's model is the first event alone.
 - **A spiral:** `trajectory` (a sampled path in µm) with measurement windows
   every 20 µs.
 
-### 2.3 The reference interpreter
+### 2.4 Waits and triggers
 
-`interpret(program) -> Timeline` expands a program into absolute,
-time-ordered device actions:
+A program that waits for an external trigger has no absolute timeline until
+the trigger arrives. The model therefore splits the timeline at each wait:
 
-- `t, device, value` for every position change, edge and level;
-- the measurement windows, each with its loop indices and coordinates.
+- **The timeline is a sequence of segments.** Each segment starts at a
+  **barrier**: the run start, or a wait's release. Every time inside a
+  segment is relative to its barrier.
+- **`interpret(program, inputs=None) -> Timeline`:**
+  - With no `inputs`, it returns the segments with their barriers
+    unresolved.
+  - With an input trace (the release time of each barrier), it returns
+    absolute times.
+- **Conformance compares like with like.** An engine's log records when each
+  barrier was released. The oracle re-interprets with those release times as
+  the input trace, and the two timelines must match.
+- **While waiting,** outputs follow `Wait.hold`. The default is `idle`:
+  TTLs low, levels off, positions held. A laser is never left on through an
+  unbounded wait by accident.
+- **Timeout.** `timeout_s` with `on_timeout`:
+  - `fail` ends the run as failed, with the reason;
+  - `skip` releases the barrier and records it as a timeout.
+- **Stop during a wait.** Stop is honoured at once: the step has not started.
+  Outputs go to the engine's safe state (TTL low, levels off, positions
+  held, then restored per `Motion.restore`). The run ends as stopped.
+- **Stop elsewhere.** Stop is honoured at the next barrier or step boundary.
+  "Between steps" is a step boundary or a wait, never a blocked step.
+- **On the NI-DAQ** an external wait is refused: its counters need a clock.
+  Fixed-interval waits (`trigger: 'time'`) are ordinary segments.
 
-It is the meaning of the model, and it is used in three places:
+### 2.5 Detectors: bindings, events and layouts
 
-1. **Densifying for streaming engines** (the NI-DAQ): sample the timeline at
-   the engine's rate.
-2. **Simulating an engine** for mock setups. The mock APD's `mockSample`
-   then images any program, interleaved and composite included.
-3. **Conformance:** a firmware engine replays a program in a logging mode,
-   and its log must equal the interpreter's timeline (to its timing
-   resolution).
+Detectors that share the motion loops can still record different things:
 
-**Advanced keeps its own designers for what it does today.**
+- one camera takes two frames per step;
+- another takes part only in phase 1;
+- an APD assembles many windows into one image.
 
-- `GalvoScanDesigner`'s swept fast axis (turnaround, flyback, `vel_max`) is
-  not re-derived. A swept loop compiles through the existing designer, so
-  today's waveforms stay byte-identical (the goldens).
-- The interpreter covers stepped loops, timelines, phases, composites and
-  trajectories.
-- Merging the two is a later question, not a prerequisite.
+Each `DetectorBinding` says which events it takes, how many per step, in
+which phases, over which window, and how they are assembled.
+
+- **Layouts come from bindings and the program, not from the loops alone.**
+  `layout_for(program, binding)` builds the detector's
+  `AcquisitionLayout`.
+- **Today's semantics are the acceptance bar.** `build_advanced_scan_layouts`
+  already handles per-detector line-step masks, pulse counts per condition,
+  repeat loops and recorded spans (`_acquisition_layout_source.py:488-601`).
+  For every Advanced-shaped program, `layout_for` must produce the same
+  layouts as `build_advanced_scan_layouts` does for the same dicts.
+- **The frame-count checks stay.** The recording's arm-time
+  `SCAN_POSITION_COUNT_MISMATCH` check (`RecordingManager.py:2282`) and the
+  layout validation keep running. Their expected counts come from the same
+  bindings, so the program and the check cannot disagree.
+- **Assembly.**
+  - `stream`: one frame per taken event, in acquisition order. The layout
+    says where each frame belongs: interleaved cycles and planes, phases,
+    repeats.
+  - `image`: each taken window is placed at its index tuple in an image.
+    For a raster in forward order this is today's reshape. For any other
+    order it is index-mapped (M2, §7).
+
+### 2.6 Timing as realized, not as requested
+
+Every engine has a timing grid: 10 µs samples on the NI-DAQ at 100 kHz,
+1 µs steps on the Teensy, whatever a plugin declares. Requested edges move
+to the grid, short pulses can shrink or vanish, and windows can shorten.
+
+**Compiling returns a `RealizedSchedule`:** every event as requested and as
+it will happen, with a summary:
+
+- the largest edge shift;
+- each pulse or window whose length changed;
+- minimum-pulse violations;
+- the total duration, requested against realized.
+
+**The acceptance policy is declared, not left to the engine:**
+
+| Change | Policy |
+|---|---|
+| An edge moves by at most half a grid step | Accepted, reported in the summary |
+| A pulse or detector window shortened, still at least one grid step and the engine's minimum pulse | Accepted and reported. Detectors normalize by the **realized** window |
+| A pulse or window vanishes, falls below the minimum pulse, or two edges of one device collapse | **Refused**, with the event and the engine's grid |
+| Total duration off by more than one grid step per step | Reported; refused above a declared tolerance (default 1 %) |
+
+Preview, acquisition and recorded metadata all use the realized schedule.
+The plot shows what will run, the detectors integrate what ran, and the file
+says what ran. Today the Teensy adapter floors `duration_ns // 1000`
+(`TeensyPulseManager.py:197`); under this policy it rounds and reports.
+
+### 2.7 The reference interpreter
+
+`interpret(program, inputs=None) -> Timeline` (§2.4) expands a program into
+time-ordered device actions per segment. It covers every position, with its
+transitions (§2.2), every edge and level, and the measurement windows, each
+with its loop indices and coordinates.
+
+**It is the meaning of the model, and it is used to:**
+
+1. **densify for streaming engines** (the NI-DAQ): sample the realized
+   schedule (§2.6) at the engine's rate;
+2. **be the conformance oracle:** an engine's log, re-interpreted with its
+   recorded barrier releases, must equal the interpreter's timeline;
+3. **simulate detectors' samples on mock setups.** The mock APD's
+   `mockSample` images any program, interleaved and composite included.
+
+It is **not** the simulated engine. An engine that executed by calling the
+interpreter would be checked against itself and prove only the plumbing. The
+step engine in M1 (§7) is an independent executor of its own compiled plan.
+
+**Today's designers stay where they are proven.**
+
+- **`GalvoScanDesigner`'s swept fast axis** (turnaround, flyback,
+  `vel_max`) is not re-derived. A swept loop compiles through the existing
+  designer, so today's waveforms stay byte-identical; the Galvo goldens
+  exist (`test_galvo_signal_goldens.py`).
+- **`BetaScanDesigner` has no goldens.** M0 captures them first, over its
+  parameter space: centred and absolute, 1 to 3 axes, return times, move
+  and settle. The interpreter's stepped path with Beta's `Motion` must then
+  reproduce them. If an exact match cannot be reached, Beta stays a compile
+  path, like Galvo. The plan says so instead of approximating.
+- **The interpreter covers** stepped loops with motion, timelines, phases,
+  composites, waits and trajectories.
 
 ---
 
@@ -355,7 +552,13 @@ class EngineCapabilities:
                                            # per step, waits, trigger in
     detector_inputs: frozenset             # 'counter', 'ai'
     triggers_out: tuple                    # camera / marker lines
-    abort: str                             # 'none', 'between-steps', 'immediate'
+    timing_grid_s: float                   # the grid edges land on (§2.6)
+    min_pulse_s: float
+    waits: frozenset                       # 'time', 'start-trigger', 'step-trigger'
+    sync_in: frozenset                     # 'start' (a start trigger) and/or
+                                           # 'clock' (an external sample clock), §5.4
+    safe_state: str                        # what outputs do on stop and while idle
+    abort: str                             # 'none', 'step-boundary', 'immediate'
 ```
 
 **Which engine drives a device** is decided by the device's channel. Each
@@ -446,11 +649,21 @@ detector kind, abort.
 `positioner` and the others (`docs/design/DEVICE_PLUGINS.md`, manifest
 `kind`).
 
-- **The public base class and its data types** are exported by
-  `imswitch.pluginapi`:
-  - `ScanEngine`, which has `capabilities()`, `owns(channel)`,
-    `compile(program) -> (plan, report)`, `run(plan)`, `abort()`, and the
-    built, started, done and failed signals;
+- **The public base class and its data types** are exported, first as
+  `imswitch.pluginapi.experimental`. They become the stable
+  `imswitch.pluginapi` only after a second execution model has used them
+  (the step engine, M1) and M2 and M3 have run on them. Nothing published
+  before then is a compatibility promise.
+
+  The exports are:
+  - `ScanEngine`, which has:
+    - `capabilities()` and `owns(channel)`;
+    - `compile(program) -> (plan, realized, report)`: the plan in the
+      engine's own form, the realized schedule (§2.6) and the feasibility
+      report;
+    - `prepare(plan)`, then a readiness answer once the detectors are armed;
+    - `run(plan)` and `abort()`;
+    - the prepared, started, released, done, stopped and failed signals.
   - `EngineCapabilities`;
   - `ScanProgram` and the interpreter.
 
@@ -476,10 +689,13 @@ detector kind, abort.
   | Be a pulse generator | Any `PulseGeneratorManager` (§5.3) | Nothing: one adapter makes it a digital-only step engine |
 - **Every engine passes the same conformance suite**, like the pulse
   generator's 18 contract tests (`test_pulsegenerator_base.py`):
-  - Its report never calls a feature native that its run cannot do.
-  - Running the conformance programs on its mock produces the interpreter's
-    timeline.
-  - Stop, done and failure behave as the coordinator expects.
+  - Its report never calls a feature native that its run cannot do, and
+    every refusal names the feature and the limit.
+  - Running the conformance programs on its mock logs what it executed. The
+    interpreter, given the log's barrier releases, must produce the same
+    timeline (§2.4, §2.7).
+  - Preparation, detector readiness, start, stop (also during a wait),
+    failure and completion behave as the coordinator expects.
 - **The config editor** gets the kind like the others:
   `setup_metadata.py` is the single source for kind, category and section.
 
@@ -514,14 +730,22 @@ the model and not from today's firmware:
   - the step timeline as an event list per phase (start µs, end µs, line or
     DAC, value);
   - the trigger-in policy.
-- **Run:** autonomous. Progress messages (`STEP i/n`) go up the link, and
-  STOP is checked between steps.
+- **Run:** autonomous. Progress messages (`STEP i/n`) and barrier releases
+  (`RELEASE k t`) go up the link.
+- **STOP** is honoured at the next step boundary, and at once while waiting
+  (§2.4). The board then goes to the declared safe state: TTL low, levels
+  off, positions held. It reports `STOPPED` and where it stopped.
+- **Waits:** a step or loop may wait on the trigger input with a timeout,
+  and outputs follow the wait's `hold` (§2.4).
 - **Introspection:** `*CAPS?` returns the capabilities (§3.1): DAC count and
   range, TTL count, timing resolution, limits. The engine reports what the
   connected board says, as the Teensy v4 `*IDN?` already does.
-- **Conformance:** a log mode replays the run's timeline for comparison with
-  the interpreter (§2.3). The Python interpreter running behind the protocol
-  is also the simulated board for mock setups and tests.
+- **Conformance:** a log mode reports what the board executed, for
+  comparison with the interpreter (§2.7).
+- **The simulated board** is the M1 step engine's executor behind the
+  protocol, not the interpreter. It executes the uploaded tables the way the
+  firmware will, so it can disagree with the interpreter and the
+  conformance test means something.
 
 **The TriggerScope** gets a new firmware implementing this protocol (Lenny:
 "worst case reprogram the TriggerScope firmware"). The lab writes it, later
@@ -534,9 +758,9 @@ the model and not from today's firmware:
   they are. The engine layer does not wrap them.
 - **When it exists,** EtSnouty starts an Expert program instead of emitting
   `sigRunScanTriggerScopePLSRMulticolor`, and the old panels can retire.
-- **Before the firmware:** the simulated step engine (the interpreter behind
-  the protocol) lets everything above it be built and tested: the protocol
-  engine, Expert programs on a "step board", the reports.
+- **Before the firmware:** the simulated board lets everything above it be
+  built and tested: the protocol engine, Expert programs on a "step board",
+  and the reports.
 
 ### 5.3 The Teensy, the representative digital-only engine
 
@@ -544,56 +768,111 @@ The lab's Teensy is digital only (decision 1), and that is the point: it
 stands for the boards people have.
 
 - **One adapter, `PulseGeneratorScanEngine`, turns any
-  `PulseGeneratorManager` into a scan engine.**
-  - The capabilities come from the manager's own properties:
-    `n_digital_channels`, `min_pulse_width_ns`, `jitter_ns`,
-    `supports_hw_trigger_in` and `supports_analog`
-    (`PulseGeneratorManager.py:73-110`).
-  - `compile` turns a program's timeline into `PulseStep`s with a repeat
-    count. The feasibility report states the board's limits: "a pixel cycle
-    of 6 steps × 4096 pixels needs one repeat, fits the Teensy's 256
-    steps."
-- **A program with no drives** runs on it natively: pulse programs, for
-  example camera and laser switching on a widefield RESOLFT setup.
-- **A program with drives** is refused with the reason: "Z needs an analog
-  output; the Teensy has none."
+  `PulseGeneratorManager` into a scan engine for a digital subset of the
+  model, and refuses everything else with the reason.**
+- **What today's contract can and cannot say.** `PulseGeneratorManager`
+  declares `n_digital_channels`, `min_pulse_width_ns`, `jitter_ns`,
+  `supports_hw_trigger_in` and `supports_analog`
+  (`PulseGeneratorManager.py:73-110`). That is not enough:
+  - `supports_analog` means a static `setAnalog` works. A `PulseStep`
+    carries only digital states (`PulseGeneratorManager.py:23-38`), so no
+    sequence can hold a level.
+  - `run(n_reps, blocking)` has no trigger policy, although
+    `supports_hw_trigger_in` describes one.
+  - Sequence capacity (the Teensy's 256 steps), timing granularity (1 µs)
+    and the repeat limit live only in the Teensy driver.
+- **The contract is extended with optional properties**, conservative when
+  absent:
+  - `max_sequence_steps` (absent: refuse any program that needs the number);
+  - `timing_resolution_ns` (absent: `min_pulse_width_ns`);
+  - `max_repeats`;
+  - `run(..., trigger='none' | 'start')`, offered only when
+    `supports_hw_trigger_in`.
+
+  The Teensy and PulseStreamer managers implement them.
+- **The representable subset.** The adapter accepts a program only when all
+  of these hold:
+  - it has no drives;
+  - its timeline holds only TTL and marker events;
+  - its waits are at most one start trigger, and only on a board that takes
+    one;
+  - after compressing runs of identical states, it fits `max_sequence_steps`
+    with one outer repeat count within `max_repeats`;
+  - its realized schedule passes §2.6 on the board's grid.
+
+  Natively, that covers pulse programs, such as camera and laser switching
+  on a widefield RESOLFT setup.
+- **Refusals name the feature and the limit:**
+  - "Z needs an analog output; the Teensy has none."
+  - "The 488 power level is an analog event; pulse generators play digital
+    states only."
+  - "This timeline needs 412 distinct steps; the Teensy holds 256."
+  - "Waiting before every step needs a per-step trigger; the Teensy takes
+    none."
+- **The tests cover refusals as well as successes:** each refusal above,
+  plus repeated sequences at the capacity edge (256 steps, and 257).
 - **A program that also needs the scanner's clock** waits for §5.4.
 - **The same adapter serves `PulseStreamerManager`** (8 digital lines,
-  analog outputs, 8 ns pulses, a trigger input) and any future
-  pulse-generator plugin. Pulse generators are not yet
-  registry-resolved, and `MasterController` builds only the Teensy
-  (`MasterController.py:40-47`). Registry resolution for `pulse_generator`
-  comes with M1.
+  8 ns pulses, a trigger input) and any future pulse-generator plugin.
+  Pulse generators are not yet registry-resolved, and `MasterController`
+  builds only the Teensy (`MasterController.py:40-47`). Registry resolution
+  for `pulse_generator` comes with M1.
 
-### 5.4 Several engines in one scan (later)
+### 5.4 Several engines in one scan (later, a hypothesis)
 
-One engine starts the others: the NI-DAQ start trigger or sample clock goes
-to a board's trigger input. Then one program can span engines, for example
-NI-DAQ galvos with TriggerScope piezo steps, or Teensy-gated lasers on an
-NI-DAQ scan.
+**The goal:** one program spanning engines, for example NI-DAQ galvos with
+TriggerScope piezo steps, or Teensy-gated lasers on an NI-DAQ scan. That
+the model needs no change for it is a hypothesis until these contracts are
+designed:
 
-The program needs no change; the compiler splits it. This needs `trigger
-in` on the step engines, which is part of the protocol.
+- **A shared start trigger is not a shared clock.**
+  - A start trigger aligns the starts. The clocks then drift apart by their
+    ppm difference over the run: a few µs per second, a pixel within a long
+    scan.
+  - A shared sample clock (or a reference clock both lock to) keeps them in
+    step. It is wired differently and not every board can take it.
+
+  The capability model declares which an engine accepts, and the report
+  states the drift bound a program would have.
+- **Waits must propagate.** A wait on one engine has to stall the others, so
+  one engine gates the rest, or the program is split at its barriers.
+- **Stop and failure must be coordinated:** one engine stopping or failing
+  stops all, into each engine's safe state, with one run outcome.
+- **The compiler splitting the program** is the last piece, not the first.
 
 ---
 
 ## 6. Data
 
-- **The layout comes from the loops.** The implemented acquisition-layout
-  contract (`imcommon/model/acquisition_layout.py`) already has the loop
-  kinds the model needs (`scan_x/y/z`, `cycle`, `plane`, `time`,
-  `condition`, `repeat`) and serpentine traversal. A program emits its
-  layout directly: no per-panel geometry code, and no reconstructor that has
-  to trust widget values.
+- **Each detector's layout comes from its binding and the program** (§2.5),
+  with `build_advanced_scan_layouts`' semantics as the acceptance bar. The
+  implemented acquisition-layout contract
+  (`imcommon/model/acquisition_layout.py`) already has the loop kinds the
+  model needs (`scan_x/y/z`, `cycle`, `plane`, `time`, `condition`,
+  `repeat`), serpentine traversal and recorded event spans. There is then no
+  per-panel geometry code, and no reconstructor that has to trust widget
+  values.
 - **Two gaps in the layout:**
   - A layout loop names one `device`; a composite drive needs a list.
   - General affine maps and tables need the spec's weights and explicit
     order. Until then, an interleave is described as `cycle` and `plane`
     loops, as now.
 - **Trajectories (decision 4): the gridded image, under today's schema.**
-  - A trajectory produces one measurement per window. The engine side grids
-    the measurements as a weighted 2-D histogram (sum over count) onto a
-    grid: the pattern's bounding box and pixel size.
+  - A trajectory produces one measurement per window: counts over the
+    window's **realized** integration time (§2.6).
+  - **Gridding** is onto the pattern's bounding box at a chosen pixel size.
+    Each bin holds the **count rate**: the sum of counts over the sum of
+    integration times of the measurements whose position falls in it. That
+    stays correct when windows differ in length, which a mean of counts
+    does not.
+  - The unit is counts per second, recorded in the metadata.
+  - The assumptions are stated with the result: a linear detector, no
+    dead-time correction, and position = the commanded position at the
+    window's centre.
+  - **Unvisited and zero are different.** A bin no measurement reached is
+    NaN (the image is float). A measured zero is 0. A second channel holds
+    each bin's integration time (its coverage), so a reader can tell sparse
+    from dark.
   - The grid is published as a `ScanFrame` with its `FrameGeometry`, and
     recorded like any assembled scan image. The schema does not change.
   - The program goes into the scan metadata beside today's scan parameters,
@@ -618,36 +897,40 @@ in` on the step engines, which is part of the protocol.
 
 **The order (decision 3: mine to choose), and why:**
 
-1. **M0 first.** Everything stands on the model. It is Qt-free and
-   reviewable on its own. It proves the adapter round trip on today's scans
-   before anything visible changes.
-2. **M1 next, as the plugin interface from the start.** A seam built
-   NI-DAQ-shaped first would be rebuilt for plugins. Greying out is the
-   capability model's first visible use. On the NI-DAQ, nothing else
-   changes.
+1. **M0 first.** Everything stands on the model, and the model now includes
+   the contracts the review found missing: motion, waits, detector bindings
+   and realized timing. It is Qt-free and reviewable on its own. It proves
+   the adapter on today's scans (Beta goldens, the layouts) before anything
+   visible changes.
+2. **M1 next, as the plugin interface, with two engines.** A seam built
+   NI-DAQ-shaped first would be rebuilt for plugins. An interface used by
+   one execution model is not yet hardware-neutral, so M1 also brings an
+   independent step engine. Greying out is the capability model's first
+   visible use. On the NI-DAQ, nothing else changes.
 3. **M2 before Expert.** It is the smallest visible step on rigs that exist:
-   NI-DAQ setups with stepped axes. It puts the interpreter's densify path
-   into real use behind a panel people know. It also finishes Guillaume's
-   option, which does nothing today.
-4. **M3 then.** Expert reuses M2's compiler. Its MS-RESOLFT preset runs on
-   the NI-DAQ and the mock before any TriggerScope firmware exists. Layouts
-   from loops replace per-panel geometry code.
-5. **M4, trajectories.** They need a new detector path (measurement mode and
-   gridding) but nothing from the step engines. They come after M3 because
-   the Expert panel hosts the patterns.
-6. **M5, the protocol and firmware, last.** The lab writes the firmware,
-   later (decision 6). The simulated step engine lets the protocol engine be
-   built and tested before a board runs it.
+   NI-DAQ setups with stepped axes. Interleaving changes which pixel a
+   measurement belongs to at once, so M2 brings the index-mapped detector
+   assembly with it. It also finishes Guillaume's option, which does nothing
+   today.
+4. **M3 then.** Expert reuses M2's compiler and assembly. Its MS-RESOLFT
+   preset runs on the NI-DAQ, the mock and the M1 step engine before any
+   TriggerScope firmware exists.
+5. **M4, trajectories.** They need the measurement mode and gridding
+   (§6) but nothing from the step engines. They come after M3 because the
+   Expert panel hosts the patterns.
+6. **M5, the serial protocol and firmware, last.** The lab writes the
+   firmware, later (decision 6). The M1 step engine's executor, put behind
+   the protocol, is the simulated board until then.
 
 | Phase | Content | Behaviour change | Checked by |
 |---|---|---|---|
-| M0 | `ScanProgram`, the reference interpreter, the Advanced dicts ↔ program adapter (round trip, as the cloak contract) | none | Qt-free tests; Advanced-shaped stepped programs densify to today's waveforms |
-| M1 | `scan_engine` plugin kind and `imswitch.pluginapi.ScanEngine`; `NidaqScanEngine` as its first contribution; capabilities and the feasibility report; Advanced and Simple grey out from it; refusals for channels no engine owns; registry resolution for `pulse_generator` | Greyed parts; refusals instead of silent drops (§10) | Goldens; "Advanced as today"; an analog-only mock setup; the engine conformance suite on the NI-DAQ mock |
-| M2 | Advanced: per-axis order (forward, serpentine, interleave *k*) and intra-pixel moves as generalised `offset` events (Guillaume's fields, all line steps, hold or ramp; stepped axes only) | New options, off by default; saved intra-pixel scans start to do what they say | Mock: an interleaved stack restacks to the true order through the SNOUTY restack; the offsets appear in the AO trace per phase |
-| M3 | Expert panel: loops, drives (composite axes), phases, timeline, presets (MS-RESOLFT first), the report beside the editor; `PulseGeneratorScanEngine` (the Teensy runs drive-less programs) | New panel | Mock APD and mock camera; layouts read by the SNOUTY reconstructor; the Teensy mock against the interpreter |
-| M4 | Trajectories (circle, spiral, Lissajous, script pattern); APD/PMT measurement mode; gridded display and recording (§6) | New pattern kind | Mock APD images the sample along a spiral (correlation, as the overview test) |
-| M5 | Step-engine protocol spec; the simulated step engine (the interpreter behind the protocol); the built-in protocol engine; then the TriggerScope firmware (the lab) and a rig | New engine | Conformance logs against the interpreter; then a rig |
-| M6 | Multi-engine sync; event-driven programs (EtSnouty); the optional raw measurement stream for trajectories | — | — |
+| M0 | `ScanProgram` with `Motion`, `Wait` and `DetectorBinding`; the interpreter with segments and input traces (§2.4); `RealizedSchedule` and its policy (§2.6); `layout_for` (§2.5); the Advanced dicts ↔ program adapter; **Beta goldens captured first** | none | Qt-free tests. Advanced-shaped programs: the interpreter reproduces the Beta goldens (or Beta stays a compile path, §2.7), and `layout_for` equals `build_advanced_scan_layouts`. Round trip as the cloak contract. Realized-schedule refusals at the grid edges |
+| M1 | `scan_engine` plugin kind under `imswitch.pluginapi.experimental`; `NidaqScanEngine`; **an independent in-process step engine** (its own compiled plan of tables and an event list, executed on a worker thread against a clock it advances, logging what it did); capabilities and the feasibility report; Advanced and Simple grey out from it; refusals for channels no engine owns; registry resolution for `pulse_generator` | Greyed parts; refusals instead of silent drops (§10) | Goldens; "Advanced as today"; an analog-only mock setup. The conformance suite on both engines: prepare, detector readiness (a mock camera triggered by the step engine's TTL events), start, stop (also during a wait), failure, completion. The step engine's log against the interpreter |
+| M2 | Advanced: per-axis order (forward, serpentine, interleave *k*), intra-pixel moves as `offset` events (Guillaume's fields, every line step, hold or ramp, refused on swept axes and when they do not fit the stationary interval, §2.2). **Index-mapped assembly** in APD and PMT (windows placed by their index tuple, not reshaped in acquisition order). Camera frame streams with the interleaved layout | New options, off by default; saved intra-pixel scans start to do what they say | **Through the real mock detector and recording path.** An interleaved acquisition of the deterministic mock sample must give the same assembled image as the forward scan. The recorded file's layout must place every frame and pixel at its true coordinates, read back through the layout reader and the SNOUTY restack. The offsets appear in the AO trace per phase |
+| M3 | Expert panel: loops, drives (composite axes), phases, timeline, waits, presets (MS-RESOLFT first), the report and the realized schedule beside the editor; `PulseGeneratorScanEngine` on the extended pulse-generator contract (§5.3) | New panel | Mock APD and mock camera; layouts read by the SNOUTY reconstructor; the Teensy mock against the interpreter, refusals included (§5.3) |
+| M4 | Trajectories (circle, spiral, Lissajous, script pattern); APD/PMT measurement mode; gridding with rate units, coverage and NaN for unvisited (§6); recording | New pattern kind | Mock APD images the sample along a spiral (correlation, as the overview test). Unequal windows give the same rates. Unvisited bins are NaN, measured dark bins 0 |
+| M5 | Step-engine serial protocol; the M1 executor behind it as the simulated board; the built-in protocol engine; then the TriggerScope firmware (the lab) and a rig | New engine | Conformance logs against the interpreter; then a rig |
+| M6 | Multi-engine design (§5.4: clocks, wait propagation, coordinated stop) and then sync; event-driven programs (EtSnouty); the optional raw measurement stream for trajectories | — | — |
 
 ---
 
@@ -658,16 +941,23 @@ in` on the step engines, which is part of the protocol.
   swept loop with phases or timeline events. The adapter must prove that
   today's Advanced scans come out byte-identical, and a mixed program that
   neither path can build exactly is refused, not approximated.
+- **Beta may not be reproducible exactly** (§2.7). Then the stepped path has
+  two definitions too, Beta's and the interpreter's. Intra-pixel moves on a
+  Beta axis must then compose with Beta's waveform, and the M0 goldens
+  decide which way.
 - **The raster scan description has about twenty readers** (APD, PMT,
   TimeTagger, recording, layouts, `scan_frame`). Programs that are not
-  raster-shaped need those readers to take the program's layout instead.
-  That is the larger part of M3 and M4.
+  raster-shaped need those readers to take the binding's layout and the
+  realized schedule instead. Part of that lands in M2 (index-mapped
+  assembly), the rest in M3 and M4.
 - **Densifying long stepped scans on the NI-DAQ** can be large. The report
   states the cost; chunked streaming is the fix.
 - **Firmware is a second code base.** The protocol keeps it small: no scan
-  types, only loops, drives and events. The interpreter is its test oracle.
-- **No engine aborts mid-iteration today.** The protocol adds STOP between
-  steps; the NI-DAQ abort is the open step on `perf/advanced-scan-freeze`.
+  types, only loops, drives, events and waits. The interpreter is its test
+  oracle, and the M1 executor its reference.
+- **No engine aborts mid-iteration today.** The protocol adds STOP at step
+  boundaries and during waits; the NI-DAQ abort is the open step on
+  `perf/advanced-scan-freeze`.
 - **Galvo dynamics on fast curves.** The commanded path is not the actual
   path. The coordinates are commanded at first; measured positions come
   later.
@@ -688,9 +978,21 @@ are proposals that want a yes or a correction:
    editor people know.
 3. **What M2 refuses.** An interleaved order or an intra-pixel move on a
    swept axis (a smooth galvo) is refused with the remedy "make the axis
-   stepped", not approximated.
+   stepped", not approximated. A stepped axis is necessary but not enough:
+   an offset is also refused when it does not fit the stationary interval
+   with its own moves and settles (§2.2).
 4. **The gridded-image caveat** (§6): re-gridding later needs the raw
    measurements, which stay an option for M6.
+5. **Outputs during a wait default to idle** (§2.4): TTL low, levels off,
+   positions held. `hold` must be asked for.
+6. **The timing acceptance defaults** (§2.6): an edge may move by half a
+   grid step; a pulse or window that vanishes or falls below the minimum is
+   refused; the total duration may be off by 1 %.
+7. **Trajectory images carry a coverage channel** beside the rate image
+   (§6), so unvisited and dark can be told apart. This adds a channel to
+   "the gridded image" of decision 4; it changes no schema.
+8. **The plugin API stays experimental** (`imswitch.pluginapi.experimental`)
+   until M3 has run on it (§5.0).
 
 ---
 
@@ -715,6 +1017,12 @@ are proposals that want a yes or a correction:
 - **`ScanManagerAdvanced.getTTLCyclePreview*`** has no callers.
 - **`ARCHITECTURE.md:186`** names scan controllers as pulse-generator
   consumers; none is.
+- **The Teensy shortens pulses silently.** `TeensyPulseManager` converts
+  `duration_ns // 1_000`, at least 1 µs (`TeensyPulseManager.py:197`), so a
+  1.9 µs step plays as 1 µs.
+- **`PulseGeneratorManager.run(n_reps, blocking)` has no trigger argument,**
+  although `supports_hw_trigger_in` says "True if `run` can wait for an
+  external trigger" (`PulseGeneratorManager.py:94-96`).
 
 ---
 
