@@ -68,8 +68,13 @@ class ViewSetupInfo(SetupInfo):
     """ Additional ROIs available to select in detector settings. """
 
     laserPresets: Dict[str, Dict[str, 'LaserPresetInfo']] = field(default_factory=dict)
-    """ Laser presets available to select (map preset name -> laser name ->
-    LaserPresetInfo). """
+    """ Manual laser presets available to select (map preset name -> laser
+    name -> LaserPresetInfo). Kept under its historical key for backward
+    compatibility. """
+
+    laserScanPresets: Dict[str, Dict[str, 'LaserPresetInfo']] = field(default_factory=dict)
+    """ Scan-context laser presets. These contain power values only and are
+    intentionally separate from :attr:`laserPresets`. """
 
     widgetLayout: Optional['WidgetLayoutInfo'] = field(default_factory=lambda: None)
     """ Optional dock layout override.  When ``null`` or absent, the built-in
@@ -136,6 +141,17 @@ class ViewSetupInfo(SetupInfo):
         """ :meta private: """
         try:
             del self.laserPresets[name]
+        except KeyError:
+            pass
+
+    def setLaserScanPreset(self, name, laserPresetInfos):
+        """ :meta private: """
+        self.laserScanPresets[name] = laserPresetInfos
+
+    def removeLaserScanPreset(self, name):
+        """ :meta private: """
+        try:
+            del self.laserScanPresets[name]
         except KeyError:
             pass
 

@@ -34,6 +34,8 @@ never publish a part terminal and are unaffected.
 
 import inspect
 
+import pytest
+
 from imswitch.imcontrol.controller.basecontrollers import SuperScanController
 from imswitch.imcontrol.controller.controllers.LaserController import (
     LaserController,
@@ -225,6 +227,32 @@ def test_arming_is_independent_of_the_manual_toggle():
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
 
     assert ('scanMode', True) in ctrl._master.lasersManager['561AOTF'].calls
+
+
+@pytest.mark.parametrize(
+    ('manual_active', 'participating'),
+    ((True, True), (False, True), (True, False), (False, False)),
+)
+def test_manual_state_and_scan_participation_baseline(manual_active, participating):
+    """Freeze the pre-Manual/Scan lifecycle contract before Patch 3 changes it."""
+    ctrl = _controller(names=('488',))
+    ctrl._widget.active['488'] = manual_active
+
+    LaserController.scanDevicesResolved(
+        ctrl, ['488'] if participating else []
+    )
+
+    calls = ctrl._master.lasersManager['488'].calls
+    if participating:
+        assert ('scanMode', True) in calls
+        assert ctrl._scanArmedLasers == ['488']
+    else:
+        assert calls == []
+        assert ctrl._scanArmedLasers == []
+
+    # Patch 1 must not alter Manual ON/OFF at scan arming. Patch 3 will
+    # intentionally change this characterization by suppressing Manual light.
+    assert ctrl._widget.active['488'] is manual_active
 
 
 # --------------------------------------------------------------------------- #

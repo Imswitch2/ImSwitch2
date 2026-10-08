@@ -1,7 +1,13 @@
 from typing import List, Union, Dict, Any
 
 from imswitch.imcommon.model import APIExport
-from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
+from imswitch.imcommon.framework import Signal
+from imswitch.imcontrol.model import (
+    LaserPowerContext,
+    configfiletools,
+    getWidgetStatePersistence,
+    normalizeLaserPowerContext,
+)
 from imswitch.imcontrol.view import guitools
 from ..basecontrollers import (
     ComponentStateApplyMode,
@@ -13,6 +19,13 @@ from ..basecontrollers import (
 
 class LaserController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to LaserWidget."""
+
+    # Semantic laser-state events. Context is emitted as the stable string
+    # value (``manual`` / ``scan``) so non-Qt consumers and future workflow
+    # services do not depend on widget state or enum serialization.
+    sigLaserPowerChanged = Signal(str, str, object)
+    sigLaserPresetListChanged = Signal(str)
+    sigLaserPresetLoaded = Signal(str, str)
 
     # StatefulComponentMixin attributes
     componentName = 'Laser'
@@ -27,6 +40,16 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         self.settingAttr = False
         self.is_scanning = False
+
+        # Scan power is intentionally software-only in Patch 1. Missing values
+        # fall back dynamically to the current Manual setpoint, preserving the
+        # behaviour of existing setups until Scan power is explicitly edited or
+        # loaded from a Scan preset.
+        self._scanPowerValues = {}
+        self._selectedPresetByContext = {
+            LaserPowerContext.MANUAL: None,
+            LaserPowerContext.SCAN: None,
+        }
         # Lasers this scan armed, so teardown touches exactly those and no
         # others (see scanDevicesResolved / _disarmScanLasers).
         self._scanArmedLasers = []
@@ -71,6 +94,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             self._widget.addPreset(laserPresetName)
 
         self._widget.setCurrentPreset(None)  # Unselect
+        self._selectedPresetByContext[LaserPowerContext.MANUAL] = None
 
         # Connect CommunicationChannel signals
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
@@ -142,53 +166,55 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setModulationDutyCycle(laserName, dutyCycle)
         self.setSharedAttr(laserName, _dcAttr, dutyCycle)
 
+    def _presetStoreForContext(self, context):
+        context = normalizeLaserPowerContext(context)
+        if context is LaserPowerContext.MANUAL:
+            return self._setupInfo.laserPresets
+        return self._setupInfo.laserScanPresets
+
+    def _selectedPresetName(self, context):
+        context = normalizeLaserPowerContext(context)
+        if context is LaserPowerContext.MANUAL:
+            # Until Patch 2 the existing preset combo remains the Manual UI and
+            # is authoritative, including an explicit cleared selection.
+            return self._widget.getCurrentPreset()
+        return getattr(self, '_selectedPresetByContext', {}).get(context)
+
+    def _setSelectedPresetName(self, context, name):
+        context = normalizeLaserPowerContext(context)
+        if not hasattr(self, '_selectedPresetByContext'):
+            self._selectedPresetByContext = {}
+        self._selectedPresetByContext[context] = name
+        if context is LaserPowerContext.MANUAL:
+            self._widget.setCurrentPreset(name)
+
     def presetSelected(self, presetName):
-        """ Handles what happens when a preset is selected in the preset list.
-        """
-        if presetName:
-            self._widget.setCurrentPreset(presetName)
+        """Handle selection in the existing (Manual) preset combo."""
+        self._setSelectedPresetName(LaserPowerContext.MANUAL, presetName)
 
     def loadPreset(self):
-        """ Handles what happens when the user requests the selected preset to
-        be loaded. """
+        """Load the selected preset from the existing Manual preset UI."""
         presetToLoad = self._widget.getCurrentPreset()
         if not presetToLoad:
             return
-
-        if presetToLoad not in self._setupInfo.laserPresets:
-            return
-
-        # Load values
-        self.applyPreset(self._setupInfo.laserPresets[presetToLoad])
+        self.loadLaserPreset(presetToLoad, LaserPowerContext.MANUAL)
 
     def savePreset(self, name=None):
-        """ Saves current values to a preset. If the name parameter is None,
-        the values will be saved to the currently selected preset. """
-
+        """Save current Manual values using the existing widget workflow."""
         if not name:
             name = self._widget.getCurrentPreset()
             if not name:
                 return
-
-        # Add in GUI
-        if name not in self._setupInfo.laserPresets:
-            self._widget.addPreset(name)
-
-        # Set in setup info
-        self._setupInfo.setLaserPreset(name, self.makePreset())
-        configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
-
-        # Update selected preset in GUI
-        self._widget.setCurrentPreset(name)
+        # Preserve the legacy UI behaviour: saving through the existing Manual
+        # preset controls also makes that preset the current selection.
+        self.saveLaserPreset(name, LaserPowerContext.MANUAL, select=True)
 
     def savePresetAs(self):
-        """ Handles what happens when the user requests the current laser
-        values to be saved as a new preset. """
-
-        name = guitools.askForTextInput(self._widget, 'Add laser preset',
-                                        'Enter a name for this preset:')
-
-        if not name:  # No name provided
+        """Save current Manual values as a newly named preset."""
+        name = guitools.askForTextInput(
+            self._widget, 'Add laser preset', 'Enter a name for this preset:'
+        )
+        if not name:
             return
 
         add = True
@@ -198,14 +224,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 'Laser preset already exists',
                 f'A preset with the name "{name}" already exists. Do you want to overwrite it"?'
             )
-
         if add:
             self.savePreset(name)
 
     def deletePreset(self):
-        """ Handles what happens when the user requests the selected preset to
-        be deleted. """
-
+        """Delete the selected preset from the existing Manual preset UI."""
         presetToDelete = self._widget.getCurrentPreset()
         if not presetToDelete:
             return
@@ -215,23 +238,109 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             'Delete laser preset?',
             f'Are you sure you want to delete the preset "{presetToDelete}"?'
         )
-
         if confirmationResult:
-            # Remove in GUI
-            self._widget.removePreset(presetToDelete)
+            self.deleteLaserPreset(presetToDelete, LaserPowerContext.MANUAL)
 
-            # Remove from setup info
-            self._setupInfo.removeLaserPreset(presetToDelete)
-            configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
+    @APIExport(runOnUIThread=True)
+    def getLaserPresetNames(self, context=LaserPowerContext.MANUAL.value) -> List[str]:
+        """Return preset names in the requested Manual/Scan namespace."""
+        return list(self._presetStoreForContext(context).keys())
 
-    def makePreset(self):
-        """ Returns a preset object corresponding to the current laser values.
+    @APIExport(runOnUIThread=True)
+    def getLaserPreset(
+        self, name: str, context=LaserPowerContext.MANUAL.value
+    ) -> Union[Dict[str, Any], None]:
+        """Return ``name`` from one preset namespace without applying it.
+
+        A shallow mapping copy is returned so callers can inspect or replace
+        entries without mutating the setup configuration. ``LaserPresetInfo``
+        entries are frozen dataclasses, so their values are immutable.
         """
-        return {lName: guitools.LaserPresetInfo(value=self._widget.getValue(lName))
-                for lName, lManager in self._master.lasersManager if not lManager.isBinary}
+        preset = self._presetStoreForContext(context).get(name)
+        return dict(preset) if preset is not None else None
 
-    def applyPreset(self, laserPreset):
-        """ Loads a preset object into the current values. """
+    @APIExport(runOnUIThread=True)
+    def loadLaserPreset(self, name: str, context=LaserPowerContext.MANUAL.value) -> bool:
+        """Load ``name`` into one power context.
+
+        Loading a Scan preset only updates software state; it never writes to a
+        laser manager or changes physical enable state.
+        """
+        context = normalizeLaserPowerContext(context)
+        presets = self._presetStoreForContext(context)
+        if name not in presets:
+            return False
+        self.applyPreset(presets[name], context=context)
+        self._setSelectedPresetName(context, name)
+        self._emitLaserPresetLoaded(context, name)
+        return True
+
+    @APIExport(runOnUIThread=True)
+    def saveLaserPreset(
+        self,
+        name: str,
+        context=LaserPowerContext.MANUAL.value,
+        select: bool = False,
+    ) -> None:
+        """Save current powers to ``name`` in one preset namespace.
+
+        Saving and selecting are separate backend operations. This allows a
+        workflow to update another preset without loading or selecting it.
+        The legacy Manual UI wrappers pass ``select=True`` to preserve their
+        historical Save/Save As behaviour.
+        """
+        context = normalizeLaserPowerContext(context)
+        presets = self._presetStoreForContext(context)
+        isNew = name not in presets
+        preset = self.makePreset(context=context)
+
+        if context is LaserPowerContext.MANUAL:
+            if isNew:
+                self._widget.addPreset(name)
+            self._setupInfo.setLaserPreset(name, preset)
+        else:
+            self._setupInfo.setLaserScanPreset(name, preset)
+
+        configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
+        if select:
+            self._setSelectedPresetName(context, name)
+        if isNew:
+            self._emitLaserPresetListChanged(context)
+
+    @APIExport(runOnUIThread=True)
+    def deleteLaserPreset(self, name: str, context=LaserPowerContext.MANUAL.value) -> bool:
+        """Delete ``name`` from one preset namespace."""
+        context = normalizeLaserPowerContext(context)
+        presets = self._presetStoreForContext(context)
+        if name not in presets:
+            return False
+
+        if context is LaserPowerContext.MANUAL:
+            self._widget.removePreset(name)
+            self._setupInfo.removeLaserPreset(name)
+        else:
+            self._setupInfo.removeLaserScanPreset(name)
+
+        if self._selectedPresetName(context) == name:
+            self._setSelectedPresetName(context, None)
+        configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
+        self._emitLaserPresetListChanged(context)
+        return True
+
+    def makePreset(self, context=LaserPowerContext.MANUAL):
+        """Return a preset object for the effective values in ``context``."""
+        context = normalizeLaserPowerContext(context)
+        return {
+            lName: guitools.LaserPresetInfo(
+                value=self.getLaserPower(lName, context)
+            )
+            for lName, lManager in self._master.lasersManager
+            if not lManager.isBinary
+        }
+
+    def applyPreset(self, laserPreset, context=LaserPowerContext.MANUAL):
+        """Apply a preset to Manual hardware state or software-only Scan state."""
+        context = normalizeLaserPowerContext(context)
         knownLasers = {lName for lName, _ in self._master.lasersManager}
         for laserName, laserPresetInfo in laserPreset.items():
             if laserName not in knownLasers:
@@ -249,7 +358,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                     f'Laser preset entry for "{laserName}" has no value; skipped.'
                 )
                 continue
-            self.setLaserValue(laserName, laserPresetInfo.value)
+            self.setLaserPower(laserName, laserPresetInfo.value, context)
 
     def scanChanged(self, isScanning):
         """ Handles what happens when a scan is started/stopped.
@@ -495,6 +604,32 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         finally:
             self.settingAttr = False
 
+    def _emitLaserPowerChanged(self, laserName, context, value):
+        try:
+            self.sigLaserPowerChanged.emit(
+                laserName, normalizeLaserPowerContext(context).value, value
+            )
+        except (AttributeError, RuntimeError):
+            # Some lightweight tests construct controllers without initializing
+            # the QObject base. State updates must still work there.
+            pass
+
+    def _emitLaserPresetListChanged(self, context):
+        try:
+            self.sigLaserPresetListChanged.emit(
+                normalizeLaserPowerContext(context).value
+            )
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _emitLaserPresetLoaded(self, context, name):
+        try:
+            self.sigLaserPresetLoaded.emit(
+                normalizeLaserPowerContext(context).value, name
+            )
+        except (AttributeError, RuntimeError):
+            pass
+
     def _setLaserValue(self, laserName, value):
         self._master.lasersManager[laserName].setValue(value)
         self._widget.setValue(laserName, value, emitSignal=False)
@@ -511,6 +646,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             self._master.lasersManager[laserName].setEnabled(False)
             self._widget.setLaserActive(laserName, False, emitSignal=False)
             self.setSharedAttr(laserName, _enabledAttr, False)
+        self._emitLaserPowerChanged(laserName, LaserPowerContext.MANUAL, value)
+
+    def _setScanPowerValue(self, laserName, value):
+        """Store an explicit Scan power without touching hardware or the UI."""
+        manager = self._master.lasersManager[laserName]
+        if manager.isBinary:
+            raise ValueError(
+                f'Binary laser "{laserName}" does not have a power setpoint.'
+            )
+        if not hasattr(self, '_scanPowerValues'):
+            self._scanPowerValues = {}
+        self._scanPowerValues[laserName] = value
+        self._emitLaserPowerChanged(laserName, LaserPowerContext.SCAN, value)
 
     @APIExport()
     def getLaserNames(self) -> List[str]:
@@ -525,15 +673,72 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport(runOnUIThread=True)
     def setLaserValue(self, laserName: str, value: Union[int, float]) -> None:
-        """ Sets the value of the specified laser, in the units that the laser
-        uses. """
+        """Set the live Manual value of a laser (legacy API)."""
         self._setLaserValue(laserName, value)
 
     @APIExport(runOnUIThread=True)
+    def getLaserPower(
+        self, laserName: str, context=LaserPowerContext.MANUAL.value
+    ) -> Union[int, float]:
+        """Return the effective power for ``laserName`` in one context.
+
+        An unset Scan value follows the current Manual value dynamically.
+        """
+        context = normalizeLaserPowerContext(context)
+        manager = self._master.lasersManager[laserName]
+        if manager.isBinary:
+            raise ValueError(
+                f'Binary laser "{laserName}" does not have a power setpoint.'
+            )
+        if context is LaserPowerContext.MANUAL:
+            return self._widget.getValue(laserName)
+        scanValues = getattr(self, '_scanPowerValues', {})
+        if laserName in scanValues:
+            return scanValues[laserName]
+        return self._widget.getValue(laserName)
+
+    @APIExport(runOnUIThread=True)
+    def setLaserPower(
+        self,
+        laserName: str,
+        value: Union[int, float],
+        context=LaserPowerContext.MANUAL.value,
+    ) -> None:
+        """Set Manual hardware power or software-only Scan power."""
+        context = normalizeLaserPowerContext(context)
+        if context is LaserPowerContext.MANUAL:
+            self._setLaserValue(laserName, value)
+        else:
+            self._setScanPowerValue(laserName, value)
+
+    @APIExport(runOnUIThread=True)
+    def getLaserPowers(self, context=LaserPowerContext.MANUAL.value) -> Dict[str, Any]:
+        """Return effective non-binary laser powers for one context."""
+        context = normalizeLaserPowerContext(context)
+        return {
+            laserName: self.getLaserPower(laserName, context)
+            for laserName, manager in self._master.lasersManager
+            if not manager.isBinary
+        }
+
+    @APIExport(runOnUIThread=True)
+    def setLaserPowers(
+        self, values: Dict[str, Union[int, float]],
+        context=LaserPowerContext.MANUAL.value,
+    ) -> None:
+        """Set multiple laser powers in one context."""
+        context = normalizeLaserPowerContext(context)
+        for laserName, value in values.items():
+            self.setLaserPower(laserName, value, context)
+
+    @APIExport(runOnUIThread=True)
     def changeScanPower(self, laserName: str, laserValue: Union[int, float]) -> None:
-        """ Sets the value of the specified laser, in the units that the laser
-        uses (alias of setLaserValue kept for existing scripts). Runs on the
-        UI thread because it updates the laser widget. """
+        """Legacy alias of :meth:`setLaserValue` with Manual semantics.
+
+        Despite the historical name, changing this method to software-only Scan
+        state would silently break existing scripts, so the permanent Scan API
+        is :meth:`setLaserPower` with ``context='scan'``.
+        """
         self._setLaserValue(laserName, laserValue)
 
     @APIExport(runOnUIThread=True)
@@ -566,31 +771,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         Returns a JSON-serializable dict with structure expected by the
         existing SetupModesController summarizer (lifted in describeComponentState).
         
-        Returns:
-            {
-                'lasers': {
-                    laserName: {
-                        'enabled': bool,
-                        'value': float | None,
-                        'isBinary': bool,
-                        'valueUnits': str
-                    }
-                },
-                'laserOrder': [laserName, ...],
-                'currentPreset': str | None,
-                'modulation': {
-                    laserName: {
-                        'frequency': int,
-                        'dutyCycle': int
-                    }
-                }
-            }
-        
+        ``currentPreset`` remains as the legacy alias for the Manual preset.
+        New state also records ``manualPreset``, ``scanPreset`` and only the
+        explicit ``scanPowers`` overrides. Missing Scan values continue to
+        follow Manual dynamically.
         """
+        manualPreset = self._selectedPresetName(LaserPowerContext.MANUAL)
         state = {
             'lasers': {},
             'laserOrder': [],
-            'currentPreset': self._widget.getCurrentPreset(),
+            'currentPreset': manualPreset,
+            'manualPreset': manualPreset,
+            'scanPreset': self._selectedPresetName(LaserPowerContext.SCAN),
+            'scanPowers': dict(getattr(self, '_scanPowerValues', {})),
             'modulation': {}
         }
         
@@ -639,8 +832,25 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         warnings = []
         known_lasers = {name for name, _ in self._master.lasersManager}
         lasers = state.get('lasers', {})
-        
-        # Always restore power values and modulation for non-binary lasers
+
+        # Scan state is software-only. Treat a missing key from an old saved
+        # state as "no explicit Scan overrides", i.e. fallback to Manual.
+        restoredScanPowers = {}
+        for lName, value in (state.get('scanPowers') or {}).items():
+            if lName not in known_lasers:
+                warnings.append(
+                    f'Scan power references laser "{lName}" not present in current setup; skipped.'
+                )
+                continue
+            if self._master.lasersManager[lName].isBinary:
+                warnings.append(
+                    f'Scan power references binary laser "{lName}"; skipped.'
+                )
+                continue
+            restoredScanPowers[lName] = value
+        self._scanPowerValues = restoredScanPowers
+
+        # Always restore Manual power values and modulation for non-binary lasers
         for lName, laserState in lasers.items():
             if lName not in known_lasers:
                 warnings.append(f'Laser "{lName}" not present in current setup; skipped.')
@@ -691,11 +901,20 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         elif any(laserState.get('enabled', False) for laserState in lasers.values()):
             warnings.append('Laser enable states not restored in startup mode.')
         
-        # Restore selected preset (UI label only — does NOT apply it to hardware)
-        selected_preset = state.get('currentPreset')
-        if selected_preset and selected_preset in self._setupInfo.laserPresets:
-            self._widget.setCurrentPreset(selected_preset)
-        
+        # Restore selected preset names only; do NOT apply either preset.
+        manualPreset = state.get('manualPreset', state.get('currentPreset'))
+        if manualPreset and manualPreset in self._setupInfo.laserPresets:
+            self._setSelectedPresetName(LaserPowerContext.MANUAL, manualPreset)
+        elif not manualPreset:
+            self._setSelectedPresetName(LaserPowerContext.MANUAL, None)
+
+        scanPresets = getattr(self._setupInfo, 'laserScanPresets', {})
+        scanPreset = state.get('scanPreset')
+        if scanPreset and scanPreset in scanPresets:
+            self._setSelectedPresetName(LaserPowerContext.SCAN, scanPreset)
+        else:
+            self._setSelectedPresetName(LaserPowerContext.SCAN, None)
+
         return warnings
     
     def describeComponentState(self, state: dict) -> list[str]:

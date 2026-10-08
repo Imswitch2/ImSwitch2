@@ -17,6 +17,7 @@ from unittest.mock import Mock, MagicMock, patch, call
 
 from imswitch.imcontrol.controller.controllers.LaserController import LaserController
 from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
+from imswitch.imcontrol.model import LaserPowerContext
 
 
 class _SingleLaserManager:
@@ -106,6 +107,7 @@ def mock_setupinfo():
     """Mock setupInfo."""
     setupinfo = Mock()
     setupinfo.laserPresets = {'Default': {}}
+    setupinfo.laserScanPresets = {}
     setupinfo.lasers = {
         '488nm': Mock(getAnalogChannel=Mock(return_value='ao0')),
         'UV': Mock(getAnalogChannel=Mock(return_value=None), getDigitalLine=Mock(return_value='port0/line0'))
@@ -148,7 +150,12 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._master = mock_master
     controller._widget = mock_widget
     controller._logger = Mock()
-    
+    controller._scanPowerValues = {}
+    controller._selectedPresetByContext = {
+        LaserPowerContext.MANUAL: None,
+        LaserPowerContext.SCAN: None,
+    }
+
     # Bind the actual methods from LaserController to the mock
     controller.getComponentState = lambda: LaserController.getComponentState(controller)
     controller.applyComponentState = lambda state, applyMode: LaserController.applyComponentState(
@@ -168,7 +175,9 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._onOff = lambda value: LaserController._onOff(controller, value)
     controller._asFloat = lambda value: LaserController._asFloat(controller, value)
     controller._isMilliwattUnit = lambda units: LaserController._isMilliwattUnit(controller, units)
-    
+    controller._selectedPresetName = lambda context: LaserController._selectedPresetName(controller, context)
+    controller._setSelectedPresetName = lambda context, name: LaserController._setSelectedPresetName(controller, context, name)
+
     # Mock action methods
     controller.setLaserValue = Mock()
     controller.setLaserActive = Mock()
@@ -382,7 +391,7 @@ def test_apply_preset_skips_unavailable_and_binary_lasers(mock_laser_manager, mo
     controller._master = Mock(lasersManager=mock_laser_manager)
     controller._widget = mock_widget
     controller._logger = Mock()
-    controller.setLaserValue = Mock()
+    controller.setLaserPower = Mock()
 
     preset = {
         '488nm': SimpleNamespace(value=12.5),
@@ -392,7 +401,9 @@ def test_apply_preset_skips_unavailable_and_binary_lasers(mock_laser_manager, mo
 
     LaserController.applyPreset(controller, preset)
 
-    controller.setLaserValue.assert_called_once_with('488nm', 12.5)
+    controller.setLaserPower.assert_called_once_with(
+        '488nm', 12.5, LaserPowerContext.MANUAL
+    )
     assert controller._logger.warning.call_count == 2
 
 
