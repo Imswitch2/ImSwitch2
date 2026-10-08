@@ -304,33 +304,82 @@ class CGHState(DynamicGroupState[CGHTargetState]):
         if not callable(setter):
             raise TypeError(f"Target '{target_key}' lock state is not mutable")
         setter(kind,reference)
+        if kind is None:
+            soft_setter = getattr(lock,"set_period_fov_reference",None)
+            if callable(soft_setter):
+                soft_setter((
+                    target.params.get_param_value("fov_x_px"),
+                    target.params.get_param_value("fov_y_px"),
+                ))
         return lock.to_dict() != before
 
     def refresh_target_lock_reference_from_changes(
         self,target_key: str,changed_keys: Iterable[str],
     ) -> bool:
-        """Update an active lock from explicitly edited locked quantities."""
+        """Refresh hard-lock and unlocked period-edit lattice intent."""
         target = self.items[target_key]
         lock = target.lock_state
-        if lock is None or getattr(lock,"kind",None) is None:
+        if lock is None:
             return False
         changed = set(changed_keys)
-        kind = str(lock.kind)
-        if kind == "fov":
-            keys = ("fov_x_px","fov_y_px")
-        elif kind == "n_foci":
-            keys = ("n_foci_x","n_foci_y")
-        else:
+        kind = getattr(lock,"kind",None)
+
+        if kind is not None:
+            if kind == "fov":
+                keys = ("fov_x_px","fov_y_px")
+            elif kind == "n_foci":
+                keys = ("n_foci_x","n_foci_y")
+            else:
+                return False
+            if not any(key in changed for key in keys):
+                return False
+            before = lock.to_dict()
+            values = list(lock.reference)
+            for index,key in enumerate(keys):
+                if key in changed:
+                    values[index] = target.params.get_param_value(key)
+            lock.set(kind,tuple(values))
+            return lock.to_dict() != before
+
+        relevant = {
+            "period_x_px","period_y_px",
+            "fov_x_px","fov_y_px",
+            "n_foci_x","n_foci_y",
+            "square",
+        }
+        if not changed.intersection(relevant):
             return False
-        if not any(key in changed for key in keys):
+
+        before = lock.to_dict()
+        current_fov = [
+            float(target.params.get_param_value("fov_x_px")),
+            float(target.params.get_param_value("fov_y_px")),
+        ]
+        values = (
+            list(lock.period_fov_reference)
+            if getattr(lock,"period_fov_reference",None) is not None
+            else list(current_fov)
+        )
+
+        if "square" in changed and not bool(target.params.get_param_value("square")):
+            values = list(current_fov)
+
+        for index,axis in enumerate(("x","y")):
+            fov_key = f"fov_{axis}_px"
+            n_key = f"n_foci_{axis}"
+            period_key = f"period_{axis}_px"
+            if fov_key in changed:
+                values[index] = float(target.params.get_param_value(fov_key))
+            elif n_key in changed:
+                count = int(target.params.get_param_value(n_key))
+                period = float(target.params.get_param_value(period_key))
+                values[index] = (count - 1) * period
+
+        setter = getattr(lock,"set_period_fov_reference",None)
+        if not callable(setter):
             return False
-        previous = tuple(lock.reference)
-        values = list(previous)
-        for index,key in enumerate(keys):
-            if key in changed:
-                values[index] = target.params.get_param_value(key)
-        lock.set(kind,tuple(values))
-        return tuple(lock.reference) != previous
+        setter(tuple(values))
+        return lock.to_dict() != before
 
     def _extract_target_param_changes(
         self,changes: Mapping[ParamPath,Any],

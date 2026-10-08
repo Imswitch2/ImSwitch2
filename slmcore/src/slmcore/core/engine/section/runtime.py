@@ -899,6 +899,17 @@ class SLMSectionRuntime:
 
         candidate = self.state.clone()
         normalized_values = candidate.apply_requested_values(changes)
+
+        target_state = candidate.cgh.items[committed.target_type]
+        lock = target_state.lock_state
+        if lock is not None and getattr(lock,"kind",None) is None:
+            setter = getattr(lock,"set_period_fov_reference",None)
+            if callable(setter):
+                setter((
+                    committed.canonical_params["fov_x_px"],
+                    committed.canonical_params["fov_y_px"],
+                ))
+
         return self._apply_candidate_transaction(
             candidate,
             normalized_values=normalized_values,

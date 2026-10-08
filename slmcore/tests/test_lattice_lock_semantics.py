@@ -238,3 +238,65 @@ def test_period_only_intent_keeps_precanonical_fov_as_fov_priority_reference():
     assert resolved["fov_x_px"] != pytest.approx(180.0)
     assert intent.x.fov_px == pytest.approx(180.0)
     assert intent.x.explicit == frozenset({"period"})
+
+
+@pytest.mark.parametrize("target_key",["multi_foci","multi_foci_vector"])
+def test_unlocked_period_edits_reuse_soft_fov_reference(target_key):
+    stepped = _runtime(target_key)
+    direct = _runtime(target_key)
+
+    for period in (6.05,6.10,6.15,6.20,6.25):
+        _patch(stepped,target_key,period_x_px=period)
+    _patch(direct,target_key,period_x_px=6.25)
+
+    assert _lock(stepped,target_key).kind is None
+    assert _lock(direct,target_key).kind is None
+    assert _lock(stepped,target_key).period_fov_reference == (180.0,180.0)
+    assert _lock(direct,target_key).period_fov_reference == (180.0,180.0)
+    for key in ("period_x_px","fov_x_px","n_foci_x"):
+        assert _value(stepped,key,target_key) == pytest.approx(
+            _value(direct,key,target_key)
+        )
+
+
+def test_vector_unlocked_soft_fov_reference_avoids_monotonic_count_ratchet():
+    runtime = _runtime("multi_foci_vector")
+
+    counts = []
+    for period in (6.05,6.10,6.15,6.20,6.25,6.30,6.35,6.40):
+        _patch(runtime,"multi_foci_vector",period_x_px=period)
+        counts.append(_value(runtime,"n_foci_x","multi_foci_vector"))
+
+    assert counts == [30,30,30,30,29,29,29,29]
+    assert _lock(runtime,"multi_foci_vector").period_fov_reference == (180.0,180.0)
+
+
+def test_unlocked_explicit_geometry_edit_refreshes_soft_fov_reference():
+    runtime = _runtime("multi_foci_vector")
+
+    _patch(runtime,"multi_foci_vector",period_x_px=6.10)
+    assert _lock(runtime,"multi_foci_vector").period_fov_reference == (180.0,180.0)
+
+    _patch(runtime,"multi_foci_vector",fov_x_px=200.0)
+    assert _lock(runtime,"multi_foci_vector").period_fov_reference == (200.0,180.0)
+
+    _patch(runtime,"multi_foci_vector",n_foci_x=21)
+    assert _lock(runtime,"multi_foci_vector").period_fov_reference == pytest.approx(
+        (122.0,180.0)
+    )
+
+
+def test_unlock_reseeds_soft_reference_from_current_realized_fov():
+    runtime = _runtime("multi_foci_vector")
+    _set_lock(
+        runtime,"n_foci",(31,31),target_key="multi_foci_vector",
+    )
+    _patch(runtime,"multi_foci_vector",period_x_px=6.25)
+    assert _value(runtime,"fov_x_px","multi_foci_vector") == pytest.approx(187.5)
+
+    _set_lock(runtime,None,None,target_key="multi_foci_vector")
+
+    lock = _lock(runtime,"multi_foci_vector")
+    assert lock.kind is None
+    assert lock.reference is None
+    assert lock.period_fov_reference == pytest.approx((187.5,180.0))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
 from slmcore.core.cgh import CGHResult,CGHResultState,CGHSignature
@@ -235,3 +236,30 @@ def test_context_staleness_is_not_target_restorable():
     assert status.result_state is CGHResultState.STALE
     assert status.draft_target_changed
     assert not status.target_restore_available
+
+
+def test_restore_current_cgh_target_resets_unlocked_period_fov_reference():
+    runtime,section_key = _runtime()
+    original_job = _commit_job(runtime,section_key)
+
+    runtime.apply_section_patch(
+        section_key,{
+            ("cgh","multi_foci","params","fov_x_px"):200.0,
+        },
+    )
+    lock = runtime.get_section_snapshot(
+        section_key
+    ).state.cgh.items["multi_foci"].lock_state
+    assert lock.kind is None
+    assert lock.period_fov_reference[0] == pytest.approx(200.0)
+
+    runtime.restore_section_current_cgh_target(section_key)
+
+    lock = runtime.get_section_snapshot(
+        section_key
+    ).state.cgh.items["multi_foci"].lock_state
+    assert lock.kind is None
+    assert lock.period_fov_reference == pytest.approx((
+        original_job.spec.target_params["fov_x_px"],
+        original_job.spec.target_params["fov_y_px"],
+    ))

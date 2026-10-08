@@ -716,6 +716,11 @@ class CghGroupView(BaseGroupView):
         self._lock_states[target_key] = LatticeLockState(
             kind=lock.kind,
             reference=(None if lock.reference is None else tuple(lock.reference)),
+            period_fov_reference=(
+                None
+                if lock.period_fov_reference is None
+                else tuple(lock.period_fov_reference)
+            ),
         )
         self._lock_states[target_key].validate()
         self._set_lattice_lock_button_checks(target_key,lock.kind)
