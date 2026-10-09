@@ -337,3 +337,52 @@ def test_the_convergence_report_runs_on_the_mock_detectors_cubes():
     assert report.last("moment").photons_per_pixel > 200
     assert report.converged("moment") is True, report.summary()
     assert abs(report.last("moment").bias_ns) < 0.5, report.summary()
+
+
+# --------------------------------------------------------------------------- #
+# Review round 4                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_conditioning_that_comes_right_at_scan_time_sets_the_direction():
+    from imswitch.imcontrol._test.unit.test_timetagger_manager import _FilterRefusingApi
+
+    nidaq = _Nidaq()
+    info = TimeTaggerInfo(simulation=True, photonsChannel=-1, filterSyncByPhotons=True,
+                          mockSample="uniform")
+    card = TimeTaggerManager(info, SimpleNamespace(scan=SimpleNamespace(sampleRate=SAMPLE_RATE)),
+                             nidaq, api=_FilterRefusingApi(model=SignalModel.from_info(info)))
+    det = SwabianTimeTaggerManager(_DetectorInfo({"laser_rep_rate_mhz": 80.0}), "FLIM", nidaq,
+                                   timeTaggerManager=card)
+    assert card.tcspcDirection == "forward", "unconditioned: never claims reverse"
+    _build(nidaq, det)
+    assert det._preparedScanGeneration is None, "an unconditioned card refuses the scan"
+    assert "conditioning could not be applied" in str(nidaq.scanBuildFailures[-1][1])
+    # The card comes right; the next scan is acquired in the real direction.
+    card.tagger.setConditionalFilter = card.tagger._original_setConditionalFilter
+    _build(nidaq, det)
+    assert det._preparedScanGeneration is not None, nidaq.scanBuildFailures
+    assert card.tcspcDirection == "reverse"
+    assert det._scan["direction"] == "reverse"
+    assert det._flim.start_channel == -1, "reverse: the photon starts the histogram"
+
+
+def test_pixel_marker_channels_are_gone_after_the_scan_and_frames_carry_t0():
+    nidaq, card, det = _rig(detector_props={"t0_ps": 640})
+    _build(nidaq, det)
+    assert set(det.pixel_marker_channels()) == {"pixel_begin", "pixel_end"}
+    worker, frames = _run_worker(det, done_before_run=True, complete_after_polls=1)
+    _, live = _final(frames)
+    assert live.metadata["t0_ps"] == 640 and live.metadata["binwidth_ps"] == 32
+    assert det.pixel_marker_channels() == {}, "released with the scan's hold"
+
+
+def test_finalize_frees_a_private_card_only():
+    nidaq, card, det = _rig()
+    det.finalize()
+    assert card.connected, "a shared card is the TimeTaggerManager's to free"
+    private = TimeTaggerManager(TimeTaggerInfo(simulation=True))
+    det._timeTagger = private
+    det._ownsTimeTagger = True
+    det.finalize()
+    assert not private.connected, "the private card is freed with its detector"

@@ -29,6 +29,11 @@ from .processing import subtract_background
 from .types import TimeResolvedScanProducts
 
 METHODS: Tuple[str, ...] = ("moment", "phasor", "exp1")
+#: Photons per pixel below which a method's verdict is "more photons", not
+#: "not converged": exp1 fits the log of the tail and needs the most.
+NEEDS_PHOTONS = {"moment": 100.0, "phasor": 200.0, "exp1": 1000.0}
+#: Metadata that must agree between the scans of one campaign run.
+COMPATIBILITY_KEYS = ("binwidth_ps", "n_bins", "laser_rep_rate_mhz", "t0_ps", "tcspc_direction")
 
 
 def refit_cube(
@@ -142,8 +147,16 @@ class ConvergenceReport:
         lines = [head] + ["  " + p.line() for p in self.points]
         for method in self.methods:
             state = self.converged(method)
-            verdict = ("needs more scans" if state is None
-                       else "converged" if state else "NOT converged")
+            last = self.last(method)
+            if state is None:
+                verdict = "needs more scans"
+            elif state:
+                verdict = "converged"
+            elif last is not None and last.photons_per_pixel < NEEDS_PHOTONS.get(method, 0):
+                verdict = (f"not converged at {last.photons_per_pixel:.0f} photons per pixel: "
+                           f"{method} needs about {NEEDS_PHOTONS[method]:.0f}, more scans")
+            else:
+                verdict = "NOT converged"
             accurate = self.accurate(method)
             if accurate is not None:
                 verdict += (", within tolerance of the reference" if accurate
@@ -169,22 +182,48 @@ def convergence_report(
     tolerance_ns: float = 0.1,
     laser_rep_rate_mhz: Optional[float] = None,
     min_counts_per_pixel: Optional[int] = None,
+    allow_invalid: bool = False,
 ) -> ConvergenceReport:
     """Accumulate the scans' cubes one by one and refit each accumulation
     with every method.
 
-    Every product needs ``cube_counts`` (``capture_cube=True``) on the same
-    axis. ``reference_tau_ns`` is a scalar (a reference dye) or a per-pixel
+    Every product needs ``cube_counts`` (``capture_cube=True``), the same
+    time axis and the same acquisition settings (``COMPATIBILITY_KEYS``),
+    and must be valid (no dropped tags, the frame closed by the card)
+    unless ``allow_invalid`` is set; otherwise a ``ValueError`` names the
+    scan. ``reference_tau_ns`` is a scalar (a reference dye) or a per-pixel
     map (the mock sample's truth); the rep rate, count threshold and
     background per bin default to the first product's metadata.
     """
     products = list(products)
     if not products:
         raise ValueError("no products to analyse")
-    for p in products:
+    invalid = []
+    for k, p in enumerate(products, start=1):
         if p.cube_counts is None:
             raise ValueError("every product needs cube_counts (capture_cube=True)")
+        pm = p.metadata or {}
+        if not pm.get("frame_valid", True) or int(pm.get("overflows", p.overflows) or 0) > 0:
+            invalid.append(k)
+    if invalid and not allow_invalid:
+        raise ValueError(
+            f"scan(s) {invalid} are invalid (dropped tags or a frame the card never "
+            "closed): a campaign verdict needs valid scans; pass allow_invalid=True "
+            "to analyse them anyway")
+    first_axis = np.asarray(products[0].t_axis_ns, dtype=np.float64)
     meta = products[0].metadata or {}
+    for k, p in enumerate(products[1:], start=2):
+        axis = np.asarray(p.t_axis_ns, dtype=np.float64)
+        if axis.shape != first_axis.shape or not np.allclose(axis, first_axis):
+            raise ValueError(f"scan {k} has a different time axis than scan 1")
+        if np.shape(p.cube_counts) != np.shape(products[0].cube_counts):
+            raise ValueError(f"scan {k} has a different cube shape than scan 1")
+        pm = p.metadata or {}
+        for key in COMPATIBILITY_KEYS:
+            if pm.get(key) != meta.get(key):
+                raise ValueError(
+                    f"scan {k} was taken with a different {key} ({pm.get(key)!r} vs "
+                    f"{meta.get(key)!r}) than scan 1: one campaign run keeps its settings")
     rep = float(laser_rep_rate_mhz if laser_rep_rate_mhz is not None
                 else meta.get("laser_rep_rate_mhz", 80.0) or 80.0)
     min_counts = int(min_counts_per_pixel if min_counts_per_pixel is not None
@@ -220,4 +259,5 @@ def convergence_report(
     return report
 
 
-__all__ = ["METHODS", "ConvergencePoint", "ConvergenceReport", "convergence_report", "refit_cube"]
+__all__ = ["COMPATIBILITY_KEYS", "METHODS", "NEEDS_PHOTONS", "ConvergencePoint",
+           "ConvergenceReport", "convergence_report", "refit_cube"]

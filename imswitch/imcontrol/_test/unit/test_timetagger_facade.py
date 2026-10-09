@@ -505,3 +505,23 @@ def test_sted_pulse_delay_needs_the_role_and_peaks_after_the_excitation():
     assert sted.peak_ns == pytest.approx((model.t0_ps + model.sted_delay_ps) / 1000.0, abs=0.05)
     assert sted.total > 1000
     assert sted.click_role == "sted_pulse" and sted.direction == "forward"
+
+
+def test_scope_prepares_the_scan_before_the_capture_and_starts_it_after():
+    tt, nidaq = _scan_facade()
+    order = []
+    real_scope = tt.manager.api.Scope
+
+    class _RecordingScope(real_scope):
+        def __init__(self, *args, **kwargs):
+            order.append('scope built')
+            super().__init__(*args, **kwargs)
+
+    tt.manager.api.Scope = _RecordingScope
+    try:
+        tt.scope(['line_clock'], trigger_role='frame_clock', window_ps=10_000_000, duration_s=0.001,
+                 prepare=lambda: order.append('prepared'),
+                 start=lambda: (order.append('started'), nidaq.sigScanStarted.emit()))
+    finally:
+        tt.manager.api.Scope = real_scope
+    assert order == ['prepared', 'scope built', 'started']

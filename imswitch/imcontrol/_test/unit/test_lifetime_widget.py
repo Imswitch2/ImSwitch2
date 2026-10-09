@@ -131,3 +131,10 @@ def test_gate_table_regions_and_presets(widget):
     assert chosen == ['sted_early_late']
     widget.setStedMarker(0.3)
     assert widget._stedLine.isVisible()
+
+
+def test_a_layout_naming_flimhist_builds_the_lifetime_dock():
+    from imswitch.imcontrol.view.ImConMainView import _build_dock_infos_from_layout
+    infos = _build_dock_infos_from_layout([['Settings'], ['FLIMHist', 'Scan']])
+    assert list(infos) == ['Settings', 'Lifetime', 'Scan']
+    assert infos['Lifetime'].name == 'Lifetime (FLIM / STED)' and infos['Lifetime'].yPosition == 1

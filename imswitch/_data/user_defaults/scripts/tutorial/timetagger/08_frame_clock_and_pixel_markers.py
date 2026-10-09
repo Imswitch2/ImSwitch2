@@ -91,10 +91,12 @@ try:
     tr = facade.time_resolved
     token = tr.configure(TimeResolvedScanConfig(), owner='tutorial08') if tr else None
     try:
+        # The pixel markers exist once the scan is prepared: prepare first
+        # (the clocks do not run yet), arm the capture, then start.
         run = helpers.ScanRun()
         trace = tt.scope(['frame_clock', 'line_clock'], trigger_role='frame_clock',
                          window_ps=int(line_ps * 1.2), duration_s=scan_s + 2.0,
-                         detector_name=DETECTOR, start=run.start)
+                         detector_name=DETECTOR, prepare=run.prepare, start=run.start)
         run.wait()
         print('scope, from the frame edge, one line (times in us; rising edges only):')
         for name, events in trace.items():

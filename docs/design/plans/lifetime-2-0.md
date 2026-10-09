@@ -1158,3 +1158,25 @@ an early clock with a positive one.
    applied.
 7. **Accumulated pile-up map** — fixed: exposure is dwell × scans summed, at
    the acquisition's rep rate.
+
+### External review 4 (nine items against the branch through P6; fixed on the branch)
+
+1. **Direction before conditioning** — fixed: `initiateScan` calls
+   `ensureConditioned` before reading `tcspcDirection` and validating the
+   window.
+2. **Invalid constituents hidden by accumulation** — fixed: the sum carries
+   `frame_valid = all(...)` and `invalid_scans`.
+3. **Incompatible scans summed** — fixed: `combine_products` refuses a
+   different time axis, image size, direction or `ACCUMULATION_KEYS`.
+4. **Convergence report on invalid data** — fixed: invalid or incompatible
+   scans raise (`allow_invalid` to override); a method short of photons is
+   told so (`NEEDS_PHOTONS`); tutorial 10 defaults to eight scans.
+5. **Find t0 repeated** — fixed: adds to the acquisition's recorded `t0_ps`
+   (now in every frame's metadata) and consumes the decay once.
+6. **Scope before the markers exist** — fixed: `scope(prepare=...)`;
+   `ScanRun.prepare()` waits for `scanBuilt`; markers are dropped with the
+   scan's hold.
+7. **Private card never freed** — fixed: `SwabianTimeTaggerManager.finalize`
+   (and `__del__`) finalize an owned card.
+8. **Stale render on detector switch** — fixed: all render caches cleared.
+9. **`widgetLayout` with `FLIMHist`** — fixed: layout keys are renamed too.

@@ -118,17 +118,30 @@ class ScanRun:
 
     ``start`` can also be handed to a measurement that must span the scan
     from its first edge: ``tt.count_edges('line_clock', 3.0, start=run.start)``.
+    ``prepare`` requests the scan and returns once it is *built* (the FLIM
+    detector's pixel markers exist, the clocks do not run yet); ``start``
+    after it waits for the clocks: ``tt.scope(..., prepare=run.prepare,
+    start=run.start)``.
     """
 
     def __init__(self, timeout=120):
         self.timeout = timeout
         self.handle = None
         self._started = None
+        self._built = None
 
-    def start(self):
+    def prepare(self):
         signals = api.imcontrol.signals()
+        self._built = getWaitForSignal(signals.scanBuilt, timeout=60)
         self._started = getWaitForSignal(signals.scanStarted, timeout=60)
         self.handle = api.imcontrol.runScan()
+        self._built()
+
+    def start(self):
+        if self.handle is None:
+            signals = api.imcontrol.signals()
+            self._started = getWaitForSignal(signals.scanStarted, timeout=60)
+            self.handle = api.imcontrol.runScan()
         self._started()
 
     def wait(self):

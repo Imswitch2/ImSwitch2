@@ -497,3 +497,64 @@ def test_an_invalid_frame_is_said_so_in_the_footer(rig):
     products.metadata['frame_valid'] = False
     rig.controller._onRunProducts(products)
     assert 'FRAME INVALID' in rig.widget.footerStatus.text()
+
+
+# --------------------------------------------------------------------------- #
+# Review round 4                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_an_invalid_constituent_makes_the_accumulation_invalid():
+    a, b = _products(1), _products(2)
+    a.metadata['frame_valid'] = False
+    a.overflows = 2
+    out = combine_products([a, b])
+    assert out.metadata['frame_valid'] is False and out.metadata['invalid_scans'] == [1]
+    assert out.overflows == 2
+    assert combine_products([b, _products(3)]).metadata['frame_valid'] is True
+
+
+def test_scans_with_different_settings_are_not_accumulated():
+    a, b = _products(1), _products(2)
+    a.metadata['binwidth_ps'] = 32
+    b.metadata['binwidth_ps'] = 64
+    with pytest.raises(ValueError, match='binwidth_ps'):
+        combine_products([a, b])
+    c = _products(3)
+    c.metadata['binwidth_ps'] = 32
+    c.t_axis_ns = a.t_axis_ns * 2
+    with pytest.raises(ValueError, match='time axis'):
+        combine_products([a, c])
+
+
+def test_find_t0_uses_the_acquisitions_t0_once_per_decay(rig):
+    controller, widget, detector = rig.controller, rig.widget, rig.detector
+    live = _live()
+    live.metadata['t0_ps'] = 1000           # the decay was taken with t0 = 1000
+    widget.setSetting('t0_ps', 0)           # the field was edited since
+    detector.sigTimeResolvedProducts.emit(live)
+    widget.findT0Button.click()
+    assert widget.getSetting('t0_ps') == 1250, 'the acquisition\'s t0 plus the peak'
+    assert ('t0_ps', 1250) in detector.writes
+    widget.findT0Button.click()
+    assert widget.getSetting('t0_ps') == 1250, 'the same decay is not consumed twice'
+    assert 'already taken' in widget.footerStatus.text()
+
+
+def test_switching_detectors_clears_the_previous_render(qapp, qtbot):
+    a, b = _FakeDetector(), _FakeDetector()
+    comm = _Comm()
+    master = SimpleNamespace(detectorsManager=_Detectors({'A': a, 'B': b}), timeTaggerManager=None)
+    widget = WidgetFactory(None).createWidget(LifetimeWidget)
+    controller = LifetimeController(setupInfo=SimpleNamespace(), commChannel=comm, master=master,
+                                    widget=widget, factory=None, moduleCommChannel=None)
+    try:
+        a.sigTimeResolvedProducts.emit(_live())
+        qtbot.waitUntil(lambda: 'A › lifetime' in comm.layers, timeout=2000)
+        widget.detectorCombo.setCurrentText('B')
+        qtbot.waitUntil(lambda: 'A › lifetime' in comm.removed, timeout=2000)
+        widget.setDisplay('intensity')
+        qtbot.wait(100)
+        assert not any(name.startswith('B') for name in comm.layers), 'B has no frame yet'
+    finally:
+        controller.closeEvent()

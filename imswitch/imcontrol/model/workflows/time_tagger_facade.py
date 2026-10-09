@@ -609,14 +609,22 @@ class TimeTaggerFacade:
 
     def scope(self, roles: Sequence[str], trigger_role: str, window_ps: int,
               duration_s: float = 1.0, extra_channels: Optional[Dict[str, int]] = None,
-              detector_name: Optional[str] = None, start=None) -> Dict[str, List[tuple]]:
+              detector_name: Optional[str] = None, start=None,
+              prepare=None) -> Dict[str, List[tuple]]:
         """An oscilloscope-like trace: the edges on each role within
         ``window_ps`` after the first edge on ``trigger_role``, as
         ``(time_ps, 'rising' | 'falling')`` per role. ``extra_channels``
         adds virtual channels under a name; ``detector_name`` adds the FLIM
         detector's pixel markers of the scan it has prepared (none when it
-        is disabled). A plain measurement: allowed during a scan hold."""
+        is disabled). A plain measurement: allowed during a scan hold.
+        The markers exist only once the scan is *prepared*, so ``prepare``
+        (a callable that requests the scan and returns when it is built, not
+        yet running) is called before the capture is set up, and ``start``
+        (returning when the clocks run) after it is armed; tutorial 08 passes
+        ``run.prepare`` and ``run.start``."""
         manager = self._manager
+        if prepare is not None:
+            prepare()
         names = list(roles)
         channels = [manager.channel(r) for r in names]
         extra = dict(extra_channels or {})

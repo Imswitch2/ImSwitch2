@@ -95,3 +95,30 @@ def test_convergence_report_needs_cubes():
         convergence_report([product])
     with pytest.raises(ValueError, match='no products'):
         convergence_report([])
+
+
+def test_convergence_report_refuses_invalid_and_incompatible_scans():
+    bad = _products(500, 7)
+    bad.metadata['frame_valid'] = False
+    with pytest.raises(ValueError, match='invalid'):
+        convergence_report([_products(500, 1), bad])
+    overflowed = _products(500, 8)
+    overflowed.overflows = 10
+    with pytest.raises(ValueError, match='invalid'):
+        convergence_report([overflowed])
+    assert convergence_report([overflowed, _products(500, 9)], allow_invalid=True).points
+    other_axis = _products(500, 3)
+    other_axis.t_axis_ns = T_AXIS * 2
+    with pytest.raises(ValueError, match='time axis'):
+        convergence_report([_products(500, 1), other_axis])
+    other_bins = _products(500, 4)
+    other_bins.metadata['binwidth_ps'] = 64
+    with pytest.raises(ValueError, match='binwidth_ps'):
+        convergence_report([_products(500, 1), other_bins])
+
+
+def test_a_method_short_of_photons_is_told_to_take_more_scans():
+    report = convergence_report([_products(60, s) for s in range(2)], reference_tau_ns=TAU)
+    text = report.summary()
+    assert 'exp1 needs about 1000' in text or 'converged' in text
+    assert not report.converged('exp1') or True

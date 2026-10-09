@@ -71,6 +71,9 @@ DEFAULT_TAU_RANGE = (0.5, 5.0)
 RUN_TIMEOUT_S = 600.0
 #: Roles a scope snapshot shows (never the photons: millions of edges).
 SCOPE_ROLES = ('line_clock', 'frame_clock', 'laser_sync')
+#: Metadata that must agree between scans summed into one result.
+ACCUMULATION_KEYS = ('binwidth_ps', 'n_bins', 'fit_method', 'laser_rep_rate_mhz',
+                     't0_ps', 'background_rate_hz', 'min_counts_per_pixel')
 #: Where the gate presets live, relative to the user's scripts folder (the
 #: same files tutorial 12 loads); the shipped defaults are the fallback.
 GATE_PRESETS_RELATIVE = os.path.join('scripts', 'tutorial', 'timetagger', 'gate_presets')
@@ -155,6 +158,24 @@ def combine_products(products_list):
     if len(products_list) == 1:
         return products_list[0]
     first = products_list[0]
+    # Scans summed into one result must be the same acquisition: the same
+    # time axis and settings. An edit between scans makes them something
+    # else, and the sum would carry the last scan's labels on the first
+    # scan's photons.
+    for k, p in enumerate(products_list[1:], start=2):
+        if (np.shape(p.t_axis_ns) != np.shape(first.t_axis_ns)
+                or not np.allclose(p.t_axis_ns, first.t_axis_ns)):
+            raise ValueError(f'scan {k} has a different time axis: not accumulated')
+        if np.shape(p.intensity) != np.shape(first.intensity):
+            raise ValueError(f'scan {k} has a different image size: not accumulated')
+        for key in ACCUMULATION_KEYS:
+            if (p.metadata or {}).get(key) != (first.metadata or {}).get(key):
+                raise ValueError(
+                    f'scan {k} was taken with a different {key} '
+                    f'({(p.metadata or {}).get(key)!r} vs {(first.metadata or {}).get(key)!r}): '
+                    'not accumulated; keep the settings for the whole accumulation')
+        if p.tcspc_direction != first.tcspc_direction:
+            raise ValueError(f'scan {k} was taken in the other TCSPC direction: not accumulated')
     intensity = sum(np.asarray(p.intensity, dtype=np.float64) for p in products_list)
     decay = sum(np.asarray(p.decay_counts, dtype=np.float64) for p in products_list)
     weighted = np.zeros_like(intensity)
@@ -172,6 +193,12 @@ def combine_products(products_list):
     global_tau = float((photons * taus).sum() / photons.sum()) if photons.sum() > 0 else 0.0
     metadata = dict(products_list[-1].metadata)
     metadata['frames_accumulated'] = len(products_list)
+    # One invalid constituent (dropped tags, a frame the card never
+    # closed) makes the sum invalid; say how many.
+    invalid = [k for k, p in enumerate(products_list, start=1)
+               if not (p.metadata or {}).get('frame_valid', True)]
+    metadata['frame_valid'] = not invalid
+    metadata['invalid_scans'] = invalid
     gate_images = {}
     for name in first.gate_images:
         images = [p.gate_images[name] for p in products_list if name in p.gate_images]
@@ -311,7 +338,13 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._lastLive = None
         self._lastProducts = None
         self._lastLifetime = None
+        self._lastRender = None
+        self._lastGateImages = None
+        self._lastRunParams = None
+        self._stedPeakNs = None
+        self._t0SourceId = None
         self._pooledLifetimes = []
+        self._widget.setStedMarker(None)
 
     def _onDetectorChanged(self, name: str):
         if name and name != self._detectorName:
@@ -505,11 +538,21 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             t = np.asarray(source.t_axis_ns)
             c = np.asarray(source.decay_counts)
             peak_ns = float(t[int(np.argmax(c))]) if c.size and c.sum() > 0 else 0.0
-        new_t0 = int(round(float(self._widget.getSetting('t0_ps')) + peak_ns * 1000.0))
+        if getattr(self, '_t0SourceId', None) == id(source):
+            self._widget.setFooterStatus('t0 already taken from this decay: run a scan first',
+                                         error=True)
+            return
+        # The decay was taken with the t0 of *its* acquisition, which the
+        # widget's field may no longer show; the correction adds to that.
+        acquired_t0 = (source.metadata or {}).get('t0_ps')
+        base_t0 = float(acquired_t0 if acquired_t0 is not None
+                        else self._widget.getSetting('t0_ps'))
+        new_t0 = int(round(base_t0 + peak_ns * 1000.0))
+        self._t0SourceId = id(source)
         self._widget.setSetting('t0_ps', new_t0)
         self._onSettingChanged('t0_ps', new_t0)
-        self._widget.setFooterStatus(f't0_ps = {new_t0} (peak was at {peak_ns:.3f} ns); '
-                                     'takes effect at the next scan')
+        self._widget.setFooterStatus(f't0_ps = {new_t0} (peak at {peak_ns:.3f} ns on top of the '
+                                     f'acquisition\'s {int(base_t0)} ps); takes effect at the next scan')
 
     # ------------------------------------------------------------------ #
     # Live products                                                        #

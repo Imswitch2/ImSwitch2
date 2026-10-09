@@ -294,6 +294,31 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._scanThread = None
         self._scanWorker = None
 
+    def finalize(self) -> None:
+        """Stop the worker, release the card, and free a *private* card.
+
+        A detector built without a ``timeTagger`` block owns the card it
+        made (the compatibility path); nothing else will free it. A shared
+        card is the TimeTaggerManager's and is finalized by it.
+        """
+        try:
+            self.stopAcquisition()
+        except Exception as e:
+            self._logger.warning(f'Failed to stop acquisition at finalize: {e}')
+        try:
+            with self._flim_lock:
+                self._ev_pix_begin = None
+                self._ev_pix_end = None
+                self._flim = None
+            self._releaseCard()
+        except Exception as e:
+            self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
+        if getattr(self, '_ownsTimeTagger', False):
+            try:
+                self._timeTagger.finalize()
+            except Exception as e:
+                self._logger.warning(f'Failed to free the private Time Tagger: {e}')
+
     def __del__(self):
         try:
             self.stopAcquisition()
@@ -307,6 +332,11 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._releaseCard()
         except Exception as e:
             self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
+        if self.__dict__.get('_ownsTimeTagger'):
+            try:
+                self._timeTagger.finalize()
+            except Exception:
+                pass
         if hasattr(super(), '__del__'):
             super().__del__()
 
@@ -491,6 +521,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             return
         try:
             self._cardHeldGeneration = None
+            # The pixel markers belong to the scan that just ended; a stale
+            # virtual channel must not be handed to the next scope capture.
+            self._ev_pix_begin = None
+            self._ev_pix_end = None
             self._restoreClickDelay()
             self._timeTagger.endScanHold(self.name)
         except Exception:
@@ -700,6 +734,17 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             )
 
         tt = self._timeTagger
+        # The direction depends on the conditional filter being applied:
+        # a conditioning that failed at connect is retried here, before
+        # the direction and the window are decided, so a card that comes
+        # right only now is still acquired in its real direction.
+        try:
+            tt.ensureConnected()
+            tt.ensureConditioned()
+        except TimeTaggerError as error:
+            with self._flim_lock:
+                self._flim = None
+            raise RuntimeError(f'Time Tagger is not available: {error}') from error
         direction = tt.tcspcDirection
         period_ps = 1e6 / max(1e-9, float(self._laser_rep_rate_mhz))
         window_ps = self._n_bins * self._binwidth_ps
@@ -1965,6 +2010,8 @@ class _TTFlimWorker(Worker):
             "dwell_s": float(self._dwell_s),
             "background_rate_hz": float(self._background_rate_hz),
             "background_per_bin": float(self._background_per_bin),
+            "t0_ps": int(self._m._scan.get('t0_ps', self._m._t0_ps)),
+            "binwidth_ps": int(self._binwidth_ps),
             "pileup_max": pileup_max,
             "t0_roll_bins": int(self._t0_roll_bins),
         }

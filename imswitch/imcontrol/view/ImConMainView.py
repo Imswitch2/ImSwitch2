@@ -832,7 +832,7 @@ def _build_dock_infos_from_layout(tab_groups):
     """
     result = {}
     for y_pos, group in enumerate(tab_groups):
-        for key in group:
+        for key in _renameRetiredWidgetKeys(group):
             result[key] = _DockInfo(name=_DOCK_DISPLAY_NAMES.get(key, key), yPosition=y_pos)
     return result
 
