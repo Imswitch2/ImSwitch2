@@ -392,7 +392,7 @@ optional premium GPU point-cloud viewer: embedded behind a lazy import and the
 — phased, first phases spelled out. **Scope for now: localization + in-house
 rendering only.** COMET drift correction (GPU-optional), grouping, and
 advanced filtering are named as future phases but deliberately out of the
-initial scope.
+initial scope (COMET landed 2026-10 as the optional `comet` extra).
 
 **Why this fits ImProcess (M12) rather than being a rewrite:**
 
@@ -460,9 +460,12 @@ initial scope.
   list (`analysis/smlm_import.py`, `LocalizationImportDialog`); schema gained
   `lp_*_nm` localization precision beside `sigma_*_nm` PSF width, filled by
   the localizer via Thompson/Mortensen and preferred for rendering.
-- ⬜ **Future phases (out of initial scope):** COMET/RCC all-pairs drift
-  refinement (GPU-optional), 3D (astigmatism/PSF) fitting,
-  throughput-oriented (vectorized/GPU) localization.
+- ✅ **COMET drift correction** (2026-10). `smlm-drift-comet` runs the
+  optional `comet-smlm` package (`comet` extra): all-pairs, x/y/z,
+  numba-cuda / torch / CPU with COMET's own defaults, Cancel through its
+  progress callback, same `DriftCorrectedLocalizationResult` downstream.
+- ⬜ **Future phases (out of initial scope):** 3D (astigmatism/PSF)
+  fitting, throughput-oriented (vectorized/GPU) localization.
 
 ---
 

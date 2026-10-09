@@ -482,6 +482,7 @@ denoise                 Processor      UNet / UNet+RCAN neural-network denoising
 smlm-render             Processor      Render a localization table into a super-resolved image/volume
 smlm-filter             Processor      Filter localizations by photons, lateral sigma and frame range
 smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
+smlm-drift-comet        Processor      COMET all-pairs drift correction in x, y and z, GPU-optional (needs comet-smlm)
 smlm-group              Processor      Link blinking repeats into photon-weighted merged localizations
 table-to-localizations  Processor      Promote a points table to localizations with an explicit column mapping
 ======================= ============== ====================================================
@@ -697,6 +698,13 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        segment count and 2+ non-empty temporal segments.
      - ``DriftCorrectedLocalizationResult`` with positions minus the
        estimated per-frame drift, plus an X/Y drift-trace graph payload.
+   * - ``smlm-drift-comet``
+     - Localization
+     - ``LocalizationResult`` only; needs the optional ``comet-smlm``
+       package and a chosen window size (COMET has no default for it).
+     - ``DriftCorrectedLocalizationResult`` with x, y and z corrected by
+       COMET's all-pairs estimate; the drift trace gains a Z series on a 3D
+       table.  See :ref:`improcess-comet-drift`.
    * - ``smlm-group``
      - Localization
      - ``LocalizationResult`` only.
@@ -763,7 +771,8 @@ amplitudes, time constants and R².  Without the opt-in the numbers exist only
 inside the result, drawn but unreadable.
 
 Built-in graph producers include ``drift-correct`` and ``widefield-starss``.
-Drift-corrected results expose Y and X drift traces over frame number.
+Drift-corrected results expose Y and X drift traces over frame number (and
+Z, from ``smlm-drift-comet`` on a 3D table).
 WidefieldSTARSS results expose an anisotropy histogram and region
 area-vs-anisotropy scatter plot.  ``frc`` results expose the FRC curve,
 threshold curve and cutoff marker.  The same graph contract is intended for
@@ -1846,6 +1855,62 @@ recorded in ``metadata["pixel_size_assumed"]`` and logged.  The coordinates
 themselves are exact either way — the pixel size only sets the preview
 histogram's bin floor and the scale of a later Picasso export — but nothing
 downstream should report the assumed value as measured.
+
+.. _improcess-comet-drift:
+
+COMET drift correction
+----------------------
+
+Two drift corrections take a localization table.  ``smlm-drift`` is built
+in: it renders temporal segments and cross-correlates each against the
+first, which is quick and needs nothing installed, but resolves only lateral
+drift at the render pixel and only as well as the first segment represents
+the sample.  ``smlm-drift-comet`` runs `COMET
+<https://github.com/gpufit/Comet>`_ (Cost-function Optimized Maximal Overlap
+Drift EsTimation; `preprint <https://doi.org/10.64898/2026.03.27.714864>`_)
+through the optional ``comet-smlm`` package, installed by the ``comet``
+extra::
+
+    pip install "imswitch2[comet]"
+
+COMET estimates one drift vector per time window by maximising the overlap
+of every pair of localizations closer than *Max drift* across windows,
+refining its kernel from a coarse width down to *Target sigma*, and
+interpolating the window drifts to a per-frame curve that it subtracts from
+x, y **and z**.  It runs on numba-cuda (an NVIDIA GPU), on PyTorch (its own
+``comet-smlm[torch]`` extra; CUDA or Apple MPS) or on a numba-compiled CPU
+kernel, and *Backend* ``auto`` takes the fastest COMET finds on the machine;
+a backend asked for by name that is not available is refused with the ones
+that are.  The first CPU run compiles the kernel, which takes a moment.
+**Cancel** in the panel lands at COMET's next progress report, after any
+cost-function evaluation, and leaves the input untouched.
+
+Every parameter default is COMET's own (``comet_run_kd`` in ``comet-smlm``
+1.2.0) and the panel says so.  The one value COMET has no default for is the
+**window size** — frames per window, localizations per window or the number
+of windows, by *Window mode* — because the right value depends on how many
+localizations each frame holds and how fast the sample drifts: enough
+windows to resolve the drift, enough localizations per window to constrain
+it.  The run is refused until it is set.  A window too coarse for the movie
+is reported in COMET's words.  The advanced group holds the initial kernel
+width (unset = COMET's rule, a third of the maximum drift), the boxcar
+smoothing between optimizer steps, the interpolating spline, a random cap on
+localizations per window to bound memory and time (COMET lowers it by itself
+if the pair search runs out of memory) and a seed that makes a capped run
+repeat exactly.
+
+The result is the same ``DriftCorrectedLocalizationResult`` the built-in
+correction produces, so everything downstream (render, filter, group, export)
+is unchanged.  Its drift trace is referenced to the acquisition's centre,
+where ``smlm-drift``'s is referenced to its first segment.  The result's
+metadata records the backend that ran, the number of windows and pairs, the
+kernel width the estimate was accepted at, whether the cap was lowered,
+COMET's per-stage timings and the package version, and the panel shows the
+summary line after each run.
+
+Without the package the panel opens, says how to install it, and a run fails
+with the same message; nothing else notices.  If you use COMET in published
+work, cite its preprint.
 
 Localization precision versus PSF width
 ---------------------------------------
