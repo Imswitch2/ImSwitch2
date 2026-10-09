@@ -257,6 +257,7 @@
    "f670617b86fb72580645a97e062dcf840be3832fb47f0f9181157ed975e1bb8b"
   ],
   "scripts/tutorial/timetagger/08_frame_clock_and_pixel_markers.py": [
+   "7e265ed188cd02bb751767b7d901ae40ec4093dcddcf05920ff73b03efdbeb76",
    "b5032186f43cb1baef7dd623d4bc0bda9f42e0f797d5648a3ca6011030c5b2e4"
   ],
   "scripts/tutorial/timetagger/09_line_delay_alignment.py": [
@@ -265,6 +266,7 @@
   ],
   "scripts/tutorial/timetagger/10_flim_preflight.py": [
    "0635b910e5b5329856fb9010af4960910bc99127a865421b6ac28ff048dd29d8",
+   "104db9f7c84efc459859189bec4d67871074e7abebab7bd050d4447fb10dc66b",
    "bc6a459d1b6668e284738c3d8b57508001f417e7f713006dc9ab1cf1e125d358",
    "e30400e033db6557daabb72d4bd155db777ee805c57ade142b7ae5ce36cc854c"
   ],
@@ -288,6 +290,7 @@
   ],
   "scripts/tutorial/timetagger/timetagger_helpers.py": [
    "c8e20baa7887d108f55b0dad522d62fcb52031cdab05b8bf14192724710b5202",
+   "eb63e94c7c08465053526d05282d08dc04ef4dd32a32be9857375604fa0b6406",
    "f30f757279b64c5363ebd069691ade8876f19fd609313a56a4c6225f33487648"
   ],
   "scripts/wfs/01_WidefieldSTARSS_example.py": [

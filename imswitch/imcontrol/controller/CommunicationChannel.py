@@ -751,6 +751,7 @@ class CommunicationChannel(SignalInterface):
             'recordingEnded': self.sigRecordingEnded,
             'recordingFailed': self.sigRecordingFailed,
             'scanStarting': self.sigScanStarting,
+            'scanBuilt': self.sigScanBuilt,
             'scanStarted': self.sigScanStarted,
             'scanDone': self.sigScanDone,
             'scanEnded': self.sigScanEnded,
