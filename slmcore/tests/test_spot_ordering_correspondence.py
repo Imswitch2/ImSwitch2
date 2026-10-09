@@ -3,6 +3,10 @@ import numpy as np
 from slmcore.core.cgh.feedback import (
     ReferenceCorrespondence,resolve_reference_correspondence,
 )
+from slmcore.core.measurement.position_reference import (
+    position_reference_target_from_localization,reference_geometry_from_localization,
+    resolve_exact_lattice_correspondence,
+)
 from slmcore.core.cgh.localization import (
     DetectedSpots,LatticeRegistration,LocalizationResult,SpotOrdering,
     available_spot_orderings,canonicalize_registration,make_lattice_model,
@@ -196,3 +200,35 @@ def test_reference_correspondence_manual_override_is_respected():
     assert resolution.requested is ReferenceCorrespondence.ROTATE_180
     assert resolution.resolved is SpotOrdering.ROTATE_180
     np.testing.assert_allclose(resolved,reference[:,permutation])
+
+
+def test_neutral_exact_lattice_auto_correspondence_matches_legacy_helper():
+    base_registration=canonicalize_registration(_registration(nx=5,ny=4))
+    base=_localization(base_registration)
+    reference=np.asarray(base.measured_positions_px,dtype=np.float64)
+    theta=np.deg2rad(5.0)
+    rotation=np.array([[np.cos(theta),-np.sin(theta)],[np.sin(theta),np.cos(theta)]])
+    center=np.mean(reference,axis=1,keepdims=True)
+    current_positions=rotation@(reference-center)+center+np.array([[2.0],[-3.0]])
+    current=LocalizationResult(
+        target_type=base.target_type,target_params=base.target_params,parameters=base.parameters,
+        lattice_indices=base.lattice_indices,crop_coord=base.crop_coord,
+        cropped_image=base.cropped_image,expected_positions_px=current_positions,
+        measured_positions_px=current_positions,period_x_px=base.period_x_px,
+        period_y_px=base.period_y_px,offset_x_px=base.offset_x_px,offset_y_px=base.offset_y_px,
+        diagnostics=base.diagnostics,
+    )
+    flip=spot_ordering_permutation(base.lattice_indices,SpotOrdering.FLIP_X)
+    wrong=reference[:,flip]
+    legacy,legacy_resolution=resolve_reference_correspondence(
+        current,wrong,ReferenceCorrespondence.AUTO,
+    )
+    target=position_reference_target_from_localization(current,full_image=False)
+    source=reference_geometry_from_localization(base,full_image=False)
+    source=type(source)(
+        positions_px=wrong,site_ids=target.site_ids,valid_mask=np.ones(wrong.shape[1],dtype=bool),
+    )
+    resolved=resolve_exact_lattice_correspondence(source,target,"auto")
+
+    assert resolved.correspondence["resolved"]==legacy_resolution.resolved.value
+    np.testing.assert_allclose(resolved.desired_positions_px,legacy,atol=1e-10)

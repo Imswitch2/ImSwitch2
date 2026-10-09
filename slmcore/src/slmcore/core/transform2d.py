@@ -246,14 +246,38 @@ def fitted_polynomial_transform(
     )
 
 
+def _fit_weights(value: Any,*,count: int,minimum: int) -> np.ndarray | None:
+    if value is None:
+        return None
+    weights = np.asarray(value,dtype=np.float64)
+    if weights.shape != (int(count),):
+        raise ValueError(f"weights must have shape ({int(count)},)")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+        raise ValueError("weights must be finite and >= 0")
+    positive = weights > 0
+    if int(np.count_nonzero(positive)) < int(minimum):
+        raise ValueError(
+            "Transform fit requires at least %d positive-weight samples" % int(minimum)
+        )
+    return weights
+
+
 def fit_transform2d(
     source_positions: Any,
     desired_displacements: Any,
     *,
     model: str,
     polynomial_degree: int=2,
+    weights: Any=None,
 ) -> FittedTransform2D:
-    """Fit one continuous transform to source positions and desired displacements."""
+    """Fit one continuous transform to source positions and desired displacements.
+
+    Optional non-negative per-sample ``weights`` are shared by every transform
+    model.  Zero-weight samples are excluded entirely; positive weights enter
+    translation averaging, weighted Kabsch, or weighted least squares as
+    appropriate.  Residual RMS follows the same weighting while maximum
+    residual is reported across the positive-weight fit samples.
+    """
     model = normalize_transform_model(model)
     degree = (
         normalize_polynomial_degree(polynomial_degree,allow_legacy_linear=True)
@@ -266,20 +290,38 @@ def fit_transform2d(
     )
     if source.shape != displacement.shape:
         raise ValueError("Transform source/displacement arrays must have matching shapes")
+    sample_weights = _fit_weights(weights,count=source.shape[1],minimum=minimum)
+    if sample_weights is not None:
+        positive = sample_weights > 0
+        source = source[:,positive]
+        displacement = displacement[:,positive]
+        sample_weights = sample_weights[positive]
 
     if model == TRANSFORM_TRANSLATION:
-        shift = np.mean(displacement,axis=1)
+        shift = (
+            np.mean(displacement,axis=1)
+            if sample_weights is None
+            else np.average(displacement,axis=1,weights=sample_weights)
+        )
         matrix = np.column_stack([np.eye(2),shift])
         transform = FittedTransform2D(model=model,matrix=matrix)
     elif model == TRANSFORM_RIGID:
         target = source+displacement
-        source_center = np.mean(source,axis=1)
-        target_center = np.mean(target,axis=1)
+        if sample_weights is None:
+            source_center = np.mean(source,axis=1)
+            target_center = np.mean(target,axis=1)
+        else:
+            source_center = np.average(source,axis=1,weights=sample_weights)
+            target_center = np.average(target,axis=1,weights=sample_weights)
         source_zero = source-source_center[:,None]
         target_zero = target-target_center[:,None]
         if float(np.linalg.norm(source_zero)) < 1e-12:
             raise ValueError("Rigid source points are degenerate")
-        covariance = target_zero@source_zero.T
+        covariance = (
+            target_zero@source_zero.T
+            if sample_weights is None
+            else (target_zero*sample_weights[None,:])@source_zero.T
+        )
         u,_singular_values,vt = np.linalg.svd(covariance)
         rotation = u@vt
         if float(np.linalg.det(rotation)) < 0.0:
@@ -294,19 +336,41 @@ def fit_transform2d(
         design = np.column_stack([
             source.T,np.ones(source.shape[1],dtype=np.float64),
         ])
-        coefficients,_,rank,_ = np.linalg.lstsq(design,target.T,rcond=None)
+        if sample_weights is None:
+            weighted_design = design
+            weighted_target = target.T
+        else:
+            root = np.sqrt(sample_weights)[:,None]
+            weighted_design = design*root
+            weighted_target = target.T*root
+        coefficients,_,rank,_ = np.linalg.lstsq(
+            weighted_design,weighted_target,rcond=None
+        )
         if int(rank) < 3:
             raise ValueError("Affine transform samples are rank-deficient")
         transform = FittedTransform2D(model=model,matrix=coefficients.T)
     else:
-        center = np.mean(source,axis=1)
+        center = (
+            np.mean(source,axis=1)
+            if sample_weights is None
+            else np.average(source,axis=1,weights=sample_weights)
+        )
         span = np.ptp(source,axis=1)
         scale = np.where(span > 1e-12,0.5*span,1.0)
         design = polynomial_design(
             source,center=center,scale=scale,degree=degree,
         )
         term_count = polynomial_term_count(degree)
-        coefficients,_,rank,_ = np.linalg.lstsq(design,displacement.T,rcond=None)
+        if sample_weights is None:
+            weighted_design = design
+            weighted_displacement = displacement.T
+        else:
+            root = np.sqrt(sample_weights)[:,None]
+            weighted_design = design*root
+            weighted_displacement = displacement.T*root
+        coefficients,_,rank,_ = np.linalg.lstsq(
+            weighted_design,weighted_displacement,rcond=None
+        )
         if int(rank) < term_count:
             raise ValueError(
                 "Polynomial transform samples are rank-deficient for degree %d"
@@ -320,6 +384,13 @@ def fit_transform2d(
 
     residual = displacement-transform.displacement(source)
     magnitude = np.linalg.norm(residual,axis=0)
+    rms = (
+        float(np.sqrt(np.mean(magnitude*magnitude)))
+        if sample_weights is None
+        else float(np.sqrt(
+            np.sum(sample_weights*magnitude*magnitude)/np.sum(sample_weights)
+        ))
+    )
     return FittedTransform2D(
         model=transform.model,
         matrix=transform.matrix,
@@ -327,7 +398,7 @@ def fit_transform2d(
         normalization_center=transform.normalization_center,
         normalization_scale=transform.normalization_scale,
         polynomial_degree=transform.polynomial_degree,
-        rms_residual=float(np.sqrt(np.mean(magnitude*magnitude))),
+        rms_residual=rms,
         max_residual=float(np.max(magnitude)),
     )
 

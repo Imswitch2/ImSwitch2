@@ -6,7 +6,7 @@ from .contracts import (
     MeasurementDispatcher,MeasurementRequest,SLMFeedbackCallbacks,
 )
 from .references import (
-    PositionReferenceContext,PositionReferencePreview,PositionReferenceSelection,
+    PositionReferenceContext,PositionReferencePreview,PositionCorrectionSelection,PositionReferenceSelection,PositionReferenceSourceSelection,
 )
 from .service import SLMFeedbackService
 
@@ -18,7 +18,8 @@ __all__ = [
     "MeasurementRequest",
     "PositionReferenceContext",
     "PositionReferencePreview",
-    "PositionReferenceSelection",
+    "PositionCorrectionSelection","PositionReferenceSelection",
+    "PositionReferenceSourceSelection",
     "SLMFeedbackCallbacks",
     "SLMFeedbackService",
 ]

@@ -409,6 +409,52 @@ def test_position_reference_workflow_remains_available_with_stored_correction(tm
         session.dispose()
 
 
+def test_reference_source_updates_preserve_correction_model_state(tmp_path):
+    from slmcore import PositionReferenceMode,PositionReferenceStore
+
+    store=PositionReferenceStore(tmp_path / "position_references")
+    runtime=_runtime()
+    session=SLMSession(runtime=runtime,position_reference_store=store)
+    _set_feedback_observation_planes(session,"sample")
+    from dataclasses import replace
+    localization=_attach_reference_localization(runtime)
+    diagnostics=dict(localization.diagnostics)
+    diagnostics.update({
+        "affine_linear":((32.0,0.0),(0.0,32.0)),
+        "affine_translation":(12.0,12.0),
+    })
+    localization=replace(localization,diagnostics=diagnostics)
+    parameters=dict(runtime.get_section_feedback_status("sec_0").localization_params)
+    runtime.commit_section_feedback_localization("sec_0",localization,parameters)
+
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode=PositionReferenceMode.EDITABLE,
+        correction_mode="polynomial",polynomial_degree=3,
+    )
+    assert selection.correction_mode=="polynomial"
+    assert selection.polynomial_degree==3
+
+    selection=session.feedback.fit_position_reference_center("sec_0")
+    assert selection.mode is PositionReferenceMode.EDITABLE
+    assert selection.correction_mode=="polynomial"
+    assert selection.polynomial_degree==3
+
+    session.feedback.add_position_reference("sec_0","new reference")
+    selection=session.feedback.position_reference_selection("sec_0")
+    assert selection.mode is PositionReferenceMode.REFERENCE
+    assert selection.correction_mode=="polynomial"
+    assert selection.polynomial_degree==3
+
+    session.feedback.delete_position_reference("sec_0","new reference")
+    selection=session.feedback.position_reference_selection("sec_0")
+    assert selection.mode is PositionReferenceMode.GLOBAL_FIT
+    assert selection.correction_mode=="polynomial"
+    assert selection.polynomial_degree==3
+    assert selection.correction.manual_transform is None
+
+    session.dispose()
+
+
 def test_named_reference_reindexes_source_orientation_for_destination_section(tmp_path):
     from slmcore import PositionReferenceStore
     from slmcore.core.cgh.feedback import orient_localization
@@ -1160,69 +1206,3 @@ def test_named_reference_affine_correction_uses_one_continuous_field(tmp_path):
 
     reference_session.dispose()
     current_session.dispose()
-
-
-def test_quadratic_reference_correction_reproduces_smooth_nonlinear_field():
-    from slmcore.application.feedback.references import (
-        _apply_quadratic_displacement,_fit_quadratic_displacement,
-    )
-
-    xs,ys = np.meshgrid(
-        np.linspace(10.0,90.0,5),np.linspace(20.0,80.0,4),indexing="xy",
-    )
-    registered = np.vstack([xs.ravel(),ys.ravel()])
-    x = (registered[0]-50.0)/40.0
-    y = (registered[1]-50.0)/30.0
-    expected_error = np.vstack([
-        1.2 + 0.4*x - 0.25*y + 1.8*x*x - 0.7*x*y + 0.6*y*y,
-        -0.8 + 0.2*x + 0.5*y - 0.4*x*x + 0.9*x*y + 1.1*y*y,
-    ])
-
-    polynomial = _fit_quadratic_displacement(registered,expected_error)
-    fitted_error = _apply_quadratic_displacement(polynomial,registered)
-    np.testing.assert_allclose(fitted_error,expected_error,atol=1e-10)
-
-    # An affine field cannot reproduce the deliberately nonlinear curvature.
-    design = np.column_stack([
-        registered.T,np.ones(registered.shape[1],dtype=np.float64),
-    ])
-    affine_coefficients,_,_,_ = np.linalg.lstsq(
-        design,expected_error.T,rcond=None,
-    )
-    affine_error = (design@affine_coefficients).T
-    assert np.max(np.abs(affine_error-expected_error)) > 0.5
-
-
-def test_polynomial_reference_correction_supports_orders_two_three_four():
-    from slmcore.application.feedback.references import (
-        _apply_polynomial_displacement,_fit_polynomial_displacement,
-        _polynomial_term_count,
-    )
-
-    xs,ys = np.meshgrid(
-        np.linspace(10.0,90.0,7),np.linspace(20.0,80.0,7),indexing="xy",
-    )
-    registered = np.vstack([xs.ravel(),ys.ravel()])
-    x = (registered[0]-50.0)/40.0
-    y = (registered[1]-50.0)/30.0
-
-    base_x = 1.2 + 0.4*x - 0.25*y + 1.8*x*x - 0.7*x*y + 0.6*y*y
-    base_y = -0.8 + 0.2*x + 0.5*y - 0.4*x*x + 0.9*x*y + 1.1*y*y
-    cubic_x = 0.35*x**3 - 0.22*x*x*y + 0.18*x*y*y - 0.11*y**3
-    cubic_y = -0.28*x**3 + 0.16*x*x*y + 0.21*x*y*y + 0.09*y**3
-    quartic_x = 0.14*x**4 - 0.10*x**3*y + 0.08*x*x*y*y - 0.06*x*y**3 + 0.04*y**4
-    quartic_y = -0.12*x**4 + 0.09*x**3*y - 0.07*x*x*y*y + 0.05*x*y**3 + 0.03*y**4
-
-    expected_by_degree = {
-        2:np.vstack([base_x,base_y]),
-        3:np.vstack([base_x+cubic_x,base_y+cubic_y]),
-        4:np.vstack([base_x+cubic_x+quartic_x,base_y+cubic_y+quartic_y]),
-    }
-    assert [_polynomial_term_count(degree) for degree in (2,3,4)] == [6,10,15]
-
-    for degree,expected_error in expected_by_degree.items():
-        polynomial = _fit_polynomial_displacement(
-            registered,expected_error,degree=degree,
-        )
-        fitted_error = _apply_polynomial_displacement(polynomial,registered)
-        np.testing.assert_allclose(fitted_error,expected_error,atol=1e-10)

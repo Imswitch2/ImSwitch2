@@ -17,7 +17,7 @@ from .geometry_calibration import (
 from .feedback import (
     AutomaticFeedbackRunner,AutomaticFeedbackState,FeedbackParameterUpdateResult,
     MeasurementDispatcher,MeasurementRequest,PositionReferenceContext,
-    PositionReferenceSelection,SLMFeedbackCallbacks,SLMFeedbackService,
+    PositionCorrectionSelection,PositionReferenceSelection,PositionReferenceSourceSelection,SLMFeedbackCallbacks,SLMFeedbackService,
 )
 from .mapping import MappingService
 from .observation import ObservationPlaneService
@@ -53,7 +53,8 @@ __all__ = [
     "PreparedMappingSelection",
     "PreparedSectionLayoutChange",
     "PositionReferenceContext",
-    "PositionReferenceSelection",
+    "PositionCorrectionSelection","PositionReferenceSelection",
+    "PositionReferenceSourceSelection",
     "SLMCalibrationCallbacks",
     "SLMCalibrationService",
     "SLMConfigurationService",

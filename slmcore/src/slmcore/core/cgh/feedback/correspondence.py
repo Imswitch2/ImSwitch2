@@ -1,4 +1,4 @@
-"""Reference-to-localization spot correspondence for position feedback."""
+"""Compatibility API for position-reference finite-lattice correspondence."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from typing import Any
 
 import numpy as np
 
-from ..localization import (
-    LocalizationResult,SpotOrdering,available_spot_orderings,
-    spot_ordering_label,spot_ordering_permutation,
+from ...measurement.position_reference import (
+    ReferenceGeometry,exact_lattice_correspondence_options,
+    position_reference_target_from_localization,resolve_exact_lattice_correspondence,
 )
+from ..localization import LocalizationResult,SpotOrdering,spot_ordering_label
 
 
 class ReferenceCorrespondence(str,Enum):
@@ -67,20 +68,21 @@ class ReferenceCorrespondenceResolution:
         }
 
 
+def _neutral_target(localization: LocalizationResult):
+    if not isinstance(localization,LocalizationResult):
+        raise TypeError("localization must be a LocalizationResult")
+    return position_reference_target_from_localization(localization,full_image=False)
+
+
 def reference_correspondence_options(
     localization: LocalizationResult,
 ) -> tuple[ReferenceCorrespondence,...]:
-    logical = _logical_positions(localization)
-    result = [ReferenceCorrespondence.AUTO]
-    try:
-        orderings = available_spot_orderings(
-            localization.lattice_indices,logical,
-        )
-    except ValueError:
-        orderings = (SpotOrdering.CANONICAL,)
-    for ordering in orderings:
-        result.append(ReferenceCorrespondence(ordering.value))
-    return tuple(result)
+    """Compatibility wrapper around the neutral exact-lattice resolver."""
+    target=_neutral_target(localization)
+    return tuple(
+        ReferenceCorrespondence(value)
+        for value in exact_lattice_correspondence_options(target)
+    )
 
 
 def resolve_reference_correspondence(
@@ -88,128 +90,38 @@ def resolve_reference_correspondence(
     reference_positions_px: np.ndarray,
     correspondence: ReferenceCorrespondence | str=ReferenceCorrespondence.AUTO,
 ) -> tuple[np.ndarray,ReferenceCorrespondenceResolution]:
-    """Return reference positions reindexed to the current localization identities.
+    """Return reference positions reindexed to current localization identities.
 
-    Auto tests only exact finite-lattice ordering symmetries.  Each candidate is
-    globally registered current->reference for *scoring only*.  Gross reflection
-    is rejected first, then the correspondence requiring the smallest residual
-    rotation/deformation is preferred.  The returned positions remain the real
-    per-spot reference coordinates; the fitted affine is never used as the
-    position correction itself.
+    The finite-lattice scoring implementation now lives only in the neutral
+    ``exact_lattice`` resolver.  This function preserves the historical public
+    ``LocalizationResult`` API and result value object.
     """
-    if not isinstance(localization,LocalizationResult):
-        raise TypeError("localization must be a LocalizationResult")
-    reference = np.asarray(reference_positions_px,dtype=np.float64)
-    current = np.asarray(localization.measured_positions_px,dtype=np.float64)
-    if reference.shape != current.shape:
+    target=_neutral_target(localization)
+    reference=np.asarray(reference_positions_px,dtype=np.float64)
+    if reference.shape!=target.measured_positions_px.shape:
         raise ValueError("Reference positions must align with localization spots")
-
-    requested = ReferenceCorrespondence.normalize(correspondence)
-    options = reference_correspondence_options(localization)
-    manual = requested.ordering
-    if manual is not None and requested not in options:
-        raise ValueError(
-            "Reference correspondence '%s' is not valid for this finite lattice"
-            % requested.value
-        )
-
-    diagnostics = dict(localization.diagnostics or {})
-    matched_value = diagnostics.get("matched_mask")
-    matched = (
-        np.ones(current.shape[1],dtype=bool)
-        if matched_value is None
-        else np.asarray(matched_value,dtype=bool)
+    source=ReferenceGeometry(
+        positions_px=reference,
+        site_ids=target.site_ids,
+        lattice=target.lattice,
+        valid_mask=np.ones(target.point_count,dtype=bool),
     )
-    if matched.shape != (current.shape[1],):
-        raise RuntimeError("Localization matched-mask shape is inconsistent")
-    if int(np.count_nonzero(matched)) < 3:
-        raise RuntimeError(
-            "Reference correspondence needs at least three genuinely localized spots"
-        )
-
-    candidates = []
-    orderings = (
-        (manual,) if manual is not None
-        else tuple(item.ordering for item in options if item.ordering is not None)
+    requested=ReferenceCorrespondence.normalize(correspondence)
+    resolved=resolve_exact_lattice_correspondence(
+        source,target,requested.value,
     )
-    for ordering in orderings:
-        permutation = spot_ordering_permutation(
-            localization.lattice_indices,ordering,
-        )
-        candidate = reference[:,permutation]
-        linear,translation,rms = _fit_affine(
-            current[:,matched],candidate[:,matched],
-        )
-        metrics = _transform_metrics(linear,rms)
-        # Reflection should already be described by FeedbackOrientation.  After
-        # that fixed section mapping, prefer the correspondence needing the
-        # smallest residual rotation and deformation. RMS breaks remaining ties.
-        score = (
-            1 if metrics["reflection"] else 0,
-            abs(float(metrics["rotation_deg"])),
-            float(metrics["deformation_score"]),
-            float(rms),
-            ordering.value,
-        )
-        candidates.append((score,ordering,candidate,metrics,translation))
-
-    if not candidates:
-        raise RuntimeError("No valid reference correspondence is available")
-    candidates.sort(key=lambda item:item[0])
-    _score,resolved,candidate,metrics,_translation = candidates[0]
-    resolution = ReferenceCorrespondenceResolution(
-        requested=requested,
-        resolved=resolved,
-        relative_rotation_deg=float(metrics["rotation_deg"]),
-        rms_px=float(metrics["rms_px"]),
-        reflection=bool(metrics["reflection"]),
-        singular_values=tuple(float(value) for value in metrics["singular_values"]),
-        deformation_score=float(metrics["deformation_score"]),
-        candidate_count=len(candidates),
+    details=dict(resolved.correspondence or {})
+    resolution=ReferenceCorrespondenceResolution(
+        requested=ReferenceCorrespondence.normalize(details["requested"]),
+        resolved=SpotOrdering.normalize(details["resolved"]),
+        relative_rotation_deg=float(details["relative_rotation_deg"]),
+        rms_px=float(details["rms_px"]),
+        reflection=bool(details["reflection"]),
+        singular_values=tuple(float(value) for value in details["singular_values"]),
+        deformation_score=float(details["deformation_score"]),
+        candidate_count=int(details["candidate_count"]),
     )
-    return candidate,resolution
-
-
-def _logical_positions(localization: LocalizationResult) -> np.ndarray | None:
-    diagnostics = dict(localization.diagnostics or {})
-    value = diagnostics.get("ordering_logical_positions")
-    if value is None:
-        return None
-    logical = np.asarray(value,dtype=np.float64)
-    return logical if logical.shape == localization.lattice_indices.shape else None
-
-
-def _fit_affine(source: np.ndarray,target: np.ndarray):
-    source = np.asarray(source,dtype=np.float64)
-    target = np.asarray(target,dtype=np.float64)
-    design = np.vstack((source,np.ones((1,source.shape[1])))).T
-    coefficients,_,_,_ = np.linalg.lstsq(design,target.T,rcond=None)
-    linear = coefficients[:2,:].T
-    translation = coefficients[2,:]
-    residual = target-(linear@source+translation[:,None])
-    rms = float(np.sqrt(np.mean(np.sum(residual*residual,axis=0))))
-    return linear,translation,rms
-
-
-def _transform_metrics(linear: np.ndarray,rms: float) -> dict[str,Any]:
-    linear = np.asarray(linear,dtype=np.float64)
-    determinant = float(np.linalg.det(linear))
-    u,singular,vt = np.linalg.svd(linear)
-    rotation = u@vt
-    if np.linalg.det(rotation) < 0:
-        u = np.array(u,copy=True)
-        u[:,-1] *= -1.0
-        rotation = u@vt
-    angle = float(np.degrees(np.arctan2(rotation[1,0],rotation[0,0])))
-    singular = np.maximum(np.asarray(singular,dtype=np.float64),1e-12)
-    deformation = float(np.sqrt(np.mean(np.square(np.log(singular)))))
-    return {
-        "rotation_deg":angle,
-        "rms_px":float(rms),
-        "reflection":bool(determinant < 0.0),
-        "singular_values":tuple(float(value) for value in singular),
-        "deformation_score":deformation,
-    }
+    return np.asarray(resolved.desired_positions_px,dtype=np.float64),resolution
 
 
 __all__ = [
