@@ -334,9 +334,10 @@ Key fields:
   ``"TriggerScope"`` runs scans on the TriggerScope board (see `triggerScope`_)
   from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
 * ``cloak``: Optional simplified frontend over that backend. ``"SimplePointScan"``
-  is currently registered for ``"Advanced"`` and provides the beginner's
-  point-scan panel (overview and acquisition modes). Old setups that used
-  ``scanWidgetType: "SimplePointScan"`` are still accepted while they migrate.
+  and ``"SimpleMoNaLISA"`` are registered for ``"Advanced"``. PointScan has
+  overview and acquisition modes; the first MoNaLISA cloak is acquisition-only.
+  Old setups that used ``scanWidgetType: "SimplePointScan"`` are still accepted
+  while they migrate.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer.
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and
@@ -367,7 +368,18 @@ Key fields:
   * ``minSamplesPerPixel``: the shortest dwell in samples (default 2);
   * ``maxDwellMs``: the dwell slider's longest value (default 10 ms).
 
-  Other scan panels ignore the block.
+  Other scan panels ignore the ``simplePointScan`` block.
+
+* ``simpleMoNaLISA``: Setup facts and defaults for the acquisition-only
+  ``SimpleMoNaLISA`` cloak. ``fovUm`` and ``ulensPeriodUm`` are displayed but
+  not editable. Device names are ``offLaser``, ``onLaser``, ``readoutLaser``
+  and optional ``readoutDetector``. ``readoutTimeMs``, ``interPulseDelayMs``
+  and ``cameraReadoutTimeMs`` are fixed timing. ``interPulseDelayMs`` is used
+  once before the first ON pulse and between subsequent active pulses. Defaults
+  for the editable
+  controls are ``defaultScanType``, ``defaultLateralStepUm``,
+  ``defaultZScanLengthUm`` (1 µm by default), ``defaultZStepUm``,
+  ``defaultMode``, ``defaultOffTimeMs`` and ``defaultOnTimeMs``.
 
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:
@@ -375,8 +387,10 @@ hands its designers a fixed set of parameters.  The shipped setups use:
 * ``"Base"`` and ``"MoNaLISA"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
 * ``"PointScan"``: ``GalvoScanDesigner`` + ``PointScanTTLCycleDesigner``
   (``example_sted.json``)
-* ``"Advanced"``: ``GalvoScanDesigner`` + ``AdvancedScanTTLCycleDesigner``
-  (``galvo_apd_mock_scan_setup.json``)
+* ``"Advanced"``: normally ``GalvoScanDesigner`` +
+  ``AdvancedScanTTLCycleDesigner`` (``galvo_apd_mock_scan_setup.json``); the
+  ``SimpleMoNaLISA`` cloak uses the same Advanced frontend/backend with
+  ``BetaScanDesigner`` + ``AdvancedScanTTLCycleDesigner``.
 
 **Example** (Base scan, from ``example_no_hardware.json``):
 

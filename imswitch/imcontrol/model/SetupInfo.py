@@ -506,6 +506,15 @@ class ScanInfo:
     ``overviewMaxPixels``, ``overviewFrameTimeS``, ``minSamplesPerPixel``,
     ``maxDwellMs``. Other scan panels ignore it. """
 
+    simpleMoNaLISA: Optional[Dict[str, Any]] = None
+    """ Options for the ``SimpleMoNaLISA`` cloak. Fixed setup facts include
+    ``fovUm``, ``ulensPeriodUm``, ``offLaser``, ``onLaser``, ``readoutLaser``,
+    ``readoutDetector``, ``readoutTimeMs``, ``interPulseDelayMs`` and
+    ``cameraReadoutTimeMs``. Defaults for the simple acquisition can set
+    ``defaultScanType``, ``defaultLateralStepUm``, ``defaultZScanLengthUm``,
+    ``defaultZStepUm``, ``defaultMode``, ``defaultOffTimeMs`` and
+    ``defaultOnTimeMs``. """
+
 
 
 @dataclass(frozen=True)

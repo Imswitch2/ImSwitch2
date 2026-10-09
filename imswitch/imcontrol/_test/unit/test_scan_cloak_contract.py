@@ -47,6 +47,7 @@ SCAN_TEMPLATE = 'imswitch/imcontrol/view/configeditor/builtin_templates/sections
 #: A shipped mock setup per cloak.
 MOCK_SETUPS = {
     'SimplePointScan': SETUPS + 'galvo_apd_simple_mock_scan_setup.json',
+    'SimpleMoNaLISA': SETUPS + 'simple_monalisa_mock_scan_setup.json',
 }
 
 
@@ -72,9 +73,23 @@ def _pointScanUnrepresentableEdit(rig):
     return 'timing windows'
 
 
+def _moNaLISARepresentableEdit(rig):
+    before = rig.scan.acquisitionPlan().lateral_step_um
+    for axis in ('X', 'Y'):
+        rig.panel.backend.setScanStepSize(rig.limits().axis_device(axis), before + 0.01)
+    return lambda old, new: new.lateral_step_um == pytest.approx(old.lateral_step_um + 0.01)
+
+
+def _moNaLISAUnrepresentableEdit(rig):
+    device = rig.limits().axis_device('X')
+    rig.panel.backend.setScanSize(device, rig.limits().ulens_period_um + 0.1)
+    return 'scan length must stay'
+
+
 #: Per cloak: an Advanced-page edit it can show, and one it cannot.
 EDITS = {
     'SimplePointScan': (_pointScanRepresentableEdit, _pointScanUnrepresentableEdit),
+    'SimpleMoNaLISA': (_moNaLISARepresentableEdit, _moNaLISAUnrepresentableEdit),
 }
 
 CLOAKS = sorted(SCAN_CLOAKS)
@@ -379,6 +394,8 @@ def _loadedFile(rig, tmp_path):
 @pytest.mark.parametrize('write', [_export, _sharedAttribute, _loadedFile],
                          ids=['script-export', 'shared-attribute', 'loaded-file'])
 def test_a_write_into_the_backend_widget_ends_in_the_plan(rig, write, tmp_path):
+    if rig.type != 'SimplePointScan':
+        pytest.skip('These write paths currently exercise PointScan centre-position semantics.')
     check = write(rig, tmp_path) if write is _loadedFile else write(rig)
     QtTest.QTest.qWait(50)                              # the deferred adoption
     assert rig.scan.scanPage() == 'simple'
@@ -424,6 +441,8 @@ def test_the_advanced_page_builds_what_the_backend_builds(rig):
 
 
 def test_a_design_made_on_one_page_is_not_run_from_the_other(rig):
+    if rig.type != 'SimplePointScan':
+        pytest.skip('Frame-geometry injection is a PointScan overview/viewer contract.')
     """The backend reuses its last design while its dicts stay the same, but
     the pages design the same dicts differently (the frame geometry here).
     The pages hand over differently shaped dicts today; held to the same

@@ -44,6 +44,10 @@ SCAN_CLOAKS = {
         compatible_scan_widget_types=('Advanced',),
         has_overview=True,
     ),
+    'SimpleMoNaLISA': ScanCloakSpec(
+        compatible_scan_widget_types=('Advanced',),
+        has_overview=False,
+    ),
 }
 
 

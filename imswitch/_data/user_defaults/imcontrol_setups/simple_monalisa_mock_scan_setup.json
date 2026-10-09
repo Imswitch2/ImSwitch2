@@ -1,0 +1,172 @@
+{
+  "__comment__": "Hardware-free visual/test setup for the SimpleMoNaLISA cloak. The real scan backend is Advanced with BetaScanDesigner; scan.cloak selects SimpleMoNaLISA. Simulated NI-DAQ axes and binary lasers let the scan design run without hardware. The mock AV camera is included mainly so the configured read-out detector and its TTL pulse are visible in Advanced; this first cloak has no overview mode.",
+  "detectors": {
+    "Camera": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line4",
+      "managerName": "AVManager",
+      "managerProperties": {
+        "cameraListIndex": "mock",
+        "cameraPixelSizeUm": 0.1,
+        "avcam": {
+          "exposure": 1,
+          "gain": 1
+        }
+      },
+      "forAcquisition": true,
+      "forFocusLock": false
+    }
+  },
+  "lasers": {
+    "488 (OFF)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line0",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "405 (ON)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line2",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 405,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "488 (EXC)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line1",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    }
+  },
+  "positioners": {
+    "X": {
+      "analogChannel": "Dev1/ao0",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 5.0,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "X"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Y": {
+      "analogChannel": "Dev1/ao1",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 5.0,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "Y"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Z": {
+      "analogChannel": "Dev1/ao2",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.0,
+        "minVolt": 0,
+        "maxVolt": 10,
+        "vel_max": 1000.0,
+        "acc_max": 1000.0,
+        "smoothScan": false
+      },
+      "axes": [
+        "Z"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    }
+  },
+  "scan": {
+    "scanWidgetType": "Advanced",
+    "cloak": "SimpleMoNaLISA",
+    "scanDesigner": "BetaScanDesigner",
+    "scanDesignerParams": {
+      "return_time": 0.001,
+      "move_time": 0.001,
+      "settle_time": 0.001
+    },
+    "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+    "TTLCycleDesignerParams": {},
+    "sampleRate": 100000,
+    "maxScanTimeMin": 0,
+    "lineClockLine": null,
+    "frameStartClockLine": null,
+    "frameEndClockLine": null,
+    "simpleMoNaLISA": {
+      "fovUm": [
+        40.0,
+        40.0
+      ],
+      "ulensPeriodUm": 0.72,
+      "defaultScanType": "XY",
+      "defaultLateralStepUm": 0.04,
+      "defaultZStepUm": 0.15,
+      "defaultMode": "resolft",
+      "defaultOffTimeMs": 2.0,
+      "defaultOnTimeMs": 1.0,
+      "readoutTimeMs": 1.0,
+      "cameraReadoutTimeMs": 6.0,
+      "offLaser": "488 (OFF)",
+      "onLaser": "405 (ON)",
+      "readoutLaser": "488 (EXC)",
+      "readoutDetector": "Camera",
+      "defaultZScanLengthUm": 1.0,
+      "interPulseDelayMs": 0.1
+    }
+  },
+  "nidaq": {
+    "timerCounterChannel": null,
+    "startTrigger": false,
+    "simulation": true
+  },
+  "availableWidgets": [
+    "Settings",
+    "View",
+    "Recording",
+    "Image",
+    "Laser",
+    "Positioner",
+    "Scan"
+  ],
+  "processing": {
+    "graphPanel": false,
+    "profilePanel": false,
+    "frcPanel": false,
+    "projectionPanel": false,
+    "roiStatsPanel": false,
+    "roiManagerPanel": false,
+    "segmentationPanel": false,
+    "psfResolutionPanel": false,
+    "colocalizationPanel": false,
+    "multicolorPanel": false,
+    "reconstructors": [
+      "monalisa",
+      "view-only"
+    ],
+    "processors": []
+  }
+}
