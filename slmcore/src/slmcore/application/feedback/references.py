@@ -9,15 +9,18 @@ from typing import Any,Callable,Mapping,Sequence,TYPE_CHECKING,TypedDict
 import numpy as np
 
 from ...core.cgh.feedback import (
-    EditablePositionReferenceGeometry,FeedbackCapability,PositionReference,
+    EditablePositionReferenceGeometry,FeedbackCapability,FeedbackOrientation,PositionReference,
     PositionReferenceMode,ReferenceCorrespondence,
     editable_position_reference_geometry,
     editable_reference_center_px,editable_reference_positions,
     fit_center_reference_geometry,localization_positions_full_px,
-    orient_localization,orientation_reindex_permutation,
+    orient_lattice_representation,orient_localization,orientation_permutation,
+    orientation_reindex_permutation,
     reference_correspondence_options,
 )
-from ...core.cgh.localization import LocalizationResult,localization_site_masks
+from ...core.cgh.localization import (
+    LocalizationResult,SpotOrdering,localization_site_masks,spot_ordering_permutation,
+)
 from ...core.measurement.position_alignment import (
     PositionAlignmentResult,align_resolved_position_reference,
 )
@@ -58,6 +61,21 @@ _POSITION_REFERENCE_CORRECTION_MODES = frozenset({
     _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL,
 })
 _UNSET = object()
+
+
+def _spot_ordering_for_permutation(
+    lattice_indices: np.ndarray,permutation: np.ndarray,
+) -> SpotOrdering:
+    """Identify the D4 ordering represented by one rectangular permutation."""
+    expected=np.asarray(permutation,dtype=np.int64)
+    for ordering in SpotOrdering:
+        try:
+            candidate=spot_ordering_permutation(lattice_indices,ordering)
+        except ValueError:
+            continue
+        if np.array_equal(candidate,expected):
+            return ordering
+    raise ValueError("Feedback-orientation reindex is not a supported lattice ordering")
 
 
 def _normalize_editable_locks(value: Any) -> frozenset[str]:
@@ -570,6 +588,9 @@ class PositionReferenceService(FeedbackComponent):
         )
         config_path = self._current_config_path()
         matched,inferred,_resolved = localization_site_masks(localization)
+        source_target=position_reference_target_from_localization(
+            localization,full_image=True,
+        )
         return PositionReference(
             name=name,
             observation_plane_name=plane,
@@ -586,6 +607,10 @@ class PositionReferenceService(FeedbackComponent):
                     None if not config_path else Path(config_path).name
                 ),
                 "feedback_orientation":self._feedback_orientation(section).value,
+                "lattice_representation":(
+                    None if source_target.lattice is None
+                    else source_target.lattice.to_dict()
+                ),
                 "matched_count":int(np.count_nonzero(matched)),
                 "inferred_count":int(np.count_nonzero(inferred)),
             },
@@ -815,26 +840,45 @@ class PositionReferenceService(FeedbackComponent):
 
         source=reference_geometry_from_position_reference(reference)
         source_orientation=dict(reference.metadata or {}).get("feedback_orientation")
-        if source_orientation not in (None,""):
+        source_ordering=SpotOrdering.CANONICAL
+        if source.lattice is not None and source_orientation not in (None,""):
+            # Pass-4/5 references persisted topology reconstructed from an already
+            # oriented localization, but the topology itself had not been permuted
+            # with the detector positions.  Repair those records once on load.
+            normalized_orientation=FeedbackOrientation.normalize(source_orientation)
+            lattice_orientation=dict(source.lattice.diagnostics or {}).get(
+                "feedback_orientation"
+            )
+            if (
+                normalized_orientation is not FeedbackOrientation.IDENTITY
+                and lattice_orientation!=normalized_orientation.value
+            ):
+                permutation=orientation_permutation(
+                    reference.lattice_indices,normalized_orientation,
+                )
+                source=ReferenceGeometry(
+                    positions_px=source.positions_px,site_ids=source.site_ids,
+                    lattice=orient_lattice_representation(
+                        source.lattice,permutation,normalized_orientation,
+                    ),
+                    valid_mask=source.valid_mask,weights=source.weights,
+                    metadata=dict(source.metadata),
+                )
+        if source.lattice is None and source_orientation not in (None,""):
+            # Legacy references have no persisted topology, so retain the old
+            # explicit source/target orientation reindex.  Topology-aware
+            # references normalize source and target directly from their detector
+            # geometry inside the neutral resolver and must not apply this again.
             permutation=orientation_reindex_permutation(
                 localization.lattice_indices,source_orientation,
                 self._feedback_orientation(section),
             )
-            # Orientation establishes the fixed section convention before the
-            # user-selectable finite-lattice correspondence is considered.
-            source=ReferenceGeometry(
-                positions_px=np.asarray(source.positions_px)[:,permutation],
-                site_ids=target.site_ids,
-                lattice=source.lattice,
-                valid_mask=np.asarray(source.valid_mask)[permutation],
-                weights=(
-                    None if source.weights is None
-                    else np.asarray(source.weights)[permutation]
-                ),
-                metadata=dict(source.metadata),
+            source_ordering=_spot_ordering_for_permutation(
+                localization.lattice_indices,permutation,
             )
         resolved=resolve_exact_lattice_correspondence(
             source,target,selection.correspondence.value,
+            source_ordering=source_ordering.value,
         )
         alignment=align_resolved_position_reference(
             target,resolved,model=selection.correction_mode,

@@ -165,6 +165,11 @@ def localize_measurement(
             "stagger_source",hints.stagger_source
         ),
         "canonical_stagger":registration.diagnostics.get("canonical_stagger"),
+        "lattice_representation":(
+            None
+            if registration.model.representation is None
+            else registration.model.representation.to_dict()
+        ),
         "expected_period_px":(
             None if hints.expected_period_px is None
             else tuple(float(value) for value in hints.expected_period_px)

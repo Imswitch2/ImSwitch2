@@ -19,6 +19,7 @@ from .correspondence import (
 )
 from .orientation import (
     FeedbackOrientation,
+    orient_lattice_representation,
     orient_localization,
     orientation_permutation,
     orientation_reindex_permutation,
@@ -78,6 +79,7 @@ __all__ = [
     "editable_reference_center_px",
     "editable_reference_positions",
     "localization_positions_full_px",
+    "orient_lattice_representation",
     "orient_localization",
     "orientation_permutation",
     "orientation_reindex_permutation",

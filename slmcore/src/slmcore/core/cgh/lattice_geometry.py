@@ -81,6 +81,34 @@ class LatticeRepresentation:
         object.__setattr__(self,"basis_offsets",offsets)
         object.__setattr__(self,"diagnostics",_freeze_mapping(self.diagnostics))
 
+
+    def to_dict(self):
+        """Return a JSON-serializable representation of this finite lattice."""
+        return {
+            "lattice_indices":self.lattice_indices.tolist(),
+            "cell_indices":self.cell_indices.tolist(),
+            "basis_indices":self.basis_indices.tolist(),
+            "cell_vectors":self.cell_vectors.tolist(),
+            "basis_offsets":self.basis_offsets.tolist(),
+            "diagnostics":deepcopy(dict(self.diagnostics)),
+        }
+
+    @classmethod
+    def from_mapping(cls,value):
+        """Restore a :class:`LatticeRepresentation` from ``to_dict()`` data."""
+        if isinstance(value,cls):
+            return value
+        if not isinstance(value,Mapping):
+            raise TypeError("Lattice representation data must be a mapping")
+        return cls(
+            lattice_indices=np.asarray(value["lattice_indices"]),
+            cell_indices=np.asarray(value["cell_indices"]),
+            basis_indices=np.asarray(value["basis_indices"],dtype=np.int64),
+            cell_vectors=np.asarray(value["cell_vectors"],dtype=np.float64),
+            basis_offsets=np.asarray(value["basis_offsets"],dtype=np.float64),
+            diagnostics=value.get("diagnostics",{}),
+        )
+
     @property
     def logical_positions(self):
         """Return uncentered logical positions with shape ``(2, N)``."""

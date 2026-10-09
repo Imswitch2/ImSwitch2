@@ -100,10 +100,14 @@ def resolve_reference_correspondence(
     reference=np.asarray(reference_positions_px,dtype=np.float64)
     if reference.shape!=target.measured_positions_px.shape:
         raise ValueError("Reference positions must align with localization spots")
+    # This compatibility API accepts an already re-ordered bare position array,
+    # so it has no trustworthy source topology to pair with those columns. Keep
+    # the historical rectangular-permutation behavior here; persisted references
+    # use the topology-aware path through PositionReferenceService.
     source=ReferenceGeometry(
         positions_px=reference,
         site_ids=target.site_ids,
-        lattice=target.lattice,
+        lattice=None,
         valid_mask=np.ones(target.point_count,dtype=bool),
     )
     requested=ReferenceCorrespondence.normalize(correspondence)

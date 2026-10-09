@@ -42,6 +42,14 @@ def _lattice_from_localization(localization: Any) -> LatticeRepresentation | Non
     fallback for older accepted localizations.
     """
     diagnostics=dict(getattr(localization,"diagnostics",{}) or {})
+    payload=diagnostics.get("lattice_representation")
+    if payload is not None:
+        try:
+            lattice=LatticeRepresentation.from_mapping(payload)
+            if np.array_equal(lattice.lattice_indices,localization.lattice_indices):
+                return lattice
+        except (KeyError,TypeError,ValueError):
+            pass
     stagger=diagnostics.get("resolved_stagger")
     if stagger is None:
         params=dict(getattr(localization,"target_params",{}) or {})
@@ -120,6 +128,13 @@ def reference_geometry_from_position_reference(
 
     if not isinstance(reference,PositionReference):
         raise TypeError("reference must be a PositionReference")
+    if lattice is None:
+        payload=dict(reference.metadata or {}).get("lattice_representation")
+        if payload is not None:
+            try:
+                lattice=LatticeRepresentation.from_mapping(payload)
+            except (KeyError,TypeError,ValueError):
+                lattice=None
     return ReferenceGeometry(
         positions_px=reference.positions_px,
         site_ids=lattice_site_ids(reference.lattice_indices),

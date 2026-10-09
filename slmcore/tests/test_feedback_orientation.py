@@ -121,3 +121,38 @@ def test_feedback_orientation_pre_release_section_value_migrates_to_default():
             "planes":{},
         },
     }
+
+
+def test_staggered_feedback_orientation_keeps_topology_paired_with_positions():
+    from slmcore.core.cgh.lattice_geometry import LatticeRepresentation
+
+    x,y=np.meshgrid(np.arange(5),np.arange(4),indexing="xy")
+    indices=np.vstack([x.ravel(),y.ravel()]).astype(np.int64)
+    lattice=LatticeRepresentation.alternating_rows(indices,-0.5)
+    logical=np.asarray(lattice.logical_positions,dtype=np.float64)
+    linear=np.array([[18.0,1.5],[-0.7,17.0]])
+    positions=linear@logical+np.array([[100.0],[80.0]])
+    localization=LocalizationResult(
+        target_type="multi_foci_vector",target_params={"stagger":-0.5},parameters={},
+        lattice_indices=indices,crop_coord=(0,256,0,256),cropped_image=np.zeros((256,256)),
+        expected_positions_px=positions,measured_positions_px=positions,
+        period_x_px=18.0,period_y_px=17.0,offset_x_px=100.0,offset_y_px=80.0,
+        diagnostics={
+            "matched_mask":tuple(True for _ in range(indices.shape[1])),
+            "resolved_stagger":-0.5,
+            "lattice_representation":lattice.to_dict(),
+        },
+    )
+    permutation=orientation_permutation(indices,FeedbackOrientation.FLIP_HORIZONTAL)
+    oriented=orient_localization(localization,FeedbackOrientation.FLIP_HORIZONTAL)
+    oriented_lattice=LatticeRepresentation.from_mapping(
+        oriented.diagnostics["lattice_representation"]
+    )
+
+    np.testing.assert_allclose(
+        oriented_lattice.logical_positions,lattice.logical_positions[:,permutation],
+    )
+    np.testing.assert_allclose(
+        oriented.measured_positions_px,localization.measured_positions_px[:,permutation],
+    )
+    assert oriented_lattice.diagnostics["feedback_orientation"]=="flip_horizontal"
