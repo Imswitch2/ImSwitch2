@@ -71,6 +71,9 @@
   "imcontrol_setups/example_uc2_lightsheet.json": [
    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   ],
+  "imcontrol_setups/expert_mock_scan_setup.json": [
+   "784d6a4ed4967539e9f1aac35c0a8aa7c5c88e54ed698fda363cdde9c07c42d1"
+  ],
   "imcontrol_setups/fiji_processor.json": [
    "479cfe624ccea39700e06e766a6ebda8b3e2826e568f5e3211fcc84a597656c5"
   ],

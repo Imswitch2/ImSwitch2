@@ -100,4 +100,12 @@ BUILTIN_DEVICE_MANAGERS: list[DeviceManagerContribution] = [
         plugin_name="imswitch-core",
         manager_name_aliases=("builtin.simulated-step-board",),
     ),
+    DeviceManagerContribution(
+        id="PulseGeneratorScanEngine",
+        kind="scan_engine",
+        display_name="Pulse generator (Teensy, PulseStreamer: digital programs)",
+        python_name="imswitch.imcontrol.model.managers.scan_engines.PulseGeneratorScanEngine:PulseGeneratorScanEngine",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("builtin.pulse-generator-scan-engine",),
+    ),
 ]

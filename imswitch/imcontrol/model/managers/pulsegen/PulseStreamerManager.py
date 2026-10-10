@@ -113,6 +113,16 @@ class PulseStreamerManager(PulseGeneratorManager):
         return True
 
     @property
+    def timing_resolution_ns(self) -> int:
+        # 1 ns resolution on transitions (the spec above).
+        return 1
+
+    # The sequence capacity, the repeat limit, the start trigger through
+    # run() and what a stop does to the outputs are not declared: nothing in
+    # this repository says them for the 8/2, and a scan program that needs
+    # them is refused as unknown rather than run on a guess.
+
+    @property
     def connected(self) -> bool:
         return self.__pulseStreamer is not None
 

@@ -2,8 +2,8 @@
 
 **Status:** Plan, draft 7. The direction is agreed (Lenny, 2026-10-08:
 "that sounds like what we're aiming for"), and the review is closed with
-draft 7's amendments. **M0, M1 and M2 are implemented** on
-`feat/scan-engines` (§7.1, §7.2, §7.3).
+draft 7's amendments. **M0, M1, M2 and M3 are implemented** on
+`feat/scan-engines` (§7.1-§7.4).
 **Date:** 2026-10-08
 **Branch:** `feat/scan-engines`, off `feat/simple-point-scan` (56ef43f0,
 which carries the scan cloak and the Advanced scan-freeze work): the plan and
@@ -1489,6 +1489,98 @@ it yet.
   windows are in the schedule but not yet on the panel.
 - **Rig validation:** an interleaved Beta scan on Snouty's stage, recorded
   and reconstructed with SNOUTY.
+
+### 7.4 M3 status (2026-10-09)
+
+**Delivered so far: the pulse-generator engine (§5.3).**
+
+| Where | What |
+|---|---|
+| `managers/pulsegen/PulseGeneratorManager.py` | Optional capabilities, `None` when undeclared: `max_sequence_steps`, `timing_resolution_ns`, `max_repeats`, `run_triggers`, `stop_drives_low`, `stop_granularity` |
+| `TeensyPulseManager` | Declares them from the v4 firmware: `*IDN?`'s step count (0 on v3, which plays no uploaded sequences), whole microseconds on the wire, `n_reps` in a `uint32_t`, no trigger input, `allChannelsLow()` on STOP, STOP checked between steps. `run(trigger=)` refuses `'start'` |
+| `PulseStreamerManager` | Declares its 1 ns resolution; nothing else is in the repository, so the rest stays unknown |
+| `managers/scan_engines/PulseGeneratorScanEngine.py` | The adapter: the digital subset's refusals, realization on the generator's grid, the shortest exactly repeating period as the step table, off levels after a run and a stop, the run in its own thread |
+| Registry, editor, docs | Built-in `scan_engine`; schema, fixture, docs card (`devices/scan_engines.rst`) |
+
+**Checked:** the mock Teensy's pin timeline equals the interpreter's
+schedule, line by line (one frame repeated; phases that alternate); every
+refusal of §5.3 by its message; the capacity edge (256 fit, 257 and 258 do
+not, 256 repeated 50 times fit); a time off the 1 µs grid with its
+neighbours; undeclared capabilities as unknown; the setup loader building it
+from `teensyPulse` and `scanEngines`; a stop leaving every line off.
+Mutation-checked: a repeat too many, a step a tick long and an ignored
+active-low mapping all fail the tests.
+
+**Found:**
+
+- **The Teensy's STOP drives every channel low** (`allChannelsLow()` in the
+  firmware), whatever the line's polarity. An active-low line on it would be
+  switched on by every stop, so the adapter refuses one with that reason.
+  Firmware that stops to each line's off level would lift it (M5).
+- **On DONE the Teensy keeps its last step's state on the wire.** The
+  adapter sets every line to its off level after the run.
+- **The firmware parses numbers without an overflow check** (`parseUInt`
+  multiplies into a `uint32_t`): a repeat count above 2^32 - 1 wraps
+  silently. The adapter never sends one; M5's protocol should refuse it.
+
+**Delivered in part 2 (d230caae5): the model under the Expert panel.**
+Programs as JSON (`serialize.py`, `scan-program/1`, read strictly; no
+timing policy, no program); presets (`presets.py`: MS-RESOLFT, a pulse
+sequence, a stepped raster; every value a parameter, kept in
+`requested_as`); the NI-DAQ engine compiles programs (realized on its own
+clock, volts through `conversionFactor`, voltage limits); `scan_info.py`
+(the `ScanInfoContract` of a regular raster, with its visit orders, or the
+reason point detectors cannot assemble the program); `build_program_layouts`
+(a frame stream has the program's loops, spans where a camera takes frames
+in some steps only; a point detector an assembled image of a raster).
+
+**Delivered in part 3: the panel.**
+
+| Where | What |
+|---|---|
+| `ScanWidgetExpert` | Tabs for loops, drives (a weight column per loop, the motion), timeline, waits and detector bindings; step and timing policy; **Make…** with a form generated from the preset's fields (checked before it closes); the report; **Plot** |
+| `ScanControllerExpert` | The program is authoritative (the tables are read back only after an edit); one compile, cached on the program and the captured positions, for the report, the run and the recording; NI-DAQ programs through the base lifecycle; step engines armed through the coordinator and ended by their done, stopped and failed signals; recording queries (positions, frames per position, dims, layouts); saved states with `requiredFeatures`; Advanced files opened as programs and saved back in the Advanced format until edited |
+| `NidaqScanEngine.assess` | A scan clock the setup does not wire is reported as not played, as the NI-DAQ does today, instead of blocking |
+| `ScanManagerExpert`, `MasterController` | The panel type, without signal designers |
+| `expert_mock_scan_setup.json` | The panel without hardware |
+| Docs | `expert-scanning.rst`, the panel lists, the changelog |
+
+**Checked (part 3):** the panel's choices are the model's; an empty panel
+says what to do; a preset fills the tables and the report (88 ms, 12 steps);
+the tables read back as the same program and are stable; an edited cell
+changes the program, a bad one is named; refusals reach the report; the
+preset form reopens with its values and names what is missing. **An
+MS-RESOLFT recording** through the recording manager reads back at its
+positions and SNOUTY restacks it (2 x 3 x 2). **The mock APD images a
+serpentine raster program** in place (correlation above 0.9). A program
+point detectors cannot assemble is refused while they take part, naming
+them. Saved programs load back; the Advanced panel refuses them with the
+reason. **An Advanced file opens as a program that plays the same analog
+waveforms and TTL lines**, is saved back in the Advanced format while
+unchanged, and needs the Expert panel once edited. A file naming a missing
+device is not applied. **A Teensy runs a pulse program from the panel** and
+a laser on the NI-DAQ is reported as not driven by it.
+
+**Found:**
+
+- **The M2 interleave split carried a direction onto `cycle` and `plane`,**
+  which a non-spatial loop may not have; with the directions the controller
+  passes, the camera layout was invalid. Fixed in part 2, and the M2 test
+  now passes directions.
+- **Advanced scans always carry the TTL designer's clocks;** the NI-DAQ
+  plays them only on configured lines. An opened Advanced file would have
+  been refused on a rig without clock lines.
+- **A preset's step is a float sum** (6 + 0.5 + 0.5 ms is
+  0.007000000000000001 s); the tables keep what they show (7 ms). The
+  panel's ms are divided back into seconds, the inverse of the display, so
+  a value survives the round trip.
+
+**Still open in M3:** registry resolution for `pulse_generator` (a second
+pulse generator in one setup, a plugin's generator); **Hardware → What this
+setup can scan…** (§3.3); the panel shows the selected engine only (choosing
+among a setup's engines per scan is not offered); the timeline table has no
+column for an event's `still` list, so editing the table drops it (a loaded
+program keeps it until then).
 
 ## 8. Risks
 

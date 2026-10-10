@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "channels": {
+      "description": "The generator's channels it owns, by index.",
+      "x-imswitch-kind": "array",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:array"
+      ]
+    },
+    "pulseGenerator": {
+      "description": "The low-level manager it drives. A ``teensyPulse`` section builds",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    }
+  },
+  "title": "PulseGeneratorScanEngine managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PulseGeneratorScanEngine"
+  ]
+}

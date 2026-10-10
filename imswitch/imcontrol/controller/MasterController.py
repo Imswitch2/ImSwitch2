@@ -2,7 +2,7 @@ from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
     DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
-    RotatorsManager, SLMsManager, ScanManagerAdvanced
+    RotatorsManager, SLMsManager, ScanManagerAdvanced, ScanManagerExpert
 )
 from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
 from imswitch.imcontrol.model.scan_cloak import SCAN_CLOAKS, scan_backend_type
@@ -109,11 +109,13 @@ class MasterController:
                 self.scanManager = ScanManagerMoNaLISA(self.__setupInfo)
             elif scanType == "Advanced":
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
+            elif scanType == "Expert":
+                self.scanManager = ScanManagerExpert(self.__setupInfo)
             elif scanType == "TriggerScope":
                 self.scanManager = ScanManagerTriggerScope(self.__setupInfo,
                                                            self.triggerScopeManager)
             else:
-                known = ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope",
+                known = ["Base", "PointScan", "MoNaLISA", "Advanced", "Expert", "TriggerScope",
                          *SCAN_CLOAKS]
                 self.__logger.error(
                     'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the '

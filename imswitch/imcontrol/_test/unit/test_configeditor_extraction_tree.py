@@ -63,16 +63,18 @@ def report(extractions):
 def test_the_coverage_the_plan_is_built_on(report):
     # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
     # 64: the NI-DAQ and simulated step scan engines (kind scan_engine).
-    assert report.managers == 64, "61 plus RS232Manager, plus the two scan engines"
+    # 65: the pulse-generator scan engine.
+    assert report.managers == 65, "61 plus RS232Manager, plus the three scan engines"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
     # ... plus RS232Manager itself, once the catalog stopped skipping it.
     # Four fewer since the removed camera managers (see above): 59 -> 55.
-    # 57: the simulated step engine reads its board's properties.
-    assert report.reads_any == 57
-    assert report.with_keys == 57
+    # 57: the simulated step engine reads its board's properties. 58: the
+    # pulse-generator engine its generator and channels.
+    assert report.reads_any == 58
+    assert report.with_keys == 58
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
@@ -82,16 +84,18 @@ def test_the_coverage_the_plan_is_built_on(report):
     # calibCsvPath boundary read. 215 after open-loop positioner reference
     # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope;
     # 216: the APD's mockSample. 221: the simulated step engine's timingGridS,
-    # analogChannels, digitalLines, triggerLatencyS and maxSteps.
-    assert report.keys == 221
+    # analogChannels, digitalLines, triggerLatencyS and maxSteps. 223: the
+    # pulse-generator engine's pulseGenerator and channels.
+    assert report.keys == 223
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 159  # +5 simulated step engine properties
+    assert report.optional == 161  # +5 simulated step, +2 pulse-generator engine properties
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
-    # properties read with .get(): no default is guessed for a board.
-    assert report.none_default_only == 36
+    # properties read with .get(): no default is guessed for a board. 37:
+    # the pulse-generator engine's channels (absent: every channel).
+    assert report.none_default_only == 37
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -102,8 +106,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # availableCubes are now documented by their cards.
     # 135: NidaqPositionerManager.defaultReferenceVoltage is now documented
     # too; 136: and the APD's mockSample. 141: the simulated step engine's
-    # five properties (docs/devices/scan_engines.rst).
-    assert (report.docs_agree, report.docs_documented) == (141, 141)
+    # five properties (docs/devices/scan_engines.rst). 143: the
+    # pulse-generator engine's two.
+    assert (report.docs_agree, report.docs_documented) == (143, 143)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -284,5 +289,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 64
+    assert totals["managers"] == 65
 

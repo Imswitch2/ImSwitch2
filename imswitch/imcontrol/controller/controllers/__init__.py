@@ -37,6 +37,7 @@ _CONTROLLER_MODULES = {
     "RotatorController": "RotatorController",
     "ScanControllerAdvanced": "ScanControllerAdvanced",
     "ScanControllerBase": "ScanControllerBase",
+    "ScanControllerExpert": "ScanControllerExpert",
     "ScanControllerMoNaLISA": "ScanControllerMoNaLISA",
     "ScanControllerPointScan": "ScanControllerPointScan",
     "ScanControllerSimplePointScan": "ScanControllerSimplePointScan",

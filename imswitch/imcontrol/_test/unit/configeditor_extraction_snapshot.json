@@ -407,6 +407,15 @@
     },
     {
       "constrained": 0,
+      "keys": 2,
+      "name": "PulseGeneratorScanEngine",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
       "keys": 1,
       "name": "PulseStreamerLaserManager",
       "refs": 0,
@@ -580,22 +589,22 @@
   "totals": {
     "alias_spellings": 9,
     "constrained": 47,
-    "docs_agree": 141,
-    "docs_documented": 141,
-    "keys": 221,
-    "managers": 64,
-    "none_default_only": 36,
+    "docs_agree": 143,
+    "docs_documented": 143,
+    "keys": 223,
+    "managers": 65,
+    "none_default_only": 37,
     "none_only": 16,
-    "optional": 159,
-    "reads_any": 57,
+    "optional": 161,
+    "reads_any": 58,
     "refs": 14,
     "required": 62,
     "typed_by_code": 97,
-    "typed_with_docs": 165,
+    "typed_with_docs": 167,
     "typed_with_examples": 133,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 57,
+    "with_keys": 58,
     "writes": 0
   }
 }

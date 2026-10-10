@@ -38,6 +38,7 @@ _WIDGET_MODULES = {
     "RotatorWidget": "RotatorWidget",
     "ScanWidgetAdvanced": "ScanWidgetAdvanced",
     "ScanWidgetBase": "ScanWidgetBase",
+    "ScanWidgetExpert": "ScanWidgetExpert",
     "ScanWidgetMoNaLISA": "ScanWidgetMoNaLISA",
     "ScanWidgetPointScan": "ScanWidgetPointScan",
     "ScanWidgetSimplePointScan": "ScanWidgetSimplePointScan",

@@ -346,7 +346,10 @@ Required if you want to use the ``Scan`` widget.
 Key fields:
 
 * ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``,
-  ``"MoNaLISA"``, ``"Advanced"``, ``"SimplePointScan"`` or ``"TriggerScope"``.
+  ``"MoNaLISA"``, ``"Advanced"``, ``"SimplePointScan"``, ``"Expert"`` or
+  ``"TriggerScope"``. ``"Expert"`` edits scan programs and compiles them on
+  the scan engine (:doc:`expert-scanning`); it uses no signal designers, so
+  ``scanDesigner`` and ``TTLCycleDesigner`` can be ``null``.
   ``"TriggerScope"`` runs scans on the TriggerScope board (see `triggerScope`_)
   from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
   ``SimplePointScan`` is a beginner's point-scan panel (overview and acquisition modes) that runs on the Advanced scan path; pair it with ``GalvoScanDesigner`` and ``AdvancedScanTTLCycleDesigner``.

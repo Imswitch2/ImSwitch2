@@ -507,8 +507,11 @@ def _interleave_loops(loop: AcquisitionLoop, order: Sequence[int]) -> tuple[Acqu
             "described yet"
         )
     step = loop.step
+    # cycle and plane are not spatial kinds: the layout gives them no
+    # direction (the stage's sign stays with the device).
     return (
-        replace(loop, id="cycle", kind="cycle", count=cycles, storage_axis=None),
+        replace(loop, id="cycle", kind="cycle", count=cycles, storage_axis=None,
+                direction=None),
         replace(
             loop,
             id="plane",
@@ -516,6 +519,7 @@ def _interleave_loops(loop: AcquisitionLoop, order: Sequence[int]) -> tuple[Acqu
             count=planes,
             step=None if step is None else step * cycles,
             storage_axis=None,
+            direction=None,
         ),
     )
 
@@ -700,6 +704,135 @@ def build_advanced_scan_layouts(
         for detector, layout in layouts.items():
             if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
                 layouts[detector] = _with_visit_order(layout, physical, orders)
+    return layouts
+
+
+def _program_loop(program, loop) -> AcquisitionLoop:
+    """One program loop as a layout loop: its step and device when exactly
+    one drive weights it (a composite axis has neither)."""
+    if loop.kind == "condition":
+        return replace(_condition_loop(loop.count), id=loop.id)
+    weighted = [(d.device, float(d.weights_um[loop.id])) for d in program.drives
+                if loop.id in d.weights_um]
+    device = step = direction = None
+    if len(weighted) == 1:
+        device, weight = weighted[0]
+        step = abs(weight)
+        if loop.kind.startswith("scan_"):   # a direction is spatial
+            direction = 1 if weight >= 0 else -1
+    return AcquisitionLoop(
+        loop.id, loop.kind, int(loop.count), step=step,
+        unit="um" if step is not None else None, direction=direction, device=device,
+    )
+
+
+def _program_frames(schedule, detector: str) -> list[int]:
+    """Frames ``detector`` takes in each step, in the order the steps run:
+    the rising edges of its line within the step (touching windows are one
+    pulse on the wire)."""
+    steps = schedule.step_spans()
+    windows: dict[int, list[tuple[int, int]]] = {}
+    for event in schedule.events:
+        if event.device == detector and event.step_index is not None:
+            windows.setdefault(event.step_index, []).append((event.start_tick, event.end_tick))
+    counts = []
+    for realized in steps:
+        edges, end = 0, None
+        for start, stop in sorted(windows.get(realized.span.step_index, ())):
+            if end is None or start > end:
+                edges += 1
+            end = stop if end is None else max(end, stop)
+        counts.append(edges)
+    return counts
+
+
+def build_program_layouts(
+    program: Any,
+    schedule: Any,
+    detector_names: Sequence[str],
+    *,
+    scan_source: str,
+    scan_driven_detectors: Sequence[str] = (),
+    raster_refusal: str = "",
+    modality: str | None = None,
+) -> dict[str, AcquisitionLayout]:
+    """Layouts for an Expert program (plan §2.5, M3), from the program's
+    loops and its realized schedule.
+
+    A frame stream (a camera) has the program's loops, outermost first, and
+    a ``repeat`` loop when it takes several frames per step; when it takes
+    frames in only some steps, the recorded spans say which. A serpentine
+    loop is a serpentine traversal. A point detector stores an assembled
+    image, which it can only build from a regular raster: ``raster_refusal``
+    says why this program is not one.
+    """
+    tables = [d.table_loop for d in program.drives if d.table_loop is not None]
+    loops = tuple(_program_loop(program, loop) for loop in program.loops)
+    traversal = tuple(
+        TraversalRule(loop.id, loop.traversal, tuple(loop.parity_loops))
+        if loop.traversal == "serpentine" else TraversalRule(loop.id, loop.traversal)
+        for loop in program.loops
+    )
+    scan_driven = set(scan_driven_detectors)
+    layouts = {}
+    for raw_detector in detector_names:
+        detector = str(raw_detector)
+        if detector in scan_driven:
+            if raster_refusal:
+                raise ValueError(f"{detector} cannot assemble this scan: {raster_refusal}")
+            physical = [loop for loop in loops if loop.kind != "condition"]
+            kinds = [loop.kind for loop in physical]
+            if len(set(kinds)) != len(kinds):
+                raise ValueError(
+                    f"{detector} stores one image axis per loop kind; this scan repeats "
+                    f"{sorted(k for k in kinds if kinds.count(k) > 1)}"
+                )
+            storage_axes = ["frame"]
+            assembled = list(loops)
+            if program.phase_loop is not None:
+                assembled = [replace(loop, storage_axis="condition")
+                             if loop.kind == "condition" else loop for loop in assembled]
+                storage_axes.append("condition")
+            storage_axes.extend(kinds)
+            layouts[detector] = _assembled_layout(
+                detector=detector, loops=assembled, storage_axes=storage_axes,
+                scan_source=scan_source, modality=modality,
+            )
+            continue
+        if tables:
+            raise ValueError(
+                f"{detector}: the loop(s) {', '.join(tables)} visit their positions from a "
+                "table, which a frame stream cannot describe; write the order as loops "
+                "(cycle and plane) instead"
+            )
+        counts = _program_frames(schedule, detector)
+        repeat = max(counts, default=0)
+        if repeat <= 0:
+            raise ValueError(f"{detector} takes no frame in this scan")
+        event_loops = loops + ((AcquisitionLoop("repeat", "repeat", repeat),)
+                               if repeat > 1 else ())
+        rules = traversal + ((TraversalRule("repeat", "forward"),) if repeat > 1 else ())
+        spans = None
+        if any(count != repeat for count in counts):
+            spans = []
+            for index, count in enumerate(counts):
+                if count:
+                    spans.append(RecordedEventSpan(start=index * repeat, count=count))
+            spans = tuple(spans)
+        layouts[detector] = _validated(
+            AcquisitionLayout(
+                schema=ACQUISITION_LAYOUT_SCHEMA,
+                payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+                detector=detector,
+                storage_axes=("frame", "detector_y", "detector_x"),
+                event_loops=event_loops,
+                traversal=rules,
+                recorded_event_spans=spans,
+                modality=modality,
+                scan_source=scan_source,
+                provenance="recorded",
+            )
+        )
     return layouts
 
 

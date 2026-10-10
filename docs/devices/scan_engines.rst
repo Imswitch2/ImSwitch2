@@ -116,3 +116,68 @@ times the tests choose. It is registered as ``SimulatedStepEngine`` and
      - int
      - not declared
      - The steps it can hold; a longer program is refused.
+
+
+PulseGeneratorScanEngine
+========================
+
+Any pulse generator -- the Teensy, the PulseStreamer, a pulse-generator
+plugin -- as a scan engine, for the digital part of a scan program: laser and
+camera switching, with fixed pauses between, such as a widefield RESOLFT
+sequence. It is registered as ``PulseGeneratorScanEngine`` and
+``builtin.pulse-generator-scan-engine``.
+
+It compiles the program into the generator's step table: it plays the
+program on the generator's own timing grid, finds the shortest stretch whose
+line states repeat through the whole run, uploads that stretch and repeats
+it. A device is wired to it by its ``digitalLine``, the generator's channel
+index (as ``PulseGeneratorLaserManager`` reads it).
+
+It refuses, naming the feature and the limit, what a table of digital states
+cannot play:
+
+* a position (a drive or an intra-step move): "Stage needs an analog output;
+  Teensy has none.";
+* a power level: "The L488 power level is an analog event; pulse generators
+  play digital states only.";
+* a wait for a trigger before every step, and a start trigger the generator
+  does not take;
+* more distinct steps than the generator holds ("This timeline needs 412
+  distinct steps; Teensy holds 256."), more repeats than it counts;
+* a time off the generator's grid, with the two nearest times on it (the
+  Teensy's grid is 1 µs);
+* a line active when low, on a generator whose stop drives every channel low
+  (the Teensy's does): a stop would switch that device on.
+
+After a run, and after a stop, it sets every line it drives to its off level:
+the Teensy keeps its last step's state on the wire when a sequence ends.
+
+What the generator does not declare is unknown, and a scan that needs it is
+refused as such. The pulse-generator contract
+(``imswitch.imcontrol.model.managers.pulsegen.PulseGeneratorManager``) has
+optional properties for it: ``max_sequence_steps``, ``timing_resolution_ns``,
+``max_repeats``, ``run_triggers``, ``stop_drives_low`` and
+``stop_granularity``. The Teensy declares them all from its v4 firmware (256
+steps, whole microseconds, a 32-bit repeat count, no trigger input, a stop
+that drives every channel low, checked between steps); a v3 firmware plays no
+uploaded sequences. The PulseStreamer declares its 1 ns resolution only.
+
+**managerProperties**
+
+.. list-table::
+   :widths: 25 12 18 45
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Default
+     - Meaning
+   * - ``pulseGenerator``
+     - str
+     - ``pulseGeneratorManager``
+     - The low-level manager it drives. A ``teensyPulse`` section builds
+       ``pulseGeneratorManager``.
+   * - ``channels``
+     - list
+     - every channel
+     - The generator's channels it owns, by index.

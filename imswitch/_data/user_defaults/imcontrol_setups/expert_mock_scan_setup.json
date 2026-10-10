@@ -1,0 +1,173 @@
+{
+    "__comment__": "Hardware-free setup for the Expert scan panel (scan.scanWidgetType \"Expert\"): scan programs edited as loops, drives, a step timeline, waits and detector bindings, with presets (MS-RESOLFT, a pulse sequence, a stepped raster) and a report of what the scan engine makes of them. Everything runs on a SIMULATED NIDAQ (nidaq.simulation = true). X/Y are galvo-like axes and Z a piezo-like stepped axis, as in galvo_apd_simple_mock_scan_setup.json; two APDs image the same synthetic sample (mockSample) from the scan waveforms, and a mock camera on Dev1/port0/line7 takes a frame per trigger, so an MS-RESOLFT program on Z can be recorded and reconstructed with SNOUTY. The Expert panel builds no waveforms with signal designers, so scan.scanDesigner and scan.TTLCycleDesigner are null. To run pulse programs on a Teensy, add a teensyPulse section and a scanEngines entry with managerName PulseGeneratorScanEngine, and name it in scan.engine (docs/devices/scan_engines.rst).",
+    "detectors": {
+        "APD": {
+            "managerName": "APDManager",
+            "managerProperties": {
+                "ctrInputLine": "Dev1/ctr0",
+                "terminal": "PFI0",
+                "displayRotation": "0",
+                "displayFlipX": "False",
+                "displayFlipY": "False",
+                "mockSample": {
+                    "axes": {
+                        "X": 5.0,
+                        "Y": 5.0
+                    }
+                }
+            },
+            "analogChannel": null,
+            "digitalLine": null,
+            "forAcquisition": true,
+            "forFocusLock": false
+        },
+        "APD 2": {
+            "managerName": "APDManager",
+            "managerProperties": {
+                "ctrInputLine": "Dev1/ctr1",
+                "terminal": "PFI12",
+                "displayRotation": "0",
+                "displayFlipX": "False",
+                "displayFlipY": "False",
+                "mockSample": {
+                    "axes": {
+                        "X": 5.0,
+                        "Y": 5.0
+                    }
+                }
+            },
+            "analogChannel": null,
+            "digitalLine": null,
+            "forAcquisition": true,
+            "forFocusLock": false
+        },
+        "Camera": {
+            "analogChannel": null,
+            "digitalLine": "Dev1/port0/line7",
+            "managerName": "HamamatsuManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "hamamatsu": {
+                    "trigger_source": 2,
+                    "subarray_hpos": 0,
+                    "subarray_vpos": 0,
+                    "subarray_hsize": 512,
+                    "subarray_vsize": 512,
+                    "image_width": 512,
+                    "image_height": 512
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        }
+    },
+    "lasers": {
+        "405 (ON)": {
+            "analogChannel": null,
+            "digitalLine": "Dev1/port0/line2",
+            "managerName": "NidaqLaserManager",
+            "managerProperties": {},
+            "wavelength": 405,
+            "valueRangeMin": 0,
+            "valueRangeMax": 200
+        },
+        "488 (EXC)": {
+            "analogChannel": null,
+            "digitalLine": "Dev1/port0/line1",
+            "managerName": "NidaqLaserManager",
+            "managerProperties": {},
+            "wavelength": 488,
+            "valueRangeMin": 0,
+            "valueRangeMax": 200
+        },
+        "561 (EXC)": {
+            "analogChannel": null,
+            "digitalLine": "Dev1/port0/line3",
+            "managerName": "NidaqLaserManager",
+            "managerProperties": {},
+            "wavelength": 561,
+            "valueRangeMin": 0,
+            "valueRangeMax": 200
+        }
+    },
+    "positioners": {
+        "X": {
+            "analogChannel": "Dev1/ao0",
+            "digitalLine": null,
+            "managerName": "NidaqPositionerManager",
+            "managerProperties": {
+                "conversionFactor": 5.0,
+                "minVolt": -10,
+                "maxVolt": 10,
+                "vel_max": 0.1,
+                "acc_max": 0.0001
+            },
+            "axes": [
+                "X"
+            ],
+            "forScanning": true,
+            "forPositioning": true
+        },
+        "Y": {
+            "analogChannel": "Dev1/ao1",
+            "digitalLine": null,
+            "managerName": "NidaqPositionerManager",
+            "managerProperties": {
+                "conversionFactor": 5.0,
+                "minVolt": -10,
+                "maxVolt": 10,
+                "vel_max": 0.1,
+                "acc_max": 0.0001
+            },
+            "axes": [
+                "Y"
+            ],
+            "forScanning": true,
+            "forPositioning": true
+        },
+        "Z": {
+            "analogChannel": "Dev1/ao2",
+            "digitalLine": null,
+            "managerName": "NidaqPositionerManager",
+            "managerProperties": {
+                "conversionFactor": 1.0,
+                "minVolt": 0,
+                "maxVolt": 10,
+                "vel_max": 1000.0,
+                "acc_max": 1000.0,
+                "smoothScan": false
+            },
+            "axes": [
+                "Z"
+            ],
+            "forScanning": true,
+            "forPositioning": true
+        }
+    },
+    "scan": {
+        "scanWidgetType": "Expert",
+        "scanDesigner": null,
+        "scanDesignerParams": {},
+        "TTLCycleDesigner": null,
+        "TTLCycleDesignerParams": {},
+        "sampleRate": 100000,
+        "maxScanTimeMin": 0,
+        "lineClockLine": null,
+        "frameStartClockLine": null,
+        "frameEndClockLine": null
+    },
+    "nidaq": {
+        "timerCounterChannel": null,
+        "startTrigger": false,
+        "simulation": true
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Laser",
+        "Positioner",
+        "Scan"
+    ]
+}

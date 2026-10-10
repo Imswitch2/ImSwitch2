@@ -333,6 +333,8 @@ def _camera_layout(info, *, linesteps=1):
     return build_advanced_scan_layouts(
         info, ('Camera',), scan_source='test',
         devices={'scan_x': 'StageX', 'scan_y': 'StageY', 'scan_z': 'StageZ'},
+        # as the controller passes them: a stage stepping the other way
+        directions={'scan_x': 1, 'scan_y': -1, 'scan_z': 1},
         detector_masks={'Camera': [True] * linesteps},
         pulse_counts_by_condition={'Camera': [1] * linesteps},
     )['Camera']

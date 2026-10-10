@@ -481,7 +481,9 @@ class TilingInfo:
 @dataclass(frozen=True)
 class ScanInfo:
     scanWidgetType: str
-    """ Type of scan widget to generate: PointScan/MoNaLISA/Base/etc."""
+    """ Type of scan widget to generate: Base, PointScan, MoNaLISA, Advanced,
+    SimplePointScan, Expert or TriggerScope. Expert uses no signal designers:
+    scanDesigner and TTLCycleDesigner may be null for it. """
 
     scanDesigner: str
     """ Name of the scan designer class to use. """

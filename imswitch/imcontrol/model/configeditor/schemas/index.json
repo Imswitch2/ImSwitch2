@@ -2,22 +2,22 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 47,
-    "docs_agree": 143,
-    "docs_documented": 143,
-    "keys": 223,
-    "managers": 64,
-    "none_default_only": 36,
+    "docs_agree": 145,
+    "docs_documented": 145,
+    "keys": 225,
+    "managers": 65,
+    "none_default_only": 37,
     "none_only": 16,
-    "optional": 161,
-    "reads_any": 58,
+    "optional": 163,
+    "reads_any": 59,
     "refs": 15,
     "required": 62,
     "typed_by_code": 97,
-    "typed_with_docs": 167,
+    "typed_with_docs": 169,
     "typed_with_examples": 133,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 58,
+    "with_keys": 59,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -521,6 +521,15 @@
       ],
       "overridden": false,
       "properties": 1,
+      "required": 0
+    },
+    "PulseGeneratorScanEngine": {
+      "category": "scanEngines",
+      "classes": [
+        "PulseGeneratorScanEngine"
+      ],
+      "overridden": false,
+      "properties": 2,
       "required": 0
     },
     "PulseStreamerLaserManager": {

@@ -83,7 +83,7 @@ def test_the_generation_set_is_the_catalog_plus_template_backed_managers(inputs)
     assert set(inputs.unresolved) == {"PyCoboltManager"}
     # 61 in the catalog, minus that one, plus PiezoconceptZManager2, which only
     # a template names. (65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.)
-    assert len(names) == 64  # + the two scan engines
+    assert len(names) == 65  # + the three scan engines
 
 
 def test_index_names_every_manager_and_its_override_status(generated):

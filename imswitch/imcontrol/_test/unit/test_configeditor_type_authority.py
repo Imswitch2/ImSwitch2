@@ -490,8 +490,9 @@ def test_the_corpus_is_what_the_plan_says():
     # reconstruction work; 18: galvo_apd_simple_mock_scan_setup.json with
     # the SimplePointScan panel; 19: simple_mock_setup.json, the default
     # setup. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert len(shipped_setups()) == 19
-    assert len(generated_fixtures()) == 64  # + the two scan engines
+    # 20: expert_mock_scan_setup.json, the Expert panel's mock setup.
+    assert len(shipped_setups()) == 20
+    assert len(generated_fixtures()) == 65  # + the three scan engines
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 
