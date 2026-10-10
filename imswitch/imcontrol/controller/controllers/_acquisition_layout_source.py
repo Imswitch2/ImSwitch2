@@ -485,6 +485,100 @@ def _advanced_spans(
     return tuple(spans)
 
 
+#: ``scanInfoDict`` key with each image axis's visit order (plan M2; the
+#: scan-program adapter writes it, ``_visit_order`` in the detectors reads it).
+AXIS_VISIT_ORDER_KEY = "axis_visit_order"
+
+
+def _interleave_loops(loop: AcquisitionLoop, order: Sequence[int]) -> tuple[AcquisitionLoop, ...]:
+    """An interleaved axis as a frame stream: ``cycle`` outside ``plane``,
+    position = cycle + cycles * plane -- the SNOUTY order (plane immediately
+    inside cycle). A visit order of any other form is refused."""
+    order = [int(value) for value in order]
+    count = len(order)
+    if count != loop.count or 1 not in order:
+        raise ValueError(f"The visit order of {loop.id!r} does not cover its {loop.count} positions")
+    planes = order.index(1)
+    cycles = count // planes if planes else 0
+    expected = [cycle + cycles * plane for cycle in range(cycles) for plane in range(planes)]
+    if not planes or cycles * planes != count or order != expected:
+        raise ValueError(
+            f"The visit order of {loop.id!r} is not cycles x planes, so its frames cannot be "
+            "described yet"
+        )
+    step = loop.step
+    return (
+        replace(loop, id="cycle", kind="cycle", count=cycles, storage_axis=None),
+        replace(
+            loop,
+            id="plane",
+            kind="plane",
+            count=planes,
+            step=None if step is None else step * cycles,
+            storage_axis=None,
+        ),
+    )
+
+
+def _with_visit_order(
+    layout: AcquisitionLayout,
+    physical: Sequence[AcquisitionLoop],
+    orders: Sequence[Any],
+) -> AcquisitionLayout:
+    """A frame stream's loops and traversal for a scan that visits an axis
+    out of order (plan M2). Spans are unchanged: an interleaved axis splits
+    into cycle x plane in the same chronological order, and a serpentine
+    keeps every count."""
+    by_axis = {physical[len(physical) - 1 - index].id: index for index in range(len(physical))}
+    orders = list(orders) + [None] * (len(physical) - len(orders))
+    interleaved = any(isinstance(order, Mapping) and "interleave" in order for order in orders)
+    loops: list[AcquisitionLoop] = []
+    group: dict[str, int] = {}  # loop id -> image axis it carries
+    for loop in layout.event_loops:
+        axis = by_axis.get(loop.id)
+        order = orders[axis] if axis is not None and axis < len(orders) else None
+        if isinstance(order, Mapping) and "interleave" in order:
+            for part in _interleave_loops(loop, order["interleave"]):
+                loops.append(part)
+                group[part.id] = axis
+            continue
+        if interleaved and axis is not None and loop.count == 1:
+            # A scan axis held at one position adds no coordinate. An
+            # interleaved stream is read as cycles x planes (SNOUTY), whose
+            # reader refuses loops it does not place; the held axis is not
+            # one of them.
+            continue
+        loops.append(loop)
+        if axis is not None:
+            group[loop.id] = axis
+    if len({loop.id for loop in loops}) != len(loops):
+        raise ValueError("Only one interleaved axis can be described per frame stream")
+
+    ids = [loop.id for loop in loops]
+    rules = []
+    for loop in loops:
+        axis = group.get(loop.id)
+        order = orders[axis] if axis is not None else None
+        if not (isinstance(order, Mapping) and "serpentine" in order):
+            rules.append(TraversalRule(loop.id, "forward"))
+            continue
+        position = ids.index(loop.id)
+        # x runs back on every other line played in a slice (the y loops and
+        # the line steps), y on every other slice (the z loops).
+        outer_axes = {1} if axis == 0 else {2}
+        first = position
+        while first > 0 and (
+            group.get(ids[first - 1]) in outer_axes
+            or (axis == 0 and loops[first - 1].kind == "condition")
+        ):
+            first -= 1
+        parity = tuple(ids[first:position])
+        if not parity:
+            raise ValueError(f"The serpentine {loop.id!r} has no loop outside it to alternate with")
+        rules.append(TraversalRule(loop.id, "serpentine", parity))
+    return _validated(replace(layout, event_loops=tuple(loops), traversal=tuple(rules)))
+
+
 def build_advanced_scan_layouts(
     scan_info: Mapping[str, Any],
     detector_names: Sequence[str],
@@ -598,6 +692,14 @@ def build_advanced_scan_layouts(
                 provenance="recorded",
             )
         )
+    orders = scan_info.get(AXIS_VISIT_ORDER_KEY)
+    if orders and any(order is not None for order in orders):
+        # Point detectors place every visit at its image index while they
+        # assemble (``_visit_order``); a frame stream records in visit order
+        # and the layout says how.
+        for detector, layout in layouts.items():
+            if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
+                layouts[detector] = _with_visit_order(layout, physical, orders)
     return layouts
 
 

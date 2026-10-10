@@ -165,6 +165,20 @@ class _Converter:
         return ticks
 
 
+def realized_duration(seconds, rate_hz, policy, quantity='step', where='the dwell'):
+    """``(realized_s, refusal)``: one requested duration on the ``rate_hz``
+    grid under ``policy``, as :func:`realize` places it. ``refusal`` is the
+    strict policy's reason (with the representable neighbours), or ``''``."""
+    conv = _Converter(float(rate_hz), resolve_policy(policy))
+    ticks = conv.ticks(seconds, quantity, where)
+    return ticks / conv.rate, (conv.refusals[0] if conv.refusals else '')
+
+
+def format_seconds(seconds) -> str:
+    """A duration in the unit that reads best (``4.03 ms``)."""
+    return _fmt(seconds)
+
+
 def _fmt(seconds):
     seconds = float(seconds)
     if seconds == 0:
@@ -398,7 +412,8 @@ def _check_separations(conv, program, events, rate_hz):
 
 __all__ = [
     'Change', 'RealizedEvent', 'RealizedOffset', 'RealizedSchedule', 'RealizedSpan',
-    'ScheduleRefused', 'Segment', 'TimingError', 'realize',
+    'ScheduleRefused', 'Segment', 'TimingError', 'format_seconds', 'realize',
+    'realized_duration',
 ]
 
 

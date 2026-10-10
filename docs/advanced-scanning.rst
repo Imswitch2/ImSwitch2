@@ -96,14 +96,68 @@ event. A negative value means the program extends beyond the dwell and should be
 corrected before scanning. Use **Plot** and enable **include TTL** to inspect
 the generated analog and digital waveforms before driving hardware.
 
-.. warning::
+Intra-pixel positioner moves
+----------------------------
 
-   **Intra-pixel positioner movement is not executed by the built-in scan
-   designers.** The widget can edit, save and reload positioner windows and
-   offsets, but the current ``GalvoScanDesigner`` and ``BetaScanDesigner`` do
-   not apply them to the generated positioner waveform. Treat these fields as
-   reserved for a site-specific designer; do not rely on them to move a stage
-   or galvo.
+With **Intra pixel positioners** on, a scanning positioner can be given
+windows in a line step, like a laser, and a **Value** in µm: during each
+window the positioner stands that far from its pixel's position, and returns
+to it afterwards. On a stepped scan (``BetaScanDesigner``) the moves are
+played: each one takes the stage's ``move_time`` and ``settle_time`` on both
+sides, inside the dwell, so a window must leave room for them while the
+stage holds its pixel. A window that does not is refused, and the message
+says which step and how long the move needs. A scan with an intra-pixel move
+runs under strict timing (see `Order`_).
+
+.. note::
+
+   On a swept scan (``GalvoScanDesigner``) intra-pixel moves are refused with
+   the reason: the fast axis never holds a pixel. Earlier versions saved the
+   windows and silently ignored them on every designer; a saved scan with
+   intra-pixel moves now does what it says on a stepped scan.
+
+
+Order
+=====
+
+The **Order** column says in which order an axis visits its positions:
+
+**Forward**
+    1, 2, 3, ... -- every scan until now.
+
+**Serpentine**
+    Every other pass runs back: the fast axis on every other line played in
+    a slice (line steps included), the middle axis on every other slice. The
+    outermost axis cannot be serpentine.
+
+**Interleave k**
+    *k* cycles of every *k*-th position: with *k* = 2 over six positions,
+    1, 3, 5, 2, 4, 6. These are the cycles and planes of MS-RESOLFT (*k*
+    cycles of *n/k* planes). Only the *k* that divide the axis's pixel count
+    are offered.
+
+Each pixel is still placed at its own position: APDs and PMTs assemble the
+image in position order, and a camera's recording says in its acquisition
+layout where every frame was taken (an interleaved axis as ``cycle`` ×
+``plane``, which the SNOUTY reconstructor restacks; a serpentine as a
+serpentine traversal). Saved scans keep the order (``axis_order``); a scan
+saved without one loads as forward.
+
+Orders are built for stepped scans (``BetaScanDesigner``). On a swept scan
+the column is greyed out with the reason.
+
+An order other than forward, or an intra-pixel move, runs the scan under
+**strict timing** (``strict-v1``), and the panel says so. Every time -- the
+dwell, the moves, the windows -- must sit on the sample clock: a value off it
+is refused with the two nearest that are on it, never rounded. A forward scan
+runs as before (``advanced-compatible-v1``): when the clock rounds the dwell,
+the panel shows the dwell it runs at beside the requested one (*Dwell
+1.005 ms runs as 1.01 ms*). Saved scans record the policy they run under as
+``timingPolicy``; a file without it is a scan saved before, and runs as
+before. A file naming a policy this version does not know is not applied.
+
+Only the APD and PMT place visits; the Swabian TimeTagger refuses a scan
+that is not forward, with the reason.
 
 
 Hardware requirements and limits
@@ -226,8 +280,12 @@ Advanced scan troubleshooting
      - Use one camera pulse per enabled line step and verify the scan dimensions
        and camera selection.
    * - Programmed intra-pixel offset has no effect
-     - Expected with the built-in designers; the metadata is retained but the
-       positioner waveform is not generated.
+     - Intra-pixel moves are played on stepped scans (``BetaScanDesigner``)
+       only; a swept scan refuses them. Plot the scan to see the move.
+   * - Scan refused: a time "is not on the 10 µs grid"
+     - The scan uses an order other than forward or an intra-pixel move, so
+       it runs under strict timing. Use one of the two values the message
+       offers.
    * - Line-step image has the wrong number of lines or channels
      - Search the log for ``[LineStepDiag]``. The scan controller, NI-DAQ
        manager and APD manager each log the expanded line count, sample

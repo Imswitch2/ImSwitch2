@@ -1,5 +1,7 @@
 import math
 import numpy as np
+
+from ._visit_order import require_forward
 import threading
 import time
 
@@ -521,6 +523,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
     def _onScanBuilt(self, scanInfoDict, signalDict, _devices):
         try:
+            # It builds its image from line pulses in time order; placing
+            # interleaved or serpentine visits is not implemented for it.
+            require_forward(self.name, scanInfoDict)
             self.initiateScan(scanInfoDict, signalDict)
         except Exception as error:
             self._logger.exception('TimeTagger scan preparation failed')

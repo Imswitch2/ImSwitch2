@@ -14,6 +14,11 @@ from imswitch.imcontrol.model.scan_parameters import (
     AdvancedScanParameterSerializer,
     pixels_for_length_step,
 )
+from imswitch.imcontrol.model.scan_program import PolicyError, resolve_policy
+from imswitch.imcontrol.model.scan_program.advanced import (
+    AdvancedConversionError, axis_order_refusal, program_scan_signals, scan_timing_policy,
+    timing_note, uses_program_features,
+)
 from ..basecontrollers import SuperScanController
 
 # Optional: only if you want wavelength-based colors like MoNaLISA
@@ -118,6 +123,9 @@ class ScanControllerAdvanced(SuperScanController):
         # Grey out TTL devices the scan engine cannot drive (plan §3.3); the
         # run refuses them in _make_full_scan.
         self._widget.setTTLAvailability(*self._ttlAvailability())
+        # Visit orders other than forward are built for stepped scans (M2).
+        if hasattr(self._widget, 'setAxisOrderAvailability'):
+            self._widget.setAxisOrderAvailability(*self._axisOrderAvailability())
 
         # Tell the widget which TTL devices support per-linestep analog power (AO channel present)
         try:
@@ -140,6 +148,8 @@ class ScanControllerAdvanced(SuperScanController):
             sig = getattr(self._widget, sig_name, None)
             if sig is not None:
                 sig.connect(self.plotSignalGraph)
+                # The dwell and the line program decide the timing note.
+                sig.connect(self._refreshTimingNote)
         if hasattr(self._widget, 'sigStageParChanged'):
             self._widget.sigStageParChanged.connect(self.updatePixels)
         if hasattr(self._widget, "sigPlotScanClicked"):
@@ -234,6 +244,15 @@ class ScanControllerAdvanced(SuperScanController):
                 raise ScanDesignRefusedError(refusal)
 
         scanSignalsDict, positions, scanInfoDict = scan_des.make_signal(stage_param, self._setupInfo)
+        try:
+            programmed = uses_program_features(stage_param, stage_param)
+        except AdvancedConversionError as error:
+            raise ScanDesignRefusedError(str(error)) from error
+        if programmed:
+            # An interleaved order or an intra-pixel move: the analog
+            # waveforms come from the scan-program interpreter (plan M2).
+            scanSignalsDict, scanInfoDict = program_scan_signals(
+                stage_param, self._setupInfo, scanSignalsDict, scanInfoDict)
 
         # Voltage compliance, like PointScan's makeFullScan: refuse waveforms
         # outside a scanner's configured minVolt/maxVolt. Without this the
@@ -294,6 +313,47 @@ class ScanControllerAdvanced(SuperScanController):
         self._lastTTLParameters = copy.deepcopy(TTLParameters)
 
         return signalDict, scanInfoDict
+
+    def _axisOrderAvailability(self):
+        refusal = axis_order_refusal(self._setupInfo)
+        return not refusal, refusal
+
+    # ------------------------------------------------------------------
+    # Timing policy (plan §2.6): saved with the scan, shown on the panel
+    # ------------------------------------------------------------------
+
+    def getComponentState(self) -> dict:
+        state = super().getComponentState()
+        # Additive: a file without it is a legacy Advanced scan, which runs
+        # under advanced-compatible-v1.
+        state['timingPolicy'] = scan_timing_policy(self._stage_parameters(
+            state['analogParameterDict'], state['digitalParameterDict']))
+        return state
+
+    def applyComponentState(self, state, *, applyMode):
+        if isinstance(state, dict) and 'timingPolicy' in state:
+            try:
+                resolve_policy(state['timingPolicy'])
+            except PolicyError as error:
+                return [f'{error} Scan state was not applied.']
+        return super().applyComponentState(state, applyMode=applyMode)
+
+    def _refreshTimingNote(self):
+        if getattr(self, 'settingParameters', False):
+            return
+        self.getParameters()
+        self._updateTimingNote()
+
+    def _updateTimingNote(self):
+        if not hasattr(self._widget, 'setTimingNote'):
+            return
+        try:
+            note = timing_note(
+                self._stage_parameters(self._analogParameterDict, self._digitalParameterDict),
+                self._setupInfo.scan.sampleRate)
+        except Exception as error:
+            note = f'Timing: {error}'
+        self._widget.setTimingNote(note)
 
     def _log_linestep_scan_diagnostics(
         self,
@@ -962,6 +1022,7 @@ class ScanControllerAdvanced(SuperScanController):
                     self._widget.setScanPixels(positionerName, pixels)
         except Exception:
             self._logger.debug("updatePixels failed:\n%s", traceback.format_exc())
+        self._updateTimingNote()
 
     # ---------------------------------------------------------------------
     # TTL preview plotting

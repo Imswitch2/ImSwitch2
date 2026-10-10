@@ -2,12 +2,12 @@
 
 **Status:** Plan, draft 7. The direction is agreed (Lenny, 2026-10-08:
 "that sounds like what we're aiming for"), and the review is closed with
-draft 7's amendments. **M0 and M1 are implemented** on `feat/scan-engines`
-(§7.1, §7.2).
+draft 7's amendments. **M0, M1 and M2 are implemented** on
+`feat/scan-engines` (§7.1, §7.2, §7.3).
 **Date:** 2026-10-08
-**Branch:** `docs/scan-engines-expert-scan`, off `feat/simple-point-scan`
-(56ef43f0, which carries the scan cloak and the Advanced scan-freeze work).
-File references are to this branch.
+**Branch:** `feat/scan-engines`, off `feat/simple-point-scan` (56ef43f0,
+which carries the scan cloak and the Advanced scan-freeze work): the plan and
+every milestone, one commit each. File references are to this branch.
 
 **Asked (Lenny, 2026-10-08):**
 
@@ -1415,6 +1415,80 @@ it yet.
 - **A Simple plan with no channel had zero line passes,** which crashed the
   TTL designer. Any user who took every laser out could reach it. It is now
   one line pass that fires nothing.
+
+### 7.3 M2 status (2026-10-08)
+
+**Delivered:**
+
+| Where | What |
+|---|---|
+| `scan_program/advanced.py` | Per-axis order (`axis_order`: forward, serpentine, `interleave:k`); an interleave as a table drive, a serpentine as a traversal; Guillaume's intra-pixel fields as `offset` events per line step; `program_scan_signals` (the analog waveforms on Beta's sample structure, under `strict-v1`); `axis_visit_orders`; `scan_timing_policy` and `timing_note` |
+| `scan_program/interpreter.py`, `program.py` | A serpentine alternates on the flat index of its parity loops, which must be the loops right outside it -- the acquisition layout's rule |
+| `scan_program/schedule.py` | `realized_duration`, `format_seconds` |
+| Detectors | `_visit_order.VisitOrder`: APD and PMT place each visit at its image index. The Swabian TimeTagger refuses an order other than forward (`require_forward`) |
+| Layouts | A frame stream with an interleaved axis has `cycle` x `plane` loops (the SNOUTY order); a serpentine axis a serpentine traversal. Forward layouts are unchanged |
+| Advanced controller | The program path for scans that use the new options (Beta only; a swept designer is refused with the reason); `timingPolicy` saved with the scan, an unknown one refused on load; the timing note |
+| Advanced panel | The **Order** column (only the interleaves the pixel count allows; greyed on a swept rig); the timing note (strict timing, or the realized dwell beside the requested one) |
+| Docs | `advanced-scanning.rst` (Order, intra-pixel moves, strict timing), the changelog |
+
+**Checked:**
+
+- Model level, without noise: a point detector reading a test object at
+  the middle of every stationary interval of the program's waveforms, and
+  placing lines through the visit order, images the object at every pixel's
+  position -- for interleaves on x and y, serpentines on x (with line steps)
+  and y, and combinations. The same lines placed in time order do not.
+- Refusals with their reasons: a swept designer; an interleave the count
+  does not allow; a serpentine on the outermost axis; a dwell off the clock
+  (with its neighbours); an intra-pixel window without room for its moves.
+- Intra-pixel moves appear in the AO trace in their line step only.
+- A camera frame stream's layout gives every frame the position the
+  waveform held at its trigger; SNOUTY reads cycles and planes from it and
+  restacks into position order.
+- On the panel: the order column, the strict-timing note, the realized
+  dwell, an ordered scan saved and loaded back with identical waveforms, an
+  unknown `timingPolicy` not applied, a swept rig's greyed column.
+- **The legacy round trip** (deferred from M0): a legacy file loads,
+  previews, saves and reloads with identical requested values and
+  waveforms; the saved file differs only by the added `timingPolicy`. A
+  previous order does not survive loading it.
+- **End to end on the mock rig:** the simulated APD images the synthetic
+  sample from the AO waveforms; an interleaved and serpentine 24 x 24 scan
+  correlates with the forward one above 0.9, the same lines as read below
+  0.5.
+- **Through the recording path:** a camera records an interleaved scan
+  through the gate, the worker, the HDF5 storer and the resolver; every
+  frame resolves to the position held at its trigger, and SNOUTY restacks it.
+
+**Found by M2:**
+
+- **The interpreter's serpentine summed its parity ordinals.** With two
+  parity loops (lines and line steps) that plays forward, back, back,
+  forward; the acquisition layout alternates on the flat index. The
+  interpreter now uses the layout's rule, and a program must name the loops
+  right outside the serpentine, so every serpentine it plays can be
+  recorded. No existing scan was serpentine.
+- **Saved intra-pixel moves did nothing.** Every designer ignored them (the
+  docs said so). They now move the stage on Beta: a saved scan with them
+  does what it says, as the milestone table promised.
+- **"Interleaved equals forward" is exact only without the mock's noise.**
+  The mock APD draws Poisson counts and integrates the whole dwell, moves
+  included, and a different order moves to different neighbours. Exactness is
+  shown at the model level (above); on the mock, by correlation.
+- **SNOUTY's reader refuses loops it does not place,** a held axis included.
+  An interleaved frame stream leaves its held (one-position) scan axes out of
+  the layout; they add no coordinate.
+
+**Still open:**
+
+- **The layout repeat loop** (§7.1): unchanged, still for Lenny.
+- **Two interleaved axes in one frame stream** are refused: a layout has one
+  `cycle` and one `plane`. Point detectors take them.
+- **Orders on swept scans** wait for the Galvo compile path (§2.7).
+- **The timing note** shows the dwell; the realized moves, settles and
+  windows are in the schedule but not yet on the panel.
+- **Rig validation:** an interleaved Beta scan on Snouty's stage, recorded
+  and reconstructed with SNOUTY.
 
 ## 8. Risks
 

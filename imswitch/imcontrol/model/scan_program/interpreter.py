@@ -98,28 +98,37 @@ class Expansion:
     restore_um: Dict[str, float]
 
 
-def _iterations(loop, outer_ordinals):
+def _iterations(loop, outer_ordinals, counts):
     """A loop's counter values in traversal order, given the ordinals of the
-    loops outside it (for a serpentine's parity)."""
+    loops outside it (for a serpentine's parity).
+
+    A serpentine reverses on every other pass: the parity is that of the
+    passes' flat index over its parity loops, outermost first -- the rule of
+    the acquisition layout's ``serpentine`` traversal, so a recording reads
+    back the order that was played. (A sum of the ordinals would not
+    alternate: with two line steps it plays forward, back, back, forward.)"""
     values = list(range(int(loop.count)))
     if loop.traversal == 'reverse':
         return values[::-1]
     if loop.traversal == 'serpentine':
-        parity = sum(outer_ordinals[name] for name in loop.parity_loops) % 2
-        return values[::-1] if parity else values
+        flat = 0
+        for name in loop.parity_loops:
+            flat = flat * counts[name] + outer_ordinals[name]
+        return values[::-1] if flat % 2 else values
     return values
 
 
 def visits(program: ScanProgram) -> List[Dict[str, int]]:
     """Every step's loop counters, in the order the scan visits them."""
     out = []
+    counts = {loop.id: int(loop.count) for loop in program.loops}
 
     def walk(depth, counters, ordinals):
         if depth == len(program.loops):
             out.append(dict(counters))
             return
         loop = program.loops[depth]
-        for ordinal, value in enumerate(_iterations(loop, ordinals)):
+        for ordinal, value in enumerate(_iterations(loop, ordinals, counts)):
             counters[loop.id] = value
             ordinals[loop.id] = ordinal
             walk(depth + 1, counters, ordinals)

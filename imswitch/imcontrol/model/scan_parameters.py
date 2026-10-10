@@ -158,6 +158,17 @@ class AdvancedScanParameterSerializer:
                 analogParameterDict["axis_centerpos"].append(center)
                 analogParameterDict["axis_startpos"].append([center])
 
+        # Per-axis visit order (plan M2), aligned with target_device; only
+        # written when an axis is not forward, so a forward scan's dict (and
+        # its saved file) is unchanged.
+        orders = [
+            widget.getScanAxisOrder(name)
+            if name in positionersScan and hasattr(widget, "getScanAxisOrder") else "forward"
+            for name in analogParameterDict["target_device"]
+        ]
+        if any(order != "forward" for order in orders):
+            analogParameterDict["axis_order"] = orders
+
         seq_time = widget.getSeqTimePar()
         analogParameterDict["sequence_time"] = seq_time
         # Only a widget without the field falls back to zero. A blank or
@@ -395,6 +406,11 @@ class AdvancedScanParameterSerializer:
                 widget.setScanCenterPos(positionerName, analogParameterDict["axis_centerpos"][i])
             except Exception:
                 pass
+            if hasattr(widget, "setScanAxisOrder"):
+                # A scan saved without orders is forward on every axis.
+                orders = analogParameterDict.get("axis_order") or []
+                widget.setScanAxisOrder(
+                    positionerName, orders[i] if i < len(orders) else "forward")
 
         # timing
         if "sequence_time" in digitalParameterDict:

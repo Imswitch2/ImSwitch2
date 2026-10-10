@@ -10,6 +10,17 @@ from imswitch.imcontrol.view import guitools as guitools
 from .ScanWidgetBase import SuperScanWidget
 
 
+AXIS_ORDER_TOOLTIP = (
+    'The order the axis visits its positions. Forward: 1, 2, 3, ... '
+    'Serpentine: every other pass runs back. Interleave k: k cycles of '
+    'every k-th position (k = 3: 1, 4, 7, ..., 2, 5, 8, ..., 3, 6, 9, ...), '
+    'the planes and cycles of MS-RESOLFT. Each pixel is still placed at its '
+    'own position. An order other than forward runs the scan under strict '
+    'timing: a dwell, move or window off the sample clock is refused instead '
+    'of rounded.'
+)
+
+
 class ScanWidgetAdvanced(SuperScanWidget):
     """
     PointScan-like widget with:
@@ -277,7 +288,9 @@ class ScanWidgetAdvanced(SuperScanWidget):
         pixelsLabel = QtWidgets.QLabel("Pixels (#)")
         centerLabel = QtWidgets.QLabel("Center (µm)")
         scandimLabel = QtWidgets.QLabel("Scan dim")
-        for lab in (sizeLabel, stepLabel, pixelsLabel, centerLabel, scandimLabel):
+        orderLabel = QtWidgets.QLabel("Order")
+        orderLabel.setToolTip(AXIS_ORDER_TOOLTIP)
+        for lab in (sizeLabel, stepLabel, pixelsLabel, centerLabel, scandimLabel, orderLabel):
             lab.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom)
 
         self.grid.addWidget(sizeLabel, currentRow, 1)
@@ -285,6 +298,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.grid.addWidget(pixelsLabel, currentRow, 3)
         self.grid.addWidget(centerLabel, currentRow, 4, 1, 2)
         self.grid.addWidget(scandimLabel, currentRow, 7)
+        self.grid.addWidget(orderLabel, currentRow, 8)
         currentRow += 1
 
         for index, positionerName in enumerate(positionerNames):
@@ -334,11 +348,18 @@ class ScanWidgetAdvanced(SuperScanWidget):
             self.scanPar["scanDim" + str(index)] = scanDimPar
             self.grid.addWidget(scanDimPar, currentRow, 7)
 
+            orderPar = QtWidgets.QComboBox()
+            orderPar.setToolTip(AXIS_ORDER_TOOLTIP)
+            self.scanPar["order" + positionerName] = orderPar
+            self._fillAxisOrders(orderPar, None, 'forward')
+            self.grid.addWidget(orderPar, currentRow, 8)
+
             # Connect
             sizePar.textChanged.connect(lambda: self.sigStageParChanged.emit())
             stepSizePar.textChanged.connect(lambda: self.sigStageParChanged.emit())
             centerPar.textChanged.connect(lambda: self.sigStageParChanged.emit())
             scanDimPar.currentIndexChanged.connect(lambda: self.sigStageParChanged.emit())
+            orderPar.currentIndexChanged.connect(lambda: self.sigStageParChanged.emit())
 
             currentRow += 1
 
@@ -355,6 +376,12 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
         self.grid.addWidget(QtWidgets.QLabel("D3:"), currentRow, 4)
         self.grid.addWidget(self.d3StepDelayPar, currentRow, 5)
+        currentRow += 1
+        # Realized dwell, or strict timing, when it matters (plan §2.6).
+        self.timingNoteLabel = QtWidgets.QLabel('')
+        self.timingNoteLabel.setWordWrap(True)
+        self.timingNoteLabel.setVisible(False)
+        self.grid.addWidget(self.timingNoteLabel, currentRow, 0, 1, 9)
         currentRow += 1
 
         # Spacer
@@ -852,6 +879,62 @@ class ScanWidgetAdvanced(SuperScanWidget):
     def setScanPixels(self, positionerName, pixels):
         txt = str(pixels) if pixels > 1 else "-"
         self.scanPar["pixels" + positionerName].setText(txt)
+        orderPar = self.scanPar.get("order" + positionerName)
+        if orderPar is not None:
+            self._fillAxisOrders(orderPar, int(pixels), self.getScanAxisOrder(positionerName))
+
+    @staticmethod
+    def _fillAxisOrders(orderPar, pixels, current):
+        """Forward, serpentine, and every interleave the axis's pixel count
+        allows (the divisors k, 1 < k < pixels: k cycles of pixels/k planes).
+        A saved choice the count no longer allows stays listed, so the scan
+        says why it cannot be built instead of dropping it."""
+        options = [('Forward', 'forward'), ('Serpentine', 'serpentine')]
+        if pixels:
+            options += [(f'Interleave {k}', f'interleave:{k}')
+                        for k in range(2, pixels) if pixels % k == 0]
+        if current not in [value for _, value in options]:
+            options.append((str(current).replace('interleave:', 'Interleave '), current))
+        if [orderPar.itemData(i) for i in range(orderPar.count())] == \
+                [value for _, value in options]:
+            return
+        blocked = orderPar.blockSignals(True)
+        orderPar.clear()
+        for text, value in options:
+            orderPar.addItem(text, value)
+        orderPar.setCurrentIndex(orderPar.findData(current))
+        orderPar.blockSignals(blocked)
+
+    def setTimingNote(self, text):
+        label = getattr(self, 'timingNoteLabel', None)
+        if label is not None:
+            label.setText(text)
+            label.setVisible(bool(text))
+
+    def getScanAxisOrder(self, positionerName):
+        """``'forward'``, ``'serpentine'`` or ``'interleave:<k>'``."""
+        orderPar = self.scanPar.get("order" + positionerName)
+        if orderPar is None or not orderPar.isEnabled():
+            return 'forward'
+        return orderPar.currentData() or 'forward'
+
+    def setScanAxisOrder(self, positionerName, order):
+        orderPar = self.scanPar.get("order" + positionerName)
+        if orderPar is None:
+            return
+        order = str(order or 'forward')
+        if orderPar.findData(order) < 0:
+            orderPar.addItem(order.replace('interleave:', 'Interleave '), order)
+        orderPar.setCurrentIndex(orderPar.findData(order))
+
+    def setAxisOrderAvailability(self, available, note=''):
+        """Whether this setup can scan an axis out of order; ``note`` says
+        why not (a swept scan designer)."""
+        for name in self._positioner_device_names:
+            orderPar = self.scanPar.get("order" + name)
+            if orderPar is not None:
+                orderPar.setEnabled(bool(available))
+                orderPar.setToolTip(AXIS_ORDER_TOOLTIP if available else note)
 
     def setSeqTimePar(self, seqTimePar):
         self.seqTimePar.setText(str(round(float(1000 * seqTimePar), 3)))

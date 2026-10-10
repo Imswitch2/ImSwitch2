@@ -218,6 +218,14 @@ def validate(program: ScanProgram) -> ScanProgram:
         for parity in loop.parity_loops:
             if parity not in ids or ids.index(parity) >= ids.index(loop.id):
                 problems.append(f'{where}: parity loop {parity!r} must be an outer loop')
+        if loop.parity_loops and all(p in ids for p in loop.parity_loops):
+            # The acquisition layout's rule: the loops right outside it, in
+            # order, so the recording can say how the passes alternated.
+            position = ids.index(loop.id)
+            expected = tuple(ids[max(0, position - len(loop.parity_loops)):position])
+            if tuple(loop.parity_loops) != expected:
+                problems.append(f'{where}: the parity loops must be the loops right outside '
+                                f'it, outermost first ({", ".join(expected)})')
     if len([loop for loop in program.loops if loop.kind == 'condition']) > 1:
         problems.append('A program has at most one phase (condition) loop.')
     if not float(program.step_s) > 0:

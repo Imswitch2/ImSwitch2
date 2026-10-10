@@ -21,6 +21,7 @@ from .DetectorManager import (
 )
 from ._live_display import LiveDisplayThrottle
 from ._mock_sample import MockSample
+from ._visit_order import VisitOrder
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -265,6 +266,8 @@ class APDManager(DetectorManager):
                 if item >= generation - 8
             }
         self._liveThrottle.reset()
+        # Where each visit belongs, for interleaved or serpentine axes.
+        self._visitOrder = VisitOrder.from_scan_info(scanInfoDict)
         self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
         self._scanWorker.scanGeneration = generation
         self._scanTeardownOperation = None
@@ -739,6 +742,12 @@ class APDManager(DetectorManager):
         else:
             y = y_expanded
             s = None
+        outer = tuple(int(v) for v in pos[:-1])
+        # A scan that visits an axis out of order says where each visit
+        # belongs; the line was read in visit order.
+        visitOrder = getattr(self, '_visitOrder', None)
+        if visitOrder is not None:
+            pixels, y, outer = visitOrder.place(pixels, y, outer, line=y_expanded)
 
         # ---- S == 1: could be 2D (1, Ny, Nx) OR 3D (1, Nz, Ny, Nx) (or higher) ----
         # <= 2, not == 2: a single-line scan's (1, N) buffer squeezes to rank
@@ -772,7 +781,7 @@ class APDManager(DetectorManager):
         if np.squeeze(self._image).ndim >= 3:
             # (Nz, Ny, Nx) for Z stacks (and potentially more dims in front of Ny,Nx)
             # pos[:-1] contains all outer indices (e.g. z), last is y
-            outer = tuple(int(v) for v in pos[:-1])  # e.g. (z,) or (t,z,...) depending on scan
+            # outer: all outer indices (e.g. (z,) or (t, z, ...)), placed above
             # Build index into raw buffer:
             # raw layout is (1, ...outer..., y, x)
             # where y is always the second-to-last axis
