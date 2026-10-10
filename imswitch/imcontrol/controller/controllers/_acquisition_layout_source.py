@@ -21,6 +21,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     TraversalRule,
     validate_acquisition_layout,
 )
+from imswitch.imcontrol.model.scan_program.bindings import frames_per_step
 
 
 @runtime_checkable
@@ -739,26 +740,6 @@ def _program_loop(program, loop) -> AcquisitionLoop:
     )
 
 
-def _program_frames(schedule, detector: str) -> list[int]:
-    """Frames ``detector`` takes in each step, in the order the steps run:
-    the rising edges of its line within the step (touching windows are one
-    pulse on the wire)."""
-    steps = schedule.step_spans()
-    windows: dict[int, list[tuple[int, int]]] = {}
-    for event in schedule.events:
-        if event.device == detector and event.step_index is not None:
-            windows.setdefault(event.step_index, []).append((event.start_tick, event.end_tick))
-    counts = []
-    for realized in steps:
-        edges, end = 0, None
-        for start, stop in sorted(windows.get(realized.span.step_index, ())):
-            if end is None or start > end:
-                edges += 1
-            end = stop if end is None else max(end, stop)
-        counts.append(edges)
-    return counts
-
-
 def build_program_layouts(
     program: Any,
     schedule: Any,
@@ -770,11 +751,14 @@ def build_program_layouts(
     modality: str | None = None,
 ) -> dict[str, AcquisitionLayout]:
     """Layouts for an Expert program (plan §2.5, M3), from the program's
-    loops and its realized schedule.
+    loops, its detector bindings and its realized schedule (``schedule``: the
+    run's, or the leader's and each follower's).
 
     A frame stream (a camera) has the program's loops, outermost first, and
     a ``repeat`` loop when it takes several frames per step; when it takes
-    frames in only some steps, the recorded spans say which. A serpentine
+    frames in only some steps, the recorded spans say which. Its frames per
+    step are its binding's, checked against its line before the run; without
+    a binding, its line's (``scan_program.bindings``). A serpentine
     loop is a serpentine traversal. A point detector stores an assembled
     image, which it can only build from a regular raster: ``raster_refusal``
     says why this program is not one.
@@ -818,7 +802,7 @@ def build_program_layouts(
                 "table, which a frame stream cannot describe; write the order as loops "
                 "(cycle and plane) instead"
             )
-        counts = _program_frames(schedule, detector)
+        counts = frames_per_step(program, schedule, detector)
         repeat = max(counts, default=0)
         if repeat <= 0:
             raise ValueError(f"{detector} takes no frame in this scan")

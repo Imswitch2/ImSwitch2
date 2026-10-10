@@ -34,9 +34,18 @@ plugin. A setup without the section runs on the NI-DAQ alone, built from its
     },
     "scan": { "engine": "board", "...": "..." }
 
-* ``scan.engine`` names the engine a scan panel runs on; omitted, the NI-DAQ.
-  A name the setup does not have stops the setup from loading, with the
-  names it does have.
+* ``scan.engine`` names the engine the Advanced and SimplePointScan panels
+  run on, and the one that leads other engines; omitted, the NI-DAQ. A name
+  the setup does not have stops the setup from loading, with the names it
+  does have.
+* **The Expert panel runs a program where its devices are.** Every channel
+  is one engine's, so a program whose devices are all on one engine runs on
+  that engine; one whose devices are on ``scan.engine`` and the engines
+  wired to follow it runs on them together; one with no device on an engine
+  runs on ``scan.engine``. A program whose devices are on engines that do not
+  run together is refused, with which device is on which engine. The report
+  names the engine, and **Hardware → What this setup can scan…** says for
+  each engine when a program runs on it.
 * **Channel ownership.** Which engine drives a device follows from its
   ``analogChannel`` and ``digitalLine``: each engine says which channels it
   owns. A channel two engines claim stops the setup from loading, naming
@@ -125,7 +134,8 @@ says which with ``triggerInput`` on the follower's entry:
   channel of its own. A leader or follower that declares no timing grid (a
   board that has not answered) makes the program unknown.
 * A program that uses only the leader's devices is the leader's alone,
-  exactly as without followers. A follower wired to any engine but the one
+  exactly as without followers, and one that uses only a follower's runs on
+  that follower alone. A follower wired to any engine but the one
   ``scan.engine`` names is a setup error.
 
 

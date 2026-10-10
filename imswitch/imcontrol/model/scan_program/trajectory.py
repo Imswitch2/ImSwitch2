@@ -34,6 +34,7 @@ import numpy as np
 from .policy import resolve_policy
 from .program import PATH_ANCHOR, ProgramError, ScanProgram
 from .schedule import ScheduleRefused, realized_duration
+from .script_approval import ScriptNotApproved, approvals
 
 COUNTS = 'counts'
 MEAN = 'mean'
@@ -120,7 +121,10 @@ def _points(params, t, duration):
 
 def _script(params, t, duration):
     """``path(t, duration)`` defined by the user's code, returning (x, y) in
-    µm for an array of times in s. It runs like a Python step: not sandboxed."""
+    µm for an array of times in s. It runs like a Python step: not sandboxed,
+    and only once approved on this computer (§7.10)."""
+    if not approvals().approved(params['code']):
+        raise ScriptNotApproved(params['code'])
     namespace = {'np': np, 'math': math}
     exec(compile(str(params['code']), '<trajectory script>', 'exec'), namespace)
     if not callable(namespace.get('path')):

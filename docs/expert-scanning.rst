@@ -6,9 +6,10 @@ The Expert scan panel edits a whole **scan program**: nested loops that
 drive devices, and what happens inside every step. Interleaved and composite
 axes, line steps at any level, pulse sequences, waits and detector bindings
 are all written directly, instead of through the fixed geometry of the
-Advanced panel. The program runs on the setup's scan engine (see
+Advanced panel. The program runs on the scan engine its devices are on (see
 :doc:`devices/scan_engines`): the NI-DAQ plays it as sampled waveforms, a
-pulse generator or step board plays it itself.
+pulse generator or step board plays it itself. A program with no device on
+an engine runs on ``scan.engine``.
 
 Configure it with ``scanWidgetType: "Expert"``. The panel builds no waveforms
 with the signal designers, so ``scanDesigner`` and ``TTLCycleDesigner`` can be
@@ -52,8 +53,18 @@ The program
     a wait.
 
 **Detectors**
-    Which events a detector takes. A camera takes a frame on every rising
-    edge of its line.
+    What each detector records. A camera takes a frame on every rising edge
+    of its line, so its binding -- the **Events** it takes (an event id, or
+    the camera itself), the frames **Per step** and the **Phases** it takes
+    part in (blank: all) -- is checked against its line before anything
+    runs: a step where the line fires other than the binding says refuses
+    the program, with the step and its phase. The recording's layout and
+    frame counts then come from the binding. A camera takes ``event``
+    windows assembled as a ``stream``; a point detector (APD, PMT)
+    assembles an ``image``, one value per step that integrates every sample
+    of the step (``step``), in every phase. Other combinations are refused,
+    not approximated. A detector without a binding is recorded as its line
+    fires; the report says which detector is recorded which way.
 
 **Step** is the length of every innermost step. **Timing** is the program's
 timing policy: ``strict-v1`` -- every time must sit on the engine's clock,
@@ -114,6 +125,18 @@ like a Python step, unsandboxed). The form asks for the time on the path, the
 **measurement window**, the **approach** (the move onto the path from where
 the scanners are, and back off it at the end) and the **grid pixel**; a laser
 can be on along the path.
+
+**A Python path runs only once it is approved on this computer.** A scan file
+can carry one, and its code runs whenever the program is checked, plotted or
+run. Code written in the **Make…** form counts as approved. Code a file
+brings is shown when the file is loaded with **Load**, and again at **Plot**
+or **Start** until it is approved; declined, it does not run, and the report
+says so. The startup restore and scripts that load or set a program never
+ask: the program opens with its path held until someone approves it at the
+panel. Approved code is remembered by its SHA-256 (line endings ignored) in
+``ImSwitchConfig/config/approved_scan_scripts.json``, so the same code does
+not ask again; changed code asks again. Drop-in pattern files (below) are
+installed by hand and not asked about.
 
 **What is measured.** APDs and PMTs measure window after window along the
 path. Each window is one measurement over its realized integration time,
@@ -260,9 +283,11 @@ next run's captured origin, and a move by hand, start from there. Where that
 is not known, the log says so and the tracked position is left as it was.
 
 On a step engine the engine runs the compiled program itself, and **Stop**
-stops it at its next step. A program whose devices are on several engines
-runs on all of them as one: the engine the panel runs on leads, and every
-engine wired to follow it is stepped by its pulses (:doc:`devices/scan_engines`).
+stops it at its next step. A program whose devices are on ``scan.engine``
+and the engines wired to follow it runs on all of them as one: ``scan.engine``
+leads, and every follower is stepped by its pulses
+(:doc:`devices/scan_engines`); devices on engines that do not run together
+are refused, with which is where.
 The report then lists each engine's verdicts, the pulse, and each
 follower's drift between two pulses. A step board that speaks the step-engine protocol
 (:doc:`devices/step-engine-protocol`) is uploaded the program and runs it

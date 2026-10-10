@@ -43,8 +43,14 @@ def _entry(entries, item):
     return next(e for e in entries if e.item == item)
 
 
+def _on_a_waveform_panel(setup):
+    # The Expert panel runs a program where its devices are (§7.10); a
+    # waveform panel on scan.engine.
+    setup['scan']['scanWidgetType'] = 'Advanced'
+
+
 def test_the_leader_follower_and_idle_engine_each_say_what_the_panel_does_with_them():
-    report = _report()
+    report = _report(edit=_on_a_waveform_panel)
     assert [s.engine for s in report.engines] == ['nidaq', 'triggerscope', 'aux']
     assert report.section('triggerscope').role.startswith('The scan panel runs on it')
     assert 'It leads aux' in report.section('triggerscope').role

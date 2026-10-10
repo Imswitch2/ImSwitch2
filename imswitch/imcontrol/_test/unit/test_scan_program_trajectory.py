@@ -15,6 +15,9 @@ from imswitch.imcontrol.model.scan_program import presets
 from imswitch.imcontrol.model.scan_program.engine import ScanEngineRefused, setup_channels
 from imswitch.imcontrol.model.scan_program.program import Trajectory, validate
 from imswitch.imcontrol.model.scan_program.scan_info import TRAJECTORY_KEY
+from imswitch.imcontrol.model.scan_program.script_approval import (
+    ScriptApprovals, set_approvals,
+)
 from imswitch.imcontrol.model.scan_program.schedule import ScheduleRefused
 from imswitch.imcontrol.model.scan_program.serialize import program_from_dict, program_to_dict
 from imswitch.imcontrol.model.scan_program.trajectory import (
@@ -57,17 +60,28 @@ def test_a_spiral_grows_from_its_centre():
     assert np.allclose(np.hypot(x, y), [0.0, 5.0, 10.0])
 
 
-def test_points_are_visited_at_equal_times_and_a_script_draws_its_own_path():
+@pytest.fixture
+def approved(tmp_path):
+    """Approve code on a computer of the test's own (§7.10)."""
+    store = ScriptApprovals(str(tmp_path / 'approved.json'))
+    previous = set_approvals(store)
+    yield store.approve
+    set_approvals(previous)
+
+
+def test_points_are_visited_at_equal_times_and_a_script_draws_its_own_path(approved):
     points = Trajectory(('X', 'Y'), 'points', {'points_um': [[0, 0], [2, 0], [2, 4]]},
                         2.0, 0.0, 0.5)
     assert path_positions(points, np.array([0.0, 0.5, 1.0, 2.0])).T.tolist() == \
         [[0, 0], [1, 0], [2, 0], [2, 4]]
-    script = Trajectory(('X', 'Y'), 'script', {
-        'code': 'def path(t, duration):\n    return 3 * t / duration, -t\n'}, 1.0, 0.0, 0.5)
+    code = 'def path(t, duration):\n    return 3 * t / duration, -t\n'
+    approved(code)
+    script = Trajectory(('X', 'Y'), 'script', {'code': code}, 1.0, 0.0, 0.5)
     assert path_positions(script, np.array([0.5])).ravel().tolist() == [1.5, -0.5]
 
 
-def test_a_script_without_a_path_says_so():
+def test_a_script_without_a_path_says_so(approved):
+    approved('x = 1')
     trajectory = Trajectory(('X', 'Y'), 'script', {'code': 'x = 1'}, 1.0, 0.0, 0.5)
     with pytest.raises(ProgramError, match=r'defines no path\(t, duration\)'):
         path_positions(trajectory, np.array([0.0]))

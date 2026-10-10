@@ -411,7 +411,9 @@ def test_a_pulse_generator_runs_a_pulse_program_from_the_panel(qtbot):
                                  'wavelength': 405, 'valueRangeMin': 0, 'valueRangeMax': 1}
     rig = ExpertRig(setup)
     try:
-        assert rig.widget.engineLabel.text() == 'Runs on teensy (PulseGeneratorScanEngine).'
+        assert rig.widget.engineLabel.text() == (           # X and Y are on the NI-DAQ
+            'Runs on the scan engine its devices are on (nidaq, teensy); without devices '
+            'on teensy.')
         program = presets.make('pulse-sequence', dict(
             pulses=[['Pulsed', 1e-3, 2e-3]], camera='', exposure_pulse=1, frames=5,
             pause_s=0.0))
@@ -423,12 +425,14 @@ def test_a_pulse_generator_runs_a_pulse_program_from_the_panel(qtbot):
         rises = [e for e in driver.timeline
                  if e.source == 'seq' and e.level and e.virtual_time_ns >= since]
         assert [e.channel for e in rises] == [2] * 5
-        # a laser on the NI-DAQ cannot be switched by the Teensy
+        # a laser on the NI-DAQ makes it the NI-DAQ's program (§7.10), and the
+        # NI-DAQ answers for it
         nidaq = presets.make('pulse-sequence', dict(
             pulses=[[rig.lasers[0], 1e-3, 1e-3]], camera='', exposure_pulse=1, frames=2,
             pause_s=0.0))
         rig.scan.setProgram(nidaq)
-        assert 'which teensy does not drive' in rig.widget.reportText()
+        report = rig.widget.reportText()
+        assert report.startswith('Not runnable on nidaq.') and 'drives none' in report
     finally:
         rig.close()
 
@@ -483,7 +487,8 @@ def board_rig(qtbot):
 def test_a_step_board_runs_an_ms_resolft_program_as_the_interpreter_means_it(board_rig):
     rig = board_rig
     engine = rig.master.scanEngine
-    assert rig.widget.engineLabel.text() == 'Runs on board (StepProtocolScanEngine).'
+    assert rig.widget.engineLabel.text() == (               # X and Y are on the NI-DAQ
+        'Runs on the scan engine its devices are on (board, nidaq); without devices on board.')
     rig.scan.setProgram(_ms_resolft(rig))
     assert rig.widget.reportText().startswith('Runnable on board.'), rig.widget.reportText()
     ran = rig.scan._compile()
@@ -524,15 +529,21 @@ def test_a_step_board_failure_ends_the_run_with_its_reason(board_rig, monkeypatc
 
 def test_the_report_refuses_what_the_board_does_not_have(board_rig):
     rig = board_rig
-    # Y is still on the NI-DAQ: a raster over X and Y is not the board's
+    # X and Y are on the NI-DAQ, the laser on the board: engines that do not
+    # run together (§7.10)
     params = dict(x_device='X', y_device='Y', x_pixels=3, y_pixels=2, x_step_um=1.0,
                   y_step_um=1.0, x_start_um=0.0, y_start_um=0.0,
                   pulses=[[rig.lasers[0], 1e-3, 0.0]], camera='', exposure_pulse=1,
                   move_s=5e-4, settle_s=5e-4, return_s=1e-3, traversal='forward')
     rig.scan.setProgram(presets.make('raster', params))
+    assert rig.widget.reportText() == (
+        'Not runnable.\n\nIts devices are on engines that do not run together: 405 (ON) on '
+        'board; X, Y on nidaq. Engines run one program together only as scan.engine leading '
+        'the engines wired to follow it (triggerInput).')
+    # on the board's devices alone, the board's own verdict
+    rig.scan.setProgram(_ms_resolft(rig, transition='smooth'))
     report = rig.widget.reportText()
-    assert 'X is wired to Dev1/ao0, which board does not drive' in report
-    assert 'smooth transition' in report         # a board jumps
+    assert report.startswith('Not runnable on board.') and 'smooth transition' in report
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +572,9 @@ def test_the_panel_runs_one_program_on_a_leader_and_its_follower(qtbot):
     rig = ExpertRig(setup)
     try:
         engine = rig.master.scanEngine
-        assert rig.widget.engineLabel.text() == 'Runs on lead (CompositeScanEngine).'
+        assert rig.widget.engineLabel.text() == (
+            'Runs on the scan engine its devices are on (follow, lead, nidaq); without devices '
+            'on lead.')
         rig.scan.setProgram(_ms_resolft(rig, timepoints=1))
         report = rig.widget.reportText()
         assert report.startswith('Runnable on lead.'), report
@@ -586,7 +599,9 @@ def test_the_shipped_step_board_setup_scans_and_sets_by_hand(qtbot):
     rig = ExpertRig(json.load(open(STEP_BOARDS_SETUP)))
     try:
         engine = rig.master.scanEngine
-        assert rig.widget.engineLabel.text() == 'Runs on triggerscope (CompositeScanEngine).'
+        assert rig.widget.engineLabel.text() == (
+            'Runs on the scan engine its devices are on (aux, triggerscope); without devices '
+            'on triggerscope.')
         board = engine.leader.board
         rig.master.positionersManager['Z'].setPosition(25.0, 'Z')
         assert board.outputs['dac0'] == 2.5                   # 10 µm per volt

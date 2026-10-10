@@ -7,15 +7,22 @@ resolved through the device-plugin registry (kind ``scan_engine``), so a
 board joins by its plugin. Channel ownership must be unambiguous: a channel
 two engines claim is a setup error, raised when the setup loads.
 
-An engine whose ``triggerInput`` is wired to a line of the engine the panel
-runs on follows it (§5.4, M6): the panel then runs on a composite of the two,
-which is the leader alone for every program that uses only its devices.
+An engine whose ``triggerInput`` is wired to a line of ``scan.engine`` follows
+it (§5.4, M6): the two run one program together as a composite.
+
+Which engine runs an Expert program is decided by its devices (§7.10,
+``ScanEngines.for_program``): every channel is one engine's, so a program
+whose devices are all on one engine runs there; one whose devices are on
+the leader and its followers runs on the composite; any other spread is
+refused with which device is on which engine. A program with no device on
+an engine runs on ``scan.engine``. The panels that build sampled waveforms
+(Advanced, SimplePointScan) run on ``scan.engine``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
 from imswitch.imcontrol.model.plugins.registry import get_default_registry
 from imswitch.imcontrol.model.scan_program.engine import (
@@ -41,6 +48,33 @@ class ScanEngines:
     def owner_of(self, channel) -> Optional[str]:
         return self.owners.get(channel)
 
+    def for_program(self, program, channels) -> 'EngineChoice':
+        """Where ``program`` runs: on the engine its devices' channels are
+        on, on the leader with its followers when they spread over those, on
+        ``scan.engine`` when none is on an engine; else refused."""
+        by_engine: Dict[str, list] = {}
+        for device in sorted(program_devices(program)):
+            entry = channels.get(device)
+            if entry is None:
+                continue
+            for owner in sorted({self.owners.get(c) for c in (entry.analog, entry.digital)
+                                 if c is not None} - {None}):
+                by_engine.setdefault(owner, []).append(device)
+        devices = {name: tuple(found) for name, found in by_engine.items()}
+        if not devices:
+            return EngineChoice(self.engines[self.selected], devices)
+        if len(devices) == 1:
+            return EngineChoice(self.engines[next(iter(devices))], devices)
+        if self.composite is not None and set(devices) <= {self.selected,
+                                                           *self.composite.followers}:
+            return EngineChoice(self.composite, devices)
+        spread = '; '.join(f'{", ".join(found)} on {name}'
+                           for name, found in sorted(devices.items()))
+        return EngineChoice(None, devices, (
+            f'Its devices are on engines that do not run together: {spread}. Engines run '
+            'one program together only as scan.engine leading the engines wired to follow '
+            'it (triggerInput).'))
+
     def finalize(self):
         """Close every engine that holds a link (a step board's port)."""
         complete = True
@@ -49,6 +83,24 @@ class ScanEngines:
             if callable(finalize) and finalize() is False:
                 complete = False
         return complete
+
+
+@dataclass(frozen=True)
+class EngineChoice:
+    """Where a program runs (§7.10): ``engine``, or ``None`` with the
+    ``refusal``; ``devices`` says which of its devices are on which engine."""
+    engine: Optional[ScanEngine]
+    devices: Dict[str, Tuple[str, ...]]
+    refusal: str = ''
+
+
+def program_devices(program) -> set:
+    """Every device a program moves or switches."""
+    if program is None:
+        return set()
+    moved = (set(program.trajectory.devices) if program.trajectory is not None
+             else {drive.device for drive in program.drives})
+    return moved | {event.device for event in program.timeline}
 
 
 def _engine_class(managerName, registry):
@@ -109,7 +161,7 @@ def _followers(declared, engines, selected):
     return out
 
 
-__all__ = ['NIDAQ', 'ScanEngines', 'build_scan_engines']
+__all__ = ['NIDAQ', 'EngineChoice', 'ScanEngines', 'build_scan_engines', 'program_devices']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

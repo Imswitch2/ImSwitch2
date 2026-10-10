@@ -1034,14 +1034,16 @@ scanEngines
 
 Optional map from an engine name to ``ScanEngineInfo``: ``managerName`` (a
 registered ``scan_engine``) and ``managerProperties``. Every setup also has
-the NI-DAQ engine, ``nidaq``; ``scan.engine`` chooses the engine the ``Scan``
-panel runs on. A channel two engines claim stops the setup from loading.
+the NI-DAQ engine, ``nidaq``; ``scan.engine`` chooses the engine the Advanced
+and SimplePointScan panels run on and the one that leads; the Expert panel
+runs a program on the engine its devices are on. A channel two engines claim
+stops the setup from loading.
 The engines, their properties and channel ownership are documented in
 :doc:`devices/scan_engines`; a board joins without Python by speaking the
 step-engine protocol (:doc:`devices/step-engine-protocol`). An engine's
-optional ``triggerInput`` -- the line of the engine the panel runs on that
-its trigger input is wired to -- has it follow that engine step by step in a
-program that uses its devices.
+optional ``triggerInput`` -- the line of ``scan.engine`` its trigger input is
+wired to -- has it follow that engine step by step in a program that uses
+both engines' devices.
 
 .. code-block:: json
 

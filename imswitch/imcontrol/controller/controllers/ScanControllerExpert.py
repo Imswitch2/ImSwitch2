@@ -1,8 +1,11 @@
 """The Expert scan panel's controller (docs/design/plans/
 scan-engines-and-expert-scan.md §4, M3).
 
-The panel edits a scan program; this controller turns it into what the
-setup's scan engine runs and reports what the engine makes of it:
+The panel edits a scan program; this controller turns it into what a scan
+engine runs and reports what the engine makes of it. The program's devices
+choose the engine (§7.10): the one their channels are on, the leader with
+its followers when they spread over those, ``scan.engine`` when none is on
+an engine.
 
 - on a streaming engine (the NI-DAQ), the program is compiled into sampled
   waveforms and runs through the same lifecycle as every other scan panel;
@@ -38,11 +41,18 @@ from imswitch.imcontrol.model.scan_program import (
 from imswitch.imcontrol.model.scan_program.advanced import (
     AdvancedConversionError, is_legacy_advanced_state, program_from_advanced,
 )
+from imswitch.imcontrol.model.scan_program.bindings import (
+    binding_lines, binding_problems, frames_per_step,
+)
 from imswitch.imcontrol.model.scan_program.densify import densify
+from imswitch.imcontrol.model.managers.scan_engines.loader import EngineChoice
 from imswitch.imcontrol.model.scan_program.engine import ScanEngineRefused, setup_channels
 from imswitch.imcontrol.model.scan_program.pattern_plugins import load_user_patterns
 from imswitch.imcontrol.model.scan_program.policy import PUBLISHED
 from imswitch.imcontrol.model.scan_program.preparation import resolve_preparation
+from imswitch.imcontrol.model.scan_program.script_approval import (
+    approvals, unapproved_script,
+)
 from imswitch.imcontrol.model.scan_program.scan_info import (
     RASTER_KEY, RASTER_REASON_KEY, TRAJECTORY_KEY, scan_info_for,
 )
@@ -51,7 +61,7 @@ from imswitch.imcontrol.model.scan_program.schedule import approach_span, format
 from imswitch.imcontrol.model.scan_program.serialize import (
     FORMAT, program_from_dict, program_to_dict,
 )
-from ..basecontrollers import SuperScanController
+from ..basecontrollers import SuperScanController, same_run_signals
 from .ScanControllerAdvanced import SCAN_PROGRESS_INTERVAL_MS, scan_progress
 from ._acquisition_layout_source import (
     build_program_layouts,
@@ -123,6 +133,7 @@ class ScanControllerExpert(SuperScanController):
         self._advancedOrigin = None     # (program, analog, digital) of an opened Advanced file
         self._compiled = None
         self._compiledFor = None
+        self._compiledEngine = None     # the engine the compile is for
         # The program is authoritative; the tables are read back only after
         # an edit, so an opened file's request is never re-rounded by them.
         self._edited = False
@@ -137,12 +148,19 @@ class ScanControllerExpert(SuperScanController):
 
         detectors = list(self._setupInfo.detectors)
         lasers = [name for name in self.TTLDevices if name not in detectors]
-        engine = self._engineForScans()
+        engines = getattr(self._master, 'scanEngines', None)
+        used = sorted({name for name in (engines.owners.values() if engines else ())
+                       if name is not None})
+        if len(used) > 1:
+            where = (f'Runs on the scan engine its devices are on ({", ".join(used)}); '
+                     f'without devices on {engines.selected}.')
+        else:
+            engine = engines.engines[used[0]] if used else self._engineForScans()
+            where = f'Runs on {engine.name} ({type(engine).__name__}).'
         self._widget.initControls(
             list(self.positioners), lasers, 'ms', detectorNames=detectors,
             presets=[(p.id, p.title) for p in presets.PRESETS.values()],
-            policies=sorted(PUBLISHED),
-            engine=f'Runs on {engine.name} ({type(engine).__name__}).')
+            policies=sorted(PUBLISHED), engine=where)
 
         self._reportTimer = QtCore.QTimer(self)
         self._reportTimer.setSingleShot(True)
@@ -152,13 +170,6 @@ class ScanControllerExpert(SuperScanController):
         self._widget.sigPresetRequested.connect(self.makeFromPreset)
         self._widget.sigPlotClicked.connect(self.plotProgram)
 
-        # A step engine ends its run by these too; the NI-DAQ has neither.
-        for name, slot in (('sigScanStopped', self._SuperScanController__onNidaqScanDone),
-                           ('sigScanFailed', self._onEngineFailed)):
-            signal = getattr(self._scanEngine, name, None)
-            if signal is not None:
-                signal.connect(slot)
-
         # Progress while a run of this panel's lasts: a step engine counts its
         # steps (waits included), the rest by time against the duration.
         self._progressSteps = None
@@ -167,10 +178,6 @@ class ScanControllerExpert(SuperScanController):
         self._progressTimer = QtCore.QTimer(self)
         self._progressTimer.setInterval(SCAN_PROGRESS_INTERVAL_MS)
         self._progressTimer.timeout.connect(self._updateScanProgress)
-        self._scanEngine.sigScanStarted.connect(self._onRunStarted)
-        stepProgress = getattr(self._scanEngine, 'sigScanProgress', None)
-        if stepProgress is not None:
-            stepProgress.connect(self._onStepProgress)
 
         self.updateReport()
         getWidgetStatePersistence().register('Scan', self)
@@ -267,7 +274,28 @@ class ScanControllerExpert(SuperScanController):
 
         params = self._widget.askPresetParams(preset, initial, validate)
         if params is not None:
+            # Code written or read in the form has been seen here (§7.10).
+            for field in preset.fields:
+                if field.kind == 'code' and params.get(field.name):
+                    approvals().approve(params[field.name])
             self.setProgram(presets.make(preset_id, params))
+
+    def _approveScript(self):
+        """Whether the program may run its trajectory script: approved
+        already, or shown now and approved (§7.10). Asked only where someone
+        acts on the panel -- Load, Plot, Start; a restore or an API call
+        never asks, and the report says the script is held."""
+        self.getParameters()
+        code = unapproved_script(self._program)
+        if code is None:
+            return True
+        if not self._widget.askApproveScript(code):
+            self._widget.setReport('The trajectory script was not approved, so it did not '
+                                   'run. Plot or Start asks again.')
+            return False
+        approvals().approve(code)
+        self.updateReport()
+        return True
 
     # ------------------------------------------------------------------
     # Compiling: one compile for the report, the run and the recording
@@ -301,15 +329,34 @@ class ScanControllerExpert(SuperScanController):
                                                   setup_has_scan_engines=has_engines)
         return facts
 
+    def _engineSignalSlots(self):
+        # A step engine ends its run by sigScanStopped and sigScanFailed too
+        # and counts its steps; the NI-DAQ has none of these.
+        return super()._engineSignalSlots() + (
+            ('sigScanStopped', self._SuperScanController__onNidaqScanDone),
+            ('sigScanFailed', self._onEngineFailed),
+            ('sigScanStarted', self._onRunStarted),
+            ('sigScanProgress', self._onStepProgress))
+
+    def _choice(self, program) -> EngineChoice:
+        """Where ``program`` runs: the engine its devices are on (§7.10)."""
+        engines = getattr(self._master, 'scanEngines', None)
+        if engines is None:        # a master without engines (test doubles)
+            return EngineChoice(self._engineForScans(), {})
+        return engines.for_program(program, setup_channels(self._setupInfo))
+
     def _compile(self):
-        """The engine's compile of the current program, or
-        ScanDesignRefusedError with every reason."""
+        """The compile of the current program on the engine its devices
+        choose, or ScanDesignRefusedError with every reason."""
         self.getParameters()
         if self._program is None:
             raise ScanDesignRefusedError(self._programError)
-        engine = self._engineForScans()
+        choice = self._choice(self._program)
+        if choice.engine is None:
+            raise ScanDesignRefusedError(choice.refusal)
+        engine = choice.engine
         captured = self._capturedPositions(self._program)
-        key = (program_to_dict(self._program), tuple(sorted(captured.items())))
+        key = (engine.name, program_to_dict(self._program), tuple(sorted(captured.items())))
         if self._compiledFor == key and self._compiled is not None:
             return self._compiled
         try:
@@ -321,8 +368,30 @@ class ScanControllerExpert(SuperScanController):
                 + '\n- '.join(error.report.reasons())) from error
         except (ProgramError, AdvancedConversionError, ValueError) as error:
             raise ScanDesignRefusedError(str(error)) from error
-        self._compiled, self._compiledFor = compiled, key
+        # What each detector records is its binding's, checked against its
+        # line before anything runs (§2.5, §7.10).
+        problems = binding_problems(
+            self._program, self._schedulesOf(compiled),
+            point_detectors=self._pointDetectors([b.detector for b in self._program.detectors]),
+            known_detectors=list(self._setupInfo.detectors))
+        if problems:
+            raise ScanDesignRefusedError('The detector bindings do not hold:\n- '
+                                         + '\n- '.join(problems))
+        self._compiled, self._compiledFor, self._compiledEngine = compiled, key, engine
         return compiled
+
+    @staticmethod
+    def _schedulesOf(compiled):
+        """The run's schedule; on several engines, the leader's and each
+        follower's (a detector's line is on one of them)."""
+        schedules = [compiled.schedule]
+        for part in (getattr(compiled, 'followers', None) or {}).values():
+            if getattr(part, 'schedule', None) is not None:
+                schedules.append(part.schedule)
+        return schedules
+
+    def _pointDetectors(self, names):
+        return scan_driven_detector_names(self, names)
 
     def _scheduleOf(self, compiled):
         """The schedule the engine compiled the program to -- every engine
@@ -330,7 +399,7 @@ class ScanControllerExpert(SuperScanController):
         schedule = getattr(compiled, 'schedule', None)
         if schedule is None:
             raise ScanDesignRefusedError(
-                f'{self._engineForScans().name} kept no schedule of the program, so its timing '
+                f'{self._compiledEngine.name} kept no schedule of the program, so its timing '
                 'cannot be shown.')
         return schedule
 
@@ -365,6 +434,14 @@ class ScanControllerExpert(SuperScanController):
         refusal = self._durationRefusal(compiled)
         if refusal:
             raise ScanDesignRefusedError(refusal)
+        # The run is on the engine the program chose (bound as the run
+        # began): a continuation of it cannot move to another one.
+        engine = self._compiledEngine
+        if not same_run_signals(engine, self._engineForScans()):
+            raise ScanDesignRefusedError(
+                f'This program runs on {engine.name}, and the scan in progress on '
+                f'{self._engineForScans().name}; stop it first.')
+        self._bindScanEngine(engine)
         # The file says what ran (§7.9): the realized timing beside the
         # program as requested.
         self.setSharedAttr('ScanStage', 'scan_schedule', self._scheduleOf(compiled).summary())
@@ -379,19 +456,30 @@ class ScanControllerExpert(SuperScanController):
 
     def updateReport(self):
         """Compile what the panel shows and say what the engine makes of it."""
-        engine = self._engineForScans()
+        self.getParameters()
+        choice = self._choice(self._program)
         try:
             compiled = self._compile()
             schedule = self._scheduleOf(compiled)
         except ScanDesignRefusedError as error:
-            self._widget.setReport(f'Not runnable on {engine.name}.\n\n{error}')
+            where = f' on {choice.engine.name}' if choice.engine is not None else ''
+            self._widget.setReport(f'Not runnable{where}.\n\n{error}')
             return
-        lines = [f'Runnable on {engine.name}.', '']
+        lines = [f'Runnable on {choice.engine.name}.']
+        if len(choice.devices) > 1:
+            lines += [f'{name}: {", ".join(found)}' for name, found in sorted(choice.devices.items())]
+        lines.append('')
         for verdict in compiled.report.verdicts:
             text = f'{verdict.verdict}: {verdict.feature}'
             if verdict.reason or verdict.cost:
                 text += f' -- {verdict.reason or verdict.cost}'
             lines.append(text)
+        if not isinstance(schedule, RealizedTrajectory):
+            detectors = list(self._setupInfo.detectors)
+            recorded = binding_lines(compiled.program, self._schedulesOf(compiled), detectors,
+                                     point_detectors=self._pointDetectors(detectors))
+            if recorded:
+                lines += [''] + recorded
         lines += ['', f'Timing policy {schedule.policy.id}, '
                       f'{format_seconds(schedule.grid_s)} grid.']
         if isinstance(schedule, RealizedTrajectory):
@@ -446,6 +534,8 @@ class ScanControllerExpert(SuperScanController):
         return lines
 
     def plotProgram(self):
+        if not self._approveScript():
+            return
         try:
             compiled = self._compile()
         except ScanDesignRefusedError as error:
@@ -466,6 +556,27 @@ class ScanControllerExpert(SuperScanController):
     # ------------------------------------------------------------------
     # Running
     # ------------------------------------------------------------------
+
+    def runScan(self):
+        # The Start button: someone is at the panel to approve a script.
+        if self._approveScript():
+            super().runScan()
+
+    def loadScan(self):
+        before = self._program
+        super().loadScan()
+        if self._program is not before:
+            self._approveScript()
+
+    def _beginScanRunWithDesign(self, **kwargs):
+        # A new run runs on the engine its program's devices choose, heard
+        # from and stopped by it; a run in progress keeps its engine.
+        if self._scanCoordinator.runForOwner(self) is None:
+            self.getParameters()
+            engine = self._choice(self._program).engine
+            if engine is not None:
+                self._bindScanEngine(engine)
+        return super()._beginScanRunWithDesign(**kwargs)
 
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted=False):
@@ -691,19 +802,11 @@ class ScanControllerExpert(SuperScanController):
         if isinstance(schedule, RealizedTrajectory):
             return {}          # point detectors only: no camera frames
         out = {}
+        schedules = self._schedulesOf(compiled)
         for detector in self._setupInfo.detectors:
-            events = [e for e in schedule.events if e.device == detector]
-            if not events or not positions:
-                continue
-            edges = 0
-            for step in {e.step_index for e in events}:
-                end = None
-                for e in sorted((e for e in events if e.step_index == step),
-                                key=lambda e: e.start_tick):
-                    if end is None or e.start_tick > end:
-                        edges += 1
-                    end = e.end_tick if end is None else max(end, e.end_tick)
-            if edges % positions == 0:
+            # the binding's frames, or its line's (§2.5): what the layout says
+            edges = sum(frames_per_step(compiled.program, schedules, detector))
+            if edges and positions and edges % positions == 0:
                 out[detector] = edges // positions
         return out
 
@@ -721,7 +824,7 @@ class ScanControllerExpert(SuperScanController):
                 scan_source=type(self).__name__,
                 scan_driven_detectors=scan_driven_detector_names(self, detectorNames))
         layouts = build_program_layouts(
-            compiled.program, self._scheduleOf(compiled), detectorNames,
+            compiled.program, self._schedulesOf(compiled), detectorNames,
             scan_source=type(self).__name__,
             scan_driven_detectors=scan_driven_detector_names(self, detectorNames),
             raster_refusal=info.get(RASTER_REASON_KEY, ''),

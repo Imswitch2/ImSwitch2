@@ -302,6 +302,34 @@ def _follow(name, engine, line, leader, simulated) -> List[Entry]:
     return out
 
 
+def _expert_role(name, caps, devices, selected, followers, leader) -> str:
+    """What the Expert panel does with an engine: a program runs on the
+    engine its devices are on (§7.10)."""
+    from .CompositeScanEngine import can_lead, lead_refusal
+    role = 'An Expert program runs on it when its devices are on it'
+    if name == selected:
+        role += ', or when it has no device on an engine (scan.engine).'
+        if followers and can_lead(leader):
+            role += (f' One that also uses the devices of {", ".join(sorted(followers))} runs '
+                     'on them too, with this engine leading: it pulses the wired trigger input '
+                     'at every step.')
+        elif followers:
+            role += (f' {", ".join(sorted(followers))} {"is" if len(followers) == 1 else "are"}'
+                     f' wired to follow it, but {lead_refusal(leader, sorted(followers))}')
+        return role
+    role += '.'
+    if name in followers:
+        return role + (f' One that also uses the devices of {selected} runs on both, '
+                       f'{selected} leading: its trigger input is wired to {followers[name][1]}.')
+    if not devices:
+        return role + ' No device of the setup is on its channels.'
+    if 'step-trigger' in caps.waits and can_lead(leader):
+        return role + (f' One that also uses another engine\'s devices is refused: to run them '
+                       f'together, wire its triggerInput to a line of {selected} for it to '
+                       'follow.')
+    return role + ' One that also uses another engine\'s devices is refused.'
+
+
 def setup_capabilities(scanEngines, setupInfo) -> SetupCapabilities:
     """The report for ``scanEngines`` (``build_scan_engines``) on
     ``setupInfo``."""
@@ -312,12 +340,17 @@ def setup_capabilities(scanEngines, setupInfo) -> SetupCapabilities:
     composite = scanEngines.composite
     followers = dict(composite.followers) if composite is not None else {}
     leader = scanEngines.engines[selected]
+    # The Expert panel runs a program on the engine its devices are on
+    # (§7.10); the other panels on scan.engine.
+    expert = getattr(getattr(setupInfo, 'scan', None), 'scanWidgetType', None) == 'Expert'
     sections = []
     for name, engine in scanEngines.engines.items():
         caps = engine.capabilities()
         linked = name == selected and bool(followers) or name in followers
         devices = _devices(name, caps, owners, channels)
-        if name == selected:
+        if expert:
+            role = _expert_role(name, caps, devices, selected, followers, leader)
+        elif name == selected:
             role = 'The scan panel runs on it (scan.engine).'
             if followers and can_lead(leader):
                 role += (f' It leads {", ".join(sorted(followers))}, pulsing the wired trigger '

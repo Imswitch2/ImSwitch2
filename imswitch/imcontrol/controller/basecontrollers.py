@@ -49,6 +49,12 @@ def scan_engine_of(master):
                            setupInfo=getattr(master, '_MasterController__setupInfo', None))
 
 
+def same_run_signals(a, b) -> bool:
+    """Whether two engines' runs are heard on the same signals: one engine,
+    or a composite and its leader (a composite's signals are its leader's)."""
+    return getattr(a, 'leader', a) is getattr(b, 'leader', b)
+
+
 class ImConWidgetControllerFactory(WidgetControllerFactory):
     """ Factory class for creating a ImConWidgetController object. """
 
@@ -467,20 +473,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # The engine that runs this controller's scans. On the NI-DAQ its
         # signals are the NI-DAQ manager's own, so nothing about when or how
         # often they arrive changes.
-        self._scanEngine = scan_engine_of(self._master)
-        self._scanEngine.sigScanBuilt.connect(
-            lambda _, __, deviceList: self.emitScanSignal(self._commChannel.sigScanBuilt, deviceList)
-        )
-        self._scanEngine.sigScanStarted.connect(
-            lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
-        )
-        # The engine is authoritative: abortScan() does not stop a running
-        # NI-DAQ scan, so ownership is released on sigScanDone rather than at
-        # the user's abort click.
-        self._scanEngine.sigScanDone.connect(self.__onNidaqScanDone)
-        self._scanEngine.sigScanBuildFailed.connect(
-            self.__onNidaqScanBuildFailed
-        )
+        self._scanEngine = None
+        self._bindScanEngine(scan_engine_of(self._master))
 
         # Connect CommunicationChannel signals
         self._commChannel.sigRunScan.connect(self.runScanExternal)
@@ -1731,6 +1725,38 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             engine = scan_engine_of(self._master)
             self._scanEngine = engine
         return engine
+
+    def _engineSignalSlots(self):
+        """``(signal name, slot)``: what this controller hears from the engine
+        it runs on. The engine is authoritative: abortScan() does not stop a
+        running NI-DAQ scan, so ownership is released on sigScanDone rather
+        than at the user's abort click."""
+        return (('sigScanBuilt', self._onEngineScanBuilt),
+                ('sigScanStarted', self._onEngineScanStarted),
+                ('sigScanDone', self.__onNidaqScanDone),
+                ('sigScanBuildFailed', self.__onNidaqScanBuildFailed))
+
+    def _bindScanEngine(self, engine):
+        """Run on ``engine`` and hear its run signals instead of the bound
+        engine's."""
+        old = self.__dict__.get('_scanEngine')
+        if old is engine:
+            return
+        self._scanEngine = engine
+        for name, slot in self._engineSignalSlots():
+            if old is not None and getattr(old, name, None) is not None:
+                try:
+                    getattr(old, name).disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            if getattr(engine, name, None) is not None:
+                getattr(engine, name).connect(slot)
+
+    def _onEngineScanBuilt(self, _signals, _info, deviceList):
+        self.emitScanSignal(self._commChannel.sigScanBuilt, deviceList)
+
+    def _onEngineScanStarted(self):
+        self.emitScanSignal(self._commChannel.sigScanStarted)
 
     def __onNidaqScanDone(self):
         """NI-DAQ finished a scan iteration.

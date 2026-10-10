@@ -381,7 +381,11 @@ def test_the_setup_dialog_says_the_nidaq_cannot_lead_and_never_advises_it():
     entry = next(e for e in follow.features if e.item == 'follow step by step')
     assert entry.verdict == IMPOSSIBLE and 'nidaq cannot pulse the line' in entry.text
     idle = report.section('idle')
-    assert idle.devices and idle.role.endswith('To scan its devices, make it scan.engine.')
+    # an Expert program on its laser alone runs on it (§7.10); with another
+    # engine's devices, refused -- and no wiring is advised
+    assert idle.devices and idle.role == (
+        'An Expert program runs on it when its devices are on it. One that also uses another '
+        "engine's devices is refused.")
     assert 'wire its triggerInput' not in report.text()
 
 

@@ -609,6 +609,24 @@ class ScanWidgetExpert(SuperScanWidget):
             return dialog.params()
         return None
 
+    def askApproveScript(self, code) -> bool:
+        """Show a trajectory script a file brought and ask whether it may run."""
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setWindowTitle('Run this trajectory script?')
+        box.setText('This scan program holds a trajectory script: Python code that runs '
+                    'with your permissions, unsandboxed, whenever the program is checked, '
+                    'plotted or run.')
+        box.setInformativeText('Run it only if you know where it comes from. Approved code '
+                               'is remembered on this computer and does not ask again; changed '
+                               'code asks again. The code is under Show Details.')
+        box.setDetailedText(str(code))
+        approve = box.addButton('Approve and run', QtWidgets.QMessageBox.AcceptRole)
+        box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(QtWidgets.QMessageBox.Cancel)
+        box.exec_()
+        return box.clickedButton() is approve
+
     def showTraces(self, time_s, traces: Dict[str, object]):
         self.plot.clear()
         for index, (name, values) in enumerate(traces.items()):

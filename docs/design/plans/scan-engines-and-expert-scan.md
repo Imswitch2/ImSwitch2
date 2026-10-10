@@ -2062,6 +2062,77 @@ or keep only a hash?); the Expert **Detectors** tab has no effect (build the
 bindings, or remove the tab?); choosing the engine per scan; the NI-DAQ
 leading.
 
+### 7.10 Lenny's decisions on review round 1 (2026-10-10)
+
+The branch was rebuilt on main as one commit per milestone (SimplePointScan,
+this plan, M0-M6, the leftovers, review round 1). Lenny's answers to the four
+questions §7.9 left:
+
+1. **A trajectory script runs only once approved on this computer** (ask
+   once, remember). *Done.* `scan_program/script_approval.py` keeps the
+   approved code's SHA-256 (line endings ignored) in
+   `ImSwitchConfig/config/approved_scan_scripts.json`; the one place code
+   runs (`trajectory._script`) refuses unapproved code with
+   `ScriptNotApproved`, a `ProgramError`, so every compile -- the report,
+   estimates, recording, a restore -- holds it with the reason and runs
+   nothing. Only someone at the panel is asked: **Load** shows the code a
+   file brought, **Plot** and **Start** ask until it is approved; code
+   written or read in **Make…** counts as approved. The startup restore and
+   scripts never ask. Drop-in pattern files stay ungated: they are installed
+   by hand.
+2. **The Detectors tab: build §2.5** -- each detector's layout from its
+   binding, checked against what its line plays. *Done.*
+   `scan_program/bindings.py`: a camera takes a frame on every rising edge
+   of its line, so `binding_problems` compares the binding's frames per
+   step (`per_step` in the steps of its `phases`, none elsewhere) with the
+   line's, on the leader's or a follower's schedule, and refuses the first
+   step that differs, with its phase; a camera bound to another device's
+   events, two bindings, an unknown detector or a binding on a trajectory
+   are refused. The Expert compile runs it, so the report, the run and the
+   recording refuse alike; `build_program_layouts` and `getNumCamTTL` take
+   `frames_per_step` -- the binding's, or without one the line's -- so the
+   layout and the recording's counts come from the binding. Built: cameras
+   `event` / `stream`; point detectors `step` / `image`, one value per
+   step, every phase (they integrate the whole step); other combinations
+   are refused as not built. The report says how each detector is
+   recorded.
+3. **The program's devices choose the engine** -- no chooser. *Done.*
+   `ScanEngines.for_program` takes each device's channels to their engine:
+   one engine runs it; `scan.engine` with its followers run it together (a
+   follower's devices alone run on the follower); no device on an engine
+   runs on `scan.engine`; any other spread is refused, naming which device
+   is where. The Expert panel binds to the chosen engine as a new run
+   begins (`SuperScanController._bindScanEngine` moves its run slots), a
+   run in progress keeps its engine, and the report names it. Advanced and
+   SimplePointScan stay on `scan.engine`, and **What this setup can
+   scan…** words each engine's role for the panel the setup uses.
+4. **The NI-DAQ leading stays under *Later*** (§5.4), refused with its
+   reason until a rig needs it.
+
+**What to test on the rig:** `scan-engines-rig-test-plan.md`, beside this
+plan. **Not built, by decision or deferred** (each refused with its reason,
+never approximated):
+
+- the Advanced and SimplePointScan panels on an engine that does not stream
+  (they build sampled waveforms); a stepped Advanced scan reaches a board by
+  opening its file in the Expert panel;
+- one program on the NI-DAQ and a pulse generator together: the NI-DAQ
+  cannot lead, a pulse generator cannot follow step by step, and a shared
+  clock or start-trigger sync is *Later* (§5.4);
+- a real step board: the TriggerScope firmware is the lab's, later; the
+  conformance runner is ready for it;
+- stopping an NI-DAQ iteration midway (Stop is after the current
+  iteration), and streaming a long densified program in chunks;
+- point detectors on step boards, over an event's window, or per phase;
+  orders on swept axes; two interleaved axes in one frame stream;
+  trajectories on anything but a streaming engine, and from measured
+  rather than commanded positions;
+- followers of followers, a program split at its barriers, `on_timeout:
+  skip`, an event's position used to place the program, drop-ins that make
+  whole programs;
+- still to confirm: whether a trajectory's coverage and stream declaration
+  are read from live detector state under Repeat (§7.9).
+
 ## 8. Risks
 
 - **Two definitions of a swept scan.** `GalvoScanDesigner` keeps the swept
@@ -2120,40 +2191,40 @@ draft 7): proceed to M0.
 
 ---
 
-## 10. Found on the way (not fixed)
+## 10. Found on the way
 
-- **A laser on a non-NI-DAQ line silently never fires in an NI-DAQ scan.**
-  `getTTLDevices` lists it (`SetupInfo.py:753`), so the Advanced TTL table
-  offers it, but `runScan` skips any line without `Dev` in it, with no
-  message (`NidaqManager.py:1254`).
-- **A TTL-only NI-DAQ scan with point detectors would hang on hardware.**
-  With no AO task, the DO task and the detectors wait on `ao/StartTrigger`
-  (`NidaqManager.py:1394-1402`, `APDManager.py:1216`). Advanced always has
-  AO for its scanned axes, so it does not reach this today.
-- **The intra-pixel positioner fields are dead.** They are serialized and
-  forwarded (`ScanControllerAdvanced.py:364-375`), but the designer half
-  (`BetaScanDesigner`, upstream `testalab_scanDev`, `1dcbbe2af`) was never
-  ported, so the option does nothing.
+Found while writing draft 1; where each stands at the end of the branch
+(2026-10-10):
+
+- **A laser on a non-NI-DAQ line silently never fired in an NI-DAQ scan.**
+  *Fixed (M1):* the Advanced panel greys it with the reason and refuses a
+  scan that fires it.
+- **A TTL-only NI-DAQ scan with point detectors would hang on hardware**
+  (no AO task, so the DO task and the detectors wait on `ao/StartTrigger`).
+  *Fixed for programs:* the NI-DAQ engine refuses a program that drives no
+  analog output while point detectors would wait for its start; Advanced
+  always has AO for its axes.
+- **The intra-pixel positioner fields were dead.** *Fixed (M2):* the moves
+  play.
 - **`ScanManagerBase.makeFullScan` would store the Advanced TTL designer's
-  `(dict, scanInfo)` tuple as the TTL signal dict** (`ScanManagerBase.py:153`,
-  `AdvancedScanTTLCycleDesigner.py:331`). It is unreachable today: the
-  Advanced controller builds its designers itself.
-- **`ScanManagerAdvanced.getTTLCyclePreview*`** has no callers.
-- **`ARCHITECTURE.md:186`** names scan controllers as pulse-generator
-  consumers; none is.
-- **Beta stretches dwells with only a warning.** A dwell that is not a whole
-  number of samples is rounded up per pixel (`BetaScanDesigner.py:266-271`).
-  A 4.025 ms dwell at 100 kHz runs as 4.03 ms, and a 512 × 512 scan takes
-  1.3 s longer than the panel says.
-- **Scan TTL lines have no polarity setting.** Every line is driven
-  active-high, so an inverted laser or shutter input is on when ImSwitch
-  thinks it is off.
-- **The Teensy shortens pulses silently.** `TeensyPulseManager` converts
-  `duration_ns // 1_000`, at least 1 µs (`TeensyPulseManager.py:197`), so a
-  1.9 µs step plays as 1 µs.
-- **`PulseGeneratorManager.run(n_reps, blocking)` has no trigger argument,**
-  although `supports_hw_trigger_in` says "True if `run` can wait for an
-  external trigger" (`PulseGeneratorManager.py:94-96`).
+  `(dict, scanInfo)` tuple as the TTL signal dict.** *Unchanged:* still
+  unreachable (the Advanced controller builds its designers itself).
+- **`ScanManagerAdvanced.getTTLCyclePreview*`** has no callers. *Unchanged.*
+- **`docs/design/ARCHITECTURE.md`** names scan controllers as
+  pulse-generator consumers. *Now true, through the engine:* a scan
+  controller runs `PulseGeneratorScanEngine`, which drives the generator.
+- **Beta stretched dwells with only a warning.** *Reported (§7.8):* the
+  timing note lists every time that plays differently, the dwell included.
+- **Scan TTL lines had no polarity setting.** *Fixed (M1):*
+  `ttlActiveLevel`, on every NI-DAQ path, the protocol boards and the pulse
+  generators (by hand too, §7.9).
+- **The Teensy shortens pulses silently** (`duration_ns // 1_000`).
+  *Partly:* a scan program is realized on the generator's 1 µs grid, and a
+  time off it is refused with its neighbours; the manager's own API still
+  floors.
+- **`PulseGeneratorManager.run(n_reps, blocking)` has no trigger argument.**
+  *Partly:* the Teensy's `run` takes `trigger`, and generators declare
+  `run_triggers`; the base interface does not.
 
 ---
 

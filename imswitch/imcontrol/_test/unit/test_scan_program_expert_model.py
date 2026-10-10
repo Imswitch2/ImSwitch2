@@ -21,7 +21,7 @@ from imswitch.imcontrol.controller.controllers._acquisition_layout_source import
 from imswitch.imcontrol.model import SetupInfo
 from imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine import NidaqScanEngine
 from imswitch.imcontrol.model.scan_program import (
-    Loop, ProgramError, ScanProgram, TimelineEvent, Wait, visits,
+    DetectorBinding, Loop, ProgramError, ScanProgram, TimelineEvent, Wait, visits,
 )
 from imswitch.imcontrol.model.scan_program import presets
 from imswitch.imcontrol.model.scan_program.advanced import program_from_advanced
@@ -254,7 +254,9 @@ def test_a_camera_that_takes_frames_in_some_phases_has_spans():
                        TimelineEvent('Camera', 'detector', e.start_s, e.end_s,
                                      phases=frozenset({1}), id='exposure')
                        for e in program.timeline),
-        detectors=program.detectors, timing_policy=program.timing_policy)
+        # bound as its line fires: phase 1 only (§2.5)
+        detectors=(DetectorBinding('Camera', events='exposure', phases=frozenset({1})),),
+        timing_policy=program.timing_policy)
     _compiled, layout = _camera_layout(program)
     assert [loop.kind for loop in layout.event_loops] == ['scan_y', 'condition', 'scan_x']
     assert recorded_frame_count(layout) == 3 * 4
