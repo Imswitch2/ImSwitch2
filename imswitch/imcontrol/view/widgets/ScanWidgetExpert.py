@@ -1,25 +1,43 @@
 """The Expert scan panel (docs/design/plans/scan-engines-and-expert-scan.md §4,
-M3): the whole scan program, edited as tables.
+§7.11): the whole scan program, described top to bottom.
 
-- **Loops**, outermost first: id, kind, count, traversal, parity loops.
-- **Drives**: a device's position as an offset plus a weight per loop
-  (µm per count), or a table indexed by one loop; and how it moves.
-- **Timeline**: what devices do inside every step, in ms from its start.
-- **Waits** and **detector bindings**.
+- A header: what the scan is, whether it can run and where, its steps,
+  duration and frames, and Run.
+- **Scan order**: the loops as nested blocks, outermost first, each with its
+  count and order, and the positions a drive visits in that order.
+- **Positions**: each drive as offset + µm per count of each loop, and how
+  it moves.
+- **Inside every step**: the timeline drawn and edited by dragging, the time
+  a drive moves shaded.
+- **Waits** and **Recording** (detector bindings) as sentences.
+- **Check** (the engine's report) and a **Preview** with every device on its
+  own lane, beside the editor when the panel is wide enough, below it when
+  not.
 
-The panel edits the program's JSON form (``scan_program.serialize``); the
-controller turns it into a program, and the report beside the tables says
-what the scan engine makes of it. Times are shown in ms, positions in µm.
+**Tables** shows the same program as the tables underneath: the one state
+the parts above edit (``_expert_scan_parts``). The panel edits the program's
+JSON form (``scan_program.serialize``); the controller turns it into a
+program and says what the scan engine makes of it. Times are shown in ms,
+positions in µm.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import math
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Dict, List, Optional, Sequence
 
-import pyqtgraph as pg
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
+from imswitch.imcontrol.model.scan_program import visits
+from imswitch.imcontrol.model.scan_program.program import Motion
+from imswitch.imcontrol.model.scan_program.serialize import FORMAT, program_from_dict
+from ._expert_scan_parts import (
+    KIND_NAMES, AdaptiveColumns, CheckCard, Chip, FlowLayout, LanePreview, OrderCard,
+    PositionsCard, RecordingCard, StartCard, StepCard, TrajectoryCard, WaitsCard, WheelGuard,
+    device_color, duration_text, ms_text, role_color,
+)
 from .ScanWidgetBase import SuperScanWidget
 
 #: Shown units per stored unit: times are stored in s and shown in ms. A
@@ -75,14 +93,21 @@ class _Column:
         self.choices, self.scale = choices, scale
 
 
+#: What a cell of each kind takes, in a message.
+_KIND_WORDS = {'int': 'a whole number', 'float': 'a number', 'optional-float': 'a number',
+               'names': 'a list of names', 'optional-names': 'a list of names',
+               'ints': 'a list of whole numbers', 'floats': 'a list of numbers'}
+
+
 class _RowTable(QtWidgets.QWidget):
     """A table of rows of plain values, with add, remove and move buttons."""
 
     sigEdited = QtCore.Signal()
 
-    def __init__(self, columns: Sequence[_Column], parent=None):
+    def __init__(self, columns: Sequence[_Column], parent=None, title='Row'):
         super().__init__(parent)
         self._columns = list(columns)
+        self._title = title
         self.table = QtWidgets.QTableWidget(0, len(self._columns))
         self.table.verticalHeader().setVisible(False)
         self.table.itemChanged.connect(lambda _item: self._edited())
@@ -198,7 +223,7 @@ class _RowTable(QtWidgets.QWidget):
 
     def _parse(self, column, text, row):
         text = str(text).strip()
-        where = f'{column.label} in row {row + 1}'
+        where = f'{self._title} {row + 1}, {column.label}'
         try:
             if column.kind == 'int':
                 return int(text)
@@ -219,9 +244,33 @@ class _RowTable(QtWidgets.QWidget):
                 return None if text == '' else [stored(p, column.scale)
                                                 for p in text.split(',') if p.strip()]
         except ValueError:
-            raise ValueError(f'{where}: {text!r} is not a {column.kind.replace("-", " ")}') \
+            raise ValueError(f'{where}: {text!r} is not {_KIND_WORDS.get(column.kind, "valid")}') \
                 from None
         return text
+
+    def setValue(self, row, key, text):
+        """Write ``text`` (shown units) into a cell, as typing it would."""
+        col = next(i for i, c in enumerate(self._columns) if c.key == key)
+        widget = self.table.cellWidget(row, col)
+        if widget is not None:
+            if widget.findText(str(text)) < 0:
+                widget.addItem(str(text))
+            widget.setCurrentText(str(text))
+            return
+        item = self.table.item(row, col)
+        if item is None:
+            self.table.setItem(row, col, QtWidgets.QTableWidgetItem(str(text)))
+        elif item.text() != str(text):
+            item.setText(str(text))
+
+    def removeRow(self, row):
+        if 0 <= row < self.table.rowCount():
+            self.table.removeRow(row)
+            self._edited()
+
+    def moveRow(self, row, delta):
+        self.table.setCurrentCell(row, 0)
+        self._move(delta)
 
     def _removeSelected(self):
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
@@ -367,6 +416,35 @@ class PresetDialog(QtWidgets.QDialog):
         self.accept()
 
 
+def _style() -> str:
+    """The panel's own look, on top of the application's style sheet: neutral
+    greys, and text colours chosen for the theme it is drawn on."""
+    muted, bad = role_color('muted'), role_color('bad')
+    return f'''
+QFrame#expertCard, QFrame#expertHeader {{
+    border: 1px solid rgba(128, 128, 128, 0.45); border-radius: 8px; }}
+QLabel#expertCardTitle {{ font-weight: bold; }}
+QLabel#expertTitle {{ font-size: 14px; font-weight: bold; }}
+QLabel#expertMuted {{ color: {muted}; }}
+QLabel#expertProblems, QLabel#expertNotice {{ color: {bad}; }}
+QLabel#expertChip {{
+    border: 1px solid rgba(128, 128, 128, 0.6); border-radius: 8px; padding: 1px 8px; }}
+QFrame#expertLoop {{ border: 1px solid rgba(128, 128, 128, 0.6); border-radius: 6px; }}
+QFrame#expertInspector {{ background-color: rgba(128, 128, 128, 0.12); border-radius: 6px; }}
+QPushButton#expertRun {{ background-color: #185FA5; color: white; font-weight: bold;
+    padding: 4px 18px; border-radius: 4px; }}
+QPushButton#expertRun:disabled {{ background-color: #444441; color: #B4B2A9; }}
+QToolButton::menu-indicator {{ image: none; width: 0px; }}
+'''
+
+
+#: The tables' names in messages: a value that does not parse is named by its
+#: part, row and column.
+_TABLE_TITLES = {'loops': 'Scan order, loop', 'drives': 'Positions, drive',
+                 'timeline': 'Inside every step, event', 'waits': 'Waits, wait',
+                 'detectors': 'Recording, binding'}
+
+
 class ScanWidgetExpert(SuperScanWidget):
     """The Expert scan panel."""
 
@@ -377,15 +455,27 @@ class ScanWidgetExpert(SuperScanWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._devices: Dict[str, List[str]] = {}
+        self._wavelengths: Dict[str, float] = {}
+        self._pointDetectors: List[str] = []
+        self._presets: Dict[str, str] = {}
+        self._check: Dict = {}
+        self._lastGrid: Optional[float] = None
+        self._running = False
+        self._undo: List[Dict] = []
+        self._redo: List[Dict] = []
+        self._restoring = False
+
+        # -- the tables: the one state every part edits ------------------------
         self.loops = _RowTable([
             _Column('id', 'Id'), _Column('kind', 'Kind', 'choice', LOOP_KINDS),
             _Column('count', 'Count', 'int'),
             _Column('traversal', 'Order', 'choice', TRAVERSALS),
-            _Column('parity_loops', 'Alternates with', 'names')])
-        self.drives = _RowTable(self._driveColumns(()))
-        self.timeline = _RowTable(self._timelineColumns())
-        self.waits = _RowTable(self._waitColumns(()))
-        self.bindings = _RowTable(self._bindingColumns())
+            _Column('parity_loops', 'Alternates with', 'names')],
+            title=_TABLE_TITLES['loops'])
+        self.drives = _RowTable(self._driveColumns(()), title=_TABLE_TITLES['drives'])
+        self.timeline = _RowTable(self._timelineColumns(), title=_TABLE_TITLES['timeline'])
+        self.waits = _RowTable(self._waitColumns(()), title=_TABLE_TITLES['waits'])
+        self.bindings = _RowTable(self._bindingColumns(), title=_TABLE_TITLES['detectors'])
         self.tabs = QtWidgets.QTabWidget()
         for name, table in (('Loops', self.loops), ('Drives', self.drives),
                             ('Timeline', self.timeline), ('Waits', self.waits),
@@ -393,31 +483,53 @@ class ScanWidgetExpert(SuperScanWidget):
             self.tabs.addTab(table, name)
         self.loops.sigEdited.connect(self._loopsEdited)
         for table in (self.drives, self.timeline, self.waits, self.bindings):
-            table.sigEdited.connect(self.sigProgramEdited)
+            table.sigEdited.connect(self._edited)
 
         self.stepPar = QtWidgets.QLineEdit('')
         self.stepPar.setToolTip('The length of every innermost step, in ms.')
-        self.stepPar.textChanged.connect(lambda _t: self.sigProgramEdited.emit())
+        self.stepPar.textChanged.connect(lambda _t: self._edited())
         self.policyPar = QtWidgets.QComboBox()
         self.policyPar.setToolTip(
             'How requested times meet the engine\'s clock. strict-v1: every time must sit on '
             'it, and one that does not is refused with its neighbours.')
-        self.policyPar.currentIndexChanged.connect(lambda _i: self.sigProgramEdited.emit())
-        self.presetPar = QtWidgets.QComboBox()
-        self.presetButton = QtWidgets.QPushButton('Make…')
-        self.presetButton.setToolTip('Make a program from a preset\'s parameters.')
-        self.presetButton.clicked.connect(
-            lambda: self.sigPresetRequested.emit(self.presetPar.currentData() or ''))
-        self.plotButton = QtWidgets.QPushButton('Plot')
-        self.plotButton.clicked.connect(self.sigPlotClicked)
+        self.policyPar.currentIndexChanged.connect(lambda _i: self._edited())
+
+        # -- the header ---------------------------------------------------------
+        self.titleLabel = QtWidgets.QLabel('Scan program')
+        self.titleLabel.setObjectName('expertTitle')
+        self.subtitleLabel = QtWidgets.QLabel('')
+        self.subtitleLabel.setObjectName('expertMuted')
+        self.statusChip = Chip('Not checked yet', 'muted')
+        self.statusChip.setToolTip('Click for the check.')
+        self.noticeLabel = QtWidgets.QLabel('')
+        self.noticeLabel.setObjectName('expertNotice')
+        self.noticeLabel.setVisible(False)
+        self.factsHost = QtWidgets.QWidget()
+        self.facts = FlowLayout(self.factsHost)
+        self.templateButton = QtWidgets.QToolButton()
+        self.templateButton.setText('Templates ▾')
+        self.templateButton.setToolTip('Make a program from a template\'s parameters; a '
+                                       'program made from one reopens with its values.')
+        self.templateButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.templateButton.setMenu(QtWidgets.QMenu(self.templateButton))
+        self.tablesButton = QtWidgets.QToolButton()
+        self.tablesButton.setText('Tables')
+        self.tablesButton.setCheckable(True)
+        self.tablesButton.setToolTip('The same program as tables, every field of it.')
+        self.undoButton = QtWidgets.QToolButton()
+        self.undoButton.setText('Undo')
+        self.undoButton.setToolTip('Undo the last edit (Ctrl+Z).')
+        self.undoButton.clicked.connect(self.undo)
+        self.redoButton = QtWidgets.QToolButton()
+        self.redoButton.setText('Redo')
+        self.redoButton.setToolTip('Redo (Ctrl+Shift+Z).')
+        self.redoButton.clicked.connect(self.redo)
         self.engineLabel = QtWidgets.QLabel('')
-        self.report = QtWidgets.QPlainTextEdit()
-        self.report.setReadOnly(True)
-        self.report.setMinimumHeight(0)
-        self.plot = pg.PlotWidget()
-        self.plot.addLegend()
-        self.plot.setLabel('bottom', 'time', units='s')
-        self.plot.setVisible(False)
+        self.engineLabel.setObjectName('expertMuted')
+        self.scanButton.setText('Run')
+        self.scanButton.setObjectName('expertRun')
+        self.loadScanBtn.setText('Open…')
+        self.saveScanBtn.setText('Save…')
         self.scanProgressBar = QtWidgets.QProgressBar()
         self.scanProgressBar.setRange(0, _PROGRESS_RANGE)
         self.scanProgressBar.setTextVisible(False)
@@ -429,44 +541,117 @@ class ScanWidgetExpert(SuperScanWidget):
         progressLayout.addWidget(self.scanProgressLabel)
         self.progressRow.setVisible(False)
 
+        # -- the parts ------------------------------------------------------------
+        self.report = QtWidgets.QPlainTextEdit()
+        self.report.setReadOnly(True)
+        self.report.setMinimumHeight(0)
+        self.plotButton = QtWidgets.QPushButton('Draw')
+        self.plotButton.setToolTip('Draw what every device does, from the same compile the '
+                                   'run uses.')
+        self.plotButton.clicked.connect(self.sigPlotClicked)
+        self.start = StartCard(self)
+        self.trajectoryCard = TrajectoryCard(self)
+        self.order = OrderCard(self)
+        self.positions = PositionsCard(self)
+        self.step = StepCard(self)
+        self.waitsCard = WaitsCard(self)
+        self.recording = RecordingCard(self)
+        self.check = CheckCard(self.report)
+        self.preview = LanePreview(self.plotButton)
+        self.plot = self.preview.plot
+        self.columns = AdaptiveColumns(
+            [self.start, self.trajectoryCard, self.order, self.positions, self.step,
+             self.waitsCard, self.recording], [self.check, self.preview])
+        tablesPage = QtWidgets.QWidget()
+        tablesLayout = QtWidgets.QGridLayout(tablesPage)
+        tablesLayout.setContentsMargins(0, 0, 0, 0)
+        tablesLayout.addWidget(self.tabs, 0, 0, 1, 4)
+        tablesLayout.addWidget(QtWidgets.QLabel('Step (ms):'), 1, 0)
+        tablesLayout.addWidget(self.stepPar, 1, 1)
+        tablesLayout.addWidget(QtWidgets.QLabel('Timing:'), 1, 2)
+        tablesLayout.addWidget(self.policyPar, 1, 3)
+        self.pages = QtWidgets.QStackedWidget()
+        self.pages.addWidget(self.columns)
+        self.pages.addWidget(tablesPage)
+        self.tablesButton.toggled.connect(lambda on: self.pages.setCurrentIndex(1 if on else 0))
+        self.statusChip.clicked.connect(self._showCheck)
+        self.setStyleSheet(_style())
+        self.wheelGuard = WheelGuard(self.scrollArea, self)
+        for keys, slot in ((QtGui.QKeySequence.Undo, self.undo),
+                           (QtGui.QKeySequence.Redo, self.redo)):
+            shortcut = QtWidgets.QShortcut(keys, self)
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
+
+        self._refreshTimer = QtCore.QTimer(self)
+        self._refreshTimer.setSingleShot(True)
+        self._refreshTimer.setInterval(0)
+        self._refreshTimer.timeout.connect(self.refreshParts)
+
     # -- the panel ------------------------------------------------------------
 
     def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits=None, *,
-                     detectorNames=(), presets=(), policies=(), engine=''):
+                     detectorNames=(), presets=(), policies=(), engine='', wavelengths=None,
+                     pointDetectorNames=()):
         self._devices = {'positioner': list(positionerNames), 'laser': list(TTLDeviceNames),
                          'detector': list(detectorNames)}
-        row = 0
-        self.grid.addWidget(self.scanButton, row, 0)
-        self.grid.addWidget(self.repeatBox, row, 1)
-        self.grid.addWidget(self.loadScanBtn, row, 2)
-        self.grid.addWidget(self.saveScanBtn, row, 3)
-        self.grid.addItem(QtWidgets.QSpacerItem(20, 20, QtWidgets.QSizePolicy.Expanding,
-                                                QtWidgets.QSizePolicy.Minimum), row, 4)
-        self.grid.addWidget(self.presetPar, row, 5)
-        self.grid.addWidget(self.presetButton, row, 6)
-        self.grid.addWidget(self.plotButton, row, 7)
-        row += 1
-        self.grid.addWidget(self.engineLabel, row, 0, 1, 8)
-        row += 1
-        self.grid.addWidget(self.progressRow, row, 0, 1, 8)
-        row += 1
-        self.grid.addWidget(self.tabs, row, 0, 1, 8)
-        row += 1
-        self.grid.addWidget(QtWidgets.QLabel('Step (ms):'), row, 0)
-        self.grid.addWidget(self.stepPar, row, 1)
-        self.grid.addWidget(QtWidgets.QLabel('Timing:'), row, 2)
-        self.grid.addWidget(self.policyPar, row, 3, 1, 2)
-        row += 1
-        self.grid.addWidget(self.report, row, 0, 1, 8)
-        row += 1
-        self.grid.addWidget(self.plot, row, 0, 1, 8)
+        self._wavelengths = dict(wavelengths or {})
+        self._pointDetectors = list(pointDetectorNames)
+        # The header stays put above the scrolling parts: what the scan is,
+        # whether it runs, and Run, wherever the user has scrolled to.
+        header = QtWidgets.QFrame()
+        header.setObjectName('expertHeader')
+        headerLayout = QtWidgets.QVBoxLayout(header)
+        top = QtWidgets.QHBoxLayout()
+        titles = QtWidgets.QVBoxLayout()
+        titles.addWidget(self.titleLabel)
+        titles.addWidget(self.subtitleLabel)
+        top.addLayout(titles, 1)
+        top.addWidget(self.statusChip, 0, QtCore.Qt.AlignVCenter)
+        top.addWidget(self.scanButton, 0, QtCore.Qt.AlignVCenter)
+        headerLayout.addLayout(top)
+        headerLayout.addWidget(self.noticeLabel)
+        headerLayout.addWidget(self.factsHost)
+        toolsHost = QtWidgets.QWidget()
+        tools = FlowLayout(toolsHost)
+        for widget in (self.templateButton, self.loadScanBtn, self.saveScanBtn,
+                       self.undoButton, self.redoButton, self.repeatBox, self.tablesButton):
+            tools.addWidget(widget)
+        headerLayout.addWidget(toolsHost)
+        headerLayout.addWidget(self.engineLabel)
+        headerLayout.addWidget(self.progressRow)
+        self.scrollContainer.removeWidget(self.scrollArea)
+        self.scrollContainer.addWidget(header, 0, 0)
+        self.scrollContainer.addWidget(self.scrollArea, 1, 0)
+        self.scrollContainer.setRowStretch(1, 1)
+        self.grid.addWidget(self.pages, 0, 0)
+        self.grid.setRowStretch(0, 1)
+        menu = self.templateButton.menu()
+        trajectories = None
+        starters = []
         for preset_id, title in presets:
-            self.presetPar.addItem(title, preset_id)
+            self._presets[preset_id] = title
+            if preset_id.startswith('trajectory-'):
+                trajectories = trajectories or menu.addMenu('Trajectories')
+                target, text = trajectories, title.split(': ', 1)[-1]
+            else:
+                target, text = menu, title
+                starters.append((preset_id, title))
+            action = target.addAction(text)
+            action.setData(preset_id)
+            action.triggered.connect(lambda _c=False, p=preset_id: self.sigPresetRequested.emit(p))
+        self.start.setTemplates(starters)
         self.policyPar.addItems(list(policies))
         self.engineLabel.setText(engine)
         self.drives.setColumns(self._driveColumns(()))
         self.timeline.setColumns(self._timelineColumns())
         self.bindings.setColumns(self._bindingColumns())
+        self.refreshParts()
+        self._undo = [self._snapshot()]
+
+    def presetTitles(self) -> Dict[str, str]:
+        """The templates offered: ``{preset id: title}``."""
+        return dict(self._presets)
 
     def _driveColumns(self, loopIds):
         return ([_Column('device', 'Device', 'choice', tuple(self._devices.get('positioner', ()))),
@@ -484,9 +669,7 @@ class ScanWidgetExpert(SuperScanWidget):
                    _Column('restore', 'After the scan', 'choice', RESTORES)])
 
     def _timelineColumns(self):
-        devices = tuple(self._devices.get('laser', ()) + self._devices.get('detector', ())
-                        + self._devices.get('positioner', ()))
-        return [_Column('device', 'Device', 'choice', devices),
+        return [_Column('device', 'Device', 'choice', tuple(self.timelineDevices())),
                 _Column('kind', 'Kind', 'choice', EVENT_KINDS),
                 _Column('start_s', 'Start (ms)', 'float', scale=MS),
                 _Column('end_s', 'End (ms)', 'float', scale=MS),
@@ -521,13 +704,49 @@ class ScanWidgetExpert(SuperScanWidget):
         ids = self._loopIds()
         current = [c.key[2:] for c in self.drives.columns() if c.key.startswith('w:')]
         if ids != current:
+            # a loop renamed in place keeps what names it: its drives'
+            # weights, the waits before it, the anchors on it
+            renamed = ({old: new for old, new in zip(current, ids) if old != new}
+                       if len(ids) == len(current) else {})
             rows = self.drives.rows(raw=True)
+            for row in rows:
+                for old, new in renamed.items():
+                    row[f'w:{new}'] = row.pop(f'w:{old}', '')
+            waits = self.waits.rows(raw=True)
             self.drives.setColumns(self._driveColumns(ids))
             self.drives.setRows([])
             for row in rows:
                 self.drives.addRow(row, raw=True)
             self.waits.setColumns(self._waitColumns(ids))
+            if renamed:
+                self._renameReferences(renamed, waits)
+        self._edited()
+
+    def _renameReferences(self, renamed, waits=None):
+        for index, wait in enumerate(waits if waits is not None else self.tableRows('waits')):
+            if wait['at'] in renamed:
+                self.waits.setValue(index, 'at', renamed[wait['at']])
+        for index, event in enumerate(self.tableRows('timeline')):
+            anchor = event['anchor'] or 'step'
+            kind, _, loop = anchor.partition(':')
+            if loop in renamed:
+                self.timeline.setValue(index, 'anchor', f'{kind}:{renamed[loop]}')
+        for index, loop in enumerate(self.tableRows('loops')):
+            parity = [p.strip() for p in loop['parity_loops'].split(',') if p.strip()]
+            if any(p in renamed for p in parity):
+                self.loops.setValue(index, 'parity_loops',
+                                    ', '.join(renamed.get(p, p) for p in parity))
+
+    def _edited(self):
         self.sigProgramEdited.emit()
+        self.preview.setStale(True)
+        self._refreshTimer.start()
+
+    def flushRefresh(self):
+        """Draw the parts now if an edit is waiting to be drawn: a click that
+        commits a field acts on the program as it now is."""
+        if self._refreshTimer.isActive():
+            self.refreshParts()
 
     # -- program <-> tables -----------------------------------------------------
 
@@ -551,6 +770,7 @@ class ScanWidgetExpert(SuperScanWidget):
                 row.update(drive.get('motion') or {})
                 rows.append(row)
             self.drives.setRows(rows)
+            self.timeline.setColumns(self._timelineColumns())
             self.timeline.setRows(data.get('timeline') or [])
             self.waits.setRows(data.get('waits') or [])
             self.bindings.setRows(data.get('detectors') or [])
@@ -562,40 +782,506 @@ class ScanWidgetExpert(SuperScanWidget):
                 self.policyPar.setCurrentText(data['timing_policy'])
         finally:
             del blockers
+        self.preview.setStale(True)
+        self.refreshParts()
+        # a program opened is where undo starts
+        self._undo, self._redo = [self._snapshot()], []
+        self.undoButton.setEnabled(False)
+        self.redoButton.setEnabled(False)
+
+    def _loopDicts(self) -> List[Dict]:
+        return [{'id': row['id'], 'kind': row['kind'], 'count': row['count'],
+                 'traversal': row['traversal'], 'parity_loops': row['parity_loops']}
+                for row in self.loops.rows()]
+
+    def _driveDicts(self) -> List[Dict]:
+        motion_keys = ('transition', 'move_s', 'settle_s', 'placement', 'return_s', 'origin',
+                       'restore')
+        return [{'device': row['device'], 'offset_um': row['offset_um'],
+                 'weights_um': {k[2:]: v for k, v in row.items()
+                                if k.startswith('w:') and v is not None},
+                 'table_loop': row['table_loop'], 'table_um': row['table_um'],
+                 'motion': {k: row[k] for k in motion_keys}}
+                for row in self.drives.rows()]
 
     def programDict(self) -> Dict:
         """The program the tables describe, in its JSON form (without
         ``format``); a cell that does not parse raises ValueError naming it."""
-        loops = []
-        for row in self.loops.rows():
-            loops.append({'id': row['id'], 'kind': row['kind'], 'count': row['count'],
-                          'traversal': row['traversal'],
-                          'parity_loops': row['parity_loops']})
-        motion_keys = ('transition', 'move_s', 'settle_s', 'placement', 'return_s', 'origin',
-                       'restore')
-        drives = []
-        for row in self.drives.rows():
-            drives.append({
-                'device': row['device'], 'offset_um': row['offset_um'],
-                'weights_um': {k[2:]: v for k, v in row.items()
-                               if k.startswith('w:') and v is not None},
-                'table_loop': row['table_loop'], 'table_um': row['table_um'],
-                'motion': {k: row[k] for k in motion_keys}})
+        loops = self._loopDicts()
+        drives = self._driveDicts()
         timeline = []
         for row in self.timeline.rows():
             event = dict(row)
             event['anchor'] = event['anchor'] or 'step'
             timeline.append(event)
         step = self.stepPar.text().strip()
+        if not step:
+            raise ValueError('Set the length of a step (Inside every step, in ms).')
         try:
             step_s = stored(step, MS)
         except ValueError:
-            raise ValueError(f'Step: {step!r} is not a number of ms') from None
+            raise ValueError(f'The step length {step!r} is not a number of ms.') from None
         return {'loops': loops, 'drives': drives, 'step_s': step_s, 'timeline': timeline,
                 'waits': self.waits.rows(), 'detectors': self.bindings.rows(),
                 'timing_policy': self.policyPar.currentText()}
 
+    # -- undo -----------------------------------------------------------------
+
+    def _snapshot(self) -> Dict:
+        return {'tables': {name: self.tableRows(name) for name in _TABLE_TITLES},
+                'step': self.stepPar.text(), 'policy': self.policyPar.currentText()}
+
+    def _remember(self):
+        if self._restoring:
+            return
+        snapshot = self._snapshot()
+        if not self._undo or self._undo[-1] != snapshot:
+            self._undo.append(snapshot)
+            self._redo.clear()
+        self.undoButton.setEnabled(len(self._undo) > 1)
+        self.redoButton.setEnabled(bool(self._redo))
+
+    def _restore(self, snapshot):
+        self._restoring = True
+        try:
+            blockers = [QtCore.QSignalBlocker(w) for w in (
+                self.loops, self.drives, self.timeline, self.waits, self.bindings,
+                self.stepPar, self.policyPar)]
+            try:
+                tables = snapshot['tables']
+                self.loops.setRows([])
+                for row in tables['loops']:
+                    self.loops.addRow(row, raw=True)
+                ids = [row['id'] for row in tables['loops'] if row['id']]
+                self.drives.setColumns(self._driveColumns(ids))
+                self.waits.setColumns(self._waitColumns(ids))
+                for name in ('drives', 'timeline', 'waits', 'detectors'):
+                    table = self._table(name)
+                    table.setRows([])
+                    for row in tables[name]:
+                        table.addRow(row, raw=True)
+                self.stepPar.setText(snapshot['step'])
+                self.policyPar.setCurrentText(snapshot['policy'])
+            finally:
+                del blockers
+            self._edited()
+            self.refreshParts()
+        finally:
+            self._restoring = False
+        self.undoButton.setEnabled(len(self._undo) > 1)
+        self.redoButton.setEnabled(bool(self._redo))
+
+    def undo(self):
+        self.flushRefresh()              # the state now, edits not yet drawn included
+        if len(self._undo) > 1:
+            self._redo.append(self._undo.pop())
+            self._restore(self._undo[-1])
+
+    def redo(self):
+        self.flushRefresh()
+        if self._redo:
+            snapshot = self._redo.pop()
+            self._undo.append(snapshot)
+            self._restore(snapshot)
+
+    # -- what the parts read and write --------------------------------------------
+
+    @property
+    def devices(self) -> Dict[str, List[str]]:
+        return self._devices
+
+    def _table(self, name) -> _RowTable:
+        return {'loops': self.loops, 'drives': self.drives, 'timeline': self.timeline,
+                'waits': self.waits, 'detectors': self.bindings}[name]
+
+    def tableRows(self, name) -> List[Dict]:
+        return self._table(name).rows(raw=True)
+
+    def setTableValue(self, name, row, key, text):
+        self._table(name).setValue(row, key, '' if text is None else str(text))
+
+    def addTableRow(self, name, values) -> int:
+        table = self._table(name)
+        table.addRow(values)
+        return table.table.rowCount() - 1
+
+    def removeTableRow(self, name, row):
+        self._table(name).removeRow(row)
+
+    def moveTableRow(self, name, row, delta):
+        self._table(name).moveRow(row, delta)
+
+    def setTimes(self, row, start_s, end_s):
+        """An event's times, as one edit."""
+        blocker = QtCore.QSignalBlocker(self.timeline)
+        try:
+            self.timeline.setValue(row, 'start_s', ms_text(start_s))
+        finally:
+            del blocker
+        self.timeline.setValue(row, 'end_s', ms_text(end_s))
+
+    def addLoop(self, kind):
+        ids = set(self._loopIds())
+        name, n = kind, 2
+        while name in ids:
+            name, n = f'{kind}{n}', n + 1
+        self.addTableRow('loops', {'id': name, 'kind': kind, 'count': 1,
+                                   'traversal': 'forward', 'parity_loops': []})
+
+    def moveLoop(self, index, delta):
+        """A loop moved outwards or inwards: a serpentine's parity -- the
+        loops right outside it -- is no longer what it named, so it goes."""
+        self.moveTableRow('loops', index, delta)
+        for row, loop in enumerate(self.tableRows('loops')):
+            if loop['traversal'] == 'serpentine':
+                self.loops.setValue(row, 'traversal', 'forward')
+                self.loops.setValue(row, 'parity_loops', '')
+                self.showNotice(f'Loop {loop["id"]!r} moved out of serpentine order: the loops '
+                                'outside it changed.')
+
+    def removeLoop(self, index):
+        """A loop removed with what names it: the waits before it, the events
+        anchored on its passes (now every step), the serpentines alternating
+        with it."""
+        loops = self.tableRows('loops')
+        loop = loops[index]['id']
+        said = []
+        for row in reversed(range(len(self.tableRows('waits')))):
+            if self.tableRows('waits')[row]['at'] == loop:
+                self.waits.removeRow(row)
+                said.append('the wait before it')
+        for row, event in enumerate(self.tableRows('timeline')):
+            if (event['anchor'] or '').partition(':')[2] == loop:
+                self.timeline.setValue(row, 'anchor', 'step')
+                said.append(f'{event["device"]}\'s anchor')
+        for row, other in enumerate(loops):
+            parity = [p.strip() for p in other['parity_loops'].split(',') if p.strip()]
+            if loop in parity:
+                self.loops.setValue(row, 'traversal', 'forward')
+                self.loops.setValue(row, 'parity_loops', '')
+                said.append(f'{other["id"]}\'s serpentine')
+        self.removeTableRow('loops', index)
+        self.showNotice(f'Removed loop {loop!r}' + (f', and {", ".join(sorted(set(said)))}'
+                                                    if said else '') + '. Undo brings it back.')
+
+    def renameLoop(self, index, name):
+        if name in self._loopIds():
+            self.showNotice(f'There is a loop {name!r} already.')
+            return
+        self.setTableValue('loops', index, 'id', name)
+
+    def addDrive(self, device):
+        # the model's defaults, as a drive written without them gets
+        self.addTableRow('drives', {'device': device, 'offset_um': 0.0,
+                                    **dataclasses.asdict(Motion())})
+
+    def addEvent(self, device, kind) -> Optional[int]:
+        """An event after the last one in the step, to the step's end; over
+        the whole step when the last one ends it."""
+        step = self.stepSeconds()
+        ends = []
+        for row in self.tableRows('timeline'):
+            if (row['anchor'] or 'step') == 'step':
+                try:
+                    ends.append(stored(row['end_s'], MS))
+                except ValueError:
+                    pass
+        start = max(ends, default=0.0)
+        if step is None or start >= step:
+            start = 0.0
+        return self.addTableRow('timeline', {
+            'device': device, 'kind': kind, 'start_s': start,
+            'end_s': step if step is not None else start, 'shape': 'hold',
+            'during': 'stationary', 'anchor': 'step'})
+
+    def addWait(self, trigger):
+        ids = self._loopIds()
+        self.addTableRow('waits', {'at': ids[0] if ids else 'start', 'trigger': trigger,
+                                   'on_timeout': 'fail', 'hold': 'idle'})
+
+    def addBinding(self, detector):
+        point = detector in self._pointDetectors
+        self.addTableRow('detectors', {
+            'detector': detector, 'events': detector, 'per_step': 1,
+            'window': 'step' if point else 'event', 'assembly': 'image' if point else 'stream'})
+
+    def timelineDevices(self) -> List[str]:
+        names = (self._devices.get('laser', []) + self._devices.get('detector', [])
+                 + self._devices.get('positioner', []))
+        return list(dict.fromkeys(names))
+
+    def eventChoices(self) -> List[str]:
+        rows = self.tableRows('timeline')
+        return list(dict.fromkeys([r['id'] for r in rows if r['id']]
+                                  + [r['device'] for r in rows if r['device']]))
+
+    def deviceColor(self, name) -> QtGui.QColor:
+        kind = ('positioner' if name in self._devices.get('positioner', ()) else
+                'detector' if name in self._devices.get('detector', ()) else 'laser')
+        return device_color(name, self._wavelengths, kind)
+
+    def stepSeconds(self) -> Optional[float]:
+        try:
+            value = stored(self.stepPar.text(), MS)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
+    def gridSeconds(self) -> Optional[float]:
+        return (self._check.get('facts') or {}).get('grid_s') or self._lastGrid
+
+    def phaseCount(self) -> int:
+        for row in self.tableRows('loops'):
+            if row['kind'] == 'condition':
+                try:
+                    return int(row['count'])
+                except ValueError:
+                    return 1
+        return 1
+
+    def stepContent(self):
+        """The step's events as the canvas draws them, the time each drive
+        moves inside the step, and what to say under the drawing."""
+        events, notes = [], []
+        latest = None
+        for index, row in enumerate(self.tableRows('timeline')):
+            try:
+                start, end = stored(row['start_s'], MS), stored(row['end_s'], MS)
+            except ValueError:
+                notes.append(f'{row["device"]}\'s event has a time that is not a number, so it '
+                             'is not drawn.')
+                continue
+            try:
+                phases = (None if not row['phases'].strip() else
+                          frozenset(int(p) for p in row['phases'].split(',') if p.strip()))
+            except ValueError:
+                phases = None
+            anchor = row['anchor'] or 'step'
+            tag = {'level': row['value'], 'offset': f'{row["value"]} µm'}.get(row['kind'], '')
+            if anchor.startswith('pass-start:'):
+                tag = (tag + ' ' if tag else '') + f'first of each {anchor.split(":", 1)[1]}'
+            elif anchor.startswith('pass-end:'):
+                tag = (tag + ' ' if tag else '') + f'last of each {anchor.split(":", 1)[1]}'
+            if phases is not None:
+                tag = (tag + ' ' if tag else '') + 'phase ' + ', '.join(
+                    str(p) for p in sorted(phases))
+            if anchor == 'step':
+                latest = end if latest is None else max(latest, end)
+            events.append({'row': index, 'device': row['device'], 'label': row['device'],
+                           'kind': row['kind'], 'start_s': start, 'end_s': end,
+                           'from_end': anchor.startswith('pass-end:'), 'phases': phases,
+                           'color': self.deviceColor(row['device']), 'tag': tag})
+        moving = []
+        step = self.stepSeconds()
+        if step is None:
+            notes.append('Set the length of a step.')
+        elif latest is not None and latest > step:
+            notes.append((f'The events end at {ms_text(latest)} ms, after the step.',
+                          f'Make the step {ms_text(latest)} ms',
+                          lambda _c=False, t=ms_text(latest): self.stepPar.setText(t)))
+        for row in self.tableRows('drives'):
+            try:
+                busy = stored(row['move_s'], MS) + stored(row['settle_s'], MS)
+            except ValueError:
+                continue
+            if busy <= 0:
+                continue
+            if row['placement'] == 'in-step' and step is not None:
+                moving.append((max(0.0, step - busy), step, f'{row["device"]} moves'))
+            elif row['placement'] == 'between-steps':
+                notes.append(f'{row["device"]} moves between steps: '
+                             f'{duration_text(busy)} after each.')
+        return events, moving, notes
+
+    def driveRange(self, index) -> str:
+        """Where a drive goes over the whole scan: from its loops' counts and
+        weights (every order visits the same counters), or its table."""
+        try:
+            row = self.tableRows('drives')[index]
+            counts = {loop['id']: int(loop['count']) for loop in self.tableRows('loops')}
+            offset = float(row['offset_um'])
+            if row['table_loop']:
+                table = [float(v) for v in row['table_um'].split(',') if v.strip()]
+                low, high = offset + min(table), offset + max(table)
+                steps = counts.get(row['table_loop'], len(table))
+            else:
+                low = high = offset
+                steps = 1
+                for loop, count in counts.items():
+                    text = row.get(f'w:{loop}', '').strip()
+                    if not text or float(text) == 0:
+                        continue
+                    reach = float(text) * (count - 1)
+                    low, high = low + min(0.0, reach), high + max(0.0, reach)
+                    steps *= count
+        except (ValueError, KeyError, IndexError):
+            return ''
+        if steps <= 1:
+            return f'Stays at {low:.6g} µm.'
+        return f'{steps} positions, from {low:.6g} to {high:.6g} µm.'
+
+    def visitStrip(self, fit):
+        """The positions the first drive visits over the two innermost loops
+        that move it (the others at their first iteration), at most ``fit`` of
+        them: the scan's order, as bars. ``(None, why not)`` when it cannot
+        be drawn."""
+        drives = self.tableRows('drives')
+        if not drives:
+            return None, ''
+        try:
+            # the loops and the drive alone: an event or a wait that does not
+            # read yet does not hide the order
+            loops = self._loopDicts()
+            drive = self._driveDicts()[0]
+        except ValueError as error:
+            return None, f'The visit order is drawn once the loops and drives read: {error}'
+        moving = [loop['id'] for loop in loops
+                  if loop['id'] in drive['weights_um'] and drive['weights_um'][loop['id']]
+                  or loop['id'] == drive['table_loop']]
+        if not moving:
+            return None, f'{drive["device"]} does not move with the loops.'
+        inner = moving[-2:]
+        counts = {loop['id']: max(1, int(loop['count'])) for loop in loops}
+        innermost = counts[inner[-1]]
+        shown = {inner[-1]: min(innermost, fit)}
+        if len(inner) > 1:
+            shown[inner[0]] = max(1, min(counts[inner[0]], fit // max(1, shown[inner[-1]])))
+        reduced = []
+        for loop in loops:
+            loop['count'] = shown.get(loop['id'], 1)
+            reduced.append(loop)
+        table = drive['table_um']
+        if drive['table_loop'] and table:
+            table = table[:shown.get(drive['table_loop'], 1)]
+        try:
+            program = program_from_dict({
+                'format': FORMAT, 'loops': reduced, 'step_s': 1.0, 'timeline': [],
+                'timing_policy': self.policyPar.currentText() or 'strict-v1',
+                'drives': [{**drive, 'table_um': table}]})
+        except Exception as error:
+            return None, f'The visit order cannot be drawn: {error}'
+        model = program.drives[0]
+        positions, shades = [], []
+        for counters in visits(program):
+            if model.table_loop is not None:
+                position = model.offset_um + model.table_um[counters[model.table_loop]]
+            else:
+                position = model.offset_um + sum(float(w) * counters[lp] for lp, w in
+                                                 model.weights_um.items())
+            positions.append(position)
+            shades.append(counters[inner[0]] if len(inner) > 1 else 0)
+        total = math.prod(counts[i] for i in inner)
+        kinds = {loop['id']: loop['kind'] for loop in loops}
+        names = [KIND_NAMES.get(kinds[i], (i, i))[1] for i in inner]
+        text = (f'{model.device} over the {" and ".join(names)}' if len(positions) == total
+                else f'{model.device}: the first {len(positions)} of {total} positions over the '
+                     f'{" and ".join(names)}')
+        return positions, shades, self.deviceColor(model.device), text
+
     # -- what the controller shows ----------------------------------------------
+
+    def _mode(self) -> str:
+        if self._check.get('trajectory'):
+            return 'trajectory'
+        if not any(self.tableRows(name) for name in ('loops', 'drives', 'timeline')):
+            return 'empty'
+        return 'program'
+
+    def refreshParts(self):
+        self._refreshTimer.stop()
+        mode = self._mode()
+        self.start.setVisible(mode == 'empty')
+        self.trajectoryCard.setVisible(mode == 'trajectory')
+        if mode == 'trajectory':
+            self.trajectoryCard.setTrajectory(self._check['trajectory'])
+        for part in (self.order, self.positions, self.step):
+            part.setVisible(mode == 'program')
+        for part in (self.order, self.positions, self.step, self.waitsCard, self.recording):
+            part.refresh()
+        self._refreshHeader()
+        self.wheelGuard.watch(self.columns)
+        self._remember()
+
+    def _refreshHeader(self):
+        check = self._check
+        loops = self.tableRows('loops')
+        parts = []
+        for row in loops:
+            many = KIND_NAMES.get(row['kind'], (row['kind'],) * 2)
+            parts.append(f'{row["count"]} {many[1] if row["count"] != "1" else many[0]}')
+        self.titleLabel.setText(check.get('title') or 'Scan program')
+        self.subtitleLabel.setText(' × '.join(parts) if parts else
+                                   check.get('subtitle') or 'Nothing to scan yet')
+        if self._running:
+            self.statusChip.setText('Running')
+            self.statusChip.setRole('accent')
+        elif self._mode() == 'empty':
+            self.statusChip.setText('Empty')
+            self.statusChip.setRole('muted')
+        elif not check:
+            self.statusChip.setText('Not checked yet')
+            self.statusChip.setRole('muted')
+        elif check.get('runnable'):
+            self.statusChip.setText(f'Ready on {check.get("engine")}')
+            self.statusChip.setRole('ok')
+        else:
+            engine = check.get('engine')
+            self.statusChip.setText(f'Not runnable on {engine}' if engine else 'Not runnable')
+            self.statusChip.setRole('bad')
+        problems = check.get('problems') or []
+        if self._mode() != 'empty' and problems:
+            first = problems[0].splitlines()[0] if problems[0] else ''
+            self._setNotice(first, problems[0])
+        _clear_layout(self.facts)
+        facts = check.get('facts') or {}
+        if facts.get('steps') is not None:
+            self.facts.addWidget(Chip(f'{facts["steps"]} steps'))
+        if facts.get('duration_s') is not None:
+            self.facts.addWidget(Chip(duration_text(facts['duration_s'])))
+        for detector, frames in (facts.get('frames') or {}).items():
+            self.facts.addWidget(Chip(f'{frames} frames, {detector}'))
+        if facts.get('grid_s'):
+            exact = facts.get('policy') == 'strict-v1'
+            chip = Chip(f'{"exact" if exact else "rounded"} timing, '
+                        f'{duration_text(facts["grid_s"])} clock')
+            chip.setToolTip(f'Timing policy {facts.get("policy")}: '
+                            + ('every time sits on the engine\'s clock.' if exact else
+                               'times are rounded as the policy says; the check lists them.'))
+            self.facts.addWidget(chip)
+
+    def _setNotice(self, text, tooltip=''):
+        metrics = self.noticeLabel.fontMetrics()
+        width = max(self.width() - 4 * metrics.averageCharWidth(), metrics.averageCharWidth())
+        self.noticeLabel.setText(metrics.elidedText(text, QtCore.Qt.ElideRight, width))
+        self.noticeLabel.setToolTip(tooltip or text)
+        self.noticeLabel.setVisible(bool(text))
+
+    def showNotice(self, text):
+        """Say one thing under the header until the next check."""
+        self._setNotice(text)
+
+    def _showCheck(self):
+        if self.tablesButton.isChecked():
+            self.tablesButton.setChecked(False)
+        self.scrollArea.ensureWidgetVisible(self.check)
+
+    def setCheck(self, check: Dict):
+        """What the engine makes of the program (the controller's report, as
+        data): ``runnable``, ``engine``, ``title``, ``problems``, ``verdicts``
+        ``[(verdict, feature, reason)]``, ``notes``, ``recorded``, ``facts``
+        (``steps``, ``duration_s``, ``frames``, ``grid_s``, ``policy``) and,
+        for a path, ``trajectory`` (``text``, ``events``, ``preset``)."""
+        self._check = dict(check or {})
+        grid = (self._check.get('facts') or {}).get('grid_s')
+        if grid:
+            self._lastGrid = grid
+        self._setNotice('')
+        self.check.setCheck(self._check)
+        self.recording.setLines(self._check.get('recorded') or [])
+        self.refreshParts()
+        if self._check.get('runnable') and self.preview.live.isChecked() \
+                and self.preview.drawn() and self._mode() != 'empty':
+            self.sigPlotClicked.emit()
 
     def setReport(self, text):
         self.report.setPlainText(text)
@@ -627,11 +1313,17 @@ class ScanWidgetExpert(SuperScanWidget):
         box.exec_()
         return box.clickedButton() is approve
 
-    def showTraces(self, time_s, traces: Dict[str, object]):
-        self.plot.clear()
-        for index, (name, values) in enumerate(traces.items()):
-            self.plot.plot(time_s, values, name=name, pen=pg.intColor(index, len(traces)))
-        self.plot.setVisible(True)
+    def showTraces(self, time_s, traces: Dict[str, object], *, analog=(), windows=None,
+                   note=''):
+        """Every device's trace on its own lane; ``windows``: each zoom's
+        (start_s, end_s) -- one step, one pass, all of it -- else the whole."""
+        self.preview.setWindows(*(windows or (None, None, None)))
+        colors = {name: self.deviceColor(name) for name in traces}
+        self.preview.showTraces(time_s, traces, colors, analog=analog, note=note)
+
+    def showPreviewProblem(self, text):
+        """Why the preview is not drawn, where the drawing would be."""
+        self.preview.showProblem(text)
 
     def showScanProgress(self, fraction, text):
         """The running scan's progress; ``fraction`` None: not known."""
@@ -643,12 +1335,18 @@ class ScanWidgetExpert(SuperScanWidget):
                 int(round(_PROGRESS_RANGE * min(max(float(fraction), 0.0), 1.0))))
         self.scanProgressLabel.setText(text)
         self.progressRow.setVisible(True)
+        if not self._running:
+            self._running = True
+            self._refreshHeader()
 
     def hideScanProgress(self):
         self.scanProgressBar.setRange(0, _PROGRESS_RANGE)
         self.scanProgressBar.setValue(0)
         self.scanProgressLabel.clear()
         self.progressRow.setVisible(False)
+        if self._running:
+            self._running = False
+            self._refreshHeader()
 
     # -- SuperScanWidget ----------------------------------------------------------
 
@@ -668,6 +1366,13 @@ class ScanWidgetExpert(SuperScanWidget):
     def setScanCenterPos(self, positionerName, centerPos):
         # Expert positions are the program's offsets; nothing to center.
         pass
+
+
+def _clear_layout(layout):
+    while layout.count():
+        item = layout.takeAt(0)
+        if item.widget() is not None:
+            item.widget().deleteLater()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

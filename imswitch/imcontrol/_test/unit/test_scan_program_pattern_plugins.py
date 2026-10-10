@@ -135,9 +135,7 @@ def test_the_expert_panel_offers_the_drop_ins(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(pattern_plugins, 'user_patterns_directory', lambda: str(tmp_path))
     rig = ExpertRig()
     try:
-        combo = rig.widget.presetPar
-        assert combo.findData('trajectory-user.rosette') >= 0
-        assert combo.itemText(combo.findData('trajectory-user.rosette')) == 'Trajectory: Rosette'
+        assert rig.widget.presetTitles()['trajectory-user.rosette'] == 'Trajectory: Rosette'
     finally:
         rig.close()
 

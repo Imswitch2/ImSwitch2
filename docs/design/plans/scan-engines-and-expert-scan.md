@@ -2133,6 +2133,64 @@ never approximated):
 - still to confirm: whether a trajectory's coverage and stream declaration
   are read from live detector state under Repeat (§7.9).
 
+**Out of scope, by decision (Lenny, 2026-10-11): adaptive scans.** A scan
+that changes what it does from what it measures -- MINFLUX-type closed
+loops (count, estimate, shrink and re-centre the pattern, iterate) -- is not
+the Expert program's job. Its programs stay static, which is what makes them
+checkable, exactly timed and recorded as they ran; a general "if" would break
+that. Such loops belong on dedicated FPGA hardware with its own logic.
+Host-level adaptivity stays as it is: an event starts a program (EtSnouty's
+Slow scan; etSTED works the same way); placing that program at the event's
+position is the one open item in that direction.
+
+### 7.11 The Expert panel made over (2026-10-11)
+
+Lenny: the tables were "very user unfriendly and not intuitive". The panel
+now describes the scan top to bottom (concept agreed on a mockup first):
+a header (what, whether it runs and where, steps, duration, frames, clock,
+Run); **Scan order** (loops as blocks with count and order, waits as
+badges, and the first drive's visit order as bars); **Positions** (each
+drive as a formula, its motion as a sentence); **Inside every step** (a
+custom-painted timeline: drag to move, edges to resize, snapped to the
+engine's grid from the check, in-step moves hatched, phases, an inspector
+for every field); **Waits** and **Recording** as sentences; **Check** (the
+report as data: `ScanControllerExpert.updateReport` sends `setCheck` beside
+the text); **Preview** (a lane per device, zoom to one step, one pass or
+the run, from `_preview_windows`). `AdaptiveColumns` puts Check and Preview
+beside the editor when both fit at their preferred widths.
+
+**One state.** The tables (`_RowTable`) stay the program's only state in the
+widget, behind **Tables**; every part reads their raw rows and writes cells
+(`setTableValue`), and is drawn again after each edit except the field being
+typed in. Parse errors, the controller contract and the tests of the tables
+stay as they were (`_expert_scan_parts.py`, `test_scan_widget_expert_composer.py`).
+
+**An independent review** (one agent, its own worktree, screenshots and
+probes) found 5 high and 11 medium problems; all fixed, each with a test
+that fails without it: the mouse wheel edited fields it scrolled past (a
+`WheelGuard`); drags left the step, inverted bars, could not move narrow ones,
+and lost a value typed just before (clamped, a tick minimum, narrow bars move
+from inside, the click draws the commit first); the order button made
+serpentines the model refuses (the parity is the loop right outside; never
+the outermost); errors from Draw and a declined script went to the hidden
+report (shown in the preview, under the header); a refused program lost the
+clock (the engine's declared grid); refusals were said twice and per step
+(once, collapsed); the point-detector note showed for cameras; narrow docks
+scrolled sideways (flow layouts, the policy out of the step header);
+trajectories and empty programs were described as loops (their own cards);
+the visit strip vanished for unrelated reasons (loops and drives only, the
+loops the drive moves with); an O(N²) paint; removing or renaming a loop
+broke what named it (cascades, renames carried, also from **Tables**); new
+events were zero-length (from the last event to the step's end -- derived,
+no default length); the preview was slow on long scans (clip to view,
+downsampled); light-theme contrast (colours by theme); 640 and 775 nm drawn
+alike. Added from its suggestions: undo/redo, arrow-key nudges, a row per
+device, the drive's range, More in the inspector, plainer words (*Runs
+exactly as written*, *exact timing, 10 µs clock*, messages naming the part,
+row and field), the header pinned above the scroll, Keep drawn. Not taken:
+a default step or event length (a number nobody declared); the check still
+compiles on the GUI thread (as before the makeover).
+
 ## 8. Risks
 
 - **Two definitions of a swept scan.** `GalvoScanDesigner` keeps the swept

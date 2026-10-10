@@ -108,6 +108,32 @@ def _end_positions(schedule):
     return dict(schedule.expansion.restore_um)
 
 
+def _preview_windows(schedule, program):
+    """Where the preview's zooms look, in s on the drawn (first) segment: the
+    first step (a trajectory: its first window), the first pass of the
+    innermost loop (the path), the whole of it."""
+    rate = schedule.rate_hz
+    if isinstance(schedule, RealizedTrajectory):
+        first = int(schedule.window_start[0])
+        last = int(schedule.window_start[-1] + schedule.window_ticks[-1])
+        return ((first / rate, (first + int(schedule.window_ticks[0])) / rate),
+                (first / rate, last / rate), None)
+    steps = [s for s in schedule.step_spans() if s.segment == 0]
+    if not steps:
+        return None
+    start = steps[0].start_tick
+    step = (start / rate, (start + steps[0].ticks) / rate)
+    returns = [s for s in schedule.spans
+               if s.segment == 0 and s.span.kind == 'return' and s.start_tick >= start]
+    if returns:
+        end = returns[0].start_tick + returns[0].ticks
+    else:
+        inner = int(program.loops[-1].count) if program.loops else 1
+        last = steps[min(len(steps), inner) - 1]
+        end = last.start_tick + last.ticks
+    return step, (start / rate, end / rate), None
+
+
 def _logged_positions(parts):
     """Each device's last write in the engines' logs, in µm (a step board's
     log comes back in the program's terms); an engine whose log cannot be
@@ -156,11 +182,15 @@ class ScanControllerExpert(SuperScanController):
                      f'without devices on {engines.selected}.')
         else:
             engine = engines.engines[used[0]] if used else self._engineForScans()
-            where = f'Runs on {engine.name} ({type(engine).__name__}).'
+            where = f'Runs on {engine.name}.'
+        wavelengths = {name: getattr(info, 'wavelength', None)
+                       for name, info in (self._setupInfo.lasers or {}).items()}
+        self._titleBase = None          # the template the program was made from
         self._widget.initControls(
             list(self.positioners), lasers, 'ms', detectorNames=detectors,
             presets=[(p.id, p.title) for p in presets.PRESETS.values()],
-            policies=sorted(PUBLISHED), engine=where)
+            policies=sorted(PUBLISHED), engine=where, wavelengths=wavelengths,
+            pointDetectorNames=self._pointDetectors(detectors))
 
         self._reportTimer = QtCore.QTimer(self)
         self._reportTimer.setSingleShot(True)
@@ -197,6 +227,9 @@ class ScanControllerExpert(SuperScanController):
     def setProgram(self, program, *, advancedOrigin=None):
         """Show ``program`` in the panel (``None`` for an empty one)."""
         self._program = program
+        made_from = presets.preset_of(program)[0] if program is not None else ''
+        self._titleBase = presets.PRESETS[made_from].title if made_from in presets.PRESETS \
+            else None
         self._advancedOrigin = advancedOrigin
         self._programError = '' if program is not None else self._EMPTY
         self.setParameters()
@@ -290,8 +323,10 @@ class ScanControllerExpert(SuperScanController):
         if code is None:
             return True
         if not self._widget.askApproveScript(code):
-            self._widget.setReport('The trajectory script was not approved, so it did not '
-                                   'run. Plot or Start asks again.')
+            text = ('The trajectory script was not approved, so it did not run. Draw or Run '
+                    'asks again.')
+            self._widget.setReport(text)
+            self._widget.showNotice(text)
             return False
         approvals().approve(code)
         self.updateReport()
@@ -454,16 +489,62 @@ class ScanControllerExpert(SuperScanController):
             signals = {'scanSignalsDict': {}, 'TTLCycleSignalsDict': {}, 'compiled': compiled}
         return signals, info
 
+    def _title(self, program):
+        """What the panel calls the program: its template, or ``…, edited``."""
+        if program is not None and program.trajectory is not None:
+            preset = presets.PRESETS.get(f'trajectory-{program.trajectory.pattern}')
+            return preset.title if preset else f'Trajectory: {program.trajectory.pattern}'
+        made_from = presets.preset_of(program)[0] if program is not None else ''
+        if made_from in presets.PRESETS:
+            return presets.PRESETS[made_from].title
+        return f'{self._titleBase}, edited' if self.__dict__.get('_titleBase') else \
+            'Scan program'
+
+    @staticmethod
+    def _trajectorySummary(program):
+        """A path in words, for the panel (a path is not loops)."""
+        if program is None or program.trajectory is None:
+            return None
+        path = program.trajectory
+        lasers = sorted({e.device for e in program.timeline})
+        text = (f'{" and ".join(path.devices)} follow a {path.pattern} for '
+                f'{format_seconds(path.duration_s)}, measured every '
+                f'{format_seconds(program.step_s)} and gridded at {path.pixel_um:g} µm; '
+                f'{format_seconds(path.approach_s)} onto the path and back.')
+        return {'text': text, 'preset': f'trajectory-{path.pattern}'
+                if f'trajectory-{path.pattern}' in presets.PRESETS else '',
+                'events': (f'On along the path: {", ".join(lasers)}.' if lasers else '')}
+
     def updateReport(self):
-        """Compile what the panel shows and say what the engine makes of it."""
+        """Compile what the panel shows and say what the engine makes of it:
+        as text (the report) and as data (the header and the check)."""
         self.getParameters()
         choice = self._choice(self._program)
+        check = {'title': self._title(self._program),
+                 'engine': choice.engine.name if choice.engine is not None else '',
+                 'trajectory': self._trajectorySummary(self._program)}
         try:
             compiled = self._compile()
             schedule = self._scheduleOf(compiled)
         except ScanDesignRefusedError as error:
             where = f' on {choice.engine.name}' if choice.engine is not None else ''
             self._widget.setReport(f'Not runnable{where}.\n\n{error}')
+            refused = getattr(error.__cause__, 'report', None)
+            # each reason the once: the engine's, where it gave them
+            problems = list(refused.reasons()) if refused is not None else [str(error)]
+            facts = {}
+            caps = getattr(choice.engine, 'capabilities', None)
+            if callable(caps):
+                try:
+                    facts['grid_s'] = caps().timing_grid_s
+                except Exception:
+                    pass
+            if self._program is not None:
+                facts['policy'] = self._program.timing_policy
+            check.update(runnable=False, problems=problems, facts=facts, verdicts=[
+                (v.verdict, v.feature, v.reason or v.cost) for v in
+                (refused.verdicts if refused is not None else ())])
+            self._widget.setCheck(check)
             return
         lines = [f'Runnable on {choice.engine.name}.']
         if len(choice.devices) > 1:
@@ -474,39 +555,75 @@ class ScanControllerExpert(SuperScanController):
             if verdict.reason or verdict.cost:
                 text += f' -- {verdict.reason or verdict.cost}'
             lines.append(text)
+        check.update(runnable=True, problems=[], verdicts=[
+            (v.verdict, v.feature, v.reason or v.cost) for v in compiled.report.verdicts])
+        facts = {'grid_s': schedule.grid_s, 'policy': schedule.policy.id,
+                 'duration_s': self._duration_s(schedule)}
+        notes = []
+        if len(choice.devices) > 1:
+            notes.append('Runs on ' + '; '.join(f'{name} ({", ".join(found)})' for name, found
+                                                in sorted(choice.devices.items())) + '.')
+        recorded = []
         if not isinstance(schedule, RealizedTrajectory):
             detectors = list(self._setupInfo.detectors)
-            recorded = binding_lines(compiled.program, self._schedulesOf(compiled), detectors,
-                                     point_detectors=self._pointDetectors(detectors))
+            point = self._pointDetectors(detectors)
+            schedules = self._schedulesOf(compiled)
+            recorded = binding_lines(compiled.program, schedules, detectors,
+                                     point_detectors=point)
             if recorded:
                 lines += [''] + recorded
+            facts['steps'] = len(schedule.step_spans())
+            facts['frames'] = {
+                detector: total for detector in detectors if detector not in point
+                for total in [sum(frames_per_step(compiled.program, schedules, detector))]
+                if total}
         lines += ['', f'Timing policy {schedule.policy.id}, '
                       f'{format_seconds(schedule.grid_s)} grid.']
         if isinstance(schedule, RealizedTrajectory):
-            lines += self._trajectoryReport(schedule)
+            path = self._trajectoryReport(schedule)
+            lines += path
+            notes += path
             refusal = self._durationRefusal(compiled)
-            self._widget.setReport('\n'.join(lines + ([refusal] if refusal else [])))
+            if refusal:
+                lines.append(refusal)
+                check.update(runnable=False, problems=[refusal])
+            self._widget.setReport('\n'.join(lines))
+            self._widget.setCheck({**check, 'facts': facts, 'notes': notes,
+                                   'recorded': recorded})
             return
         lines.append(f'Duration {format_seconds(self._duration_s(schedule))}, '
                      f'{len(schedule.step_spans())} steps.')
         approach = approach_span(schedule)
         if approach is not None:
-            lines.append(f'Starts with {format_seconds(approach.ticks / schedule.rate_hz)} for '
-                         'the drives to reach their first positions and settle.')
+            text = (f'Starts with {format_seconds(approach.ticks / schedule.rate_hz)} for '
+                    'the drives to reach their first positions and settle.')
+            lines.append(text)
+            notes.append(text)
         elif not compiled.program.approach:
-            lines.append('Starts at its first positions, without an approach (an Advanced '
-                         'scan, as its designer plays it).')
+            text = ('Starts at its first positions, without an approach (an Advanced '
+                    'scan, as its designer plays it).')
+            lines.append(text)
+            notes.append(text)
         for change in schedule.changes:
-            lines.append(f'Runs differently: {change.quantity} at {change.where}, '
-                         f'{format_seconds(change.requested_s)} as '
-                         f'{format_seconds(change.realized_s)}.')
+            text = (f'Runs differently: {change.quantity} at {change.where}, '
+                    f'{format_seconds(change.requested_s)} as '
+                    f'{format_seconds(change.realized_s)}.')
+            lines.append(text)
+            notes.append(text)
         info = self._scanInfoOf(compiled)
         if not info.get(RASTER_KEY):
-            lines.append(f'Point detectors cannot assemble it: {info.get(RASTER_REASON_KEY)}')
+            text = f'Point detectors cannot assemble it: {info.get(RASTER_REASON_KEY)}'
+            lines.append(text)
+            # on the panel only where a point detector is bound to take part
+            point = set(self._pointDetectors([b.detector for b in compiled.program.detectors]))
+            if point:
+                notes.append(text)
         refusal = self._durationRefusal(compiled)
         if refusal:
             lines.append(refusal)
+            check.update(runnable=False, problems=[refusal])
         self._widget.setReport('\n'.join(lines))
+        self._widget.setCheck({**check, 'facts': facts, 'notes': notes, 'recorded': recorded})
 
     def _trajectoryReport(self, realized):
         """The path, its windows and grid, and the limits readout: each
@@ -535,11 +652,14 @@ class ScanControllerExpert(SuperScanController):
 
     def plotProgram(self):
         if not self._approveScript():
+            self._widget.showPreviewProblem('Nothing drawn: the trajectory script was not '
+                                            'approved.')
             return
         try:
             compiled = self._compile()
         except ScanDesignRefusedError as error:
             self._widget.setReport(str(error))
+            self._widget.showPreviewProblem(f'Nothing to draw: {error}')
             return
         schedule = self._scheduleOf(compiled)
         if isinstance(schedule, RealizedTrajectory):
@@ -551,7 +671,12 @@ class ScanControllerExpert(SuperScanController):
         for name, line in sorted(dense['digital'].items()):
             traces[name] = line.astype(float)
         n = max((len(v) for v in traces.values()), default=0)
-        self._widget.showTraces(np.arange(n) / rate, traces)
+        segments = len(getattr(schedule, 'segments', ()) or ())
+        self._widget.showTraces(
+            np.arange(n) / rate, traces, analog=sorted(dense['analog']),
+            windows=_preview_windows(schedule, compiled.program),
+            note=('Drawn up to the first wait for a trigger: what follows depends on when it '
+                  'comes.') if segments > 1 else '')
 
     # ------------------------------------------------------------------
     # Running

@@ -52,8 +52,8 @@ class ScriptNotApproved(ProgramError):
         self.sha256 = script_sha256(code)
         super().__init__(
             'This program holds a trajectory script (Python) that has not been approved on '
-            'this computer, so it was not run. Plot or Start shows it and asks; Make… shows '
-            'it too.')
+            'this computer, so it was not run. Draw or Run shows it and asks; its template '
+            'shows it too.')
 
 
 class ScriptApprovals:

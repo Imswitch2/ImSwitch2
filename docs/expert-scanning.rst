@@ -17,6 +17,80 @@ with the signal designers, so ``scanDesigner`` and ``TTLCycleDesigner`` can be
 image a synthetic sample, and a mock camera takes a frame per trigger.
 
 
+The panel
+=========
+
+The panel describes the scan from top to bottom, in the order it happens.
+When the dock is wide enough, **Check** and **Preview** stand beside the
+editor; when it is narrow, below it.
+
+**The header** stays in view while the rest scrolls. It names the program
+(its template, or *edited* once changed) and its loops (*2 timepoints × 3
+cycles × 4 planes*), says whether it can run and on which engine (*Ready on
+triggerscope*; red, with the first reason on the line under it, when it
+cannot -- click it for the whole check), and shows its steps, duration,
+frames per camera and the engine's clock. **Run**, **Templates** (the
+presets and trajectories, below), **Open…**, **Save…**, **Undo** and **Redo**
+(Ctrl+Z, Ctrl+Shift+Z), **Repeat** and **Tables** are next to it. An empty
+program starts with the templates as buttons; a trajectory is shown as its
+path, with **Edit the path…** to change it.
+
+**Scan order** shows the loops as blocks, outermost first, each with its
+count and its order (the arrow: forward, backward, serpentine; click for the
+next). A pause or a trigger before a loop's iterations shows on its block.
+A serpentine alternates with the loop right outside it (the outermost loop
+cannot be one). The **⋯** of a block renames it, moves it outwards or
+inwards, changes its kind, says how many loops outside it a serpentine
+alternates with, or removes it -- with the waits before it and the anchors on
+it, which the line under the header says (**Undo** brings them back); **+
+Loop** adds one inside the others. Scrolling over a field you have not
+clicked into scrolls the panel; it does not change the field. The bars under the blocks are the positions the first
+drive visits, in order, over the innermost two loops: an interleaved order
+is seen at a glance.
+
+**Positions** writes each drive as a formula -- *Z = 1 µm + 0.15 µm × cycle
++ 0.45 µm × plane* (a blank weight: that loop does not move it), with where
+that takes it (*12 positions, from 1 to 2.65 µm*) -- and how it moves, as a
+sentence: the move shape, the move and settle times, at the
+end of each step or between steps, the return after each pass, absolute or
+from where it starts, and where it goes after the scan.
+
+**Inside every step** draws one step: each event a bar on its device's row,
+in the colour of the laser's light. Drag a bar to move it, an edge to resize
+it (a narrow bar: just outside its edges), or select it and nudge it with
+the arrow keys -- one tick of the engine's clock, ten with Shift; Delete
+removes it. Times snap to the engine's clock and stay inside the step, and
+the times show while you drag. The time a drive moves at the end of the step
+is hatched, so an exposure that must fall while the stage stands still is
+placed outside it. With line steps, the phase box shows the step as one
+phase plays it. **+ Event** adds a pulse, a camera exposure, a power level or
+a move, from the end of the last event to the end of the step, to be
+resized. Events that end after the step offer to lengthen it. Under the
+drawing, the selected event's device, kind and times (and value, for a
+level or a move); **More** shows the rest -- its phases, whether it needs
+the drives still, every step or only the first or last of each pass, its
+id.
+
+**Waits** and **Recording** are sentences: *Before each timepoint, pause
+100 ms; outputs off*; *Camera takes 1 per step of exposure*. Under the
+recording, what the check says each detector records.
+
+**Check** is the engine's verdict (the report, below): what stops the run
+first, in red; each feature that is not native, and the notes. **Full
+report** shows all of it.
+
+**Preview** draws every device on its own lane, like a logic analyser --
+the drives' positions scaled into their lanes, the lines high or low -- for
+**One step**, **One pass** or **All**. **Draw** compiles it the way the run
+will; after an edit the preview says it changed since it was drawn, and
+**Keep drawn** draws it again after every edit the engine accepts. A program
+that cannot be drawn says why where the drawing would be. A program that
+waits for a trigger is drawn up to that wait.
+
+**Tables** shows the same program as tables, every field of it, as the
+parts above edit them: one program, two views.
+
+
 The program
 ===========
 
@@ -92,8 +166,8 @@ moves for: lengthen the return, or let the event run while it moves
 Presets
 =======
 
-**Make…** builds a program from a few parameters, in a form; the program
-remembers them, so **Make…** opens the form again with them.
+**Templates** builds a program from a few parameters, in a form; the program
+remembers them, so its template opens the form again with them.
 
 **MS-RESOLFT (cycles x planes)**
     One readout device visits ``first + dy * (cycle + cycles * plane)``,
@@ -128,9 +202,9 @@ can be on along the path.
 
 **A Python path runs only once it is approved on this computer.** A scan file
 can carry one, and its code runs whenever the program is checked, plotted or
-run. Code written in the **Make…** form counts as approved. Code a file
-brings is shown when the file is loaded with **Load**, and again at **Plot**
-or **Start** until it is approved; declined, it does not run, and the report
+run. Code written in a template's form counts as approved. Code a file
+brings is shown when the file is loaded with **Open…**, and again at **Draw**
+or **Run** until it is approved; declined, it does not run, and the report
 says so. The startup restore and scripts that load or set a program never
 ask: the program opens with its path held until someone approves it at the
 panel. Approved code is remembered by its SHA-256 (line endings ignored) in
@@ -213,11 +287,11 @@ linear speed starts with an unbounded acceleration there and is refused on a
 galvo.
 
 A trajectory runs on a streaming engine (the NI-DAQ). Cameras take no frames
-on it. The tables show the laser's timing on the path; **Make…** edits the
+on it. The panel shows the laser's timing on the path; **Templates** edits the
 path itself.
 
 **Your own patterns.** A ``.py`` file in the ``scan_patterns`` folder of the
-user files (``ImSwitchConfig/scan_patterns``) adds patterns to **Make…**
+user files (``ImSwitchConfig/scan_patterns``) adds patterns to **Templates**
 without touching ImSwitch: it defines ``PATTERNS``, a list of ``Pattern`` --
 an id (dotted and your own, such as ``user.rosette``), a title, the devices
 it moves (two: the X and Y device), its parameters as ``(name, label,
@@ -241,7 +315,7 @@ code you trust.
 The report
 ==========
 
-The text under the tables is the scan engine's verdict on the program,
+**Check** is the scan engine's verdict on the program,
 compiled the same way the run compiles it, so it refuses exactly what the run
 would refuse:
 
@@ -255,13 +329,14 @@ would refuse:
   that is not one runs for cameras; with an APD or PMT taking part it is
   refused, naming them.
 
-**Plot** draws every device's trace: positions in µm, lines as 0 and 1.
+**Draw**, in the preview, draws every device's trace, each on its lane:
+positions in µm, scaled into their lane, lines high or low.
 
 
 Running and recording
 =====================
 
-**Run Scan** runs the program on the engine, through the same lifecycle as
+**Run** runs the program on the engine, through the same lifecycle as
 the other scan panels: **Repeat**, recording, the progress of the run.
 Recording asks the program for its positions, frames per position and
 layout: a camera records the program's loops (with a ``repeat`` loop when it
