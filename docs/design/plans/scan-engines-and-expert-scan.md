@@ -2,7 +2,8 @@
 
 **Status:** Plan, draft 7. The direction is agreed (Lenny, 2026-10-08:
 "that sounds like what we're aiming for"), and the review is closed with
-draft 7's amendments: proceed to M0 (§9). Nothing is implemented.
+draft 7's amendments. **M0 is implemented** on `feat/scan-program-m0`
+(§7.1); nothing visible has changed.
 **Date:** 2026-10-08
 **Branch:** `docs/scan-engines-expert-scan`, off `feat/simple-point-scan`
 (56ef43f0, which carries the scan cloak and the Advanced scan-freeze work).
@@ -1296,6 +1297,70 @@ designed:
 | M6 | Multi-engine design (§5.4: clocks, wait propagation, coordinated stop) and then sync; event-driven programs (EtSnouty); the optional raw measurement stream for trajectories | — | — |
 
 ---
+
+### 7.1 M0 status (2026-10-08)
+
+**Delivered,** Qt-free, in `imswitch/imcontrol/model/scan_program/`:
+
+| Module | What it does |
+|---|---|
+| `program.py` | The model and its validation, which lists every problem |
+| `motion.py` | The transition shapes. Beta's ramp now lives here and the designer calls it |
+| `interpreter.py` | Expansion into steps, returns, moves, waits and preparation stages |
+| `schedule.py` | Realization under a policy: changes, refusals with neighbours, run-wide error, deadlines with the overrun rule, order and overlap, per-device stationarity, separations, sources |
+| `densify.py` | Samples for streaming engines |
+| `policy.py`, `policies/` | `strict-v1` and `advanced-compatible-v1` as schema-validated documents, pinned by content hash |
+| `preparation.py` | The three-state preparation key and `legacy-preparation-v1` |
+| `advanced.py` | The Advanced adapter, the requested-as round trip, legacy-file recognition and the layout inputs |
+
+**The acceptance results:**
+
+- **Beta goldens were captured first** (`test_beta_signal_goldens.py`, ten
+  cases), on unchanged code.
+- **The interpreter reproduces every one of them** within the golden
+  tolerance, under `advanced-compatible-v1`.
+- **It also reproduces the Advanced TTL designer on the same scans,
+  sample-exactly,** clocks included (four cases).
+- So for stepped Advanced scans neither designer has to stay a compile path.
+  The swept (Galvo) fast axis still does, by design.
+- **Layouts.** `build_advanced_scan_layouts` fed from the program
+  (`layout_inputs`) gives the same layouts as fed from the designers. The
+  frame-count check gives the same verdict on the interpreter's TTL as on
+  the designer's.
+- Mutation checks were run on the return placement, the stationarity
+  check, the phase masks, the compatible rounding, the overrun rule and
+  unknown preparation; all are caught.
+
+**Found by M0:**
+
+- **The Advanced TTL designer's clocks are 10 samples, hard-coded**
+  (`clock_len=10` in `__generate_all_clocks`): 100 µs at 100 kHz,
+  whatever the line. Its window edges round half to even (Python's
+  `round`). The compatibility policy documents both.
+- **The layout repeat loop counts phases a detector is off in.** The
+  controller counts pulses with every line step forced on
+  (`_layoutPulseCounts`), so a phase the camera is off in can size its
+  repeat loop. A program knows only the phases it takes part in. They differ
+  only when a disabled phase has more pulses than every enabled one; this is
+  pinned by `test_a_disabled_phase_does_not_size_the_repeat_loop` and is
+  **open for M2**.
+
+**Deliberate differences from today:**
+
+- A step whose rounded move and settle leave no stationary sample is
+  refused. Beta plays a ramp that folds into the previous pixel there; its
+  own check runs only on the unrounded values. Recorded in the policy's
+  rationale.
+
+**Not yet done:**
+
+- **Critical separations are checked, not yet placed** relative to their
+  reference. Under `strict-v1` the two are the same, because every edge is
+  exact. A tolerant policy would refuse where it should place.
+- **Logical-to-electrical mapping** (§2.6a, `ttlActiveLevel`) belongs to
+  the engines, in M1. Densify emits logical states.
+- **The panel-level load → preview → save → reload test** waits for M2.
+  The model-level round trip (the request kept verbatim) is in M0.
 
 ## 8. Risks
 

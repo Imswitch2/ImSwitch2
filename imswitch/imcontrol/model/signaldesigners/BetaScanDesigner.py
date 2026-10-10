@@ -4,6 +4,7 @@ from .basesignaldesigners import (
     ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
 )
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
+from ..scan_program.motion import smooth_ramp
 from imswitch.imcommon.model import initLogger
 
 #: Fast-axis ramp and settle inside each pixel dwell, in seconds. These were
@@ -416,14 +417,8 @@ class BetaScanDesigner(ScanDesigner):
         return sig_dict, positions, scanInfoDict
 
     def __smoothRamp(self, start, end, samples):
-        start = float(start)
-        end = float(end)
-        curve_half = 0.6
-        n = int(np.floor(curve_half * samples))
-        x = np.linspace(0, np.pi / 2, num=n, endpoint=True)
-        signal = start + (end - start) * np.sin(x)
-        signal = np.append(signal, end * np.ones(int(np.ceil((1 - curve_half) * samples))))
-        return signal
+        # One definition, shared with the scan-program interpreter.
+        return smooth_ramp(start, end, samples)
 
     def __plot_curves(self, plot, signals):
         """ Plot all scan curves, for debugging. """
