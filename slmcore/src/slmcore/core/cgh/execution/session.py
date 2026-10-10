@@ -39,6 +39,7 @@ from ..measurement_metrics import (
     analyze_measurement_intensity,
 )
 from ..targets.base import Target
+from ..targets.lattice import LatticeDefinition
 from ..targets.resolution import TargetResolution
 from .errors import InvalidCGHResultError
 from .job import CGHJob
@@ -67,6 +68,17 @@ from .spec import CGHSpec
 from .status import CGHResultState,CGHStatus
 
 T = TypeVar("T")
+
+
+def _position_target_lattice(resolution: TargetResolution):
+    """Return authoritative finite lattice topology for position feedback."""
+    try:
+        lattice=LatticeDefinition.from_params(resolution.canonical_params).lattice_representation()
+    except (KeyError,TypeError,ValueError):
+        return None
+    if not np.array_equal(lattice.lattice_indices,resolution.lattice_indices):
+        return None
+    return lattice
 
 
 class CGHSession:
@@ -1083,6 +1095,7 @@ class CGHSession:
 
         oriented_localization = orient_localization(
             measurement.localization,orientation,
+            target_lattice=_position_target_lattice(target.resolution),
         )
         oriented_measurement = FeedbackMeasurement(
             acquisition=measurement.acquisition,
@@ -1161,6 +1174,7 @@ class CGHSession:
         target = self._current_round_target(state,context)
         oriented_localization = orient_localization(
             measurement.localization,orientation,
+            target_lattice=_position_target_lattice(target.resolution),
         )
         return analyze_position(
             FeedbackMeasurement(

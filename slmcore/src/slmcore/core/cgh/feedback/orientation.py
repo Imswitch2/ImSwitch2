@@ -7,6 +7,10 @@ from enum import Enum
 import numpy as np
 
 from ..lattice_geometry import LatticeRepresentation
+from ..lattice_mapping import (
+    detector_frame_transform,finite_lattice_mapping_candidates,
+    lattice_transform_matrix,
+)
 from ..localization import LocalizationResult
 
 
@@ -67,6 +71,72 @@ def _localization_lattice_representation(
         return None
 
 
+def _target_lattice_representation(
+    localization: LocalizationResult,
+) -> LatticeRepresentation | None:
+    """Return the authoritative target topology captured by the localization."""
+    try:
+        from ..targets.lattice import LatticeDefinition
+        lattice=LatticeDefinition.from_params(localization.target_params).lattice_representation()
+        if np.array_equal(lattice.lattice_indices,localization.lattice_indices):
+            return lattice
+    except (KeyError,TypeError,ValueError):
+        pass
+    return _localization_lattice_representation(localization)
+
+
+def _topology_orientation_permutation(
+    localization: LocalizationResult,
+    orientation: FeedbackOrientation,
+    target_lattice: LatticeRepresentation,
+) -> tuple[np.ndarray,str,np.ndarray] | None:
+    """Map camera-canonical localization columns into target lattice identities.
+
+    Localization canonicalization may leave a staggered motif in a residual D4
+    logical frame because not every rectangular ordering is a finite motif
+    self-symmetry.  Detect that residual detector frame, compose it with the
+    configured camera->target feedback orientation, and resolve the finite motif
+    phase without cyclic edge wrapping.
+    """
+    source_lattice=_localization_lattice_representation(localization)
+    if source_lattice is None:
+        return None
+    if not isinstance(target_lattice,LatticeRepresentation):
+        raise TypeError("target_lattice must be a LatticeRepresentation")
+    if source_lattice.lattice_indices.shape[1]!=target_lattice.lattice_indices.shape[1]:
+        return None
+    if not np.array_equal(target_lattice.lattice_indices,localization.lattice_indices):
+        return None
+
+    source_frame=detector_frame_transform(
+        source_lattice,localization.expected_positions_px,
+        np.ones(localization.lattice_indices.shape[1],dtype=bool),
+    )
+    combined=(
+        lattice_transform_matrix(orientation.value)
+        @lattice_transform_matrix(source_frame)
+    )
+    candidates=finite_lattice_mapping_candidates(
+        source_lattice,target_lattice,combined,best_overlap_only=True,
+    )
+    complete=[]
+    count=localization.lattice_indices.shape[1]
+    for source_indices,translation in candidates:
+        source_indices=np.asarray(source_indices,dtype=np.int64)
+        if (
+            source_indices.shape==(count,)
+            and np.all(source_indices>=0)
+            and np.unique(source_indices).size==count
+        ):
+            complete.append((source_indices,np.asarray(translation,dtype=np.float64)))
+    if not complete:
+        return None
+    complete.sort(key=lambda item:float(np.dot(item[1],item[1])))
+    permutation,translation=complete[0]
+    return permutation,source_frame,translation
+
+
+
 def orient_lattice_representation(
     lattice: LatticeRepresentation,
     permutation: np.ndarray,
@@ -100,29 +170,49 @@ def orient_lattice_representation(
 def orient_localization(
     localization: LocalizationResult,
     orientation: FeedbackOrientation | str,
+    *,
+    target_lattice: LatticeRepresentation | None=None,
 ) -> LocalizationResult:
-    """Return target-indexed localization for one discrete camera orientation.
+    """Return localization arrays in authoritative target-site order.
 
-    The acquired/cropped image itself is deliberately left untouched.  Only the
-    correspondence between logical target indices and localized camera points is
-    permuted.  This is equivalent to rotating/flipping the camera image before
-    localization, while preserving native camera coordinates for display.
+    Rectangular index permutations are retained as a compatibility fallback.
+    When finite lattice topology is available, the mapping is motif-aware: the
+    residual detector frame left by localization canonicalization is composed
+    with the configured camera->target orientation and matched to the target
+    lattice with a non-wrapping finite phase map.  Downstream reference
+    resolution and detector->kxy analysis then consume the same target ordering.
     """
     if not isinstance(localization,LocalizationResult):
         raise TypeError("localization must be a LocalizationResult")
     orientation = FeedbackOrientation.normalize(orientation)
-    if orientation is FeedbackOrientation.IDENTITY:
-        return localization
+    if target_lattice is None:
+        target_lattice=_target_lattice_representation(localization)
 
-    permutation = orientation_permutation(
-        localization.lattice_indices,orientation,
+    topology_mapping=(
+        None if target_lattice is None
+        else _topology_orientation_permutation(localization,orientation,target_lattice)
     )
     diagnostics = dict(localization.diagnostics or {})
-    lattice=_localization_lattice_representation(localization)
-    if lattice is not None:
-        diagnostics["lattice_representation"]=orient_lattice_representation(
-            lattice,permutation,orientation,
-        ).to_dict()
+    if topology_mapping is not None:
+        permutation,source_frame,logical_translation=topology_mapping
+        diagnostics["lattice_representation"]=target_lattice.to_dict()
+        diagnostics["feedback_orientation_topology_aware"]=True
+        diagnostics["feedback_source_detector_frame"]=source_frame
+        diagnostics["feedback_logical_translation"]=tuple(
+            float(value) for value in logical_translation
+        )
+    else:
+        if orientation is FeedbackOrientation.IDENTITY:
+            return localization
+        permutation = orientation_permutation(
+            localization.lattice_indices,orientation,
+        )
+        lattice=_localization_lattice_representation(localization)
+        if lattice is not None:
+            diagnostics["lattice_representation"]=orient_lattice_representation(
+                lattice,permutation,orientation,
+            ).to_dict()
+        diagnostics["feedback_orientation_topology_aware"]=False
     for key in ("matched_mask","inferred_mask","detection_indices"):
         value = diagnostics.get(key)
         if value is not None:

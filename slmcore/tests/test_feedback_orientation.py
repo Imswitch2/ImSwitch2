@@ -156,3 +156,89 @@ def test_staggered_feedback_orientation_keeps_topology_paired_with_positions():
         oriented.measured_positions_px,localization.measured_positions_px[:,permutation],
     )
     assert oriented_lattice.diagnostics["feedback_orientation"]=="flip_horizontal"
+
+
+def test_staggered_target_order_drives_position_feedback_sign_consistently():
+    """Regression for the 405-style signed-stagger + horizontal-flip case.
+
+    Localization is left in a residual Rotate-180 logical frame because the
+    staggered finite motif cannot use every rectangular self-symmetry.  Feedback
+    orientation must first restore true target-site order; analyze_position then
+    needs no special stagger/sign handling.
+    """
+    from slmcore.core.cgh.feedback import FeedbackMeasurement
+    from slmcore.core.cgh.feedback.analysis import analyze_position
+    from slmcore.core.cgh.lattice_geometry import LatticeRepresentation
+    from slmcore.core.measurement import ImageMeasurement
+
+    nx=ny=5
+    x,y=np.meshgrid(np.arange(nx),np.arange(ny),indexing="xy")
+    indices=np.vstack([x.ravel(),y.ravel()]).astype(np.int64)
+    lattice=LatticeRepresentation.alternating_rows(indices,-0.5)
+    logical=np.asarray(lattice.centered_logical_positions,dtype=np.float64)
+
+    feedback_linear=np.array([[-1.0,0.0],[0.0,1.0]])
+    detector_linear=np.array([[20.0,2.0],[-1.0,18.0]])
+    physical_target_positions=(
+        detector_linear@(feedback_linear@logical)+np.array([[120.0],[100.0]])
+    )
+
+    # Camera-canonical localization columns are in a residual Rotate-180 frame.
+    # For this odd-sized alternating-row lattice, composing Rotate-180 with the
+    # configured horizontal feedback flip is a vertical target-site reversal.
+    target_to_source=np.flipud(np.arange(nx*ny).reshape(ny,nx)).ravel()
+    inverse=np.empty_like(target_to_source)
+    inverse[target_to_source]=np.arange(target_to_source.size)
+    raw_positions=physical_target_positions[:,inverse]
+    localization=LocalizationResult(
+        target_type="multi_foci_vector",
+        target_params={
+            "period_x_px":20.0,"period_y_px":18.0,
+            "n_foci_x":nx,"n_foci_y":ny,
+            "rotation_deg":0.0,"skew_deg":0.0,"stagger":-0.5,
+        },
+        parameters={},lattice_indices=indices,
+        crop_coord=(0,256,0,256),cropped_image=np.zeros((256,256)),
+        expected_positions_px=raw_positions,measured_positions_px=raw_positions,
+        period_x_px=20.0,period_y_px=18.0,offset_x_px=120.0,offset_y_px=100.0,
+        diagnostics={
+            "matched_mask":tuple(True for _ in range(indices.shape[1])),
+            "resolved_stagger":-0.5,
+            "lattice_representation":lattice.to_dict(),
+        },
+    )
+
+    oriented=orient_localization(
+        localization,FeedbackOrientation.FLIP_HORIZONTAL,target_lattice=lattice,
+    )
+    np.testing.assert_allclose(
+        oriented.expected_positions_px,physical_target_positions,atol=1e-12,
+    )
+    assert oriented.diagnostics["feedback_orientation_topology_aware"] is True
+    assert oriented.diagnostics["feedback_source_detector_frame"]=="rotate_180"
+
+    # Use an independent ideal-kxy affine so the sign check is not tautological.
+    ideal_linear=np.array([[0.045,0.006],[-0.004,0.052]])
+    ideal=ideal_linear@logical
+    desired_kxy_shift=np.array([[0.003],[-0.002]])
+    detector_per_kxy=(
+        detector_linear@feedback_linear@np.linalg.inv(ideal_linear)
+    )
+    detector_error=detector_per_kxy@desired_kxy_shift
+    reference=physical_target_positions+detector_error
+
+    measurement=FeedbackMeasurement(
+        acquisition=ImageMeasurement(
+            image=np.zeros((256,256),dtype=np.float64),source="test",
+        ),
+        localization=oriented,
+    )
+    analysis=analyze_position(
+        measurement,ideal_positions_kxy=ideal,
+        reference_positions_px=reference,parameters={},
+    )
+    np.testing.assert_allclose(
+        analysis.correction_kxy,
+        np.repeat(desired_kxy_shift,indices.shape[1],axis=1),
+        atol=1e-12,
+    )
