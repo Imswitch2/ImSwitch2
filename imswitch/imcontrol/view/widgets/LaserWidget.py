@@ -8,6 +8,19 @@ from .basewidgets import Widget
 class LaserWidget(Widget):
     """Laser widget supporting coupled and separated laser-power policies."""
 
+    _transparentToolButtonStyle = """
+        QToolButton {
+            border: none;
+            background: transparent;
+        }
+        QToolButton:hover {
+            background: transparent;
+        }
+        QToolButton:pressed {
+            background: transparent;
+        }
+    """
+
     sigEnableChanged = QtCore.Signal(str, bool)
     sigValueChanged = QtCore.Signal(str, float)
 
@@ -102,11 +115,37 @@ class LaserWidget(Widget):
         self.resumeLiveButton.clicked.connect(self.sigResumeLiveClicked)
         self.resumeLiveButton.hide()
 
+        self.presetsLabel = QtWidgets.QLabel('Presets:')
+
         self.presetsList = QtWidgets.QComboBox()
-        self.presetsList.setMinimumWidth(150)
+        self.presetsList.setMinimumWidth(200)
+        self.presetsList.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
         # ``activated`` is user-only: rebuilding the combo or switching context
         # never accidentally loads a preset.
         self.presetsList.activated.connect(self._presetActivated)
+
+        # Match the compact reload affordance used by the SLM config selector.
+        # Reload deliberately reuses the normal preset-load signal so there is
+        # only one controller path for applying a selected preset.
+        self.reloadPresetButton = QtWidgets.QToolButton()
+        self.reloadPresetButton.setIcon(
+            self.style().standardIcon(
+                getattr(
+                    QtWidgets.QStyle,
+                    'SP_BrowserReload',
+                    QtWidgets.QStyle.SP_ArrowRight,
+                )
+            )
+        )
+        self.reloadPresetButton.setAutoRaise(True)
+        self.reloadPresetButton.setFixedSize(22, 22)
+        self.reloadPresetButton.setToolTip('Reload selected preset')
+        self.reloadPresetButton.setStyleSheet(self._transparentToolButtonStyle)
+        self.reloadPresetButton.clicked.connect(self._reloadSelectedPreset)
+        self.reloadPresetButton.setEnabled(False)
 
         self.moreButton = QtWidgets.QToolButton()
         self.moreButton.setText('More…')
@@ -128,11 +167,15 @@ class LaserWidget(Widget):
         self.clearPresetAction.triggered.connect(self.sigClearPresetClicked)
 
         self.topBar.addWidget(self.contextFrame, 0)
+        # Keep the Scan-editing warning next to the context selector. This
+        # leaves the right side of the sticky bar available for a wider preset
+        # selector without weakening the warning's association with SCAN.
+        self.topBar.addWidget(self.scanEditingLabel, 0, QtCore.Qt.AlignVCenter)
         self.topBar.addWidget(self.resumeLiveButton, 0)
         self.topBar.addStretch(1)
-        self.topBar.addWidget(self.scanEditingLabel, 0, QtCore.Qt.AlignCenter)
-        self.topBar.addStretch(1)
+        self.topBar.addWidget(self.presetsLabel, 0, QtCore.Qt.AlignVCenter)
         self.topBar.addWidget(self.presetsList, 0)
+        self.topBar.addWidget(self.reloadPresetButton, 0, QtCore.Qt.AlignVCenter)
         self.topBar.addWidget(self.moreButton, 0)
         self.layout.addLayout(self.topBar, 0, 0)
         self.layout.addWidget(self.scrollArea, 1, 0)
@@ -166,6 +209,11 @@ class LaserWidget(Widget):
             if found < 0:
                 found = self.presetsList.findText(text)
             name = self.presetsList.itemData(found) if found >= 0 else None
+        if name:
+            self.sigPresetSelected.emit(str(name))
+
+    def _reloadSelectedPreset(self):
+        name = self.getCurrentPreset()
         if name:
             self.sigPresetSelected.emit(str(name))
 
@@ -307,6 +355,7 @@ class LaserWidget(Widget):
         selected = self.getCurrentPreset()
         hasSelection = bool(selected)
         self.updatePresetAction.setEnabled(hasSelection)
+        self.reloadPresetButton.setEnabled(hasSelection)
         self.renamePresetAction.setEnabled(hasSelection)
         self.deletePresetAction.setEnabled(hasSelection)
         self.clearPresetAction.setEnabled(hasSelection)

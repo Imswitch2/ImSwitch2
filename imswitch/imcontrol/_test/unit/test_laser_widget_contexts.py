@@ -168,3 +168,46 @@ def test_separated_mode_restores_context_controls(qtbot):
     assert not widget.contextFrame.isHidden()
     widget.setPowerContext('scan', emitSignal=False)
     assert not widget.scanEditingLabel.isHidden()
+
+
+def test_preset_header_restores_label_reload_and_wider_combo(qtbot):
+    widget = _widget(qtbot)
+
+    assert widget.presetsLabel.text() == 'Presets:'
+    assert widget.presetsList.minimumWidth() >= 200
+    assert widget.reloadPresetButton.toolTip() == 'Reload selected preset'
+    assert not widget.reloadPresetButton.isEnabled()
+
+    widget.setPresetNames(['Screening'], selected='Screening')
+    assert widget.reloadPresetButton.isEnabled()
+
+    widget.setPowerMode('coupled')
+    assert not widget.presetsLabel.isHidden()
+    widget.setPowerMode('separated')
+    assert not widget.presetsLabel.isHidden()
+
+
+def test_reload_button_reloads_current_preset_through_existing_load_signal(qtbot):
+    widget = _widget(qtbot)
+    loaded = []
+    widget.sigPresetSelected.connect(loaded.append)
+
+    widget.setPresetNames(['Screening', 'Acquisition'], selected='Screening')
+    assert loaded == []
+
+    widget.reloadPresetButton.click()
+    assert loaded == ['Screening']
+
+    widget.setCurrentPreset(None)
+    assert not widget.reloadPresetButton.isEnabled()
+
+
+def test_scan_editing_banner_is_adjacent_to_context_selector(qtbot):
+    widget = _widget(qtbot)
+
+    context_index = widget.topBar.indexOf(widget.contextFrame)
+    banner_index = widget.topBar.indexOf(widget.scanEditingLabel)
+    preset_label_index = widget.topBar.indexOf(widget.presetsLabel)
+
+    assert banner_index == context_index + 1
+    assert preset_label_index > banner_index
