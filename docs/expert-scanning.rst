@@ -84,6 +84,64 @@ Every value is a parameter of the form; a preset defaults no time or
 distance.
 
 
+Trajectories
+============
+
+A trajectory program moves two scanners along a free path instead of through
+loops: **Trajectory: Circle**, **Spiral**, **Lissajous**, **Points** (a curve
+given as a list of points, visited at equal times) or **Python** (a function
+``path(t, duration)`` returning x and y in µm for an array of times; it runs
+like a Python step, unsandboxed). The form asks for the time on the path, the
+**measurement window**, the **approach** (the move onto the path from where
+the scanners are, and back off it at the end) and the **grid pixel**; a laser
+can be on along the path.
+
+**What is measured.** APDs and PMTs measure window after window along the
+path. Each window is one measurement over its realized integration time,
+placed at the commanded position of its centre, and binned onto a grid that
+covers the windows:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 15
+
+   * - Detector
+     - Bin value
+     - Unit
+   * - APD (photon counter)
+     - Σ counts / Σ integration time
+     - counts/s
+   * - PMT (analog)
+     - Σ (voltage · integration time) / Σ integration time
+     - V
+
+Weighting by integration time keeps a bin right when windows differ in
+length -- the last one usually does. A bin no window reached is **empty
+(NaN)**; a measured zero is 0. The image assumes a linear detector, no
+dead-time correction, and the path followed as commanded.
+
+**The coverage** -- each bin's total integration time, in seconds -- is
+recorded beside the image, so sparse can be told from dark: in HDF5 and Zarr
+as a ``coverage`` array in the detector's group, in TIFF as a
+``…_coverage.tif`` beside the recording. The image carries its unit
+(``measurement:unit``) and the reduction (``measurement:reduction``: that it
+was gridded from a trajectory, the grid, the weighting, the assumptions, and
+that the raw measurements were not stored).
+
+**Limits.** The approach joins the path with its speed, so the scanners never
+jump. The report shows each scanner's peak speed and acceleration against its
+``vel_max`` and ``acc_max``; a path above them is refused, and so is a
+scanner that does not declare one of them -- a path is not run on limits
+nobody gave.
+A spiral at constant angular speed is gentle at its centre; one at constant
+linear speed starts with an unbounded acceleration there and is refused on a
+galvo.
+
+A trajectory runs on a streaming engine (the NI-DAQ). Cameras take no frames
+on it. The tables show the laser's timing on the path; **Make…** edits the
+path itself.
+
+
 The report
 ==========
 

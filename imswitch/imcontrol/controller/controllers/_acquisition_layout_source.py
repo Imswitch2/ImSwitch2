@@ -836,6 +836,40 @@ def build_program_layouts(
     return layouts
 
 
+def build_trajectory_layouts(
+    grid: Any,
+    labels: Sequence[str],
+    detector_names: Sequence[str],
+    *,
+    scan_source: str,
+    scan_driven_detectors: Sequence[str] = (),
+) -> dict[str, AcquisitionLayout]:
+    """Layouts for a trajectory (plan §6, M4): a point detector stores the
+    grid its windows were binned onto, as one assembled image; a camera takes
+    no frames on a trajectory and is refused."""
+    loops = []
+    for index in reversed(range(len(grid.shape))):     # outermost (rows) first
+        kind = _kind(labels[index] if index < len(labels) else None, index)
+        loops.append(AcquisitionLoop(
+            kind, kind, int(grid.shape[index]), step=float(grid.pixel_um), unit="um",
+            device=grid.devices[index]))
+    scan_driven = set(scan_driven_detectors)
+    layouts = {}
+    for raw_detector in detector_names:
+        detector = str(raw_detector)
+        if detector not in scan_driven:
+            raise ValueError(
+                f"{detector} takes no frames on a trajectory: point detectors measure it, "
+                "window by window"
+            )
+        layouts[detector] = _assembled_layout(
+            detector=detector, loops=loops,
+            storage_axes=["frame", *(loop.kind for loop in loops)],
+            scan_source=scan_source,
+        )
+    return layouts
+
+
 def build_triggerscope_raster_layouts(
     detector_names: Sequence[str],
     *,

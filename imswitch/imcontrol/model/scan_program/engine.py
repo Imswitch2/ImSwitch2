@@ -219,6 +219,22 @@ def assess_program(program, caps: EngineCapabilities, owns, channels) -> Feasibi
             report.add(f'{shape} transition', IMPOSSIBLE,
                        f'{caps.name} moves with {", ".join(sorted(caps.transitions))} only.')
 
+    trajectory = getattr(program, 'trajectory', None)
+    if trajectory is not None:
+        report.add('trajectory', NATIVE if caps.streaming else IMPOSSIBLE,
+                   '' if caps.streaming else
+                   f'{caps.name} cannot follow a path: it does not stream.')
+        for device in trajectory.devices:
+            entry = channels.get(device)
+            if entry is None or entry.analog is None:
+                report.add(f'path {device}', IMPOSSIBLE, f'{device} has no analog channel.')
+            elif not owns(entry.analog):
+                report.add(f'path {device}', IMPOSSIBLE,
+                           f'{device} is wired to {entry.analog}, which {caps.name} does not '
+                           'drive.')
+            else:
+                report.add(f'path {device}', NATIVE)
+
     for drive in program.drives:
         entry = channels.get(drive.device)
         if entry is None or entry.analog is None:

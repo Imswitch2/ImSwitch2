@@ -2,8 +2,8 @@
 
 **Status:** Plan, draft 7. The direction is agreed (Lenny, 2026-10-08:
 "that sounds like what we're aiming for"), and the review is closed with
-draft 7's amendments. **M0, M1, M2 and M3 are implemented** on
-`feat/scan-engines` (§7.1-§7.4).
+draft 7's amendments. **M0 to M4 are implemented** on
+`feat/scan-engines` (§7.1-§7.5).
 **Date:** 2026-10-08
 **Branch:** `feat/scan-engines`, off `feat/simple-point-scan` (56ef43f0,
 which carries the scan cloak and the Advanced scan-freeze work): the plan and
@@ -1581,6 +1581,56 @@ setup can scan…** (§3.3); the panel shows the selected engine only (choosing
 among a setup's engines per scan is not offered); the timeline table has no
 column for an event's `still` list, so editing the table drops it (a loaded
 program keeps it until then).
+
+### 7.5 M4 status (2026-10-09)
+
+**Delivered: trajectories, measured and gridded.**
+
+| Where | What |
+|---|---|
+| `program.Trajectory` | A free path instead of loops and drives: devices, pattern and its parameters, time on the path, approach, grid pixel; `step_s` is the measurement window; timeline events switch lines on the path (anchor `path`) |
+| `scan_program/trajectory.py` | Patterns as functions of time (circle, spiral at constant angular or linear speed, Lissajous, points, a Python `path(t, duration)`); realization on an engine's clock under the program's policy (windows tile the path, the last may be shorter); approach and return as cubic Hermite curves that leave rest and join the path with its position and velocity; the limits check (`vel_max`, `acc_max`, undeclared = refused); `Grid`; `GridAccumulator` (count rate or time-weighted mean, NaN unvisited, coverage in s); the provenance recorded with the image |
+| `NidaqScanEngine` | Compiles trajectories: volts, limits, the scan info with every window's start, length and grid bin, and the grid as the frame geometry |
+| APD, PMT (`_trajectory_measure.py`) | A trajectory worker per detector reads the stream window by window (cumulative counts per window; mean voltage after the offset) and bins it; the image is float32; TTL multiplying is refused with a trajectory |
+| `RecordingManager` | `recordingAuxiliary()` on a detector: attrs on its dataset and auxiliary arrays -- HDF5 (before SWMR), Zarr (in the detector's group), TIFF (MapAnnotation and a `_coverage.tif` sidecar) |
+| Expert panel | Trajectory presets (one per pattern) with point, pair, code and optional-laser fields; the report's trajectory lines and limits readout; the plot; recording queries from the grid; the trajectory carried through table edits |
+| `minmaxLevels` | Auto-levels over finite values: an empty bin no longer makes the contrast limits NaN |
+
+**Checked:**
+
+- **The mock APD images the sample along a spiral** (40 turns, 1 s,
+  20 µs windows, 0.25 µm grid): correlation above 0.9 with the sample at
+  the bin centres, below 0.5 three micrometres off. The corners are NaN; the
+  coverage sums to the time on the path exactly.
+- **Unequal windows give the same rates and voltages:** exactly in the
+  model (1, 2 and 7 ms windows, one rate; a time-weighted mean); on the mock
+  PMT, 20 µs and 70 µs windows (the last of a 200 ms path shorter) both give
+  the mock's 1 V within five standard errors.
+- **Unvisited bins are NaN, measured dark bins 0** (the accumulator).
+- **Units and coverage are in the file**, for HDF5, Zarr and TIFF: the
+  float image with its NaN, `measurement:unit` counts/s, the reduction, and
+  the coverage in s summing to the time on the path.
+- The approach joins the path without a jump in speed (a mutant whose
+  approach ends at rest fails); off-grid windows and a missing approach are
+  refused with the reason; limits refuse with the numbers; JSON round trip.
+
+**Found:**
+
+- **Beta's smooth ramp starts at full speed.** Fine between stepped pixels,
+  but onto a moving path it is a jump in velocity, which the acceleration
+  check rightly refused. The approach is a Hermite curve instead.
+- **A constant-linear-speed spiral has an unbounded acceleration at its
+  centre** and is refused on the mock galvos; the constant-angular one is
+  the default in the panel's examples.
+- **How well a trajectory images a sample depends on how densely it covers
+  the grid** (correlation 0.82 with rings one bin apart, 0.96 at a quarter
+  bin): that is the reduction, not an error, and the coverage shows it.
+- **Auto-levels took `arr.max()`**, NaN for any image with an empty bin.
+
+**Still open:** pattern plugins (drop-in patterns with `param_spec` forms;
+the built-ins are a registry today); the optional raw measurement stream
+(M6); trajectories on step engines (refused: they need a streaming engine);
+the coverage of a recording with several frames is the first frame's.
 
 ## 8. Risks
 

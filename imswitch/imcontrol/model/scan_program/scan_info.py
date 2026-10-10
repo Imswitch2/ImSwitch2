@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+from ..scan_frame import FRAME_GEOMETRY_KEY, AxisGeometry, FrameGeometry
 from ..signaldesigners.basesignaldesigners import ScanInfoContract
 
 #: Image-axis labels for the spatial loop kinds; any other kind (cycle,
@@ -145,7 +146,48 @@ def scan_info_for(program, schedule, rate_hz) -> Dict[str, object]:
     return info
 
 
-__all__ = ['RASTER_KEY', 'RASTER_REASON_KEY', 'scan_info_for']
+#: The trajectory a point detector measures (plan §6, M4): each window's
+#: first sample and length, the grid bin it lands in, and the grid.
+TRAJECTORY_KEY = 'trajectory'
+
+
+def trajectory_scan_info(realized, labels) -> Dict[str, object]:
+    """The ``scanInfoDict`` for a trajectory: the grid as the image the
+    point detectors make, the stream's length, and under ``TRAJECTORY_KEY``
+    what they measure. ``labels``: the image axis label of each device."""
+    grid = realized.grid
+    window = int(realized.window_ticks.max())
+    dims = list(grid.shape)
+    levels = [window, window * dims[0]] + ([window * dims[0] * dims[1]] if len(dims) > 1 else [])
+    contract = ScanInfoContract(
+        img_dims=dims, img_axes_phys=list(labels), pixel_sizes=[grid.pixel_um] * len(dims),
+        scan_samples=levels, scan_samples_total=int(realized.total_ticks),
+        scan_samples_d2_period=window * dims[0], n_pixels_fast=dims[0],
+        samples_per_pixel=window, dwell_time=window / realized.rate_hz,
+        scan_time_step=1.0 / realized.rate_hz, n_linesteps=1, positions=list(dims),
+    )
+    info = contract.to_dict()
+    info[TRAJECTORY_KEY] = {
+        'window_start': realized.window_start.copy(),
+        'window_ticks': realized.window_ticks.copy(),
+        'bin': grid.flat_index(realized.centres_um),
+        'grid': grid.as_dict(),
+        'rate_hz': realized.rate_hz,
+        'provenance_counts': realized.provenance('counts'),
+        'provenance_mean': realized.provenance('mean'),
+    }
+    # The image is the grid: its pixels sit where the bins are.
+    info[FRAME_GEOMETRY_KEY] = FrameGeometry(axes=tuple(
+        AxisGeometry(device, grid.pixel_um, count, first)
+        for device, count, first in zip(grid.devices, grid.shape, grid.first_um))).to_dict()
+    info[RASTER_KEY] = False
+    info[RASTER_REASON_KEY] = 'A trajectory is measured window by window, not as a raster.'
+    info['timing_policy'] = realized.policy.id
+    return info
+
+
+__all__ = ['RASTER_KEY', 'RASTER_REASON_KEY', 'TRAJECTORY_KEY', 'scan_info_for',
+           'trajectory_scan_info']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

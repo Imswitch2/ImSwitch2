@@ -13,6 +13,9 @@ kept in its ``requested_as``, so the panel can open the form again with them.
 - ``pulse-sequence``: a pulse sequence repeated *frames* times, no positions
   -- widefield RESOLFT, or anything a pulse generator plays alone.
 - ``raster``: a stepped X/Y raster with a pulse sequence at every pixel.
+- ``trajectory-<pattern>`` (M4): X and Y along a free path -- a circle, a
+  spiral, a Lissajous figure, a list of points, a few lines of Python --
+  measured window by window by the point detectors and gridded.
 
 Qt-free.
 """
@@ -23,17 +26,21 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Mapping, Tuple
 
 from .program import (
-    DetectorBinding, DeviceDrive, Loop, Motion, ScanProgram, TimelineEvent, Wait, validate,
+    PATH_ANCHOR, DetectorBinding, DeviceDrive, Loop, Motion, ScanProgram, TimelineEvent,
+    Trajectory, Wait, validate,
 )
+from .trajectory import PATTERNS
 
 STRICT = 'strict-v1'
 
 
 @dataclass(frozen=True)
 class Field:
-    """One preset parameter. ``kind``: 'positioner', 'laser', 'detector'
-    (a device of the setup), 'count', 'seconds', 'micrometres', 'choice' or
-    'pulses' (a list of ``[device, on_s, gap_after_s]``)."""
+    """One preset parameter. ``kind``: 'positioner', 'laser', 'detector',
+    'optional-laser' (a device of the setup; the last two may be empty),
+    'count', 'number', 'seconds', 'micrometres', 'pair' (two numbers),
+    'points' (a list of [x, y]), 'code', 'choice' or 'pulses' (a list of
+    ``[device, on_s, gap_after_s]``)."""
     name: str
     label: str
     kind: str
@@ -153,6 +160,50 @@ def raster(*, x_device, y_device, x_pixels, y_pixels, x_step_um, y_step_um, x_st
     ))
 
 
+def trajectory(pattern, *, x_device, y_device, duration_s, window_s, approach_s, pixel_um,
+               laser, **pattern_params) -> ScanProgram:
+    """X and Y along a ``pattern`` path for ``duration_s``, measured in
+    windows of ``window_s`` and gridded at ``pixel_um``; ``laser`` (if any)
+    on along the path."""
+    duration_s = float(duration_s)
+    events = ((TimelineEvent(str(laser), 'ttl', 0.0, duration_s, anchor=PATH_ANCHOR),)
+              if laser else ())
+    return validate(ScanProgram(
+        loops=(), drives=(), step_s=float(window_s), timeline=events,
+        trajectory=Trajectory((str(x_device), str(y_device)), pattern, dict(pattern_params),
+                              duration_s, float(approach_s), float(pixel_um)),
+        timing_policy=STRICT))
+
+
+def _pattern_field(name, label, kind):
+    if kind.startswith('choice:'):
+        return Field(name, label, 'choice', tuple(kind.split(':', 1)[1].split(',')))
+    if kind in ('pair-micrometres', 'pair-hertz'):
+        unit = ' (µm, µm)' if kind == 'pair-micrometres' else ' (Hz, Hz)'
+        return Field(name, label + unit, 'pair')
+    return Field(name, label, kind)
+
+
+def _trajectory_preset(pattern):
+    import functools
+    path = PATTERNS[pattern]
+    fields = ((Field('x_device', 'X device', 'positioner'),
+               Field('y_device', 'Y device', 'positioner'))
+              + tuple(_pattern_field(*parameter) for parameter in path.parameters)
+              + (Field('duration_s', 'Time on the path', 'seconds'),
+                 Field('window_s', 'Measurement window', 'seconds',
+                       help='Each window is one measurement, binned at its centre.'),
+                 Field('approach_s', 'Approach', 'seconds',
+                       help='Onto the path from where the stage is, and back.'),
+                 Field('pixel_um', 'Grid pixel', 'micrometres'),
+                 Field('laser', 'Laser on along the path', 'optional-laser')))
+    return Preset(f'trajectory-{pattern}', f'Trajectory: {path.title}', fields,
+                  functools.partial(trajectory, pattern),
+                  'Point detectors measure window by window: APDs as a count rate, PMTs as a '
+                  'time-weighted mean voltage; unvisited bins stay empty, and the coverage is '
+                  'recorded beside the image.')
+
+
 _PULSES = Field('pulses', 'Pulse sequence', 'pulses',
                 help='Lasers one after another: on time, then a gap before the next.')
 _CAMERA = Field('camera', 'Camera', 'detector', help='Leave empty for no camera.')
@@ -198,7 +249,11 @@ PRESETS: Dict[str, Preset] = {
          Field('traversal', 'X order', 'choice', ('forward', 'serpentine'))),
         raster,
         'A pulse sequence at every pixel; APDs and PMTs assemble it as an image.'),
+    **{f'trajectory-{pattern}': _trajectory_preset(pattern) for pattern in PATTERNS},
 }
+
+#: Kinds a preset may leave empty.
+OPTIONAL_KINDS = ('detector', 'optional-laser')
 
 
 def make(preset_id: str, params: Mapping[str, object]) -> ScanProgram:
@@ -208,7 +263,7 @@ def make(preset_id: str, params: Mapping[str, object]) -> ScanProgram:
     except KeyError:
         raise PresetError(f'No preset {preset_id!r}; there are {", ".join(PRESETS)}.') from None
     # A camera is optional; every other field must be filled in.
-    missing = [f.label for f in preset.fields if f.kind != 'detector'
+    missing = [f.label for f in preset.fields if f.kind not in OPTIONAL_KINDS
                and (f.name not in params or params[f.name] in (None, ''))]
     if missing:
         raise PresetError(f'{preset.title}: fill in {", ".join(missing)}.')
@@ -241,8 +296,8 @@ def preset_of(program) -> Tuple[str, Dict[str, object]]:
     return '', {}
 
 
-__all__ = ['Field', 'PRESETS', 'Preset', 'PresetError', 'make', 'ms_resolft', 'preset_of',
-           'pulse_sequence', 'raster']
+__all__ = ['Field', 'OPTIONAL_KINDS', 'PRESETS', 'Preset', 'PresetError', 'make', 'ms_resolft',
+           'preset_of', 'pulse_sequence', 'raster', 'trajectory']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

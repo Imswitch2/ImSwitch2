@@ -282,6 +282,40 @@ class AsTemporaryFile(object):
         os.rename(self.tmp_path, self.path)
 
 
+def auxiliary_tiff_path(path, name):
+    """``x.ome.tif`` -> ``x_coverage.tif``: an auxiliary array's sidecar."""
+    stem = str(path)
+    for suffix in ('.ome.tiff', '.ome.tif', '.tiff', '.tif'):
+        if stem.lower().endswith(suffix):
+            stem = stem[:-len(suffix)]
+            break
+    return f'{stem}_{name}.tif'
+
+
+def _json_safe(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def recording_auxiliary(detectorManager, detectorName):
+    """What a detector records beside its image (plan §6): ``{'attrs': {...},
+    'arrays': {name: (array, attrs)}}`` -- a trajectory's unit, reduction and
+    coverage -- or ``None``. Asked once, when its first frame is written: a
+    scan-driven detector's frame comes after its scan, complete."""
+    try:
+        get = getattr(detectorManager[detectorName], 'recordingAuxiliary', None)
+        return get() if callable(get) else None
+    except Exception:
+        logger.error(f'Could not read what {detectorName} records beside its image',
+                     exc_info=True)
+        return None
+
+
 class Storer(abc.ABC):
     """Base class for storing detector data to disk.
     
@@ -798,6 +832,19 @@ class ZarrStorer(Storer):
                     self._set_attrs(meta_group, cat_attrs, 'metadata')
 
         self._set_ngff_attrs(det_group, detectorName, dataset)
+
+        # What the detector records beside its image (a trajectory's coverage).
+        auxiliary = recording_auxiliary(self.detectorManager, detectorName)
+        if auxiliary:
+            for key, value in auxiliary['attrs'].items():
+                dataset.attrs[key] = self._zarr_attr_value(value)
+            for name, (array, arrayAttrs) in auxiliary['arrays'].items():
+                array = np.asarray(array)
+                extra = self._create_array(det_group, name, shape=array.shape,
+                                           chunks=array.shape, dtype=array.dtype)
+                extra[...] = array
+                for key, value in arrayAttrs.items():
+                    extra.attrs[key] = self._zarr_attr_value(value)
         imagePath = f'{groupPath}/{detectorName}' if groupPath else detectorName
         self._register_root_series(root, imagePath)
         return dataset
@@ -1421,6 +1468,16 @@ class HDF5Storer(Storer):
             self._completeDatasets[detectorName] = det_group.create_dataset(
                 'stream_complete', shape=(1,), dtype=np.uint8
             )
+            # What the detector records beside its image (a trajectory's
+            # coverage): created here, before SWMR forbids new objects.
+            auxiliary = recording_auxiliary(self.detectorManager, detectorName)
+            if auxiliary:
+                for key, value in auxiliary['attrs'].items():
+                    dataset.attrs[key] = value
+                for name, (array, arrayAttrs) in auxiliary['arrays'].items():
+                    extra = det_group.create_dataset(name, data=np.asarray(array))
+                    for key, value in arrayAttrs.items():
+                        extra.attrs[key] = value
 
             # Enable SWMR mode after creating datasets and metadata
             # (SWMR forbids creating objects after swmr_mode=True)
@@ -1810,6 +1867,15 @@ class TiffStorer(Storer):
         if frames.dtype != declared:
             frames = frames.astype(declared)
 
+        if detectorName not in self._spatial:
+            # What the detector records beside its image (a trajectory's
+            # coverage): its attributes go into the OME MapAnnotation, its
+            # arrays into a sidecar TIFF each, written at finalize.
+            auxiliary = recording_auxiliary(self.detectorManager, detectorName)
+            if auxiliary:
+                attrs = self._attrs.setdefault(detectorName, {})
+                attrs.update(auxiliary['attrs'])
+                self.__dict__.setdefault('_auxiliary', {})[detectorName] = auxiliary
         self._spatial[detectorName] = tuple(
             int(s) for s in frames.shape[1:]
         )
@@ -1852,6 +1918,11 @@ class TiffStorer(Storer):
                     stored_meta,
                     (getattr(self, '_attrs', None) or {}).get(detectorName))
                 tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
+                for name, (array, arrayAttrs) in (
+                        self.__dict__.get('_auxiliary', {}).get(detectorName) or {}
+                ).get('arrays', {}).items():
+                    tiff.imwrite(auxiliary_tiff_path(path, name), np.asarray(array),
+                                 description=json.dumps(_json_safe(arrayAttrs)))
             except Exception as e:
                 errors.append((
                     f'failed to embed OME-XML for "{detectorName}" at {path}',

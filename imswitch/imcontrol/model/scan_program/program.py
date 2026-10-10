@@ -147,6 +147,23 @@ class DetectorBinding:
 
 
 @dataclass(frozen=True)
+class Trajectory:
+    """A free path (§1.5, M4): the devices follow ``pattern`` -- a function
+    of time, given by its ``params`` -- for ``duration_s``. The program's
+    ``step_s`` is then the measurement window: point detectors integrate
+    window after window along the path (the last may be shorter), and each
+    window is binned at the commanded position of its centre onto a grid of
+    ``pixel_um``. ``approach_s`` is the move onto the path from where the
+    devices were captured, and back off it at the end."""
+    devices: Tuple[str, ...]
+    pattern: str
+    params: Mapping[str, object]
+    duration_s: float
+    approach_s: float
+    pixel_um: float
+
+
+@dataclass(frozen=True)
 class ScanProgram:
     loops: Tuple[Loop, ...]
     drives: Tuple[DeviceDrive, ...]
@@ -157,6 +174,9 @@ class ScanProgram:
     detectors: Tuple[DetectorBinding, ...] = ()
     park: Mapping[str, float] = field(default_factory=dict)
     timing_policy: str = 'strict-v1'
+    #: A free path instead of loops and drives (§1.5); ``step_s`` is then the
+    #: measurement window.
+    trajectory: Optional[Trajectory] = None
     #: The request in the format it was made, when a panel made it (e.g.
     #: ``{'format': 'advanced-scan/1', 'analog': ..., 'digital': ...}``).
     #: Saving writes it back unchanged: requested values are never rewritten.
@@ -201,6 +221,8 @@ def validate(program: ScanProgram) -> ScanProgram:
     """``program`` if it is well formed, else :class:`ProgramError` listing
     every problem. Feasibility on an engine is a separate question."""
     problems = []
+    if program.trajectory is not None:
+        return _validate_trajectory(program)
     if not program.loops:
         problems.append('A program needs at least one loop.')
     ids = [loop.id for loop in program.loops]
@@ -310,9 +332,57 @@ def validate(program: ScanProgram) -> ScanProgram:
     return program
 
 
+#: Where a trajectory program's timeline events are placed: relative to the
+#: start of the path.
+PATH_ANCHOR = 'path'
+
+
+def _validate_trajectory(program: ScanProgram) -> ScanProgram:
+    from .trajectory import PATTERNS     # the patterns live with their functions
+    trajectory = program.trajectory
+    problems = []
+    if program.loops or program.drives:
+        problems.append('A trajectory program has no loops or drives: the path moves the '
+                        'devices.')
+    if program.waits or program.separations:
+        problems.append('A trajectory program has no waits or separations.')
+    devices = list(trajectory.devices)
+    if not devices or len(set(devices)) != len(devices):
+        problems.append(f'A trajectory moves distinct devices: {devices}')
+    if trajectory.pattern not in PATTERNS:
+        problems.append(f'Unknown pattern {trajectory.pattern!r}: '
+                        f'{", ".join(sorted(PATTERNS))}.')
+    elif len(devices) != PATTERNS[trajectory.pattern].dimensions:
+        problems.append(f'The {trajectory.pattern} pattern moves '
+                        f'{PATTERNS[trajectory.pattern].dimensions} devices, not {len(devices)}.')
+    for name in ('duration_s', 'pixel_um'):
+        if not float(getattr(trajectory, name)) > 0:
+            problems.append(f'The trajectory\'s {name} must be positive.')
+    if float(trajectory.approach_s) < 0:
+        problems.append('The trajectory\'s approach_s must not be negative.')
+    if not float(program.step_s) > 0:
+        problems.append(f'The measurement window (step_s) must be positive, not '
+                        f'{program.step_s}')
+    elif float(program.step_s) > float(trajectory.duration_s):
+        problems.append('The measurement window is longer than the path.')
+    for index, event in enumerate(program.timeline):
+        where = f'event {event.id or index} ({event.device})'
+        if event.kind != 'ttl':
+            problems.append(f'{where}: a trajectory switches lines only (ttl), not '
+                            f'{event.kind}.')
+        if event.anchor != PATH_ANCHOR:
+            problems.append(f'{where}: a trajectory\'s events are placed on the path '
+                            f'(anchor {PATH_ANCHOR!r}).')
+        if not 0 <= float(event.start_s) < float(event.end_s) <= float(trajectory.duration_s):
+            problems.append(f'{where}: outside the path (0 to {trajectory.duration_s:g} s)')
+    if problems:
+        raise ProgramError('The scan program is not well formed:\n- ' + '\n- '.join(problems))
+    return program
+
+
 __all__ = [
-    'DetectorBinding', 'DeviceDrive', 'Loop', 'Motion', 'ProgramError',
-    'ScanProgram', 'Separation', 'TimelineEvent', 'Wait', 'validate',
+    'DetectorBinding', 'DeviceDrive', 'Loop', 'Motion', 'PATH_ANCHOR', 'ProgramError',
+    'ScanProgram', 'Separation', 'TimelineEvent', 'Trajectory', 'Wait', 'validate',
 ]
 
 

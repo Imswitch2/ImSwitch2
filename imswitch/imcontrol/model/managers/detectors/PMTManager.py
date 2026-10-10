@@ -21,6 +21,9 @@ from .DetectorManager import (
 )
 from ._live_display import LiveDisplayThrottle
 from ._visit_order import VisitOrder
+from ._trajectory_measure import (
+    TrajectoryDetectorMixin, TrajectoryMeasurement, is_trajectory, run_trajectory,
+)
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -72,7 +75,7 @@ def _timerRateOf(nidaqManager):
         return 1e6
 
 
-class PMTManager(DetectorManager):
+class PMTManager(TrajectoryDetectorMixin, DetectorManager):
     """PMT analog-input manager with linestep-aware buffering + frame-boundary UI updates."""
 
     def __init__(self, detectorInfo, name, nidaqManager, **_lowLevelManagers):
@@ -250,6 +253,14 @@ class PMTManager(DetectorManager):
     def setPixelSize(self, pixel_sizes: list):
         self.__pixel_sizes = list(pixel_sizes)
 
+    def _publishTrajectoryImage(self):
+        if self._liveThrottle.due():
+            self.sigImageUpdated.emit(
+                display_frame(self, self._image, current_frame_geometry(self)),
+                True,
+                self.scale,
+            )
+
     @property
     def dtype(self):
         """ Override: PMT analog voltage buffer is always float32. """
@@ -268,6 +279,13 @@ class PMTManager(DetectorManager):
         # scan's result.
         self._rawAborted = False
         self._abandonRaw()
+        # A trajectory is measured window by window into a gridded,
+        # time-weighted mean voltage (plan §6).
+        self._trajectoryMode = is_trajectory(scanInfoDict)
+        self._trajectoryState = None
+        if self._trajectoryMode and scanInfoDict.get('ttlmultiplying', self._ttlmultiplying):
+            raise ValueError(f'{self.name}: TTL multiplying cannot be combined with a '
+                             'trajectory, which is measured window by window.')
         if not self._scanParticipating:
             return
 
@@ -297,7 +315,10 @@ class PMTManager(DetectorManager):
         self._liveThrottle.reset()
         # Where each visit belongs, for interleaved or serpentine axes.
         self._visitOrder = VisitOrder.from_scan_info(scanInfoDict)
-        self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
+        workerClass = TrajectoryScanWorker if self._trajectoryMode else ScanWorker
+        self._scanWorker = workerClass(self, scanInfoDict, signalDict)
+        if self._trajectoryMode:
+            self._scanWorker.trajectoryImage.connect(self._onTrajectoryImage)
         self._scanWorker.scanGeneration = generation
         self._scanTeardownOperation = None
 
@@ -1282,3 +1303,26 @@ class ScanWorker(Worker):
             self._manager._mock_voltage_max,
         )
         return (signal + self._manager._offset_v).astype(np.float32, copy=False)
+
+
+class TrajectoryScanWorker(ScanWorker):
+    """Reads a trajectory window by window (plan §6, M4): each window's mean
+    voltage, binned onto the grid weighted by its integration time."""
+
+    trajectoryImage = Signal(object, object, str, object, int)
+
+    def __init__(self, manager, scanInfoDict, signalDict):
+        super().__init__(manager, scanInfoDict, signalDict)
+        self._trajectory = TrajectoryMeasurement(scanInfoDict, self._frac_scan_det_rate, 'mean')
+
+    def _runAcquisition(self):
+        run_trajectory(self, self._windowMeans, self._publishTrajectory)
+
+    def _windowMeans(self, data, offsets, lengths):
+        volts = np.asarray(data, dtype=float) - float(self._manager._offset_v)
+        return np.add.reduceat(volts, offsets) / lengths
+
+    def _publishTrajectory(self, measurement):
+        accumulator = measurement.accumulator
+        self.trajectoryImage.emit(accumulator.image(), accumulator.coverage(), accumulator.unit,
+                                  measurement.provenance, self.scanGeneration)

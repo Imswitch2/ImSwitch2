@@ -42,8 +42,9 @@ from imswitch.imcontrol.model.scan_program.engine import ScanEngineRefused, setu
 from imswitch.imcontrol.model.scan_program.policy import PUBLISHED
 from imswitch.imcontrol.model.scan_program.preparation import resolve_preparation
 from imswitch.imcontrol.model.scan_program.scan_info import (
-    RASTER_KEY, RASTER_REASON_KEY, scan_info_for,
+    RASTER_KEY, RASTER_REASON_KEY, TRAJECTORY_KEY, scan_info_for,
 )
+from imswitch.imcontrol.model.scan_program.trajectory import RealizedTrajectory, US_PER_S
 from imswitch.imcontrol.model.scan_program.schedule import format_seconds
 from imswitch.imcontrol.model.scan_program.serialize import (
     FORMAT, program_from_dict, program_to_dict,
@@ -51,6 +52,7 @@ from imswitch.imcontrol.model.scan_program.serialize import (
 from ..basecontrollers import SuperScanController
 from ._acquisition_layout_source import (
     build_program_layouts,
+    build_trajectory_layouts,
     scan_driven_detector_names,
     validate_detector_edge_counts,
 )
@@ -134,7 +136,7 @@ class ScanControllerExpert(SuperScanController):
             carried = self._carriedFields()
             try:
                 data = self._widget.programDict()
-                if not data.get('loops'):
+                if not data.get('loops') and not carried.get('trajectory'):
                     self._program, self._programError = None, self._EMPTY
                 else:
                     self._program = program_from_dict({'format': FORMAT, **data, **carried})
@@ -146,7 +148,7 @@ class ScanControllerExpert(SuperScanController):
         elif self._program is None and not self._programError:
             self._programError = self._EMPTY
         program = self._program
-        devices = [d.device for d in program.drives] if program else []
+        devices = self._movedDevices(program)
         # What the base reads: the actuators and the positions to capture.
         self._analogParameterDict = {'target_device': devices}
         self._digitalParameterDict = {
@@ -159,7 +161,9 @@ class ScanControllerExpert(SuperScanController):
         program = self._program or (self._advancedOrigin[0] if self._advancedOrigin else None)
         if program is None:
             return {}
+        # A trajectory is not in the tables either: Make… edits its path.
         return {'park': dict(program.park), 'requested_as': None,
+                'trajectory': program_to_dict(program)['trajectory'],
                 'separations': [{'after': list(s.after), 'before': list(s.before),
                                  'tolerance_s': s.tolerance_s} for s in program.separations]}
 
@@ -201,13 +205,21 @@ class ScanControllerExpert(SuperScanController):
     # Compiling: one compile for the report, the run and the recording
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _movedDevices(program):
+        if program is None:
+            return []
+        if program.trajectory is not None:
+            return list(program.trajectory.devices)
+        return [d.device for d in program.drives]
+
     def _capturedPositions(self, program):
         captured = {}
-        for drive in program.drives:
-            manager = self._master.positionersManager[drive.device]
-            info = self._setupInfo.positioners[drive.device]
+        for device in self._movedDevices(program):
+            manager = self._master.positionersManager[device]
+            info = self._setupInfo.positioners[device]
             axes = list(getattr(info, 'axes', None) or manager.axes)
-            captured[drive.device] = float(manager.position[axes[0]])
+            captured[device] = float(manager.position[axes[0]])
         return captured
 
     def _deviceFacts(self):
@@ -268,6 +280,8 @@ class ScanControllerExpert(SuperScanController):
 
     @staticmethod
     def _duration_s(schedule):
+        if isinstance(schedule, RealizedTrajectory):
+            return schedule.total_ticks / schedule.rate_hz
         return sum(segment.ticks for segment in schedule.segments) / schedule.rate_hz
 
     def _durationRefusal(self, compiled):
@@ -312,9 +326,14 @@ class ScanControllerExpert(SuperScanController):
             lines.append(text)
         schedule = self._scheduleOf(compiled)
         lines += ['', f'Timing policy {schedule.policy.id}, '
-                      f'{format_seconds(schedule.grid_s)} grid.',
-                  f'Duration {format_seconds(self._duration_s(schedule))}, '
-                  f'{len(schedule.step_spans())} steps.']
+                      f'{format_seconds(schedule.grid_s)} grid.']
+        if isinstance(schedule, RealizedTrajectory):
+            lines += self._trajectoryReport(schedule)
+            refusal = self._durationRefusal(compiled)
+            self._widget.setReport('\n'.join(lines + ([refusal] if refusal else [])))
+            return
+        lines.append(f'Duration {format_seconds(self._duration_s(schedule))}, '
+                     f'{len(schedule.step_spans())} steps.')
         for change in schedule.changes:
             lines.append(f'Runs differently: {change.quantity} at {change.where}, '
                          f'{format_seconds(change.requested_s)} as '
@@ -327,6 +346,31 @@ class ScanControllerExpert(SuperScanController):
             lines.append(refusal)
         self._widget.setReport('\n'.join(lines))
 
+    def _trajectoryReport(self, realized):
+        """The path, its windows and grid, and the limits readout: each
+        device's peak speed and acceleration against its own limits."""
+        trajectory = realized.program.trajectory
+        seconds = realized.window_seconds()
+        grid = realized.grid
+        last = (f' (the last {format_seconds(seconds[-1])})'
+                if seconds[-1] != seconds.max() else '')
+        lines = [f'Trajectory {trajectory.pattern}: {format_seconds(trajectory.duration_s)} on '
+                 f'the path, {format_seconds(trajectory.approach_s)} onto it and back; '
+                 f'{format_seconds(self._duration_s(realized))} in all.',
+                 f'{len(seconds)} measurement windows of {format_seconds(seconds.max())}{last}.',
+                 f'Gridded onto {" x ".join(str(n) for n in grid.shape)} bins of '
+                 f'{grid.pixel_um:g} µm: APDs as counts/s, PMTs as V, unvisited bins '
+                 'empty (NaN); the coverage (s per bin) is recorded beside the image.']
+        rate = realized.rate_hz
+        for device, positions in realized.positions_um.items():
+            props = self._setupInfo.positioners[device].managerProperties or {}
+            speed = np.max(np.abs(np.diff(positions))) * rate / US_PER_S
+            accel = np.max(np.abs(np.diff(positions, 2))) * (rate / US_PER_S) ** 2
+            lines.append(f'{device}: peak {speed:.3g} µm/µs (vel_max {props.get("vel_max")}), '
+                         f'{accel:.3g} µm/µs² (acc_max {props.get("acc_max")}); '
+                         f'{positions.min():.4g} to {positions.max():.4g} µm.')
+        return lines
+
     def plotProgram(self):
         try:
             compiled = self._compile()
@@ -334,7 +378,10 @@ class ScanControllerExpert(SuperScanController):
             self._widget.setReport(str(error))
             return
         schedule = self._scheduleOf(compiled)
-        dense = densify(schedule)
+        if isinstance(schedule, RealizedTrajectory):
+            dense = {'analog': schedule.positions_um, 'digital': schedule.digital}
+        else:
+            dense = densify(schedule)
         rate = schedule.rate_hz
         traces = dict(dense['analog'])
         for name, line in sorted(dense['digital'].items()):
@@ -365,7 +412,8 @@ class ScanControllerExpert(SuperScanController):
             self.scanFailed()
 
     def _pointDetectorRefusal(self, scanInfoDict):
-        if scanInfoDict.get(RASTER_KEY, True):
+        # A trajectory is what point detectors measure window by window.
+        if scanInfoDict.get(RASTER_KEY, True) or scanInfoDict.get(TRAJECTORY_KEY):
             return ''
         participants = self._scanCoordinator.composeParticipants()
         if not participants:
@@ -439,12 +487,29 @@ class ScanControllerExpert(SuperScanController):
         return [loop for loop in program.loops
                 if LOOP_KIND_ADVANCES_POSITION.get(loop.kind, True)]
 
+    def _trajectoryGrid(self):
+        """The grid a trajectory is binned onto, or None (not a trajectory, or
+        not compilable)."""
+        self.getParameters()
+        if self._program is None or self._program.trajectory is None:
+            return None
+        try:
+            return self._scheduleOf(self._compile()).grid
+        except ScanDesignRefusedError:
+            return None
+
     def getNumScanPositions(self):
+        grid = self._trajectoryGrid()
+        if grid is not None:
+            return int(math.prod(grid.shape))     # one assembled image of the grid
         self.getParameters()
         return int(math.prod(loop.count for loop in self._positionalLoops())) \
             if self._program else 0
 
     def getDimsScan(self):
+        grid = self._trajectoryGrid()
+        if grid is not None:
+            return tuple(grid.shape)
         self.getParameters()
         if self._program is None:
             return ()
@@ -452,6 +517,9 @@ class ScanControllerExpert(SuperScanController):
                      if loop.kind != 'condition')
 
     def getScanStepSizes(self):
+        grid = self._trajectoryGrid()
+        if grid is not None:
+            return tuple(grid.pixel_um for _ in grid.shape)
         self.getParameters()
         if self._program is None:
             return ()
@@ -476,6 +544,8 @@ class ScanControllerExpert(SuperScanController):
             return {}
         positions = self.getNumScanPositions()
         schedule = self._scheduleOf(compiled)
+        if isinstance(schedule, RealizedTrajectory):
+            return {}          # point detectors only: no camera frames
         out = {}
         for detector in self._setupInfo.detectors:
             events = [e for e in schedule.events if e.device == detector]
@@ -500,6 +570,12 @@ class ScanControllerExpert(SuperScanController):
     def getAcquisitionLayouts(self, detectorNames):
         compiled = self._compile()
         info = self._scanInfoOf(compiled)
+        schedule = self._scheduleOf(compiled)
+        if isinstance(schedule, RealizedTrajectory):
+            return build_trajectory_layouts(
+                schedule.grid, info['img_axes_phys'], detectorNames,
+                scan_source=type(self).__name__,
+                scan_driven_detectors=scan_driven_detector_names(self, detectorNames))
         layouts = build_program_layouts(
             compiled.program, self._scheduleOf(compiled), detectorNames,
             scan_source=type(self).__name__,

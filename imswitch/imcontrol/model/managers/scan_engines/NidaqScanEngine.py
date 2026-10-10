@@ -32,8 +32,13 @@ from imswitch.imcontrol.model.scan_program.engine import (
     ScanEngine, ScanEngineRefused, UNKNOWN, setup_channels,
 )
 from imswitch.imcontrol.model.scan_program.interpreter import RunContext, expand
-from imswitch.imcontrol.model.scan_program.scan_info import scan_info_for
+from imswitch.imcontrol.model.scan_program.scan_info import (
+    scan_info_for, trajectory_scan_info,
+)
 from imswitch.imcontrol.model.scan_program.schedule import ScheduleRefused, realize
+from imswitch.imcontrol.model.scan_program.trajectory import (
+    limits_refusals, realize_trajectory,
+)
 from imswitch.imcontrol.model.signaldesigners.basesignaldesigners import (
     scan_voltage_range_refusal,
 )
@@ -157,6 +162,8 @@ class NidaqScanEngine(ScanEngine):
         report = self.assess(program, channels)
         if not report.runnable:
             raise ScanEngineRefused(report)
+        if getattr(program, 'trajectory', None) is not None:
+            return self._compileTrajectory(program, report, captured_um)
         try:
             schedule = realize(
                 expand(program, RunContext(captured_um=dict(captured_um or {}),
@@ -186,6 +193,44 @@ class NidaqScanEngine(ScanEngine):
         info['minmaxes'] = [[float(v.min()), float(v.max())] for v in analog.values()]
         signals = {'scanSignalsDict': analog, 'TTLCycleSignalsDict': dict(dense['digital'])}
         return CompiledWaveforms(program, schedule, signals, info, report)
+
+    def _positionerProps(self, device):
+        positioners = getattr(self._setupInfo, 'positioners', {}) or {}
+        return getattr(positioners.get(device), 'managerProperties', None) or {}
+
+    def _volts(self, positions_um, report):
+        analog = {}
+        for device, positions in positions_um.items():
+            volts = positions / self._positionerProps(device).get('conversionFactor', 1)
+            refusal = scan_voltage_range_refusal(
+                self._setupInfo, device, (float(volts.min()), float(volts.max())))
+            if refusal:
+                report.add(f'path {device}', IMPOSSIBLE, refusal)
+            analog[device] = volts
+        return analog
+
+    def _compileTrajectory(self, program, report, captured_um):
+        try:
+            realized = realize_trajectory(program, self.rate_hz, captured_um=captured_um)
+        except ScheduleRefused as error:
+            report.add('timing', IMPOSSIBLE, str(error))
+            raise ScanEngineRefused(report) from error
+        for refusal in limits_refusals(realized, {d: self._positionerProps(d)
+                                                  for d in realized.positions_um}):
+            report.add('path limits', IMPOSSIBLE, refusal)
+        analog = self._volts(realized.positions_um, report)
+        if not report.runnable:
+            raise ScanEngineRefused(report)
+        labels = []
+        for device in program.trajectory.devices:
+            info = (getattr(self._setupInfo, 'positioners', {}) or {}).get(device)
+            axes = list(getattr(info, 'axes', None) or [])
+            label = axes[0].lower() if axes and axes[0].lower() in ('x', 'y', 'z') else device
+            labels.append(label)
+        info = trajectory_scan_info(realized, labels)
+        info['minmaxes'] = [[float(v.min()), float(v.max())] for v in analog.values()]
+        signals = {'scanSignalsDict': analog, 'TTLCycleSignalsDict': dict(realized.digital)}
+        return CompiledWaveforms(program, realized, signals, info, report)
 
     def run_signals(self, signalDict, scanInfoDict):
         return self._nidaq.runScan(signalDict, scanInfoDict)

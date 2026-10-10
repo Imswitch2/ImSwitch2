@@ -22,6 +22,9 @@ from .DetectorManager import (
 from ._live_display import LiveDisplayThrottle
 from ._mock_sample import MockSample
 from ._visit_order import VisitOrder
+from ._trajectory_measure import (
+    TrajectoryDetectorMixin, TrajectoryMeasurement, is_trajectory, run_trajectory,
+)
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -83,7 +86,7 @@ def _requireTimerClock(detectorName, terminal):
     return terminal
 
 
-class APDManager(DetectorManager):
+class APDManager(TrajectoryDetectorMixin, DetectorManager):
     """ DetectorManager that deals with an avalanche photodiode connected to a
     counter input on a Nidaq card.
 
@@ -241,6 +244,13 @@ class APDManager(DetectorManager):
         self._abandonRaw()
         if not self._scanParticipating:
             return
+        # A trajectory is measured window by window into a gridded rate image
+        # (plan §6); its image is float, NaN where no window landed.
+        self._trajectoryMode = is_trajectory(scanInfoDict)
+        self._trajectoryState = None
+        if self._trajectoryMode and self._ttlmultiplying:
+            raise ValueError(f'{self.name}: TTL multiplying cannot be combined with a '
+                             'trajectory, which is measured window by window.')
 
         # The scan-scoped participant snapshot is authoritative.  Do not gate
         # on ``acquisition``: it is a coarse hardware-state flag and older
@@ -268,8 +278,11 @@ class APDManager(DetectorManager):
         self._liveThrottle.reset()
         # Where each visit belongs, for interleaved or serpentine axes.
         self._visitOrder = VisitOrder.from_scan_info(scanInfoDict)
-        self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
+        workerClass = TrajectoryScanWorker if self._trajectoryMode else ScanWorker
+        self._scanWorker = workerClass(self, scanInfoDict, signalDict)
         self._scanWorker.scanGeneration = generation
+        if self._trajectoryMode:
+            self._scanWorker.trajectoryImage.connect(self._onTrajectoryImage)
         self._scanTeardownOperation = None
         self._scanThread = Thread()
         self._scanWorker.moveToThread(self._scanThread)
@@ -814,7 +827,8 @@ class APDManager(DetectorManager):
         # Use uint16 for the common photon-counting case; the TTL-multiplying
         # path inserts NaN as a "no-data" marker, so fall back to float32 there
         # (still ImageJ-compatible, half the memory of float64).
-        image_dtype = np.float32 if self._ttlmultiplying else np.uint16
+        # A trajectory's gridded rate is float too, NaN where unvisited.
+        image_dtype = np.float32 if (self._ttlmultiplying or self._trajectoryMode) else np.uint16
 
         # A scan carrying a geometry always gets fresh storage: frames already
         # published for the previous scan share the old buffer (napari's layer
@@ -1064,10 +1078,20 @@ class APDManager(DetectorManager):
         # pixel_sizes: list of low dim to high dim
         self.__pixel_sizes = pixel_sizes
 
+    def _publishTrajectoryImage(self):
+        if self._liveThrottle.due():
+            self.sigImageUpdated.emit(
+                display_frame(self, self._image, current_frame_geometry(self)),
+                True,
+                self.scale,
+            )
+
     @property
     def dtype(self):
         """ Override: APD's recorded dtype mirrors initiateImage buffer choice. """
-        return np.dtype(np.float32) if self._ttlmultiplying else np.dtype(np.uint16)
+        if self._ttlmultiplying or self._trajectoryMode:
+            return np.dtype(np.float32)
+        return np.dtype(np.uint16)
 
     def crop(self, hpos, vpos, hsize, vsize):
         pass
@@ -1566,6 +1590,31 @@ class ScanWorker(Worker):
         if len(coords) == 1:
             coords.append(np.zeros(datalen))
         return self._manager._mock_sample.brightness(coords[0], coords[1])
+
+class TrajectoryScanWorker(ScanWorker):
+    """Reads a trajectory window by window (plan §6, M4): the counts in each
+    window over its integration time, binned onto the grid as a count rate."""
+
+    trajectoryImage = Signal(object, object, str, object, int)
+
+    def __init__(self, manager, scanInfoDict, signalDict):
+        super().__init__(manager, scanInfoDict, signalDict)
+        self._trajectory = TrajectoryMeasurement(scanInfoDict, self._frac_scan_det_rate, 'counts')
+
+    def _runAcquisition(self):
+        run_trajectory(self, self._windowCounts, self._publishTrajectory)
+
+    def _windowCounts(self, data, offsets, lengths):
+        # The counter is cumulative: counts per sample, then per window.
+        counts = np.concatenate(([data[0] - self._last_value], np.diff(data))).astype(float)
+        self._last_value = data[-1]
+        return np.add.reduceat(counts, offsets)
+
+    def _publishTrajectory(self, measurement):
+        accumulator = measurement.accumulator
+        self.trajectoryImage.emit(accumulator.image(), accumulator.coverage(), accumulator.unit,
+                                  measurement.provenance, self.scanGeneration)
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

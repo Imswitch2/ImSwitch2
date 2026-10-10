@@ -20,12 +20,12 @@ from typing import Any, Dict, Mapping
 from .policy import PolicyError, resolve_policy
 from .program import (
     DetectorBinding, DeviceDrive, Loop, Motion, ProgramError, ScanProgram, Separation,
-    TimelineEvent, Wait, validate,
+    TimelineEvent, Trajectory, Wait, validate,
 )
 
 FORMAT = 'scan-program/1'
 
-_TUPLES = {'parity_loops', 'table_um', 'still', 'after', 'before'}
+_TUPLES = {'parity_loops', 'table_um', 'still', 'after', 'before', 'devices'}
 _SETS = {'phases'}
 
 
@@ -89,6 +89,10 @@ def _motion(value, where, problems):
     return _build(Motion, value, where, problems) or Motion()
 
 
+def _trajectory(value, where, problems):
+    return None if value is None else _build(Trajectory, value, where, problems)
+
+
 def program_from_dict(data: Mapping[str, Any]) -> ScanProgram:
     """The program a ``program_to_dict`` dict describes, validated; or
     :class:`ProgramError` with every problem."""
@@ -114,6 +118,7 @@ def program_from_dict(data: Mapping[str, Any]) -> ScanProgram:
         'waits': _list(Wait),
         'separations': _list(Separation),
         'detectors': _list(DetectorBinding),
+        'trajectory': _trajectory,
     })
     if problems or program is None:
         raise ProgramError('The scan program cannot be read:\n- ' + '\n- '.join(problems))

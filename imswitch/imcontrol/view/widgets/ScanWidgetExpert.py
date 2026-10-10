@@ -261,11 +261,12 @@ class PresetDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
 
     def _editor(self, field, value):
-        if field.kind in ('positioner', 'laser', 'detector', 'choice'):
+        if field.kind in ('positioner', 'laser', 'detector', 'optional-laser', 'choice'):
             combo = QtWidgets.QComboBox()
+            devices = 'laser' if field.kind == 'optional-laser' else field.kind
             choices = list(field.choices) if field.kind == 'choice' else \
-                list(self._devices.get(field.kind, ()))
-            if field.kind == 'detector':
+                list(self._devices.get(devices, ()))
+            if field.kind in ('detector', 'optional-laser'):
                 choices = [''] + choices
             combo.addItems(choices)
             if value not in (None, '') and combo.findText(str(value)) < 0:
@@ -281,7 +282,17 @@ class PresetDialog(QtWidgets.QDialog):
             for device, on_s, gap_s in (value or ()):
                 table.addRow({'device': device, 'on': on_s, 'gap': gap_s})
             return table
+        if field.kind in ('points', 'code'):
+            text = QtWidgets.QPlainTextEdit()
+            if field.kind == 'points' and value:
+                text.setPlainText('\n'.join(f'{x:g}, {y:g}' for x, y in value))
+            elif value:
+                text.setPlainText(str(value))
+            return text
         line = QtWidgets.QLineEdit()
+        if field.kind == 'pair' and value:
+            line.setText(', '.join(f'{float(v):g}' for v in value))
+            return line
         if value not in (None, ''):
             line.setText(f'{float(value) * MS:.12g}' if field.kind == 'seconds' else str(value))
         return line
@@ -293,10 +304,21 @@ class PresetDialog(QtWidgets.QDialog):
                 out[name] = editor.currentText()
             elif isinstance(editor, _RowTable):
                 out[name] = [[r['device'], r['on'], r['gap']] for r in editor.rows()]
+            elif isinstance(editor, QtWidgets.QPlainTextEdit):
+                text = editor.toPlainText()
+                if field.kind == 'points':
+                    out[name] = [[float(v) for v in line.replace(',', ' ').split()]
+                                 for line in text.splitlines() if line.strip()] or None
+                else:
+                    out[name] = text if text.strip() else None
             else:
                 text = editor.text().strip()
                 if text == '':
                     out[name] = None
+                elif field.kind == 'pair':
+                    out[name] = [float(v) for v in text.replace(',', ' ').split()]
+                elif field.kind == 'number':
+                    out[name] = float(text)
                 elif field.kind == 'seconds':
                     out[name] = float(text) / MS
                 elif field.kind == 'micrometres':
