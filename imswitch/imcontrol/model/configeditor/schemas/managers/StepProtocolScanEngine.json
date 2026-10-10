@@ -17,7 +17,7 @@
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
         "code:optional(get)",
-        "docs:string"
+        "example:string"
       ]
     },
     "replyTimeoutS": {
@@ -34,7 +34,7 @@
       "x-imswitch-kind": "object",
       "x-imswitch-source": [
         "code:optional(in)",
-        "docs:object"
+        "example:object"
       ]
     }
   },

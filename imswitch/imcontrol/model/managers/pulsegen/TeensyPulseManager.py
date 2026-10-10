@@ -3,6 +3,7 @@ ImSwitch v4 pulse-generator firmware (with v3 fallback)."""
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 from typing import List, Optional
 
@@ -18,7 +19,29 @@ from .PulseGeneratorManager import (
 # ``TeensyPulseInfo`` is defined in SetupInfo.py so it can sit alongside
 # the other setup-file dataclasses.  Re-exported here for callers who
 # only know about the manager.
-__all__ = ['TeensyPulseManager', 'TeensyPulseInfo']
+__all__ = ['TeensyPulseManager', 'TeensyPulseInfo', 'teensy_info']
+
+
+def teensy_info(name, props) -> TeensyPulseInfo:
+    """A ``pulseGenerators`` entry's ``managerProperties`` as the
+    ``teensyPulse`` section they mirror: the same keys and defaults, and a
+    key it does not have refused by name."""
+    known = [f.name for f in dataclasses.fields(TeensyPulseInfo)]
+    unknown = sorted(set(props) - set(known))
+    if unknown:
+        raise ValueError(f'{name}: TeensyPulseManager does not take managerProperties '
+                         f'{", ".join(unknown)}; it takes {", ".join(known)}.')
+    # Each key read by name, so that the config editor lists them.
+    default = TeensyPulseInfo()
+    return TeensyPulseInfo(
+        port=props.get('port', default.port),
+        baud=props.get('baud', default.baud),
+        pinMap=props.get('pinMap', default.pinMap),
+        useMockOnFailure=props.get('useMockOnFailure', default.useMockOnFailure),
+        mockNChannels=props.get('mockNChannels', default.mockNChannels),
+        mockMinPulseUs=props.get('mockMinPulseUs', default.mockMinPulseUs),
+        mockMaxSteps=props.get('mockMaxSteps', default.mockMaxSteps),
+    )
 
 
 class TeensyPulseManager(PulseGeneratorManager):
@@ -55,9 +78,14 @@ class TeensyPulseManager(PulseGeneratorManager):
     #: not report it.
     _V4_MAX_REPEATS = 2 ** 32 - 1
 
-    def __init__(self, info: TeensyPulseInfo):
+    def __init__(self, info, name=None, **lowLevelManagers):
+        """``info``: the setup's ``teensyPulse`` section, or a
+        ``pulseGenerators`` entry whose ``managerProperties`` are that
+        section's keys."""
         super().__init__()
-        self.__logger = initLogger(self)
+        self.__logger = initLogger(self, instanceName=name)
+        if not isinstance(info, TeensyPulseInfo):
+            info = teensy_info(name, getattr(info, 'managerProperties', None) or {})
         self._info = info
 
         self._driver = self._open_driver(info)

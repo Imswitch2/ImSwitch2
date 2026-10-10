@@ -69,6 +69,7 @@ class ImConMainController(MainController):
         self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
         self.__mainView.sigOpenSessionNotes.connect(self.openSessionNotes)
         self.__mainView.sigOpenConfigEditor.connect(self.openConfigEditor)
+        self.__mainView.sigOpenScanCapabilities.connect(self.openScanCapabilities)
         self.__mainView.sigOpenMemoryLimits.connect(self.openMemoryLimits)
         self.__mainView.memoryLimitsDialog.sigSaveRequested.connect(self.saveMemoryLimits)
         self.__mainView.sigOpenRecordingFolder.connect(self.openRecordingFolder)
@@ -648,6 +649,25 @@ class ImConMainController(MainController):
                            f'{" (dated subfolders)" if recording.includeDateInOutputFolder else ""}')
         dialog.setStatus('')
         dialog.accept()
+
+    def openScanCapabilities(self):
+        """ Show what this setup's scan engines can do. Built afresh each
+        time: a board that had not answered may have since. """
+        from imswitch.imcontrol.model.managers.scan_engines.capability_report import (
+            setup_capabilities,
+        )
+        engines = getattr(self.__masterController, 'scanEngines', None)
+        if engines is None:
+            text = 'This setup has no scan engines.'
+        else:
+            try:
+                text = setup_capabilities(engines, self.__setupInfo).text()
+            except Exception as e:
+                self.__logger.error(f'Failed to report what this setup can scan: {e}',
+                                    exc_info=True)
+                text = f'The report could not be made:\n{e}'
+        self.__mainView.scanCapabilitiesDialog.setReport(text)
+        self.__mainView.showScanCapabilitiesDialog()
 
     def openConfigEditor(self):
         """ Open the Config Studio on this microscope's setup files.

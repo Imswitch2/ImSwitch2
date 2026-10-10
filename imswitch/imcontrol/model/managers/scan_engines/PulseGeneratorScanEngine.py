@@ -24,8 +24,9 @@ the scan unknown, and it is refused as such.
 
 ``managerProperties``:
 
-- ``pulseGenerator``: the low-level manager it drives (the one the setup's
-  ``teensyPulse`` builds is ``pulseGeneratorManager``);
+- ``pulseGenerator``: the generator it drives -- a ``pulseGenerators``
+  entry's name; omitted, the one the setup's ``teensyPulse`` builds
+  (``pulseGeneratorManager``);
 - ``channels``: the generator's channels it owns, by index (default: all of
   them). A device is wired to one by its ``digitalLine`` (the channel index,
   as ``PulseGeneratorLaserManager`` reads it).
@@ -42,6 +43,7 @@ from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcontrol.model.managers.pulsegen.PulseGeneratorManager import PulseStep
+from imswitch.imcontrol.model.managers.pulsegen.loader import pulse_generator_named
 from imswitch.imcontrol.model.scan_program.engine import (
     EngineCapabilities, FeasibilityReport, IMPOSSIBLE, NATIVE, UNKNOWN, ScanEngine,
     ScanEngineRefused, SetupError,
@@ -50,7 +52,6 @@ from imswitch.imcontrol.model.scan_program.interpreter import RunContext, expand
 from imswitch.imcontrol.model.scan_program.schedule import ScheduleRefused, format_seconds, realize
 
 NS_PER_S = 1_000_000_000
-DEFAULT_GENERATOR = 'pulseGeneratorManager'
 
 
 @dataclass
@@ -118,12 +119,13 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
         super().__init__()
         props = dict(getattr(engineInfo, 'managerProperties', None) or {})
         self.name = name
-        key = props.get('pulseGenerator', DEFAULT_GENERATOR)
-        self._generator = lowLevelManagers.get(key)
+        key = props.get('pulseGenerator')
+        self._generator, available = pulse_generator_named(lowLevelManagers, key)
         if self._generator is None:
-            raise SetupError(
-                f'{name}: the setup has no pulse generator {key!r} (a teensyPulse section '
-                'builds pulseGeneratorManager).')
+            has = (f'it has {", ".join(available)}' if available else
+                   'it has none (pulseGenerators, or a teensyPulse section)')
+            raise SetupError(f'{name}: the setup has no pulse generator '
+                             f'{key or "pulseGeneratorManager"!r}; {has}.')
         self._setupInfo = lowLevelManagers.get('setupInfo')
         count = int(self._generator.n_digital_channels)
         channels = props.get('channels')

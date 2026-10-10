@@ -64,6 +64,9 @@ class StepEngineBase(SignalInterface, ScanEngine):
     sigBarrierReleased = Signal(int, int)
     sigScanStopped = Signal()
     sigScanFailed = Signal(str)
+    #: (step about to run, steps): emitted in a composite's quiet runs too,
+    #: so a leader's progress is the run's.
+    sigScanProgress = Signal(int, int)
 
     #: Where the declared capabilities came from (for the report).
     _capsSource = 'managerProperties'
@@ -222,6 +225,8 @@ class SimulatedStepEngine(StepEngineBase):
         self._thread = None
         self._quiet = False
         self._onEnd = None
+        #: What was set by hand.
+        self.outputs = {}
         self.log = RunLog()
         #: How the last run ended: ('done' | 'stopped' | 'failed', reason).
         self.outcome = None
@@ -239,6 +244,12 @@ class SimulatedStepEngine(StepEngineBase):
 
     def ready(self) -> bool:
         return self._prepared is not None
+
+    def set(self, channel, value):
+        """An output by hand, between runs (it only keeps the value)."""
+        if not self.owns(channel):
+            raise ValueError(f'{channel} is not {self.name}\'s.')
+        self.outputs[str(channel)] = float(value)
 
     def run(self, compiled: Compiled = None, *, arrivals=(), blocking=False, fail_at_step=None,
             quiet=False, on_end=None):
@@ -302,6 +313,9 @@ class _Signals(Listener):
     def released(self, segment, wall):
         if not self.quiet:
             self.engine.sigBarrierReleased.emit(segment, wall)
+
+    def progressed(self, step, steps):
+        self.engine.sigScanProgress.emit(step, steps)
 
     def done(self, wall):
         self._end('done')

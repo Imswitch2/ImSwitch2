@@ -79,7 +79,7 @@ class CompositeScanEngine(ScanEngine):
     """``leader`` and ``followers`` (``{name: (engine, line)}``)."""
 
     _SIGNALS = ('sigScanBuilt', 'sigScanStarted', 'sigScanDone', 'sigScanBuildFailed',
-                'sigBarrierReleased', 'sigScanStopped', 'sigScanFailed')
+                'sigBarrierReleased', 'sigScanStopped', 'sigScanFailed', 'sigScanProgress')
 
     def __init__(self, leader, followers):
         self.leader = leader

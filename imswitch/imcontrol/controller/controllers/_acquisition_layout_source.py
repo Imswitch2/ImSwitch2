@@ -583,6 +583,13 @@ def _with_visit_order(
     return _validated(replace(layout, event_loops=tuple(loops), traversal=tuple(rules)))
 
 
+def _enabled_conditions(mask, condition_count):
+    """The line steps a detector takes part in, from a per-step mask or a
+    per-expanded-line one (line ``i`` is step ``i % condition_count``)."""
+    return sorted({index % condition_count
+                   for index, enabled in enumerate(mask) if bool(enabled)})
+
+
 def build_advanced_scan_layouts(
     scan_info: Mapping[str, Any],
     detector_names: Sequence[str],
@@ -665,8 +672,14 @@ def build_advanced_scan_layouts(
             raise ValueError(
                 f"Advanced pulse counts for {detector!r} must match n_linesteps"
             )
-        repeat_count = max(counts, default=0)
-        if repeat_count <= 0 or not any(bool(value) for value in mask):
+        # Sized by the line steps the detector takes part in: a step it is
+        # off in records nothing, so its pulses size nothing (Lenny,
+        # 2026-10-09; the program's view, plan §7.1).
+        repeat_count = max(
+            (counts[c] for c in _enabled_conditions(mask, condition_count)),
+            default=0,
+        )
+        if repeat_count <= 0:
             raise ValueError(
                 f"Advanced detector {detector!r} has no recorded pulse in this scan"
             )

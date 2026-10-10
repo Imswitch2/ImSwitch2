@@ -77,6 +77,10 @@ class Listener:
         """The preparation after a release is over; the segment starts."""
         pass
 
+    def waiting(self, segment: int):
+        """Still waiting for a trigger (every heartbeat period)."""
+        pass
+
     def progressed(self, step: int, steps: int):
         pass
 
@@ -96,7 +100,11 @@ class StepExecutor:
 
     def __init__(self, plan: StepPlan, *, latency_ticks: int, stop: threading.Event,
                  blocking: bool, listener: Listener, log: Optional[RunLog] = None,
-                 release: Optional[Callable] = None):
+                 release: Optional[Callable] = None,
+                 settable: Optional[Callable] = None,
+                 heartbeat_s: Optional[float] = None):
+        """``settable(device, value)``: what the output really sets (a DAC's
+        nearest code); by default the value itself."""
         self.plan = plan
         self.latency_ticks = int(latency_ticks)
         self.stop = stop
@@ -104,6 +112,8 @@ class StepExecutor:
         self.listener = listener
         self.log = log if log is not None else RunLog()
         self.release = release or self.standard_release
+        self.settable = settable or (lambda device, value: value)
+        self.heartbeat_s = heartbeat_s
         self._wall = self._tick = self._segment = 0
         self._step = 0
 
@@ -184,6 +194,7 @@ class StepExecutor:
         def write(device, value, tick=None):
             # A write at a time inside the current span names its tick; it
             # never moves the board's clocks.
+            value = self.settable(device, value)
             if held.get(device) != value:
                 held[device] = value
                 if device not in silent:
@@ -306,8 +317,13 @@ class StepExecutor:
                 raise Failed('a wait with no trigger coming and no timeout would block a '
                              'blocking run forever')
             # No trigger is coming and none is waited out: the board blocks
-            # until it is stopped, which it honours at once.
-            self.stop.wait()
+            # until it is stopped, which it honours at once -- saying it
+            # still waits, every heartbeat period, when it has one.
+            if self.heartbeat_s:
+                while not self.stop.wait(self.heartbeat_s):
+                    self.listener.waiting(self._segment)
+            else:
+                self.stop.wait()
             raise Stopped()
         if released is None:
             if wait['on_timeout'] == 'fail':
@@ -322,7 +338,8 @@ class StepExecutor:
         self.listener.released(self._segment, release)
         # Preparation: only what needs it. Positioners whose position differs
         # from what they hold move; nothing timed happens here.
-        movers = [d for d in plan.drives if held.get(d['device']) != here[d['device']]]
+        movers = [d for d in plan.drives
+                  if held.get(d['device']) != self.settable(d['device'], here[d['device']])]
         for d in movers:
             write(d['device'], here[d['device']])
         need = [d['move'] + d['settle'] for d in movers] + list(plan.preparation.values())

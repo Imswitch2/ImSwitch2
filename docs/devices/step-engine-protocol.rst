@@ -83,6 +83,14 @@ program runs, when the board reports on its own (`While it runs`_).
            engine step by step).
        * - ``CAPS,clock_ppm,<x>``
          - The clock's accuracy, in parts per million (to lead or follow).
+       * - ``CAPS,alive_ticks,<n>``
+         - While a program runs it sends a message at least every ``n``
+           ticks -- ``WAITING`` while it waits -- so a host can tell a board
+           that fell silent from one that waits. Not declared, it cannot.
+       * - ``CAPS,dac_bits,<i>,<bits>``
+         - DAC ``i`` sets the nearest of ``2**bits`` codes over its range, and
+           logs the volts it set. The host refuses a step finer than one
+           code; conformance compares positions within half a code.
 
     A capability the board does not declare is unknown, and a program that
     needs it is refused as such. A host ignores ``CAPS`` keys it does not
@@ -104,6 +112,13 @@ program runs, when the board reports on its own (`While it runs`_).
 ``LOG?``
     What the last run executed (`The log`_), then ``LOG,END``. A board that
     keeps no log answers ``ERR,capacity,...``.
+
+``SET,<channel>,<value>``
+    An output by hand, between runs: a DAC to ``value`` volts, a line to the
+    level ``0`` or ``1``. ``OK,SET``; ``ERR,state`` while a program runs,
+    ``ERR,channel`` for a channel it does not have (or a ``time`` channel),
+    ``ERR,range`` for a value outside the DAC's range or a level that is not
+    0 or 1. ImSwitch's positioners and lasers on a board use it.
 
 Anything else is ``ERR,syntax,...``.
 
@@ -140,9 +155,10 @@ line names it, and a ``DRIVE`` before its ``WEIGHT`` and ``TABLE`` lines.
      - Volts per count of that loop.
    * - ``TABLE,<dac>,<loop>,<v0;v1;...>``
      - Volts per count of that loop, given explicitly.
-   * - ``EVENT,<ttl>,<start>,<end>,<anchor>,<loop>,<phases>,<on>,<off>``
-     - The line is at ``on`` from ``start`` to ``end`` ticks after its
-       anchor, and at ``off`` otherwise. ``anchor`` is ``step`` (every
+   * - ``EVENT,<channel>,<start>,<end>,<anchor>,<loop>,<phases>,<on>,<off>``
+     - The line (or DAC) is at ``on`` from ``start`` to ``end`` ticks after
+       its anchor, and at ``off`` otherwise. On a DAC the values are volts:
+       a laser's power level inside a step. ``anchor`` is ``step`` (every
        step), ``pass-start`` (the first step of every pass of ``loop``) or
        ``pass-end`` (the end of the last step of every pass of ``loop``;
        times are then <= 0). ``phases`` (``0;2``, or ``-`` for all) limits
@@ -160,13 +176,14 @@ line names it, and a ``DRIVE`` before its ``WEIGHT`` and ``TABLE`` lines.
      - Where the device stood before the run (for ``captured``).
    * - ``PARK,<dac>,<volts>``
      - Where it parks after the run (for ``park``).
-   * - ``SAFE,<ttl>,<0|1>``
-     - The line's safe level: where a stop, a failure and the end of a run
-       leave it.
+   * - ``SAFE,<channel>,<value>``
+     - Where a stop, a failure and the end of a run leave a line (0 or 1),
+       or a DAC that carries a laser's power (volts: off). A DAC without
+       one holds its position.
 
 A board refuses (``ERR,channel``) a channel it does not have, an event or a
-safe level on a DAC or a ``time`` channel, a drive, captured or park position
-on a line;
+safe level on a ``time`` channel, a drive, captured or park position on a
+line;
 (``ERR,capacity``) more steps than ``max_steps``, or a trigger wait without a
 trigger input; (``ERR,range``) a number that does not fit; (``ERR,syntax``)
 anything else that is not this table.
@@ -212,7 +229,8 @@ comes the preparation: every drive whose value is not the coming step's is
 written, and the board waits the longest of their ``move + settle`` and every
 ``PREPARE`` time. Nothing timed happens during it.
 
-**After the run** every line goes to its safe level; DACs hold.
+**After the run** every line, and every DAC with a ``SAFE`` value, goes to
+its safe level; other DACs hold.
 
 
 While it runs
@@ -232,6 +250,8 @@ While it runs
      - A trigger wait released; ``clock`` is ticks since ``RUN``.
    * - ``PREPARED,<segment>,<clock>``
      - The preparation after it is over; the segment starts.
+   * - ``WAITING,<segment>``
+     - Still waiting for a trigger: every ``alive_ticks``, when declared.
    * - ``DONE,<clock>``
      - The run is over.
    * - ``STOPPED,<step>,<clock>``
@@ -287,13 +307,28 @@ it chose: none before its arrival, each within the declared latency.
 Testing a firmware
 ==================
 
-``imswitch/imcontrol/_test/unit/test_scan_engine_conformance.py`` runs its
-programs through ``StepProtocolScanEngine`` on the simulated board and
-compares the logs with the interpreter; ``test_step_protocol.py`` checks the
-answers to what a board must refuse. A firmware passes when, run in place of
-the simulated board, its logs match the same way. Trigger tests need the
-arrivals on the board's trigger input; the simulated board takes them from
-the test.
+Point the conformance runner at the board:
+
+.. code-block:: bash
+
+    python tools/step_board_conformance.py --port COM5 --baudrate 115200 --reply-timeout 0.5
+
+It runs the conformance programs on the board's first DAC and first three
+lines (at 1 µm per volt; nothing else may be wired to them) -- a raster with
+line steps, an interleave, a serpentine on two loops, pass anchors with a
+table and time waits -- and compares each ``LOG?`` with what the scan-program
+interpreter says the program means, write by write and edge by edge (within
+half a code for a DAC that declares its bits). It prints ``PASS`` or
+``FAIL`` with every difference per program, and exits 0 when all pass.
+``--trigger`` adds a program with trigger waits: something must pulse the
+trigger input; the execution after each release is compared, when the
+releases came is not. ``--simulated --grid-ns 1000`` runs it on the
+reference board.
+
+The same programs, and more -- trigger handling against chosen arrivals, a
+stop during a wait, failures -- run against the simulated board in
+``imswitch/imcontrol/_test/unit/test_scan_engine_conformance.py`` and
+``test_step_protocol.py``.
 
 
 An example

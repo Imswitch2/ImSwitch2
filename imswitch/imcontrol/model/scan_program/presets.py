@@ -186,7 +186,8 @@ def _pattern_field(name, label, kind):
     return Field(name, label, kind)
 
 
-def _trajectory_preset(pattern):
+def trajectory_preset(pattern):
+    """The Make… preset of trajectory ``pattern`` (built in or a drop-in)."""
     import functools
     path = PATTERNS[pattern]
     fields = ((Field('x_device', 'X device', 'positioner'),
@@ -254,7 +255,7 @@ PRESETS: Dict[str, Preset] = {
          Field('traversal', 'X order', 'choice', ('forward', 'serpentine'))),
         raster,
         'A pulse sequence at every pixel; APDs and PMTs assemble it as an image.'),
-    **{f'trajectory-{pattern}': _trajectory_preset(pattern) for pattern in PATTERNS},
+    **{f'trajectory-{pattern}': trajectory_preset(pattern) for pattern in PATTERNS},
 }
 
 #: Kinds a preset may leave empty.

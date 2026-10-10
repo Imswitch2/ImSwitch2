@@ -26,7 +26,9 @@ Qt-free.
 from __future__ import annotations
 
 import copy
-from typing import Mapping, Optional, Tuple
+import dataclasses
+import re
+from typing import List, Mapping, Optional, Tuple
 
 from ..errors import ScanDesignRefusedError
 from ..scan_parameters import pixels_for_length_step
@@ -439,23 +441,73 @@ def scan_timing_policy(stage: Mapping) -> str:
         return STRICT_POLICY   # an order is set, if not one that can be built
 
 
-def timing_note(stage: Mapping, rate_hz) -> str:
+def timing_note(stage: Mapping, rate_hz, digital: Optional[Mapping] = None,
+                setup=None) -> str:
     """What the Advanced panel says about the scan's timing, or ``''``:
     the realized dwell beside the requested one when the designers round it,
     and, under strict timing, that nothing is rounded -- with the reason when
-    the dwell is off the sample clock."""
+    a time is off the sample clock. Given the line program (``digital``) and
+    the setup, every other time that runs differently too: moves, settles,
+    returns, line-step windows (from the realized schedule, §7.3)."""
     dwell = float(stage['sequence_time'])
     policy = scan_timing_policy(stage)
     realized, refusal = realized_duration(dwell, rate_hz, policy)
+    others, problem = _other_timing_changes(stage, digital, setup, rate_hz)
     if policy == STRICT_POLICY:
         note = ('Strict timing (strict-v1): an order other than forward or an intra-pixel '
                 'move is on, so every time must sit on the '
                 f'{format_seconds(1 / float(rate_hz))} sample clock; nothing is rounded.')
-        return note + (f' {refusal}.' if refusal else '')
+        if refusal:
+            return note + f' {refusal}.'
+        return note + (f' {problem}' if problem else '')
+    lines = []
     if realized != dwell:
-        return (f'Dwell {format_seconds(dwell)} runs as {format_seconds(realized)} '
-                f'(whole samples at {format_seconds(1 / float(rate_hz))}, {policy}).')
-    return ''
+        lines.append(f'Dwell {format_seconds(dwell)} runs as {format_seconds(realized)} '
+                     f'(whole samples at {format_seconds(1 / float(rate_hz))}, {policy}).')
+    return ' '.join(lines + others)
+
+
+_STEP_PREFIX = re.compile(r'^step \d+, ')
+
+
+def _other_timing_changes(stage, digital, setup, rate_hz) -> Tuple[List[str], str]:
+    """``(lines, refusal)``: each distinct time other than the dwell that
+    the schedule realizes differently, said once; or why it is refused. A
+    copy of the scan two positions deep realizes every distinct time the
+    whole scan does (line steps kept: each has its own windows)."""
+    if digital is None or setup is None:
+        return [], ''
+    try:
+        program, context = program_from_advanced(stage, digital, setup)
+    except (AdvancedConversionError, ProgramError, KeyError, TypeError, ValueError):
+        return [], ''      # not a scan the program path describes (a swept one)
+    loops = tuple(loop if loop.kind == 'condition' else dataclasses.replace(
+        loop, count=min(loop.count, 2)) for loop in program.loops)
+    drives = tuple(drive if drive.table_um is None else dataclasses.replace(
+        drive, table_um=tuple(drive.table_um[:2])) for drive in program.drives)
+    try:
+        schedule = realize(expand(dataclasses.replace(program, loops=loops, drives=drives),
+                                  context), rate_hz)
+    except ScheduleRefused as error:
+        return [], str(error)
+    except (InterpretError, PolicyError, ProgramError):
+        return [], ''
+    lines, seen = [], set()
+    for change in schedule.changes:
+        if change.quantity == 'step':
+            continue           # the dwell, said above
+        label = _STEP_PREFIX.sub('', change.where)
+        key = (change.quantity, label, change.requested_s, change.realized_s)
+        if key in seen:
+            continue
+        seen.add(key)
+        if change.quantity == 'event_edges':
+            lines.append(f'{label} at {format_seconds(change.requested_s)} runs at '
+                         f'{format_seconds(change.realized_s)}.')
+        else:
+            lines.append(f'{label[0].upper()}{label[1:]} {format_seconds(change.requested_s)} '
+                         f'runs as {format_seconds(change.realized_s)}.')
+    return lines, ''
 
 
 def advanced_from_program(program: ScanProgram):

@@ -355,8 +355,9 @@ def _validate_trajectory(program: ScanProgram) -> ScanProgram:
     if not devices or len(set(devices)) != len(devices):
         problems.append(f'A trajectory moves distinct devices: {devices}')
     if trajectory.pattern not in PATTERNS:
-        problems.append(f'Unknown pattern {trajectory.pattern!r}: '
-                        f'{", ".join(sorted(PATTERNS))}.')
+        problems.append(f'Unknown pattern {trajectory.pattern!r}: there are '
+                        f'{", ".join(sorted(PATTERNS))} (a drop-in pattern loads from the '
+                        'scan_patterns folder).')
     elif len(devices) != PATTERNS[trajectory.pattern].dimensions:
         problems.append(f'The {trajectory.pattern} pattern moves '
                         f'{PATTERNS[trajectory.pattern].dimensions} devices, not {len(devices)}.')

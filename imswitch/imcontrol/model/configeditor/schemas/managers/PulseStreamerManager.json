@@ -1,7 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
-  "properties": {},
+  "properties": {
+    "ipAddress": {
+      "description": "IP address of the Pulse Streamer on the network.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    }
+  },
   "title": "PulseStreamerManager managerProperties",
   "type": "object",
   "x-imswitch-classes": [

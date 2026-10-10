@@ -43,7 +43,8 @@ The program
     (``ttl``), a camera exposure (``detector``), a laser power (``level``),
     a positioner moved for part of the step (``offset``). **Phases** limits
     an event to some line steps. An event is placed while the devices stand
-    still unless **During** says ``any``.
+    still unless **During** says ``any``; **Still** names the devices that
+    must stand still under it (blank: every drive).
 
 **Waits**
     A pause or an external trigger before the run, before every step, or
@@ -173,6 +174,27 @@ galvo.
 A trajectory runs on a streaming engine (the NI-DAQ). Cameras take no frames
 on it. The tables show the laser's timing on the path; **Make…** edits the
 path itself.
+
+**Your own patterns.** A ``.py`` file in the ``scan_patterns`` folder of the
+user files (``ImSwitchConfig/scan_patterns``) adds patterns to **Make…**
+without touching ImSwitch: it defines ``PATTERNS``, a list of ``Pattern`` --
+an id (dotted and your own, such as ``user.rosette``), a title, the devices
+it moves (two: the X and Y device), its parameters as ``(name, label,
+kind)``, and ``path(params, t, duration)`` returning x and y in µm for an
+array of times. A parameter's kind decides its field in the form:
+``micrometres``, ``number``, ``pair-micrometres``, ``pair-hertz``,
+``points``, ``code`` or ``choice:a,b``. The folder holds an example,
+``_example_pattern.py``; files starting with an underscore are not loaded.
+
+The patterns are loaded when the Expert panel starts. A file that does not
+load, a pattern that would replace a built-in or reuse another file's id,
+moves other than two devices, or asks for a kind the form has no field for,
+is skipped and the reason logged (**View → Log**); the rest still load. A
+saved program that uses a pattern opens wherever its file is loaded, and is
+refused with that reason where it is not. The gridded image records the
+pattern's source with its id (``measurement:reduction``: ``pattern_source``,
+the file's name and SHA-256). The files run as Python, unsandboxed: keep only
+code you trust.
 
 
 The report

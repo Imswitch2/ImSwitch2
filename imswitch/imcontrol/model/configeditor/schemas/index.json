@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 47,
-    "docs_agree": 151,
-    "docs_documented": 151,
-    "keys": 231,
-    "managers": 66,
-    "none_default_only": 42,
+    "constrained": 48,
+    "docs_agree": 164,
+    "docs_documented": 164,
+    "keys": 244,
+    "managers": 68,
+    "none_default_only": 48,
     "none_only": 16,
-    "optional": 169,
-    "reads_any": 60,
+    "optional": 181,
+    "reads_any": 64,
     "refs": 15,
-    "required": 62,
-    "typed_by_code": 97,
-    "typed_with_docs": 175,
-    "typed_with_examples": 133,
+    "required": 63,
+    "typed_by_code": 98,
+    "typed_with_docs": 188,
+    "typed_with_examples": 138,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 60,
+    "with_keys": 64,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -42,6 +42,11 @@
       "class": "PositionerInfo",
       "fields": 16,
       "required": 2
+    },
+    "pulse_generator": {
+      "class": "PulseGeneratorInfo",
+      "fields": 2,
+      "required": 1
     },
     "rotator": {
       "class": "DeviceInfo",
@@ -520,7 +525,7 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
       "required": 0
     },
     "PulseGeneratorScanEngine": {
@@ -543,13 +548,13 @@
       "required": 0
     },
     "PulseStreamerManager": {
-      "category": "pulsegen",
+      "category": "pulseGenerators",
       "classes": [
         "PulseStreamerManager",
         "PulseGeneratorManager"
       ],
       "overridden": false,
-      "properties": 0,
+      "properties": 1,
       "required": 0
     },
     "PyMicroscopeLaserManager": {
@@ -630,6 +635,26 @@
       "properties": 4,
       "required": 4
     },
+    "StepBoardLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "StepBoardLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "StepBoardPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "StepBoardPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 1
+    },
     "StepProtocolScanEngine": {
       "category": "scanEngines",
       "classes": [
@@ -661,13 +686,13 @@
       "required": 2
     },
     "TeensyPulseManager": {
-      "category": "pulsegen",
+      "category": "pulseGenerators",
       "classes": [
         "TeensyPulseManager",
         "PulseGeneratorManager"
       ],
       "overridden": false,
-      "properties": 0,
+      "properties": 7,
       "required": 0
     },
     "ThorCamTSIManager": {

@@ -154,11 +154,25 @@ def longest_pulse_interval(program: ScanProgram) -> float:
     return float(program.step_s) + max(extra, default=0.0)
 
 
+def max_pulse_interval_s(leader_grid_s: Optional[float], leader_ppm: Optional[float],
+                         wire: Wire) -> Optional[float]:
+    """The longest two pulses may be apart for the clocks' drift between them
+    to stay under half the finer tick (``drift``'s rule): half that tick over
+    the two accuracies summed. ``math.inf`` for clocks both declared exact;
+    ``None`` when a tick or an accuracy is not declared."""
+    if None in (leader_grid_s, leader_ppm, wire.grid_s, wire.clock_ppm):
+        return None
+    ppm = float(leader_ppm) + float(wire.clock_ppm)
+    limit = 0.5 * min(float(leader_grid_s), float(wire.grid_s))
+    return math.inf if ppm <= 0 else limit / (ppm * 1e-6)
+
+
 def drift(leader: str, leader_grid_s: float, leader_ppm: Optional[float], wire: Wire,
           interval_s: float) -> Tuple[str, str]:
     """``(verdict, reason)`` for two clocks that agree at every pulse: their
     drift over the longest pulse interval must stay under half the finer tick
-    -- where an edge still lands on its tick (the strict policy's edge rule)."""
+    -- where an edge still lands on its tick (the strict policy's edge rule;
+    ``max_pulse_interval_s`` is the same rule as a longest interval)."""
     if leader_ppm is None or wire.clock_ppm is None:
         missing = [name for name, ppm in ((leader, leader_ppm), (wire.engine, wire.clock_ppm))
                    if ppm is None]
@@ -169,14 +183,14 @@ def drift(leader: str, leader_grid_s: float, leader_ppm: Optional[float], wire: 
     numbers = (f'{bound * 1e6:.3g} µs over the longest {interval_s * 1e3:.3g} ms between '
                f'pulses ({leader_ppm:g} + {wire.clock_ppm:g} ppm), against half a tick, '
                f'{limit * 1e6:.3g} µs')
-    if bound < limit:
+    if interval_s < max_pulse_interval_s(leader_grid_s, leader_ppm, wire):
         return 'native', f'{wire.engine} drifts at most {numbers}.'
     return 'impossible', (f'{wire.engine} would drift {numbers}: an edge would leave its tick. '
                           'Shorter steps, or clocks that agree better.')
 
 
 __all__ = ['LEADER_PULSE', 'Wire', 'devices_of', 'drift', 'follower_program', 'leader_program',
-           'longest_pulse_interval', 'pulse_seconds', 'shares']
+           'longest_pulse_interval', 'max_pulse_interval_s', 'pulse_seconds', 'shares']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

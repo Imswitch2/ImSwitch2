@@ -241,8 +241,9 @@ def test_builtin_device_managers():
     """Test that built-in managers are correctly defined."""
     from imswitch.imcontrol.model.plugins.builtins import BUILTIN_DEVICE_MANAGERS
     
-    # + the NI-DAQ, simulated step, pulse-generator and step-protocol scan engines
-    assert len(BUILTIN_DEVICE_MANAGERS) == 13
+    # + the NI-DAQ, simulated step, pulse-generator and step-protocol scan
+    # engines, and the Teensy and Pulse Streamer pulse generators
+    assert len(BUILTIN_DEVICE_MANAGERS) == 15
     
     # Check that AVManager is in the list
     av_manager = next(c for c in BUILTIN_DEVICE_MANAGERS if c.id == "AVManager")
@@ -266,6 +267,8 @@ def test_builtin_device_managers():
     engines = {c.id: c for c in BUILTIN_DEVICE_MANAGERS if c.kind == "scan_engine"}
     assert set(engines) == {"NidaqScanEngine", "PulseGeneratorScanEngine", "SimulatedStepEngine",
                             "StepProtocolScanEngine"}
+    generators = {c.id for c in BUILTIN_DEVICE_MANAGERS if c.kind == "pulse_generator"}
+    assert generators == {"TeensyPulseManager", "PulseStreamerManager"}
 
 
 def test_build_default_registry_no_discover():
@@ -274,7 +277,7 @@ def test_build_default_registry_no_discover():
     
     # Should have the built-ins
     contribs = registry.list_contributions()
-    assert len(contribs) == 13
+    assert len(contribs) == 15
     
     # Test resolving a built-in
     av = registry.resolve("detector", "AVManager")
@@ -352,9 +355,10 @@ def test_manifest_accepts_stand_kind():
     assert contributions[0].kind == "stand"
 
 
-def test_manifest_rejects_bespoke_loader_kinds():
-    """Test that parse_manifest rejects pulse_generator kinds."""
-    from imswitch.imcontrol.model.plugins.manifest import parse_manifest, ManifestError
+def test_manifest_accepts_a_pulse_generator():
+    """A plugin may contribute a pulse generator: ``pulseGenerators`` entries
+    resolve through the registry (it was a bespoke loader until §7.8)."""
+    from imswitch.imcontrol.model.plugins.manifest import parse_manifest
     
     pulse_manifest = {
         "contributions": {
@@ -369,11 +373,9 @@ def test_manifest_rejects_bespoke_loader_kinds():
         }
     }
     
-    with pytest.raises(
-        ManifestError,
-        match="Device kind 'pulse_generator'.* is not supported by runtime plugin loading"
-    ):
-        parse_manifest(pulse_manifest, plugin_name="test-plugin", plugin_version="1.0.0")
+    [contribution] = parse_manifest(pulse_manifest, plugin_name="test-plugin",
+                                    plugin_version="1.0.0")
+    assert contribution.kind == "pulse_generator" and contribution.id == "CustomPulseGen"
 
 
 def test_manifest_accepts_multimanager_backed_kinds():

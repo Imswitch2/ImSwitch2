@@ -273,13 +273,19 @@ def lines_to_plan(lines: Sequence[str]) -> WirePlan:
 
 
 def _level(name):
-    """How a level is read: a line's electrical level is 0 or 1. (A level
-    on a DAC is a number; a board refuses one, as it does not take it.)"""
+    """How a level is read: a line's electrical level is 0 or 1, a DAC's is
+    volts (a laser's power inside a step, and where a stop leaves it)."""
     return _bit if channel(name)[0] == 'ttl' else _float
 
 
 def _bit(value, where) -> int:
     return _whole(value, where, 0, 1, 'a line level (0 or 1)')
+
+
+def level_of(name, value, where):
+    """A channel's value as the wire reads it: a line's 0 or 1, a DAC's
+    volts."""
+    return _level(name)(value, where)
 
 
 def _drive(drives, name, where):
@@ -308,6 +314,29 @@ class BoardCaps:
     trigger_min_ticks: Optional[int] = None
     #: Its clock's accuracy, in parts per million (M6).
     clock_ppm: Optional[float] = None
+    #: Each DAC's resolution in bits: it sets the nearest of 2**bits codes
+    #: over its range (§7.8). Not declared: the volts it is sent.
+    dac_bits: Dict[int, int] = field(default_factory=dict)
+    #: While a program runs, a message at least this often, in ticks
+    #: (``WAITING`` while it waits): so a host can tell a board that fell
+    #: silent from one that waits (§7.8). Not declared: it cannot.
+    alive_ticks: Optional[int] = None
+
+    def dac_step(self, index) -> Optional[float]:
+        """DAC ``index``'s smallest step in volts, or ``None``."""
+        bits = self.dac_bits.get(index)
+        if bits is None or index not in self.dacs:
+            return None
+        low, high = self.dacs[index]
+        return (high - low) / (2 ** bits - 1)
+
+    def dac_value(self, index, volts) -> float:
+        """What DAC ``index`` sets for ``volts``: the nearest code."""
+        step = self.dac_step(index)
+        if step is None:
+            return float(volts)
+        low = self.dacs[index][0]
+        return low + round((float(volts) - low) / step) * step
 
     def idn(self) -> str:
         return f'{PROTOCOL},{self.board},{self.firmware}'
@@ -328,6 +357,10 @@ class BoardCaps:
             out.append(f'CAPS,trigger_min_ticks,{self.trigger_min_ticks}')
         if self.clock_ppm is not None:
             out.append(f'CAPS,clock_ppm,{_num(self.clock_ppm)}')
+        for index, bits in sorted(self.dac_bits.items()):
+            out.append(f'CAPS,dac_bits,{index},{bits}')
+        if self.alive_ticks is not None:
+            out.append(f'CAPS,alive_ticks,{self.alive_ticks}')
         return out + ['CAPS,END']
 
     def has(self, token) -> bool:
@@ -361,8 +394,8 @@ def parse_caps(board: str, firmware: str, lines: Iterable[str]) -> BoardCaps:
         if key == 'END':
             return caps
         if key in ('grid_ns', 'ttl', 'max_steps', 'trigger_in', 'trigger_latency_ticks',
-                   'trigger_min_ticks', 'clock_ppm') and len(f) != 1 \
-                or key == 'dac' and len(f) != 3:
+                   'trigger_min_ticks', 'clock_ppm', 'alive_ticks') and len(f) != 1 \
+                or key == 'dac' and len(f) != 3 or key == 'dac_bits' and len(f) != 2:
             raise ProtocolError(f'{where}: {line!r} has the wrong number of fields')
         if key == 'grid_ns':
             caps.grid_ns = _uint(f[0], where)
@@ -380,6 +413,10 @@ def parse_caps(board: str, firmware: str, lines: Iterable[str]) -> BoardCaps:
             caps.trigger_min_ticks = _uint(f[0], where)
         elif key == 'clock_ppm':
             caps.clock_ppm = _float(f[0], where)
+        elif key == 'dac_bits':
+            caps.dac_bits[_uint(f[0], where)] = _uint(f[1], where)
+        elif key == 'alive_ticks':
+            caps.alive_ticks = _uint(f[0], where)
         # Any other key is a capability this host does not use.
     raise ProtocolError('The capabilities end without CAPS,END.')
 
@@ -444,7 +481,7 @@ def parse_log(lines: Iterable[str]) -> RunLog:
 
 __all__ = ['BoardCaps', 'CAPACITY', 'CHANNEL', 'INT32_MAX', 'INT32_MIN', 'NONE', 'PROTOCOL',
            'ProtocolError', 'RANGE', 'STATE', 'SYNTAX', 'UINT32_MAX', 'UINT64_MAX', 'WirePlan',
-           'channel', 'lines_to_plan', 'log_lines', 'message', 'parse_caps', 'parse_idn',
+           'channel', 'level_of', 'lines_to_plan', 'log_lines', 'message', 'parse_caps', 'parse_idn',
            'parse_log', 'plan_to_lines', 'text']
 
 

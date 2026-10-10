@@ -25,9 +25,12 @@ import threading
 from typing import List, Optional
 
 from .step_executor import Listener, RunLog, StepExecutor
+
+#: Nanoseconds per second: the grid is declared in ns.
+NS_PER_S = 1_000_000_000
 from .step_protocol import (
-    BoardCaps, CAPACITY, CHANNEL, ProtocolError, STATE, SYNTAX, channel, lines_to_plan,
-    log_lines, text,
+    BoardCaps, CAPACITY, CHANNEL, ProtocolError, RANGE, STATE, SYNTAX, channel, level_of,
+    lines_to_plan, log_lines, text,
 )
 
 
@@ -88,6 +91,8 @@ class SimulatedStepBoard:
             elif line == 'LOG?':
                 for log_line in log_lines(self.log):
                     self._reply(log_line)
+            elif line.startswith('SET,'):
+                self._set(line)
             else:
                 self._error(SYNTAX, f'not a command of the protocol: {line}')
 
@@ -111,6 +116,31 @@ class SimulatedStepBoard:
 
     def _error(self, code, reason):
         self._reply(f'ERR,{code},{text(reason)}')
+
+    def _set(self, line):
+        """``SET,<channel>,<value>``: an output by hand, between runs."""
+        fields = line.split(',')
+        if len(fields) != 3:
+            self._error(SYNTAX, f'SET takes a channel and a value: {line}')
+            return
+        if self.running:
+            self._error(STATE, 'an output is not set by hand while a program runs')
+            return
+        try:
+            kind, index = channel(fields[1])
+            if kind == 'time' or not self.caps.has(fields[1]):
+                raise ProtocolError(f'{fields[1]}: this board has no such output', CHANNEL)
+            value = level_of(fields[1], fields[2], 'SET')
+            if kind == 'dac':
+                low, high = self.caps.dacs[index]
+                if not low <= value <= high:
+                    raise ProtocolError(f'{fields[1]} gives {low:g} to {high:g} V, not '
+                                        f'{value:g}', RANGE)
+        except ProtocolError as error:
+            self._error(error.code, str(error))
+            return
+        self.outputs[fields[1]] = self._settable(fields[1], value)
+        self._reply('OK,SET')
 
     # -- a program --------------------------------------------------------------
 
@@ -138,8 +168,9 @@ class SimulatedStepBoard:
                  [d['device'] for d in plan.drives]),
                 (('dac', 'time'), 'a DAC or a time channel has a captured or park position',
                  list(plan.captured_um) + list(plan.park_um)),
-                (('ttl',), 'a line takes an event', [e['device'] for e in plan.events]),
-                (('ttl',), 'a line has a safe level (a DAC holds)', list(plan.safe))):
+                (('ttl', 'dac'), 'a line or a DAC takes an event',
+                 [e['device'] for e in plan.events]),
+                (('ttl', 'dac'), 'a line or a DAC has a safe level', list(plan.safe))):
             for name in names:
                 if channel(name)[0] not in kinds:
                     raise ProtocolError(f'{name}: only {what}', CHANNEL)
@@ -173,11 +204,19 @@ class SimulatedStepBoard:
 
     def _execute(self):
         plan = self._plan
+        heartbeat = (self.caps.alive_ticks * self.caps.grid_ns / NS_PER_S
+                     if self.caps.alive_ticks and self.caps.grid_ns else None)
         self._executor = StepExecutor(plan, latency_ticks=self.latency_ticks or 0,
                                       stop=self._stop, blocking=self.arrivals_final,
                                       listener=_Wire(self), log=self.log,
-                                      release=self._release)
+                                      release=self._release, settable=self._settable,
+                                      heartbeat_s=heartbeat)
         self._executor.run(self.arrivals, self.fail_at_step)
+
+    def _settable(self, name, value):
+        """What an output really takes: a DAC its nearest code."""
+        kind, index = channel(name)
+        return self.caps.dac_value(index, value) if kind == 'dac' else value
 
     def _settle(self):
         """Where a run leaves the outputs: every line at its safe level, every
@@ -204,6 +243,9 @@ class _Wire(Listener):
 
     def prepared(self, segment, wall):
         self.board._reply(f'PREPARED,{segment},{wall}')
+
+    def waiting(self, segment):
+        self.board._reply(f'WAITING,{segment}')
 
     def done(self, wall):
         self.board._settle()

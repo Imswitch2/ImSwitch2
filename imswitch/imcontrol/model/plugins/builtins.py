@@ -109,6 +109,22 @@ BUILTIN_DEVICE_MANAGERS: list[DeviceManagerContribution] = [
         manager_name_aliases=("builtin.pulse-generator-scan-engine",),
     ),
     DeviceManagerContribution(
+        id="TeensyPulseManager",
+        kind="pulse_generator",
+        display_name="Teensy / Arduino pulse generator (ImSwitch v4 firmware)",
+        python_name="imswitch.imcontrol.model.managers.pulsegen.TeensyPulseManager:TeensyPulseManager",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("builtin.teensy-pulse",),
+    ),
+    DeviceManagerContribution(
+        id="PulseStreamerManager",
+        kind="pulse_generator",
+        display_name="Swabian Pulse Streamer 8/2",
+        python_name="imswitch.imcontrol.model.managers.pulsegen.PulseStreamerManager:PulseStreamerManager",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("builtin.pulse-streamer",),
+    ),
+    DeviceManagerContribution(
         id="StepProtocolScanEngine",
         kind="scan_engine",
         display_name="Step board (any board speaking the IMSWITCH_STEP/1 protocol)",

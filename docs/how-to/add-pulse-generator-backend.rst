@@ -196,37 +196,33 @@ Step-by-step
      Document the lock convention; the manager-level ``_running_lock``
      pattern in TeensyPulseManager is good enough for most backends.
 
-4. **Add a config dataclass to** ``SetupInfo.py``.
+4. **Take the constructor every pulse generator takes:**
+   ``__init__(info, name, **lowLevelManagers)``.
 
-   Frozen dataclass with ``port``/``connection`` fields plus any
-   mock-mode knobs.  Mirror ``TeensyPulseInfo``.  Add an
-   ``Optional[...]`` field on ``SetupInfo`` itself (default
-   ``None``) so setups without your backend continue to load
-   unchanged.
+   ``info`` is the setup's ``pulseGenerators`` entry (a
+   ``PulseGeneratorInfo``); read your connection settings from
+   ``info.managerProperties`` one key at a time (``props.get('port')``),
+   so that the configuration editor lists them.
 
-5. **Wire** ``MasterController``.
+5. **Register it** as kind ``pulse_generator``.
 
-   Construct the manager iff ``setupInfo.<your_field>`` is set, expose
-   via ``lowLevelManagers['pulseGeneratorManager']``.  Today
-   ``MasterController`` builds only ``TeensyPulseManager`` (from
-   ``teensyPulse``), so this means extending that code.  Only one
-   pulse generator can be active per setup at a time — this is by
-   design and matches how consumers (laser managers, snap actions)
-   look up the dependency.
+   A plugin declares it in its manifest like any other device manager
+   (see :doc:`/devices/plugins`); an in-tree backend in
+   ``imswitch/imcontrol/model/managers/pulsegen/`` gets a
+   ``DeviceManagerContribution`` in
+   ``imswitch/imcontrol/model/plugins/builtins.py``. A setup then
+   lists it under ``pulseGenerators`` by name, and a laser or scan engine
+   names it in its ``managerProperties.pulseGenerator``
+   (:doc:`/devices/pulse_generators`). An in-tree backend is picked up by
+   the manager inventory tests, which fail until you:
 
-   Pulse generators are loaded by this bespoke code, not by the device
-   plugin registry, so a backend cannot ship as an external plugin; it
-   lives in ``imswitch/imcontrol/model/managers/pulsegen/``.  A new
-   ``*Manager.py`` file there is picked up by the manager inventory
-   tests, which fail until you:
-
-   * add ``("pulse_generator", "<YourManager>")`` to the ``legacy_only``
-     set asserted in ``imswitch/imcontrol/_test/unit/test_setup_metadata.py``;
+   * count it in the registered managers asserted in
+     ``imswitch/imcontrol/_test/unit/test_setup_metadata.py``;
    * regenerate the configuration-editor schemas with
      ``python tools/extract_manager_schemas.py --write`` and update the
      manager count in ``test_configeditor_schemas_match_source.py``;
-   * add the manager to ``UNDOCUMENTED`` in ``test_devices_docs_drift.py``
-     (or give it a card under ``docs/devices/``).
+   * give it a card in ``docs/devices/pulse_generators.rst`` (or add it to
+     ``UNDOCUMENTED`` in ``test_devices_docs_drift.py``).
 
 6. **Add contract tests.**
 

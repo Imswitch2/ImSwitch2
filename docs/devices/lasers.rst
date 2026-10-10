@@ -833,9 +833,10 @@ None directly.  All NI-DAQmx traffic goes through the
 PulseGeneratorLaserManager
 ==========================
 
-Backend-agnostic laser driven by a ``PulseGeneratorManager``
-(Teensy today; PulseStreamer/NI in the future).  v4-era replacement
-for ``PulseStreamerLaserManager``.
+Backend-agnostic laser driven by a ``PulseGeneratorManager``: the
+``teensyPulse`` section's Teensy, or any ``pulseGenerators`` entry
+(:doc:`pulse_generators`).  v4-era replacement for
+``PulseStreamerLaserManager``.
 
 **Setup JSON**
 
@@ -855,10 +856,16 @@ for ``PulseStreamerLaserManager``.
 
 **managerProperties**
 
-None.  The class docstring lists ``digitalChannel`` /
-``analogChannel`` as "managerProperties", but the implementation reads
-them from the top-level ``LaserInfo`` fields ``digitalLine`` and
-``analogChannel`` via ``getattr(laserInfo, ...)``.
+.. list-table::
+   :widths: 25 15 60
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``pulseGenerator``
+     - str or null
+     - The ``pulseGenerators`` entry it is wired to; omitted, the ``teensyPulse`` section's.
 
 **LaserInfo fields used**
 
@@ -868,10 +875,10 @@ them from the top-level ``LaserInfo`` fields ``digitalLine`` and
 
 **Low-level dependencies**
 
-* ``pulseGeneratorManager`` — required; accessed via
-  ``lowLevelManagers.get('pulseGeneratorManager')``.  If ``None`` (e.g.
-  ``setupInfo.teensyPulse`` was left unset), the manager enters mock
-  mode (``_isMock=True``).
+* The generator it names (``pulseGenerator``), or the ``teensyPulse``
+  section's.  When it names none and the setup has no ``teensyPulse``,
+  the manager enters mock mode (``_isMock=True``); a generator it names
+  and the setup does not have stops the setup from loading.
 
 **Vendor library**
 
@@ -1056,3 +1063,61 @@ any import or construction failure the manager enters mock mode
 **Source**
 
 `PyMicroscopeLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py>`_
+
+
+StepBoardLaserManager
+=====================
+
+A laser on a step board: a board that speaks the step-engine protocol
+(:doc:`step-engine-protocol`). Its line is the board's ``<engine>/ttl<j>``
+and, for a laser with a power control, its analog channel the board's
+``<engine>/dac<i>``. In a scan the board's engine switches it (and plays a
+power level inside a step on its DAC); by hand this manager does, through
+the protocol's ``SET``, between runs.
+
+**Setup JSON**
+
+.. code-block:: json
+
+    "lasers": {
+        "405": {
+            "managerName": "StepBoardLaserManager",
+            "managerProperties": {},
+            "digitalLine": "triggerscope/ttl0",
+            "analogChannel": null,
+            "wavelength": 405,
+            "valueRangeMin": 0,
+            "valueRangeMax": 1
+        }
+    }
+
+**managerProperties**
+
+.. list-table::
+   :widths: 22 12 60
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``calibCsvPath``
+     - str
+     - The power calibration (optional): volts and the power they give, one
+       pair per row. With it a power is a percentage of the calibrated
+       range; without it the value is the voltage. A scan converts a power
+       level the same way.
+
+**LaserInfo fields used**
+
+* ``digitalLine``, ``analogChannel`` (none: an on/off laser),
+  ``ttlActiveLevel`` (on and off follow it), ``valueRangeMin`` /
+  ``valueRangeMax``.
+
+**Low-level dependencies**
+
+* ``scanEngineNamed`` -- the setup's scan engines, looked up when the laser
+  is switched.
+
+**Source**
+
+`StepBoardLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/StepBoardLaserManager.py>`_

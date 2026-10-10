@@ -24,8 +24,9 @@ from typing import Dict, Mapping, Optional
 import numpy as np
 
 from imswitch.imcontrol.model.managers.NidaqManager import (
-    SCAN_CLOCK_RATE_HZ, SCAN_CLOCK_TERMINAL,
+    SCAN_CLOCK_RATE_HZ, SCAN_CLOCK_TERMINAL, nidaq_drives_line,
 )
+from imswitch.imcontrol.model.managers.lasers._power_volts import level_volts
 from imswitch.imcontrol.model.scan_program.densify import densify
 from imswitch.imcontrol.model.scan_program.engine import (
     AnalogOut, EMULATED, EngineCapabilities, FeasibilityReport, FeatureVerdict, IMPOSSIBLE,
@@ -93,7 +94,7 @@ class NidaqScanEngine(ScanEngine):
 
     def owns(self, channel: str) -> bool:
         channel = str(channel)
-        return 'Dev' in channel or bool(_NI_ANALOG_OUTPUT.fullmatch(channel))
+        return nidaq_drives_line(channel) or bool(_NI_ANALOG_OUTPUT.fullmatch(channel))
 
     def capabilities(self) -> EngineCapabilities:
         analog, digital, triggers = {}, [], []
@@ -124,7 +125,8 @@ class NidaqScanEngine(ScanEngine):
             sources={
                 'timing_grid_s': f'NidaqManager: scans run on {SCAN_CLOCK_TERMINAL} '
                                  f'({SCAN_CLOCK_RATE_HZ} Hz)',
-                'digital': 'NidaqManager.runScan drives lines whose name contains "Dev"',
+                'digital': 'NidaqManager.runScan drives NI-DAQmx digital lines '
+                           '(<device>/port<n>/line<m>, <device>/PFI<n>)',
                 'abort': 'NI-DAQ scans cannot be stopped mid-iteration today',
             },
         )
@@ -187,10 +189,26 @@ class NidaqScanEngine(ScanEngine):
             if refusal:
                 report.add(f'drive {device}', IMPOSSIBLE, refusal)
             analog[device] = volts
+        minmaxes = [[float(v.min()), float(v.max())] for v in analog.values()]
+        # A power level inside a step: the laser's analog channel plays it,
+        # converted as the laser is set by hand (§7.8). It used to be
+        # reported native and then not played at all.
+        lasers = getattr(self._setupInfo, 'lasers', {}) or {}
+        for laser, values in dense['level'].items():
+            if any(e.kind == 'level' and e.device == laser and e.shape != 'hold'
+                   for e in program.timeline):
+                report.add(f'level {laser}', IMPOSSIBLE,
+                           f'A ramped power level of {laser} is not played; hold it.')
+                continue
+            volts, refusal = level_volts(laser, lasers.get(laser), values)
+            if refusal:
+                report.add(f'level {laser}', IMPOSSIBLE, refusal)
+                continue
+            analog[laser] = volts
         if not report.runnable:
             raise ScanEngineRefused(report)
         info = scan_info_for(program, schedule, self.rate_hz)
-        info['minmaxes'] = [[float(v.min()), float(v.max())] for v in analog.values()]
+        info['minmaxes'] = minmaxes
         signals = {'scanSignalsDict': analog, 'TTLCycleSignalsDict': dict(dense['digital'])}
         return CompiledWaveforms(program, schedule, signals, info, report)
 

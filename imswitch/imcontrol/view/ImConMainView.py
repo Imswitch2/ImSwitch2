@@ -14,6 +14,7 @@ from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
 from .RecordingFolderDialog import RecordingFolderDialog
+from .ScanCapabilitiesDialog import ScanCapabilitiesDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -164,6 +165,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigOpenShortcutEditor = QtCore.Signal()
     sigOpenSessionNotes = QtCore.Signal()
     sigOpenConfigEditor = QtCore.Signal()
+    sigOpenScanCapabilities = QtCore.Signal()
     sigOpenMemoryLimits = QtCore.Signal()
     sigOpenRecordingFolder = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
@@ -186,6 +188,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.sessionNotesDialog = SessionNotesDialog(self)
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
         self.recordingFolderDialog = RecordingFolderDialog(self)
+        self.scanCapabilitiesDialog = ScanCapabilitiesDialog(self)
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -253,6 +256,16 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
         hardware.addAction(self.configEditorAction)
+
+        hardware.addSeparator()
+
+        self.scanCapabilitiesAction = QtWidgets.QAction('What this setup can scan…', self)
+        self.scanCapabilitiesAction.setToolTip(
+            'Every scan engine of this setup and what it can do: native,'
+            ' emulated or impossible, and why.'
+        )
+        self.scanCapabilitiesAction.triggered.connect(self.sigOpenScanCapabilities)
+        hardware.addAction(self.scanCapabilitiesAction)
 
         # Checkable, but left unconnected until the dock it toggles exists --
         # the menu bar is built before the dock area.
@@ -582,6 +595,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.memoryLimitsDialog.show()
         self.memoryLimitsDialog.raise_()
         self.memoryLimitsDialog.activateWindow()
+
+    def showScanCapabilitiesDialog(self):
+        """Raise the report of what this setup can scan."""
+        self.scanCapabilitiesDialog.show()
+        self.scanCapabilitiesDialog.raise_()
+        self.scanCapabilitiesDialog.activateWindow()
 
     def showRecordingFolderDialog(self):
         """Raise the recordings-folder editor."""

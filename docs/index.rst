@@ -155,6 +155,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/positioners
     devices/rotators
     devices/stands
+    devices/pulse_generators
     devices/scan_engines
     devices/step-engine-protocol
     Hdf5datafile

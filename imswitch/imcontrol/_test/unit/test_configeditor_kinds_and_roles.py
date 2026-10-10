@@ -130,7 +130,8 @@ class TestKindReader:
         for kind in kinds.KIND_INFO_CLASSES:
             schema = resources.kind_schema_for(kind)
             assert schema is not None and schema["x-imswitch-info-class"] == kinds.KIND_INFO_CLASSES[kind], kind
-        assert resources.kind_schema_for("pulse_generator") is None, "a bespoke loader, no dataclass"
+        assert resources.kind_schema_for("pulse_generator")["x-imswitch-info-class"] == \
+            "PulseGeneratorInfo"
         assert resources.kind_schema_for("../index") is None
 
     def test_kinds_are_generated_and_roles_are_not(self, tmp_path):

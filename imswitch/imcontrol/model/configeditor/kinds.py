@@ -25,8 +25,7 @@ from typing import Optional
 
 #: Which ``SetupInfo`` dataclass describes a device entry of each kind
 #: (``setup_metadata.KIND_METADATA`` keys). Rotators are plain
-#: ``DeviceInfo``; pulse generators use a bespoke loader and have no
-#: per-device dataclass.
+#: ``DeviceInfo``.
 KIND_INFO_CLASSES: dict[str, str] = {
     "detector": "DetectorInfo",
     "laser": "LaserInfo",
@@ -37,6 +36,7 @@ KIND_INFO_CLASSES: dict[str, str] = {
     "flip_mirror": "FlipMirrorInfo",
     "stand": "MicroscopeStandInfo",
     "scan_engine": "ScanEngineInfo",
+    "pulse_generator": "PulseGeneratorInfo",
 }
 
 #: Top-level keys the editor handles outside the form.

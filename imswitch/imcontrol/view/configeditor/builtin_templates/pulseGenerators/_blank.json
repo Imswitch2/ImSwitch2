@@ -1,6 +1,6 @@
 {
   "display": "Generic Pulse Generator",
-  "category": "pulsegen",
+  "category": "pulseGenerators",
   "blank": true,
   "props": []
 }

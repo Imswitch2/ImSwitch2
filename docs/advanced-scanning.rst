@@ -150,9 +150,11 @@ An order other than forward, or an intra-pixel move, runs the scan under
 **strict timing** (``strict-v1``), and the panel says so. Every time -- the
 dwell, the moves, the windows -- must sit on the sample clock: a value off it
 is refused with the two nearest that are on it, never rounded. A forward scan
-runs as before (``advanced-compatible-v1``): when the clock rounds the dwell,
-the panel shows the dwell it runs at beside the requested one (*Dwell
-1.005 ms runs as 1.01 ms*). Saved scans record the policy they run under as
+runs as before (``advanced-compatible-v1``): when the clock rounds a time,
+the panel shows the time it runs at beside the requested one -- the dwell
+(*Dwell 1.005 ms runs as 1.01 ms*), and every move, settle, return and
+line-step window edge the scan plays differently (*405 (ON) ttl start at
+15 µs runs at 20 µs*), each once. Saved scans record the policy they run under as
 ``timingPolicy``; a file without it is a scan saved before, and runs as
 before. A file naming a policy this version does not know is not applied.
 

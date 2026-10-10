@@ -33,8 +33,9 @@ wired to one by its ``analogChannel`` or ``digitalLine``.
 - ``simulatedBoard`` (required for ``"simulated"``): what the simulated board
   declares -- ``gridNs`` (required), ``dacs`` (``{index: [minV, maxV]}``),
   ``ttlLines``, ``maxSteps``, ``triggerIn``, ``triggerLatencyTicks``,
-  ``triggerMinTicks``, ``clockPpm``, and ``actualTriggerLatencyTicks`` when it
-  has a trigger input whose latency it does not declare.
+  ``triggerMinTicks``, ``clockPpm``, ``dacBits`` (``{index: bits}``),
+  ``aliveTicks``, and ``actualTriggerLatencyTicks`` when it has a trigger
+  input whose latency it does not declare.
 """
 
 from __future__ import annotations
@@ -42,13 +43,16 @@ from __future__ import annotations
 import dataclasses
 import math
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.scan_program.engine import (
-    AnalogOut, EngineCapabilities, FeatureVerdict, IMPOSSIBLE, UNKNOWN, ScanEngineRefused,
+    AnalogOut, EngineCapabilities, FeatureVerdict, IMPOSSIBLE, NATIVE, UNKNOWN,
+    ScanEngineRefused,
 )
+from imswitch.imcontrol.model.managers.lasers._power_volts import level_volts
 from imswitch.imcontrol.model.signaldesigners.basesignaldesigners import (
     scan_voltage_range_refusal,
 )
@@ -56,8 +60,8 @@ from .SimulatedStepEngine import Compiled, StepEngineBase
 from .step_board import SimulatedStepBoard
 from .step_executor import RunLog
 from .step_protocol import (
-    BoardCaps, INT32_MAX, INT32_MIN, ProtocolError, UINT32_MAX, WirePlan, channel, message,
-    parse_caps, parse_idn, parse_log, plan_to_lines, text,
+    BoardCaps, INT32_MAX, INT32_MIN, ProtocolError, UINT32_MAX, WirePlan, _num, channel,
+    message, parse_caps, parse_idn, parse_log, plan_to_lines, text,
 )
 
 NS_PER_S = 1_000_000_000
@@ -130,7 +134,9 @@ def simulated_board(props) -> SimulatedStepBoard:
         ttl_lines=int(props.get('ttlLines', 0)), max_steps=props.get('maxSteps'),
         trigger_in=bool(props.get('triggerIn', False)),
         trigger_latency_ticks=props.get('triggerLatencyTicks'),
-        trigger_min_ticks=props.get('triggerMinTicks'), clock_ppm=props.get('clockPpm'))
+        trigger_min_ticks=props.get('triggerMinTicks'), clock_ppm=props.get('clockPpm'),
+        dac_bits={int(i): int(b) for i, b in (props.get('dacBits') or {}).items()},
+        alive_ticks=props.get('aliveTicks'))
     return SimulatedStepBoard(caps, latency_ticks=props.get('actualTriggerLatencyTicks'))
 
 
@@ -274,10 +280,9 @@ class StepProtocolScanEngine(StepEngineBase):
             report.add('timing grid', UNKNOWN,
                        f'{self.name} does not declare its timing grid (CAPS grid_ns).')
         for event in program.timeline:
-            if event.kind == 'level':
+            if event.kind == 'level' and event.shape != 'hold':
                 _replace(report, f'level {event.device}', IMPOSSIBLE,
-                         f'A power level of {event.device} needs its power-to-volt conversion; '
-                         f'{self.name} plays lines and positioner drives only.')
+                         f'A ramped power level of {event.device} is not played; hold it.')
         for wait in program.waits:
             if wait.hold != 'idle':
                 report.add(f'wait hold at {wait.at}', IMPOSSIBLE,
@@ -296,7 +301,8 @@ class StepProtocolScanEngine(StepEngineBase):
             compiled.report.add('conversion', UNKNOWN, ' '.join(unknown))
         if refusals:
             compiled.report.add('board', IMPOSSIBLE, ' '.join(refusals))
-        if unknown or refusals:
+        self._resolution(compiled.report, wire, back)
+        if not compiled.report.runnable:
             raise ScanEngineRefused(compiled.report)
         return ProtocolCompiled(compiled.program, compiled.plan, compiled.report, wire,
                                 plan_to_lines(wire), back)
@@ -358,7 +364,30 @@ class StepProtocolScanEngine(StepEngineBase):
                 refusals.append(refusal)
 
         events, safe, carriers = [], {}, {}
+        lasers = getattr(self._setupInfo, 'lasers', None) or {}
         for e in plan.events:
+            if e['kind'] == 'level':
+                # A power level: the laser's DAC at its volts during the event,
+                # at the volts of off (0) otherwise and after a stop (§7.8).
+                name = token(channels[e['device']].analog)
+                if carriers.setdefault(name, e['device']) != e['device']:
+                    refusals.append(f'{name} carries {carriers[name]} and {e["device"]}.')
+                    continue
+                volts, refusal = level_volts(e['device'], lasers.get(e['device']),
+                                             [float(e['value']), 0.0])
+                if refusal:
+                    refusals.append(refusal)
+                    continue
+                on, off = (float(v) for v in volts)
+                low, high = self._caps.dacs[channel(name)[1]]
+                if not (low <= min(on, off) and max(on, off) <= high):
+                    refusals.append(f'{e["device"]} needs {min(on, off):g} to {max(on, off):g}'
+                                    f' V; {self.name} {name} gives {low:g} to {high:g} V.')
+                    continue
+                back[name] = (e['device'], None)
+                safe[name] = off
+                events.append(dict(e, device=name, on=on, off=off))
+                continue
             line = e['device'] if e['kind'] == 'marker' else channels[e['device']].digital
             name = token(line)
             if carriers.setdefault(name, e['device']) != e['device']:
@@ -387,6 +416,36 @@ class StepProtocolScanEngine(StepEngineBase):
                         captured_um=captured, park_um=park, safe=safe)
         refusals += _width_refusals(wire)
         return wire, back, refusals, unknown
+
+    def _resolution(self, report, wire, back):
+        """Each drive's position resolution where its DAC declares one: a
+        step finer than one code would not move the device, so it is refused."""
+        if wire is None:
+            return
+        for drive in wire.drives:
+            if not drive.get('output', True):
+                continue
+            index = channel(drive['device'])[1]
+            step = self._caps.dac_step(index)
+            device, factor = back[drive['device']]
+            if step is None:
+                report.add(f'resolution {device}', NATIVE,
+                           f'{self.name} {drive["device"]} declares no resolution: it is sent '
+                           'the exact volts.')
+                continue
+            moves = [abs(w) for w in drive['weights'].values() if w]
+            table = drive['table'] or []
+            moves += [abs(b - a) for a, b in zip(table, table[1:]) if b != a]
+            resolution = step * factor
+            bits = self._caps.dac_bits[index]
+            if moves and min(moves) < step:
+                report.add(f'resolution {device}', IMPOSSIBLE,
+                           f'{device} steps by {min(moves) * factor:.4g} µm; {self.name} '
+                           f'{drive["device"]} sets {resolution:.4g} µm steps ({bits} bits).')
+            else:
+                report.add(f'resolution {device}', NATIVE,
+                           f'{device} lands on {resolution:.4g} µm steps ({self.name} '
+                           f'{drive["device"]}, {bits} bits).')
 
     def _conversion(self, device) -> Optional[float]:
         positioners = getattr(self._setupInfo, 'positioners', None) or {}
@@ -420,6 +479,24 @@ class StepProtocolScanEngine(StepEngineBase):
 
     def ready(self) -> bool:
         return self._prepared is not None
+
+    @property
+    def unanswered(self):
+        """Why the board has not said what it can do; ``None`` once it has.
+        Until then its capabilities are empty (the setup's report says so)."""
+        return None if self._caps is not None else self._unreachable
+
+    def set(self, channel_name, value):
+        """An output by hand (``SET``), between runs: a DAC to ``value`` volts,
+        a line to the level 0 or 1. StepBoardError with the board's reason."""
+        prefix, _, token = str(channel_name).rpartition('/')
+        if prefix and prefix != self.name:
+            raise StepBoardError(f'{channel_name} is not {self.name}\'s.')
+        self._idle('set an output by hand')
+        if self._caps is None:
+            self.connect()
+        self._write(f'SET,{token},{_num(value)}')
+        self._expect('SET')
 
     def run(self, compiled: ProtocolCompiled = None, *, arrivals=(), blocking=False,
             fail_at_step=None, quiet=False, on_end=None):
@@ -472,24 +549,50 @@ class StepProtocolScanEngine(StepEngineBase):
         if self._follower is not None:
             self._follower.join(timeout)
 
+    def _silence_limit(self, transport):
+        """How long the board may say nothing while it runs: the period of
+        its declared heartbeat plus the link's reply time; ``None`` when it
+        declares none, or for an in-process board, which has no link to lose."""
+        caps = self._caps
+        if caps is None or not caps.alive_ticks or not caps.grid_ns \
+                or not transport.reply_timeout:
+            return None
+        return caps.alive_ticks * caps.grid_ns / NS_PER_S + float(transport.reply_timeout)
+
     def _follow(self):
         """Read what the board reports until its run ends; then signal."""
         outcome, reason = 'failed', ''
         transport = self._transport
+        limit = self._silence_limit(transport)
+        timeout = transport.run_timeout
+        if limit is not None:
+            timeout = limit if timeout is None else min(limit, timeout)
+        heard = time.monotonic()
         try:
             while True:
-                line = transport.read(transport.run_timeout)
+                line = transport.read(timeout)
                 if line is None:
                     if self._closing:
                         reason = 'the link was closed during the run'
                         break
+                    if limit is not None and time.monotonic() - heard > limit:
+                        reason = (f'the board fell silent: nothing for {limit:g} s, and it '
+                                  'declares a message at least every '
+                                  f'{limit - float(transport.reply_timeout):g} s while it runs')
+                        try:
+                            self._write('STOP')
+                        except (OSError, StepBoardError):
+                            pass
+                        break
                     continue
+                heard = time.monotonic()
                 kind, fields = message(line)
                 if kind == 'STARTED':
                     if not self._quiet:
                         self.sigScanStarted.emit()
                 elif kind == 'STEP':
                     self.progress = (int(fields[0]), int(fields[1]))
+                    self.sigScanProgress.emit(*self.progress)
                 elif kind == 'RELEASE':
                     if not self._quiet:
                         self.sigBarrierReleased.emit(int(fields[0]), int(fields[1]))
@@ -502,7 +605,8 @@ class StepProtocolScanEngine(StepEngineBase):
                 elif kind == 'ERR':
                     reason = f'{fields[0]}: {fields[1]}'
                     break
-                # PREPARED, and OK,STOP for a stop sent while running.
+                # PREPARED, WAITING (the heartbeat), and OK,STOP for a stop sent
+                # while running.
         except (OSError, ProtocolError, ValueError, IndexError) as error:
             reason = f'the link failed: {text(error)}'
         finally:

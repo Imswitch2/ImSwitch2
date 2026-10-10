@@ -55,6 +55,19 @@ the waits they support, their trigger latency, how they stop. A capability an
 engine does not declare is unknown, and a scan that needs it is refused as
 unknown rather than run on a guess.
 
+**Hardware → What this setup can scan…** shows them before anyone builds a
+scan. For every engine of the setup: what the scan panel does with it (runs
+on it, follows that engine, or neither -- with what would change that), each
+feature with its verdict and why (swept axes, stepped positions, each
+transition, intra-step offsets, time and trigger waits, stopping mid-scan),
+what it declares and where each value came from (*1 µs, from triggerscope
+\*CAPS? grid_ns*), and the setup's devices on its channels. A follower is
+told how far apart its leader's pulses may be (see below). Last come the
+devices on no engine's channel, which take part in no scan. The verdicts are
+the ones a scan is assessed with; the report is built afresh each time it is
+opened, so a board that had not answered may have since. **Copy** puts it on
+the clipboard.
+
 
 Several engines in one scan
 ===========================
@@ -111,10 +124,13 @@ NidaqScanEngine
 The NI-DAQ seen as a scan engine; every setup has it, named ``nidaq``. Its
 signals are the NI-DAQ manager's own, and the scans the Advanced and
 SimplePointScan panels build run through it exactly as before. It reads no
-``managerProperties``; what it drives is today's behaviour, written down:
+``managerProperties``; what it drives:
 
-* digital lines whose name contains ``Dev`` (the lines ``NidaqManager.runScan``
-  drives);
+* digital lines whose name contains ``Dev``, and every NI-DAQmx line or PFI
+  terminal on any device name -- ``<device>/port<n>/line<m>``,
+  ``<device>/PFI<n>``, a PXI chassis slot's (``PXI1Slot2/port0/line1``) as
+  much as ``Dev1``'s. Before, a line on a device not named ``Dev...`` was
+  dropped from every scan without a word;
 * analog channels in NI-DAQmx form, ``<device>/ao<n>``.
 
 It streams sampled waveforms on the board's 100 kHz timebase, emulates
@@ -209,9 +225,26 @@ interpreter.
   device's ``ttlActiveLevel``, and its off level is sent as its **safe**
   level, where a stop, a failure and the end of a run leave it. A DAC holds
   its position.
+* **Resolution:** a board that declares its DACs' bits (``dac_bits``) sets
+  the nearest code; the report gives each drive's step in µm and refuses a
+  step finer than one code.
+* **While it runs** the Expert panel shows its steps (*Step 5 of 12*). A
+  board that declares a heartbeat (``alive_ticks``) and then says nothing
+  for that long plus the link's reply time fails the run with the reason
+  (the host stops it), instead of being noticed only when the link closes.
+* **A power level inside a step** (``level``) plays on the laser's DAC, at
+  its volts during the event and at off's otherwise and after a stop --
+  converted as the laser is set by hand (its ``calibCsvPath``, or the value
+  as the voltage). The NI-DAQ plays one on the laser's analog channel the
+  same way. A ramped level is refused.
+* **By hand,** between runs, a board's positioners and lasers are set
+  through the protocol's ``SET``: ``StepBoardPositionerManager`` and
+  ``StepBoardLaserManager`` (:doc:`positioners`, :doc:`lasers`).
+  ``expert_step_boards_mock_setup.json`` has a simulated TriggerScope-like
+  board leading and a second following, with Z, three lasers and a camera on
+  them.
 * **Refused, with the reason:** a sweep, a smooth transition (a board jumps),
-  a power level inside a step (``level``), an intra-step move (``offset``),
-  two devices on one line, a wait that does not idle, a trigger wait on a
+  an intra-step move (``offset``), two devices on one line, a wait that does not idle, a trigger wait on a
   board without a trigger input, more steps than the board holds, a time off
   its grid, and a number the protocol's integers cannot hold. A board that
   answers another protocol version, or does not answer, is unknown, and so
@@ -263,8 +296,9 @@ Expert panel and the conformance tests run against.
      - What the simulated board declares: ``gridNs`` (required, its timing
        grid in ns), ``dacs`` (``{index: [minV, maxV]}``), ``ttlLines``,
        ``maxSteps``, ``triggerIn``, ``triggerLatencyTicks``,
-       ``triggerMinTicks``, ``clockPpm``, and ``actualTriggerLatencyTicks``
-       for a trigger input whose latency it does not declare.
+       ``triggerMinTicks``, ``clockPpm``, ``dacBits`` (``{index: bits}``), and
+       ``actualTriggerLatencyTicks`` for a trigger input whose latency it
+       does not declare.
 
 
 PulseGeneratorScanEngine
@@ -323,9 +357,8 @@ uploaded sequences. The PulseStreamer declares its 1 ns resolution only.
      - Meaning
    * - ``pulseGenerator``
      - str
-     - ``pulseGeneratorManager``
-     - The low-level manager it drives. A ``teensyPulse`` section builds
-       ``pulseGeneratorManager``.
+     - the ``teensyPulse`` section's
+     - The ``pulseGenerators`` entry it drives (:doc:`pulse_generators`).
    * - ``channels``
      - list
      - every channel

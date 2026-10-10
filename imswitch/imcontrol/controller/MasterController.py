@@ -46,11 +46,22 @@ class MasterController:
                 self.__setupInfo.teensyPulse
             )
 
+        # Any further generators by name, each through the registry (a
+        # plugin's too); a scan engine or laser names the one it drives.
+        from imswitch.imcontrol.model.managers.pulsegen.loader import build_pulse_generators
+        self.pulseGenerators = build_pulse_generators(
+            self.__setupInfo, lowLevelManagers={'nidaqManager': self.nidaqManager,
+                                                'rs232sManager': self.rs232sManager})
+
         lowLevelManagers = {
             'nidaqManager': self.nidaqManager,
             #'pulseStreamerManager' : self.pulseStreamerManager,
             'pulseGeneratorManager': self.pulseGeneratorManager,
-            'rs232sManager': self.rs232sManager
+            'pulseGenerators': self.pulseGenerators,
+            'rs232sManager': self.rs232sManager,
+            # A device on a step board is set by hand through its engine,
+            # which is built after the devices: looked up when it is used.
+            'scanEngineNamed': self._scanEngineNamed,
         }
 
         if self.__setupInfo.triggerScope:
@@ -158,6 +169,12 @@ class MasterController:
         if not any(candidate is manager for candidate in completed):
             completed.append(manager)
 
+    def _scanEngineNamed(self, name):
+        """The setup's scan engine ``name`` (not the composite it may lead),
+        or ``None``."""
+        engines = getattr(self, 'scanEngines', None)
+        return None if engines is None else engines.engines.get(name)
+
     def closeEvent(self):
         # Finalize all manager attributes explicitly, not only MultiManager
         # instances. This ordering is also the retry scope: a manager object
@@ -167,7 +184,7 @@ class MasterController:
             'detectorsManager', 'lasersManager', 'positionersManager',
             'rotatorsManager', 'flipMirrorsManager', 'recordingManager',
             'slmsManager', 'scanEngines', 'nidaqManager', 'rs232sManager',
-            'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
+            'pulseGeneratorManager', 'pulseGenerators', 'triggerScopeManager', 'standManager',
             'scanManager',
         ]
         unsafeWhileActive = {

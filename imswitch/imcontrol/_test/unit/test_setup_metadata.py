@@ -65,6 +65,7 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("laser", "PulseStreamerLaserManager"),
     ("laser", "PyCoboltManager"),
     ("laser", "PyMicroscopeLaserManager"),
+    ("laser", "StepBoardLaserManager"),
     ("laser", "TriggerScopeLaserManager"),
     ("positioner", "BSC203StageManager"),
     ("positioner", "ESP32StageManager"),
@@ -79,6 +80,7 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("positioner", "SQUIDStageManager"),
     ("positioner", "SerialDacZManager"),
     ("positioner", "SmarACTPositionerManager"),
+    ("positioner", "StepBoardPositionerManager"),
     ("positioner", "TriggerScopePositionerManager"),
     ("rotator", "ElliptecRotatorManager"),
     ("rotator", "KinesisRotatorManager"),
@@ -108,12 +110,11 @@ def test_core_manager_registry_coverage_is_an_explicit_inventory():
         for status in ("registered", "unregistered", "legacy_only")
     }
 
-    assert len(by_status["registered"]) == 9
+    # The two pulse generators were legacy-only until pulseGenerators made
+    # their kind registry-backed (scan-engines plan §7.8).
+    assert len(by_status["registered"]) == 11
     assert by_status["unregistered"] == _UNREGISTERED_CORE_MANAGERS
-    assert by_status["legacy_only"] == {
-        ("pulse_generator", "PulseStreamerManager"),
-        ("pulse_generator", "TeensyPulseManager"),
-    }
+    assert by_status["legacy_only"] == set()
 
 
 def test_registry_backed_kinds_match_the_named_loader_subsets():

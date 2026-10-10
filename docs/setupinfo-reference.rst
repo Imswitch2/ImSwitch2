@@ -627,6 +627,7 @@ documented below with full field lists and examples:
 * `flipMirrors`_
 * `triggerScope`_
 * `teensyPulse`_
+* `pulseGenerators`_
 * `scanEngines`_
 * `pyroServerInfo`_
 * `smartMicroscopyModes`_ (and its two companion sections)
@@ -637,7 +638,7 @@ documented below with full field lists and examples:
 **Legacy / deprecated sections**:
 
 * `slm (singular)`_ — superseded by ``slms``; only used by old ``SLMController``
-* `pulseStreamer`_ — dormant; ``PulseStreamerManager`` no longer constructed at runtime
+* `pulseStreamer`_ — no effect; a Pulse Streamer is a `pulseGenerators`_ entry
 
 
 focusLock
@@ -1089,6 +1090,28 @@ Key fields:
 :doc:`how-to/wire-teensy`
 
 
+pulseGenerators
+---------------
+
+Optional map from a generator name to ``PulseGeneratorInfo``:
+``managerName`` (a registered ``pulse_generator``: ``TeensyPulseManager``,
+``PulseStreamerManager`` or a plugin's) and ``managerProperties``. A setup
+may have several. A ``PulseGeneratorScanEngine`` or
+``PulseGeneratorLaserManager`` names the one it drives in its
+``managerProperties.pulseGenerator``; one that names none drives the
+``teensyPulse`` section's generator, ``pulseGeneratorManager`` -- a name
+``pulseGenerators`` cannot reuse. See :doc:`devices/pulse_generators`.
+
+.. code-block:: json
+
+   "pulseGenerators": {
+       "widefield": {
+           "managerName": "TeensyPulseManager",
+           "managerProperties": {"port": "COM7"}
+       }
+   }
+
+
 pyroServerInfo
 --------------
 
@@ -1249,12 +1272,11 @@ pulseStreamer
 -------------
 
 .. deprecated:: ImSwitch2
-   **Legacy / not constructed at runtime.**  ``MasterController`` no longer
-   constructs ``PulseStreamerManager`` (its instantiation is commented out
-   in ``imswitch/imcontrol/controller/MasterController.py``).  The active
-   pulse-generator path is ``teensyPulse`` → ``TeensyPulseManager``.  This
-   field remains for backward compatibility with old configs but has no
-   runtime effect.
+   **No runtime effect.**  ``MasterController`` does not build a
+   ``PulseStreamerManager`` from this section; a Pulse Streamer is a
+   `pulseGenerators`_ entry (``"managerName": "PulseStreamerManager"``,
+   ``"managerProperties": {"ipAddress": ...}``).  This field remains so that
+   old configs still load.
 
 Optional :class:`PulseStreamerInfo` object.
 

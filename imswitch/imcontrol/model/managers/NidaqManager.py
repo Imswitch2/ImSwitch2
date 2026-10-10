@@ -87,15 +87,28 @@ READ_TIMEOUT_MARGIN = 2.0
 
 
 
+#: An NI-DAQmx digital line or PFI terminal, on any device name: a PXI
+#: chassis slot (``PXI1Slot2/port0/line1``) as much as ``Dev1``.
+_NI_DIGITAL_LINE = re.compile(r'[^/]+/(port\d+/line\d+|PFI\d+)')
+
+
+def nidaq_drives_line(line) -> bool:
+    """Whether a digital line is the NI-DAQ's: a ``Dev...`` line, as before,
+    or any NI-DAQmx line or PFI terminal -- a PXI line used to be dropped
+    from every scan without a word (Lenny, 2026-10-09: drive it). A
+    TriggerScope or step-board line is not."""
+    line = str(line)
+    return 'Dev' in line or bool(_NI_DIGITAL_LINE.fullmatch(line))
+
+
 def scan_digital_outputs(ttlDic, targetPairs, getDevice):
     """``(devices, signals, lines)`` the scan's DO task writes: every device
-    in ``ttlDic`` on a line whose name contains ``Dev`` (the lines this board
-    drives), each signal mapped from the designers' logical on/off to the
-    line's level -- an inverted input (``ttlActiveLevel: "low"``) is driven
-    low for on."""
+    in ``ttlDic`` on a line this board drives (:func:`nidaq_drives_line`),
+    each signal mapped from the designers' logical on/off to the line's level
+    -- an inverted input (``ttlActiveLevel: "low"``) is driven low for on."""
     devices, signals, lines = [], [], []
     for device, line in targetPairs:
-        if device not in ttlDic or 'Dev' not in line:
+        if device not in ttlDic or not nidaq_drives_line(line):
             continue
         signal = np.asarray(ttlDic[device], dtype=bool)
         if not _ttl_level(getDevice(device), True):

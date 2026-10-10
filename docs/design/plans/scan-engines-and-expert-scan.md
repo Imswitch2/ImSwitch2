@@ -1412,7 +1412,7 @@ so a time one of them cannot represent is refused by it.
   repeat loop. A program knows only the phases it takes part in. They differ
   only when a disabled phase has more pulses than every enabled one; this is
   pinned by `test_a_disabled_phase_does_not_size_the_repeat_loop` and is
-  **open for M2**.
+  **open for M2**. *Decided and done (§7.8): the steps it takes part in.*
 
 **Deliberate differences from today:**
 
@@ -1427,9 +1427,10 @@ so a time one of them cannot represent is refused by it.
   reference. Under `strict-v1` the two are the same, because every edge is
   exact. A tolerant policy would refuse where it should place.
 - **Logical-to-electrical mapping** (§2.6a, `ttlActiveLevel`) belongs to
-  the engines, in M1. Densify emits logical states.
+  the engines, in M1. Densify emits logical states. *Done in M1.*
 - **The panel-level load → preview → save → reload test** waits for M2.
-  The model-level round trip (the request kept verbatim) is in M0.
+  The model-level round trip (the request kept verbatim) is in M0. *Done in
+  M2.*
 
 ### 7.2 M1 status (2026-10-08)
 
@@ -1477,7 +1478,7 @@ it yet.
   are dropped by today's `runScan` filter, like the TriggerScope lines.
   `NidaqScanEngine.owns` keeps that rule exactly, so such a line now greys and
   refuses instead of dropping silently. Whether the NI-DAQ should drive it is
-  open.
+  open. *Decided and done (§7.8): it drives every NI-DAQmx line.*
 - **The TriggerScope's built-in scan routines drive their lines active-high
   whatever `ttlActiveLevel` says;** only manual on/off honours it. That is
   documented, and fixed by the protocol firmware (M5).
@@ -1550,12 +1551,12 @@ it yet.
 
 **Still open:**
 
-- **The layout repeat loop** (§7.1): unchanged, still for Lenny.
+- **The layout repeat loop** (§7.1): unchanged, still for Lenny. *Done, §7.8.*
 - **Two interleaved axes in one frame stream** are refused: a layout has one
   `cycle` and one `plane`. Point detectors take them.
 - **Orders on swept scans** wait for the Galvo compile path (§2.7).
 - **The timing note** shows the dwell; the realized moves, settles and
-  windows are in the schedule but not yet on the panel.
+  windows are in the schedule but not yet on the panel. *Done, §7.8.*
 - **Rig validation:** an interleaved Beta scan on Snouty's stage, recorded
   and reconstructed with SNOUTY.
 
@@ -1649,7 +1650,8 @@ pulse generator in one setup, a plugin's generator); **Hardware → What this
 setup can scan…** (§3.3); the panel shows the selected engine only (choosing
 among a setup's engines per scan is not offered); the timeline table has no
 column for an event's `still` list, so editing the table drops it (a loaded
-program keeps it until then).
+program keeps it until then). *The `still` column, registry resolution for
+`pulse_generator` and **What this setup can scan…**: done, §7.8.*
 
 ### 7.5 M4 status (2026-10-09)
 
@@ -1697,7 +1699,7 @@ program keeps it until then).
 - **Auto-levels took `arr.max()`**, NaN for any image with an empty bin.
 
 **Still open:** pattern plugins (drop-in patterns with `param_spec` forms;
-the built-ins are a registry today); the optional raw measurement stream
+the built-ins are a registry today; *drop-in trajectory patterns done, §7.8*); the optional raw measurement stream
 (M6); trajectories on step engines (refused: they need a streaming engine);
 the coverage of a recording with several frames is the first frame's.
 
@@ -1767,15 +1769,17 @@ tested against the simulated board.
 
 - the TriggerScope firmware (the lab), and its first rig run;
 - a runner that puts a real board through the conformance programs over its
-  port (trigger tests need a signal on its trigger input);
+  port (trigger tests need a signal on its trigger input) *done, §7.8;*
 - a power level inside a step on a board DAC, which needs the laser's
-  power-to-volt conversion on the host;
+  power-to-volt conversion on the host; *done, §7.8;*
 - point detectors on a step board (cameras only, decision 2);
 - a DAC's resolution in `*CAPS?`, so conformance can compare what a board
-  can set rather than what it was told;
+  can set rather than what it was told; *done, §7.8;*
 - the progress messages are read but not shown; a board that falls silent
-  in the middle of a run is noticed only when the link is closed;
+  in the middle of a run is noticed only when the link is closed; *both
+  done, §7.8;*
 - `expert_mock_scan_setup.json` has no step board; the tests build one.
+  *Done: `expert_step_boards_mock_setup.json`, §7.8.*
 
 ### 7.7 M6 status (2026-10-09)
 
@@ -1847,7 +1851,107 @@ hardware -- its aggregation is tested with fakes; raw measurements for
 trajectories only, and a layout-contract loop kind for path windows; the
 event's position is recorded, not used to place the program; skipping a
 gated step on a timeout (`on_timeout: skip`); the EtSnouty widget screenshot
-predates **Slow scan**.
+predates **Slow scan** (*regenerated, §7.8*).
+
+### 7.8 Leftovers (2026-10-09)
+
+The open items of §7.1-7.7, closed or placed. **Decided by Lenny
+(2026-10-09):**
+
+- **The layout repeat axis is sized by the line steps a detector takes part
+  in** (§7.1, §7.3). A camera off in a step that has more camera pulses than
+  any step it is on in had a repeat axis deeper than any frame it took, half
+  empty; the Advanced controller's layouts now equal the program's for it
+  (`_enabled_conditions` in `_acquisition_layout_source.py`; the pinned test
+  is now a case of the controller-equals-program comparison).
+- **The NI-DAQ drives every NI-DAQmx line** (§7.2): `<device>/port<n>/line<m>`
+  and `<device>/PFI<n>` on any device name, a PXI chassis slot's included,
+  besides `Dev...` as before. One rule, `nidaq_drives_line`, for the scan's
+  digital outputs and the engine's ownership.
+
+**Done:**
+
+- **The timing note lists every time that runs differently** (§7.3): the
+  dwell, and each move, settle, return and window edge, once each, from a
+  copy of the scan two positions deep realized under its policy.
+- **The timeline table has a Still column** (§7.4): blank is every drive, a
+  list is those devices; editing the table keeps it.
+- **Stale items** (§7.1): the logical-to-electrical mapping was done in M1,
+  the panel-level load-preview-save-reload test in M2.
+- **A power level inside a step plays** (§7.6), on a step board's DAC and on
+  the NI-DAQ, through one conversion with the laser's manual one
+  (`lasers/_power_volts.py`: its `calibCsvPath`, or the value as the
+  voltage). **Found:** on the NI-DAQ a `level` event was reported native and
+  then not played at all -- `densify` had no place for it.
+- **Step boards are set by hand** (found while making a mock setup with
+  them: the protocol had no manual control, which the TriggerScope's own
+  firmware has): `SET,<channel>,<value>` between runs;
+  `StepBoardPositionerManager` and `StepBoardLaserManager`, which reach their
+  engine through a lookup `MasterController` hands every device manager
+  (`scanEngineNamed`: the engines are built after the devices).
+- **A DAC's resolution** (§7.6): `CAPS,dac_bits`; a board sets the nearest
+  code (the executor's `settable`), the host reports each drive's step in µm
+  and refuses a finer step, and `log_differences(..., resolution_um)`
+  compares positions within half a code.
+- **Progress and liveness** (§7.6): step engines emit `sigScanProgress`
+  (a composite's leader too, in quiet runs), and the Expert panel shows it
+  by step, or by time on the NI-DAQ. A board may declare `alive_ticks`: it
+  sends at least one message that often while it runs (`WAITING` while it
+  waits), and the host fails a run that falls silent for that long plus the
+  link's reply time, stopping the board.
+- **A conformance runner for real boards** (§7.6):
+  `tools/step_board_conformance.py` (`conformance_runner.py`) runs the
+  conformance programs on a board's own channels over its port and compares
+  each `LOG?` with the interpreter; `--trigger` with a signal on its input,
+  `--simulated` on the reference board. A board whose DAC writes land off
+  fails it, naming the write.
+- **`expert_step_boards_mock_setup.json`** (§7.6): a simulated
+  TriggerScope-like board leading and a second following, Z, three lasers
+  and a camera on them; a test scans on the leader alone and on both, and
+  sets Z and a laser by hand.
+- **Hardware → What this setup can scan…** (§3.3): every engine of the
+  setup, what the panel does with it (runs on it, follows that engine, or
+  neither, with the remedy), each feature's verdict and why, what it
+  declares and where that came from, the devices on it, and the devices on
+  no engine. A follower is told how far apart the leader's pulses may be:
+  `split.max_pulse_interval_s`, the drift rule itself as a longest interval
+  (`drift` decides by it). Built afresh on each open
+  (`capability_report.setup_capabilities`); a board that has not answered is
+  unknown with the reason.
+- **Pulse generators resolve through the registry** (§5.3, §7.4):
+  `pulseGenerators` by name, kind `pulse_generator`, built as
+  `cls(info, name, **lowLevelManagers)` (`managers/pulsegen/loader.py`); a
+  consumer names its generator (`pulseGenerator`), `pulse_generator_named`
+  is the one lookup, and naming none is the `teensyPulse` section's
+  `pulseGeneratorManager`. The kind moved from a bespoke loader to a
+  standalone registry-backed one, so a plugin may contribute a generator;
+  the editor's category is now `pulseGenerators`, its section. **Found:**
+  `PulseStreamerManager` was unreachable (its construction was commented
+  out), and the editor wrote pulse generators to a `pulsegen` section no
+  code read.
+- **Drop-in trajectory patterns** (§4, §7.5): a `.py` in
+  `ImSwitchConfig/scan_patterns` defines `PATTERNS`, each a `Pattern` whose
+  `parameters` are its `param_spec` (the Make… form's fields); loaded when
+  the Expert panel starts (`pattern_plugins.load_user_patterns`), tolerant
+  as ImProcess's drop-ins. Refused with the reason: a built-in's or another
+  file's id, other than two devices, a parameter kind the form has no field
+  for. `Pattern.source` (file and SHA-256) goes into the gridded image's
+  provenance. Program patterns (drop-ins that make whole programs, not
+  paths) stay open: the Make… presets are the built-in registry.
+- **The EtSnouty screenshot** (§7.7) shows **Slow scan**
+  (`tools/screenshot_widgets.py EtSnoutyWidget`).
+
+**Placed, not done:**
+
+- **The NI-DAQ leading** (§5.4 lists it under *Later*): the composite runs
+  a leader through a step engine's run, log and outcome, and the NI-DAQ
+  runs through the scan coordinator; a leading NI-DAQ also needs its clock
+  accuracy declared (`nidaq`, from the card's specification) and its
+  pulses known to a simulated follower. Refused with that reason until then.
+- **Choosing the engine per scan** (§7.4): not designed. Two shapes, for
+  Lenny: an engine chooser on the Expert panel (the run rebinds the
+  panel's engine signals), or the program's devices choosing it (every
+  device on one engine's channels runs there; one panel, no chooser).
 
 ## 8. Risks
 

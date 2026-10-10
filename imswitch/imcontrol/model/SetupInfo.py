@@ -558,6 +558,17 @@ class ScanEngineInfo:
 
 
 @dataclass(frozen=True)
+class PulseGeneratorInfo:
+    managerName: str
+    """ The generator's manager: a registered ``pulse_generator`` id or
+    alias. """
+
+    managerProperties: Dict[str, Any] = field(default_factory=dict)
+    """ Properties to be read by the generator's manager (its port or
+    address, and what it needs to connect). """
+
+
+@dataclass(frozen=True)
 class MicroscopeStandInfo:
     managerName: str
     """ Name of the manager to use. """
@@ -742,6 +753,13 @@ class SetupInfo:
     teensyPulse: Optional[TeensyPulseInfo] = field(default_factory=lambda: None)
     """ Teensy / Arduino pulse generator settings.  ``None`` = no
     Teensy in this setup.  See :class:`TeensyPulseInfo`. """
+
+    pulseGenerators: Dict[str, PulseGeneratorInfo] = field(default_factory=dict)
+    """ Pulse generators by name, each resolved through the device-plugin
+    registry (kind ``pulse_generator``): several in one setup, or a
+    plugin's. A scan engine or laser names the one it drives in its
+    ``managerProperties.pulseGenerator``. ``teensyPulse`` still builds the
+    generator named ``pulseGeneratorManager``. """
 
     pyroServerInfo: PyroServerInfo = field(default_factory=PyroServerInfo)
 

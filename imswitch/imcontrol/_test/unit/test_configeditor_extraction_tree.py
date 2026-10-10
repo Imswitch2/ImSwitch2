@@ -63,8 +63,9 @@ def report(extractions):
 def test_the_coverage_the_plan_is_built_on(report):
     # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
     # 64: the NI-DAQ and simulated step scan engines (kind scan_engine).
-    # 65: the pulse-generator scan engine. 66: the step-protocol engine.
-    assert report.managers == 66, "61 plus RS232Manager, plus the four scan engines"
+    # 65: the pulse-generator scan engine. 66: the step-protocol engine. 68:
+    # the step-board positioner and laser managers (set by hand, §7.8).
+    assert report.managers == 68, "61 plus RS232Manager, the four scan engines, two step-board devices"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
@@ -73,9 +74,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # Four fewer since the removed camera managers (see above): 59 -> 55.
     # 57: the simulated step engine reads its board's properties. 58: the
     # pulse-generator engine its generator and channels. 59: the
-    # step-protocol engine its port.
-    assert report.reads_any == 59
-    assert report.with_keys == 59
+    # step-protocol engine its port. 61: the step-board positioner and laser.
+    # 63: the Teensy and the Pulse Streamer, built from pulseGenerators entries.
+    assert report.reads_any == 63
+    assert report.with_keys == 63
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
@@ -89,13 +91,20 @@ def test_the_coverage_the_plan_is_built_on(report):
     # pulse-generator engine's pulseGenerator and channels. 227: the
     # step-protocol engine's port, baudrate, replyTimeoutS and simulatedBoard.
     # 229: the simulated step engine's triggerMinPulseS and clockAccuracyPpm
-    # (to lead or follow another engine, M6).
-    assert report.keys == 229
+    # (to lead or follow another engine, M6). 233: the step-board
+    # positioner's conversionFactor, minVolt and maxVolt, and its laser's
+    # calibCsvPath. 242: a pulseGenerators entry's keys -- the Teensy's seven
+    # (the teensyPulse section's), the Pulse Streamer's ipAddress -- and the
+    # pulse-generator laser's pulseGenerator.
+    assert report.keys == 242
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
-    assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    # +7 simulated step, +2 pulse-generator, +4 step-protocol engine properties
-    assert report.optional == 167
+    # 63: the step-board positioner's conversionFactor.
+    assert report.required == 63, "60 under the guard-aware rule, RS232Manager's port and recv_termination, the step-board positioner's conversionFactor"
+    # +7 simulated step, +2 pulse-generator, +4 step-protocol engine properties,
+    # +3 step-board positioner and laser properties, +9 pulse generators' and
+    # the pulse-generator laser's
+    assert report.optional == 179
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -103,7 +112,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # step-protocol engine's port, baudrate and replyTimeoutS (required as
     # the port says, checked by the engine). 42: the simulated step engine's
     # triggerMinPulseS and clockAccuracyPpm (absent: undeclared, unknown).
-    assert report.none_default_only == 42
+    # 44: the step-board positioner's minVolt and maxVolt (absent: no clamp).
+    # 48: the Teensy's port, the Pulse Streamer's ipAddress, and the
+    # pulseGenerator a laser or engine names (absent: the teensyPulse one).
+    assert report.none_default_only == 48
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -117,7 +129,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     # five properties (docs/devices/scan_engines.rst). 143: the
     # pulse-generator engine's two. 147: the step-protocol engine's four.
     # 149: the simulated step engine's two clock and trigger properties.
-    assert (report.docs_agree, report.docs_documented) == (149, 149)
+    # 153: the step-board positioner's three and laser's one. 162: the
+    # Teensy's seven, the Pulse Streamer's one (docs/devices/
+    # pulse_generators.rst) and the pulse-generator laser's pulseGenerator.
+    assert (report.docs_agree, report.docs_documented) == (162, 162)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -125,8 +140,9 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 93: AAAOTF's useMockOnFailure is read with a bool default.
     # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
     # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
-    # 97: the simulated step engine's timingGridS is read as a float.
-    assert report.typed_by_code == 97
+    # 97: the simulated step engine's timingGridS is read as a float. 98:
+    # the step-board positioner's conversionFactor.
+    assert report.typed_by_code == 98
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -298,5 +314,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 66
+    assert totals["managers"] == 68
 

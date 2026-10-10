@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import math
+import time
 import traceback
 import numpy as np
 from qtpy import QtCore
@@ -39,6 +40,7 @@ from imswitch.imcontrol.model.scan_program.advanced import (
 )
 from imswitch.imcontrol.model.scan_program.densify import densify
 from imswitch.imcontrol.model.scan_program.engine import ScanEngineRefused, setup_channels
+from imswitch.imcontrol.model.scan_program.pattern_plugins import load_user_patterns
 from imswitch.imcontrol.model.scan_program.policy import PUBLISHED
 from imswitch.imcontrol.model.scan_program.preparation import resolve_preparation
 from imswitch.imcontrol.model.scan_program.scan_info import (
@@ -50,6 +52,7 @@ from imswitch.imcontrol.model.scan_program.serialize import (
     FORMAT, program_from_dict, program_to_dict,
 )
 from ..basecontrollers import SuperScanController
+from .ScanControllerAdvanced import SCAN_PROGRESS_INTERVAL_MS, scan_progress
 from ._acquisition_layout_source import (
     build_program_layouts,
     build_trajectory_layouts,
@@ -80,6 +83,14 @@ class ScanControllerExpert(SuperScanController):
         # an edit, so an opened file's request is never re-rounded by them.
         self._edited = False
 
+        # Drop-in trajectory patterns join the Make… presets; a file that
+        # does not load is skipped with the reason.
+        loaded = load_user_patterns()
+        for problem in loaded.errors:
+            self._logger.warning(f'Scan pattern {problem.path} skipped: {problem.message}.')
+        if loaded.ids:
+            self._logger.info(f'Drop-in scan patterns: {", ".join(loaded.ids)}.')
+
         detectors = list(self._setupInfo.detectors)
         lasers = [name for name in self.TTLDevices if name not in detectors]
         engine = self._engineForScans()
@@ -103,6 +114,19 @@ class ScanControllerExpert(SuperScanController):
             signal = getattr(self._scanEngine, name, None)
             if signal is not None:
                 signal.connect(slot)
+
+        # Progress while a run of this panel's lasts: a step engine counts its
+        # steps (waits included), the rest by time against the duration.
+        self._progressSteps = None
+        self._progressStarted = None
+        self._progressDuration = None
+        self._progressTimer = QtCore.QTimer(self)
+        self._progressTimer.setInterval(SCAN_PROGRESS_INTERVAL_MS)
+        self._progressTimer.timeout.connect(self._updateScanProgress)
+        self._scanEngine.sigScanStarted.connect(self._onRunStarted)
+        stepProgress = getattr(self._scanEngine, 'sigScanProgress', None)
+        if stepProgress is not None:
+            stepProgress.connect(self._onStepProgress)
 
         self.updateReport()
         getWidgetStatePersistence().register('Scan', self)
@@ -446,6 +470,37 @@ class ScanControllerExpert(SuperScanController):
 
         return self._scanCoordinator.armWithStarter(start, owner=self,
                                                     scanInfoDict=scanInfoDict)
+
+    def _onRunStarted(self):
+        if self._scanCoordinator.tokenForOwner(self) is None:
+            return
+        self._progressSteps = None
+        self._progressStarted = time.monotonic()
+        schedule = getattr(self._compiled, 'schedule', None)
+        segments = getattr(schedule, 'segments', None)
+        self._progressDuration = (self._duration_s(schedule)
+                                  if schedule is not None and len(segments or (0,)) == 1
+                                  else None)
+        self._updateScanProgress()
+        self._progressTimer.start()
+
+    def _onStepProgress(self, step, steps):
+        self._progressSteps = (int(step), int(steps))
+
+    def _updateScanProgress(self):
+        if self._scanCoordinator.runForOwner(self) is None or self._progressStarted is None:
+            self._progressTimer.stop()
+            self._progressStarted = None
+            self._widget.hideScanProgress()
+            return
+        if self._progressSteps is not None:
+            step, steps = self._progressSteps
+            self._widget.showScanProgress(step / steps if steps else None,
+                                          f'Step {step + 1} of {steps}')
+            return
+        fraction, text = scan_progress(time.monotonic() - self._progressStarted,
+                                       self._progressDuration, 1, show_frame=False)
+        self._widget.showScanProgress(fraction, text)
 
     def _onEngineFailed(self, reason):
         # Why; sigScanBuildFailed, emitted right after, ends the run.

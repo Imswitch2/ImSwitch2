@@ -39,12 +39,13 @@ _PS_MIN_PULSE_NS = 8
 class PulseStreamerManager(PulseGeneratorManager):
     """Drives a Swabian Pulse Streamer 8/2.
 
-    Setup file ``pulseStreamer`` block:
+    Setup file ``pulseStreamer`` block, or a ``pulseGenerators`` entry's
+    ``managerProperties``:
 
     - ``ipAddress`` — IP address of the streamer on the network.
     """
 
-    def __init__(self, setupInfo):
+    def __init__(self, setupInfo, name=None, **lowLevelManagers):
         super().__init__()
 
         # Redirect stdout while constructing the vendor object; its
@@ -53,8 +54,10 @@ class PulseStreamerManager(PulseGeneratorManager):
         self.__stdOut = io.StringIO()
         sys.stdout = self.__stdOut
 
-        self.__logger = initLogger(self)
-        self.__ipAddress = setupInfo.pulseStreamer.ipAddress
+        self.__logger = initLogger(self, instanceName=name)
+        props = getattr(setupInfo, 'managerProperties', None)
+        self.__ipAddress = (props.get('ipAddress') if props is not None
+                            else setupInfo.pulseStreamer.ipAddress)
 
         self.__digitalChannels: List[int] = []
         self.__analogChannels: List[float] = [0.0, 0.0]

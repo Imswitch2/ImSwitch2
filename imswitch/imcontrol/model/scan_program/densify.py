@@ -4,7 +4,8 @@
 One sample per grid step. Drives come out in µm (the engine converts to its
 own units, e.g. volts through ``conversionFactor``); TTL and marker events
 come out as logical on/off, which an engine maps to electrical levels
-(§2.6a). The indexing within a span is the Beta designer's: an in-step
+(§2.6a); a power level inside a step comes out as the laser's value over the
+event and 0 (off) elsewhere, which the engine converts to its volts. The indexing within a span is the Beta designer's: an in-step
 transition fills ``[n - move - settle, n - settle)`` and the settle holds
 the new position to the end of the step; a return fills its whole span.
 
@@ -26,8 +27,8 @@ class DensifyError(ValueError):
 
 
 def densify(schedule: RealizedSchedule, segment: int = 0) -> Dict[str, Dict[str, np.ndarray]]:
-    """``{'analog': {device: µm[n]}, 'digital': {device: bool[n]}}`` for one
-    segment of the schedule."""
+    """``{'analog': {device: µm[n]}, 'digital': {device: bool[n]},
+    'level': {laser: value[n]}}`` for one segment of the schedule."""
     if not 0 <= segment < len(schedule.segments):
         raise DensifyError(f'No segment {segment}; the schedule has {len(schedule.segments)}.')
     swept = [loop.id for loop in schedule.expansion.program.loops if loop.mode == 'swept']
@@ -87,7 +88,13 @@ def densify(schedule: RealizedSchedule, segment: int = 0) -> Dict[str, Dict[str,
             continue
         line = digital.setdefault(event.device, np.zeros(total, dtype=bool))
         line[event.start_tick:event.end_tick] = True
-    return {'analog': analog, 'digital': digital}
+    level = {}
+    for event in schedule.events:
+        if event.segment != segment or event.kind != 'level':
+            continue
+        values = level.setdefault(event.device, np.zeros(total))
+        values[event.start_tick:event.end_tick] = float(event.value)
+    return {'analog': analog, 'digital': digital, 'level': level}
 
 
 __all__ = ['DensifyError', 'densify']

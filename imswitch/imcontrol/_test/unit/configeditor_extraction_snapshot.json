@@ -398,7 +398,7 @@
     },
     {
       "constrained": 0,
-      "keys": 1,
+      "keys": 2,
       "name": "PulseGeneratorLaserManager",
       "refs": 0,
       "required": 0,
@@ -425,7 +425,7 @@
     },
     {
       "constrained": 0,
-      "keys": 0,
+      "keys": 1,
       "name": "PulseStreamerManager",
       "refs": 0,
       "required": 0,
@@ -515,6 +515,24 @@
     },
     {
       "constrained": 0,
+      "keys": 1,
+      "name": "StepBoardLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 3,
+      "name": "StepBoardPositionerManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
       "keys": 4,
       "name": "StepProtocolScanEngine",
       "refs": 0,
@@ -542,7 +560,7 @@
     },
     {
       "constrained": 0,
-      "keys": 0,
+      "keys": 7,
       "name": "TeensyPulseManager",
       "refs": 0,
       "required": 0,
@@ -597,23 +615,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 47,
-    "docs_agree": 149,
-    "docs_documented": 149,
-    "keys": 229,
-    "managers": 66,
-    "none_default_only": 42,
+    "constrained": 48,
+    "docs_agree": 162,
+    "docs_documented": 162,
+    "keys": 242,
+    "managers": 68,
+    "none_default_only": 48,
     "none_only": 16,
-    "optional": 167,
-    "reads_any": 59,
+    "optional": 179,
+    "reads_any": 63,
     "refs": 14,
-    "required": 62,
-    "typed_by_code": 97,
-    "typed_with_docs": 173,
-    "typed_with_examples": 133,
+    "required": 63,
+    "typed_by_code": 98,
+    "typed_with_docs": 186,
+    "typed_with_examples": 138,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 59,
+    "with_keys": 63,
     "writes": 0
   }
 }

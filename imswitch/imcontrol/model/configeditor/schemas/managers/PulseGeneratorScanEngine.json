@@ -12,8 +12,9 @@
       ]
     },
     "pulseGenerator": {
-      "description": "The low-level manager it drives. A ``teensyPulse`` section builds",
+      "description": "The ``pulseGenerators`` entry it drives (:doc:`pulse_generators`).",
       "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
         "code:optional(get)",
         "docs:string"

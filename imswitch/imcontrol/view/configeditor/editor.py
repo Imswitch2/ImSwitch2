@@ -81,7 +81,7 @@ _FALLBACK_CATEGORY_REGISTRY = {
     "rs232devices": ("RS232 Devices", "rs232"),
     "slms": ("SLMs", "slms"),
     "flipMirrors": (None, "flipMirrors"),
-    "pulsegen": (None, "pulsegen"),
+    "pulseGenerators": (None, "pulsegen"),
     "stands": (None, "stands"),
 }
 _CATEGORY_REGISTRY = (

@@ -164,9 +164,18 @@ def _camera_off_in_phase_1():
     return scan, digital
 
 
+def _camera_off_in_a_busier_phase():
+    """Off in the one line step where it would pulse twice."""
+    scan, digital = _camera_off_in_phase_1()
+    digital['pulse_starts_s']['Camera'][1] = [0.0, 2.0e-3]
+    digital['pulse_ends_s']['Camera'][1] = [1.0e-3, 3.0e-3]
+    return scan, digital
+
+
 LAYOUT_CASES = {name: goldens.TTL_CASES[name]
                 for name in ('ttl_whole_pixel', 'ttl_windows', 'ttl_linesteps')}
 LAYOUT_CASES['camera_off_in_phase_1'] = _camera_off_in_phase_1()
+LAYOUT_CASES['camera_off_in_a_busier_phase'] = _camera_off_in_a_busier_phase()
 
 
 @pytest.mark.parametrize('case', sorted(LAYOUT_CASES))
@@ -204,20 +213,20 @@ def test_the_programs_layouts_are_the_controllers(case):
     assert (verdict(designer) == 'ok') == (case != 'ttl_whole_pixel')
 
 
-def test_a_disabled_phase_does_not_size_the_repeat_loop():
-    """Open point for M2 (plan §9): the controller counts pulses with every
-    line step forced on, so a phase the camera is OFF in still sizes its
-    repeat loop. A program knows only the phases the camera takes part in.
-    They differ only when a disabled phase has more pulses than every
-    enabled one; pinned here until it is decided."""
-    scan, digital = goldens.TTL_CASES['ttl_linesteps']
+def test_a_line_step_the_camera_is_off_in_sizes_nothing():
+    """Decided 2026-10-09 (Lenny): the repeat axis is sized by the line steps
+    the camera takes part in. Off in the step where it would pulse twice, it
+    records one frame per pixel in each of the others -- no repeat axis --
+    from the controller's counts as from the program's."""
+    scan, digital = _camera_off_in_a_busier_phase()
     stage = goldens.CASES[scan]
-    digital = dict(copy.deepcopy(digital), sequence_time=stage['sequence_time'])
-    digital['linestep_enable']['Camera'] = [True, False, True]
-    digital['pulse_starts_s']['Camera'][1] = [0.0, 2.0e-3]
-    digital['pulse_ends_s']['Camera'][1] = [1.0e-3, 3.0e-3]
+    digital = dict(digital, sequence_time=stage['sequence_time'])
     info, masks, counts, devices = _controller_inputs(stage, digital, ['Camera'])
     assert counts['Camera'] == (1, 2, 1)
+    layout = build_advanced_scan_layouts(
+        info, ['Camera'], scan_source='Test', detector_masks=masks,
+        pulse_counts_by_condition=counts, devices=devices)['Camera']
+    assert 'repeat' not in [loop.kind for loop in layout.event_loops]
     _, _, p_masks, p_counts = layout_inputs(_schedule(stage, digital), ['Camera'])
     assert p_counts['Camera'] == (1, 0, 1) and p_masks['Camera'] == [True, False, True]
 

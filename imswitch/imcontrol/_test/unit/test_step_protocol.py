@@ -27,10 +27,12 @@ from imswitch.imcontrol.model.managers.scan_engines.step_protocol import (
 from imswitch.imcontrol.model.scan_program import (
     DeviceDrive, Loop, Motion, ScanProgram, TimelineEvent, Wait,
 )
-from imswitch.imcontrol.model.scan_program.engine import IMPOSSIBLE, UNKNOWN, ScanEngineRefused
+from imswitch.imcontrol.model.scan_program.engine import (
+    IMPOSSIBLE, NATIVE, UNKNOWN, ScanEngineRefused,
+)
 
 from .test_scan_engine_conformance import (
-    CHANNELS, GRID_NS, JUMP, SETUP, _interleaved, _raster, _waiting, _wire,
+    CHANNELS, GRID_NS, JUMP, RATE, SETUP, _interleaved, _raster, _waiting, _wire,
 )
 
 CAPTURED = Motion(transition='jump', move_s=1e-3, settle_s=1e-3, return_s=2e-3,
@@ -90,7 +92,8 @@ def test_positions_go_as_volts_and_lines_as_their_levels():
 
 def test_caps_and_logs_read_back():
     caps = BoardCaps('B', 'fw 2', grid_ns=1000, dacs={0: (-5.0, 5.0), 3: (0.0, 10.0)},
-                     ttl_lines=16, max_steps=4096, trigger_in=True, trigger_latency_ticks=3)
+                     ttl_lines=16, max_steps=4096, trigger_in=True, trigger_latency_ticks=3,
+                     trigger_min_ticks=2, clock_ppm=20.0, dac_bits={0: 16}, alive_ticks=500)
     assert parse_caps('B', 'fw 2', caps.lines()) == caps
     assert caps.has('dac3') and not caps.has('dac1') and caps.has('ttl15')
     assert not caps.has('ttl16') and not caps.has('X')
@@ -118,10 +121,10 @@ def test_a_number_the_protocol_cannot_hold_is_refused_by_the_board():
     (['RUN'], 'ERR,state,no program to run'),
     (['PROGRAM,BEGIN', 'LOOP,2,forward,-', 'STEP,10,0', 'DRIVE,dac7,0,0,0,in-step,absolute,'
       'hold', 'PROGRAM,END'], 'ERR,channel,dac7: this board has no such channel'),
-    (['PROGRAM,BEGIN', 'LOOP,2,forward,-', 'STEP,10,0', 'EVENT,dac0,0,5,step,-,-,1.5,0',
-      'PROGRAM,END'], 'ERR,channel,dac0: only a line takes an event'),
-    (['PROGRAM,BEGIN', 'LOOP,2,forward,-', 'STEP,10,0', 'SAFE,dac0,0', 'PROGRAM,END'],
-     'ERR,channel,dac0: only a line has a safe level (a DAC holds)'),
+    (['PROGRAM,BEGIN', 'LOOP,2,forward,-', 'STEP,10,0', 'EVENT,time0,0,5,step,-,-,1.5,0',
+      'PROGRAM,END'], 'ERR,channel,time0: only a line or a DAC takes an event'),
+    (['PROGRAM,BEGIN', 'LOOP,2,forward,-', 'STEP,10,0', 'SAFE,time0,0', 'PROGRAM,END'],
+     'ERR,channel,time0: only a line or a DAC has a safe level'),
     (['PROGRAM,BEGIN', 'LOOP,2,sideways,-', 'STEP,10,0', 'PROGRAM,END'],
      "ERR,syntax,line 2 (LOOP): traversal 'sideways' is not one of forward, reverse, "
      'serpentine'),
@@ -135,6 +138,34 @@ def test_the_board_answers_what_it_cannot_take_with_the_reason(lines, answer):
     assert board.read(0) == answer
 
 
+def test_an_output_is_set_by_hand_between_runs(qtbot):
+    """SET (§7.8): a DAC to volts, a line to a level; the engine raises the
+    board's reason."""
+    engine = _wire()
+    engine.set('Board/dac1', 2.5)
+    engine.set('ttl0', 1)
+    assert engine.board.outputs == {'dac1': 2.5, 'ttl0': 1}
+    for line, answer in (('SET,dac0,11', 'ERR,range,dac0 gives -10 to 10 V, not 11'),
+                         ('SET,ttl0,2', 'ERR,range,SET: 2 does not fit a line level (0 or 1)'),
+                         ('SET,dac5,1', 'ERR,channel,dac5: this board has no such output'),
+                         ('SET,time0,1', 'ERR,channel,time0: this board has no such output'),
+                         ('SET,dac0', 'ERR,syntax,SET takes a channel and a value: SET,dac0')):
+        engine.board.write(line)
+        assert engine.board.read(0) == answer
+    with pytest.raises(StepBoardError, match='refused SET: range'):
+        engine.set('Board/dac0', 11)
+    with pytest.raises(StepBoardError, match="Other/dac0 is not Board's"):
+        engine.set('Other/dac0', 1)
+    compiled = engine.compile(_waiting(), CHANNELS)
+    engine.prepare(compiled)
+    engine.run(compiled, arrivals=[], blocking=False)
+    qtbot.wait(50)
+    with pytest.raises(StepBoardError, match='is running; it cannot set an output by hand'):
+        engine.set('Board/dac0', 1)
+    engine.abort()
+    engine.join(timeout=2)
+
+
 def test_a_board_refuses_more_steps_than_it_holds():
     board = _wire(max_steps=4).board
     for line in ['PROGRAM,BEGIN', 'LOOP,5,forward,-', 'STEP,10,0', 'PROGRAM,END']:
@@ -145,6 +176,36 @@ def test_a_board_refuses_more_steps_than_it_holds():
 # ---------------------------------------------------------------------------
 # The host: what the board says it can do
 # ---------------------------------------------------------------------------
+
+def test_a_dac_sets_its_nearest_code_and_conformance_allows_half_of_it():
+    """§7.8: a board declares its DACs' bits; it sets the nearest code, and
+    its positions then match the program's within half a code."""
+    from imswitch.imcontrol.model.scan_program import RunContext, expand, realize
+    from imswitch.imcontrol.model.scan_program.conformance import (
+        engine_log, expected_log, log_differences,
+    )
+    engine = _wire(dac_bits={0: 12, 1: 12})
+    program = _raster()
+    compiled = engine.compile(program, CHANNELS)
+    verdict = compiled.report.verdict('resolution X')
+    step_um = 20 / 4095 * 2.0                       # 12 bits over 20 V, 2 µm per volt
+    assert verdict.verdict == NATIVE and f'{step_um:.4g} µm steps (Board dac0, 12 bits)' \
+        in verdict.reason
+    engine.run(compiled, blocking=True)
+    expected = expected_log(realize(expand(program, RunContext()), RATE))
+    assert log_differences(engine_log(engine.log), expected, {'X': step_um}) == []
+    assert log_differences(engine_log(engine.log), expected)      # not to the last bit
+    engine.set('Board/dac1', 1.0)
+    assert engine.board.outputs['dac1'] == pytest.approx(-10 + round(11 / (20 / 4095)) * (20 / 4095))
+
+
+def test_a_step_finer_than_one_code_is_refused():
+    program = ScanProgram(**{**_raster().__dict__, 'drives': (
+        DeviceDrive('X', weights_um={'x': 0.001}, motion=JUMP),)})
+    with pytest.raises(ScanEngineRefused,
+                       match='X steps by 0.001 µm; Board dac0 sets 0.009768 µm steps'):
+        _wire(dac_bits={0: 12}).compile(program, CHANNELS)
+
 
 def test_the_engine_is_what_the_board_says():
     engine = _wire(ttl_lines=2, dacs={0: (-1.0, 1.0)}, max_steps=99)
@@ -214,14 +275,51 @@ def test_positions_beyond_the_dac_or_the_positioner_are_refused_with_the_numbers
         _wire().compile(_raster(), CHANNELS)
 
 
-def test_a_power_level_is_refused_with_the_reason():
-    program = ScanProgram(loops=(Loop('x', 'scan_x', 2),), drives=(), step_s=1e-3,
-                          timeline=(TimelineEvent('L405', 'level', 0.0, 1e-3, value=0.5,
-                                                  during='any'),))
+def _power(**laser):
+    """L405's power held at 0.5 for the first 1 ms of every step, on the
+    board's dac1 (a laser with an analog channel)."""
     channels = dict(CHANNELS, L405=CHANNELS['X'].__class__('L405', analog='Board/dac1',
                                                            kind='laser'))
+    program = ScanProgram(loops=(Loop('x', 'scan_x', 3),), drives=(), step_s=2e-3,
+                          timeline=(TimelineEvent('L405', 'level', 0.0, 1e-3, value=0.5,
+                                                  during='any', **laser),))
+    return program, channels
+
+
+def test_a_power_level_is_a_dac_event_in_volts_and_off_after_a_stop():
+    """§7.8: a power level inside a step plays on the laser's DAC -- at its
+    volts during the event, at off's otherwise and after the run."""
+    program, channels = _power()
+    engine = _wire()
+    compiled = engine.compile(program, channels)
+    assert 'EVENT,dac1,0,100,step,-,-,0.5,0.0' in compiled.lines
+    assert 'SAFE,dac1,0.0' in compiled.lines
+    engine.run(compiled, blocking=True)
+    assert engine.board.outputs['dac1'] == 0.0
+    assert len([e for e in engine.log.entries if e[0] == 'on' and e[3] == 'L405']) == 3
+
+
+def test_a_power_level_goes_through_the_lasers_calibration(tmp_path, monkeypatch):
+    calibration = tmp_path / 'calib.csv'
+    calibration.write_text('0 0\n1 10\n2 30\n4 100\n')   # volts, measured power
+    monkeypatch.setitem(SETUP.lasers, 'L405', SimpleNamespace(
+        ttlActiveLevel='high', valueRangeMin=0, valueRangeMax=100,
+        managerProperties={'calibCsvPath': str(calibration)}))
+    program, channels = _power()
+    program = ScanProgram(**{**program.__dict__, 'timeline': (TimelineEvent(
+        'L405', 'level', 0.0, 1e-3, value=30.0, during='any'),)})
+    lines = _wire().compile(program, channels).lines
+    assert 'EVENT,dac1,0,100,step,-,-,2.0,0.0' in lines    # 30 % is 2 V
+    program = ScanProgram(**{**program.__dict__, 'timeline': (TimelineEvent(
+        'L405', 'level', 0.0, 1e-3, value=150.0, during='any'),)})
+    with pytest.raises(ScanEngineRefused, match='L405 takes 0 to 100 %; the scan asks 0 to 150'):
+        _wire().compile(program, channels)
+
+
+def test_a_ramped_power_level_is_refused():
+    program, channels = _power(shape='ramp')
     verdict = _wire().assess(program, channels).verdict('level L405')
-    assert verdict.verdict == IMPOSSIBLE and 'power-to-volt conversion' in verdict.reason
+    assert verdict.verdict == IMPOSSIBLE and 'ramped power level' in verdict.reason
 
 
 def test_what_does_not_fit_the_protocol_is_refused_on_the_host():
@@ -340,6 +438,53 @@ def test_a_failure_reports_the_step_and_the_reason():
     assert reasons == ['failed at step 2: injected failure at step 2']
 
 
+class _Linked(SimulatedTransport):
+    """An in-process board behind a link with a reply time, as a serial one."""
+    reply_timeout = 0.5
+
+
+class _Mute(SimulatedStepBoard):
+    """A board that stops saying it waits: it fell silent."""
+
+    def _reply(self, line):
+        if not line.startswith('WAITING'):
+            super()._reply(line)
+
+
+def _heartbeat_engine(board_cls):
+    caps = BoardCaps('B', 'f', grid_ns=GRID_NS, dacs={0: (-10.0, 10.0), 1: (-10.0, 10.0)},
+                     ttl_lines=3, trigger_in=True, trigger_latency_ticks=2,
+                     alive_ticks=1000)                       # 10 ms
+    return StepProtocolScanEngine(SimpleNamespace(managerProperties={}), name='Board',
+                                  setupInfo=SETUP, transport=_Linked(board_cls(caps)))
+
+
+def test_a_waiting_board_says_so_and_a_silent_one_fails_the_run(qtbot):
+    """§7.8: a board that declares a heartbeat sends WAITING while it waits;
+    one that falls silent fails the run with the reason, instead of being
+    noticed only when the link closes."""
+    alive = _heartbeat_engine(SimulatedStepBoard)
+    compiled = alive.compile(_waiting(), CHANNELS)
+    alive.prepare(compiled)
+    alive.run(compiled, arrivals=[], blocking=False)
+    qtbot.wait(1200)                    # over twice the limit, heartbeats only
+    assert alive._running
+    alive.abort()
+    alive.join(timeout=2)
+    assert alive.outcome == ('stopped', '')
+
+    mute = _heartbeat_engine(_Mute)
+    reasons = []
+    mute.sigScanFailed.connect(reasons.append)
+    compiled = mute.compile(_waiting(), CHANNELS)
+    mute.prepare(compiled)
+    mute.run(compiled, arrivals=[], blocking=False)
+    mute.join(timeout=5)
+    assert mute.outcome[0] == 'failed'
+    assert mute.outcome[1].startswith('the board fell silent: nothing for 0.51 s')
+    qtbot.waitUntil(lambda: bool(reasons), timeout=2000)
+
+
 def test_trigger_arrivals_are_only_a_simulated_boards():
     class Link:
         reply_timeout = run_timeout = 0
@@ -377,6 +522,43 @@ def test_finalize_stops_a_run_and_closes_the_link(qtbot):
     assert not board.running and board.log.of('safe-state')
     with pytest.raises(StepBoardError, match='not connected'):
         engine.prepare(compiled)
+
+
+# ---------------------------------------------------------------------------
+# The conformance runner a firmware is put through (tools/step_board_conformance.py)
+# ---------------------------------------------------------------------------
+
+class _Off(SimulatedStepBoard):
+    """Firmware whose DAC writes land 0.1 V off."""
+
+    def _settable(self, name, value):
+        value = super()._settable(name, value)
+        return value + 0.1 if name.startswith('dac') else value
+
+
+@pytest.mark.parametrize('dac_bits', [None, {0: 16}])
+def test_the_reference_board_passes_every_conformance_program(dac_bits):
+    from imswitch.imcontrol.model.managers.scan_engines import conformance_runner
+    lines = []
+    results = conformance_runner.run(conformance_runner.simulated_transport(
+        1000, dac_bits=dac_bits), report=lines.append)
+    assert [r.passed for r in results] == [True] * 4, lines
+    assert lines[0].startswith('simulated (simulated): grid 1000 ns')
+
+
+def test_firmware_that_writes_off_fails_the_runner_with_the_reason():
+    from imswitch.imcontrol.model.managers.scan_engines import conformance_runner
+    caps = BoardCaps('Off', 'test', grid_ns=1000, dacs={0: (-10.0, 10.0)}, ttl_lines=4)
+    results = conformance_runner.run(SimulatedTransport(_Off(caps)), report=lambda _: None)
+    assert not any(r.passed for r in results)
+    assert 'DAC write' in results[0].problems[0]
+
+
+def test_the_runner_says_what_a_board_lacks():
+    from imswitch.imcontrol.model.managers.scan_engines import conformance_runner
+    caps = BoardCaps('Small', 'test', grid_ns=1000, dacs={}, ttl_lines=1)
+    with pytest.raises(StepBoardError, match='need a DAC, 3 lines and a declared grid'):
+        conformance_runner.run(SimulatedTransport(SimulatedStepBoard(caps)))
 
 
 # ---------------------------------------------------------------------------

@@ -99,11 +99,27 @@ def test_the_nidaq_declares_what_it_drives_and_where_that_came_from():
     caps = engines.engine.capabilities()
     assert caps.streaming and caps.stepping == 'emulated' and caps.abort == 'none'
     assert caps.timing_grid_s == pytest.approx(1e-5)
-    assert 'runScan drives lines' in caps.sources['digital']
+    assert 'runScan drives NI-DAQmx digital lines' in caps.sources['digital']
     nidaq = engines.engine
     assert nidaq.owns('Dev1/port0/line3') and nidaq.owns('Dev1/ao0')
     assert nidaq.owns('PXI1Slot2/ao1')
     assert not nidaq.owns('Triggerscope/TTL1') and not nidaq.owns('Triggerscope/DAC1')
+    # NI-DAQmx lines on any device name (Lenny 2026-10-09): a PXI line too
+    assert nidaq.owns('PXI1Slot2/port0/line1') and nidaq.owns('PXI1Slot2/PFI3')
+    assert not nidaq.owns('board/ttl0') and not nidaq.owns('Sim/TTL0')
+
+
+def test_a_scan_drives_a_laser_on_a_pxi_line():
+    """Such a line used to be dropped from every scan without a word."""
+    setup = _setup(**{'lasers.488 (EXC).digitalLine': 'PXI1Slot2/port0/line1'})
+    ttl = {'488 (EXC)': np.array([True, False]), '405 (ON)': np.array([False, True])}
+    pairs = [(name, info.getDigitalLine()) for name, info in setup.lasers.items()
+             if name in ttl]
+    devices, _, lines = scan_digital_outputs(ttl, pairs, setup.getDevice)
+    assert dict(zip(devices, lines))['488 (EXC)'] == 'PXI1Slot2/port0/line1'
+    pairs.append(('Board laser', 'Triggerscope/TTL1'))
+    ttl['Board laser'] = np.array([True, True])
+    assert 'Board laser' not in scan_digital_outputs(ttl, pairs, setup.getDevice)[0]
 
 
 # ---------------------------------------------------------------------------

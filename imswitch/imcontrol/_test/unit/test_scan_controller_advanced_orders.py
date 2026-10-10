@@ -151,6 +151,25 @@ def test_the_panel_shows_a_rounded_dwell_beside_the_requested_one(rig):
     assert 'is not on the 10 µs grid' in text and '1 ms or 1.01 ms' in text
 
 
+def test_the_panel_shows_a_rounded_window_edge_too(rig):
+    """Not only the dwell: a line-step window that starts between two
+    samples is played on one of them, and the note says which (§7.3)."""
+    rig.load(lengths=[3.0, 3.0, 0.0], steps=[0.5, 0.5, 1.0], ttl=True)
+    analog = copy.deepcopy(rig.scan._analogParameterDict)
+    digital = copy.deepcopy(rig.scan._digitalParameterDict)
+    laser = digital['target_device'][0]
+    rate = rig.setup.scan.sampleRate
+    digital['advanced_mode'] = True
+    digital['linestep_enable'] = {name: [name == laser] for name in digital['target_device']}
+    digital['pulse_starts_s'] = {name: [[1.5 / rate]] for name in digital['target_device']}
+    digital['pulse_ends_s'] = {name: [[50 / rate]] for name in digital['target_device']}
+    rig.scan._scanParams.apply(rig.widget, analog, digital, rig.scan.positioners,
+                               rig.scan.TTLDevices)
+    rig.scan._refreshTimingNote()
+    text = rig.widget.timingNoteLabel.text()
+    assert f'{laser} ttl start at 15 µs runs at 20 µs.' in text, text
+
+
 def test_a_legacy_file_loads_previews_and_saves_back_unchanged_but_for_its_policy(rig, tmp_path):
     """Plan §2.6: load -> preview -> save -> reload of a legacy Advanced file
     gives identical requested values and waveforms; the saved file differs

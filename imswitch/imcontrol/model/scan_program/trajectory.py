@@ -59,12 +59,15 @@ ASSUMPTIONS = ('a linear detector', 'no dead-time correction',
 @dataclass(frozen=True)
 class Pattern:
     """A path pattern: ``path(params, t, duration)`` gives, for times ``t``
-    (s, from the start of the path), one row of µm per device."""
+    (s, from the start of the path), one row of µm per device. ``source``
+    says where it came from: built in, or a drop-in file and its SHA-256
+    (``pattern_plugins``)."""
     id: str
     title: str
     dimensions: int
     parameters: Tuple[Tuple[str, str, str], ...]     # (name, label, kind)
     path: Callable[[Mapping, np.ndarray, float], np.ndarray]
+    source: str = 'built-in'
 
 
 def _pair(params, name):
@@ -275,6 +278,7 @@ class RealizedTrajectory:
         return {
             'reduction': 'gridded from a trajectory',
             'pattern': self.program.trajectory.pattern,
+            'pattern_source': PATTERNS[self.program.trajectory.pattern].source,
             'grid': self.grid.as_dict(),
             'weighting': rule,
             'unit': unit,

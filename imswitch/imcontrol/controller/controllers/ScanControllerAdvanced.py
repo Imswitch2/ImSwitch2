@@ -350,7 +350,9 @@ class ScanControllerAdvanced(SuperScanController):
         try:
             note = timing_note(
                 self._stage_parameters(self._analogParameterDict, self._digitalParameterDict),
-                self._setupInfo.scan.sampleRate)
+                self._setupInfo.scan.sampleRate,
+                self._ttl_parameters_without_positioners(self._digitalParameterDict),
+                self._setupInfo)
         except Exception as error:
             note = f'Timing: {error}'
         self._widget.setTimingNote(note)

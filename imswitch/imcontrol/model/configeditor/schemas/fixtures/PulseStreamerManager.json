@@ -1,7 +1,9 @@
 {
-  "category": "pulsegen",
+  "category": "pulseGenerators",
   "device": {
     "managerName": "PulseStreamerManager",
-    "managerProperties": {}
+    "managerProperties": {
+      "ipAddress": "example"
+    }
   }
 }

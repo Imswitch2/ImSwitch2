@@ -44,12 +44,17 @@ ASSEMBLIES = ('stream', 'image')
 WINDOWS = ('event', 'step')
 
 
+#: The progress bar's resolution: per mille.
+_PROGRESS_RANGE = 1000
+
+
 class _Column:
     """One table column: how a cell reads and writes a value.
 
     ``kind``: 'text', 'optional-text', 'int', 'float', 'optional-float',
-    'choice', 'names' (comma-separated text), 'ints' (comma-separated
-    integers, blank = none), 'floats'. ``scale``: shown units per stored
+    'choice', 'names' (comma-separated text), 'optional-names' (the same,
+    blank = not given), 'ints' (comma-separated integers, blank = none),
+    'floats'. ``scale``: shown units per stored
     unit (``MS``: ms shown, s stored)."""
 
     def __init__(self, key, label, kind='text', choices=(), scale=1.0):
@@ -172,7 +177,7 @@ class _RowTable(QtWidgets.QWidget):
             return ''
         if column.kind in ('float', 'optional-float'):
             return f'{float(value) * column.scale:.12g}'
-        if column.kind in ('names', 'ints'):
+        if column.kind in ('names', 'optional-names', 'ints'):
             return ', '.join(str(v) for v in value)
         if column.kind == 'floats':
             return ', '.join(f'{float(v) * column.scale:.12g}' for v in value)
@@ -192,6 +197,9 @@ class _RowTable(QtWidgets.QWidget):
                 return text or None
             if column.kind == 'names':
                 return [part.strip() for part in text.split(',') if part.strip()]
+            if column.kind == 'optional-names':
+                return None if text == '' else [part.strip() for part in text.split(',')
+                                                if part.strip()]
             if column.kind == 'ints':
                 return None if text == '' else [int(p) for p in text.split(',') if p.strip()]
             if column.kind == 'floats':
@@ -397,7 +405,15 @@ class ScanWidgetExpert(SuperScanWidget):
         self.plot.addLegend()
         self.plot.setLabel('bottom', 'time', units='s')
         self.plot.setVisible(False)
-        self.progressRow = QtWidgets.QLabel('')
+        self.scanProgressBar = QtWidgets.QProgressBar()
+        self.scanProgressBar.setRange(0, _PROGRESS_RANGE)
+        self.scanProgressBar.setTextVisible(False)
+        self.scanProgressLabel = QtWidgets.QLabel()
+        self.progressRow = QtWidgets.QWidget()
+        progressLayout = QtWidgets.QHBoxLayout(self.progressRow)
+        progressLayout.setContentsMargins(0, 0, 0, 0)
+        progressLayout.addWidget(self.scanProgressBar, 1)
+        progressLayout.addWidget(self.scanProgressLabel)
         self.progressRow.setVisible(False)
 
     # -- the panel ------------------------------------------------------------
@@ -465,6 +481,7 @@ class ScanWidgetExpert(SuperScanWidget):
                 _Column('shape', 'Shape', 'choice', EVENT_SHAPES),
                 _Column('phases', 'Phases', 'ints'),
                 _Column('during', 'During', 'choice', DURING),
+                _Column('still', 'Still', 'optional-names'),
                 _Column('anchor', 'Anchor'),
                 _Column('id', 'Id', 'optional-text')]
 
@@ -585,9 +602,22 @@ class ScanWidgetExpert(SuperScanWidget):
             self.plot.plot(time_s, values, name=name, pen=pg.intColor(index, len(traces)))
         self.plot.setVisible(True)
 
-    def setScanProgress(self, text):
-        self.progressRow.setText(text)
-        self.progressRow.setVisible(bool(text))
+    def showScanProgress(self, fraction, text):
+        """The running scan's progress; ``fraction`` None: not known."""
+        if fraction is None:
+            self.scanProgressBar.setRange(0, 0)          # busy
+        else:
+            self.scanProgressBar.setRange(0, _PROGRESS_RANGE)
+            self.scanProgressBar.setValue(
+                int(round(_PROGRESS_RANGE * min(max(float(fraction), 0.0), 1.0))))
+        self.scanProgressLabel.setText(text)
+        self.progressRow.setVisible(True)
+
+    def hideScanProgress(self):
+        self.scanProgressBar.setRange(0, _PROGRESS_RANGE)
+        self.scanProgressBar.setValue(0)
+        self.scanProgressLabel.clear()
+        self.progressRow.setVisible(False)
 
     # -- SuperScanWidget ----------------------------------------------------------
 

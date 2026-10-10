@@ -8,6 +8,7 @@ panel. Scans really run; a camera recording goes through the recording
 manager and is read back by the layout resolver and SNOUTY.
 """
 import copy
+import dataclasses
 import functools
 import importlib
 import json
@@ -36,6 +37,7 @@ from imswitch.imcontrol.controller.controllers.ScanControllerExpert import (
 from imswitch.imcontrol.model import RecMode, SaveFormat, SaveMode
 from imswitch.imcontrol.model.managers.detectors._mock_sample import MockSample
 from imswitch.imcontrol.model.scan_program import presets, program as program_model
+from imswitch.imcontrol.model.scan_program import TimelineEvent
 from imswitch.imcontrol.model.scan_program.conformance import (
     engine_log, expected_log, log_differences,
 )
@@ -173,6 +175,21 @@ def test_the_tables_read_back_as_the_same_program(rig):
     rig.scan._onEdited()
     rig.scan.getParameters()
     assert rig.scan.program() == once        # and reading it again changes nothing
+
+
+def test_an_events_still_list_survives_the_tables(rig):
+    """Which devices must stand still under an event: blank is every drive,
+    a list is those. The table had no column for it, so an edit dropped it."""
+    program = _ms_resolft(rig)
+    timeline = list(program.timeline)
+    timeline[0] = dataclasses.replace(timeline[0], still=('Z',))
+    program = dataclasses.replace(program, timeline=tuple(timeline))
+    rig.scan.setProgram(program)
+    rig.scan._onEdited()
+    rig.scan.getParameters()
+    events = rig.scan.program().timeline
+    assert events[0].still == ('Z',)
+    assert all(event.still is None for event in events[1:])
 
 
 def test_an_edit_in_a_table_changes_the_program(rig, qtbot):
@@ -413,6 +430,29 @@ def test_a_pulse_generator_runs_a_pulse_program_from_the_panel(qtbot):
         rig.close()
 
 
+def test_a_power_level_runs_on_the_lasers_analog_channel(qtbot, monkeypatch):
+    """§7.8: a level event used to be reported native and then not played."""
+    setup = _setup_dict()
+    laser = list(setup['lasers'])[2]
+    setup['lasers'][laser].update(analogChannel='Dev1/ao3', valueRangeMin=0, valueRangeMax=5)
+    rig = ExpertRig(setup)
+    try:
+        played = []
+        nidaq = rig.master.nidaqManager
+        run = nidaq.runScan
+        monkeypatch.setattr(nidaq, 'runScan', lambda signals, info: played.append(
+            signals['scanSignalsDict']) or run(signals, info))
+        program = _ms_resolft(rig, timepoints=1)
+        level = TimelineEvent(laser, 'level', 0.0, 1e-3, value=2.0, during='any')
+        rig.scan.setProgram(dataclasses.replace(program,
+                                                timeline=program.timeline + (level,)))
+        assert 'Runnable on nidaq.' in rig.widget.reportText()
+        assert rig.run(timeoutS=10.0) and rig.rejected == []
+        assert set(np.unique(played[0][laser])) == {0.0, 2.0}
+    finally:
+        rig.close()
+
+
 # ---------------------------------------------------------------------------
 # A step board behind the protocol (M5)
 # ---------------------------------------------------------------------------
@@ -448,6 +488,21 @@ def test_a_step_board_runs_an_ms_resolft_program_as_the_interpreter_means_it(boa
     assert log_differences(engine_log(engine.log), expected) == []
     frames = [e for e in engine.log.entries if e[0] == 'on' and e[3] == 'Camera']
     assert len(frames) == 2 * 3 * 2           # cycles x planes x timepoints
+
+
+def test_a_step_boards_progress_is_shown_by_step(board_rig, qtbot):
+    """§7.8: the board's STEP messages were read and not shown."""
+    rig = board_rig
+    shown = []
+    show = rig.widget.showScanProgress
+    rig.widget.showScanProgress = lambda fraction, text: shown.append(text) or show(fraction,
+                                                                                    text)
+    rig.scan.setProgram(_ms_resolft(rig, timepoints=1))
+    assert rig.run(timeoutS=10.0)
+    qtbot.waitUntil(lambda: rig.scan._progressSteps == (5, 6), timeout=2000)
+    assert shown                                  # shown while it ran
+    rig.scan._updateScanProgress()                # the run is over: hidden
+    assert rig.widget.progressRow.isHidden()
 
 
 def test_a_step_board_failure_ends_the_run_with_its_reason(board_rig, monkeypatch):
@@ -511,6 +566,41 @@ def test_the_panel_runs_one_program_on_a_leader_and_its_follower(qtbot):
         frames = [e for e in follower.log.entries if e[0] == 'on' and e[3] == 'Camera']
         assert len(frames) == 2 * 3                    # cycles x planes
         assert len(follower.log.of('release')) == 2 * 3
+    finally:
+        rig.close()
+
+
+STEP_BOARDS_SETUP = ('imswitch/_data/user_defaults/imcontrol_setups/'
+                     'expert_step_boards_mock_setup.json')
+
+
+def test_the_shipped_step_board_setup_scans_and_sets_by_hand(qtbot):
+    """§7.8: a TriggerScope-like board leads, a second board follows; the
+    devices on them are set by hand through the protocol's SET."""
+    rig = ExpertRig(json.load(open(STEP_BOARDS_SETUP)))
+    try:
+        engine = rig.master.scanEngine
+        assert rig.widget.engineLabel.text() == 'Runs on triggerscope (CompositeScanEngine).'
+        board = engine.leader.board
+        rig.master.positionersManager['Z'].setPosition(25.0, 'Z')
+        assert board.outputs['dac0'] == 2.5                   # 10 µm per volt
+        rig.master.lasersManager['405 (ON)'].setEnabled(True)
+        assert board.outputs['ttl0'] == 1
+        rig.master.lasersManager['405 (ON)'].setEnabled(False)
+
+        params = dict(device='Z', cycles=2, planes=3, cycle_step_um=0.25, start_um=1.0,
+                      pulses=[['405 (ON)', 1e-3, 1e-3], ['488 (OFF)', 2e-3, 1e-3],
+                              ['488 (OFF)', 1e-3, 0.0]],
+                      camera='Camera', exposure_pulse=3, timepoints=1, pause_s=0.0,
+                      move_s=5e-4, settle_s=5e-4, transition='jump')
+        rig.scan.setProgram(presets.make('ms-resolft', params))     # the leader's alone
+        assert rig.run(timeoutS=10.0) and rig.rejected == []
+        assert engine.partsOutcome() is None
+        params['pulses'][1][0] = '561 (EXC)'                          # now on both boards
+        rig.scan.setProgram(presets.make('ms-resolft', params))
+        assert 'aux follows triggerscope step by step' in rig.widget.reportText()
+        assert rig.run(timeoutS=10.0) and rig.rejected == []
+        assert engine.partsOutcome() == {'triggerscope': ('done', ''), 'aux': ('done', '')}
     finally:
         rig.close()
 

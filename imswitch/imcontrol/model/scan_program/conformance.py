@@ -75,13 +75,19 @@ def engine_log(log) -> Dict[str, list]:
     return {'dac': dac, 'on': sorted(on)}
 
 
-def log_differences(engine: Dict[str, list], expected: Dict[str, list]) -> List[str]:
-    """Every way the engine's log differs from the program's meaning."""
+def log_differences(engine: Dict[str, list], expected: Dict[str, list],
+                    resolution_um: Dict[str, float] = None) -> List[str]:
+    """Every way the engine's log differs from the program's meaning.
+    ``resolution_um``: a device's smallest step on an engine that sets the
+    nearest of its DAC's codes; its positions then match within half of it."""
     problems = []
+    resolution_um = resolution_um or {}
     if len(engine['dac']) != len(expected['dac']):
         problems.append(f'{len(engine["dac"])} DAC writes, expected {len(expected["dac"])}')
     for got, want in zip(engine['dac'], expected['dac']):
-        if got[:3] != want[:3] or not _close(got[3], want[3]):
+        within = (abs(got[3] - want[3]) <= resolution_um[want[2]] / 2
+                  if want[2] in resolution_um else _close(got[3], want[3]))
+        if got[:3] != want[:3] or not within:
             problems.append(f'DAC write {got}, expected {want}')
             break
     if engine['on'] != expected['on']:
