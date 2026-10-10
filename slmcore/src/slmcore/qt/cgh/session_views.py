@@ -577,7 +577,7 @@ class InspectView(QtWidgets.QWidget):
 
 
 class PositionReferenceView(QtWidgets.QWidget):
-    """Detector-image overlay for measured, fitted and selected reference lattices."""
+    """Detector-space Current / Reference / Predicted alignment workbench."""
 
     sigCenterOffsetRequested = QtCore.Signal(float,float)
     sigAffineTransformRequested = QtCore.Signal(object)
@@ -616,14 +616,20 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.measured_item = pg.ScatterPlotItem(
             symbol="x",size=9,pen=pg.mkPen("#55aa55",width=1.6),
         )
+        # Keep the historical item names internally for a small Pass-1 patch:
+        # reference_item is the model-predicted landing position, while
+        # raw_reference_item is the actual desired/reference geometry.
         self.reference_item = pg.ScatterPlotItem(
-            symbol="+",size=12,pen=pg.mkPen("#e06cdb",width=1.8),
+            symbol="+",size=12,pen=pg.mkPen("#55c7d9",width=1.8),
         )
         self.raw_reference_item = pg.ScatterPlotItem(
-            symbol="o",size=10,pen=pg.mkPen("#e06cdb",width=1.2),brush=None,
+            symbol="o",size=10,pen=pg.mkPen("#e06cdb",width=1.3),brush=None,
         )
         self.vector_item = pg.PlotCurveItem(
             pen=pg.mkPen("#ff9966",width=1.1),
+        )
+        self.residual_item = pg.PlotCurveItem(
+            pen=pg.mkPen("#cc6666",width=1.1),
         )
         self.center_item = pg.TargetItem(
             movable=True,size=16,
@@ -645,8 +651,9 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.affine_x_label = pg.TextItem("X",anchor=(0.0,1.0))
         self.affine_y_label = pg.TextItem("Y",anchor=(0.0,1.0))
         for item in (
-            self.image_item,self.global_item,self.vector_item,self.measured_item,
-            self.raw_reference_item,self.reference_item,self.affine_frame_item,
+            self.image_item,self.global_item,self.vector_item,self.residual_item,
+            self.measured_item,self.raw_reference_item,self.reference_item,
+            self.affine_frame_item,
             self.center_item,self.affine_origin_item,self.affine_x_item,
             self.affine_y_item,self.affine_origin_label,self.affine_x_label,
             self.affine_y_label,
@@ -672,11 +679,57 @@ class PositionReferenceView(QtWidgets.QWidget):
             item.sigPositionChangeFinished.connect(self._on_affine_edit_finished)
         layout.addWidget(self.graphics,1)
 
+        overlay_row = QtWidgets.QHBoxLayout()
+        overlay_row.setContentsMargins(0,2,0,0)
+        overlay_row.setSpacing(8)
+        self.current_checkbox = QtWidgets.QCheckBox("Current")
+        self.reference_checkbox = QtWidgets.QCheckBox("Reference")
+        self.predicted_checkbox = QtWidgets.QCheckBox("Predicted")
+        self.correction_vectors_checkbox = QtWidgets.QCheckBox(
+            "Correction vectors"
+        )
+        self.residuals_checkbox = QtWidgets.QCheckBox("Residuals")
+        self.global_fit_checkbox = QtWidgets.QCheckBox("Global fit")
+        for checkbox in (
+            self.current_checkbox,self.reference_checkbox,self.predicted_checkbox,
+        ):
+            checkbox.setChecked(True)
+        for checkbox in (
+            self.correction_vectors_checkbox,self.residuals_checkbox,
+            self.global_fit_checkbox,
+        ):
+            checkbox.setChecked(False)
+        self.current_checkbox.setToolTip("Localized positions of the current CGH.")
+        self.reference_checkbox.setToolTip(
+            "Desired detector positions from the selected reference source."
+        )
+        self.predicted_checkbox.setToolTip(
+            "Where Current is predicted to land after the selected correction."
+        )
+        self.correction_vectors_checkbox.setToolTip(
+            "Current → Predicted correction vectors."
+        )
+        self.residuals_checkbox.setToolTip(
+            "Predicted → Reference residual vectors."
+        )
+        self.global_fit_checkbox.setToolTip(
+            "Original global lattice fit retained as a diagnostic overlay."
+        )
+        for checkbox in (
+            self.current_checkbox,self.reference_checkbox,self.predicted_checkbox,
+            self.correction_vectors_checkbox,self.residuals_checkbox,
+            self.global_fit_checkbox,
+        ):
+            checkbox.toggled.connect(self._apply_overlay_visibility)
+            overlay_row.addWidget(checkbox)
+        overlay_row.addStretch(1)
+        layout.addLayout(overlay_row)
+
         footer = QtWidgets.QHBoxLayout()
-        footer.setContentsMargins(0,2,0,0)
+        footer.setContentsMargins(0,0,0,0)
         footer.setSpacing(8)
         self.legend_label = QtWidgets.QLabel(
-            "Measured ×   Global fit +   Reference +   Vector: measured → reference"
+            "Current ×   Reference ○   Predicted +"
         )
         self.legend_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
         footer.addWidget(self.legend_label)
@@ -756,32 +809,19 @@ class PositionReferenceView(QtWidgets.QWidget):
         constrained_model = correction_mode in {
             "translation","rigid","affine","polynomial",
         }
-        if constrained_model:
-            self.raw_reference_item.setData(
-                x=raw_reference[0],y=raw_reference[1],
+        self.raw_reference_item.setData(
+            x=raw_reference[0],y=raw_reference[1],
+        )
+        self._set_residual_overlay(reference,raw_reference)
+        if constrained_model and self._affine_active:
+            self._set_affine_transform(
+                global_positions,np.asarray(affine_transform,dtype=np.float64),
             )
-            model_label = {
-                "translation":"Translation",
-                "rigid":"Rigid",
-                "affine":"Affine",
-                "polynomial":"Polynomial",
-            }[correction_mode]
-            self.legend_label.setText(
-                "Measured ×   Global fit +   Saved reference ○   "
-                f"{model_label} target +   Vector: {model_label.lower()} correction"
-            )
-            if self._affine_active:
-                self._set_affine_transform(
-                    global_positions,np.asarray(affine_transform,dtype=np.float64),
-                )
-            else:
-                self._hide_affine_overlay()
         else:
-            self.raw_reference_item.setData(x=[],y=[])
-            self.legend_label.setText(
-                "Measured ×   Global fit +   Reference +   Vector: measured → reference"
-            )
             self._hide_affine_overlay()
+        self.legend_label.setText(
+            "Current ×   Reference ○   Predicted +"
+        )
         self._updating_center = True
         try:
             self.center_item.setPos(
@@ -792,15 +832,23 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.center_item.setVisible(bool(center_editable))
         self.center_item.movable = bool(center_editable)
         self.set_affine_editable(self._affine_editable)
-        displacement = reference-measured
-        magnitudes = np.linalg.norm(displacement,axis=0)
+        correction = reference-measured
+        correction_magnitude = np.linalg.norm(correction,axis=0)
+        residual = raw_reference-reference
+        residual_magnitude = np.linalg.norm(residual,axis=0)
+        residual_rms = (
+            float(np.sqrt(np.mean(residual_magnitude*residual_magnitude)))
+            if residual_magnitude.size else 0.0
+        )
         self.summary_label.setText(
-            "%d spots · Δ median %.3g px · max %.3g px" % (
+            "%d spots · correction median %.3g px · residual RMS %.3g px" % (
                 reference.shape[1],
-                float(np.median(magnitudes)) if magnitudes.size else 0.0,
-                float(np.max(magnitudes)) if magnitudes.size else 0.0,
+                float(np.median(correction_magnitude))
+                if correction_magnitude.size else 0.0,
+                residual_rms,
             )
         )
+        self._apply_overlay_visibility()
         self.reset_button.setEnabled(True)
         if reset_view:
             self.view_box.autoRange()
@@ -812,7 +860,9 @@ class PositionReferenceView(QtWidgets.QWidget):
 
     def set_affine_editable(self,enabled: bool) -> None:
         self._affine_editable = bool(enabled)
-        visible = bool(self._affine_active and self._preview is not None)
+        visible = bool(
+            self._affine_active and self._preview is not None and self._affine_editable
+        )
         self.affine_frame_item.setVisible(visible)
         for item in (
             self.affine_origin_item,self.affine_x_item,self.affine_y_item,
@@ -838,6 +888,7 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.reference_item.setData(x=[],y=[])
         self.raw_reference_item.setData(x=[],y=[])
         self.vector_item.setData([],[])
+        self.residual_item.setData([],[])
         self.center_item.setVisible(False)
         self._affine_active = False
         self._hide_affine_overlay()
@@ -855,6 +906,24 @@ class PositionReferenceView(QtWidgets.QWidget):
         x[0::2],x[1::2] = measured[0],reference[0]
         y[0::2],y[1::2] = measured[1],reference[1]
         self.vector_item.setData(x=x,y=y,connect="pairs")
+
+    def _set_residual_overlay(
+        self,predicted: np.ndarray,reference: np.ndarray,
+    ) -> None:
+        count = predicted.shape[1]
+        x = np.empty(2*count,dtype=np.float64)
+        y = np.empty(2*count,dtype=np.float64)
+        x[0::2],x[1::2] = predicted[0],reference[0]
+        y[0::2],y[1::2] = predicted[1],reference[1]
+        self.residual_item.setData(x=x,y=y,connect="pairs")
+
+    def _apply_overlay_visibility(self,*_args: Any) -> None:
+        self.measured_item.setVisible(self.current_checkbox.isChecked())
+        self.raw_reference_item.setVisible(self.reference_checkbox.isChecked())
+        self.reference_item.setVisible(self.predicted_checkbox.isChecked())
+        self.vector_item.setVisible(self.correction_vectors_checkbox.isChecked())
+        self.residual_item.setVisible(self.residuals_checkbox.isChecked())
+        self.global_item.setVisible(self.global_fit_checkbox.isChecked())
 
     def _set_affine_transform(
         self,global_positions: np.ndarray,transform: np.ndarray,
@@ -948,6 +1017,9 @@ class PositionReferenceView(QtWidgets.QWidget):
         mapped_global = self._apply_affine(transform,global_positions)
         effective_reference = measured + (mapped_global-global_positions)
         self._set_reference_overlay(effective_reference)
+        raw_reference = self._raw_reference_positions
+        if raw_reference is not None:
+            self._set_residual_overlay(effective_reference,raw_reference)
 
     def _on_affine_origin_changed(self,*_args: Any) -> None:
         if self._affine_updating:

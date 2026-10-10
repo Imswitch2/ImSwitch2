@@ -570,7 +570,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         # Main visualization: detector-space reference workbench by default,
         # with the original k-space diagnostic retained as an alternate view.
-        viewer = QtWidgets.QGroupBox("Position reference")
+        viewer = QtWidgets.QGroupBox("Alignment preview")
         viewer_layout = QtWidgets.QVBoxLayout(viewer)
         viewer_layout.setContentsMargins(8,7,8,7)
 
@@ -602,7 +602,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         # Match the intensity tab: workflow controls live in a narrow vertical
         # panel on the right while the visualization keeps the dominant area.
-        controls = QtWidgets.QGroupBox("Position controls")
+        controls = QtWidgets.QGroupBox("Position setup")
         controls.setMinimumWidth(220)
         controls.setMaximumWidth(285)
         controls_layout = QtWidgets.QVBoxLayout(controls)
@@ -612,7 +612,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_status_label = QtWidgets.QLabel("No correction")
         self.position_status_label.setWordWrap(True)
 
-        reference_label = QtWidgets.QLabel("Reference source")
+        reference_label = QtWidgets.QLabel("REFERENCE")
         reference_font = reference_label.font()
         reference_font.setBold(True)
         reference_label.setFont(reference_font)
@@ -620,14 +620,20 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         # First choose the *kind* of detector-space reference.  Controls that
         # belong to one kind live in their own conditional panel below.
+        source_row = QtWidgets.QHBoxLayout()
+        source_row.setContentsMargins(0,0,0,0)
+        source_row.setSpacing(5)
+        source_row.addWidget(QtWidgets.QLabel("Source"))
         self.position_reference_combo = QtWidgets.QComboBox()
         self.position_reference_combo.addItem("Global fit","global_fit")
         self.position_reference_combo.addItem("Editable lattice","editable")
         self.position_reference_combo.addItem("Saved reference","reference")
+        self.position_reference_combo.addItem("Current (free edit)","current")
         self.position_reference_combo.currentIndexChanged.connect(
             self._on_position_reference_changed,
         )
-        controls_layout.addWidget(self.position_reference_combo)
+        source_row.addWidget(self.position_reference_combo,1)
+        controls_layout.addLayout(source_row)
 
         self.position_reference_editable_widget = QtWidgets.QWidget(controls)
         editable_layout = QtWidgets.QVBoxLayout(
@@ -769,66 +775,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
         saved_row.addWidget(self.position_reference_manage_button)
         saved_layout.addLayout(saved_row)
 
-        correction_model_label = QtWidgets.QLabel("Correction model")
-        saved_layout.addWidget(correction_model_label)
-        self.position_reference_correction_model_combo = QtWidgets.QComboBox()
-        self.position_reference_correction_model_combo.addItem("Translation","translation")
-        self.position_reference_correction_model_combo.addItem("Rigid","rigid")
-        self.position_reference_correction_model_combo.addItem("Affine","affine")
-        self.position_reference_correction_model_combo.addItem("Polynomial","polynomial")
-        self.position_reference_correction_model_combo.addItem("Per-spot","per_spot")
-        self.position_reference_correction_model_combo.setToolTip(
-            "Translation fits one common shift. Rigid fits translation + rotation. "
-            "Affine also allows scale and shear. Polynomial fits a smooth nonlinear "
-            "field of order 2, 3, or 4. Per-spot applies each measured reference "
-            "error independently."
-        )
-        self.position_reference_correction_model_combo.currentIndexChanged.connect(
-            self._on_position_reference_correction_mode_changed
-        )
-        saved_layout.addWidget(self.position_reference_correction_model_combo)
-
-        self.position_reference_polynomial_degree_label = QtWidgets.QLabel(
-            "Polynomial order"
-        )
-        saved_layout.addWidget(self.position_reference_polynomial_degree_label)
-        self.position_reference_polynomial_degree_combo = QtWidgets.QComboBox()
-        for degree in (2,3,4):
-            self.position_reference_polynomial_degree_combo.addItem(
-                str(degree),degree
-            )
-        self.position_reference_polynomial_degree_combo.setToolTip(
-            "Total polynomial degree of the continuous detector-space correction "
-            "field. Higher orders can model more complex warping but require "
-            "more matched spots and can follow localization noise more closely."
-        )
-        self.position_reference_polynomial_degree_combo.currentIndexChanged.connect(
-            self._on_position_reference_polynomial_degree_changed
-        )
-        saved_layout.addWidget(self.position_reference_polynomial_degree_combo)
-
-        self.position_reference_affine_reset_button = QtWidgets.QPushButton(
-            "Reset affine fit"
-        )
-        self.position_reference_affine_reset_button.setToolTip(
-            "Discard manual affine-handle edits and refit from the current "
-            "localization to the saved reference."
-        )
-        self.position_reference_affine_reset_button.clicked.connect(
-            self._reset_position_reference_affine_fit,
-        )
-        saved_layout.addWidget(self.position_reference_affine_reset_button)
-
-        self.position_reference_affine_hint = QtWidgets.QLabel(
-            "Detector view: drag Move to translate, X to change the horizontal "
-            "affine axis, or Y to change the vertical axis."
-        )
-        self.position_reference_affine_hint.setWordWrap(True)
-        self.position_reference_affine_hint.setStyleSheet(
-            "color: %s;" % _MUTED_COLOR
-        )
-        saved_layout.addWidget(self.position_reference_affine_hint)
-
         correspondence_label = QtWidgets.QLabel("Correspondence")
         saved_layout.addWidget(correspondence_label)
         self.position_reference_correspondence_combo = QtWidgets.QComboBox()
@@ -854,13 +800,106 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "color: %s;" % _MUTED_COLOR
         )
         controls_layout.addWidget(self.position_reference_info_label)
-        controls_layout.addSpacing(7)
 
-        correction_label = QtWidgets.QLabel("Position correction")
-        correction_font = correction_label.font()
-        correction_font.setBold(True)
-        correction_label.setFont(correction_font)
-        controls_layout.addWidget(correction_label)
+        reference_separator = QtWidgets.QFrame(controls)
+        reference_separator.setFrameShape(QtWidgets.QFrame.HLine)
+        reference_separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        controls_layout.addWidget(reference_separator)
+
+        correction_model_label = QtWidgets.QLabel("CORRECTION")
+        correction_model_font = correction_model_label.font()
+        correction_model_font.setBold(True)
+        correction_model_label.setFont(correction_model_font)
+        controls_layout.addWidget(correction_model_label)
+
+        correction_model_row = QtWidgets.QHBoxLayout()
+        correction_model_row.setContentsMargins(0,0,0,0)
+        correction_model_row.setSpacing(5)
+        correction_model_row.addWidget(QtWidgets.QLabel("Model"))
+        self.position_reference_correction_model_combo = QtWidgets.QComboBox()
+        self.position_reference_correction_model_combo.addItem("Translation","translation")
+        self.position_reference_correction_model_combo.addItem("Rigid","rigid")
+        self.position_reference_correction_model_combo.addItem("Affine","affine")
+        self.position_reference_correction_model_combo.addItem("Polynomial","polynomial")
+        self.position_reference_correction_model_combo.addItem("Per-spot","per_spot")
+        self.position_reference_correction_model_combo.setToolTip(
+            "Translation fits one common shift. Rigid fits translation + rotation. "
+            "Affine also allows scale and shear. Polynomial fits a smooth nonlinear "
+            "field of order 2, 3, or 4. Per-spot applies each measured reference "
+            "error independently."
+        )
+        self.position_reference_correction_model_combo.currentIndexChanged.connect(
+            self._on_position_reference_correction_mode_changed
+        )
+        correction_model_row.addWidget(self.position_reference_correction_model_combo,1)
+        controls_layout.addLayout(correction_model_row)
+
+        polynomial_row = QtWidgets.QHBoxLayout()
+        polynomial_row.setContentsMargins(0,0,0,0)
+        polynomial_row.setSpacing(5)
+        self.position_reference_polynomial_degree_label = QtWidgets.QLabel(
+            "Polynomial order"
+        )
+        polynomial_row.addWidget(self.position_reference_polynomial_degree_label)
+        self.position_reference_polynomial_degree_combo = QtWidgets.QComboBox()
+        for degree in (2,3,4):
+            self.position_reference_polynomial_degree_combo.addItem(
+                str(degree),degree
+            )
+        self.position_reference_polynomial_degree_combo.setToolTip(
+            "Total polynomial degree of the continuous detector-space correction "
+            "field. Higher orders can model more complex warping but require "
+            "more matched spots and can follow localization noise more closely."
+        )
+        self.position_reference_polynomial_degree_combo.currentIndexChanged.connect(
+            self._on_position_reference_polynomial_degree_changed
+        )
+        polynomial_row.addWidget(self.position_reference_polynomial_degree_combo,1)
+        controls_layout.addLayout(polynomial_row)
+
+        self.position_reference_interactive_edit_checkbox = QtWidgets.QCheckBox(
+            "Edit interactively"
+        )
+        self.position_reference_interactive_edit_checkbox.setToolTip(
+            "Pass 1 exposes the existing affine handles here. A common affine / "
+            "polynomial editor will replace them in the next pass."
+        )
+        self.position_reference_interactive_edit_checkbox.toggled.connect(
+            self._on_position_reference_interactive_edit_toggled
+        )
+        controls_layout.addWidget(self.position_reference_interactive_edit_checkbox)
+
+        self.position_reference_affine_reset_button = QtWidgets.QPushButton(
+            "Reset fit"
+        )
+        self.position_reference_affine_reset_button.setToolTip(
+            "Discard manual affine-handle edits and refit from Current to Reference."
+        )
+        self.position_reference_affine_reset_button.clicked.connect(
+            self._reset_position_reference_affine_fit,
+        )
+        controls_layout.addWidget(self.position_reference_affine_reset_button)
+
+        self.position_reference_affine_hint = QtWidgets.QLabel(
+            "Temporary affine editor: drag Move to translate, X or Y to change "
+            "the affine axes. Predicted updates in the detector view."
+        )
+        self.position_reference_affine_hint.setWordWrap(True)
+        self.position_reference_affine_hint.setStyleSheet(
+            "color: %s;" % _MUTED_COLOR
+        )
+        controls_layout.addWidget(self.position_reference_affine_hint)
+
+        applied_separator = QtWidgets.QFrame(controls)
+        applied_separator.setFrameShape(QtWidgets.QFrame.HLine)
+        applied_separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        controls_layout.addWidget(applied_separator)
+
+        applied_label = QtWidgets.QLabel("APPLIED CORRECTION")
+        applied_font = applied_label.font()
+        applied_font.setBold(True)
+        applied_label.setFont(applied_font)
+        controls_layout.addWidget(applied_label)
         controls_layout.addWidget(self.position_status_label)
 
         self.position_use_checkbox = QtWidgets.QCheckBox(
@@ -987,6 +1026,15 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 item = combo.model().item(saved_index)
                 if item is not None:
                     item.setEnabled(bool(references))
+            current_index = combo.findData("current")
+            if current_index >= 0:
+                item = combo.model().item(current_index)
+                if item is not None:
+                    item.setEnabled(False)
+                    item.setToolTip(
+                        "Free editing will be enabled with the common interactive "
+                        "correction editor in Pass 2."
+                    )
             index = combo.findData(mode)
             combo.setCurrentIndex(index if index >= 0 else 0)
         finally:
@@ -1031,13 +1079,21 @@ class CGHSessionWindow(QtWidgets.QDialog):
             saved_widget.setVisible(mode == "reference")
 
         correction_mode = str(context.get("correction_mode") or "per_spot")
+        # Global-fit and editable-lattice sources still use their historical
+        # direct per-site correction in Pass 1.  Show the effective model rather
+        # than a remembered named-reference model that is not actually applied.
+        displayed_correction_mode = (
+            correction_mode if mode == "reference" else "per_spot"
+        )
         correction_model_combo = getattr(
             self,"position_reference_correction_model_combo",None,
         )
         if correction_model_combo is not None:
             correction_blocker = QtCore.QSignalBlocker(correction_model_combo)
             try:
-                correction_index = correction_model_combo.findData(correction_mode)
+                correction_index = correction_model_combo.findData(
+                    displayed_correction_mode
+                )
                 correction_model_combo.setCurrentIndex(
                     correction_index if correction_index >= 0 else 0
                 )
@@ -1073,30 +1129,34 @@ class CGHSessionWindow(QtWidgets.QDialog):
             correction_model_combo.setEnabled(
                 change_allowed and mode == "reference" and bool(reference_name)
             )
-            correction_model_combo.setToolTip(
-                reason or (
+            if reason:
+                correction_tooltip = reason
+            elif mode != "reference":
+                correction_tooltip = (
+                    "Pass 1 keeps Global fit and Editable lattice on their existing "
+                    "per-spot correction. Model selection is available for Saved "
+                    "reference; the common editor comes in Pass 2."
+                )
+            else:
+                correction_tooltip = (
                     "Translation fits one common shift; Rigid fits translation + "
                     "rotation; Affine also allows scale and shear; Polynomial fits "
                     "a smooth nonlinear field of selectable order 2, 3, or 4; "
                     "Per-spot applies each saved-reference error independently."
                 )
-            )
+            correction_model_combo.setToolTip(correction_tooltip)
         polynomial_degree_label = getattr(
             self,"position_reference_polynomial_degree_label",None,
         )
+        polynomial_visible = (
+            mode == "reference" and displayed_correction_mode == "polynomial"
+        )
         if polynomial_degree_label is not None:
-            polynomial_degree_label.setVisible(
-                mode == "reference" and correction_mode == "polynomial"
-            )
+            polynomial_degree_label.setVisible(polynomial_visible)
         if polynomial_degree_combo is not None:
-            polynomial_degree_combo.setVisible(
-                mode == "reference" and correction_mode == "polynomial"
-            )
+            polynomial_degree_combo.setVisible(polynomial_visible)
             polynomial_degree_combo.setEnabled(
-                change_allowed
-                and mode == "reference"
-                and correction_mode == "polynomial"
-                and bool(reference_name)
+                change_allowed and polynomial_visible and bool(reference_name)
             )
             polynomial_degree_combo.setToolTip(
                 reason or (
@@ -1104,13 +1164,40 @@ class CGHSessionWindow(QtWidgets.QDialog):
                     "needs 10, and order 4 needs 15."
                 )
             )
+
+        interactive = getattr(
+            self,"position_reference_interactive_edit_checkbox",None,
+        )
+        affine_supported = bool(
+            mode == "reference"
+            and displayed_correction_mode == "affine"
+            and reference_name
+        )
+        if interactive is not None:
+            interactive.setVisible(
+                mode == "reference" and displayed_correction_mode == "affine"
+            )
+            interactive.setEnabled(change_allowed and affine_supported)
+            interactive.setToolTip(
+                reason or (
+                    "Use the existing affine handles as a temporary interactive "
+                    "editor. Pass 2 will replace this with the common editor."
+                )
+            )
+            if not affine_supported and interactive.isChecked():
+                interactive_blocker = QtCore.QSignalBlocker(interactive)
+                interactive.setChecked(False)
+                del interactive_blocker
+
         affine_reset = getattr(self,"position_reference_affine_reset_button",None)
         if affine_reset is not None:
-            affine_reset.setVisible(mode == "reference" and correction_mode == "affine")
-            affine_reset.setEnabled(change_allowed and bool(reference_name))
+            affine_reset.setVisible(affine_supported)
+            affine_reset.setEnabled(change_allowed and affine_supported)
         affine_hint = getattr(self,"position_reference_affine_hint",None)
         if affine_hint is not None:
-            affine_hint.setVisible(mode == "reference" and correction_mode == "affine")
+            affine_hint.setVisible(
+                affine_supported and interactive is not None and interactive.isChecked()
+            )
         for editor in self._position_geometry_editors():
             editor.setEnabled(change_allowed)
             editor.setToolTip(reason)
@@ -1146,9 +1233,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         compatibility_error = str(context.get("compatibility_error") or "")
         plane = str(context.get("observation_plane_name") or "").strip()
         if mode == "global_fit":
-            info = "Current localization · global affine fit"
+            info = "Reference: current localization global fit"
         elif mode == "editable":
-            info = "Current localization · editable affine lattice"
+            info = "Reference: editable lattice"
         elif reference_name:
             # Name + lifetime already appear in the saved-reference selector.
             info = ""
@@ -1168,10 +1255,15 @@ class CGHSessionWindow(QtWidgets.QDialog):
             detector_view.set_center_editable(
                 mode == "editable" and change_allowed
             )
+            interactive = getattr(
+                self,"position_reference_interactive_edit_checkbox",None,
+            )
             detector_view.set_affine_editable(
                 mode == "reference"
-                and correction_mode == "affine"
+                and displayed_correction_mode == "affine"
                 and change_allowed
+                and interactive is not None
+                and interactive.isChecked()
             )
 
         add_button = getattr(self,"position_reference_add_button",None)
@@ -1468,6 +1560,23 @@ class CGHSessionWindow(QtWidgets.QDialog):
             return 2
         value = combo.currentData()
         return int(2 if value is None else value)
+
+    def _on_position_reference_interactive_edit_toggled(
+        self,checked: bool,
+    ) -> None:
+        mode = str(self.position_reference_combo.currentData() or "global_fit")
+        correction_mode = self._selected_position_reference_correction_mode()
+        enabled = bool(
+            checked
+            and mode == "reference"
+            and correction_mode == "affine"
+            and self._selected_is_current_context()
+            and not self._cgh_computing
+        )
+        self.position_reference_view.set_affine_editable(enabled)
+        hint = getattr(self,"position_reference_affine_hint",None)
+        if hint is not None:
+            hint.setVisible(enabled)
 
     def _on_position_reference_polynomial_degree_changed(self,_index: int) -> None:
         if str(self.position_reference_combo.currentData()) != "reference":
