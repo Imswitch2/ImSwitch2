@@ -1133,9 +1133,13 @@ Key fields (per ROI):
 laserPresets
 ------------
 
-Optional laser power preset system.
+Optional Live/Scan laser power preset system.
 
-* ``laserPresets`` (dict): Map of preset names to ``{laserName: LaserPresetInfo}`` nested dicts
+* ``laserPresets`` (dict): Live preset names mapped to ``{laserName: LaserPresetInfo}``.
+  This historical key remains the Live namespace for backward compatibility.
+* ``laserScanPresets`` (dict): Scan preset names mapped to the same structure.
+  Scan presets store acquisition power only; loading one does not itself emit
+  light or change Live ON/OFF state.
 
 **LaserPresetInfo fields** (per laser, per preset):
 
@@ -1146,15 +1150,17 @@ Optional laser power preset system.
 .. code-block:: json
 
    "laserPresets": {
-       "HighPower": {
+       "Screening": {
            "Laser405": {
                "value": 200.0
            },
            "Laser488": {
                "value": 150.0
            }
-       },
-       "LowPower": {
+       }
+   },
+   "laserScanPresets": {
+       "Acquisition": {
            "Laser405": {
                "value": 50.0
            },
@@ -1255,6 +1261,10 @@ references, and what fails silently if references are missing or incorrect.
      - ``timerCounterChannel`` references counter channel
      - Silent failure if simulation disabled + no hardware
    * - ``laserPresets``
+     - Lasers in setup
+     - Laser names in preset map
+     - Preset silently skips unknown lasers
+   * - ``laserScanPresets``
      - Lasers in setup
      - Laser names in preset map
      - Preset silently skips unknown lasers

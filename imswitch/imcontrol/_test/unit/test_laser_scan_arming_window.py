@@ -96,9 +96,13 @@ class _Widget:
         self.active = {}
         self.values = {}
         self.editable = True
+        self.resumeAvailable = False
 
     def setEditable(self, editable):
         self.editable = bool(editable)
+
+    def setResumeLiveAvailable(self, available):
+        self.resumeAvailable = bool(available)
 
     def setLaserEnableEditable(self, name, editable):
         self.enableEditable[name] = editable
@@ -753,6 +757,119 @@ def test_abort_style_teardown_restores_owned_live_values_and_leaves_others_alone
 
 
 
+def test_live_setpoint_restore_failure_discards_resume():
+    ctrl = _controller(names=('488',))
+    ctrl._livePowerValues['488'] = 3.0
+    ctrl._scanPowerValues['488'] = 30.0
+    ctrl._widget.active['488'] = True
+
+    original_set_value = ctrl._master.lasersManager['488'].setValue
+
+    def fail_only_live_restore(value):
+        if value == 3.0:
+            raise RuntimeError('restore timeout')
+        return original_set_value(value)
+
+    ctrl._master.lasersManager['488'].setValue = fail_only_live_restore
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    LaserController.scanChanged(ctrl, False)
+
+    assert ctrl._resumableLiveEnabledSnapshot is None
+    assert ctrl._widget.resumeAvailable is False
+
+
+def test_resume_live_uses_existing_enable_path_and_switches_to_live():
+    ctrl = _controller(names=('405', '488', '640'))
+    ctrl._resumableLiveEnabledSnapshot = {'405': True, '488': True}
+    ctrl._widget.resumeAvailable = True
+    ctrl._currentPowerContext = 'scan'
+    calls = []
+
+    def set_active(name, active):
+        calls.append((name, active))
+        ctrl._widget.active[name] = bool(active)
+
+    contexts = []
+    ctrl.setLaserActive = set_active
+    ctrl.powerContextChanged = lambda context: contexts.append(getattr(context, 'value', context))
+
+    assert LaserController.resumeLiveIllumination(ctrl) is True
+    assert calls == [('405', True), ('488', True)]
+    assert ctrl._widget.active.get('640', False) is False
+    assert ctrl._resumableLiveEnabledSnapshot is None
+    assert ctrl._widget.resumeAvailable is False
+    assert contexts == ['live']
+
+
+def test_resume_live_is_invalidated_by_live_on_off_action_only():
+    ctrl = _controller(names=('488',))
+    ctrl._resumableLiveEnabledSnapshot = {'488': True}
+    ctrl._widget.resumeAvailable = True
+
+    LaserController.toggleLaser(ctrl, '488', False)
+
+    assert ctrl._resumableLiveEnabledSnapshot is None
+    assert ctrl._widget.resumeAvailable is False
+
+
+def test_live_power_edit_preserves_pending_resume():
+    ctrl = _controller(names=('488',))
+    ctrl._resumableLiveEnabledSnapshot = {'488': True}
+    ctrl._widget.resumeAvailable = True
+
+    LaserController.setLaserPower(ctrl, '488', 4.0, 'live')
+
+    assert ctrl._resumableLiveEnabledSnapshot == {'488': True}
+    assert ctrl._widget.resumeAvailable is True
+
+
+def test_new_scan_clears_pending_resume():
+    ctrl = _controller(names=('488',))
+    ctrl._resumableLiveEnabledSnapshot = {'488': True}
+    ctrl._widget.resumeAvailable = True
+
+    LaserController.scanChanged(ctrl, True)
+
+    assert ctrl._resumableLiveEnabledSnapshot is None
+    assert ctrl._widget.resumeAvailable is False
+
+
+def test_resume_live_ignores_stale_laser_names_and_is_one_shot():
+    ctrl = _controller(names=('488',))
+    ctrl._resumableLiveEnabledSnapshot = {'missing': True, '488': True}
+    ctrl._widget.resumeAvailable = True
+    calls = []
+
+    def set_active(name, active):
+        calls.append((name, active))
+        ctrl._widget.active[name] = bool(active)
+
+    ctrl.setLaserActive = set_active
+    ctrl.powerContextChanged = lambda context: None
+
+    assert LaserController.resumeLiveIllumination(ctrl) is True
+    assert calls == [('488', True)]
+    assert ctrl._resumableLiveEnabledSnapshot is None
+    assert LaserController.resumeLiveIllumination(ctrl) is False
+
+
+def test_resume_live_rejection_leaves_laser_off_and_consumes_snapshot():
+    ctrl = _controller(names=('488',))
+    ctrl._resumableLiveEnabledSnapshot = {'488': True}
+    ctrl._widget.resumeAvailable = True
+
+    def reject(name, active):
+        ctrl._widget.active[name] = False
+
+    ctrl.setLaserActive = reject
+    ctrl.powerContextChanged = lambda context: None
+
+    assert LaserController.resumeLiveIllumination(ctrl) is False
+    assert ctrl._widget.active['488'] is False
+    assert ctrl._resumableLiveEnabledSnapshot is None
+    assert ctrl._widget.resumeAvailable is False
+
 
 def test_laser_mutations_are_rejected_while_scan_is_active():
     ctrl = _controller(names=('488',))
@@ -768,6 +885,7 @@ def test_laser_mutations_are_rejected_while_scan_is_active():
         lambda: LaserController.powerContextChanged(ctrl, 'scan'),
         lambda: LaserController.clearPresetSelection(ctrl),
         lambda: LaserController.savePresetAs(ctrl),
+        lambda: LaserController.resumeLiveIllumination(ctrl),
     )
     for mutate in mutators:
         with pytest.raises(RuntimeError, match='read-only'):

@@ -25,6 +25,7 @@ class LaserWidget(Widget):
     sigRenamePresetClicked = QtCore.Signal()
     sigDeletePresetClicked = QtCore.Signal()
     sigClearPresetClicked = QtCore.Signal()
+    sigResumeLiveClicked = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -93,6 +94,13 @@ class LaserWidget(Widget):
         )
         self.scanEditingLabel.hide()
 
+        self.resumeLiveButton = QtWidgets.QPushButton('↶ Resume Live')
+        self.resumeLiveButton.setToolTip(
+            'Restore the Live illumination state from before the last scan.'
+        )
+        self.resumeLiveButton.clicked.connect(self.sigResumeLiveClicked)
+        self.resumeLiveButton.hide()
+
         self.presetsList = QtWidgets.QComboBox()
         self.presetsList.setMinimumWidth(150)
         # ``activated`` is user-only: rebuilding the combo or switching context
@@ -119,6 +127,7 @@ class LaserWidget(Widget):
         self.clearPresetAction.triggered.connect(self.sigClearPresetClicked)
 
         self.topBar.addWidget(self.contextFrame, 0)
+        self.topBar.addWidget(self.resumeLiveButton, 0)
         self.topBar.addStretch(1)
         self.topBar.addWidget(self.scanEditingLabel, 0, QtCore.Qt.AlignCenter)
         self.topBar.addStretch(1)
@@ -221,6 +230,10 @@ class LaserWidget(Widget):
 
     def setEditable(self, editable):
         self.setEnabled(editable)
+
+    def setResumeLiveAvailable(self, available):
+        """Show the one-shot post-scan Live restoration action."""
+        self.resumeLiveButton.setVisible(bool(available))
 
     def setLaserActive(self, laserName, active, emitSignal=True):
         self.laserModules[laserName].setActive(active, emitSignal=emitSignal)
@@ -560,12 +573,11 @@ class LaserModule(QtWidgets.QWidget):
         self.enableButton.setEnabled(editable)
 
     def setEnableEditable(self, editable):
-        """ Sets whether the on/off button can be used, leaving the power
-        setpoint editable.
+        """Set whether the on/off button can be used independently.
 
-        A scan owns emission but not power: the scan's TTL gates the laser, so
-        the on/off button would fight it, while the setpoint stays useful for
-        tuning mid-scan. """
+        The full LaserWidget is read-only during an active scan; this narrower
+        helper remains for non-scan UI state and compatibility.
+        """
         self.enableButton.setEnabled(editable)
 
     def setValue(self, value, emitSignal=True):

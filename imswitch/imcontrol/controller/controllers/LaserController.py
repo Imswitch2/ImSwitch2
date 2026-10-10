@@ -112,6 +112,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             self._widget.setPowerContext(LaserPowerContext.LIVE.value, emitSignal=False)
         self._refreshPresetControls()
         self._refreshAllLaserRows()
+        self._refreshResumeLiveAvailability()
 
         # Connect CommunicationChannel signals
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
@@ -143,6 +144,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._widget.sigRenamePresetClicked.connect(self.renamePreset)
         self._widget.sigDeletePresetClicked.connect(self.deletePreset)
         self._widget.sigClearPresetClicked.connect(self.clearPresetSelection)
+        resumeSignal = getattr(self._widget, 'sigResumeLiveClicked', None)
+        if resumeSignal is not None:
+            resumeSignal.connect(self.resumeLiveIllumination)
 
         # Scan participation/AO ownership is semantic workflow state, not
         # something LaserWidget infers by inspecting Advanced Scan widgets.
@@ -170,9 +174,30 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 'Laser controls are read-only while a scan is active.'
             )
 
+    def _refreshResumeLiveAvailability(self):
+        """Reflect whether an explicit post-scan Live resume is available."""
+        snapshot = getattr(self, '_resumableLiveEnabledSnapshot', None) or {}
+        setter = getattr(self._widget, 'setResumeLiveAvailable', None)
+        if callable(setter):
+            setter(any(bool(enabled) for enabled in snapshot.values()))
+
+    def _setResumableLiveEnabledSnapshot(self, snapshot):
+        self._resumableLiveEnabledSnapshot = (
+            dict(snapshot) if snapshot and any(snapshot.values()) else None
+        )
+        self._refreshResumeLiveAvailability()
+
+    def _invalidateResumeLive(self):
+        if getattr(self, '_resumableLiveEnabledSnapshot', None) is None:
+            return
+        self._setResumableLiveEnabledSnapshot(None)
+
     def toggleLaser(self, laserName, enabled):
         """ Enable or disable laser (on/off)."""
         self._requireLaserEditsAllowed()
+        # Any explicit Live ON/OFF action supersedes a pending post-scan
+        # restoration. Power/preset/context edits deliberately do not.
+        self._invalidateResumeLive()
         applied = self._master.lasersManager[laserName].setEnabled(enabled)
         # Managers may explicitly reject an unsafe enable (for example an MPB
         # laser with no positive setpoint). Keep the toggle and shared state
@@ -697,7 +722,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._scanWorkflowPreparationError(clear=True)
         self._scanPreparationFailed = None
         self._scanPowerWrittenLasers = []
-        self._resumableLiveEnabledSnapshot = None
+        self._setResumableLiveEnabledSnapshot(None)
         self._scanLiveEnabledSnapshot = {}
         self._scanLiveSuppressed = False
 
@@ -1064,6 +1089,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # Restore the current Live setpoints only after scan-owned emission has
         # been forced OFF. Explicit zero is meaningful and must not be skipped.
         restored = {}
+        restoreFailures = []
         for name in restoreTargets:
             manager = self._master.lasersManager[name]
             if manager.isBinary:
@@ -1076,25 +1102,31 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                         raise RuntimeError('manager rejected Live setpoint restore')
                     restored[name] = setpoint
             except Exception as e:
+                restoreFailures.append(f'{name}: {e}')
                 self._logger.error(
-                    f'Failed to restore Live setpoint for laser "{name}": {e}',
+                    f'CRITICAL: failed to restore Live setpoint for laser '
+                    f'"{name}": {e}',
                     exc_info=True,
                 )
 
-        # Patch 4 may offer Resume only when teardown really ended dark. The
-        # snapshot contains scan-owned devices only; untouched Live lasers do
-        # not need resuming because their state never changed.
-        self._resumableLiveEnabledSnapshot = (
-            dict(snapshot)
-            if snapshot and any(snapshot.values()) and not darkFailures
-            else None
+        # Resume is safe only if every scan-owned path is known dark AND every
+        # non-binary Live setpoint was restored. Otherwise re-enabling could
+        # expose the sample at a stale Scan setpoint.
+        resumeSafe = not darkFailures and not restoreFailures
+        self._setResumableLiveEnabledSnapshot(
+            snapshot if resumeSafe else None
         )
 
-        if darkFailures:
+        if darkFailures or restoreFailures:
+            reasons = []
+            if darkFailures:
+                reasons.append('dark confirmation failed: ' + '; '.join(darkFailures))
+            if restoreFailures:
+                reasons.append('Live setpoint restore failed: ' + '; '.join(restoreFailures))
             self._logger.error(
-                '[LaserScan] teardown could not confirm all scan-owned lasers '
-                'dark; Resume state discarded: %s',
-                '; '.join(darkFailures),
+                '[LaserScan] Resume state discarded because teardown was not '
+                'fully safe: %s',
+                ' | '.join(reasons),
             )
         elif armed or snapshot or written:
             self._logger.debug(
@@ -1112,6 +1144,66 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._scanLiveSuppressed = False
         self._scanPreparationFailed = None
         self._scanWorkflowPreparationError(clear=True)
+
+    def resumeLiveIllumination(self):
+        """Explicitly restore the scan-owned Live ON state from the last run.
+
+        The pending snapshot is consumed before any enable attempt so Resume is
+        a one-shot action, not an undo/history stack. Re-enabling goes through
+        the existing public Live path; manager rejection therefore keeps that
+        laser OFF exactly as for a deliberate user ON action.
+        """
+        self._requireLaserEditsAllowed()
+        snapshot = dict(getattr(self, '_resumableLiveEnabledSnapshot', None) or {})
+        if not snapshot or not any(snapshot.values()):
+            self._setResumableLiveEnabledSnapshot(None)
+            return False
+
+        # Consume first. ``setLaserActive`` eventually reaches ``toggleLaser``,
+        # whose ordinary Live action invalidates any pending snapshot.
+        self._setResumableLiveEnabledSnapshot(None)
+        knownLasers = {name for name, _ in self._master.lasersManager}
+        resumed = []
+        failures = []
+
+        for name, wasEnabled in snapshot.items():
+            if not wasEnabled:
+                continue
+            if name not in knownLasers:
+                self._logger.warning(
+                    f'Cannot Resume Live laser "{name}": device is no longer configured.'
+                )
+                continue
+            try:
+                self.setLaserActive(name, True)
+                if not self._widget.isLaserActive(name):
+                    raise RuntimeError('manager rejected Live enable request')
+                resumed.append(name)
+            except Exception as e:
+                failures.append(f'{name}: {e}')
+                try:
+                    self._widget.setLaserActive(name, False, emitSignal=False)
+                    self.setSharedAttr(name, _enabledAttr, False)
+                except Exception:
+                    pass
+                self._logger.error(
+                    f'Failed to Resume Live illumination for laser "{name}": {e}',
+                    exc_info=True,
+                )
+
+        # Resume restores Live illumination, so leave the user looking at the
+        # state that now physically matters even if the button was clicked
+        # while the Scan context was displayed.
+        self.powerContextChanged(LaserPowerContext.LIVE)
+
+        if failures:
+            self._logger.error(
+                '[LaserScan] Resume Live completed with failures: %s',
+                '; '.join(failures),
+            )
+        elif resumed:
+            self._logger.debug('[LaserScan] resumed Live illumination: %s', resumed)
+        return bool(resumed) and not failures
 
     def attrChanged(self, key, value):
         if self.settingAttr or len(key) != 3 or key[0] != _attrCategory:
@@ -1210,6 +1302,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         """ Returns the device names of all lasers. These device names can be
         passed to other laser-related functions. """
         return self._master.lasersManager.getAllDeviceNames()
+
+    @APIExport(runOnUIThread=True)
+    def getLaserActive(self, laserName: str) -> bool:
+        """Return the current Live ON/OFF state for ``laserName``."""
+        return bool(self._widget.isLaserActive(laserName))
 
     @APIExport(runOnUIThread=True)
     def setLaserActive(self, laserName: str, active: bool) -> None:

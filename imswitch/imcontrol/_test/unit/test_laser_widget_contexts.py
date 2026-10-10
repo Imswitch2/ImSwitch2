@@ -120,3 +120,24 @@ def test_alternate_context_status_does_not_consume_row_width(qtbot):
 
     assert module.secondaryFrame.isHidden()
     assert module.layout.indexOf(module.secondaryFrame) == -1
+
+
+def test_resume_live_button_is_context_independent_and_temporary(qtbot):
+    widget = _widget(qtbot)
+    clicked = []
+    widget.sigResumeLiveClicked.connect(lambda: clicked.append(True))
+
+    assert widget.resumeLiveButton.isHidden()
+    widget.setResumeLiveAvailable(True)
+    assert not widget.resumeLiveButton.isHidden()
+    assert widget.resumeLiveButton.text() == '↶ Resume Live'
+
+    widget.setPowerContext('scan', emitSignal=False)
+    assert not widget.resumeLiveButton.isHidden()
+    widget.resumeLiveButton.click()
+    assert clicked == [True]
+
+    widget.setPowerContext('live', emitSignal=False)
+    assert not widget.resumeLiveButton.isHidden()
+    widget.setResumeLiveAvailable(False)
+    assert widget.resumeLiveButton.isHidden()
