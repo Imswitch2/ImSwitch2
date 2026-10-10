@@ -186,6 +186,10 @@ class ScanProgram:
     #: ``{'format': 'advanced-scan/1', 'analog': ..., 'digital': ...}``).
     #: Saving writes it back unchanged: requested values are never rewritten.
     requested_as: Optional[Mapping[str, object]] = None
+    #: The run starts with the drives moving to their first positions and
+    #: settling (§7.9). False only for the Advanced adapter's programs: the
+    #: Beta designer they reproduce has no approach.
+    approach: bool = True
 
     def loop(self, loop_id) -> Loop:
         for loop in self.loops:
@@ -228,6 +232,8 @@ def validate(program: ScanProgram) -> ScanProgram:
     problems = []
     if program.trajectory is not None:
         return _validate_trajectory(program)
+    if not isinstance(program.approach, bool):
+        problems.append(f'approach is true or false, not {program.approach!r}')
     if not program.loops:
         problems.append('A program needs at least one loop.')
     ids = [loop.id for loop in program.loops]

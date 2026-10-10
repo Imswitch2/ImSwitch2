@@ -401,8 +401,8 @@ from typing import Literal
 
 # NOTE: `stand` is registry-resolved by StandManager, but not loaded through
 # MultiManager because microscopeStand is a single setup object rather than a
-# named device map. `pulse_generator` is still a valid future kind but is not
-# registry-resolved yet.
+# named device map. `scan_engine` and `pulse_generator` are registry-resolved
+# by loaders of their own (the scanEngines and pulseGenerators sections).
 DeviceKind = Literal[
     "detector",
     "laser",
@@ -593,15 +593,12 @@ detector, laser, positioner, rotator, rs232, flip_mirror, slm
 loader too (`managers/scan_engines/loader.py`); its base class is in
 `imswitch.pluginapi.experimental` (docs/design/plans/scan-engines-and-expert-scan.md).
 
-- The pulse generator (`TeensyPulseManager`) is constructed directly in
-  `MasterController` and injected as a low-level manager
-  (`pulseGeneratorManager`) — as are `nidaqManager` and `triggerScopeManager`.
-  None of these flow through the `MultiManager` device loop, so the kind-mapping
-  table above has no row for them.
-
-`pulse_generator` stays in the manifest `kind` enum so plugin authors can write
-manifests ahead of time, but the registry will not wire it until its bespoke
-loader is migrated to registry-first resolution in a later phase.
+`pulse_generator` (the `pulseGenerators` section) is registry-backed through its
+own loader too (`managers/pulsegen/loader.py`): each entry is built as
+`cls(info, name, **lowLevelManagers)` and handed to the devices as
+`lowLevelManagers['pulseGenerators']`. The legacy `teensyPulse` section still
+builds its one Teensy, `pulseGeneratorManager`, directly in `MasterController`
+-- as `nidaqManager` and `triggerScopeManager` are built.
 
 Error messages should improve:
 

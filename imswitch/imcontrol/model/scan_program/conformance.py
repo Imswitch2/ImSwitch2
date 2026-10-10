@@ -46,9 +46,10 @@ def expected_log(schedule: RealizedSchedule) -> Dict[str, list]:
         span = realized.span
         if first and span.pieces:
             # The first positions are set when the run starts, and held
-            # through any wait before the first step.
+            # through any wait before the first step; an approach moves to
+            # them from there (its piece starts where the drive was).
             for name, piece in span.pieces.items():
-                write(0, 0, name, piece.start_um)
+                write(0, 0, name, piece.end_um if piece.where == 'start' else piece.start_um)
             first = False
         for name, piece in span.pieces.items():
             if piece.where == 'end':
@@ -66,13 +67,30 @@ def engine_log(log) -> Dict[str, list]:
     dac = [(segment, tick, device, value) for _, segment, tick, device, value in log.of('dac')]
     starts = {}
     on = []
-    for kind, segment, tick, device in [e for e in log.entries if e[0] in ('on', 'off')]:
+    for kind, segment, tick, device, _level in [e for e in log.entries if e[0] in ('on', 'off')]:
         if kind == 'on':
             starts.setdefault((segment, device), []).append(tick)
         else:
             start = starts[(segment, device)].pop(0)
             on.append((segment, start, tick, device))
     return {'dac': dac, 'on': sorted(on)}
+
+
+def level_differences(log, levels: Dict[str, tuple]) -> List[str]:
+    """Every edge that wrote another level than the host sent: ``levels`` is
+    ``{device: (on, off)}`` -- a line's electrical levels, a DAC's volts. A
+    board that ignores the host's polarity or a power level's volts shows
+    here, where the edges alone would pass. The first wrong edge per device."""
+    problems, wrong = [], set()
+    for kind, segment, tick, device, level in [e for e in log.entries if e[0] in ('on', 'off')]:
+        if device not in levels or device in wrong:
+            continue
+        want = levels[device][0 if kind == 'on' else 1]
+        if not _close(level, want):
+            wrong.add(device)
+            problems.append(f'{device} {kind} at segment {segment}, tick {tick}: wrote {level:g},'
+                            f' the host sent {want:g}')
+    return problems
 
 
 def log_differences(engine: Dict[str, list], expected: Dict[str, list],

@@ -64,9 +64,10 @@ what it declares and where each value came from (*1 µs, from triggerscope
 \*CAPS? grid_ns*), and the setup's devices on its channels. A follower is
 told how far apart its leader's pulses may be (see below). Last come the
 devices on no engine's channel, which take part in no scan. The verdicts are
-the ones a scan is assessed with; the report is built afresh each time it is
-opened, so a board that had not answered may have since. **Copy** puts it on
-the clipboard.
+the engine's own: each feature is a small program on the engine's own
+channels, assessed as a scan is. The report is built afresh each time it is
+opened, and a board that had not answered is asked again. **Copy** puts it
+on the clipboard.
 
 
 Several engines in one scan
@@ -112,7 +113,17 @@ says which with ``triggerInput`` on the follower's entry:
 * **Who can lead:** step engines (the simulated step board, protocol boards).
   The NI-DAQ cannot lead yet -- its scan drives only devices' lines, and the
   pulse line is no device's -- nor can it, or a pulse generator, follow. A
-  simulated engine only leads or follows simulated ones.
+  simulated engine only leads or follows simulated ones. An engine wired to
+  follow the NI-DAQ loads, and the NI-DAQ's own programs run as before; a
+  program that uses the follower's devices is refused with that reason.
+* **One outcome.** A part that cannot start fails the run by name; the parts
+  armed before it are stopped and those after it are not started.
+* **Each on its own grid.** The leader realizes the program -- the
+  followers' drives as timing only, their events left to them -- on its
+  grid; each follower its share on its own. A follower's devices that need
+  preparation after a trigger are waited for by the leader on a ``time``
+  channel of its own. A leader or follower that declares no timing grid (a
+  board that has not answered) makes the program unknown.
 * A program that uses only the leader's devices is the leader's alone,
   exactly as without followers. A follower wired to any engine but the one
   ``scan.engine`` names is a setup error.
@@ -136,7 +147,20 @@ SimplePointScan panels build run through it exactly as before. It reads no
 It streams sampled waveforms on the board's 100 kHz timebase, emulates
 stepped scans by sampling them, cannot wait for an external trigger, and
 cannot stop a running scan iteration (the run stops after it). It is
-registered as ``NidaqScanEngine`` and ``builtin.nidaq-scan-engine``.
+registered as ``NidaqScanEngine`` and ``builtin.nidaq-scan-engine``. For an
+Expert program:
+
+* a clock the setup wires (``scan.lineClockLine``, ``frameStartClockLine``,
+  ``frameEndClockLine``) that the program marks nothing on is held low, and
+  the report says so;
+* a ``marker`` on an NI-DAQmx line of its own is played, active high; one on
+  a device's line, or on a name that is no NI-DAQmx line, is refused;
+* a positioner without a ``conversionFactor`` is refused as unknown: its
+  volts are not taken as its µm;
+* the scan starts with its analog output, whose start trigger starts the
+  rest -- the DO and timer tasks with ``nidaq.startTrigger``, and every APD's
+  and PMT's input task. A program that drives no analog output is refused
+  when one of them is in the setup: it would wait forever.
 
 
 SimulatedStepEngine
@@ -146,8 +170,11 @@ A simulated step board: it executes scan programs the way step firmware
 will, independently of the scan-program interpreter, and logs every DAC
 write, line edge and trigger release. The conformance tests check its log
 against the interpreter's timeline, and its trigger handling against arrival
-times the tests choose. It is registered as ``SimulatedStepEngine`` and
-``builtin.simulated-step-board``.
+times the tests choose. Its host side -- as for every step engine --
+refuses what the interpreter's schedule refuses on the board's grid: an
+event that must stand still while a device moves, a move that leaves no still
+time in its step, a time off the grid, a restore it cannot know. It is
+registered as ``SimulatedStepEngine`` and ``builtin.simulated-step-board``.
 
 **managerProperties**
 

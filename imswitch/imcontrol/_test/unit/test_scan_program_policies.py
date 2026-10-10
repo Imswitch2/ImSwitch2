@@ -91,7 +91,9 @@ def test_a_malformed_policy_names_every_problem():
     for problem in ("schema must be 'imswitch.scan-timing-policy/1'", 'id must be a non-empty',
                     'rounding is missing', "rounding.step: 'round'", 'clip_to_step',
                     'events.vanished', 'events.relations', 'scheduling must be',
-                    'tolerances.duration needs a value, a unit'):
+                    # nothing applies tolerances yet, so none may be declared (§7.9)
+                    'tolerances are not applied by this version, so a policy cannot '
+                    'declare them (duration)'):
         assert problem in text, problem
 
 

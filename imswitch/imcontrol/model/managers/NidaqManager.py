@@ -101,11 +101,19 @@ def nidaq_drives_line(line) -> bool:
     return 'Dev' in line or bool(_NI_DIGITAL_LINE.fullmatch(line))
 
 
+def nidaq_raw_line(name) -> bool:
+    """Whether a scan signal's key is itself an NI-DAQmx line -- a marker a
+    program puts on a line no device owns -- rather than a device's name."""
+    return bool(_NI_DIGITAL_LINE.fullmatch(str(name)))
+
+
 def scan_digital_outputs(ttlDic, targetPairs, getDevice):
     """``(devices, signals, lines)`` the scan's DO task writes: every device
     in ``ttlDic`` on a line this board drives (:func:`nidaq_drives_line`),
     each signal mapped from the designers' logical on/off to the line's level
-    -- an inverted input (``ttlActiveLevel: "low"``) is driven low for on."""
+    -- an inverted input (``ttlActiveLevel: "low"``) is driven low for on --
+    and every marker on a line of its own (:func:`nidaq_raw_line`), active
+    high: it is no device's, so nothing inverts it."""
     devices, signals, lines = [], [], []
     for device, line in targetPairs:
         if device not in ttlDic or not nidaq_drives_line(line):
@@ -116,6 +124,13 @@ def scan_digital_outputs(ttlDic, targetPairs, getDevice):
         devices.append(device)
         signals.append(signal)
         lines.append(line)
+    named = {device for device, _ in targetPairs}
+    for key, signal in ttlDic.items():
+        if key in named or key in lines or not nidaq_raw_line(key):
+            continue
+        devices.append(key)
+        signals.append(np.asarray(signal, dtype=bool))
+        lines.append(key)
     return devices, signals, lines
 
 

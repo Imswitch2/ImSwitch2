@@ -246,6 +246,9 @@ def program_from_advanced(stage: Mapping, digital: Optional[Mapping], setup
         timeline=tuple(timeline), timing_policy=policy,
         requested_as={'format': FORMAT, 'stage': copy.deepcopy(dict(stage)),
                       'digital': copy.deepcopy(dict(digital)) if digital else None},
+        # The Beta designer has no approach: its first sample is the first
+        # position (§7.9).
+        approach=False,
     )
     return validate(program), RunContext(captured_um=captured)
 
@@ -384,19 +387,24 @@ def axis_order_refusal(setup) -> str:
             'fast axis.')
 
 
-def program_scan_signals(stage: Mapping, setup, designed_signals: Mapping, scan_info: Mapping):
+def program_scan_signals(stage: Mapping, setup, designed_signals: Mapping, scan_info: Mapping,
+                         digital: Optional[Mapping] = None):
     """``(signals, scan_info)`` for an Advanced scan that uses an option only
     the program compiler builds (plan M2): the analog waveforms in volts from
     the interpreter, on the Beta designer's sample structure, which they
     share -- an order or an intra-pixel move changes positions, not sample
-    counts. ``stage`` carries the intra-pixel keys too. The scan runs under
-    strict timing as a whole: a time off the sample clock is refused, not
-    rounded. Raises :class:`ScanDesignRefusedError` with the reason."""
+    counts. ``digital``: the line program the TTL designer plays (with the
+    positioners' intra-pixel keys); its windows are checked with the rest.
+    The scan runs under strict timing as a whole: a time off the sample
+    clock is refused, not rounded -- the TTL windows included, which the TTL
+    designer would otherwise round (§7.9). Raises
+    :class:`ScanDesignRefusedError` with the reason."""
     refusal = axis_order_refusal(setup)
     if refusal:
         raise ScanDesignRefusedError(refusal + ' Scan forward, without intra-pixel moves.')
     try:
-        program, context = program_from_advanced(stage, stage, setup)
+        program, context = program_from_advanced(stage, stage if digital is None else digital,
+                                                 setup)
         schedule = realize(expand(program, context), setup.scan.sampleRate,
                            rate_source='scan.sampleRate')
     except (AdvancedConversionError, ProgramError, InterpretError, ScheduleRefused,
@@ -470,37 +478,68 @@ def timing_note(stage: Mapping, rate_hz, digital: Optional[Mapping] = None,
 _STEP_PREFIX = re.compile(r'^step \d+, ')
 
 
-def _other_timing_changes(stage, digital, setup, rate_hz) -> Tuple[List[str], str]:
-    """``(lines, refusal)``: each distinct time other than the dwell that
-    the schedule realizes differently, said once; or why it is refused. A
-    copy of the scan two positions deep realizes every distinct time the
-    whole scan does (line steps kept: each has its own windows)."""
+def _sample_schedule(stage, digital, setup, rate_hz):
+    """``(schedule, refusal)``: a copy of the scan two positions deep,
+    realized -- every distinct time the whole scan realizes (line steps kept:
+    each has its own windows), at a fraction of its size. ``(None, '')`` for
+    a scan the program path does not describe (a swept one)."""
     if digital is None or setup is None:
-        return [], ''
+        return None, ''
     try:
         program, context = program_from_advanced(stage, digital, setup)
     except (AdvancedConversionError, ProgramError, KeyError, TypeError, ValueError):
-        return [], ''      # not a scan the program path describes (a swept one)
+        return None, ''
     loops = tuple(loop if loop.kind == 'condition' else dataclasses.replace(
         loop, count=min(loop.count, 2)) for loop in program.loops)
     drives = tuple(drive if drive.table_um is None else dataclasses.replace(
         drive, table_um=tuple(drive.table_um[:2])) for drive in program.drives)
     try:
-        schedule = realize(expand(dataclasses.replace(program, loops=loops, drives=drives),
-                                  context), rate_hz)
+        return realize(expand(dataclasses.replace(program, loops=loops, drives=drives),
+                              context), rate_hz), ''
     except ScheduleRefused as error:
-        return [], str(error)
+        return None, str(error)
     except (InterpretError, PolicyError, ProgramError):
-        return [], ''
-    lines, seen = [], set()
+        return None, ''
+
+
+def _distinct_changes(schedule):
+    """Each change once, the step prefix dropped: ``[(label, change)]``."""
+    out, seen = [], set()
     for change in schedule.changes:
-        if change.quantity == 'step':
-            continue           # the dwell, said above
         label = _STEP_PREFIX.sub('', change.where)
         key = (change.quantity, label, change.requested_s, change.realized_s)
-        if key in seen:
-            continue
-        seen.add(key)
+        if key not in seen:
+            seen.add(key)
+            out.append((label, change))
+    return out
+
+
+def schedule_summary(stage, digital, setup, rate_hz):
+    """What an Advanced scan's recording says about its timing (§7.9), or
+    ``None`` for a swept scan: the policy with its contents, the grid, and
+    each distinct time the scan realizes differently -- from the sample the
+    timing note reads, so the file and the panel say the same."""
+    schedule, _ = _sample_schedule(stage, digital, setup, rate_hz)
+    if schedule is None:
+        return None
+    summary = schedule.summary()
+    summary['changes'] = [dict(vars(change), where=label)
+                          for label, change in _distinct_changes(schedule)]
+    summary.pop('duration_s')          # the sample's, not the scan's
+    summary.pop('error')
+    return summary
+
+
+def _other_timing_changes(stage, digital, setup, rate_hz) -> Tuple[List[str], str]:
+    """``(lines, refusal)``: each distinct time other than the dwell that
+    the schedule realizes differently, said once; or why it is refused."""
+    schedule, refusal = _sample_schedule(stage, digital, setup, rate_hz)
+    if schedule is None:
+        return [], refusal
+    lines = []
+    for label, change in _distinct_changes(schedule):
+        if change.quantity == 'step':
+            continue           # the dwell, said above
         if change.quantity == 'event_edges':
             lines.append(f'{label} at {format_seconds(change.requested_s)} runs at '
                          f'{format_seconds(change.realized_s)}.')

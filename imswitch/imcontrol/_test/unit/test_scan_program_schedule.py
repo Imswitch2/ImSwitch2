@@ -21,6 +21,7 @@ from imswitch.imcontrol.model.scan_program import (
 )
 from imswitch.imcontrol.model.scan_program import policy as policies
 from imswitch.imcontrol.model.scan_program.densify import DensifyError, densify
+from imswitch.imcontrol.model.scan_program.schedule import approach_span
 
 RATE = 100_000          # a 10 µs grid
 STAGE = Motion(transition='smooth', move_s=1e-3, settle_s=1e-3, origin='absolute',
@@ -125,6 +126,7 @@ def _beta_like(*timeline):
         drives=(DeviceDrive('X', weights_um={'x': 10.0}, motion=STAGE),
                 DeviceDrive('Z', offset_um=5.0, motion=STAGE)),
         step_s=10e-3, timeline=tuple(timeline), timing_policy='strict-v1',
+        approach=False,     # as Beta: the first sample is the first position
     )
 
 
@@ -198,7 +200,9 @@ def _waiting(trigger='cameraReady', **wait):
 def test_an_external_wait_begins_a_new_segment():
     schedule = _realize(_waiting())
     assert len(schedule.segments) == 3        # before the first barrier, then one per y
-    assert schedule.segments[0].ticks == 0
+    # before it: only the approach, X's 1 ms move and 1 ms settle (§7.9)
+    assert schedule.segments[0].ticks == 200
+    assert approach_span(schedule).ticks == 200
     assert {e.segment for e in schedule.events} == {1, 2}
     with pytest.raises(DensifyError):
         densify(schedule, segment=3)
@@ -213,7 +217,8 @@ def test_a_time_wait_is_an_ordinary_span():
 def test_preparation_readies_only_what_needs_it_and_moves_no_timed_event():
     context = RunContext(devices={'Shutter': DeviceFacts(4e-3, 'Shutter.preparation.durationS')})
     schedule = _realize(_waiting(), context=context)
-    stages = [s for s in schedule.spans if s.span.kind == 'preparation']
+    approach = approach_span(schedule)
+    stages = [s for s in schedule.spans if s.span.kind == 'preparation' and s is not approach]
     assert [s.ticks for s in stages] == [400, 400]
     assert all(not s.span.events for s in stages)
     steps = schedule.step_spans()

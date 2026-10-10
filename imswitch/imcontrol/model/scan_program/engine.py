@@ -171,7 +171,12 @@ class ScanEngine(ABC):
     """An engine that runs scans. Subclasses provide the signals
     ``sigScanBuilt``, ``sigScanStarted``, ``sigScanDone`` and
     ``sigScanBuildFailed`` (the NI-DAQ manager's, for the NI-DAQ engine), and
-    may add ``sigBarrierReleased`` and ``sigScanStopped``."""
+    may add ``sigBarrierReleased``, ``sigScanStopped`` and ``sigScanFailed``.
+
+    A run ends in exactly one of three ways, and a panel ends its run on the
+    last signal: done -- ``sigScanDone``; stopped -- ``sigScanStopped`` then
+    ``sigScanDone``; failed -- ``sigScanFailed(reason)`` then
+    ``sigScanBuildFailed``."""
 
     name: str = ''
 

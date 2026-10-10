@@ -3,7 +3,7 @@ programs and say, program by program, whether it does what the scan model
 means (docs/devices/step-engine-protocol.rst, "Testing a firmware").
 
     python tools/step_board_conformance.py --port COM5 --baudrate 115200 --reply-timeout 0.5
-    python tools/step_board_conformance.py --port COM5 ... --trigger    # pulse its trigger input
+    python tools/step_board_conformance.py --port COM5 ... --trigger --trigger-timeout 2
     python tools/step_board_conformance.py --simulated                   # the reference board
 
 The board needs a DAC and three lines. The programs run on its first DAC and
@@ -28,6 +28,9 @@ def main(argv=None):
                         help='seconds a command waits for its answer')
     parser.add_argument('--trigger', action='store_true',
                         help='also run trigger waits (something must pulse the trigger input)')
+    parser.add_argument('--trigger-timeout', type=float,
+                        help='seconds a pulse on the trigger input may take to come (with '
+                             '--trigger on a board)')
     parser.add_argument('--simulated', action='store_true',
                         help='run on the simulated reference board instead')
     parser.add_argument('--grid-ns', type=int,
@@ -47,9 +50,12 @@ def main(argv=None):
                    if getattr(args, name) is None]
         if missing:
             parser.error('a board needs --' + ', --'.join(m.replace('_', '-') for m in missing))
+        if args.trigger and args.trigger_timeout is None:
+            parser.error('--trigger needs --trigger-timeout: how long a pulse may take to come')
         transport = SerialTransport(args.port, args.baudrate, args.reply_timeout)
     try:
-        results = conformance_runner.run(transport, trigger=args.trigger)
+        results = conformance_runner.run(transport, trigger=args.trigger,
+                                         trigger_timeout_s=args.trigger_timeout)
     finally:
         transport.close()
     failed = [r.program for r in results if not r.passed]

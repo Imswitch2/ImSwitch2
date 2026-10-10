@@ -5,9 +5,11 @@ It does what step firmware will do, the way firmware will do it: compile a
 program into its own plan -- loops, affine drives and event tables in grid
 ticks -- then walk the loop counters itself, write each DAC value when the
 motion says to, switch lines, wait for its trigger input and honour STOP.
-It never calls the scan-program interpreter: conformance compares this
-engine's log with the interpreter's timeline, and that comparison only means
-something if the two were written apart.
+Its executor never calls the scan-program interpreter: conformance compares
+this engine's log with the interpreter's timeline, and that comparison only
+means something if the two were written apart. The host compile, which a
+real board's host does too, refuses what the interpreter's schedule refuses
+on the board's grid (§7.9): one authority for what runs.
 
 Its properties are the board's: what a real board would report through
 ``*CAPS?``. Nothing it needs is defaulted -- an undeclared trigger latency
@@ -28,7 +30,6 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import sys
 import threading
 from dataclasses import dataclass
 
@@ -37,12 +38,14 @@ from imswitch.imcontrol.model.scan_program.engine import (
     AnalogOut, EngineCapabilities, FeasibilityReport, IMPOSSIBLE, ScanEngine,
     ScanEngineRefused,
 )
+from imswitch.imcontrol.model.scan_program.interpreter import (
+    InterpretError, RunContext, expand, return_seconds,
+)
+from imswitch.imcontrol.model.scan_program.program import Wait
+from imswitch.imcontrol.model.scan_program.schedule import (
+    ScheduleRefused, approach_span, grid_ticks, realize,
+)
 from .step_executor import Listener, RunLog, StepExecutor, StepPlan
-
-#: ``seconds / grid`` takes three roundings -- the decimal time, the grid,
-#: the quotient -- each at most half an ULP: 1.5 machine epsilon together. A
-#: quotient within it of a whole number IS that many ticks.
-_QUOTIENT_RELATIVE_ERROR = 1.5 * sys.float_info.epsilon
 
 
 @dataclass
@@ -50,6 +53,9 @@ class Compiled:
     program: object
     plan: StepPlan
     report: FeasibilityReport
+    #: The interpreter's schedule on this board's grid: what the panel shows,
+    #: and what the board's log is compared with.
+    schedule: object = None
 
 
 class StepEngineBase(SignalInterface, ScanEngine):
@@ -76,6 +82,7 @@ class StepEngineBase(SignalInterface, ScanEngine):
         super().__init__()
         self.name = name
         self._grid = None
+        self._rate = None          # ticks a second, as declared (a reciprocal of the grid)
         self._analog = {}
         self._digital = ()
         self._latency = None
@@ -108,14 +115,42 @@ class StepEngineBase(SignalInterface, ScanEngine):
 
     # -- compile ----------------------------------------------------------------
 
+    def _rate_hz(self):
+        return self._rate if self._rate is not None else 1.0 / self._grid
+
     def _ticks(self, seconds, what, refusals):
-        product = float(seconds) / self._grid
-        ticks = int(round(product))
-        if abs(product - ticks) > _QUOTIENT_RELATIVE_ERROR * max(1.0, abs(product)):
+        ticks, exact = grid_ticks(seconds, self._rate_hz())
+        if not exact:
+            product = float(seconds) * self._rate_hz()
             refusals.append(f'{what}: {seconds:g} s is not a whole number of the '
                             f'{self._grid:g} s ticks this board runs '
                             f'({math.floor(product)} or {math.ceil(product)} ticks).')
         return ticks
+
+    def _countRefusals(self, program):
+        """What the program's step count refuses: more steps than the board
+        holds."""
+        total = math.prod(int(loop.count) for loop in program.loops)
+        if self._maxSteps is not None and total > int(self._maxSteps):
+            return [f'{total} steps; this board holds {self._maxSteps}.']
+        return []
+
+    def _schedule(self, program, captured_um, devices, timing_only, report):
+        """The interpreter's schedule of ``program`` on this board's grid, or
+        the reason it refuses -- stationarity, a move that leaves no still
+        time, every time on the grid, a restore or origin it cannot know.
+        Another engine's devices (``timing_only``) are drives only here:
+        their events are on their own engine's grid (§5.4)."""
+        try:
+            return realize(expand(_without_events(program, timing_only),
+                                  RunContext(captured_um=dict(captured_um or {}),
+                                             devices=dict(devices or {}))),
+                           self._rate_hz(), rate_source=f'{self.name}.{self._capsSource}')
+        except ScheduleRefused as error:
+            report.add('timing', IMPOSSIBLE, ' '.join(error.reasons))
+        except InterpretError as error:
+            report.add('program', IMPOSSIBLE, str(error))
+        raise ScanEngineRefused(report)
 
     def compile(self, program, channels, captured_um=None, devices=None, *,
                 timing_only=frozenset()) -> Compiled:
@@ -124,18 +159,25 @@ class StepEngineBase(SignalInterface, ScanEngine):
         their moves and writes nothing for them (a leader, §5.4)."""
         report = self.assess(program, channels, timing_only=timing_only)
         used = {e.device for e in program.timeline}
+        # Preparation follows a trigger wait, not a fixed interval (the
+        # interpreter's rule).
+        barriers = any(w.trigger != 'time' for w in program.waits)
         for name, facts in (devices or {}).items():
-            if name in used and facts.preparation == 'unknown' and program.waits:
+            if name in used and facts.preparation == 'unknown' and barriers:
                 report.add(f'preparation {name}', 'unknown',
                            f'{name} needs preparation after a wait; its preparation time is '
                            f'unknown ({facts.source or "not declared"}).')
         if not report.runnable:
             raise ScanEngineRefused(report)
+        # What the program's size alone refuses, before the schedule expands
+        # every step of it.
+        early = self._countRefusals(program)
+        if early:
+            report.add('capacity', IMPOSSIBLE, ' '.join(early))
+            raise ScanEngineRefused(report)
+        schedule = self._schedule(program, captured_um, devices, timing_only, report)
         refusals = []
         ticks = lambda s, what: self._ticks(s, what, refusals)  # noqa: E731
-        inner = program.loops[-1].id
-        inner_drives = [d for d in program.drives
-                        if inner in d.weights_um or d.table_loop == inner]
         drives = []
         for d in program.drives:
             output = d.device not in timing_only
@@ -161,6 +203,13 @@ class StepEngineBase(SignalInterface, ScanEngine):
                 anchor=e.anchor.split(':', 1)[0], anchor_loop=anchor_loop, value=e.value,
             ))
         waits = []
+        approach = _approach_ticks(schedule)
+        if approach:
+            # The approach to the first positions (§7.9): the board sets them
+            # when the run starts and waits this long before anything else.
+            default = Wait('start', 'time', interval_s=0.0)
+            waits.append(dict(at='start', trigger='time', interval=approach, timeout=None,
+                              on_timeout=default.on_timeout))
         for w in program.waits:
             waits.append(dict(
                 at=w.at, trigger=w.trigger,
@@ -173,8 +222,7 @@ class StepEngineBase(SignalInterface, ScanEngine):
                    for lp in program.loops],
             phase_loop=next((lp.id for lp in program.loops if lp.kind == 'condition'), None),
             drives=drives, step_ticks=ticks(program.step_s, 'step'),
-            return_ticks=max((ticks(d.motion.return_s, f'{d.device} return')
-                              for d in inner_drives), default=0),
+            return_ticks=ticks(return_seconds(program), 'return'),
             events=events, waits=waits,
             preparation={name: ticks(facts.preparation, f'{name} preparation')
                          for name, facts in (devices or {}).items()
@@ -182,13 +230,30 @@ class StepEngineBase(SignalInterface, ScanEngine):
                                                                        None)},
             captured_um=dict(captured_um or {}), park_um=dict(program.park),
         )
-        total = math.prod(count for _, count, _, _ in plan.loops)
-        if self._maxSteps is not None and total > int(self._maxSteps):
-            refusals.append(f'{total} steps; this board holds {self._maxSteps}.')
         if refusals:
             report.add('timing', IMPOSSIBLE, ' '.join(refusals))
             raise ScanEngineRefused(report)
-        return Compiled(program, plan, report)
+        return Compiled(program, plan, report, schedule)
+
+
+def _approach_ticks(schedule):
+    approach = approach_span(schedule)
+    return 0 if approach is None else approach.ticks
+
+
+def _without_events(program, devices):
+    """``program`` without the events of ``devices`` (their drives kept):
+    their detector bindings and the separations that name those events go
+    with them -- they are held on the devices' own engine."""
+    if not devices:
+        return program
+    gone = {e.id for e in program.timeline if e.device in devices and e.id is not None}
+    return dataclasses.replace(
+        program, timeline=tuple(e for e in program.timeline if e.device not in devices),
+        detectors=tuple(b for b in program.detectors
+                        if b.detector not in devices and b.events not in gone),
+        separations=tuple(s for s in program.separations
+                          if s.after[0] not in gone and s.before[0] not in gone))
 
 
 def _without(program, devices):
@@ -212,6 +277,7 @@ class SimulatedStepEngine(StepEngineBase):
             raise ValueError(f'{name}: managerProperties.timingGridS is required '
                              '(the board\'s timing grid, in seconds).')
         self._grid = float(props['timingGridS'])
+        self._rate = 1.0 / self._grid
         self._analog = {str(ch): AnalogOut(str(ch), *(list(r) + [None, None])[:2])
                         for ch, r in (props.get('analogChannels') or {}).items()}
         self._digital = tuple(str(line) for line in props.get('digitalLines') or ())

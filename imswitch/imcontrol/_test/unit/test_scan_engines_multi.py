@@ -195,7 +195,8 @@ def test_a_leader_wait_holds_the_follower(follower):
     until it is released, and the follower is held."""
     composite = _composite(follower())
     program = _resolft(waits=(Wait('cycle', 'cameraReady'),))
-    _run(composite, program, arrivals=[5, 9000])
+    # the first after the leader's 200-tick approach (§7.9)
+    _run(composite, program, arrivals=[250, 9000])
     assert len(composite.leader.log.of('release')) == 2
     assert _played(composite) == _expected(program, composite.leader.log)
 

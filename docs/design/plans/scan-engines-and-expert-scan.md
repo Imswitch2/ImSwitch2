@@ -1953,6 +1953,115 @@ The open items of §7.1-7.7, closed or placed. **Decided by Lenny
   panel's engine signals), or the program's devices choosing it (every
   device on one engine's channels runs there; one panel, no chooser).
 
+### 7.9 Review round 1 (2026-10-10)
+
+Two independent reviewers went through `56ef43f07..0afdf8d7b`: about thirty
+distinct findings, seven high, most with a reproduction. Fixed in four
+batches on this branch, each with its tests mutation-checked:
+
+1. **Run lifecycle and hardware safety** -- done:
+   - every engine ends a run one of three ways (`ScanEngine`): done; stopped
+     then done; failed then build-failed. The pulse generator emitted only
+     `sigScanFailed`, so a failed run held the scan lease forever;
+   - a step board the host gives up on (unreadable message, `ERR`, link
+     error) is sent `STOP` and the end confirmed within `_stop_limit` -- the
+     longest stretch without a step boundary plus the reply time; the run
+     counts as running until then. It used to run on, lasers switching;
+   - a composite part that raises on start fails the run by name
+     (`_start`, `_guarded`); armed followers are stopped, later parts not
+     started. The step executor turns any error into a failure;
+   - an engine wired to follow the NI-DAQ wrapped it in a composite without
+     `run_signals`, so every NI-DAQ scan was refused -- and the setup
+     dialog advised that wiring. The composite forwards the leader's calls;
+     `can_lead` / `lead_refusal` are the one rule, in the composite and the
+     dialog;
+   - NI-DAQ: a wired scan clock the program does not mark is held low (it
+     was `KeyError: 'line_clock'`); a marker on an NI-DAQmx line of its own
+     is played (`nidaq_raw_line`), one on a device's line refused; a
+     program with no analog output is refused when something waits for the
+     AO start trigger (`AO_TRIGGERED_DETECTORS`, pinned against the
+     detectors' source; `nidaq.startTrigger`);
+   - `log` passes over a late reply; `finalize` gives up after
+     `_stop_limit`; the conformance runner gives each program its duration
+     plus the reply time (`--trigger-timeout` per trigger wait).
+2. **One schedule decides** -- done:
+   - a wait span holds every drive where it is (the NI-DAQ drove every
+     positioner to 0 V for each pause);
+   - **the approach** (Lenny, 2026-10-10: an approach span, Advanced opted
+     out): the run's first span moves every drive not yet at its first
+     position (or whose position is unknown) there and settles it, for the
+     longest move + settle (`interpreter._approach`, a `preparation` span;
+     `schedule.approach_span`). `ScanProgram.approach` is false only for the
+     Advanced adapter, whose Beta designer has none -- its goldens are
+     unchanged. A step board plays it as the first start time wait; point
+     detectors throw its samples (`scan_throw_startzero`); followers have
+     none of their own (the leader's covers their drives);
+   - a move at the end of a pass that outlasts the return is still a move in
+     the next step: stationary events there are refused (`carry` in
+     `realize`; checks only, so `during='any'` and Advanced are untouched);
+   - step engines refuse what the schedule refuses: the host compile
+     realizes the program on the board's grid (followers' events left to
+     them) and keeps the schedule (`Compiled.schedule`), which the panel
+     shows -- no second realization, no uncaught `ScheduleRefused`; size
+     refusals (capacity, the protocol's integers) come first, before a
+     program is expanded;
+   - one grid rule, `schedule.grid_ticks` (`GRID_RELATIVE_ERROR`, two
+     epsilons, derived); presets add times exactly (`exact_sum`), the panel
+     parses them as typed (`ScanWidgetExpert.stored`);
+   - the Advanced program path checks the line program's windows under
+     strict timing (the TTL designer rounded them);
+   - preparation follows trigger waits only (the interpreter's rule); a
+     leader keys PREPARE by its own lines and its followers' on a `time`
+     channel; an undeclared leader or follower grid is unknown, not a
+     `TypeError`; `inner_drives`/`return_seconds` are one rule (a zero
+     weight is no return); a trajectory without an approach ends where it
+     started.
+3. **Semantics and the spec** -- done:
+   - after a run each positioner it moved is told where it is
+     (`updateTrackedPosition`): a finished run's restore position or a
+     trajectory's last sample, a stopped or failed step board's last write
+     from its log; unknown is said, never guessed (`_trackRunEndPositions`,
+     from the compile that started);
+   - a pulse-generator laser by hand follows `ttlActiveLevel`;
+   - no-magic defaults: the NI-DAQ refuses an undeclared `conversionFactor`
+     (`conversion <device>`, unknown); the raster preset's move shape is a
+     field, and `Field.absent` says what a parameter set saved before a
+     field existed means (`smooth`, what it did);
+   - the log carries each edge's written level (`LOG,ON/OFF,...,<level>`),
+     and the conformance runner checks it against the host's EVENT levels
+     (`level_differences`), with an active-low line and, on a second DAC
+     that takes 0 V, a power level;
+   - the spec defines `ALIVE,<segment>` through anything longer than
+     `alive_ticks`, and a safe state that puts power DACs at their off
+     volts.
+4. **Recording, docs and tests** -- done:
+   - the file says what ran: `ScanStage:scan_schedule` beside
+     `ScanStage:scan_program` -- the policy with its contents, the grid and
+     its source, the changes, the approach and duration
+     (`RealizedSchedule.summary`, `RealizedTrajectory.summary`); an Advanced
+     scan's distinct changes from the sample its timing note reads
+     (`advanced.schedule_summary`), blank for a swept scan;
+   - a policy declaring tolerances is refused: nothing applies them;
+   - **What this setup can scan…** takes each feature's verdict from the
+     engine's own `assess` on probe programs on its own channels (the
+     report restated verdicts: a pulse generator's start trigger read
+     unknown where its engine answered for it), and opening it asks a board
+     that had not answered again;
+   - the plugin docs say pulse-generator plugins resolve;
+   - `_ensure_qcore_app` (tests) creates a full `QApplication`: a bare
+     `QCoreApplication` aborted a widget test later in the same xdist worker
+     (reproduced, exit 134) -- possibly some of the "xdist segfault" flakes;
+   - the pulse-generator safe-state tests end on a line high, on a generator
+     that holds its outputs on a stop, so they can fail.
+   - **Open, unconfirmed:** a trajectory's coverage and stream declaration
+     are read from live detector state at the first flush (reviewer B; their
+     Repeat reproduction recorded one frame and was inconclusive).
+
+**For Lenny:** loading a file with a trajectory script runs its code (ask,
+or keep only a hash?); the Expert **Detectors** tab has no effect (build the
+bindings, or remove the tab?); choosing the engine per scan; the NI-DAQ
+leading.
+
 ## 8. Risks
 
 - **Two definitions of a swept scan.** `GalvoScanDesigner` keeps the swept

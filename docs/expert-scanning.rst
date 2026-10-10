@@ -48,7 +48,8 @@ The program
 
 **Waits**
     A pause or an external trigger before the run, before every step, or
-    before every iteration of a loop.
+    before every iteration of a loop. Every drive holds where it is through
+    a wait.
 
 **Detectors**
     Which events a detector takes. A camera takes a frame on every rising
@@ -57,7 +58,24 @@ The program
 **Step** is the length of every innermost step. **Timing** is the program's
 timing policy: ``strict-v1`` -- every time must sit on the engine's clock,
 and one that does not is refused with the two nearest that do. Nothing is
-rounded silently.
+rounded silently. A time is taken as the decimal it is typed as (2.3 ms is
+2.3 ms, not the nearest binary fraction of a division), and a preset adds
+its times exactly, so a time on the clock is never refused as off it.
+
+**The approach.** A run starts with the drives moving to their first
+positions and settling -- for the longest move and settle of a drive that
+is not there yet (where it was captured; a drive whose position is not
+known is given its move and settle too) -- before anything else is timed.
+The report says how long (*Starts with 1 ms for the drives to reach their
+first positions and settle*). An Advanced scan opened here starts as its
+designer plays it, without one, until it is edited.
+
+**A move that outlasts the return.** A drive of an outer loop moves at the
+end of a pass, during the return. When its move and settle are longer than
+the return, it is still moving at the start of the next step, and an event
+there that must be placed while it stands still is refused with the time it
+moves for: lengthen the return, or let the event run while it moves
+(**During** ``any``).
 
 
 Presets
@@ -226,6 +244,20 @@ Recording asks the program for its positions, frames per position and
 layout: a camera records the program's loops (with a ``repeat`` loop when it
 takes several frames per step, and the steps it takes them in when not
 every step); an APD or PMT records its assembled image.
+
+A recording holds what ran beside what was requested: the program as
+``ScanStage:scan_program`` and its realized timing as
+``ScanStage:scan_schedule`` -- the policy with its contents, the grid and
+where it came from, every time that runs differently, the approach and the
+duration. A timing policy that declares tolerances is refused: nothing
+applies them yet, so it would claim a tolerance the realization does not
+honour (a separation carries its own ``tolerance_s``).
+
+When a run ends, each positioner it moved is told where the run left it --
+the position the program restores it to, a trajectory's last sample; for a
+stopped or failed run on a step board, the board's last write -- so the
+next run's captured origin, and a move by hand, start from there. Where that
+is not known, the log says so and the tracked position is left as it was.
 
 On a step engine the engine runs the compiled program itself, and **Stop**
 stops it at its next step. A program whose devices are on several engines

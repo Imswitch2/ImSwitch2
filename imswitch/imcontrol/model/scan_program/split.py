@@ -21,6 +21,7 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Set, Tuple
 
+from .interpreter import inner_drives
 from .program import ScanProgram, TimelineEvent, Wait, validate
 
 #: The trigger a follower waits for before every step: its leader's pulse.
@@ -114,7 +115,10 @@ def follower_program(program: ScanProgram, devices: Set[str], wire: Wire
         separations=tuple(s for s in program.separations
                           if {s.after[0], s.before[0]} <= own),
         detectors=(), park={k: v for k, v in program.park.items() if k in devices},
-        requested_as=None)
+        requested_as=None,
+        # The leader's approach covers its followers' drives (it times them):
+        # a follower sets its first positions and waits for the first pulse.
+        approach=False)
     return validate(share), []
 
 
@@ -146,9 +150,7 @@ def longest_pulse_interval(program: ScanProgram) -> float:
     """The longest time between two pulses: a step, then the longest of the
     return after a pass and a between-step move (a wait does not count: the
     clocks agree again at the pulse after it)."""
-    inner = program.loops[-1].id if program.loops else None
-    extra = [d.motion.return_s for d in program.drives
-             if inner in d.weights_um or d.table_loop == inner]
+    extra = [d.motion.return_s for d in inner_drives(program)]
     extra += [d.motion.move_s + d.motion.settle_s for d in program.drives
               if d.motion.placement == 'between-steps']
     return float(program.step_s) + max(extra, default=0.0)

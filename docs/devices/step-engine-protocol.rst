@@ -85,8 +85,10 @@ program runs, when the board reports on its own (`While it runs`_).
          - The clock's accuracy, in parts per million (to lead or follow).
        * - ``CAPS,alive_ticks,<n>``
          - While a program runs it sends a message at least every ``n``
-           ticks -- ``WAITING`` while it waits -- so a host can tell a board
-           that fell silent from one that waits. Not declared, it cannot.
+           ticks -- ``STEP`` before a step, ``WAITING`` while it waits for a
+           trigger, ``ALIVE`` through anything longer (a long step, a time
+           wait) -- so a host can tell a board that fell silent from one that
+           is busy. Not declared, it cannot.
        * - ``CAPS,dac_bits,<i>,<bits>``
          - DAC ``i`` sets the nearest of ``2**bits`` codes over its range, and
            logs the volts it set. The host refuses a step finer than one
@@ -171,7 +173,8 @@ line names it, and a ``DRIVE`` before its ``WEIGHT`` and ``TABLE`` lines.
        ``on_timeout`` is ``fail`` or ``continue``.
    * - ``PREPARE,<channel>,<ticks>``
      - After every trigger release, the device on that channel needs this
-       long before the segment starts.
+       long before the segment starts. On a ``time`` channel: devices another
+       engine drives (a leader's followers), which this board waits for.
    * - ``CAPTURED,<dac>,<volts>``
      - Where the device stood before the run (for ``captured``).
    * - ``PARK,<dac>,<volts>``
@@ -216,9 +219,12 @@ times. Then:
   drive is written its value for the next step (after the last step, its
   ``restore`` position), and the board waits ``return`` ticks.
 
-**Waits** come before a step, in this order: the start wait (first step
-only), the loop waits outermost first (a loop's wait comes before every
-iteration of that loop, the first included), then the step wait. A ``time``
+**Waits** come before a step, in this order: the start waits (first step
+only, in the order sent), the loop waits outermost first (a loop's wait
+comes before every iteration of that loop, the first included), then the
+step wait. A run's approach -- the drives reaching their first positions and
+settling -- is sent as the first start wait, ``WAIT,start,time,<ticks>``:
+the board has set the first positions when the run starts. A ``time``
 wait advances the clock by its interval. A ``trigger`` wait releases on the
 first arrival at or after the wait began, plus the trigger latency; with a
 timeout and no arrival, it fails the run or continues at the timeout, as
@@ -252,6 +258,9 @@ While it runs
      - The preparation after it is over; the segment starts.
    * - ``WAITING,<segment>``
      - Still waiting for a trigger: every ``alive_ticks``, when declared.
+   * - ``ALIVE,<segment>``
+     - Still running something longer than ``alive_ticks`` -- a step, a time
+       wait, a preparation: at least every ``alive_ticks``, when declared.
    * - ``DONE,<clock>``
      - The run is over.
    * - ``STOPPED,<step>,<clock>``
@@ -267,9 +276,16 @@ Stop, failure and the safe state
 ================================
 
 ``STOP`` is honoured before the next step begins, and at once during a wait.
-On a stop and on a failure the board goes to its **safe state**: every line
-at its ``SAFE`` level, every DAC holding where it is -- illumination off, no
-window open, positions held. The host sends the electrical levels, so a
+When the host gives up on a run -- a message it cannot read, an ``ERR``, a
+link error, a board that fell silent -- it sends ``STOP`` and, but for a
+silent board, reads until ``STOPPED`` (or ``DONE`` or ``FAILED``) for as
+long as the longest stretch the program can run without a step boundary,
+plus the link's reply time. Until then the run counts as running, so a Stop
+still reaches the board; a board that does not answer is reported as
+possibly still running. On a stop and on a failure the board goes to its
+**safe state**: every channel with a ``SAFE`` level at it -- every line,
+and a laser's power DAC at its off volts -- and every other DAC holding where
+it is: illumination off, no window open, positions held. The host sends the electrical levels, so a
 line's polarity lives on the host: the board never assumes that low is off.
 
 
@@ -287,8 +303,11 @@ The log
      - Meaning
    * - ``LOG,DAC,<segment>,<tick>,<dac>,<volts>``
      - A DAC was written (only when its value changes).
-   * - ``LOG,ON,<segment>,<tick>,<ttl>`` and ``LOG,OFF,...``
-     - A line went to its on, or off, level.
+   * - ``LOG,ON,<segment>,<tick>,<channel>,<level>`` and ``LOG,OFF,...``
+     - An event's channel went to its on, or off, level: ``level`` is what
+       it wrote -- the line's level, ``0`` or ``1``, or the DAC's volts for
+       a power level -- so the host can check its polarity and volts were
+       applied.
    * - ``LOG,RELEASE,<segment>,<clock>,<arrival>``
      - A wait released: the trigger's arrival, or ``-`` on a timeout.
    * - ``LOG,FINISH,<segment>,<tick>,<clock>``
@@ -318,12 +337,18 @@ lines (at 1 µm per volt; nothing else may be wired to them) -- a raster with
 line steps, an interleave, a serpentine on two loops, pass anchors with a
 table and time waits -- and compares each ``LOG?`` with what the scan-program
 interpreter says the program means, write by write and edge by edge (within
-half a code for a DAC that declares its bits). It prints ``PASS`` or
-``FAIL`` with every difference per program, and exits 0 when all pass.
-``--trigger`` adds a program with trigger waits: something must pulse the
-trigger input; the execution after each release is compared, when the
-releases came is not. ``--simulated --grid-ns 1000`` runs it on the
-reference board.
+half a code for a DAC that declares its bits), and every edge's logged level
+with the level the host sent: one line is active low, and on a board with a
+second DAC that takes 0 V a program plays a power level on it, so a firmware
+that assumes low is off, or ignores a power level's volts, fails. It prints
+``PASS`` or
+``FAIL`` with every difference per program, and exits 0 when all pass. A
+board that never reports the end of a program fails it: each program has its
+own duration plus the reply time, and is then stopped. ``--trigger`` adds a
+program with trigger waits: something must pulse the trigger input, and
+``--trigger-timeout`` says how long a pulse may take to come (per wait); the
+execution after each release is compared, when the releases came is not.
+``--simulated --grid-ns 1000`` runs it on the reference board.
 
 The same programs, and more -- trigger handling against chosen arrivals, a
 stop during a wait, failures -- run against the simulated board in
@@ -371,10 +396,10 @@ per cycle), a laser pulse and an active-low camera exposure every step:
     < DONE,120000
     > LOG?
     < LOG,DAC,0,0,dac0,0.0
-    < LOG,ON,0,0,ttl0
-    < LOG,OFF,0,2000,ttl0
-    < LOG,ON,0,9000,ttl2
-    < LOG,OFF,0,15000,ttl2
+    < LOG,ON,0,0,ttl0,1
+    < LOG,OFF,0,2000,ttl0,0
+    < LOG,ON,0,9000,ttl2,0
+    < LOG,OFF,0,15000,ttl2,1
     < LOG,DAC,0,18000,dac0,0.5
     ...
     < LOG,DAC,0,60000,dac0,0.25
@@ -382,6 +407,9 @@ per cycle), a laser pulse and an active-low camera exposure every step:
     < LOG,FINISH,0,120000,120000
     < LOG,END
 
-The plane's move is written 18000 ticks into the first step (20000 − 1000 −
+The camera's input is active low (its safe level is 1), so its window is
+logged writing 0, then 1. The piezo already stands at its first position, so
+the host sends no approach (otherwise its first start wait). The plane's move
+is written 18000 ticks into the first step (20000 − 1000 −
 1000: ``in-step``, before its move and settle); the cycle's, at the end of the
 third step, the end of a pass, after which ``return`` is 0 ticks.

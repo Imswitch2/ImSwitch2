@@ -53,17 +53,93 @@ def test_the_leader_follower_and_idle_engine_each_say_what_the_panel_does_with_t
     assert not report.unscanned
 
 
-def test_features_carry_the_verdicts_a_program_is_assessed_with():
-    report = _report()
-    nidaq, board = report.section('nidaq'), report.section('triggerscope')
-    assert _entry(nidaq.features, 'stepped positions').verdict == EMULATED
+def _assessed(engine, program, channels):
+    """The worst verdict the engine's own assessment gives a program."""
+    from imswitch.imcontrol.model.managers.scan_engines.capability_report import _worst
+    report = engine.assess(program, channels)
+    new = [v for v in report.verdicts if v.verdict != NATIVE] or report.verdicts
+    worst = _worst(new)
+    return worst.verdict, worst.reason or worst.cost
+
+
+def _program(**changes):
+    from imswitch.imcontrol.model.scan_program import (
+        DeviceDrive, Loop, Motion, ScanProgram, TimelineEvent,
+    )
+    base = dict(loops=(Loop('x', 'scan_x', 3),), step_s=10e-3, timing_policy='strict-v1',
+                drives=(DeviceDrive('Z', weights_um={'x': 0.5}, motion=Motion(
+                    transition='jump', origin='absolute', restore='first')),),
+                timeline=(TimelineEvent('405 (ON)', 'ttl', 0.0, 1e-3, during='any'),))
+    base.update(changes)
+    return ScanProgram(**base)
+
+
+def test_every_feature_is_the_verdict_the_engine_itself_gives():
+    """Not a restatement (review round 1): each entry is what the engine's
+    assess says of a program that uses the feature -- written here apart from
+    the report's own probes."""
+    import dataclasses
+    from imswitch.imcontrol.model.scan_program import Wait
+    from imswitch.imcontrol.model.scan_program.engine import setup_channels
+    setup = ViewSetupInfo.from_json(open(STEP_BOARDS).read())
+    engines = build_scan_engines(setup, nidaqManager=_FakeNidaq())
+    try:
+        report = setup_capabilities(engines, setup)
+        board, channels = engines.engines['triggerscope'], setup_channels(setup)
+        entry = _entry(report.section('triggerscope').features, 'linear transition')
+        linear = _program(drives=(dataclasses.replace(
+            _program().drives[0], motion=dataclasses.replace(
+                _program().drives[0].motion, transition='linear')),))
+        assert (entry.verdict, entry.text) == _assessed(board, linear, channels)
+        assert entry.verdict == IMPOSSIBLE
+        entry = _entry(report.section('triggerscope').features, 'trigger wait between steps')
+        assert entry.verdict == _assessed(board, _program(waits=(Wait('step', 'external'),)),
+                                          channels)[0] == NATIVE
+        assert _entry(report.section('triggerscope').features,
+                      'stepped positions').verdict == NATIVE
+    finally:
+        engines.finalize()
+
+    report = _report(SIMPLE_MOCK)
+    nidaq = report.section('nidaq')
+    stepped = _entry(nidaq.features, 'stepped positions')
+    assert (stepped.verdict, stepped.text) == (EMULATED, 'densified into samples')
     assert _entry(nidaq.features, 'swept axes and trajectories').verdict == NATIVE
+    trigger = _entry(nidaq.features, 'trigger wait between steps')
+    assert trigger.verdict == IMPOSSIBLE and 'cannot wait for an external trigger' in trigger.text
     stop = _entry(nidaq.features, 'stop mid-scan')
     assert stop.verdict == IMPOSSIBLE and 'cannot be stopped mid-iteration' in stop.text
-    assert _entry(board.features, 'stepped positions').verdict == NATIVE
-    assert _entry(board.features, 'swept axes and trajectories').verdict == IMPOSSIBLE
-    assert _entry(board.features, 'linear transition').verdict == IMPOSSIBLE
-    assert _entry(board.features, 'trigger wait between steps').verdict == NATIVE
+
+
+def test_a_pulse_generators_start_trigger_is_as_its_engine_says():
+    """The report said 'unknown latency' for a generator's start trigger
+    while the generator's own assessment answered for it."""
+    from imswitch.imcontrol.model.SetupInfo import TeensyPulseInfo
+    from imswitch.imcontrol.model.managers.pulsegen import TeensyPulseManager
+
+    def generator(raw):
+        raw['scanEngines'] = {'teensy': {'managerName': 'PulseGeneratorScanEngine',
+                                         'managerProperties': {}}}
+        raw['teensyPulse'] = {'port': None, 'useMockOnFailure': True}
+        raw['lasers']['Pulsed'] = {'managerName': 'PulseGeneratorLaserManager',
+                                   'managerProperties': {}, 'digitalLine': 1,
+                                   'wavelength': 405, 'valueRangeMin': 0, 'valueRangeMax': 1}
+    raw = json.loads(open(SIMPLE_MOCK).read())
+    generator(raw)
+    setup = ViewSetupInfo.from_json(json.dumps(raw))
+    teensy = TeensyPulseManager(TeensyPulseInfo(port=None, useMockOnFailure=True))
+    engines = build_scan_engines(setup, nidaqManager=_FakeNidaq(),
+                                 lowLevelManagers={'pulseGeneratorManager': teensy})
+    report = setup_capabilities(engines, setup)
+    entry = _entry(report.section('teensy').features, 'trigger wait before the run')
+    engine = engines.engines['teensy']
+    from imswitch.imcontrol.model.scan_program import Loop, ScanProgram, TimelineEvent, Wait
+    from imswitch.imcontrol.model.scan_program.engine import setup_channels
+    program = ScanProgram(loops=(Loop('x', 'scan_x', 2),), drives=(), step_s=2e-6,
+                          timeline=(TimelineEvent('Pulsed', 'ttl', 0.0, 1e-6, during='any'),),
+                          waits=(Wait('start', 'external'),), timing_policy='strict-v1')
+    assert (entry.verdict, entry.text) == _assessed(engine, program, setup_channels(setup))
+    assert _entry(report.section('teensy').features, 'stepped positions').verdict == IMPOSSIBLE
 
 
 def test_declared_numbers_say_where_they_came_from():
@@ -208,10 +284,39 @@ def test_a_report_that_fails_says_why_in_the_dialog(mainView, monkeypatch):
     def broken(*_args):
         raise RuntimeError('no such engine')
     monkeypatch.setattr(capability_report, 'setup_capabilities', broken)
-    errors = _open(mainView, object(), None)
+    from types import SimpleNamespace
+    errors = _open(mainView, SimpleNamespace(engines={}), None)
     assert errors and 'no such engine' in errors[0]
     assert mainView.scanCapabilitiesDialog.reportText() == \
         'The report could not be made:\nno such engine'
+    mainView.scanCapabilitiesDialog.close()
+
+
+def test_opening_the_dialog_asks_a_board_that_had_not_answered_again(mainView):
+    from imswitch.imcontrol.model.managers.scan_engines.loader import ScanEngines
+    setup = ViewSetupInfo.from_json(open(STEP_BOARDS).read())
+    asked = []
+
+    class _Absent:
+        name, unanswered = 'board', 'not asked yet'
+        owns = staticmethod(lambda channel: False)
+
+        def connect(self):
+            asked.append(True)
+            self.unanswered = None       # it answers now
+
+        def capabilities(self):
+            from imswitch.imcontrol.model.scan_program.engine import EngineCapabilities
+            return EngineCapabilities(name='board')
+
+        def assess(self, program, channels):
+            from imswitch.imcontrol.model.scan_program.engine import FeasibilityReport
+            return FeasibilityReport('board')
+
+    engines = ScanEngines({'board': _Absent()}, 'board', {})
+    _open(mainView, engines, setup)
+    assert asked == [True]
+    assert 'has not answered' not in mainView.scanCapabilitiesDialog.reportText()
     mainView.scanCapabilitiesDialog.close()
 
 # Copyright (C) 2020-2026 ImSwitch developers

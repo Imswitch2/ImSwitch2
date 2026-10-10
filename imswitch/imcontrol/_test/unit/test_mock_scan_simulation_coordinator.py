@@ -21,9 +21,13 @@ from imswitch.imcontrol.model.managers.mockscan import SimulatedScanPlan
 
 
 def _ensure_qcore_app():
+    """The application, created as a full QApplication when there is none:
+    a bare QCoreApplication would be reused by a widget test later in the
+    same worker, and QWidget aborts the process on one (review round 1)."""
     app = QtCore.QCoreApplication.instance()
     if app is None:
-        app = QtCore.QCoreApplication([])
+        from qtpy import QtWidgets
+        app = QtWidgets.QApplication([])
     return app
 
 

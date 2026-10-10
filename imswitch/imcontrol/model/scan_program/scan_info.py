@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..scan_frame import FRAME_GEOMETRY_KEY, AxisGeometry, FrameGeometry
 from ..signaldesigners.basesignaldesigners import ScanInfoContract
+from .schedule import approach_span
 
 #: Image-axis labels for the spatial loop kinds; any other kind (cycle,
 #: plane, time, ...) is labelled by its kind.
@@ -79,7 +80,10 @@ def _visit_orders(program, image_loops) -> Tuple[List[object], str]:
 
 
 def _raster_refusal(program, schedule) -> str:
-    kinds = {realized.span.kind for realized in schedule.spans if realized.ticks}
+    # The approach comes before the raster; its samples are thrown away.
+    lead = approach_span(schedule)
+    kinds = {realized.span.kind for realized in schedule.spans
+             if realized.ticks and realized is not lead}
     other = sorted(kinds - {'step', 'return'})
     if other:
         return (f'The scan has {", ".join(other)} intervals between its steps; a point '
@@ -140,6 +144,10 @@ def scan_info_for(program, schedule, rate_hz) -> Dict[str, object]:
     info = contract.to_dict()
     if any(order is not None for order in orders):
         info['axis_visit_order'] = orders
+    lead = approach_span(schedule)
+    if lead is not None:
+        # The samples of the approach, before the first step (§7.9).
+        info['scan_throw_startzero'] = int(lead.ticks)
     info[RASTER_KEY] = not refusal
     info[RASTER_REASON_KEY] = refusal
     info['timing_policy'] = schedule.policy.id

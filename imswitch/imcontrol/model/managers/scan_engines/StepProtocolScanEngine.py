@@ -232,6 +232,7 @@ class StepProtocolScanEngine(StepEngineBase):
         self._caps = caps
         grid = None if caps is None or caps.grid_ns is None else caps.grid_ns / NS_PER_S
         self._grid = grid
+        self._rate = None if grid is None else NS_PER_S / caps.grid_ns
         self._analog = {} if caps is None else {
             f'{self.name}/dac{i}': AnalogOut(f'{self.name}/dac{i}', low, high)
             for i, (low, high) in caps.dacs.items()}
@@ -290,6 +291,11 @@ class StepProtocolScanEngine(StepEngineBase):
                            f'{wait.hold!r}.')
         return report
 
+    def _countRefusals(self, program):
+        """The board's capacity, and the counts the protocol's integers hold."""
+        return (super()._countRefusals(program)
+                + _unsigned_refusals(_count_widths([int(loop.count) for loop in program.loops])))
+
     def compile(self, program, channels, captured_um=None, devices=None, *,
                 timing_only=frozenset()) -> ProtocolCompiled:
         if self._caps is None:
@@ -304,8 +310,9 @@ class StepProtocolScanEngine(StepEngineBase):
         self._resolution(compiled.report, wire, back)
         if not compiled.report.runnable:
             raise ScanEngineRefused(compiled.report)
-        return ProtocolCompiled(compiled.program, compiled.plan, compiled.report, wire,
-                                plan_to_lines(wire), back)
+        return ProtocolCompiled(compiled.program, compiled.plan, compiled.report,
+                                schedule=compiled.schedule, wire=wire,
+                                lines=plan_to_lines(wire), back=back)
 
     def _wire(self, plan, channels):
         """The plan in the board's terms: channels, volts, electrical levels."""
@@ -403,13 +410,23 @@ class StepProtocolScanEngine(StepEngineBase):
             back[name] = (e['device'], None)
             safe[name] = off
             events.append(dict(e, device=name, on=on, off=off))
-        preparation = {}
+        preparation, elsewhere = {}, []
         for device, ticks in plan.preparation.items():
             entry = channels.get(device)
             if entry is None or entry.digital is None:
                 refusals.append(f'{device} needs preparation and has no line on {self.name}.')
-                continue
-            preparation[token(entry.digital)] = ticks
+            elif self.owns(entry.digital):
+                name = token(entry.digital)
+                preparation[name] = max(preparation.get(name, 0), ticks)
+            else:
+                # Another engine's device (a leader's follower, §5.4): this
+                # board waits for it before it pulses. Its line is not this
+                # board's, so it would name the wrong channel here.
+                elsewhere.append(ticks)
+        if elsewhere:
+            # On a time channel of its own, after the timing-only drives':
+            # the board waits for the longest preparation of all.
+            preparation[f'time{len(timing)}'] = max(elsewhere)
         wire = WirePlan(loops=plan.loops, phase_loop=plan.phase_loop, drives=drives,
                         step_ticks=plan.step_ticks, return_ticks=plan.return_ticks,
                         events=events, waits=plan.waits, preparation=preparation,
@@ -559,9 +576,67 @@ class StepProtocolScanEngine(StepEngineBase):
             return None
         return caps.alive_ticks * caps.grid_ns / NS_PER_S + float(transport.reply_timeout)
 
+    def _stop_limit(self, transport):
+        """How long a board may take to report the end of a run after a STOP:
+        the longest stretch it can be in without reaching a step boundary --
+        a step, the return or a between-step move after it, a preparation;
+        STOP is honoured at once in a wait -- plus the link's reply time.
+        ``None`` for an in-process board: it has no link to lose, runs at the
+        computer's pace rather than its ticks', and always reports an end."""
+        if transport is None or not transport.reply_timeout:
+            return None
+        reply = float(transport.reply_timeout)
+        caps, compiled = self._caps, self._prepared
+        if compiled is None or caps is None or not caps.grid_ns:
+            return reply
+        plan = compiled.plan
+        between = max((d['move'] + d['settle'] for d in plan.drives
+                       if d.get('placement') == 'between-steps'), default=0)
+        ticks = (plan.step_ticks + max(plan.return_ticks, between)
+                 + max(plan.preparation.values(), default=0))
+        return ticks * caps.grid_ns / NS_PER_S + reply
+
+    def _stopAfterFailure(self, transport, *, confirm=True):
+        """The host gave up on a run the board may still be running: STOP it,
+        and -- ``confirm`` -- read until the board says the run ended, for as
+        long as ``_stop_limit``. ``''`` when it confirmed, else what is not
+        known."""
+        try:
+            self._write('STOP')
+        except (OSError, StepBoardError) as error:
+            return f'; STOP could not be sent ({text(error)}): the board may still be running'
+        if not confirm:
+            return '; STOP was sent, and the board did not answer'
+        limit = self._stop_limit(transport)
+        deadline = None if limit is None else time.monotonic() + limit
+        while True:
+            wait = None
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left < 0:
+                    return (f'; it did not report the end of the run within {limit:g} s of '
+                            'a STOP: it may still be running')
+                wait = min(left, float(transport.reply_timeout))
+            try:
+                line = transport.read(wait)
+            except OSError as error:
+                return f'; the link failed after STOP ({text(error)}): it may still be running'
+            if line is None:
+                continue
+            try:
+                kind, _ = message(line)
+            except (ProtocolError, ValueError, IndexError):
+                continue
+            if kind in ('STOPPED', 'DONE', 'FAILED'):
+                return ''
+
     def _follow(self):
-        """Read what the board reports until its run ends; then signal."""
+        """Read what the board reports until its run ends; then signal. A run
+        the host gives up on is stopped first: the board is told STOP, and the
+        run counts as running (a Stop still reaches the board) until the board
+        says it ended."""
         outcome, reason = 'failed', ''
+        stop = None                   # None: the board ended the run itself
         transport = self._transport
         limit = self._silence_limit(transport)
         timeout = transport.run_timeout
@@ -573,16 +648,14 @@ class StepProtocolScanEngine(StepEngineBase):
                 line = transport.read(timeout)
                 if line is None:
                     if self._closing:
+                        # finalize sends the STOP.
                         reason = 'the link was closed during the run'
                         break
                     if limit is not None and time.monotonic() - heard > limit:
                         reason = (f'the board fell silent: nothing for {limit:g} s, and it '
                                   'declares a message at least every '
                                   f'{limit - float(transport.reply_timeout):g} s while it runs')
-                        try:
-                            self._write('STOP')
-                        except (OSError, StepBoardError):
-                            pass
+                        stop = 'silent'
                         break
                     continue
                 heard = time.monotonic()
@@ -600,15 +673,21 @@ class StepProtocolScanEngine(StepEngineBase):
                     outcome = kind.lower()
                     break
                 elif kind == 'FAILED':
+                    # The board ended the run itself, in its safe state.
                     reason = f'failed at step {fields[0]}: {fields[1]}'
                     break
                 elif kind == 'ERR':
                     reason = f'{fields[0]}: {fields[1]}'
+                    stop = 'confirm'
                     break
-                # PREPARED, WAITING (the heartbeat), and OK,STOP for a stop sent
-                # while running.
+                # PREPARED, WAITING and ALIVE (the heartbeat), and OK,STOP for
+                # a stop sent while running.
         except (OSError, ProtocolError, ValueError, IndexError) as error:
             reason = f'the link failed: {text(error)}'
+            stop = 'confirm'
+        try:
+            if stop is not None:
+                reason += self._stopAfterFailure(transport, confirm=stop == 'confirm')
         finally:
             self._running = False
         if outcome == 'failed':
@@ -640,8 +719,12 @@ class StepProtocolScanEngine(StepEngineBase):
             if self._running:
                 raise RuntimeError(f'{self.name} is running; its log comes after.')
             self._write('LOG?')
-            first = self._read('LOG?')
-            kind, fields = message(first)
+            # What a finished run left behind (a late OK,STOP) comes first.
+            while True:
+                first = self._read('LOG?')
+                kind, fields = message(first)
+                if kind in ('LOG', 'ERR'):
+                    break
             if kind == 'ERR':
                 raise StepBoardError(f'{self.name} keeps no log: {fields[0]}: {fields[1]}')
             log = parse_log([first] if first == 'LOG,END' else
@@ -695,11 +778,19 @@ class StepProtocolScanEngine(StepEngineBase):
 
     def finalize(self):
         """Stop a run, and close the link. A board that does not report the
-        stop is given up on at the follower's next empty read."""
+        stop within ``_stop_limit`` is given up on, said so, and closed."""
         self._closing = True
         if self._running:
-            self._write('STOP')
-            self.join()
+            try:
+                self._write('STOP')
+            except (OSError, StepBoardError) as error:
+                self.__logger.error(f'{self.name}: STOP at close failed: {text(error)}')
+            limit = self._stop_limit(self._transport)
+            self.join(limit)
+            if self._follower is not None and self._follower.is_alive():
+                self.__logger.error(f'{self.name}: the run did not end within {limit:g} s of '
+                                    'a STOP; closing the link anyway -- the board may still '
+                                    'be running.')
         transport, self._transport = self._transport, None
         self._unreachable = 'closed'
         if transport is not None:
@@ -729,19 +820,26 @@ def _extremes(drive, plan, captured):
     return low, high
 
 
+def _count_widths(counts) -> List[Tuple[str, int]]:
+    """The loop counts and the run's steps, as the protocol sends them."""
+    return ([(f'loop {i} count', count) for i, count in enumerate(counts)]
+            + [('the run', math.prod(counts))])
+
+
+def _unsigned_refusals(unsigned) -> List[str]:
+    return [f'{what}: {value} does not fit the protocol\'s unsigned 32-bit number.'
+            for what, value in unsigned if not 0 <= value <= UINT32_MAX]
+
+
 def _width_refusals(wire: WirePlan) -> List[str]:
     """What does not fit the protocol's integers."""
-    out = []
-    steps = math.prod(count for _, count, _, _ in wire.loops)
-    unsigned = [(f'loop {i} count', count) for i, (_, count, _, _) in enumerate(wire.loops)]
-    unsigned += [('the run', steps), ('step', wire.step_ticks), ('return', wire.return_ticks)]
+    unsigned = _count_widths([count for _, count, _, _ in wire.loops])
+    unsigned += [('step', wire.step_ticks), ('return', wire.return_ticks)]
     unsigned += [(f'{d["device"]} move', d['move']) for d in wire.drives]
     unsigned += [(f'{d["device"]} settle', d['settle']) for d in wire.drives]
     unsigned += [(f'wait {k}', w[k]) for w in wire.waits for k in ('interval', 'timeout')
                  if w[k] is not None]
-    for what, value in unsigned:
-        if not 0 <= value <= UINT32_MAX:
-            out.append(f'{what}: {value} does not fit the protocol\'s unsigned 32-bit number.')
+    out = _unsigned_refusals(unsigned)
     for e in wire.events:
         for key in ('start', 'end'):
             if not INT32_MIN <= e[key] <= INT32_MAX:
@@ -760,8 +858,8 @@ def _translated(log: RunLog, back) -> RunLog:
             device, factor = back.get(name, (name, None))
             out.add('dac', segment, tick, device, value if factor is None else value * factor)
         elif kind in ('on', 'off'):
-            segment, tick, name = fields
-            out.add(kind, segment, tick, back.get(name, (name, None))[0])
+            segment, tick, name, level = fields
+            out.add(kind, segment, tick, back.get(name, (name, None))[0], level)
         else:
             out.add(kind, *fields)
     return out

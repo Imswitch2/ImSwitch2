@@ -101,12 +101,12 @@ def policy_from_document(document: Mapping[str, Any], *, published=False) -> Tim
     if not isinstance(tolerances, dict):
         problems.append('tolerances must be a mapping')
         tolerances = {}
-    for name, entry in tolerances.items():
-        if not (isinstance(entry, dict) and isinstance(entry.get('value'), (int, float))
-                and entry.get('unit') in ('s', 'fraction')
-                and isinstance(entry.get('rationale'), str) and entry['rationale'].strip()):
-            problems.append(f'tolerances.{name} needs a value, a unit (s or fraction) '
-                            'and a rationale')
+    if tolerances:
+        # Nothing applies a policy's tolerances yet (§7.9): a policy that
+        # declared one would claim a tolerance no realization honours.
+        problems.append(f'tolerances are not applied by this version, so a policy cannot '
+                        f'declare them ({", ".join(sorted(tolerances))}); a separation '
+                        'carries its own tolerance_s')
     if problems:
         raise PolicyError(f'Timing policy {document.get("id")!r} is malformed:\n- '
                           + '\n- '.join(problems))

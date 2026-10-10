@@ -227,13 +227,14 @@ def _wait_starts(program, arrivals, latency):
 
 def test_execution_after_each_release_matches(make):
     program = _waiting()
-    board = _run(make(), program, arrivals=[5, 7000, 20000])
+    # the first after the 200-tick approach (X's move and settle, §7.9)
+    board = _run(make(), program, arrivals=[250, 7000, 20000])
     assert log_differences(engine_log(board.log), _oracle(program)) == []
 
 
 def test_releases_follow_their_triggers_within_the_declared_latency(make):
     program = _waiting()
-    arrivals = [5, 7000, 20000]
+    arrivals = [250, 7000, 20000]
     board = _run(make(), program, arrivals=arrivals)
     starts = _wait_starts(program, arrivals, latency=LATENCY_TICKS)
     assert trigger_problems(board.log.of('release'), arrivals, starts,
@@ -263,7 +264,7 @@ def _ignoring(base):
 def test_the_trigger_check_catches_engines_that_get_triggers_wrong(board, base, mutant,
                                                                    symptom):
     program = _waiting()
-    arrivals = [5, 7000, 9000, 20000, 30000, 40000, 50000]
+    arrivals = [250, 7000, 9000, 20000, 30000, 40000, 50000]
     board = _run(BOARDS[board](mutant(base)), program, arrivals=arrivals)
     starts = _wait_starts(program, arrivals, latency=LATENCY_TICKS)
     problems = trigger_problems(board.log.of('release'), arrivals, starts,
@@ -298,7 +299,7 @@ def _wait_starts_with_timeouts(program, timeout):
 def test_preparation_after_a_release_comes_from_the_device_and_moves_no_event(make):
     devices = {'Camera': DeviceFacts(1e-3, 'Camera.preparation.durationS')}
     program = _waiting()
-    board = _run(make(), program, arrivals=[5, 7000, 20000], devices=devices)
+    board = _run(make(), program, arrivals=[250, 7000, 20000], devices=devices)
     assert log_differences(engine_log(board.log), _oracle(program, devices)) == []
 
 
@@ -372,7 +373,8 @@ def test_an_undeclared_trigger_latency_is_unknown_not_guessed(board):
 def test_times_off_the_boards_grid_are_refused(make):
     program = _raster()
     program = ScanProgram(**{**program.__dict__, 'step_s': 10.005e-3})
-    with pytest.raises(ScanEngineRefused, match='not a whole number'):
+    # the schedule refuses it, as for every engine (one authority, §7.9)
+    with pytest.raises(ScanEngineRefused, match='10.005 ms is not on the 10 µs grid'):
         make().compile(program, CHANNELS)
 
 

@@ -465,7 +465,7 @@ def parse_log(lines: Iterable[str]) -> RunLog:
         if kind == 'dac':
             log.add('dac', _uint(f[0], where), _wall(f[1], where), f[2], _float(f[3], where))
         elif kind in ('on', 'off'):
-            log.add(kind, _uint(f[0], where), _wall(f[1], where), f[2])
+            log.add(kind, _uint(f[0], where), _wall(f[1], where), f[2], _float(f[3], where))
         elif kind == 'release':
             log.add('release', _uint(f[0], where), _wall(f[1], where), _opt(f[2], _wall, where))
         elif kind == 'end':

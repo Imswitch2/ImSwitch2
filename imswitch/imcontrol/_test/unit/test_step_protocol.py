@@ -542,7 +542,9 @@ def test_the_reference_board_passes_every_conformance_program(dac_bits):
     lines = []
     results = conformance_runner.run(conformance_runner.simulated_transport(
         1000, dac_bits=dac_bits), report=lines.append)
-    assert [r.passed for r in results] == [True] * 4, lines
+    # the four programs, and a power level on its second DAC
+    assert [r.passed for r in results] == [True] * 5, lines
+    assert results[-1].program == 'a power level on the second DAC'
     assert lines[0].startswith('simulated (simulated): grid 1000 ns')
 
 

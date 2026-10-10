@@ -23,7 +23,8 @@ Qt-free.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Mapping, Tuple
+from decimal import Decimal
+from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
 from .program import (
     PATH_ANCHOR, DetectorBinding, DeviceDrive, Loop, Motion, ScanProgram, TimelineEvent,
@@ -46,6 +47,10 @@ class Field:
     kind: str
     choices: Tuple[str, ...] = ()
     help: str = ''
+    #: For a field added after programs were made with the preset: what the
+    #: preset did before it existed, which a parameter set saved without it
+    #: therefore means. ``None``: the field was always there.
+    absent: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,14 @@ class PresetError(ValueError):
     """A preset's parameters do not make a program; the message says which."""
 
 
+def exact_sum(*seconds) -> float:
+    """Times added as they were written: each as the decimal it reads as
+    (its shortest repr), summed exactly, then the float nearest that sum --
+    what typing the total would give. Added as floats, each sum may land an
+    ULP off, and strict timing refuses that as off the grid (§7.9)."""
+    return float(sum((Decimal(repr(float(value))) for value in seconds), Decimal(0)))
+
+
 def _timeline(pulses, camera, exposure_pulse) -> Tuple[List[TimelineEvent], float]:
     """Pulses one after another from 0, and the camera during pulse number
     ``exposure_pulse`` (1-based). Returns the events and where they end."""
@@ -72,10 +85,11 @@ def _timeline(pulses, camera, exposure_pulse) -> Tuple[List[TimelineEvent], floa
         if on_s <= 0 or gap_s < 0:
             raise PresetError(f'Pulse {index} ({device}): on must be positive and the gap '
                               'after it not negative.')
-        events.append(TimelineEvent(str(device), 'ttl', t, t + on_s, id=f'pulse{index}'))
+        events.append(TimelineEvent(str(device), 'ttl', t, exact_sum(t, on_s),
+                                    id=f'pulse{index}'))
         if index == exposure_pulse:
-            window = (t, t + on_s)
-        t += on_s + gap_s
+            window = (t, exact_sum(t, on_s))
+        t = exact_sum(t, on_s, gap_s)
     if camera:
         if window is None:
             raise PresetError(f'The camera exposes during pulse {exposure_pulse}; the sequence '
@@ -107,14 +121,14 @@ def ms_resolft(*, device, cycles, planes, cycle_step_um, start_um, pulses, camer
     move_s, settle_s, pause_s = float(move_s), float(settle_s), float(pause_s)
     events, length = _timeline(pulses, camera, exposure_pulse)
     motion = Motion(transition=transition, move_s=move_s, settle_s=settle_s,
-                    placement='in-step', return_s=move_s + settle_s,
+                    placement='in-step', return_s=exact_sum(move_s, settle_s),
                     origin='absolute', restore='first')
     program = ScanProgram(
         loops=(Loop('time', 'time', timepoints), Loop('cycle', 'cycle', cycles),
                Loop('plane', 'plane', planes)),
         drives=(DeviceDrive(str(device), offset_um=float(start_um),
                             weights_um={'cycle': dy, 'plane': cycles * dy}, motion=motion),),
-        step_s=length + move_s + settle_s,
+        step_s=exact_sum(length, move_s, settle_s),
         timeline=tuple(events),
         waits=(Wait(at='time', trigger='time', interval_s=pause_s),) if pause_s > 0 else (),
         detectors=(DetectorBinding(str(camera), events='exposure'),) if camera else (),
@@ -139,13 +153,15 @@ def pulse_sequence(*, pulses, camera, exposure_pulse, frames, pause_s) -> ScanPr
 
 def raster(*, x_device, y_device, x_pixels, y_pixels, x_step_um, y_step_um, x_start_um,
            y_start_um, pulses, camera, exposure_pulse, move_s, settle_s, return_s,
-           traversal='forward') -> ScanProgram:
-    """A stepped raster, X fast; serpentine runs every other line back."""
+           traversal='forward', transition='smooth') -> ScanProgram:
+    """A stepped raster, X fast; serpentine runs every other line back. The
+    move shape is the form's: a step board jumps, a galvo may move smoothly."""
     nx, ny = _count(x_pixels, 'X pixels'), _count(y_pixels, 'Y pixels')
     events, length = _timeline(pulses, camera or None, _count(exposure_pulse, 'Exposure pulse'))
     move_s, settle_s = float(move_s), float(settle_s)
-    motion = Motion(transition='smooth', move_s=move_s, settle_s=settle_s, placement='in-step',
-                    return_s=float(return_s), origin='absolute', restore='first')
+    motion = Motion(transition=transition, move_s=move_s, settle_s=settle_s,
+                    placement='in-step', return_s=float(return_s), origin='absolute',
+                    restore='first')
     x_loop = Loop('x', 'scan_x', nx) if traversal == 'forward' else \
         Loop('x', 'scan_x', nx, traversal='serpentine', parity_loops=('y',))
     return validate(ScanProgram(
@@ -154,7 +170,7 @@ def raster(*, x_device, y_device, x_pixels, y_pixels, x_step_um, y_step_um, x_st
                             weights_um={'x': float(x_step_um)}, motion=motion),
                 DeviceDrive(str(y_device), offset_um=float(y_start_um),
                             weights_um={'y': float(y_step_um)}, motion=motion)),
-        step_s=length + move_s + settle_s, timeline=tuple(events),
+        step_s=exact_sum(length, move_s, settle_s), timeline=tuple(events),
         detectors=(DetectorBinding(str(camera), events='exposure'),) if camera else (),
         timing_policy=STRICT,
     ))
@@ -252,7 +268,9 @@ PRESETS: Dict[str, Preset] = {
          Field('y_start_um', 'Y first position', 'micrometres'),
          _PULSES, _CAMERA, _EXPOSURE, _MOVE, _SETTLE,
          Field('return_s', 'Line return time', 'seconds'),
-         Field('traversal', 'X order', 'choice', ('forward', 'serpentine'))),
+         Field('traversal', 'X order', 'choice', ('forward', 'serpentine')),
+         Field('transition', 'Move shape', 'choice', ('smooth', 'linear', 'jump'),
+               absent='smooth')),
         raster,
         'A pulse sequence at every pixel; APDs and PMTs assemble it as an image.'),
     **{f'trajectory-{pattern}': trajectory_preset(pattern) for pattern in PATTERNS},
@@ -268,6 +286,10 @@ def make(preset_id: str, params: Mapping[str, object]) -> ScanProgram:
         preset = PRESETS[preset_id]
     except KeyError:
         raise PresetError(f'No preset {preset_id!r}; there are {", ".join(PRESETS)}.') from None
+    # A field added since a parameter set was saved means what the preset
+    # did before it (Field.absent).
+    params = {**{f.name: f.absent for f in preset.fields
+                 if f.absent is not None and f.name not in params}, **params}
     # A camera is optional; every other field must be filled in.
     missing = [f.label for f in preset.fields if f.kind not in OPTIONAL_KINDS
                and (f.name not in params or params[f.name] in (None, ''))]

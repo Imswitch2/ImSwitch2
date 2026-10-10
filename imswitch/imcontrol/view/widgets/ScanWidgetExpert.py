@@ -14,6 +14,7 @@ what the scan engine makes of it. Times are shown in ms, positions in µm.
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Callable, Dict, List, Optional, Sequence
 
 import pyqtgraph as pg
@@ -25,6 +26,18 @@ from .ScanWidgetBase import SuperScanWidget
 #: shown value is divided by it (the inverse of the display), so a value
 #: survives a round trip through the table exactly.
 MS = 1000.0
+
+
+def stored(text, scale):
+    """A value typed in shown units (``scale`` per stored unit) as stored:
+    the decimal as typed, divided exactly, then the nearest float -- what
+    typing the stored value would give. A float division may land an ULP
+    off, which strict timing refuses as off the grid (§7.9)."""
+    try:
+        value = Decimal(str(text).strip()) / Decimal(repr(float(scale)))
+    except InvalidOperation:
+        raise ValueError(f'{text!r} is not a number') from None
+    return float(value)
 
 #: Choices the model accepts (scan_program.program), repeated here so the
 #: panel offers exactly them; a test holds the two together.
@@ -190,9 +203,9 @@ class _RowTable(QtWidgets.QWidget):
             if column.kind == 'int':
                 return int(text)
             if column.kind == 'float':
-                return float(text) / column.scale
+                return stored(text, column.scale)
             if column.kind == 'optional-float':
-                return None if text == '' else float(text) / column.scale
+                return None if text == '' else stored(text, column.scale)
             if column.kind == 'optional-text':
                 return text or None
             if column.kind == 'names':
@@ -203,7 +216,7 @@ class _RowTable(QtWidgets.QWidget):
             if column.kind == 'ints':
                 return None if text == '' else [int(p) for p in text.split(',') if p.strip()]
             if column.kind == 'floats':
-                return None if text == '' else [float(p) / column.scale
+                return None if text == '' else [stored(p, column.scale)
                                                 for p in text.split(',') if p.strip()]
         except ValueError:
             raise ValueError(f'{where}: {text!r} is not a {column.kind.replace("-", " ")}') \
@@ -334,7 +347,7 @@ class PresetDialog(QtWidgets.QDialog):
                 elif field.kind == 'number':
                     out[name] = float(text)
                 elif field.kind == 'seconds':
-                    out[name] = float(text) / MS
+                    out[name] = stored(text, MS)
                 elif field.kind == 'micrometres':
                     out[name] = float(text)
                 elif field.kind == 'count':
@@ -575,7 +588,7 @@ class ScanWidgetExpert(SuperScanWidget):
             timeline.append(event)
         step = self.stepPar.text().strip()
         try:
-            step_s = float(step) / MS
+            step_s = stored(step, MS)
         except ValueError:
             raise ValueError(f'Step: {step!r} is not a number of ms') from None
         return {'loops': loops, 'drives': drives, 'step_s': step_s, 'timeline': timeline,
@@ -629,7 +642,7 @@ class ScanWidgetExpert(SuperScanWidget):
 
     def getSeqTimePar(self):
         step = self.stepPar.text().strip()
-        return float(step) / MS if step else 0.0
+        return stored(step, MS) if step else 0.0
 
     def unsetTTL(self, deviceName):
         pass

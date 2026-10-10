@@ -660,6 +660,16 @@ class ImConMainController(MainController):
         if engines is None:
             text = 'This setup has no scan engines.'
         else:
+            # A board that had not answered is asked again: it may have since
+            # (it is not running -- it has never answered).
+            for engine in engines.engines.values():
+                if getattr(engine, 'unanswered', None) and callable(
+                        getattr(engine, 'connect', None)):
+                    try:
+                        engine.connect()
+                    except Exception as e:
+                        self.__logger.warning(f'{engine.name} was asked again and did not '
+                                              f'answer: {e}')
             try:
                 text = setup_capabilities(engines, self.__setupInfo).text()
             except Exception as e:

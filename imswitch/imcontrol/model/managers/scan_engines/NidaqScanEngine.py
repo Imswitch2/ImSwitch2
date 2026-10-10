@@ -7,12 +7,17 @@ today runs through ``run_signals`` exactly as it did through
 ``NidaqManager.runScan``. What it adds is the declaration: what the board
 drives, on which grid, and what it cannot do, so a panel and a run can ask.
 
-Ownership is today's behaviour, written down:
+Ownership is ``runScan``'s, written down:
 
-- a digital line is driven when its name contains ``Dev`` -- the filter
-  ``runScan`` applies to every TTL line (``NidaqManager.runScan``);
+- a digital line is driven when it is an NI-DAQmx line or PFI terminal, on
+  any device name (``nidaq_drives_line``);
 - an analog channel is driven when it is an NI-DAQmx analog-output channel,
   ``<device>/ao<n>``.
+
+A scan starts with its analog output: the AO task's start trigger starts the
+rest (``nidaq.startTrigger``'s DO and timer tasks, and every APD's and PMT's
+input task). A program with no analog output is refused where something
+would wait for that trigger.
 """
 
 from __future__ import annotations
@@ -24,13 +29,13 @@ from typing import Dict, Mapping, Optional
 import numpy as np
 
 from imswitch.imcontrol.model.managers.NidaqManager import (
-    SCAN_CLOCK_RATE_HZ, SCAN_CLOCK_TERMINAL, nidaq_drives_line,
+    SCAN_CLOCK_RATE_HZ, SCAN_CLOCK_TERMINAL, nidaq_drives_line, nidaq_raw_line,
 )
 from imswitch.imcontrol.model.managers.lasers._power_volts import level_volts
 from imswitch.imcontrol.model.scan_program.densify import densify
 from imswitch.imcontrol.model.scan_program.engine import (
     AnalogOut, EMULATED, EngineCapabilities, FeasibilityReport, FeatureVerdict, IMPOSSIBLE,
-    ScanEngine, ScanEngineRefused, UNKNOWN, setup_channels,
+    NATIVE, ScanEngine, ScanEngineRefused, UNKNOWN, setup_channels,
 )
 from imswitch.imcontrol.model.scan_program.interpreter import RunContext, expand
 from imswitch.imcontrol.model.scan_program.scan_info import (
@@ -50,6 +55,11 @@ _NI_ANALOG_OUTPUT = re.compile(r'[^/]+/ao\d+')
 SCAN_CLOCKS = (('lineClockLine', 'line_clock'),
                ('frameStartClockLine', 'frame_start_clock'),
                ('frameEndClockLine', 'frame_end_clock'))
+
+#: The detector managers whose input tasks start on the scan's AO start
+#: trigger: they call ``startInputTask(..., 'ao/StartTrigger', ...)``
+#: (APDManager, PMTManager; a test pins this against their source).
+AO_TRIGGERED_DETECTORS = ('APDManager', 'PMTManager')
 
 
 @dataclass
@@ -146,6 +156,10 @@ class NidaqScanEngine(ScanEngine):
         scan = getattr(self._setupInfo, 'scan', None)
         unwired = {marker: key for key, marker in SCAN_CLOCKS
                    if not (scan is not None and getattr(scan, key, None))}
+        clocks = {marker for _, marker in SCAN_CLOCKS}
+        # A device's line, keyed by line: a marker there would be a second
+        # signal on one line, which the DO task cannot write.
+        on_line = {entry.digital: name for name, entry in channels.items() if entry.digital}
         for index, verdict in enumerate(report.verdicts):
             marker = verdict.feature[len('marker '):] if verdict.feature.startswith(
                 'marker ') else None
@@ -153,7 +167,51 @@ class NidaqScanEngine(ScanEngine):
                 report.verdicts[index] = FeatureVerdict(
                     verdict.feature, EMULATED,
                     cost=f'not played: scan.{unwired[marker]} names no line')
+            elif marker is not None and marker not in clocks and verdict.verdict == NATIVE:
+                if marker in on_line:
+                    report.verdicts[index] = FeatureVerdict(
+                        verdict.feature, IMPOSSIBLE,
+                        f'{marker} is {on_line[marker]}\'s line; switch {on_line[marker]} '
+                        'instead.')
+                elif not nidaq_raw_line(marker):
+                    report.verdicts[index] = FeatureVerdict(
+                        verdict.feature, IMPOSSIBLE,
+                        f'{marker} is not an NI-DAQmx line (<device>/port<n>/line<m> or '
+                        '<device>/PFI<n>), so no DO channel plays it.')
+        marked = {e.device for e in program.timeline if e.kind == 'marker'}
+        for key, marker in SCAN_CLOCKS:
+            line = getattr(scan, key, None) if scan is not None else None
+            if line and marker not in marked:
+                report.add(f'clock {marker}', NATIVE,
+                           f'scan.{key} wires it to {line}; the program marks nothing on it, '
+                           'so it is held low.')
+        waiting = self._waitsForAnalogStart()
+        if waiting and not self._hasAnalogOutput(program):
+            report.add('analog output', IMPOSSIBLE,
+                       'The NI-DAQ starts a scan with its analog output, and this program '
+                       f'drives none: {" and ".join(waiting)} would wait for its start '
+                       'trigger forever.', 'Drive a positioner or a power level in it.')
         return report
+
+    def _waitsForAnalogStart(self):
+        """What waits for the AO task's start trigger in every scan: the DO
+        and timer tasks with ``nidaq.startTrigger``, and the point detectors
+        whose input tasks start on it."""
+        waiting = []
+        nidaq = getattr(self._setupInfo, 'nidaq', None)
+        if nidaq is not None and getattr(nidaq, 'startTrigger', False):
+            waiting.append('the DO and timer tasks (nidaq.startTrigger)')
+        detectors = getattr(self._setupInfo, 'detectors', None) or {}
+        triggered = sorted(name for name, info in detectors.items()
+                           if getattr(info, 'managerName', None) in AO_TRIGGERED_DETECTORS)
+        if triggered:
+            waiting.append(', '.join(triggered))
+        return waiting
+
+    @staticmethod
+    def _hasAnalogOutput(program):
+        return bool(program.drives or getattr(program, 'trajectory', None) is not None
+                    or any(e.kind == 'level' for e in program.timeline))
 
     # -- programs (plan §5.1): densified on the board's clock ------------------
 
@@ -179,11 +237,12 @@ class NidaqScanEngine(ScanEngine):
                        'The NI-DAQ plays one stream; it cannot wait for a trigger in it.')
             raise ScanEngineRefused(report)
         dense = densify(schedule)
-        positioners = getattr(self._setupInfo, 'positioners', {}) or {}
         analog = {}
         for device, positions_um in dense['analog'].items():
-            props = getattr(positioners.get(device), 'managerProperties', None) or {}
-            volts = positions_um / props.get('conversionFactor', 1)
+            factor = self._factor(device, report, f'conversion {device}')
+            if factor is None:
+                continue
+            volts = positions_um / factor
             refusal = scan_voltage_range_refusal(
                 self._setupInfo, device, (float(volts.min()), float(volts.max())))
             if refusal:
@@ -209,17 +268,42 @@ class NidaqScanEngine(ScanEngine):
             raise ScanEngineRefused(report)
         info = scan_info_for(program, schedule, self.rate_hz)
         info['minmaxes'] = minmaxes
-        signals = {'scanSignalsDict': analog, 'TTLCycleSignalsDict': dict(dense['digital'])}
+        digital = self._withClocks(dense['digital'], schedule.segments[0].ticks)
+        signals = {'scanSignalsDict': analog, 'TTLCycleSignalsDict': digital}
         return CompiledWaveforms(program, schedule, signals, info, report)
+
+    def _withClocks(self, digital, samples):
+        """``digital`` with every clock the setup wires: ``runScan`` writes
+        each, and one the program does not mark is held low (the report
+        says so)."""
+        digital = dict(digital)
+        scan = getattr(self._setupInfo, 'scan', None)
+        for key, marker in SCAN_CLOCKS:
+            if scan is not None and getattr(scan, key, None) and marker not in digital:
+                digital[marker] = np.zeros(int(samples), dtype=bool)
+        return digital
 
     def _positionerProps(self, device):
         positioners = getattr(self._setupInfo, 'positioners', {}) or {}
         return getattr(positioners.get(device), 'managerProperties', None) or {}
 
+    def _factor(self, device, report, feature):
+        """A positioner's µm per volt, or ``None`` with the reason in the
+        report: an undeclared factor is unknown, never taken as 1."""
+        factor = self._positionerProps(device).get('conversionFactor')
+        if factor is None:
+            report.add(feature, UNKNOWN, f'{device} declares no conversionFactor (µm per '
+                       'volt), so the volts that put it anywhere are unknown.')
+            return None
+        return float(factor)
+
     def _volts(self, positions_um, report):
         analog = {}
         for device, positions in positions_um.items():
-            volts = positions / self._positionerProps(device).get('conversionFactor', 1)
+            factor = self._factor(device, report, f'conversion {device}')
+            if factor is None:
+                continue
+            volts = positions / factor
             refusal = scan_voltage_range_refusal(
                 self._setupInfo, device, (float(volts.min()), float(volts.max())))
             if refusal:
@@ -247,7 +331,9 @@ class NidaqScanEngine(ScanEngine):
             labels.append(label)
         info = trajectory_scan_info(realized, labels)
         info['minmaxes'] = [[float(v.min()), float(v.max())] for v in analog.values()]
-        signals = {'scanSignalsDict': analog, 'TTLCycleSignalsDict': dict(realized.digital)}
+        samples = len(next(iter(analog.values())))
+        signals = {'scanSignalsDict': analog,
+                   'TTLCycleSignalsDict': self._withClocks(realized.digital, samples)}
         return CompiledWaveforms(program, realized, signals, info, report)
 
     def run_signals(self, signalDict, scanInfoDict):

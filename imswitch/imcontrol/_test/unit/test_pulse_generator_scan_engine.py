@@ -114,8 +114,15 @@ def test_the_teensy_plays_what_the_program_means():
 
 
 def test_after_the_run_every_line_is_off():
+    """The program ends with the camera on -- the Teensy keeps its last
+    step on the wire -- so only the engine's safe state turns it off."""
+    program = ScanProgram(
+        loops=(Loop('frame', 'time', 3),), drives=(), step_s=10e-3,
+        timeline=(TimelineEvent('L405', 'ttl', 0.0, 1e-3, during='any'),
+                  TimelineEvent('Camera', 'detector', 6e-3, 10e-3, during='any')),
+        timing_policy='strict-v1')
     engine = _engine()
-    _played(engine, _resolft())
+    _played(engine, program)
     assert not any(engine._generator.driver.pin_states.values())
 
 
@@ -370,10 +377,21 @@ def test_without_a_pulse_generator_the_setup_says_which():
 
 
 def test_a_stop_leaves_every_line_off(qtbot):
+    """On a generator that holds its outputs on a stop (the Teensy's own STOP
+    drives every line low, which would hide the engine's part), with L405 on
+    through every step: only the engine's safe state turns it off."""
     engine = _engine()
-    compiled = engine.compile(_resolft(frames=200), CHANNELS)
+    program = ScanProgram(
+        loops=(Loop('frame', 'time', 200),), drives=(), step_s=10e-3,
+        timeline=(TimelineEvent('L405', 'ttl', 0.0, 10e-3, during='any'),
+                  TimelineEvent('Camera', 'detector', 6e-3, 9e-3, during='any')),
+        timing_policy='strict-v1')
+    compiled = engine.compile(program, CHANNELS)
     engine.prepare(compiled)
     driver = engine._generator.driver
+    applied = driver._set_pin
+    driver._set_pin = lambda ch, wanted, source='seq': (
+        None if source == 'stop' else applied(ch, wanted, source=source))
     driver.simulated_step_delay_s = 1e-3
     stopped = []
     engine.sigScanStopped.connect(lambda: stopped.append(True))

@@ -47,6 +47,20 @@ from .StepProtocolScanEngine import StepProtocolScanEngine
 _RATIO_RELATIVE_ERROR = 1.5 * sys.float_info.epsilon
 
 
+def can_lead(engine) -> bool:
+    """Whether an engine can lead followers: pulse a line that belongs to no
+    device at every step. A step engine can; the NI-DAQ cannot yet -- its
+    scan drives only devices' lines (plan §5.4)."""
+    return isinstance(engine, StepEngineBase)
+
+
+def lead_refusal(leader, followers) -> str:
+    """Why ``leader`` cannot step ``followers`` (one wording: the report
+    and the setup dialog)."""
+    return (f'{leader.name} cannot pulse the line that steps {", ".join(followers)}: its '
+            'scan drives only devices\' lines, and that line is no device\'s.')
+
+
 def simulated(engine) -> bool:
     """Whether an engine is a simulation (its wires can only be simulated)."""
     if isinstance(engine, SimulatedStepEngine):
@@ -73,6 +87,10 @@ class CompositeCompiled:
     leader: object
     followers: Dict[str, object]
     wires: Dict[str, Wire]
+    #: The leader's schedule: every step, wait and approach of the run on the
+    #: leader's grid (the followers' events are on theirs, each checked by
+    #: its own compile).
+    schedule: object = None
 
 
 class CompositeScanEngine(ScanEngine):
@@ -80,6 +98,9 @@ class CompositeScanEngine(ScanEngine):
 
     _SIGNALS = ('sigScanBuilt', 'sigScanStarted', 'sigScanDone', 'sigScanBuildFailed',
                 'sigBarrierReleased', 'sigScanStopped', 'sigScanFailed', 'sigScanProgress')
+    #: What a streaming leader's panel calls to run a compile of its own (the
+    #: NI-DAQ's): a program on the leader's devices alone is the leader's.
+    _LEADER_CALLS = ('run_signals', 'resolveScanTTLDevices', 'rate_hz', 'manager')
 
     def __init__(self, leader, followers):
         self.leader = leader
@@ -90,8 +111,9 @@ class CompositeScanEngine(ScanEngine):
         self._thread = None
 
     def __getattr__(self, name):
-        # The run's signals are the leader's.
-        if name in CompositeScanEngine._SIGNALS:
+        # The run's signals are the leader's, and so is how the leader alone
+        # runs (a NI-DAQ leader's waveforms).
+        if name in CompositeScanEngine._SIGNALS or name in CompositeScanEngine._LEADER_CALLS:
             return getattr(self.leader, name)
         raise AttributeError(name)
 
@@ -142,11 +164,9 @@ class CompositeScanEngine(ScanEngine):
             report.add('followers', IMPOSSIBLE, 'A trajectory is followed by one streaming '
                        f'engine; {", ".join(used)} would have to follow it step by step.')
             return split
-        if not isinstance(self.leader, StepEngineBase):
-            report.add('lead', IMPOSSIBLE,
-                       f'{self.leader.name} cannot pulse the line that steps '
-                       f'{", ".join(used)}: its scan drives only devices\' lines, and that line '
-                       'is no device\'s.', 'Run the program on a step engine that leads.')
+        if not can_lead(self.leader):
+            report.add('lead', IMPOSSIBLE, lead_refusal(self.leader, used),
+                       'Run the program on a step engine that leads.')
             return split
         lead = self.leader.capabilities()
         for name in used:
@@ -162,6 +182,10 @@ class CompositeScanEngine(ScanEngine):
                 report.add(f'follow {name}', UNKNOWN,
                            f'{name} does not declare its trigger latency, so where it runs in '
                            'the step is unknown.')
+            elif wire.grid_s is None:
+                report.add(f'follow {name}', UNKNOWN,
+                           f'{name} declares no timing grid, so its drift between pulses is '
+                           'unknown.')
             elif simulated(engine) != simulated(self.leader):
                 report.add(f'follow {name}', IMPOSSIBLE,
                            f'{"A simulated" if simulated(self.leader) else "A real"} '
@@ -173,6 +197,10 @@ class CompositeScanEngine(ScanEngine):
                            f'is wired to {line}, and it starts {wire.latency_s:g} s after each '
                            'pulse.')
         if not report.runnable:
+            return split
+        if lead.timing_grid_s is None:
+            report.add('lead', UNKNOWN, f'{self.leader.name} declares no timing grid, so '
+                       'where its pulses fall is unknown.')
             return split
         wires = [split.wires[name] for name in used]
         pulse_s, why = pulse_seconds(wires, lead.timing_grid_s)
@@ -246,7 +274,8 @@ class CompositeScanEngine(ScanEngine):
             followers[name] = engine.compile(share, channels, captured_um=captured_um,
                                              devices={})
         return CompositeCompiled(program, split.report, leader, followers,
-                                 {name: split.wires[name] for name in followers})
+                                 {name: split.wires[name] for name in followers},
+                                 schedule=getattr(leader, 'schedule', None))
 
     # -- a run ----------------------------------------------------------------------
 
@@ -283,9 +312,10 @@ class CompositeScanEngine(ScanEngine):
             self._run = {'parts': parts, 'ended': {}, 'stopping': False, 'finished': False}
         self.leader.sigScanStarted.emit()
         if simulated(self.leader):
-            work = (lambda: self._runSimulated(compiled, arrivals, fail_at_step))
+            run = (lambda: self._runSimulated(compiled, arrivals, fail_at_step))
         else:
-            work = (lambda: self._runConnected(compiled, arrivals, fail_at_step))
+            run = (lambda: self._runConnected(compiled, arrivals, fail_at_step))
+        work = (lambda: self._guarded(run))
         if blocking:
             work()
         else:
@@ -293,38 +323,80 @@ class CompositeScanEngine(ScanEngine):
                                             name=f'{self.name} composite run')
             self._thread.start()
 
+    def _guarded(self, run):
+        """A run that raises is a failed run: every part that has not ended
+        ends failed with the reason (the first of them stops the rest), so
+        the run always reports one outcome."""
+        try:
+            run()
+        except Exception as error:
+            reason = f'the run failed: {type(error).__name__}: {error}'
+            with self._lock:
+                current = self._run
+                pending = ([] if current is None or current['finished'] else
+                           [e for n, e in current['parts'].items()
+                            if n not in current['ended']])
+            for engine in pending:
+                self._ended(engine, ('failed', reason))
+
+    def _start(self, engine, part, **kwargs):
+        """Start a part. One that raises has failed -- that ends the run as
+        any failure does -- and ``False`` says so."""
+        try:
+            engine.run(part, quiet=True, on_end=self._ended, **kwargs)
+            return True
+        except Exception as error:
+            self._ended(engine, ('failed', f'it did not start: {type(error).__name__}: '
+                                           f'{error}'))
+            return False
+
+    def _notStarted(self, engines, why):
+        for engine in engines:
+            self._ended(engine, ('stopped', f'not started: {why}'))
+
     def _runSimulated(self, compiled, arrivals, fail_at_step):
         """The leader first, then each follower on the pulses it sent. The
         leader runs as on its own (a wait nothing releases holds it until it
         is stopped); a follower is handed every pulse there will be, so a
         pulse it misses fails it rather than holding it."""
-        self.leader.run(compiled.leader, arrivals=arrivals, blocking=False,
-                        fail_at_step=fail_at_step, quiet=True, on_end=self._ended)
+        followers = [(self.followers[name][0], name, part)
+                     for name, part in compiled.followers.items()]
+        if not self._start(self.leader, compiled.leader, arrivals=arrivals, blocking=False,
+                           fail_at_step=fail_at_step):
+            self._notStarted([e for e, _, _ in followers], f'{self.leader.name} failed')
+            return
         self.leader.join()
         led = self.leader.outcome or ('failed', 'the leader did not end')
-        for name, part in compiled.followers.items():
-            engine = self.followers[name][0]
+        for engine, name, part in followers:
             if led[0] == 'failed':
                 self._ended(engine, ('stopped', ''))
                 continue
-            pulses = self._pulses(self.leader.log, compiled.wires[name])
+            try:
+                pulses = self._pulses(self.leader.log, compiled.wires[name])
+            except Exception as error:
+                self._ended(engine, ('failed', f'the leader\'s pulses could not be read: '
+                                               f'{type(error).__name__}: {error}'))
+                continue
             if led[0] == 'done':
-                engine.run(part, arrivals=pulses, blocking=True, quiet=True,
-                           on_end=self._ended)
-            else:
+                self._start(engine, part, arrivals=pulses, blocking=True)
+            elif self._start(engine, part, arrivals=pulses, blocking=False):
                 # Stopped: it takes the pulses that came, then the stop at its
                 # next wait.
-                engine.run(part, arrivals=pulses, blocking=False, quiet=True,
-                           on_end=self._ended)
                 engine.abort()
                 engine.join()
 
     def _runConnected(self, compiled, arrivals, fail_at_step):
-        """Real boards: every follower armed, then the leader."""
-        for name, part in compiled.followers.items():
-            self.followers[name][0].run(part, blocking=False, quiet=True, on_end=self._ended)
-        self.leader.run(compiled.leader, arrivals=arrivals, blocking=False,
-                        fail_at_step=fail_at_step, quiet=True, on_end=self._ended)
+        """Real boards: every follower armed, then the leader. A part that
+        does not start fails the run; the parts after it are not started."""
+        order = [(self.followers[name][0], part, {})
+                 for name, part in compiled.followers.items()]
+        order.append((self.leader, compiled.leader,
+                      {'arrivals': arrivals, 'fail_at_step': fail_at_step}))
+        for index, (engine, part, kwargs) in enumerate(order):
+            if not self._start(engine, part, blocking=False, **kwargs):
+                self._notStarted([e for e, _, _ in order[index + 1:]],
+                                 f'{engine.name} did not start')
+                return
 
     def _pulses(self, log, wire):
         """The leader's pulses on ``wire.line``, on the follower's ticks."""
@@ -333,8 +405,7 @@ class CompositeScanEngine(ScanEngine):
             starts[segment] = wall
         ratio = round(self.leader.capabilities().timing_grid_s / wire.grid_s)
         return [(starts[segment] + tick) * ratio
-                for kind, segment, tick, device in
-                (entry for entry in log.entries if entry[0] == 'on')
+                for _, segment, tick, device, _level in log.of('on')
                 if device == wire.line]
 
     def _ended(self, engine, outcome=None):
@@ -404,7 +475,7 @@ class CompositeScanEngine(ScanEngine):
         return complete
 
 
-__all__ = ['CompositeCompiled', 'CompositeScanEngine', 'simulated']
+__all__ = ['CompositeCompiled', 'CompositeScanEngine', 'can_lead', 'lead_refusal', 'simulated']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

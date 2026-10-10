@@ -393,10 +393,13 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
             self._failure = str(error)
         # The board leaves its last step's state on the wire when it is done.
         self._safeState()
+        # The run's end, as every engine signals it (ScanEngine).
         if self._failure is not None:
             self.sigScanFailed.emit(self._failure)
+            self.sigScanBuildFailed.emit()
         elif self._stopping:
             self.sigScanStopped.emit()
+            self.sigScanDone.emit()
         else:
             self.sigScanDone.emit()
 

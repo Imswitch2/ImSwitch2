@@ -140,6 +140,13 @@ class StepExecutor:
             self.log.add('failed', self._wall, str(failure))
             self.listener.failed(str(failure))
             return
+        except Exception as error:
+            # Anything else is a failure too: a run always ends with its
+            # outcome, never with a thread that died without a word.
+            reason = f'{type(error).__name__}: {error}'
+            self.log.add('failed', self._wall, reason)
+            self.listener.failed(reason)
+            return
         self.listener.done(self._wall)
 
     # -- the walk -------------------------------------------------------------
@@ -259,8 +266,10 @@ class StepExecutor:
         self._tick = tick
 
     def _edge(self, event, start, end):
-        self.log.add('on', self._segment, start, event['device'])
-        self.log.add('off', self._segment, end, event['device'])
+        # The level written: the host's electrical level or volts on a wire
+        # plan (a board applies what it is sent), logical 1 and 0 in process.
+        self.log.add('on', self._segment, start, event['device'], event.get('on', 1))
+        self.log.add('off', self._segment, end, event['device'], event.get('off', 0))
 
     @staticmethod
     def _restore(drive, first, here, plan):

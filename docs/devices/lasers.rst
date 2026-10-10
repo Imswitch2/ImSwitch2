@@ -869,7 +869,8 @@ Backend-agnostic laser driven by a ``PulseGeneratorManager``: the
 
 **LaserInfo fields used**
 
-* ``digitalLine`` — pulse-generator channel index for on/off gating.
+* ``digitalLine`` — pulse-generator channel index for on/off gating; on and
+  off follow ``ttlActiveLevel``, by hand as in a scan.
 * ``analogChannel`` — pulse-generator channel index for analog power
   (ignored if the backend reports ``supports_analog == False``).
 

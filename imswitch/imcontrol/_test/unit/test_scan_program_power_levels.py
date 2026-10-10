@@ -63,7 +63,9 @@ def test_densify_gives_the_level_over_its_event_and_off_elsewhere():
     schedule = realize(expand(_program()), RATE)
     level = densify(schedule)['level']['L561']
     step = 200                                      # 2 ms at 100 kHz
-    first = level[:step]
+    start = schedule.step_spans()[0].start_tick     # after the approach (§7.9)
+    assert not level[:start].any()
+    first = level[start:start + step]
     assert set(first[50:150]) == {2.5} and not first[:50].any() and not first[150:].any()
     assert np.count_nonzero(level) == 3 * 100
 

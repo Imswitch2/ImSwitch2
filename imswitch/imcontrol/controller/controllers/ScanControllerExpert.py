@@ -47,7 +47,7 @@ from imswitch.imcontrol.model.scan_program.scan_info import (
     RASTER_KEY, RASTER_REASON_KEY, TRAJECTORY_KEY, scan_info_for,
 )
 from imswitch.imcontrol.model.scan_program.trajectory import RealizedTrajectory, US_PER_S
-from imswitch.imcontrol.model.scan_program.schedule import format_seconds
+from imswitch.imcontrol.model.scan_program.schedule import approach_span, format_seconds
 from imswitch.imcontrol.model.scan_program.serialize import (
     FORMAT, program_from_dict, program_to_dict,
 )
@@ -67,6 +67,50 @@ PROGRAM_FEATURE_REASON = 'an Expert scan program (scan-program/1)'
 
 #: How long edits settle before the report is compiled again.
 REPORT_SETTLE_MS = 300
+
+
+def _run_parts(engine, compiled):
+    """The engines a compile ran on: a multi-engine run's leader and
+    followers, else the engine itself."""
+    if getattr(compiled, 'followers', None) and hasattr(engine, 'followers'):
+        return [engine.leader] + [e for e, _ in engine.followers.values()]
+    return [getattr(engine, 'leader', engine)]
+
+
+def _run_outcomes(engine, compiled):
+    """``{engine: (kind, reason)}`` of the run that ended; an engine that
+    keeps no outcome (the NI-DAQ: its iteration always runs to its end) is
+    done."""
+    if getattr(compiled, 'followers', None) and callable(getattr(engine, 'partsOutcome', None)):
+        return dict(engine.partsOutcome() or {})
+    out = {}
+    for part in _run_parts(engine, compiled):
+        outcome = getattr(part, 'outcome', None)
+        out[part.name] = outcome if outcome is not None else ('done', '')
+    return out
+
+
+def _end_positions(schedule):
+    """Where a finished run leaves each device it moves, in µm."""
+    positions = getattr(schedule, 'positions_um', None)
+    if positions is not None:           # a trajectory: its last sample
+        return {device: float(values[-1]) for device, values in positions.items()}
+    return dict(schedule.expansion.restore_um)
+
+
+def _logged_positions(parts):
+    """Each device's last write in the engines' logs, in µm (a step board's
+    log comes back in the program's terms); an engine whose log cannot be
+    read says nothing."""
+    positions = {}
+    for part in parts:
+        try:
+            log = part.log
+        except Exception:
+            continue
+        for entry in log.of('dac'):
+            positions[entry[3]] = float(entry[4])
+    return positions
 
 
 class ScanControllerExpert(SuperScanController):
@@ -281,17 +325,13 @@ class ScanControllerExpert(SuperScanController):
         return compiled
 
     def _scheduleOf(self, compiled):
+        """The schedule the engine compiled the program to -- every engine
+        keeps it (one authority: the panel shows what the run plays)."""
         schedule = getattr(compiled, 'schedule', None)
         if schedule is None:
-            # A step engine that keeps only its own plan: the interpreter's
-            # schedule on the engine's grid says the same (conformance).
-            engine = self._engineForScans()
-            schedule = realize(
-                expand(compiled.program, RunContext(
-                    captured_um=self._capturedPositions(compiled.program),
-                    devices=self._deviceFacts())),
-                1.0 / engine.capabilities().timing_grid_s, rate_source=engine.name)
-            compiled.schedule = schedule
+            raise ScanDesignRefusedError(
+                f'{self._engineForScans().name} kept no schedule of the program, so its timing '
+                'cannot be shown.')
         return schedule
 
     def _scanInfoOf(self, compiled):
@@ -325,6 +365,9 @@ class ScanControllerExpert(SuperScanController):
         refusal = self._durationRefusal(compiled)
         if refusal:
             raise ScanDesignRefusedError(refusal)
+        # The file says what ran (§7.9): the realized timing beside the
+        # program as requested.
+        self.setSharedAttr('ScanStage', 'scan_schedule', self._scheduleOf(compiled).summary())
         info = copy.deepcopy(self._scanInfoOf(compiled))
         refusal = self._pointDetectorRefusal(info)
         if refusal:
@@ -339,6 +382,7 @@ class ScanControllerExpert(SuperScanController):
         engine = self._engineForScans()
         try:
             compiled = self._compile()
+            schedule = self._scheduleOf(compiled)
         except ScanDesignRefusedError as error:
             self._widget.setReport(f'Not runnable on {engine.name}.\n\n{error}')
             return
@@ -348,7 +392,6 @@ class ScanControllerExpert(SuperScanController):
             if verdict.reason or verdict.cost:
                 text += f' -- {verdict.reason or verdict.cost}'
             lines.append(text)
-        schedule = self._scheduleOf(compiled)
         lines += ['', f'Timing policy {schedule.policy.id}, '
                       f'{format_seconds(schedule.grid_s)} grid.']
         if isinstance(schedule, RealizedTrajectory):
@@ -358,6 +401,13 @@ class ScanControllerExpert(SuperScanController):
             return
         lines.append(f'Duration {format_seconds(self._duration_s(schedule))}, '
                      f'{len(schedule.step_spans())} steps.')
+        approach = approach_span(schedule)
+        if approach is not None:
+            lines.append(f'Starts with {format_seconds(approach.ticks / schedule.rate_hz)} for '
+                         'the drives to reach their first positions and settle.')
+        elif not compiled.program.approach:
+            lines.append('Starts at its first positions, without an approach (an Advanced '
+                         'scan, as its designer plays it).')
         for change in schedule.changes:
             lines.append(f'Runs differently: {change.quantity} at {change.where}, '
                          f'{format_seconds(change.requested_s)} as '
@@ -474,6 +524,9 @@ class ScanControllerExpert(SuperScanController):
     def _onRunStarted(self):
         if self._scanCoordinator.tokenForOwner(self) is None:
             return
+        # The compile that is running: where it leaves the positioners is
+        # told to them when it ends (_trackRunEndPositions).
+        self._runCompiled = self._compiled
         self._progressSteps = None
         self._progressStarted = time.monotonic()
         schedule = getattr(self._compiled, 'schedule', None)
@@ -519,8 +572,41 @@ class ScanControllerExpert(SuperScanController):
             except Exception:
                 self._logger.error('The scan engine did not stop', exc_info=True)
 
+    def _trackRunEndPositions(self):
+        """Tell each positioner the run moved where the run left it (§7.9):
+        a finished run, where its program ends -- the restore position, or a
+        trajectory's last sample; a stopped or failed one, a step board's
+        last write (its log). The next run captures its origin there, and
+        a move by hand starts from there. Where it is not known, that is
+        said and the tracked position is left as it was."""
+        compiled = self.__dict__.get('_runCompiled')
+        self._runCompiled = None
+        if compiled is None:
+            return
+        engine = self._engineForScans()
+        ended = _run_outcomes(engine, compiled)
+        if all(kind == 'done' for kind, _ in ended.values()):
+            positions, how = _end_positions(compiled.schedule), 'finished'
+        else:
+            positions = _logged_positions(_run_parts(engine, compiled))
+            how = 'stopped' if all(kind != 'failed' for kind, _ in ended.values()) else 'failed'
+        for device in self._movedDevices(compiled.program):
+            if device not in positions:
+                self._logger.warning(f'Where the {how} run left {device} is not known; its '
+                                     'tracked position is left as it was.')
+                continue
+            manager = self._master.positionersManager[device]
+            info = self._setupInfo.positioners[device]
+            axes = list(getattr(info, 'axes', None) or manager.axes)
+            manager.updateTrackedPosition({axes[0]: float(positions[device])})
+
+    def scanFailed(self, **kwargs):
+        self._trackRunEndPositions()
+        super().scanFailed(**kwargs)
+
     def scanDone(self):
         self.isRunning = False
+        self._trackRunEndPositions()
         try:
             if not self._widget.repeatEnabled():
                 isFinalPart = not getattr(self, 'doingNonFinalPartOfSequence', False)

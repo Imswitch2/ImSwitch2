@@ -8,18 +8,24 @@ engine does not declare what it needs -- the numbers it declares with where
 each came from, and the setup's devices on its channels. Then the devices on
 no engine's channel, which take part in no scan.
 
-The verdicts are the ones a program is assessed with (``assess_program``,
-``split.drift``): this restates nothing a run decides differently. Qt-free.
+The verdicts are the engines' own: each feature is a small probe program on
+the engine's own channels, taken through ``engine.assess`` -- the report a
+scan is refused by -- and a follower's link through ``split``'s drift rule.
+This restates nothing a run decides differently (§7.9). Qt-free.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from imswitch.imcontrol.model.scan_program.program import (
+    DeviceDrive, Loop, Motion, ScanProgram, TimelineEvent, Wait,
+)
 from imswitch.imcontrol.model.scan_program.engine import (
-    EMULATED, IMPOSSIBLE, NATIVE, UNKNOWN, setup_channels,
+    DeviceChannels, EMULATED, IMPOSSIBLE, NATIVE, UNKNOWN, setup_channels,
 )
 from imswitch.imcontrol.model.scan_program.motion import TRANSITIONS
 from imswitch.imcontrol.model.scan_program.split import Wire, max_pulse_interval_s
@@ -109,34 +115,100 @@ key_names = {'timing_grid_s': 'timing grid', 'min_pulse_s': 'shortest pulse',
              'clock_accuracy_ppm': 'clock accuracy'}
 
 
-def _features(caps, unanswered) -> List[Entry]:
-    out = []
+#: How bad a verdict is, for the worst of several.
+_SEVERITY = {NATIVE: 0, EMULATED: 1, UNKNOWN: 2, IMPOSSIBLE: 3}
+
+#: Each feature a probe tries, and the feature names an engine's own
+#: assessment reports it under (the generic ones, a pulse generator's own).
+_PROBED = (
+    ('swept axes and trajectories', ('swept loop',)),
+    ('stepped positions', ('stepped loop',)),
+    *((f'{shape} transition', (f'{shape} transition',)) for shape in TRANSITIONS),
+    ('intra-step offsets', ('offset probe stage',)),
+    ('time waits', ('time wait',)),
+    ('trigger wait before the run', ('trigger wait at start', 'start trigger')),
+    ('trigger wait between steps', ('trigger wait at step',)),
+)
+
+
+def _worst(verdicts):
+    return max(verdicts, key=lambda v: _SEVERITY.get(v.verdict, _SEVERITY[UNKNOWN]))
+
+
+def _probe_programs(caps):
+    """``(channels, baseline, {feature: program})``: each feature tried as a
+    small variation of a minimal program on the engine's own first line and
+    first analog output. The probes' times are the engine's own ticks (two
+    to a step, the line on for the first); an engine that declares no grid
+    is unknown in every probe anyway. ``None`` when the engine has neither a
+    line nor an analog output in this setup."""
+    line = caps.digital[0] if caps.digital else None
+    stage = next(iter(caps.analog), None)
+    if line is None and stage is None:
+        return None
+    tick = caps.timing_grid_s if caps.timing_grid_s else 1.0
+    channels, timeline, drives = {}, (), ()
+    jump = Motion(transition='jump', origin='absolute', restore='first')
+    if line is not None:
+        channels['probe line'] = DeviceChannels('probe line', digital=line, kind='laser')
+        timeline = (TimelineEvent('probe line', 'ttl', 0.0, tick, during='any'),)
+    if stage is not None:
+        channels['probe stage'] = DeviceChannels('probe stage', analog=stage,
+                                                 kind='positioner')
+        drives = (DeviceDrive('probe stage', weights_um={'x': 1.0}, motion=jump),)
+
+    def program(loop_mode='stepped', drives=drives, timeline=timeline, waits=()):
+        return ScanProgram(loops=(Loop('x', 'scan_x', 2, mode=loop_mode),), drives=drives,
+                           step_s=2 * tick, timeline=timeline, waits=waits,
+                           timing_policy='strict-v1', approach=False)
+
+    probes = {'time waits': program(waits=(Wait('start', 'time', interval_s=tick),)),
+              'trigger wait before the run': program(waits=(Wait('start', 'external'),)),
+              'trigger wait between steps': program(waits=(Wait('step', 'external'),))}
+    if stage is not None:
+        probes['swept axes and trajectories'] = program(loop_mode='swept')
+        probes['stepped positions'] = program()
+        for shape in TRANSITIONS:
+            probes[f'{shape} transition'] = program(drives=(dataclasses.replace(
+                drives[0], motion=dataclasses.replace(jump, transition=shape)),))
+        probes['intra-step offsets'] = program(timeline=timeline + (TimelineEvent(
+            'probe stage', 'offset', 0.0, tick, value=1.0, during='any'),))
+    return channels, program(), probes
+
+
+def _features(engine, caps, unanswered) -> List[Entry]:
+    """Each feature's verdict, as the engine's own assessment gives it: the
+    probes go through ``engine.assess`` -- the report a scan is refused by
+    -- so this restates nothing (§7.9)."""
     if unanswered:
-        out.append(Entry('board', f'has not answered ({unanswered}), so it declares nothing '
-                         'and runs nothing yet; the next compile asks it again.', UNKNOWN))
-    out.append(Entry('swept axes and trajectories', '', NATIVE) if caps.streaming else
-               Entry('swept axes and trajectories',
-                     'it does not stream: an output changes only at a step.', IMPOSSIBLE))
-    stepping = {'native': Entry('stepped positions', '', NATIVE),
-                'emulated': Entry('stepped positions', 'densified into samples', EMULATED)}
-    out.append(stepping.get(caps.stepping, Entry('stepped positions',
-                                                 'it cannot step a position.', IMPOSSIBLE)))
-    for shape in TRANSITIONS:
-        out.append(Entry(f'{shape} transition', '', NATIVE) if shape in caps.transitions else
-                   Entry(f'{shape} transition', f'it moves with '
-                         f'{", ".join(sorted(caps.transitions))} only.', IMPOSSIBLE))
-    out.append(Entry('intra-step offsets', '', NATIVE) if caps.intra_step_offsets else
-               Entry('intra-step offsets', 'it cannot move a device within a step.', IMPOSSIBLE))
-    out.append(Entry('time waits', '', NATIVE) if 'time' in caps.waits else
-               Entry('time waits', 'it cannot wait a fixed time.', IMPOSSIBLE))
-    for kind, item in (('start-trigger', 'trigger wait before the run'),
-                       ('step-trigger', 'trigger wait between steps')):
-        if kind not in caps.waits:
-            out.append(Entry(item, 'it has no trigger input for it.', IMPOSSIBLE))
-        elif caps.trigger_latency_s is None:
-            out.append(Entry(item, 'it does not declare its trigger latency.', UNKNOWN))
-        else:
-            out.append(Entry(item, '', NATIVE))
+        return [Entry('board', f'has not answered ({unanswered}), so it declares nothing '
+                      'and nothing can be tried on it; opening this asks it again.', UNKNOWN)]
+    probes = _probe_programs(caps)
+    out = []
+    if probes is None:
+        out.append(Entry('every feature', 'no line or analog output of it is in this setup, '
+                         'so nothing can be tried on it.', UNKNOWN))
+    else:
+        channels, baseline, programs = probes
+        base = engine.assess(baseline, channels)
+        floor = {v.feature for v in base.verdicts}
+        for verdict in base.verdicts:
+            if verdict.verdict != NATIVE and 'probe ' not in verdict.feature:
+                out.append(Entry(f'any scan: {verdict.feature}', verdict.reason or verdict.cost,
+                                 verdict.verdict))
+        for feature, names in _PROBED:
+            program = programs.get(feature)
+            if program is None:
+                out.append(Entry(feature, 'it has no analog output in this setup.', IMPOSSIBLE))
+                continue
+            report = engine.assess(program, channels)
+            named = [v for v in report.verdicts if v.feature in names]
+            new = named or [v for v in report.verdicts if v.feature not in floor]
+            if not new:
+                out.append(Entry(feature, '', NATIVE))
+                continue
+            worst = _worst(new)
+            out.append(Entry(feature, worst.reason or worst.cost, worst.verdict))
     verdict, text = _STOP.get(caps.abort, (UNKNOWN, f'it declares {caps.abort!r}.'))
     source = caps.sources.get('abort')
     out.append(Entry('stop mid-scan', f'{text} ({source})' if source else text, verdict))
@@ -190,7 +262,10 @@ def _devices(name, caps, owners, channels) -> List[Entry]:
 def _follow(name, engine, line, leader, simulated) -> List[Entry]:
     """A follower's link to ``leader``: the checks a scan that uses it is
     assessed with (CompositeScanEngine), without a program."""
+    from .CompositeScanEngine import can_lead, lead_refusal
     caps, lead = engine.capabilities(), leader.capabilities()
+    if not can_lead(leader):
+        return [Entry('follow step by step', lead_refusal(leader, [name]), IMPOSSIBLE)]
     out = []
     if 'step-trigger' not in caps.waits:
         out.append(Entry('follow step by step', 'it cannot wait for a pulse before every '
@@ -230,7 +305,7 @@ def _follow(name, engine, line, leader, simulated) -> List[Entry]:
 def setup_capabilities(scanEngines, setupInfo) -> SetupCapabilities:
     """The report for ``scanEngines`` (``build_scan_engines``) on
     ``setupInfo``."""
-    from .CompositeScanEngine import simulated
+    from .CompositeScanEngine import can_lead, lead_refusal, simulated
     channels = setup_channels(setupInfo)
     owners = dict(scanEngines.owners)
     selected = scanEngines.selected
@@ -244,9 +319,12 @@ def setup_capabilities(scanEngines, setupInfo) -> SetupCapabilities:
         devices = _devices(name, caps, owners, channels)
         if name == selected:
             role = 'The scan panel runs on it (scan.engine).'
-            if followers:
+            if followers and can_lead(leader):
                 role += (f' It leads {", ".join(sorted(followers))}, pulsing the wired trigger '
                          'input at every step of a scan that uses a follower\'s devices.')
+            elif followers:
+                role += (f' {", ".join(sorted(followers))} {"is" if len(followers) == 1 else "are"}'
+                         f' wired to follow it, but {lead_refusal(leader, sorted(followers))}')
         elif name in followers:
             role = (f'Follows {selected} step by step: its trigger input is wired to '
                     f'{followers[name][1]}.')
@@ -254,13 +332,13 @@ def setup_capabilities(scanEngines, setupInfo) -> SetupCapabilities:
             role = f'In no scan: the panel runs on {selected}.'
             if not devices:
                 role += ' No device of the setup is on its channels.'
-            elif 'step-trigger' in caps.waits:
+            elif 'step-trigger' in caps.waits and can_lead(leader):
                 role += (f' To scan its devices, wire its triggerInput to a line of {selected} '
                          'for it to follow, or make it scan.engine.')
             else:
                 role += ' To scan its devices, make it scan.engine.'
         section = EngineSection(name, type(engine).__name__, role,
-                                _features(caps, getattr(engine, 'unanswered', None)),
+                                _features(engine, caps, getattr(engine, 'unanswered', None)),
                                 _numbers(caps, linked=linked), devices)
         if name in followers:
             section.features += _follow(name, engine, followers[name][1], leader, simulated)

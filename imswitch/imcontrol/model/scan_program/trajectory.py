@@ -269,6 +269,17 @@ class RealizedTrajectory:
     def grid_s(self) -> float:
         return 1.0 / self.rate_hz
 
+    def summary(self) -> Dict[str, object]:
+        """What the acquisition records about its timing, as a schedule's
+        summary: a trajectory is realized strictly, so nothing runs
+        differently."""
+        return {
+            'policy': {'id': self.policy.id, 'contents': dict(self.policy.document)},
+            'grid_s': self.grid_s, 'changes': [], 'sources': list(self.sources),
+            'approach_s': self.approach_ticks / self.rate_hz,
+            'duration_s': self.total_ticks / self.rate_hz,
+        }
+
     def window_seconds(self) -> np.ndarray:
         return self.window_ticks / self.rate_hz
 
@@ -355,8 +366,11 @@ def realize_trajectory(program: ScanProgram, rate_hz: float, policy=None, *,
                 'µm: give the trajectory an approach time.'])
         way_in = _hermite(np.arange(approach) / max(approach, 1), rest, 0.0,
                           samples[row, 0], v_start[row], approach_s)
-        way_back = _hermite(np.arange(approach + 1) / max(approach, 1), ends[row, 3],
-                            v_end[row], rest, 0.0, approach_s)
+        # Without an approach the way back is one sample, where the device
+        # started; a jump there is checked against vel_max and acc_max as
+        # every sample is (limits_refusals).
+        way_back = (_hermite(np.arange(approach + 1) / approach, ends[row, 3], v_end[row],
+                             rest, 0.0, approach_s) if approach else np.array([rest]))
         positions[device] = np.concatenate([way_in, samples[row], way_back])
     total = approach + path_ticks + approach + 1
     digital = {}

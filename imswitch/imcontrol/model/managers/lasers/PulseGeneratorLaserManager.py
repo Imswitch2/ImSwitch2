@@ -57,6 +57,8 @@ class PulseGeneratorLaserManager(LaserManager):
             raise ValueError(f'{name}: the setup has no pulse generator {named!r}; it has '
                              f'{", ".join(available) or "none"}.')
         self._isMock = self._pulseGen is None
+        self._level = (laserInfo.ttlLevel if getattr(laserInfo, 'ttlActiveLevel', None)
+                       else (lambda on: on))
 
         # Read laser-info fields with defaults so a partial setup still
         # boots (matches the PulseStreamerLaserManager fall-through).
@@ -102,7 +104,8 @@ class PulseGeneratorLaserManager(LaserManager):
                 'setEnabled called but no digitalChannel configured'
             )
             return
-        self._pulseGen.setDigital(int(self._digitalChannel), bool(enabled))
+        # On and off follow ttlActiveLevel, as a scan drives the line.
+        self._pulseGen.setDigital(int(self._digitalChannel), self._level(bool(enabled)))
 
     def setValue(self, voltage: float) -> None:
         if self._isMock:

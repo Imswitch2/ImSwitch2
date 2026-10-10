@@ -17,7 +17,7 @@ from imswitch.imcontrol.model.scan_parameters import (
 from imswitch.imcontrol.model.scan_program import PolicyError, resolve_policy
 from imswitch.imcontrol.model.scan_program.advanced import (
     AdvancedConversionError, axis_order_refusal, program_scan_signals, scan_timing_policy,
-    timing_note, uses_program_features,
+    schedule_summary, timing_note, uses_program_features,
 )
 from ..basecontrollers import SuperScanController
 
@@ -252,7 +252,8 @@ class ScanControllerAdvanced(SuperScanController):
             # An interleaved order or an intra-pixel move: the analog
             # waveforms come from the scan-program interpreter (plan M2).
             scanSignalsDict, scanInfoDict = program_scan_signals(
-                stage_param, self._setupInfo, scanSignalsDict, scanInfoDict)
+                stage_param, self._setupInfo, scanSignalsDict, scanInfoDict,
+                digital=self._ttl_parameters_without_positioners(TTLParameters))
 
         # Voltage compliance, like PointScan's makeFullScan: refuse waveforms
         # outside a scanner's configured minVolt/maxVolt. Without this the
@@ -917,7 +918,27 @@ class ScanControllerAdvanced(SuperScanController):
     def _buildScanSignals(self):
         self.getParameters()
         with self._positionSnapshotForScanDesign():
-            return self._cachedFullScan()
+            built = self._cachedFullScan()
+            self._publishScheduleSummary()
+            return built
+
+    def _publishScheduleSummary(self):
+        """The file says what ran (§7.9): every distinct time the scan
+        realizes differently, from the sample the timing note reads; blank for
+        a swept scan, which the program path does not describe. Published as
+        the run is armed -- not by a design for a plot or an estimate. What
+        it fails on is said, and the run is not held for its metadata."""
+        try:
+            summary = schedule_summary(
+                self._stage_parameters(self._analogParameterDict, self._digitalParameterDict),
+                self._ttl_parameters_without_positioners(self._digitalParameterDict),
+                self._setupInfo, self._setupInfo.scan.sampleRate)
+            self.setSharedAttr('ScanStage', 'scan_schedule',
+                               summary if summary is not None else '')
+        except Exception:
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                logger.warning('The scan\'s realized timing is not recorded', exc_info=True)
 
     def _cachedFullScan(self):
         """Full scan design for the current parameters, built at most once.

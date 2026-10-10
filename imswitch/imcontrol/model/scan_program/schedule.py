@@ -26,14 +26,25 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .interpreter import Expansion, Span
+from .interpreter import Expansion, Span, inner_drives
 from .policy import TimingPolicy, resolve_policy
 
-#: The relative error of ``seconds * rate`` for a decimal time stored in
-#: binary: one rounding converting the decimal, one in the product, each at
-#: most half an ULP -- one machine epsilon together. A product within it of a
+#: The relative error of a time in ticks, however it is computed: the
+#: schedule's ``seconds * rate``, an engine's ``seconds / grid``. At most four
+#: roundings on the way -- the decimal time, the grid as declared, the
+#: reciprocal when one is derived from the other, the product -- each at most
+#: half an ULP: two machine epsilons together. A tick count within it of a
 #: whole number IS that whole number; nothing coarser is accepted as exact.
-_PRODUCT_RELATIVE_ERROR = sys.float_info.epsilon
+GRID_RELATIVE_ERROR = 2 * sys.float_info.epsilon
+
+
+def grid_ticks(seconds, rate_hz):
+    """``(ticks, exact)``: ``seconds`` in ticks of a ``rate_hz`` grid, and
+    whether it is a whole number of them. One rule for the schedule and
+    every engine that converts a program's times to its own ticks."""
+    product = float(seconds) * float(rate_hz)
+    ticks = int(round(product))
+    return ticks, abs(product - ticks) <= GRID_RELATIVE_ERROR * max(1.0, abs(product))
 
 
 class ScheduleRefused(ValueError):
@@ -124,13 +135,19 @@ class RealizedSchedule:
         return [s for s in self.spans if s.span.kind == 'step']
 
     def summary(self) -> Dict[str, object]:
-        """What the acquisition records about its timing."""
+        """What the acquisition records about its timing (§2.6, §7.9): the
+        policy with its contents, the grid and where it came from, every
+        time that runs differently, the accumulated error, the approach and
+        the duration -- the file says what ran."""
+        approach = approach_span(self)
         return {
             'policy': {'id': self.policy.id, 'contents': dict(self.policy.document)},
             'grid_s': self.grid_s,
             'changes': [vars(change) for change in self.changes],
             'error': vars(self.error),
             'sources': list(self.sources),
+            'approach_s': 0.0 if approach is None else approach.ticks / self.rate_hz,
+            'duration_s': sum(segment.ticks for segment in self.segments) / self.rate_hz,
         }
 
 
@@ -150,8 +167,8 @@ class _Converter:
         elif mode == 'nearest-even':
             ticks = int(round(product))
         else:
-            ticks = int(round(product))
-            if abs(product - ticks) > _PRODUCT_RELATIVE_ERROR * max(1.0, abs(product)):
+            ticks, exact = grid_ticks(seconds, self.rate)
+            if not exact:
                 low, high = math.floor(product), math.ceil(product)
                 self.refusals.append(
                     f'{where}: {_fmt(seconds)} is not on the {_fmt(1 / self.rate)} grid '
@@ -160,9 +177,26 @@ class _Converter:
                 )
                 return ticks
         if ticks / self.rate != float(seconds) and not math.isclose(
-                product, ticks, rel_tol=0, abs_tol=_PRODUCT_RELATIVE_ERROR * max(1.0, abs(product))):
+                product, ticks, rel_tol=0, abs_tol=GRID_RELATIVE_ERROR * max(1.0, abs(product))):
             self.changes.append(Change(quantity, where, float(seconds), ticks / self.rate))
         return ticks
+
+
+def approach_span(schedule):
+    """The run's approach to its first positions (§7.9): its first span when
+    it is one -- a preparation in the first segment, before any step -- else
+    ``None``. Engines play it, point detectors throw its samples away."""
+    first = schedule.spans[0] if getattr(schedule, 'spans', None) else None
+    if first is not None and first.span.kind == 'preparation' and first.segment == 0:
+        return first
+    return None
+
+
+def _ticks_at_least(seconds, rate_hz):
+    """The ticks a time takes at least -- a check, not a realized time: the
+    whole number when it is one, else the next."""
+    ticks, exact = grid_ticks(seconds, rate_hz)
+    return ticks if exact else math.ceil(float(seconds) * float(rate_hz))
 
 
 def realized_duration(seconds, rate_hz, policy, quantity='step', where='the dwell'):
@@ -204,6 +238,11 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
     requested = 0.0
     deviations = [0.0]
     motion = {d.device: d.motion for d in program.drives}
+    inner = {d.device for d in inner_drives(program)} if program.loops else set()
+    # A drive whose move and settle outlast the span it moves in -- an outer
+    # drive at the end of a pass -- is still moving into the next step: the
+    # ticks it still needs, which that step's stationary events must avoid.
+    carry: Dict[str, int] = {}
 
     for span in expansion.spans:
         if span.kind == 'wait' and span.duration_s is None:
@@ -240,7 +279,19 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
                         f', which leaves no stationary time in the {_fmt(ticks / rate_hz)} step.'
                     )
         if span.kind == 'step':
-            _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz)
+            _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz,
+                            carry)
+            carry = {}
+        else:
+            carry = {name: left - ticks for name, left in carry.items() if left > ticks}
+            if span.kind == 'return':
+                for name, piece in span.pieces.items():
+                    if (piece.where == 'whole' and name not in inner
+                            and piece.start_um != piece.end_um):
+                        need = _ticks_at_least(float(motion[name].move_s)
+                                               + float(motion[name].settle_s), rate_hz)
+                        if need > ticks:
+                            carry[name] = need - ticks
         spans.append(realized)
         tick += ticks
         requested += float(span.duration_s)
@@ -268,7 +319,8 @@ def _where(span):
     return span.kind
 
 
-def _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz):
+def _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz,
+                    carry=None):
     span = realized.span
     where = _where(span)
     step_ticks = realized.ticks
@@ -317,7 +369,7 @@ def _realize_events(conv, program, policy, realized, events, offsets, motion, ra
                                     realized.start_tick + start, realized.start_tick + end,
                                     event.value, event.id, span.step_index, realized.segment))
     _check_relations(conv, policy, placed, where)
-    _check_stationary(conv, program, realized, placed, offsets, where, rate_hz)
+    _check_stationary(conv, program, realized, placed, offsets, where, rate_hz, carry or {})
 
 
 def _relation(a_start, a_end, b_start, b_end):
@@ -349,9 +401,11 @@ def _check_relations(conv, policy, placed, where):
                     conv.changes.append(Change('relation', message, 0.0, 0.0))
 
 
-def _motion_intervals(realized, offsets):
-    """Where each device moves in this step, in ticks relative to the step."""
-    intervals = {}
+def _motion_intervals(realized, offsets, carry):
+    """Where each device moves in this step, in ticks relative to the step;
+    ``carry``: a move from before the step that has not ended when it
+    starts."""
+    intervals = {name: [(0, left)] for name, left in carry.items()}
     for name, piece in realized.span.pieces.items():
         if piece.where == 'end':
             used = realized.move_ticks[name] + realized.settle_ticks[name]
@@ -371,8 +425,8 @@ def _motion_intervals(realized, offsets):
     return intervals
 
 
-def _check_stationary(conv, program, realized, placed, offsets, where, rate_hz):
-    intervals = _motion_intervals(realized, offsets)
+def _check_stationary(conv, program, realized, placed, offsets, where, rate_hz, carry):
+    intervals = _motion_intervals(realized, offsets, carry)
     for event, start, end, _ in placed:
         if event.during != 'stationary' or event.kind == 'offset':
             continue
@@ -402,7 +456,7 @@ def _check_separations(conv, program, events, rate_hz):
                 continue
             other = by_step[(step, b_id)]
             got = (getattr(other, f'{b_edge}_tick') - getattr(realized, f'{a_edge}_tick')) / rate_hz
-            if abs(got - want) > tolerance + _PRODUCT_RELATIVE_ERROR * max(1.0, abs(want)):
+            if abs(got - want) > tolerance + GRID_RELATIVE_ERROR * max(1.0, abs(want)):
                 conv.refusals.append(
                     f'step {step}: the separation {a_id}.{a_edge} -> {b_id}.{b_edge} is '
                     f'{_fmt(got)}, requested {_fmt(want)}.'
@@ -411,9 +465,10 @@ def _check_separations(conv, program, events, rate_hz):
 
 
 __all__ = [
-    'Change', 'RealizedEvent', 'RealizedOffset', 'RealizedSchedule', 'RealizedSpan',
-    'ScheduleRefused', 'Segment', 'TimingError', 'format_seconds', 'realize',
-    'realized_duration',
+    'Change', 'GRID_RELATIVE_ERROR', 'RealizedEvent', 'RealizedOffset', 'RealizedSchedule',
+    'RealizedSpan', 'ScheduleRefused', 'Segment', 'TimingError', 'approach_span',
+    'format_seconds', 'grid_ticks',
+    'realize', 'realized_duration',
 ]
 
 

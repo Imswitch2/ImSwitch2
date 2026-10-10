@@ -149,7 +149,10 @@ def test_a_preset_fills_the_tables_and_the_report(rig):
     report = rig.widget.reportText()
     assert report.startswith('Runnable on nidaq.')
     assert 'Timing policy strict-v1, 10 µs grid.' in report
-    assert 'Duration 88 ms, 12 steps.' in report
+    # 88 ms of steps and waits, and 1 ms for Z to reach its first position
+    # and settle (§7.9): it was captured elsewhere
+    assert 'Duration 89 ms, 12 steps.' in report
+    assert 'Starts with 1 ms for the drives to reach their first positions' in report
 
 
 def _close(a, b):
@@ -168,8 +171,8 @@ def test_the_tables_read_back_as_the_same_program(rig):
     rig.scan._onEdited()          # as if a cell had been touched
     rig.scan.getParameters()
     once = rig.scan.program()
-    # The tables are the request now. The preset's 6 + 0.5 + 0.5 ms step is
-    # 0.007000000000000001 s in binary; the table holds what it shows, 7 ms.
+    # The tables are the request now, and hold what they show: the preset's
+    # 6 + 0.5 + 0.5 ms step is summed exactly (exact_sum), 7 ms.
     assert _close(program_to_dict(once), dict(program_to_dict(program), requested_as=None))
     rig.scan.setProgram(once)
     rig.scan._onEdited()
@@ -195,7 +198,7 @@ def test_an_events_still_list_survives_the_tables(rig):
 def test_an_edit_in_a_table_changes_the_program(rig, qtbot):
     rig.scan.setProgram(_ms_resolft(rig))
     rig.widget.loops.table.item(0, 2).setText('3')        # timepoints: 2 -> 3
-    qtbot.waitUntil(lambda: 'Duration 132 ms' in rig.widget.reportText(), timeout=3000)
+    qtbot.waitUntil(lambda: 'Duration 133 ms' in rig.widget.reportText(), timeout=3000)
     assert rig.scan.getNumScanPositions() == 18
 
 
@@ -483,8 +486,11 @@ def test_a_step_board_runs_an_ms_resolft_program_as_the_interpreter_means_it(boa
     assert rig.widget.engineLabel.text() == 'Runs on board (StepProtocolScanEngine).'
     rig.scan.setProgram(_ms_resolft(rig))
     assert rig.widget.reportText().startswith('Runnable on board.'), rig.widget.reportText()
+    ran = rig.scan._compile()
     assert rig.run(timeoutS=10.0) and rig.rejected == []
-    expected = expected_log(rig.scan._scheduleOf(rig.scan._compile()))
+    # what ran: after it Z is tracked where the run left it, so a compile
+    # now would approach from there (§7.9)
+    expected = expected_log(rig.scan._scheduleOf(ran))
     assert log_differences(engine_log(engine.log), expected) == []
     frames = [e for e in engine.log.entries if e[0] == 'on' and e[3] == 'Camera']
     assert len(frames) == 2 * 3 * 2           # cycles x planes x timepoints

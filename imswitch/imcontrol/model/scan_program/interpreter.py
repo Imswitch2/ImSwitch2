@@ -180,6 +180,20 @@ def _moved_by(drive: DeviceDrive, loop_id) -> bool:
             or drive.table_loop == loop_id)
 
 
+def inner_drives(program) -> List[DeviceDrive]:
+    """The drives the innermost loop moves: those that return at the end of
+    every pass, in the inner drives' ``return_s``. One rule for the
+    interpreter, the step engines and the leader's pulse interval."""
+    if not program.loops:
+        return []
+    return [d for d in program.drives if _moved_by(d, program.innermost.id)]
+
+
+def return_seconds(program) -> float:
+    """How long a pass's return takes: the longest of the inner drives'."""
+    return max((float(d.motion.return_s) for d in inner_drives(program)), default=0.0)
+
+
 def _event_applies(event, phase):
     return event.phases is None or phase in event.phases
 
@@ -219,22 +233,31 @@ def expand(program: ScanProgram, context: Optional[RunContext] = None) -> Expans
         target = _restore_um(drive, first[drive.device], context, program)
         restore[drive.device] = positions[-1][drive.device] if target is None else target
 
-    inner_drives = [d for d in drives if _moved_by(d, innermost)]
-    return_s = max((float(d.motion.return_s) for d in inner_drives), default=0.0)
+    inner = inner_drives(program)
+    return_s = return_seconds(program)
 
     spans: List[Span] = []
     waits_at = {}
     for wait in program.waits:
         waits_at.setdefault(wait.at, []).append(wait)
 
+    approach = _approach(program, drives, positions[0], context,
+                         visit_list[0].get(phase_loop.id, 0) if phase_loop else 0)
+    if approach is not None:
+        spans.append(approach)
+
     for index, counters in enumerate(visit_list):
         phase = counters.get(phase_loop.id, 0) if phase_loop else 0
         here = positions[index]
 
         # Barriers before this step: the run start, every iteration of a
-        # loop that starts here, every step.
+        # loop that starts here, every step. A wait holds every drive where
+        # it is.
         for wait in _waits_before(program, waits_at, visit_list, index):
+            held = _held(spans, here)
             spans.append(Span('wait', wait.interval_s if wait.trigger == 'time' else None,
+                              pieces={name: Piece('hold', value, value)
+                                      for name, value in held.items()},
                               wait=wait, phase=phase))
             if wait.trigger != 'time':
                 spans.append(_preparation(program, drives, spans, here, context, phase))
@@ -290,7 +313,7 @@ def expand(program: ScanProgram, context: Optional[RunContext] = None) -> Expans
             ret = Span('return', return_s, phase=phase)
             for drive in drives:
                 name = drive.device
-                if target[name] != here[name] or name in [d.device for d in inner_drives]:
+                if target[name] != here[name] or name in [d.device for d in inner]:
                     ret.pieces[name] = Piece('whole', here[name], target[name],
                                              drive.motion.transition)
                 else:
@@ -318,6 +341,41 @@ def _starts_iteration(program, visit_list, index, loop_id):
     ids = [loop.id for loop in program.loops]
     upto = ids[:ids.index(loop_id) + 1]
     return any(visit_list[index][o] != visit_list[index - 1][o] for o in upto)
+
+
+def _held(spans, here):
+    """Where every drive is after ``spans``: where the last span with pieces
+    left it; before any, at its first position (the run sets it)."""
+    for span in reversed(spans):
+        if span.pieces:
+            return {name: piece.end_um for name, piece in span.pieces.items()}
+    return dict(here)
+
+
+def _approach(program, drives, here, context, phase):
+    """The run's first span (§7.9): every drive moves from where it is to its
+    first position and settles, before anything is timed. Where a drive is
+    is its captured position; where that is not known it may be anywhere, so
+    it is given its move and settle too. ``None`` when nothing needs to move,
+    or the program has no approach (``approach``: the Advanced adapter)."""
+    if not program.approach or not drives:
+        return None
+    stage = Span('preparation', 0.0, phase=phase)
+    longest = 0.0
+    for drive in drives:
+        name, motion = drive.device, drive.motion
+        before = context.captured_um.get(name)
+        if before is not None and float(before) == here[name]:
+            stage.pieces[name] = Piece('hold', here[name], here[name])
+            continue
+        start = here[name] if before is None else float(before)
+        stage.pieces[name] = Piece('start', start, here[name], motion.transition,
+                                   float(motion.move_s), float(motion.settle_s))
+        longest = max(longest, float(motion.move_s) + float(motion.settle_s))
+    if longest == 0.0:
+        return None
+    stage.duration_s = longest
+    return stage
 
 
 def _preparation(program, drives, spans, here, context, phase):
@@ -359,7 +417,7 @@ def _preparation(program, drives, spans, here, context, phase):
 
 __all__ = [
     'DeviceFacts', 'EventInstance', 'Expansion', 'InterpretError', 'Piece',
-    'RunContext', 'Span', 'expand', 'position_um', 'visits',
+    'RunContext', 'Span', 'expand', 'inner_drives', 'position_um', 'return_seconds', 'visits',
 ]
 
 
