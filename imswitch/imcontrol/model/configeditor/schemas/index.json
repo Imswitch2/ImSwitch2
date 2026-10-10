@@ -2,22 +2,22 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 47,
-    "docs_agree": 145,
-    "docs_documented": 145,
-    "keys": 225,
-    "managers": 65,
-    "none_default_only": 37,
+    "docs_agree": 149,
+    "docs_documented": 149,
+    "keys": 229,
+    "managers": 66,
+    "none_default_only": 40,
     "none_only": 16,
-    "optional": 163,
-    "reads_any": 59,
+    "optional": 167,
+    "reads_any": 60,
     "refs": 15,
     "required": 62,
     "typed_by_code": 97,
-    "typed_with_docs": 169,
+    "typed_with_docs": 173,
     "typed_with_examples": 133,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 59,
+    "with_keys": 60,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -603,7 +603,8 @@
     "SimulatedStepEngine": {
       "category": "scanEngines",
       "classes": [
-        "SimulatedStepEngine"
+        "SimulatedStepEngine",
+        "StepEngineBase"
       ],
       "overridden": false,
       "properties": 5,
@@ -628,6 +629,16 @@
       "overridden": false,
       "properties": 4,
       "required": 4
+    },
+    "StepProtocolScanEngine": {
+      "category": "scanEngines",
+      "classes": [
+        "StepProtocolScanEngine",
+        "StepEngineBase"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 0
     },
     "SwabianTimeTaggerManager": {
       "category": "detectors",

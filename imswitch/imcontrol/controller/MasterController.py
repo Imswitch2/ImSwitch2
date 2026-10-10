@@ -166,13 +166,14 @@ class MasterController:
         manager_attrs = [
             'detectorsManager', 'lasersManager', 'positionersManager',
             'rotatorsManager', 'flipMirrorsManager', 'recordingManager',
-            'slmsManager', 'nidaqManager', 'rs232sManager',
+            'slmsManager', 'scanEngines', 'nidaqManager', 'rs232sManager',
             'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
             'scanManager',
         ]
         unsafeWhileActive = {
             'detectorsManager',
             'recordingManager',
+            'scanEngines',
             'nidaqManager',
             'scanManager',
         }

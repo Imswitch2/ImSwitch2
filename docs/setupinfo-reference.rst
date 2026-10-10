@@ -1036,7 +1036,8 @@ registered ``scan_engine``) and ``managerProperties``. Every setup also has
 the NI-DAQ engine, ``nidaq``; ``scan.engine`` chooses the engine the ``Scan``
 panel runs on. A channel two engines claim stops the setup from loading.
 The engines, their properties and channel ownership are documented in
-:doc:`devices/scan_engines`.
+:doc:`devices/scan_engines`; a board joins without Python by speaking the
+step-engine protocol (:doc:`devices/step-engine-protocol`).
 
 .. code-block:: json
 

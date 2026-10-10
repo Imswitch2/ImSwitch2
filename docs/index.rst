@@ -156,6 +156,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/rotators
     devices/stands
     devices/scan_engines
+    devices/step-engine-protocol
     Hdf5datafile
 
 .. toctree::

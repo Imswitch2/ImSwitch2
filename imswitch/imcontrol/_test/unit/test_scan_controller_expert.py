@@ -8,6 +8,7 @@ panel. Scans really run; a camera recording goes through the recording
 manager and is read back by the layout resolver and SNOUTY.
 """
 import copy
+import functools
 import importlib
 import json
 import time
@@ -35,6 +36,9 @@ from imswitch.imcontrol.controller.controllers.ScanControllerExpert import (
 from imswitch.imcontrol.model import RecMode, SaveFormat, SaveMode
 from imswitch.imcontrol.model.managers.detectors._mock_sample import MockSample
 from imswitch.imcontrol.model.scan_program import presets, program as program_model
+from imswitch.imcontrol.model.scan_program.conformance import (
+    engine_log, expected_log, log_differences,
+)
 from imswitch.imcontrol.model.scan_program.serialize import program_to_dict
 from imswitch.imcontrol.view import ViewSetupInfo
 from imswitch.imcontrol.view.widgets.ScanWidgetAdvanced import ScanWidgetAdvanced
@@ -407,6 +411,67 @@ def test_a_pulse_generator_runs_a_pulse_program_from_the_panel(qtbot):
         assert 'which teensy does not drive' in rig.widget.reportText()
     finally:
         rig.close()
+
+
+# ---------------------------------------------------------------------------
+# A step board behind the protocol (M5)
+# ---------------------------------------------------------------------------
+
+#: The simulated board on the protocol: a 10 µs grid, one DAC, four lines.
+STEP_BOARD = {'managerName': 'StepProtocolScanEngine', 'managerProperties': {
+    'port': 'simulated',
+    'simulatedBoard': {'gridNs': 10_000, 'dacs': {'0': [0, 10]}, 'ttlLines': 4}}}
+
+
+@pytest.fixture
+def board_rig(qtbot):
+    """Z, two lasers and the camera wired to the step board."""
+    setup = _setup_dict(engine='board')
+    setup['scanEngines'] = {'board': copy.deepcopy(STEP_BOARD)}
+    setup['positioners']['Z']['analogChannel'] = 'board/dac0'
+    for laser, line in zip(list(setup['lasers'])[:2], ('board/ttl0', 'board/ttl1')):
+        setup['lasers'][laser]['digitalLine'] = line
+    setup['detectors']['Camera']['digitalLine'] = 'board/ttl2'
+    rig = ExpertRig(setup)
+    yield rig
+    rig.close()
+
+
+def test_a_step_board_runs_an_ms_resolft_program_as_the_interpreter_means_it(board_rig):
+    rig = board_rig
+    engine = rig.master.scanEngine
+    assert rig.widget.engineLabel.text() == 'Runs on board (StepProtocolScanEngine).'
+    rig.scan.setProgram(_ms_resolft(rig))
+    assert rig.widget.reportText().startswith('Runnable on board.'), rig.widget.reportText()
+    assert rig.run(timeoutS=10.0) and rig.rejected == []
+    expected = expected_log(rig.scan._scheduleOf(rig.scan._compile()))
+    assert log_differences(engine_log(engine.log), expected) == []
+    frames = [e for e in engine.log.entries if e[0] == 'on' and e[3] == 'Camera']
+    assert len(frames) == 2 * 3 * 2           # cycles x planes x timepoints
+
+
+def test_a_step_board_failure_ends_the_run_with_its_reason(board_rig, monkeypatch):
+    rig = board_rig
+    engine = rig.master.scanEngine
+    monkeypatch.setattr(engine, 'run', functools.partial(engine.run, fail_at_step=3))
+    rig.scan.setProgram(_ms_resolft(rig))
+    assert rig.run(timeoutS=10.0)
+    assert rig.scan._externalScanRequestFailureMessage == \
+        'board: failed at step 3: injected failure at step 3'
+    assert not rig.widget.scanButton.isChecked()
+
+
+def test_the_report_refuses_what_the_board_does_not_have(board_rig):
+    rig = board_rig
+    # Y is still on the NI-DAQ: a raster over X and Y is not the board's
+    params = dict(x_device='X', y_device='Y', x_pixels=3, y_pixels=2, x_step_um=1.0,
+                  y_step_um=1.0, x_start_um=0.0, y_start_um=0.0,
+                  pulses=[[rig.lasers[0], 1e-3, 0.0]], camera='', exposure_pulse=1,
+                  move_s=5e-4, settle_s=5e-4, return_s=1e-3, traversal='forward')
+    rig.scan.setProgram(presets.make('raster', params))
+    report = rig.widget.reportText()
+    assert 'X is wired to Dev1/ao0, which board does not drive' in report
+    assert 'smooth transition' in report         # a board jumps
 
 
 # ---------------------------------------------------------------------------

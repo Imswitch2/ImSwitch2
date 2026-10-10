@@ -55,6 +55,7 @@
   "title": "SimulatedStepEngine managerProperties",
   "type": "object",
   "x-imswitch-classes": [
-    "SimulatedStepEngine"
+    "SimulatedStepEngine",
+    "StepEngineBase"
   ]
 }

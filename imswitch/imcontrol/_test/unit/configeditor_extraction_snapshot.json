@@ -514,6 +514,15 @@
       "unresolved": 0
     },
     {
+      "constrained": 0,
+      "keys": 4,
+      "name": "StepProtocolScanEngine",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 10,
       "keys": 15,
       "name": "SwabianTimeTaggerManager",
@@ -589,22 +598,22 @@
   "totals": {
     "alias_spellings": 9,
     "constrained": 47,
-    "docs_agree": 143,
-    "docs_documented": 143,
-    "keys": 223,
-    "managers": 65,
-    "none_default_only": 37,
+    "docs_agree": 147,
+    "docs_documented": 147,
+    "keys": 227,
+    "managers": 66,
+    "none_default_only": 40,
     "none_only": 16,
-    "optional": 161,
-    "reads_any": 58,
+    "optional": 165,
+    "reads_any": 59,
     "refs": 14,
     "required": 62,
     "typed_by_code": 97,
-    "typed_with_docs": 167,
+    "typed_with_docs": 171,
     "typed_with_examples": 133,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 58,
+    "with_keys": 59,
     "writes": 0
   }
 }

@@ -35,6 +35,15 @@ class ScanEngines:
     def owner_of(self, channel) -> Optional[str]:
         return self.owners.get(channel)
 
+    def finalize(self):
+        """Close every engine that holds a link (a step board's port)."""
+        complete = True
+        for engine in self.engines.values():
+            finalize = getattr(engine, 'finalize', None)
+            if callable(finalize) and finalize() is False:
+                complete = False
+        return complete
+
 
 def _engine_class(managerName, registry):
     cls = registry.load_manager_class('scan_engine', managerName)

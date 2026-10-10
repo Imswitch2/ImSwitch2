@@ -1,10 +1,14 @@
-"""Engine conformance on the simulated step board (docs/design/plans/
-scan-engines-and-expert-scan.md §2.4, §2.7, §5.0, M1).
+"""Engine conformance on the step boards (docs/design/plans/
+scan-engines-and-expert-scan.md §2.4, §2.7, §5.0, §5.2, M1, M5).
 
-The simulated board executes programs independently of the interpreter; its
-log must match the interpreter's realized schedule. Trigger handling is
-checked against arrival traces the test chooses, with mutants that release
-early or ignore the trigger. Stop, failure, preparation, readiness and the
+Two boards execute programs independently of the interpreter: the simulated
+step board (M1), and a board behind the step-engine protocol (M5) -- the
+same executor, reached through IMSWITCH_STEP/1: compiled to channels and
+volts on the host, uploaded as lines, decoded and run by the board, its log
+asked for with LOG? and read back in the program's terms. Each log must
+match the interpreter's realized schedule. Trigger handling is checked
+against arrival traces the test chooses, with mutants that release early or
+ignore the trigger. Stop, failure, preparation, readiness and the
 feasibility report are exercised too.
 """
 
@@ -14,7 +18,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from imswitch.imcontrol.model.managers.scan_engines import SimulatedStepEngine
+from imswitch.imcontrol.model.managers.scan_engines import (
+    SimulatedStepEngine, StepProtocolScanEngine,
+)
+from imswitch.imcontrol.model.managers.scan_engines.StepProtocolScanEngine import (
+    SimulatedTransport,
+)
+from imswitch.imcontrol.model.managers.scan_engines.step_board import SimulatedStepBoard
+from imswitch.imcontrol.model.managers.scan_engines.step_protocol import BoardCaps
 from imswitch.imcontrol.model.scan_program import (
     DeviceDrive, DeviceFacts, Loop, Motion, RunContext, ScanProgram, TimelineEvent, Wait,
     expand, realize,
@@ -28,25 +39,56 @@ from imswitch.imcontrol.model.scan_program.engine import (
 
 RATE = 100_000             # an exact integer rate: 1 / 1e-5 is 99999.99999999999 in binary
 GRID_S = 1 / RATE
+GRID_NS = 10_000
+LATENCY_TICKS = 2
 JUMP = Motion(transition='jump', move_s=1e-3, settle_s=1e-3, return_s=2e-3,
               origin='absolute', restore='first')
 
 CHANNELS = {
-    'X': DeviceChannels('X', analog='Sim/DAC0', kind='positioner'),
-    'RO': DeviceChannels('RO', analog='Sim/DAC1', kind='positioner'),
-    'L405': DeviceChannels('L405', digital='Sim/TTL0', kind='laser'),
-    'L488': DeviceChannels('L488', digital='Sim/TTL1', kind='laser'),
-    'Camera': DeviceChannels('Camera', digital='Sim/TTL2', kind='detector'),
+    'X': DeviceChannels('X', analog='Board/dac0', kind='positioner'),
+    'RO': DeviceChannels('RO', analog='Board/dac1', kind='positioner'),
+    'L405': DeviceChannels('L405', digital='Board/ttl0', kind='laser'),
+    'L488': DeviceChannels('L488', digital='Board/ttl1', kind='laser'),
+    'Camera': DeviceChannels('Camera', digital='Board/ttl2', kind='detector'),
     'Elsewhere': DeviceChannels('Elsewhere', digital='Dev1/port0/line3', kind='laser'),
 }
+
+#: What the protocol engine reads from the setup: µm per volt (X and RO
+#: differ, so a drive's volts are not its µm), and each line's polarity.
+SETUP = SimpleNamespace(
+    positioners={'X': SimpleNamespace(managerProperties={'conversionFactor': 2.0}),
+                 'RO': SimpleNamespace(managerProperties={'conversionFactor': 0.5})},
+    lasers={'L405': SimpleNamespace(ttlActiveLevel='high'),
+            'L488': SimpleNamespace(ttlActiveLevel='high')},
+    detectors={'Camera': SimpleNamespace(ttlActiveLevel='low')})
 
 
 def _board(cls=SimulatedStepEngine, **props):
     props = dict({'timingGridS': GRID_S,
-                  'analogChannels': {'Sim/DAC0': [-10, 10], 'Sim/DAC1': [-10, 10]},
-                  'digitalLines': ['Sim/TTL0', 'Sim/TTL1', 'Sim/TTL2'],
-                  'triggerLatencyS': 2e-5}, **props)
+                  'analogChannels': {'Board/dac0': [-10, 10], 'Board/dac1': [-10, 10]},
+                  'digitalLines': ['Board/ttl0', 'Board/ttl1', 'Board/ttl2'],
+                  'triggerLatencyS': LATENCY_TICKS * GRID_S}, **props)
     return cls(SimpleNamespace(managerProperties=props), name='Board')
+
+
+def _wire(board_cls=SimulatedStepBoard, **caps):
+    """The protocol engine on a simulated board that declares what the
+    simulated step board is given."""
+    caps = BoardCaps(**{**dict(board='Simulated', firmware='test', grid_ns=GRID_NS,
+                               dacs={0: (-10.0, 10.0), 1: (-10.0, 10.0)}, ttl_lines=3,
+                               trigger_in=True, trigger_latency_ticks=LATENCY_TICKS), **caps})
+    board = board_cls(caps, latency_ticks=LATENCY_TICKS)
+    return StepProtocolScanEngine(SimpleNamespace(managerProperties={}), name='Board',
+                                  setupInfo=SETUP, transport=SimulatedTransport(board))
+
+
+BOARDS = {'simulated': _board, 'wire': _wire}
+
+
+@pytest.fixture(params=sorted(BOARDS))
+def make(request):
+    """Each step board, built with its defaults."""
+    return BOARDS[request.param]
 
 
 def _raster(**extra):
@@ -88,29 +130,51 @@ def _oracle(program, devices=None):
 # Execution matches the program's meaning
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('make', [_raster, _interleaved], ids=['raster', 'interleaved'])
-def test_the_board_does_what_the_program_means(make):
-    program = make()
-    board = _run(_board(), program)
+@pytest.mark.parametrize('program', [_raster, _interleaved], ids=['raster', 'interleaved'])
+def test_the_board_does_what_the_program_means(make, program):
+    program = program()
+    board = _run(make(), program)
     assert log_differences(engine_log(board.log), _oracle(program)) == []
 
 
-def test_the_interleave_visits_planes_in_its_order():
-    board = _run(_board(), _interleaved())
+def _serpentine_with_phases():
+    """x runs back on every other line played, line steps included: two
+    parity loops, whose flat index -- not the sum of their counters -- says
+    which way (forward, back, forward, back)."""
+    return ScanProgram(
+        loops=(Loop('y', 'scan_y', 2), Loop('phase', 'condition', 2),
+               Loop('x', 'scan_x', 3, traversal='serpentine', parity_loops=('y', 'phase'))),
+        drives=(DeviceDrive('X', weights_um={'x': 5.0}, motion=JUMP),),
+        step_s=10e-3,
+        timeline=(TimelineEvent('Camera', 'detector', 0.0, 8e-3, during='any'),),
+    )
+
+
+def test_a_serpentine_alternates_on_the_flat_index_of_its_parity_loops(make):
+    program = _serpentine_with_phases()
+    board = _run(make(), program)
+    assert log_differences(engine_log(board.log), _oracle(program)) == []
+    x = [value for _, _, _, device, value in board.log.of('dac') if device == 'X']
+    # first positions, then each line's moves: 0 5 10 | 10 5 0 | 0 5 10 | 10 5 0
+    assert x[:3] == [0.0, 5.0, 10.0] and x[3:5] == [5.0, 0.0]
+
+
+def test_the_interleave_visits_planes_in_its_order(make):
+    board = _run(make(), _interleaved())
     positions = [value for _, _, _, device, value in board.log.of('dac') if device == 'RO']
     assert positions[:6] == [0.0, 0.5, 1.0, 0.25, 0.75, 1.25]
 
 
-def test_a_mock_camera_counts_the_frames_the_layout_plans():
+def test_a_mock_camera_counts_the_frames_the_layout_plans(make):
     """Readiness: a camera triggered by the board's TTL gets one frame per
     step (2 lines x 2 phases x 3 pixels)."""
-    board = _run(_board(), _raster())
+    board = _run(make(), _raster())
     rising = [e for e in board.log.entries if e[0] == 'on' and e[3] == 'Camera']
     assert len(rising) == 12
 
 
-def test_prepare_publishes_the_devices_before_the_run():
-    board = _board()
+def test_prepare_publishes_the_devices_before_the_run(make):
+    board = make()
     built = []
     board.sigScanBuilt.connect(lambda info, plan, devices: built.append(devices))
     compiled = board.compile(_raster(), CHANNELS)
@@ -119,8 +183,8 @@ def test_prepare_publishes_the_devices_before_the_run():
     assert board.ready() and built == [['Camera', 'L405', 'L488', 'X']]
 
 
-def test_the_lifecycle_signals_come_in_order():
-    board = _board()
+def test_the_lifecycle_signals_come_in_order(make):
+    board = make()
     seen = []
     for name in ('sigScanStarted', 'sigScanDone', 'sigScanStopped', 'sigScanBuildFailed'):
         getattr(board, name).connect(lambda *a, n=name: seen.append(n))
@@ -161,55 +225,64 @@ def _wait_starts(program, arrivals, latency):
     return starts
 
 
-def test_execution_after_each_release_matches():
+def test_execution_after_each_release_matches(make):
     program = _waiting()
-    board = _run(_board(), program, arrivals=[5, 7000, 20000])
+    board = _run(make(), program, arrivals=[5, 7000, 20000])
     assert log_differences(engine_log(board.log), _oracle(program)) == []
 
 
-def test_releases_follow_their_triggers_within_the_declared_latency():
+def test_releases_follow_their_triggers_within_the_declared_latency(make):
     program = _waiting()
     arrivals = [5, 7000, 20000]
-    board = _run(_board(), program, arrivals=arrivals)
-    starts = _wait_starts(program, arrivals, latency=2)
-    assert trigger_problems(board.log.of('release'), arrivals, starts, latency_ticks=2) == []
+    board = _run(make(), program, arrivals=arrivals)
+    starts = _wait_starts(program, arrivals, latency=LATENCY_TICKS)
+    assert trigger_problems(board.log.of('release'), arrivals, starts,
+                            latency_ticks=LATENCY_TICKS) == []
 
 
-class _EarlyRelease(SimulatedStepEngine):
-    def _release(self, wait_start, arrivals, timeout):
-        return wait_start, None
+def _early(base):
+    class EarlyRelease(base):
+        def _release(self, wait_start, arrivals, timeout):
+            return wait_start, None
+    return EarlyRelease
 
 
-class _IgnoresTrigger(SimulatedStepEngine):
-    def _release(self, wait_start, arrivals, timeout):
-        later = [a for a in arrivals if a > wait_start]
-        return (later[1], later[1]) if len(later) > 1 else super()._release(
-            wait_start, arrivals, timeout)
+def _ignoring(base):
+    class IgnoresTrigger(base):
+        def _release(self, wait_start, arrivals, timeout):
+            later = [a for a in arrivals if a > wait_start]
+            return (later[1], later[1]) if len(later) > 1 else super()._release(
+                wait_start, arrivals, timeout)
+    return IgnoresTrigger
 
 
-@pytest.mark.parametrize('mutant, symptom', [(_EarlyRelease, 'before its trigger'),
-                                              (_IgnoresTrigger, 'later than')])
-def test_the_trigger_check_catches_engines_that_get_triggers_wrong(mutant, symptom):
+@pytest.mark.parametrize('board, base', [('simulated', SimulatedStepEngine),
+                                         ('wire', SimulatedStepBoard)])
+@pytest.mark.parametrize('mutant, symptom', [(_early, 'before its trigger'),
+                                              (_ignoring, 'later than')])
+def test_the_trigger_check_catches_engines_that_get_triggers_wrong(board, base, mutant,
+                                                                   symptom):
     program = _waiting()
     arrivals = [5, 7000, 9000, 20000, 30000, 40000, 50000]
-    board = _run(_board(mutant), program, arrivals=arrivals)
-    starts = _wait_starts(program, arrivals, latency=2)
-    problems = trigger_problems(board.log.of('release'), arrivals, starts, latency_ticks=2)
+    board = _run(BOARDS[board](mutant(base)), program, arrivals=arrivals)
+    starts = _wait_starts(program, arrivals, latency=LATENCY_TICKS)
+    problems = trigger_problems(board.log.of('release'), arrivals, starts,
+                                latency_ticks=LATENCY_TICKS)
     assert any(symptom in p for p in problems), problems
     # ... while replaying its own releases would not have noticed.
     assert log_differences(engine_log(board.log), _oracle(program)) == []
 
 
-def test_a_timeout_fails_or_continues_as_asked():
-    failing = _run(_board(), _waiting(timeout_s=1e-3), arrivals=[])
+def test_a_timeout_fails_or_continues_as_asked(make):
+    failing = _run(make(), _waiting(timeout_s=1e-3), arrivals=[])
     assert failing.log.of('failed')
     program = _waiting(timeout_s=1e-3, on_timeout='continue')
-    board = _run(_board(), program, arrivals=[])
+    board = _run(make(), program, arrivals=[])
     releases = board.log.of('release')
     assert len(releases) == 3 and all(arrival is None for *_, arrival in releases)
     starts = _wait_starts_with_timeouts(program, timeout=100)
-    assert trigger_problems(releases, [], starts, latency_ticks=2, timeout_ticks=100,
-                            on_timeout='continue') == []
+    assert trigger_problems(releases, [], starts, latency_ticks=LATENCY_TICKS,
+                            timeout_ticks=100, on_timeout='continue') == []
 
 
 def _wait_starts_with_timeouts(program, timeout):
@@ -222,17 +295,17 @@ def _wait_starts_with_timeouts(program, timeout):
     return starts
 
 
-def test_preparation_after_a_release_comes_from_the_device_and_moves_no_event():
+def test_preparation_after_a_release_comes_from_the_device_and_moves_no_event(make):
     devices = {'Camera': DeviceFacts(1e-3, 'Camera.preparation.durationS')}
     program = _waiting()
-    board = _run(_board(), program, arrivals=[5, 7000, 20000], devices=devices)
+    board = _run(make(), program, arrivals=[5, 7000, 20000], devices=devices)
     assert log_differences(engine_log(board.log), _oracle(program, devices)) == []
 
 
-def test_an_unknown_preparation_refuses_a_waiting_program():
+def test_an_unknown_preparation_refuses_a_waiting_program(make):
     devices = {'Camera': DeviceFacts('unknown', 'Camera: no preparation key')}
     with pytest.raises(ScanEngineRefused, match='preparation time is\\s+unknown'):
-        _board().compile(_waiting(), CHANNELS, devices=devices)
+        make().compile(_waiting(), CHANNELS, devices=devices)
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +321,8 @@ def test_stop_at_a_step_boundary():
     assert board.log.of('safe-state') and not board.log.of('end')
 
 
-def test_stop_during_an_unbounded_wait_is_honoured_at_once(qtbot):
-    board = _board()
+def test_stop_during_an_unbounded_wait_is_honoured_at_once(qtbot, make):
+    board = make()
     compiled = board.compile(_waiting(), CHANNELS)
     board.prepare(compiled)
     stopped = threading.Event()
@@ -267,37 +340,40 @@ def test_stop_during_an_unbounded_wait_is_honoured_at_once(qtbot):
 # Feasibility: what the board cannot do is refused, unknowns are unknown
 # ---------------------------------------------------------------------------
 
-def test_a_line_another_engine_owns_is_refused_with_the_remedy():
+def test_a_line_another_engine_owns_is_refused_with_the_remedy(make):
     program = ScanProgram(loops=(Loop('x', 'scan_x', 2),), drives=(), step_s=1e-3,
                           timeline=(TimelineEvent('Elsewhere', 'ttl', 0.0, 1e-3,
                                                   during='any'),))
-    report = _board().assess(program, CHANNELS)
+    report = make().assess(program, CHANNELS)
     verdict = report.verdict('ttl Elsewhere')
     assert verdict.verdict == IMPOSSIBLE and 'Dev1/port0/line3' in verdict.reason
     assert 'Wire it to this engine' in verdict.remedy
 
 
-def test_the_board_cannot_sweep_and_says_so():
+def test_the_board_cannot_sweep_and_says_so(make):
     program = ScanProgram(loops=(Loop('x', 'scan_x', 2, mode='swept'),),
                           drives=(DeviceDrive('X', weights_um={'x': 1.0}, motion=JUMP),),
                           step_s=1e-3)
-    verdict = _board().assess(program, CHANNELS).verdict('swept loop')
+    verdict = make().assess(program, CHANNELS).verdict('swept loop')
     assert verdict.verdict == IMPOSSIBLE and 'Make the axis stepped' in verdict.remedy
 
 
-def test_an_undeclared_trigger_latency_is_unknown_not_guessed():
-    board = _board(triggerLatencyS=None)
+@pytest.mark.parametrize('board', [lambda: _board(triggerLatencyS=None),
+                                   lambda: _wire(trigger_latency_ticks=None)],
+                         ids=['simulated', 'wire'])
+def test_an_undeclared_trigger_latency_is_unknown_not_guessed(board):
+    board = board()
     verdict = board.assess(_waiting(), CHANNELS).verdict('trigger wait at y')
     assert verdict.verdict == UNKNOWN and 'does not declare its trigger latency' in verdict.reason
     with pytest.raises(ScanEngineRefused):
         board.compile(_waiting(), CHANNELS)
 
 
-def test_times_off_the_boards_grid_are_refused():
+def test_times_off_the_boards_grid_are_refused(make):
     program = _raster()
     program = ScanProgram(**{**program.__dict__, 'step_s': 10.005e-3})
     with pytest.raises(ScanEngineRefused, match='not a whole number'):
-        _board().compile(program, CHANNELS)
+        make().compile(program, CHANNELS)
 
 
 def test_a_board_without_a_declared_grid_does_not_start():
@@ -308,14 +384,15 @@ def test_a_board_without_a_declared_grid_does_not_start():
 def test_channel_ownership_must_be_unambiguous():
     a, b = _board(), _board()
     b.name = 'Other'
-    with pytest.raises(SetupError, match='Sim/TTL0 \\(L405\\) is claimed by Board and Other'):
+    with pytest.raises(SetupError,
+                       match='Board/ttl0 \\(L405\\) is claimed by Board and Other'):
         assign_owners([a, b], CHANNELS)
     owners = assign_owners([a], CHANNELS)
-    assert owners['Sim/TTL0'] == 'Board' and owners['Dev1/port0/line3'] is None
+    assert owners['Board/ttl0'] == 'Board' and owners['Dev1/port0/line3'] is None
 
 
-def test_what_the_board_runs_is_native():
-    report = _board().assess(_raster(), CHANNELS)
+def test_what_the_board_runs_is_native(make):
+    report = make().assess(_raster(), CHANNELS)
     assert report.runnable
     assert report.verdict('stepped loop').verdict == NATIVE
 

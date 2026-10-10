@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "baudrate": {
+      "description": "The link's rate (a USB board ignores it; the port still needs one).",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "port": {
+      "description": "The board's serial port, or ``\"simulated\"`` for the simulated board.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "replyTimeoutS": {
+      "description": "How long a command waits for the board's answer, in seconds.",
+      "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number"
+      ]
+    },
+    "simulatedBoard": {
+      "description": "What the simulated board declares: ``gridNs`` (required, its timing",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:object"
+      ]
+    }
+  },
+  "title": "StepProtocolScanEngine managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "StepProtocolScanEngine",
+    "StepEngineBase"
+  ]
+}

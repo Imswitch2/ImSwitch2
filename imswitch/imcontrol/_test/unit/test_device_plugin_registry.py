@@ -241,7 +241,8 @@ def test_builtin_device_managers():
     """Test that built-in managers are correctly defined."""
     from imswitch.imcontrol.model.plugins.builtins import BUILTIN_DEVICE_MANAGERS
     
-    assert len(BUILTIN_DEVICE_MANAGERS) == 12  # + the NI-DAQ, simulated step and pulse-generator scan engines
+    # + the NI-DAQ, simulated step, pulse-generator and step-protocol scan engines
+    assert len(BUILTIN_DEVICE_MANAGERS) == 13
     
     # Check that AVManager is in the list
     av_manager = next(c for c in BUILTIN_DEVICE_MANAGERS if c.id == "AVManager")
@@ -263,7 +264,8 @@ def test_builtin_device_managers():
     assert "LeicaDMIManager_mock" in stand_mock.manager_name_aliases
 
     engines = {c.id: c for c in BUILTIN_DEVICE_MANAGERS if c.kind == "scan_engine"}
-    assert set(engines) == {"NidaqScanEngine", "PulseGeneratorScanEngine", "SimulatedStepEngine"}
+    assert set(engines) == {"NidaqScanEngine", "PulseGeneratorScanEngine", "SimulatedStepEngine",
+                            "StepProtocolScanEngine"}
 
 
 def test_build_default_registry_no_discover():
@@ -272,7 +274,7 @@ def test_build_default_registry_no_discover():
     
     # Should have the built-ins
     contribs = registry.list_contributions()
-    assert len(contribs) == 12
+    assert len(contribs) == 13
     
     # Test resolving a built-in
     av = registry.resolve("detector", "AVManager")

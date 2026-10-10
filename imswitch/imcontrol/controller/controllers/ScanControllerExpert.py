@@ -448,8 +448,11 @@ class ScanControllerExpert(SuperScanController):
                                                     scanInfoDict=scanInfoDict)
 
     def _onEngineFailed(self, reason):
+        # Why; sigScanBuildFailed, emitted right after, ends the run.
         if self._scanCoordinator.tokenForOwner(self) is not None:
-            self.scanFailed(message=f'{self._engineForScans().name}: {reason}')
+            message = f'{self._engineForScans().name}: {reason}'
+            self._externalScanRequestFailureMessage = message
+            self._logger.error(f'The scan failed: {message}')
 
     def abortScan(self):
         running = self.isRunning

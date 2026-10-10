@@ -108,4 +108,12 @@ BUILTIN_DEVICE_MANAGERS: list[DeviceManagerContribution] = [
         plugin_name="imswitch-core",
         manager_name_aliases=("builtin.pulse-generator-scan-engine",),
     ),
+    DeviceManagerContribution(
+        id="StepProtocolScanEngine",
+        kind="scan_engine",
+        display_name="Step board (any board speaking the IMSWITCH_STEP/1 protocol)",
+        python_name="imswitch.imcontrol.model.managers.scan_engines.StepProtocolScanEngine:StepProtocolScanEngine",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("builtin.step-protocol-scan-engine",),
+    ),
 ]

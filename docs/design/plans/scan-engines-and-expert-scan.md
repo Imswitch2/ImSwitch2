@@ -1095,6 +1095,8 @@ the model and not from today's firmware:
   firmware will, so it can disagree with the interpreter and the
   conformance test means something.
 
+**Specified** in `docs/devices/step-engine-protocol.rst` (M5, §7.6).
+
 **The TriggerScope** gets a new firmware implementing this protocol (Lenny:
 "worst case reprogram the TriggerScope firmware"). The lab writes it, later
 (decision 6).
@@ -1631,6 +1633,82 @@ program keeps it until then).
 the built-ins are a registry today); the optional raw measurement stream
 (M6); trajectories on step engines (refused: they need a streaming engine);
 the coverage of a recording with several frames is the first frame's.
+
+### 7.6 M5 status (2026-10-09)
+
+**Delivered: the step-engine protocol, its simulated board, and the
+built-in engine that drives any board speaking it.** The TriggerScope
+firmware is the lab's, later (decision 6); everything above it is built and
+tested against the simulated board.
+
+| Where | What |
+|---|---|
+| `docs/devices/step-engine-protocol.rst` | The specification, IMSWITCH_STEP/1, for firmware authors: framing, integer widths, `*IDN?`/`*CAPS?`, the program lines, what the board does step by step, the messages while it runs, stop and the safe state, `LOG?`, error codes, a worked example checked against the simulated board |
+| `scan_engines/step_executor.py` | The M1 executor, out of `SimulatedStepEngine`, shared by both simulated boards; it reports to a listener (started, progress, release, preparation, done, stopped, failed) |
+| `scan_engines/step_protocol.py` | The codec both ends share: plan to lines and back, capabilities, messages, the log; numbers checked against the protocol's widths |
+| `scan_engines/step_board.py` | `SimulatedStepBoard`: the board end in process -- answers, checks a program as firmware does (channels, capacity, trigger input, widths), runs it on the executor in its own thread, reports, keeps its log |
+| `StepProtocolScanEngine` | Capabilities from `*CAPS?`; channels `<engine>/dac<i>`, `<engine>/ttl<j>`; compile = the shared step compile, then the board's terms (µm to volts from `conversionFactor`, checked against the DAC and positioner ranges; polarity from `ttlActiveLevel`; safe levels); upload, run, follow, stop, `LOG?` back in the program's terms; serial or `"simulated"`; closed at shutdown |
+| `StepEngineBase` | What the two step engines share: capabilities as fields, the host compile, which now uses the engine's own `assess` |
+| Expert controller | A step engine's failure reason is kept for the run's failure; the lifecycle signal ends the run |
+
+**Checked:**
+
+- **Conformance through the wire.** Every conformance test of the
+  simulated step board runs on the protocol engine too -- raster,
+  interleave, the two-parity serpentine, releases against chosen arrivals
+  (and the early and late mutants, as boards), timeouts, preparation, stop
+  during an unbounded wait, the lifecycle -- with the positioners at 2 and
+  0.5 µm per volt, so volts are not µm. Mutation-checked: weights sent
+  unconverted fail eleven tests; parity loops sent in reverse fail the
+  serpentine and the round trip.
+- **The panel on a step board:** an MS-RESOLFT program on Z, two lasers
+  and the camera wired to the board runs from the Expert panel, and the
+  board's log matches the interpreter's schedule (twelve camera frames); a
+  failure ends the run with the board's reason; a device on the NI-DAQ is
+  refused by name, and so is a smooth transition.
+- **The codec:** a decoded program encodes to the same lines; caps and logs
+  read back; what a board must refuse it refuses with the code and reason
+  (an unknown command, a run without a program, a channel it lacks, an
+  event or a safe level on a DAC, a bad choice, a missing STEP, more steps
+  than it holds, a number wider than the protocol's).
+- **The host refuses before uploading:** a positioner without
+  `conversionFactor` (unknown), volts beyond the DAC or the positioner
+  (both ranges named), a power level, two devices on one line, a wait that
+  does not idle, a loop count beyond 32 bits. A board on another protocol
+  version, or silent, is unknown -- and asked again at the next compile.
+- **Polarity and the safe state:** the active-low camera's line is sent as
+  on 0, off 1; after a stop and after a run every line is at its safe
+  level and the DACs hold.
+
+**Found:**
+
+- **The Expert panel's failure slot never got a reason** (M3): it listened
+  to `sigScanFailed`, which no step engine emitted, and had it been, the
+  slot would have ended the run a second time beside the lifecycle signal.
+  The engines emit the reason now, and the slot only keeps it.
+- **The shared step compile skipped an engine's own assessment** (it called
+  `assess_program` directly), so a refusal only the engine knows -- a board
+  that does not answer, a power level -- would not have stopped a compile.
+- **A stop before the run starts cannot be RUN then STOP:** a short program
+  finishes before the STOP arrives. The engine does not start it.
+- **The Teensy's two firmware findings are protocol rules now:** numbers
+  have declared widths and one that does not fit is refused, not wrapped
+  (M3, `parseUInt`); a stop leaves each line at the safe level the host
+  sent, not low (M3, `allChannelsLow`).
+
+**Still open:**
+
+- the TriggerScope firmware (the lab), and its first rig run;
+- a runner that puts a real board through the conformance programs over its
+  port (trigger tests need a signal on its trigger input);
+- a power level inside a step on a board DAC, which needs the laser's
+  power-to-volt conversion on the host;
+- point detectors on a step board (cameras only, decision 2);
+- a DAC's resolution in `*CAPS?`, so conformance can compare what a board
+  can set rather than what it was told;
+- the progress messages are read but not shown; a board that falls silent
+  in the middle of a run is noticed only when the link is closed;
+- `expert_mock_scan_setup.json` has no step board; the tests build one.
 
 ## 8. Risks
 

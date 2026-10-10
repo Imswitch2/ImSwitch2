@@ -6,7 +6,7 @@ Three consumers must agree -- ``normalized_fields`` (what a field is),
 honour the invariant the plan states: untouched stays identical, omitted
 stays omitted, spelling is preserved, nothing a widget cannot hold is lost,
 unknown stays verbatim. The last test runs the whole corpus (15 shipped
-setups, 65 generated fixtures, the value-shape fixtures) through the form and
+setups, 66 generated fixtures, the value-shape fixtures) through the form and
 compares type-strictly.
 """
 
@@ -492,7 +492,7 @@ def test_the_corpus_is_what_the_plan_says():
     # setup. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
     # 20: expert_mock_scan_setup.json, the Expert panel's mock setup.
     assert len(shipped_setups()) == 20
-    assert len(generated_fixtures()) == 65  # + the three scan engines
+    assert len(generated_fixtures()) == 66  # + the four scan engines
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 

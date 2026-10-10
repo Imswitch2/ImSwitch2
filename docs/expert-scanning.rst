@@ -173,8 +173,11 @@ takes several frames per step, and the steps it takes them in when not
 every step); an APD or PMT records its assembled image.
 
 On a step engine the engine runs the compiled program itself, and **Stop**
-stops it at its next step. See :doc:`devices/scan_engines` for what each
-engine can play, and what it refuses.
+stops it at its next step. A step board that speaks the step-engine protocol
+(:doc:`devices/step-engine-protocol`) is uploaded the program and runs it
+on its own; ``"port": "simulated"`` runs a simulated one. See
+:doc:`devices/scan_engines` for what each engine can play, and what it
+refuses.
 
 
 Saving and opening

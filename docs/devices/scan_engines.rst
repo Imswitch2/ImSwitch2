@@ -118,6 +118,97 @@ times the tests choose. It is registered as ``SimulatedStepEngine`` and
      - The steps it can hold; a longer program is refused.
 
 
+StepProtocolScanEngine
+======================
+
+A board that speaks the step-engine protocol, IMSWITCH_STEP/1
+(:doc:`step-engine-protocol`): the TriggerScope once its firmware is
+rewritten to it, or any microcontroller with DACs and digital lines. Such a
+board joins without Python: the engine asks it ``*IDN?`` and ``*CAPS?``, and
+what the board answers -- its timing grid, DACs and their ranges, lines,
+capacity, trigger input and latency -- is what the engine can do. It is
+registered as ``StepProtocolScanEngine`` and
+``builtin.step-protocol-scan-engine``.
+
+A scan program is compiled on the host into the board's terms and uploaded;
+the board walks the loops, writes the DACs, switches the lines and waits for
+its trigger input on its own, and reports its progress, each release and the
+end. **Stop** stops it at its next step, and at once while it waits. ``LOG?``
+returns what it executed, which the conformance tests compare with the
+interpreter.
+
+* **Channels** are named ``<engine>/dac<i>`` and ``<engine>/ttl<j>`` (the
+  engine's name in ``scanEngines``); a device is wired to one by its
+  ``analogChannel`` or ``digitalLine``. A channel the board does not declare
+  is not the engine's, so a device on it is refused with the channel named.
+  While the board does not answer, every channel of that form stays the
+  engine's, and the next compile asks the board again.
+* **Positions** go to the board in volts, from the positioner's
+  ``conversionFactor`` (µm per volt). A positioner that declares none is
+  refused as unknown; positions outside the board's DAC range, or the
+  positioner's ``minVolt``/``maxVolt``, are refused with both ranges.
+* **Polarity** stays on the host: each line's on and off levels come from the
+  device's ``ttlActiveLevel``, and its off level is sent as its **safe**
+  level, where a stop, a failure and the end of a run leave it. A DAC holds
+  its position.
+* **Refused, with the reason:** a sweep, a smooth transition (a board jumps),
+  a power level inside a step (``level``), an intra-step move (``offset``),
+  two devices on one line, a wait that does not idle, a trigger wait on a
+  board without a trigger input, more steps than the board holds, a time off
+  its grid, and a number the protocol's integers cannot hold. A board that
+  answers another protocol version, or does not answer, is unknown, and so
+  is everything it would run.
+
+The **simulated board** (``"port": "simulated"``) is the board end of the
+protocol in process: it runs uploaded programs on the step executor the
+simulated step board uses, independently of the interpreter, and answers as
+firmware must. Until the TriggerScope firmware exists, it is the board the
+Expert panel and the conformance tests run against.
+
+.. code-block:: json
+
+    "scanEngines": {
+        "board": {
+            "managerName": "StepProtocolScanEngine",
+            "managerProperties": {"port": "COM5", "baudrate": 115200,
+                                  "replyTimeoutS": 0.5}
+        }
+    },
+    "positioners": {"Z": {"analogChannel": "board/dac0", "...": "..."}},
+    "scan": {"engine": "board", "scanWidgetType": "Expert", "...": "..."}
+
+**managerProperties**
+
+.. list-table::
+   :widths: 25 12 18 45
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Default
+     - Meaning
+   * - ``port``
+     - str
+     - required
+     - The board's serial port, or ``"simulated"`` for the simulated board.
+   * - ``baudrate``
+     - int
+     - required on a serial port
+     - The link's rate (a USB board ignores it; the port still needs one).
+   * - ``replyTimeoutS``
+     - float
+     - required on a serial port
+     - How long a command waits for the board's answer, in seconds.
+   * - ``simulatedBoard``
+     - dict
+     - required on ``"simulated"``
+     - What the simulated board declares: ``gridNs`` (required, its timing
+       grid in ns), ``dacs`` (``{index: [minV, maxV]}``), ``ttlLines``,
+       ``maxSteps``, ``triggerIn``, ``triggerLatencyTicks``, and
+       ``actualTriggerLatencyTicks`` for a trigger input whose latency it
+       does not declare.
+
+
 PulseGeneratorScanEngine
 ========================
 
