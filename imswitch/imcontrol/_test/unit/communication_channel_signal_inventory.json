@@ -59,6 +59,13 @@
     ]
   },
   {
+    "name": "sigScanGeometryShown",
+    "args": [
+      "str",
+      "object"
+    ]
+  },
+  {
     "name": "sigSetVisibleLayers",
     "args": [
       "object"

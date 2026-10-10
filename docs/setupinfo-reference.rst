@@ -330,9 +330,10 @@ Required if you want to use the ``Scan`` widget.
 Key fields:
 
 * ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``,
-  ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.  ``"TriggerScope"``
-  runs scans on the TriggerScope board (see `triggerScope`_) from the
-  ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
+  ``"MoNaLISA"``, ``"Advanced"``, ``"SimplePointScan"`` or ``"TriggerScope"``.
+  ``"TriggerScope"`` runs scans on the TriggerScope board (see `triggerScope`_)
+  from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
+  ``SimplePointScan`` is a beginner's point-scan panel (overview and acquisition modes) that runs on the Advanced scan path; pair it with ``GalvoScanDesigner`` and ``AdvancedScanTTLCycleDesigner``.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer.
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and
@@ -351,6 +352,19 @@ Key fields:
   above 10 million spatial positions.
 * ``lineClockLine``: NI-DAQ port line for line clock output (integer or ``"Dev1/port0/line{N}"`` string; ``null`` if not used)
 * ``frameStartClockLine`` / ``frameEndClockLine``: Frame clock outputs (same format as ``lineClockLine``)
+* ``simplePointScan``: Optional options for the ``SimplePointScan`` panel; every key is optional:
+
+  * ``objectiveNA``: sets the pixel slider's finest end to the confocal Nyquist pixel, shortest selected wavelength / (8 · NA);
+  * ``nyquistPixelSizeUm``: sets that end directly; STED setups need this;
+  * ``overviewAxes``: the two positioners the overview scans (default: the first two scanning positioners);
+  * ``overviewFieldUm``: the overview's size (both axes) until the panel's **Size** slider changes it (default 60 µm; a point detector has no field of view of its own, so this is a choice). It is kept within what the scanners reach;
+  * ``overviewMinFieldUm``: the smallest size the slider offers (default 2 µm); the largest is what the scanners reach;
+  * ``overviewMinPixels`` / ``overviewMaxPixels``: the overview's pixel-count range (default 64 / 512);
+  * ``overviewFrameTimeS``: the overview's frame-time target (default 1 s);
+  * ``minSamplesPerPixel``: the shortest dwell in samples (default 2);
+  * ``maxDwellMs``: the dwell slider's longest value (default 10 ms).
+
+  Other scan panels ignore the block.
 
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:

@@ -90,7 +90,10 @@ Detectors
 
 APD synthetic data is modeled as a monotonic cumulative counter that
 reconstructs to bounded non-negative integer photon counts
-(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). PMT
+(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). With
+``mockSample`` the mean follows a synthetic sample (cells and beads) at the
+position the scan waveforms put the beam at each sample, so images follow the
+scanners (``_mock_sample.py``; see :doc:`devices/detectors`). PMT
 synthetic data is bounded ``float32`` voltage samples averaged per pixel
 (``mockVoltageMin``/``mockVoltageMax``/``mockVoltageMean``/``mockVoltageNoiseStd``,
 default range ``-5.0..5.0`` V).
@@ -224,6 +227,13 @@ Setup templates
 Ready-to-use hardware-free setup files, all under
 ``imswitch/_data/user_defaults/imcontrol_setups/``:
 
+* ``simple_mock_setup.json`` — **the default setup** (preselected on first
+  start): mock camera (``AVManager``) for live widefield and one simulated
+  APD imaging the synthetic sample (``mockSample``) through the
+  SimplePointScan panel; galvos reaching 100 µm, three gated lasers,
+  ``nidaq.simulation: true``.
+* ``galvo_apd_simple_mock_scan_setup.json`` — the same panel with two APDs
+  and no camera, for the panel's reference-detector choice and its tests.
 * ``example_mock.json`` — minimal mock camera (``AVManager``) + mock XY
   stage, general-purpose GUI smoke setup.
 * ``example_no_hardware.json`` — the baseline profile for

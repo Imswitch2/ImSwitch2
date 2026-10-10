@@ -732,9 +732,34 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
-``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
-:doc:`setupinfo-reference`.
+Five widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
+``Advanced`` and ``SimplePointScan`` — selected by ``scan.scanWidgetType`` in
+the setup JSON; see :doc:`setupinfo-reference`. ``SimplePointScan`` is a
+beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
+its header switches between the two, on the same scan.
+
+- **Overview** scans live at about one frame per second, and shows the
+  measured frame rate. Its **Size** slider sets the field (default 60 µm,
+  up to what the scanners reach); pixels and dwell follow it.
+- **Acquisition** scans a chosen region, with sliders for pixel size
+  (overview to Nyquist) and dwell, and an estimate of the scan time.
+- While a scan runs, a progress bar under the scan time shows the elapsed
+  and expected time, and the frame number in Live, as in the Advanced panel.
+- **Draw in viewer** draws the region as a rectangle on the live image (on
+  the ``Scan region`` layer). Moving or resizing it changes the region;
+  editing the numbers moves it. Drawing needs an image the scanners made,
+  so start the overview first. The rectangle shows in Acquisition, and in
+  Overview once Draw is clicked; the region numbers and sampling sliders
+  are greyed in Overview, which scans its own field.
+- **Lasers and channels:** drag a laser from the palette onto a channel,
+  onto *Drop a laser here for a new channel*, or between channels; the ×
+  or a drag back to the palette removes it. Lasers in one channel fire
+  together; each channel is its own line pass, and a laser can be in
+  several channels.
+
+``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware; its
+simulated APDs image a synthetic sample, so the region drawn on the overview
+is visibly the region acquired.
 
 Controls shared by the variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -39,6 +39,7 @@ _CONTROLLER_MODULES = {
     "ScanControllerBase": "ScanControllerBase",
     "ScanControllerMoNaLISA": "ScanControllerMoNaLISA",
     "ScanControllerPointScan": "ScanControllerPointScan",
+    "ScanControllerSimplePointScan": "ScanControllerSimplePointScan",
     "SettingsController": "SettingsController",
     "SetupStatusController": "SetupStatusController",
     "SetupModesController": "SetupModesController",

@@ -6,11 +6,21 @@ import time
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger, memory_limits
 from .._scan_execution import PARTICIPANTS_KEY
+from ._frame_publication import (
+    begin_frame_storage,
+    commit_frame_storage,
+    current_frame_geometry,
+    display_frame,
+    pending_scan_geometry,
+    read_with_frame_geometry,
+    remember_scan_geometry,
+)
 from .DetectorManager import (
     _queueBudgetBytes,
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
+from ._mock_sample import MockSample
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -95,6 +105,10 @@ class APDManager(DetectorManager):
         # for typical fluorescence; the TTL-multiplying path will reallocate
         # as float32 (to preserve NaN as a "no-data" marker) in initiateImage.
         self._image = np.zeros(fullShape, dtype=np.uint16)
+        # What live view shows until the first scan builds the real one: a
+        # camera's live view also asks every other acquisition detector for
+        # its latest frame, which used to fail here before any scan.
+        self._image_display = np.zeros(fullShape, dtype=np.uint16)
         # The sample clock is the NI-DAQ timer counter's pulse train: its rate
         # and terminal come from the manager that generates it, not from a
         # literal here (which named counter 2 whatever the setup file chose).
@@ -126,6 +140,8 @@ class APDManager(DetectorManager):
             manager_props.get("mock_random_seed", None),
         )
         self._warned_mock_count_clip = False
+        # A synthetic sample imaged from the scan waveforms (simulation only).
+        self._mock_sample = MockSample.from_property(manager_props.get("mockSample"))
 
         self._frameCount = 0
         self._scanWorker = None
@@ -177,6 +193,10 @@ class APDManager(DetectorManager):
             manager_props.get("simulation_mode", False)
             or getattr(nidaqManager, 'isSimulated', False)
         )
+        if self._mock_sample is not None and self._simulation_mode:
+            # Built once per process (about a second); not on the first scan.
+            threading.Thread(target=self._mock_sample.texture, daemon=True,
+                             name='mock-sample').start()
 
         # Prepare detector manager parameters and signal connections
         parameters = {}
@@ -206,6 +226,7 @@ class APDManager(DetectorManager):
             super().__del__()
 
     def initiateScan(self, scanInfoDict, signalDict):
+        remember_scan_geometry(self, scanInfoDict)
         participants = scanInfoDict.get(PARTICIPANTS_KEY)
         self._scanParticipating = (
             participants is None or self.name in participants
@@ -649,11 +670,19 @@ class APDManager(DetectorManager):
 
     def getLatestFrame(self, is_save=True):
         S = int(getattr(self, "_linestep", 1))
-        if is_save or S > 1:
+        if is_save:
             return self._image  # raw stack (1,S,Ny,Nx)
-        return self._image_display  # always (1,Ny,Nx)
+        # For display, a scan carrying a geometry publishes it with the frame
+        # (scan_frame.ScanFrame); any other scan gets exactly the array below.
+        frame, geometry = read_with_frame_geometry(
+            self,
+            lambda: self._image if S > 1 else self._image_display,
+        )
+        return display_frame(self, frame, geometry)
 
     def _renewImage(self):
+        # Axes are removed here, so no scan geometry describes the result.
+        begin_frame_storage(self)
         im_squeezed, ax_rem = self.remove_nans(self._image)
         self.setShape(np.shape(im_squeezed))
         self._image = im_squeezed
@@ -731,7 +760,13 @@ class APDManager(DetectorManager):
             # Time-throttled live preview: bound the redraw rate deterministically
             # instead of gating on image size with a random draw per line.
             if self._liveThrottle.due():
-                self.sigImageUpdated.emit(self._image, True, self.scale)
+                self.sigImageUpdated.emit(
+                    display_frame(
+                        self, self._image, current_frame_geometry(self)
+                    ),
+                    True,
+                    self.scale,
+                )
             return
 
         if np.squeeze(self._image).ndim >= 3:
@@ -772,8 +807,18 @@ class APDManager(DetectorManager):
         # (still ImageJ-compatible, half the memory of float64).
         image_dtype = np.float32 if self._ttlmultiplying else np.uint16
 
-        if (np.shape(self._image) != img_dims_extra
-                or self._image.dtype != image_dtype):
+        # A scan carrying a geometry always gets fresh storage: frames already
+        # published for the previous scan share the old buffer (napari's layer
+        # shows it directly), and rewriting it would change pixels on screen
+        # that still claim the old geometry. Scans without one keep reusing a
+        # same-shape buffer, as before.
+        geometry = pending_scan_geometry(self)
+        begin_frame_storage(self)
+        shapeChanged = (np.shape(self._image) != img_dims_extra
+                        or self._image.dtype != image_dtype)
+        if geometry is not None and not shapeChanged:
+            self._image = np.zeros(img_dims_extra, dtype=image_dtype)
+        if shapeChanged:
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)
             self.setShape(img_dims_extra)
             # The recording's raw frame is this whole volume, delivered once
@@ -794,6 +839,7 @@ class APDManager(DetectorManager):
             tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]),
             dtype=image_dtype,
         )
+        commit_frame_storage(self, geometry)
 
     def setParameter(self, name, value):
         pass
@@ -874,7 +920,9 @@ class APDManager(DetectorManager):
         Exactly once: a recording that received the same volume twice would be
         as wrong as one that received it half-written.
         """
-        display = self.getChunk()
+        display, displayGeometry = read_with_frame_geometry(
+            self, self.getChunk
+        )
 
         raw = _EMPTY_CHUNK
         if (self.__dict__.get('_rawReady', False)
@@ -888,7 +936,9 @@ class APDManager(DetectorManager):
             # separate frames.
             raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
 
-        return ChunkPayload(display=display, raw=raw)
+        return ChunkPayload(
+            display=display, raw=raw, display_geometry=displayGeometry
+        )
 
     def flushBuffers(self):
         self.__newFrameReady = False
@@ -1072,6 +1122,19 @@ class ScanWorker(Worker):
             int(round(self._manager._detection_samplerate * scanInfoDict['scan_time_step'])),
         )
         self._rng = np.random.default_rng(self._manager._mock_random_seed)
+        # Beam position per scan sample (µm, the sample's x and y) when the
+        # simulated detector images a mock sample; None for plain noise.
+        self._mock_positions = None
+        sample = self._manager._mock_sample
+        if self._manager._simulation_mode and sample is not None:
+            signals = signalDict.get('scanSignalsDict', {}) or {}
+            positions = [
+                None if signals.get(device) is None
+                else np.asarray(signals[device], dtype=float) * umPerVolt
+                for device, umPerVolt in sample.axes
+            ]
+            if any(p is not None for p in positions):
+                self._mock_positions = positions
 
         # extract APD signals from signalDict
         self._seq_signal = None  # set only if ttlmultiplying AND this device found in signalDict
@@ -1475,9 +1538,25 @@ class ScanWorker(Worker):
         frac = max(1, int(self._frac_det_dwell))
         mean_per_sample = max(0.0, self._manager._mock_photon_count_mean / frac)
         max_per_sample = max(1, int(np.ceil(self._manager._mock_photon_count_max / frac)))
+        if self._mock_positions is not None:
+            mean_per_sample = mean_per_sample * self._mock_brightness(datalen)
         increments = self._rng.poisson(mean_per_sample, size=datalen).astype(np.int64)
         increments = np.clip(increments, 0, max_per_sample)
         return np.cumsum(increments, dtype=np.int64) + int(self._last_value)
+
+    def _mock_brightness(self, datalen):
+        """The mock sample under the beam for the next ``datalen`` samples."""
+        start = int(self._samples_read)
+        scan_index = np.arange(start, start + datalen) // self._frac_scan_det_rate
+        coords = []
+        for positions in self._mock_positions:
+            if positions is None or not len(positions):
+                coords.append(np.zeros(datalen))
+            else:
+                coords.append(positions[np.minimum(scan_index, len(positions) - 1)])
+        if len(coords) == 1:
+            coords.append(np.zeros(datalen))
+        return self._manager._mock_sample.brightness(coords[0], coords[1])
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

@@ -95,6 +95,9 @@ class CommunicationChannel(SignalInterface):
     sigCrosshairToggled = Signal(bool)  # (enabled)
     sigAddItemToVb = Signal(object)  # (item)
     sigRemoveItemFromVb = Signal(object)  # (item)
+    # (detectorName, DisplayedScanGeometry or None): the scan geometry of what
+    # the detector's live layer now shows, emitted when it changes.
+    sigScanGeometryShown = Signal(str, object)
     sigSetVisibleLayers = Signal(object)  # (detectorNameTuple) — Snouty setup switching
     sigSetConfig = Signal(str)  # (configName) — Snouty setup switching
 
@@ -216,6 +219,7 @@ class CommunicationChannel(SignalInterface):
             'crosshairToggled': self.sigCrosshairToggled,
             'addItemToVb': self.sigAddItemToVb,
             'removeItemFromVb': self.sigRemoveItemFromVb,
+            'scanGeometryShown': self.sigScanGeometryShown,
         })
         self.recordingEvents = pythontools.dictToROClass({
             'recordingStarted': self.sigRecordingStarted,
