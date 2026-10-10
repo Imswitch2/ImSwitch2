@@ -141,3 +141,30 @@ def test_resume_live_button_is_context_independent_and_temporary(qtbot):
     assert not widget.resumeLiveButton.isHidden()
     widget.setResumeLiveAvailable(False)
     assert widget.resumeLiveButton.isHidden()
+
+
+def test_coupled_mode_keeps_sticky_presets_but_hides_separated_controls(qtbot):
+    widget = _widget(qtbot)
+    widget.setResumeLiveAvailable(True)
+    widget.setPowerContext('scan', emitSignal=False)
+
+    widget.setPowerMode('coupled')
+
+    assert widget.contextFrame.isHidden()
+    assert widget.scanEditingLabel.isHidden()
+    assert widget.resumeLiveButton.isHidden()
+    assert widget.getPowerContext() == 'live'
+    assert widget.presetsList.isVisible() or not widget.isVisible()
+    module = widget.laserModules['488']
+    assert not module.enableButton.isHidden()
+    assert not module.modulationGroup.isHidden()
+
+
+def test_separated_mode_restores_context_controls(qtbot):
+    widget = _widget(qtbot)
+    widget.setPowerMode('coupled')
+    widget.setPowerMode('separated')
+
+    assert not widget.contextFrame.isHidden()
+    widget.setPowerContext('scan', emitSignal=False)
+    assert not widget.scanEditingLabel.isHidden()

@@ -6,7 +6,7 @@ from .basewidgets import Widget
 
 
 class LaserWidget(Widget):
-    """Laser widget with contextual Live and Scan power views."""
+    """Laser widget supporting coupled and separated laser-power policies."""
 
     sigEnableChanged = QtCore.Signal(str, bool)
     sigValueChanged = QtCore.Signal(str, float)
@@ -31,6 +31,7 @@ class LaserWidget(Widget):
         super().__init__(*args, **kwargs)
         self.laserModules = {}
         self._powerContext = 'live'
+        self._powerMode = 'separated'
 
         self.setMinimumSize(0, 0)
         self.layout = QtWidgets.QGridLayout()
@@ -150,7 +151,9 @@ class LaserWidget(Widget):
 
     def _updateContextAppearance(self):
         """Show the explicit Scan-editing banner for the active context."""
-        self.scanEditingLabel.setVisible(self._powerContext == 'scan')
+        self.scanEditingLabel.setVisible(
+            self._powerMode == 'separated' and self._powerContext == 'scan'
+        )
 
     def _presetActivated(self, index):
         # Qt bindings normally emit the combo index here, but accepting the
@@ -204,6 +207,27 @@ class LaserWidget(Widget):
         self.laserModules[laserName] = control
         control.setContext(self._powerContext)
 
+    def setPowerMode(self, mode):
+        """Configure coupled vs separated presentation without emitting edits."""
+        mode = str(getattr(mode, 'value', mode)).lower()
+        if mode not in ('coupled', 'separated'):
+            raise ValueError(f'Unknown laser power mode: {mode!r}')
+        self._powerMode = mode
+        separated = mode == 'separated'
+        self.contextFrame.setVisible(separated)
+        if not separated:
+            # Coupled has one hardware-backed power context. Keep LaserModule
+            # controls in their Live presentation, but do not emit a context
+            # change just because setup policy was configured.
+            self.setPowerContext('live', emitSignal=False)
+            self.scanEditingLabel.hide()
+            self.resumeLiveButton.hide()
+        else:
+            self._updateContextAppearance()
+
+    def getPowerMode(self):
+        return self._powerMode
+
     def getPowerContext(self):
         return self._powerContext
 
@@ -233,7 +257,9 @@ class LaserWidget(Widget):
 
     def setResumeLiveAvailable(self, available):
         """Show the one-shot post-scan Live restoration action."""
-        self.resumeLiveButton.setVisible(bool(available))
+        self.resumeLiveButton.setVisible(
+            self._powerMode == 'separated' and bool(available)
+        )
 
     def setLaserActive(self, laserName, active, emitSignal=True):
         self.laserModules[laserName].setActive(active, emitSignal=emitSignal)

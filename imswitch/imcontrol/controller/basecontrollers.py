@@ -16,7 +16,8 @@ from imswitch.imcommon.controller.basecontrollers import (
     WidgetControllerFactory,
 )
 from imswitch.imcontrol.model import (
-    InvalidChildClassError, ScanDesignRefusedError,
+    InvalidChildClassError, LaserPowerMode, ScanDesignRefusedError,
+    normalizeLaserPowerMode,
 )
 from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
 from imswitch.imcontrol.model.managers._scan_execution import (
@@ -1672,10 +1673,12 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         ``sigScanBuilt`` arrives and its write is refused. Publishing first
         gives those consumers a window while the DAQ is still free.
 
-        Patch 3 makes laser membership part of the hardware handoff: it decides
-        which Live paths are suppressed and where Scan power is applied. A
-        failure to resolve the TTL device list therefore must abort before the
-        backend is armed rather than running with undefined laser ownership.
+        In separated laser-power mode, membership is part of the hardware
+        handoff: it decides which Live paths are suppressed and where Scan
+        power is applied, so resolution failure must abort before arming.
+        Coupled mode deliberately preserves the pre-work behavior: resolution
+        failure is logged and membership consumers are skipped, but laser
+        ownership alone does not make acquisition refusal fatal.
         """
         self._scanPositionersRestored = False
         # Published here rather than alongside sigScanStarting, which fires
@@ -1685,23 +1688,35 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # Consumers have already yielded on sigScanStarting and this only ever
         # releases them, so arriving later is safe -- arriving wrong is not.
         self._publishScanActuators()
-        self._raiseIfLaserScanPreparationFailed()
+        laserPowerMode = normalizeLaserPowerMode(
+            getattr(self._setupInfo, 'laserPowerMode', LaserPowerMode.COUPLED.value)
+        )
+        separatedLaserPower = laserPowerMode is LaserPowerMode.SEPARATED
+        if separatedLaserPower:
+            self._raiseIfLaserScanPreparationFailed()
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
         except Exception as error:
+            if separatedLaserPower:
+                self._logger.error(
+                    'Could not resolve the scan device list; refusing to arm '
+                    f'acquisition because laser ownership is undefined:\n'
+                    f'{traceback.format_exc()}'
+                )
+                raise RuntimeError(
+                    'Could not resolve scan laser/device membership before arming.'
+                ) from error
             self._logger.error(
-                'Could not resolve the scan device list; refusing to arm '
-                f'acquisition because laser ownership is undefined:\n'
+                'Could not resolve the scan device list; lasers and other '
+                f'membership consumers are not being notified:\n'
                 f'{traceback.format_exc()}'
             )
-            raise RuntimeError(
-                'Could not resolve scan laser/device membership before arming.'
-            ) from error
         else:
             self.emitScanSignal(
                 self._commChannel.sigScanDevicesResolved, devices
             )
-        self._raiseIfLaserScanPreparationFailed()
+        if separatedLaserPower:
+            self._raiseIfLaserScanPreparationFailed()
         recordingManager = getattr(self._master, 'recordingManager', None)
         markScanStarted = getattr(
             recordingManager, 'markScanStarted', None

@@ -57,6 +57,7 @@ from imswitch.imcontrol.model.EtSTEDAutoCalibration import (
 from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
 from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformService
 from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredScanRunner
+from imswitch.imcontrol.model import LaserPowerMode, normalizeLaserPowerMode
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT, FINISH_GRACEFUL, getSharedScanExecutionCoordinator,
@@ -1183,17 +1184,22 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     def runSlowScan(self) -> bool:
         self._state.detLog['scan_start'] = _now_us_tag()
-        preparationError = getattr(
-            self._commChannel.scanWorkflow,
-            'laser_scan_preparation_error',
-            lambda: None,
-        )()
-        if preparationError:
-            self._logger.error(
-                f'Laser preparation failed; slow scan will not start: '
-                f'{preparationError}'
-            )
-            return False
+        laserPowerMode = normalizeLaserPowerMode(
+            getattr(self._setupInfo, 'laserPowerMode', LaserPowerMode.COUPLED.value)
+        )
+        separatedLaserPower = laserPowerMode is LaserPowerMode.SEPARATED
+        if separatedLaserPower:
+            preparationError = getattr(
+                self._commChannel.scanWorkflow,
+                'laser_scan_preparation_error',
+                lambda: None,
+            )()
+            if preparationError:
+                self._logger.error(
+                    f'Laser preparation failed; slow scan will not start: '
+                    f'{preparationError}'
+                )
+                return False
 
         # Publish scan membership while the DAQ is still free — see
         # SuperScanController._armScanIteration. This is the fifth NI-DAQ entry
@@ -1202,26 +1208,33 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(self.signalDic)
         except Exception as e:
+            if separatedLaserPower:
+                self._logger.error(
+                    f'Could not resolve the scan device list for the '
+                    f'{self.MODALITY_LABEL} slow scan; refusing to start because '
+                    f'laser ownership is undefined: {e}', exc_info=True
+                )
+                return False
             self._logger.error(
                 f'Could not resolve the scan device list for the '
-                f'{self.MODALITY_LABEL} slow scan; refusing to start because '
-                f'laser ownership is undefined: {e}', exc_info=True
+                f'{self.MODALITY_LABEL} slow scan; membership consumers are '
+                f'not being notified: {e}', exc_info=True
             )
-            return False
         else:
             self._commChannel.sigScanDevicesResolved.emit(devices)
 
-        preparationError = getattr(
-            self._commChannel.scanWorkflow,
-            'laser_scan_preparation_error',
-            lambda: None,
-        )()
-        if preparationError:
-            self._logger.error(
-                f'Laser preparation failed; slow scan will not start: '
-                f'{preparationError}'
-            )
-            return False
+        if separatedLaserPower:
+            preparationError = getattr(
+                self._commChannel.scanWorkflow,
+                'laser_scan_preparation_error',
+                lambda: None,
+            )()
+            if preparationError:
+                self._logger.error(
+                    f'Laser preparation failed; slow scan will not start: '
+                    f'{preparationError}'
+                )
+                return False
 
         result = self._triggeredScanRunner.trigger(
             self._state.scanInitiationMode.name,

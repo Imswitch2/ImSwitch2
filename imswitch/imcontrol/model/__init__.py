@@ -10,10 +10,13 @@ from .SetupInfo import (
 )
 from .WidgetStatePersistence import WidgetStatePersistence, getWidgetStatePersistence
 from .laser_power import (
+    LaserAcquisitionState,
     LaserPowerContext,
+    LaserPowerMode,
     LaserScanPowerControl,
     LaserScanState,
     normalizeLaserPowerContext,
+    normalizeLaserPowerMode,
     normalizeLaserScanState,
 )
 from .errors import *

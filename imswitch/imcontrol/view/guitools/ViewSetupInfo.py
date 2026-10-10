@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from imswitch.imcontrol.model import SetupInfo
 
@@ -67,14 +67,16 @@ class ViewSetupInfo(SetupInfo):
     rois: Dict[str, 'ROIInfo'] = field(default_factory=dict)
     """ Additional ROIs available to select in detector settings. """
 
-    laserPresets: Dict[str, Dict[str, 'LaserPresetInfo']] = field(default_factory=dict)
-    """ Live laser presets available to select (map preset name -> laser
-    name -> LaserPresetInfo). Kept under its historical key for backward
-    compatibility. """
+    laserPowerMode: str = "coupled"
+    """Laser acquisition-power policy: ``coupled`` (legacy/default) or
+    ``separated`` (independent Live and Scan power contexts)."""
 
-    laserScanPresets: Dict[str, Dict[str, 'LaserPresetInfo']] = field(default_factory=dict)
-    """ Scan-context laser presets. These contain power values only and are
-    intentionally separate from :attr:`laserPresets`. """
+    laserPresets: Dict[str, Any] = field(default_factory=dict)
+    """Laser presets in one global namespace. Historical entries remain
+    unchanged as ``{laser: {"value": ...}}`` and are context-unspecified.
+    New contextual entries may use
+    ``{"context": "live"|"scan", "powers": {...}}``.
+    """
 
     widgetLayout: Optional['WidgetLayoutInfo'] = field(default_factory=lambda: None)
     """ Optional dock layout override.  When ``null`` or absent, the built-in
@@ -133,25 +135,14 @@ class ViewSetupInfo(SetupInfo):
         except KeyError:
             pass
 
-    def setLaserPreset(self, name, laserPresetInfos):
+    def setLaserPreset(self, name, laserPresetInfo):
         """ :meta private: """
-        self.laserPresets[name] = laserPresetInfos
+        self.laserPresets[name] = laserPresetInfo
 
     def removeLaserPreset(self, name):
         """ :meta private: """
         try:
             del self.laserPresets[name]
-        except KeyError:
-            pass
-
-    def setLaserScanPreset(self, name, laserPresetInfos):
-        """ :meta private: """
-        self.laserScanPresets[name] = laserPresetInfos
-
-    def removeLaserScanPreset(self, name):
-        """ :meta private: """
-        try:
-            del self.laserScanPresets[name]
         except KeyError:
             pass
 

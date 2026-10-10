@@ -46,7 +46,9 @@ from imswitch.imcontrol.controller.controllers.LaserController import (
 from imswitch.imcontrol.controller.controllers.EventTriggeredBaseController import (
     EventTriggeredControllerBase,
 )
-from imswitch.imcontrol.model import LaserScanPowerControl, LaserScanState
+from imswitch.imcontrol.model import (
+    LaserPowerMode, LaserScanPowerControl, LaserScanState,
+)
 
 
 class _Laser:
@@ -123,8 +125,9 @@ class _LaserInfo:
 
 
 class _SetupInfo:
-    def __init__(self, lasers):
+    def __init__(self, lasers, laserPowerMode='separated'):
         self.lasers = lasers
+        self.laserPowerMode = laserPowerMode
 
 
 class _SharedAttrs(dict):
@@ -168,7 +171,7 @@ class _Logger:
         self.messages.append(('error', message))
 
 
-def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=()):
+def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=(), mode='separated'):
     """``pairs`` maps a gate laser to the device that sets its power."""
     pairs = pairs or {}
     ctrl = LaserController.__new__(LaserController)
@@ -189,10 +192,136 @@ def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=()):
     ctrl._scanArmedLasers = []
     ctrl._scanEnabledLasers = []
     ctrl._scanLasersPaused = False
+    ctrl._powerMode = LaserPowerMode(mode)
+    ctrl._selectedPresetByContext = {}
+    ctrl._selectedCoupledPreset = None
     ctrl._setupInfo = _SetupInfo(
-        {name: _LaserInfo(pairs.get(name)) for name in names}
+        {name: _LaserInfo(pairs.get(name)) for name in names},
+        laserPowerMode=mode,
     )
     return ctrl
+
+
+# --------------------------------------------------------------------------- #
+# Coupled parity with main@bf980335                                             #
+# --------------------------------------------------------------------------- #
+
+def test_coupled_arming_never_writes_power_and_syncs_power_device_on():
+    ctrl = _controller(
+        names=('561', '561AOTF'), pairs={'561': '561AOTF'}, mode='coupled'
+    )
+    ctrl._widget.values['561AOTF'] = 17.0
+    ctrl._scanPowerValues['561AOTF'] = 99.0  # dormant separated state
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ('value', 17.0) not in ctrl._master.lasersManager['561AOTF'].calls
+    assert ('value', 99.0) not in ctrl._master.lasersManager['561AOTF'].calls
+    assert not any(call[0] == 'value' for call in ctrl._master.lasersManager['561'].calls)
+    assert ('scanMode', True) in ctrl._master.lasersManager['561'].calls
+    assert ('enabled', True) in ctrl._master.lasersManager['561AOTF'].calls
+    assert ctrl._widget.active['561AOTF'] is True
+    assert ctrl._widget.enableEditable['561'] is False
+    assert ctrl._widget.enableEditable['561AOTF'] is False
+
+
+def test_coupled_scan_start_does_not_globally_lock_or_suppress_live():
+    ctrl = _controller(names=('488', '640'), mode='coupled')
+    ctrl._widget.active.update({'488': True, '640': True})
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    assert ctrl._widget.editable is True
+    assert ('enabled', False) not in ctrl._master.lasersManager['488'].calls
+    assert ctrl._master.lasersManager['640'].calls == []
+    assert ctrl._widget.active['640'] is True
+
+
+def test_coupled_run_clears_stale_preparation_veto_and_never_recreates_it():
+    """Unconditional TriggerScope veto checks remain a no-op in coupled mode."""
+    ctrl = _controller(names=('488',), mode='coupled')
+    workflow = ctrl._commChannel.scanWorkflow
+    workflow.error = 'stale separated preparation failure'
+
+    LaserController.scanChanged(ctrl, True)
+    assert workflow.laser_scan_preparation_error() is None
+
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    assert workflow.laser_scan_preparation_error() is None
+
+    LaserController.scanPartDone(ctrl)
+    assert workflow.laser_scan_preparation_error() is None
+
+
+def test_coupled_nonparticipant_remains_editable_and_untouched_on_teardown():
+    ctrl = _controller(names=('488', '640'), mode='coupled')
+    ctrl._widget.active['640'] = True
+    ctrl._widget.values['488'] = 12.0
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    LaserController.scanChanged(ctrl, False)
+
+    assert ctrl._master.lasersManager['640'].calls == []
+    assert ctrl._widget.active['640'] is True
+    assert ctrl._widget.enableEditable.get('640', True) is True
+    assert ('scanMode', False) in ctrl._master.lasersManager['488'].calls
+    assert ('enabled', False) in ctrl._master.lasersManager['488'].calls
+    assert ('value', 12.0) in ctrl._master.lasersManager['488'].calls
+
+
+def test_coupled_repeat_membership_does_not_rearm_or_write_power():
+    ctrl = _controller(
+        names=('561', '561AOTF'), pairs={'561': '561AOTF'}, mode='coupled'
+    )
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    firstGateCalls = list(ctrl._master.lasersManager['561'].calls)
+    firstPowerCalls = list(ctrl._master.lasersManager['561AOTF'].calls)
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ctrl._master.lasersManager['561'].calls == firstGateCalls
+    assert ctrl._master.lasersManager['561AOTF'].calls == firstPowerCalls
+
+
+def test_coupled_multipart_pause_resume_syncs_power_device_widget():
+    ctrl = _controller(
+        names=('561', '561AOTF'), pairs={'561': '561AOTF'}, mode='coupled'
+    )
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    LaserController.scanPartDone(ctrl)
+    assert ctrl._widget.active['561AOTF'] is False
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    assert ctrl._widget.active['561AOTF'] is True
+    assert ctrl._master.lasersManager['561'].calls.count(('scanMode', True)) == 1
+
+
+def test_coupled_teardown_preserves_prework_zero_setpoint_rule():
+    ctrl = _controller(names=('488',), mode='coupled')
+    ctrl._widget.values['488'] = 0.0
+
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    LaserController.scanChanged(ctrl, False)
+
+    # main@bf980335 deliberately did not write a falsey/zero widget setpoint
+    # back during teardown. Coupled preserves that exact historical behavior.
+    assert ('value', 0.0) not in ctrl._master.lasersManager['488'].calls
+    assert ('scanMode', False) in ctrl._master.lasersManager['488'].calls
+    assert ('enabled', False) in ctrl._master.lasersManager['488'].calls
+
+
+def test_coupled_never_creates_resume_snapshot():
+    ctrl = _controller(names=('488',), mode='coupled')
+    ctrl._widget.active['488'] = True
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    LaserController.scanChanged(ctrl, False)
+
+    assert ctrl._resumableLiveEnabledSnapshot is None
+    assert ctrl._widget.resumeAvailable is False
 
 
 # --------------------------------------------------------------------------- #
@@ -818,7 +947,7 @@ def test_live_power_edit_preserves_pending_resume():
     ctrl._resumableLiveEnabledSnapshot = {'488': True}
     ctrl._widget.resumeAvailable = True
 
-    LaserController.setLaserPower(ctrl, '488', 4.0, 'live')
+    LaserController.setLaserPowerSetting(ctrl, '488', 4.0, 'live')
 
     assert ctrl._resumableLiveEnabledSnapshot == {'488': True}
     assert ctrl._widget.resumeAvailable is True
@@ -877,8 +1006,8 @@ def test_laser_mutations_are_rejected_while_scan_is_active():
 
     mutators = (
         lambda: LaserController.toggleLaser(ctrl, '488', True),
-        lambda: LaserController.setLaserPower(ctrl, '488', 5.0, 'live'),
-        lambda: LaserController.setLaserPower(ctrl, '488', 25.0, 'scan'),
+        lambda: LaserController.setLaserPowerSetting(ctrl, '488', 5.0, 'live'),
+        lambda: LaserController.setLaserPowerSetting(ctrl, '488', 25.0, 'scan'),
         lambda: LaserController.toggleModulation(ctrl, '488', True),
         lambda: LaserController.frequencyChanged(ctrl, '488', 100),
         lambda: LaserController.dutyCycleChanged(ctrl, '488', 50),
@@ -917,22 +1046,47 @@ def test_triggerscope_prearm_boundary_enforces_laser_preparation_veto():
     assert checks[0] < publish < checks[-1] < firmware
 
 
-def test_nidaq_membership_resolution_failure_is_blocking_before_arm():
+def test_nidaq_membership_resolution_failure_is_mode_dependent_before_arm():
     source = inspect.getsource(SuperScanController._armScanIteration)
     resolve = source.index('resolveScanTTLDevices')
     refusal = source.index(
         'Could not resolve scan laser/device membership before arming.'
     )
+    coupled_log = source.index(
+        'membership consumers are not being notified'
+    )
     arm = source.index('_scanCoordinator.arm(')
-    assert resolve < refusal < arm
+    assert 'separatedLaserPower' in source
+    assert resolve < refusal < coupled_log < arm
+    # Separated raises; coupled logs and falls through to normal arming.
+    branch = source[resolve:arm]
+    assert 'if separatedLaserPower:' in branch
+    assert 'raise RuntimeError(' in branch
 
 
-def test_event_triggered_membership_resolution_failure_stops_slow_scan():
+def test_event_triggered_membership_resolution_failure_is_mode_dependent():
     source = inspect.getsource(EventTriggeredControllerBase.runSlowScan)
     resolve = source.index('resolveScanTTLDevices')
     refusal = source.index('laser ownership is undefined')
-    publish = source.index('sigScanDevicesResolved.emit')
-    assert resolve < refusal < publish
-    # The resolution-exception branch must stop before membership publication.
-    resolution_block = source[resolve:publish]
-    assert 'return False' in resolution_block
+    coupled_log = source.index('membership consumers are')
+    trigger = source.index('_triggeredScanRunner.trigger')
+    assert 'separatedLaserPower' in source
+    assert resolve < refusal < coupled_log < trigger
+    branch = source[resolve:trigger]
+    assert 'if separatedLaserPower:' in branch
+    assert 'return False' in branch
+    # Coupled has no return in its logging branch and continues to trigger.
+    coupled_branch = branch[branch.index('membership consumers are'): ]
+    assert 'return False' not in coupled_branch.split('else:', 1)[0]
+
+
+def test_coupled_laser_mutations_remain_allowed_while_scan_is_active():
+    ctrl = _controller(names=('488', '640'), mode='coupled')
+    ctrl.is_scanning = True
+    ctrl._currentPowerContext = 'live'
+
+    LaserController.toggleLaser(ctrl, '640', True)
+    LaserController.setLaserPowerSetting(ctrl, '640', 5.0, 'live')
+
+    assert ('enabled', True) in ctrl._master.lasersManager['640'].calls
+    assert ('value', 5.0) in ctrl._master.lasersManager['640'].calls

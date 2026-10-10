@@ -1,5 +1,21 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional, Union
+
+
+
+
+class LaserPowerMode(str, Enum):
+    """Setup-level policy for how acquisition power relates to Live power.
+
+    ``COUPLED`` preserves the immediate pre-Live/Scan ImSwitch2 lifecycle:
+    acquisition uses the current hardware setpoint and does not perform a
+    Live/Scan handoff. ``SEPARATED`` enables the independent Live and Scan
+    contexts introduced by the laser-power rework.
+    """
+
+    COUPLED = "coupled"
+    SEPARATED = "separated"
 
 
 class LaserPowerContext(str, Enum):
@@ -32,6 +48,27 @@ class LaserScanState:
 
     active_for_scan: bool = False
     power_control: LaserScanPowerControl = LaserScanPowerControl.DIRECT
+
+
+@dataclass(frozen=True)
+class LaserAcquisitionState:
+    """Resolved acquisition-power state for one configured laser path.
+
+    Unlike :class:`LaserScanState`, which reports scan configuration only,
+    this object answers what acquisition would actually use under the current
+    ``laserPowerMode``. ``value`` is intentionally ``None`` when the laser is
+    inactive for the current scan, when AO owns acquisition power, or when the
+    effective power-bearing device is binary and therefore has no scalar
+    setpoint.
+    """
+
+    active_for_scan: bool
+    power_mode: LaserPowerMode
+    power_control: LaserScanPowerControl
+    power_device: str
+    value: Optional[Union[int, float]] = None
+    value_context: Optional[LaserPowerContext] = None
+    uses_fallback: bool = False
 
 
 def normalizeLaserPowerContext(context) -> LaserPowerContext:
@@ -69,3 +106,19 @@ def normalizeLaserScanState(state) -> LaserScanState:
             power_control=control,
         )
     raise TypeError(f"Unsupported laser scan state: {state!r}")
+
+
+def normalizeLaserPowerMode(mode) -> LaserPowerMode:
+    """Return ``mode`` as :class:`LaserPowerMode`. Missing/None is coupled."""
+    if mode is None:
+        return LaserPowerMode.COUPLED
+    if isinstance(mode, LaserPowerMode):
+        return mode
+    if isinstance(mode, str):
+        try:
+            return LaserPowerMode(mode.strip().lower())
+        except ValueError:
+            pass
+    raise ValueError(
+        f"Unknown laser power mode {mode!r}; expected 'coupled' or 'separated'."
+    )
