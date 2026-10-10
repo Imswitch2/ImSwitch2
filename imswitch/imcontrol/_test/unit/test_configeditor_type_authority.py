@@ -225,7 +225,8 @@ class TestMaterialize:
         }
         assert props["cameraSerial"]["nullable"] is True
         assert props["cameraSerial"]["tip"].startswith("Camera serial number")
-        assert {f["key"] for f in form["top"]} == {"analogChannel", "digitalLine", "forAcquisition", "forFocusLock"}
+        assert {f["key"] for f in form["top"]} == {"analogChannel", "digitalLine", "forAcquisition", "forFocusLock",
+                                                  "preparation", "ttlActiveLevel"}
 
     def test_a_union_kind_gets_the_text_box_even_over_a_template_int(self):
         form = editor._schema_for_manager("HamamatsuManager")
@@ -490,7 +491,7 @@ def test_the_corpus_is_what_the_plan_says():
     # the SimplePointScan panel; 19: simple_mock_setup.json, the default
     # setup. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
     assert len(shipped_setups()) == 19
-    assert len(generated_fixtures()) == 62
+    assert len(generated_fixtures()) == 64  # + the two scan engines
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 

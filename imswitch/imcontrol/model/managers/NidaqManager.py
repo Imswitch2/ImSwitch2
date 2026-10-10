@@ -86,6 +86,35 @@ READ_TIMEOUT_FLOOR_S = 10.0
 READ_TIMEOUT_MARGIN = 2.0
 
 
+
+def scan_digital_outputs(ttlDic, targetPairs, getDevice):
+    """``(devices, signals, lines)`` the scan's DO task writes: every device
+    in ``ttlDic`` on a line whose name contains ``Dev`` (the lines this board
+    drives), each signal mapped from the designers' logical on/off to the
+    line's level -- an inverted input (``ttlActiveLevel: "low"``) is driven
+    low for on."""
+    devices, signals, lines = [], [], []
+    for device, line in targetPairs:
+        if device not in ttlDic or 'Dev' not in line:
+            continue
+        signal = np.asarray(ttlDic[device], dtype=bool)
+        if not _ttl_level(getDevice(device), True):
+            signal = ~signal
+        devices.append(device)
+        signals.append(signal)
+        lines.append(line)
+    return devices, signals, lines
+
+
+def _ttl_level(device, on):
+    """The electrical level for logical ``on`` on a device's digital line:
+    its ``ttlActiveLevel`` mapping, or ``on`` itself for a device that
+    declares none (an active-high line)."""
+    if isinstance(getattr(device, 'ttlActiveLevel', None), str):
+        return device.ttlLevel(on)
+    return bool(on)
+
+
 class NidaqManager(SignalInterface):
     """ For interaction with NI-DAQ hardware interfaces. """
 
@@ -1094,9 +1123,12 @@ class NidaqManager(SignalInterface):
         """Set one digital line through a registered finite output task."""
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
-            line = self.__setupInfo.getDevice(target).getDigitalLine()
+            device = self.__setupInfo.getDevice(target)
+            line = device.getDigitalLine()
         if line is None:
             raise NidaqManagerError('Target has no digital output assigned to it')
+        # Logical on/off to the line's level (ttlActiveLevel).
+        enable = _ttl_level(device, enable)
 
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
         tasklen = 100
@@ -1246,16 +1278,9 @@ class NidaqManager(SignalInterface):
                 AOchannels.append(channel)
 
             DOTargetChanPairs = self.__makeSortedTargets('getDigitalLine')
-            DOdevices = []
-            DOsignals = []
-            DOlines = []
-
-            for device, line in DOTargetChanPairs:
-                if device not in ttlDic or 'Dev' not in line:
-                    continue
-                DOdevices.append(device)
-                DOsignals.append(ttlDic[device])
-                DOlines.append(line)
+            DOdevices, DOsignals, DOlines = scan_digital_outputs(
+                ttlDic, DOTargetChanPairs, self.__setupInfo.getDevice
+            )
                 
             # check if line and frame clock should be outputted, if so add to DO lists
             if self.__setupInfo.scan.lineClockLine:

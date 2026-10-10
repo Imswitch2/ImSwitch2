@@ -34,6 +34,21 @@ from imswitch.imcommon.model import APIExport, dirtools, initLogger
 # working while the canonical definition lives in the model layer.
 
 
+
+def scan_engine_of(master):
+    """The scan engine a controller runs its scans on: the master's selected
+    engine, or -- for a master that predates engines (test doubles) -- the
+    NI-DAQ manager seen as one."""
+    engine = getattr(master, 'scanEngine', None)
+    if engine is not None:
+        return engine
+    from imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine import (
+        NidaqScanEngine,
+    )
+    return NidaqScanEngine(nidaqManager=master.nidaqManager,
+                           setupInfo=getattr(master, '_MasterController__setupInfo', None))
+
+
 class ImConWidgetControllerFactory(WidgetControllerFactory):
     """ Factory class for creating a ImConWidgetController object. """
 
@@ -449,18 +464,21 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             ),
         )
 
-        # Connect NidaqManager signals
-        self._master.nidaqManager.sigScanBuilt.connect(
+        # The engine that runs this controller's scans. On the NI-DAQ its
+        # signals are the NI-DAQ manager's own, so nothing about when or how
+        # often they arrive changes.
+        self._scanEngine = scan_engine_of(self._master)
+        self._scanEngine.sigScanBuilt.connect(
             lambda _, __, deviceList: self.emitScanSignal(self._commChannel.sigScanBuilt, deviceList)
         )
-        self._master.nidaqManager.sigScanStarted.connect(
+        self._scanEngine.sigScanStarted.connect(
             lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
         )
-        # NI-DAQ is authoritative: abortScan() does not stop a running scan, so
-        # ownership is released on sigScanDone rather than at the user's abort
-        # click.
-        self._master.nidaqManager.sigScanDone.connect(self.__onNidaqScanDone)
-        self._master.nidaqManager.sigScanBuildFailed.connect(
+        # The engine is authoritative: abortScan() does not stop a running
+        # NI-DAQ scan, so ownership is released on sigScanDone rather than at
+        # the user's abort click.
+        self._scanEngine.sigScanDone.connect(self.__onNidaqScanDone)
+        self._scanEngine.sigScanBuildFailed.connect(
             self.__onNidaqScanBuildFailed
         )
 
@@ -1670,7 +1688,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # releases them, so arriving later is safe -- arriving wrong is not.
         self._publishScanActuators()
         try:
-            devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
+            devices = self._engineForScans().resolveScanTTLDevices(signalDict)
         except Exception:
             self._logger.error(
                 'Could not resolve the scan device list; lasers and other '
@@ -1695,7 +1713,24 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                     'Could not initialize the scan-recording watchdog',
                     exc_info=True,
                 )
-        return self._scanCoordinator.arm(signalDict, scanInfoDict, owner=self)
+        runSignals = getattr(self._engineForScans(), 'run_signals', None)
+        if runSignals is None:
+            raise ScanDesignRefusedError(
+                f'This panel builds sampled waveforms, which the scan engine '
+                f'{self._engineForScans().name!r} does not run: it does not stream. '
+                'Run the panel on a streaming engine (scan.engine), such as the NI-DAQ.'
+            )
+        return self._scanCoordinator.armWithStarter(
+            lambda: runSignals(signalDict, scanInfoDict),
+            owner=self, scanInfoDict=scanInfoDict,
+        )
+
+    def _engineForScans(self):
+        engine = self.__dict__.get('_scanEngine')
+        if engine is None:
+            engine = scan_engine_of(self._master)
+            self._scanEngine = engine
+        return engine
 
     def __onNidaqScanDone(self):
         """NI-DAQ finished a scan iteration.

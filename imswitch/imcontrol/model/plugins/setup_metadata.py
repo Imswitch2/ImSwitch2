@@ -33,6 +33,9 @@ _SETUP_KINDS: tuple[SetupKindMetadata, ...] = (
     SetupKindMetadata("slm", "slms", "slms", "slms", True),
     SetupKindMetadata("flip_mirror", "flipMirrors", "flipMirrors", "flipMirrors", True),
     SetupKindMetadata("stand", "stands", "microscopeStand", "stands", True),
+    # Scan engines run scan programs (docs/design/plans/
+    # scan-engines-and-expert-scan.md); a standalone registry-backed loader.
+    SetupKindMetadata("scan_engine", "scanEngines", "scanEngines", "scan_engines", True),
     # Pulse generators still use a bespoke loader.  They are catalogued for
     # existing core setups, but third-party manifests must not promise support.
     SetupKindMetadata("pulse_generator", "pulsegen", "pulsegen", "pulsegen", False),

@@ -115,6 +115,10 @@ class ScanControllerAdvanced(SuperScanController):
             "ms"
         )
 
+        # Grey out TTL devices the scan engine cannot drive (plan §3.3); the
+        # run refuses them in _make_full_scan.
+        self._widget.setTTLAvailability(*self._ttlAvailability())
+
         # Tell the widget which TTL devices support per-linestep analog power (AO channel present)
         try:
             power_capable = []
@@ -157,7 +161,7 @@ class ScanControllerAdvanced(SuperScanController):
         self._progressTimer = QtCore.QTimer(self)
         self._progressTimer.setInterval(SCAN_PROGRESS_INTERVAL_MS)
         self._progressTimer.timeout.connect(self._updateScanProgress)
-        self._master.nidaqManager.sigScanStarted.connect(
+        self._scanEngine.sigScanStarted.connect(
             self._onScanIterationStarted
         )
 
@@ -178,6 +182,35 @@ class ScanControllerAdvanced(SuperScanController):
             raise RuntimeError("setupInfo.scan is not defined; cannot scan")
         return SignalDesignerFactory(self._setupInfo.scan.TTLCycleDesigner)
 
+    #: What the panel says when the scan engine drives no TTL device at all.
+    ANALOG_ONLY_NOTE = ('This scanner has no digital lines: the scan does not switch lasers. '
+                        'Set them in the Laser panel.')
+
+    def _ttlAvailability(self):
+        """``({device: reason}, note)`` for the TTL devices the scan engine
+        does not drive, and the analog-only note when it drives none."""
+        engine = self._engineForScans()
+        unavailable = {}
+        for name, info in self.TTLDevices.items():
+            line = info.getDigitalLine()
+            if line is not None and not engine.owns(line):
+                unavailable[name] = (f'{name} is wired to {line}, which the scan engine '
+                                     f'{engine.name!r} does not drive.')
+        drivable = [name for name in self.TTLDevices if name not in unavailable]
+        return unavailable, (self.ANALOG_ONLY_NOTE if not drivable else '')
+
+    def _refuseUndrivenTTL(self, TTLParameters):
+        """Refuse a scan that fires a TTL device the engine does not drive.
+        Today such a line was dropped silently: the laser never fired."""
+        devices = getattr(self, 'TTLDevices', None) or {}
+        if not any(name in devices for name in TTLParameters.get('target_device', ())):
+            return
+        unavailable, _ = self._ttlAvailability()
+        named = [name for name in TTLParameters.get('target_device', ()) if name in unavailable]
+        if named:
+            raise ScanDesignRefusedError(' '.join(unavailable[name] for name in named)
+                                         + ' Remove it from the scan, or wire it to this engine.')
+
     def _make_full_scan(self, scanParameters, TTLParameters):
         """
         Constructs the full scan from scan parameters using the set parameters in the ScanWidgetAdvanced
@@ -187,6 +220,7 @@ class ScanControllerAdvanced(SuperScanController):
         Raises ScanDesignRefusedError, with the reason, when the scan designer
         refuses the scan (too long, voltages outside a scanner's range).
         """
+        self._refuseUndrivenTTL(TTLParameters)
         scan_des = self._get_scan_designer()
         ttl_des = self._get_ttl_designer()
 

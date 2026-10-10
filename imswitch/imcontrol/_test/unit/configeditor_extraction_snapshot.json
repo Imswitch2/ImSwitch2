@@ -325,6 +325,15 @@
       "unresolved": 0
     },
     {
+      "constrained": 0,
+      "keys": 0,
+      "name": "NidaqScanEngine",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 1,
       "keys": 3,
       "name": "OxxiusCombinerLaserManager",
@@ -469,6 +478,15 @@
       "unresolved": 0
     },
     {
+      "constrained": 1,
+      "keys": 5,
+      "name": "SimulatedStepEngine",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 0,
       "keys": 2,
       "name": "SmarACTPositionerManager",
@@ -561,23 +579,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 46,
-    "docs_agree": 136,
-    "docs_documented": 136,
-    "keys": 216,
-    "managers": 62,
-    "none_default_only": 32,
+    "constrained": 47,
+    "docs_agree": 141,
+    "docs_documented": 141,
+    "keys": 221,
+    "managers": 64,
+    "none_default_only": 36,
     "none_only": 16,
-    "optional": 154,
-    "reads_any": 56,
+    "optional": 159,
+    "reads_any": 57,
     "refs": 14,
     "required": 62,
-    "typed_by_code": 96,
-    "typed_with_docs": 160,
-    "typed_with_examples": 132,
+    "typed_by_code": 97,
+    "typed_with_docs": 165,
+    "typed_with_examples": 133,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 56,
+    "with_keys": 57,
     "writes": 0
   }
 }

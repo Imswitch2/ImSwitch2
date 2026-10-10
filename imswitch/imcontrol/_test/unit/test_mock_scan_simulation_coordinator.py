@@ -966,6 +966,7 @@ def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
         _log_linestep_scan_diagnostics = (
             ScanControllerAdvanced._log_linestep_scan_diagnostics
         )
+        _refuseUndrivenTTL = ScanControllerAdvanced._refuseUndrivenTTL
 
         def __init__(self):
             self._setupInfo = setup_info

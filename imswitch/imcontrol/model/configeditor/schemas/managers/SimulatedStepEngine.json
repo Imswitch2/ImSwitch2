@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "analogChannels": {
+      "description": "The analog channels it drives, ``{channel: [minV, maxV]}``.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:object"
+      ]
+    },
+    "digitalLines": {
+      "description": "The digital lines it drives.",
+      "x-imswitch-kind": "array",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:array"
+      ]
+    },
+    "maxSteps": {
+      "description": "The steps it can hold; a longer program is refused.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "timingGridS": {
+      "description": "The board's timing grid, in seconds. Every time a program uses must",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:float()",
+        "code:optional(in)"
+      ]
+    },
+    "triggerLatencyS": {
+      "description": "From a trigger's arrival to the release, in seconds. Not declared,",
+      "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number"
+      ]
+    }
+  },
+  "title": "SimulatedStepEngine managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "SimulatedStepEngine"
+  ]
+}

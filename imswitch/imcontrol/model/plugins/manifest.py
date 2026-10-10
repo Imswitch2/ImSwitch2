@@ -29,6 +29,7 @@ MULTIMANAGER_BACKED_KINDS = {
 # dedicated loader that still resolves through DevicePluginRegistry.
 STANDALONE_REGISTRY_BACKED_KINDS = {
     "stand",
+    "scan_engine",
 }
 
 # Kinds that use bespoke loaders in the current implementation. Plugin support
@@ -53,6 +54,7 @@ DeviceKind = Literal[
     "flip_mirror",
     "slm",
     "stand",
+    "scan_engine",
     "pulse_generator",
 ]
 

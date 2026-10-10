@@ -69,6 +69,8 @@ class TriggerScopeManager(SignalInterface):
                             self._deviceInfo[targetName]['TTLLine'] = lineNr
                         else:
                             self._deviceInfo[targetName] = {'TTLLine': lineNr}
+                        # Logical on/off to the line's level (ttlActiveLevel).
+                        self._deviceInfo[targetName]['ttlLevel'] = targetInfo.ttlLevel
 
         self.setParSleepTime = 0.05
 
@@ -119,8 +121,10 @@ class TriggerScopeManager(SignalInterface):
         self._rs232manager.write(command)
 
     def setDigital(self, target, enable):
-        """ Set a TTL line high (True) or low (False) for a named device. """
-        val = '1' if enable else '0'
+        """ Switch a named device's TTL line on (True) or off (False): the
+        level follows the device's ``ttlActiveLevel``. """
+        level = self._deviceInfo[target].get('ttlLevel', bool)(enable)
+        val = '1' if level else '0'
         line = self._deviceInfo[target]['TTLLine']
         self.send(f'TTL{line},{val}')
 

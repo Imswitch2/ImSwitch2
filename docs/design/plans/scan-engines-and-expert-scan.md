@@ -2,8 +2,8 @@
 
 **Status:** Plan, draft 7. The direction is agreed (Lenny, 2026-10-08:
 "that sounds like what we're aiming for"), and the review is closed with
-draft 7's amendments. **M0 is implemented** on `feat/scan-program-m0`
-(§7.1); nothing visible has changed.
+draft 7's amendments. **M0 and M1 are implemented** on `feat/scan-engines`
+(§7.1, §7.2).
 **Date:** 2026-10-08
 **Branch:** `docs/scan-engines-expert-scan`, off `feat/simple-point-scan`
 (56ef43f0, which carries the scan cloak and the Advanced scan-freeze work).
@@ -1361,6 +1361,60 @@ designed:
   the engines, in M1. Densify emits logical states.
 - **The panel-level load → preview → save → reload test** waits for M2.
   The model-level round trip (the request kept verbatim) is in M0.
+
+### 7.2 M1 status (2026-10-08)
+
+**Delivered:**
+
+| Where | What |
+|---|---|
+| `scan_program/engine.py` | `EngineCapabilities`, `FeasibilityReport` (native, emulated, impossible, unknown), `ScanEngine`, channel ownership (`setup_channels`, `assign_owners`) |
+| `scan_program/conformance.py` | The interpreter's schedule as an engine log; trigger handling checked against arrival traces the test chooses |
+| `managers/scan_engines/` | `NidaqScanEngine` (the NI-DAQ manager seen through the interface; its signals are the manager's own); `SimulatedStepEngine` (an independent executor of its own compiled plan, which never calls the interpreter); `loader.py` (engines from the setup) |
+| Setup | `scanEngines` (registry kind `scan_engine`, built-ins registered), `scan.engine`, `ttlActiveLevel` and `preparation` on devices |
+| Controllers | `SuperScanController` and the Advanced progress bar talk to the engine. A non-streaming engine is refused for the waveform panels, with the reason |
+| Panels | Advanced greys out TTL devices the engine does not drive, and every TTL part on an analog-only scanner, and refuses a scan that fires one. Simple does not offer such lasers and hides its palette when none remain |
+| Plugin API | `imswitch.pluginapi.experimental` |
+| Docs | `docs/devices/scan_engines.rst`, `setupinfo-reference`, the plugin pages, the changelog |
+
+**Checked:**
+
+- The unit lane (Advanced as today; the Beta and Galvo goldens unchanged).
+- Conformance on the simulated board:
+  - its log equals the interpreter's for a raster with phases, an
+    interleave, waits and preparation;
+  - trigger handling is checked against independent arrivals, with an
+    early-release mutant and an ignored-trigger mutant both caught;
+  - `fail` and `continue` timeouts, stop at a step boundary and during an
+    unbounded wait, failure, prepare and readiness (a mock camera counts its
+    frames).
+- On the NI-DAQ mock: lifecycle order and the feasibility report.
+- `ttlActiveLevel` on every NI-DAQ path (scan DO, `setDigital`) and on the
+  TriggerScope's manual path.
+
+**The independent executor paid for itself at once.** The trigger check
+caught a clock bug in the simulated board itself: in-step DAC writes moved
+its segment clock without its wall clock, so waits began early. Replaying the
+board's own releases would not have seen it.
+
+**Moved:** registry resolution for `pulse_generator` moves to M3, beside the
+`PulseGeneratorScanEngine` adapter that is its only consumer. Doing it in M1
+would change the setup format and four registry tests for nothing that uses
+it yet.
+
+**Found by M1:**
+
+- **NI-DAQ digital lines on a device not named `Dev…`** (`PXI1Slot2/port0/line1`)
+  are dropped by today's `runScan` filter, like the TriggerScope lines.
+  `NidaqScanEngine.owns` keeps that rule exactly, so such a line now greys and
+  refuses instead of dropping silently. Whether the NI-DAQ should drive it is
+  open.
+- **The TriggerScope's built-in scan routines drive their lines active-high
+  whatever `ttlActiveLevel` says;** only manual on/off honours it. That is
+  documented, and fixed by the protocol firmware (M5).
+- **A Simple plan with no channel had zero line passes,** which crashed the
+  TTL designer. Any user who took every laser out could reach it. It is now
+  one line pass that fires nothing.
 
 ## 8. Risks
 

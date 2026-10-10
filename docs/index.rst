@@ -155,6 +155,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/positioners
     devices/rotators
     devices/stands
+    devices/scan_engines
     Hdf5datafile
 
 .. toctree::

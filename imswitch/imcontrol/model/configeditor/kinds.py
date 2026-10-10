@@ -36,6 +36,7 @@ KIND_INFO_CLASSES: dict[str, str] = {
     "slm": "SLMsInfo",
     "flip_mirror": "FlipMirrorInfo",
     "stand": "MicroscopeStandInfo",
+    "scan_engine": "ScanEngineInfo",
 }
 
 #: Top-level keys the editor handles outside the form.

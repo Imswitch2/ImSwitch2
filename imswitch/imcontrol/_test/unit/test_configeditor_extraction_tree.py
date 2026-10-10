@@ -62,15 +62,17 @@ def report(extractions):
 # ── the numbers the plan quotes ───────────────────────────────────────────
 def test_the_coverage_the_plan_is_built_on(report):
     # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert report.managers == 62, "61 plus RS232Manager, which the legacy scan no longer skips"
+    # 64: the NI-DAQ and simulated step scan engines (kind scan_engine).
+    assert report.managers == 64, "61 plus RS232Manager, plus the two scan engines"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
     # ... plus RS232Manager itself, once the catalog stopped skipping it.
     # Four fewer since the removed camera managers (see above): 59 -> 55.
-    assert report.reads_any == 56
-    assert report.with_keys == 56
+    # 57: the simulated step engine reads its board's properties.
+    assert report.reads_any == 57
+    assert report.with_keys == 57
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
@@ -79,14 +81,17 @@ def test_the_coverage_the_plan_is_built_on(report):
     # useMockOnFailure. 213: LeicaDMIZPositionerManager's shared-hardware
     # calibCsvPath boundary read. 215 after open-loop positioner reference
     # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope;
-    # 216: the APD's mockSample.
-    assert report.keys == 216
+    # 216: the APD's mockSample. 221: the simulated step engine's timingGridS,
+    # analogChannels, digitalLines, triggerLatencyS and maxSteps.
+    assert report.keys == 221
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 154
+    assert report.optional == 159  # +5 simulated step engine properties
     assert report.refs == 14
-    assert report.none_default_only == 32  # +2 defaultReferenceVoltage, +1 mockSample
+    # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
+    # properties read with .get(): no default is guessed for a board.
+    assert report.none_default_only == 36
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -96,8 +101,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # Cobolt scanResumeSettleMs, PI runtime_timeout_ms, and Leica stand
     # availableCubes are now documented by their cards.
     # 135: NidaqPositionerManager.defaultReferenceVoltage is now documented
-    # too; 136: and the APD's mockSample.
-    assert (report.docs_agree, report.docs_documented) == (136, 136)
+    # too; 136: and the APD's mockSample. 141: the simulated step engine's
+    # five properties (docs/devices/scan_engines.rst).
+    assert (report.docs_agree, report.docs_documented) == (141, 141)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -105,7 +111,8 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 93: AAAOTF's useMockOnFailure is read with a bool default.
     # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
     # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
-    assert report.typed_by_code == 96
+    # 97: the simulated step engine's timingGridS is read as a float.
+    assert report.typed_by_code == 97
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -277,5 +284,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 62
+    assert totals["managers"] == 64
 

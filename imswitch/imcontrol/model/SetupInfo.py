@@ -22,6 +22,27 @@ class DeviceInfo:
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Properties to be read by the manager. Empty when omitted. """
 
+    ttlActiveLevel: str = 'high'
+    """ The electrical level of the ``digitalLine`` that means *on*: ``"high"``
+    (default) or ``"low"`` for an inverted input. Every path that drives the
+    line -- a scan, manual control, stopping, failure cleanup -- maps the
+    device's logical on/off through it. """
+
+    preparation: Optional[Union[str, Dict[str, float]]] = None
+    """ Time from the request of the device's state (the line's edge, or the
+    command) until it is ready (a shutter fully open, a laser emitting at its
+    set level): ``"notRequired"``, ``{"durationS": seconds}`` or ``"unknown"``.
+    Absent is not zero: see the scan-program plan, §2.4. """
+
+    def ttlLevel(self, on: bool) -> bool:
+        """ The electrical level for logical ``on``/off on the digital line.
+
+        :meta private: """
+        if self.ttlActiveLevel not in ('high', 'low'):
+            raise ValueError(f'ttlActiveLevel must be "high" or "low", not '
+                             f'{self.ttlActiveLevel!r}')
+        return bool(on) if self.ttlActiveLevel == 'high' else not bool(on)
+
     def getAnalogChannel(self):
         """ :meta private: """
         if isinstance(self.analogChannel, int):
@@ -495,6 +516,10 @@ class ScanInfo:
     If integer, it will be translated to "Dev1/port0/line{frameEndClockLine}".
     """
 
+    engine: Optional[str] = None
+    """ The scan engine (``scanEngines`` entry) the scan panel runs on.
+    ``null``/omitted: the NI-DAQ. """
+
     simplePointScan: Optional[Dict[str, Any]] = None
     """ Options for the ``SimplePointScan`` panel, all optional:
     ``objectiveNA``, ``nyquistPixelSizeUm``, ``overviewAxes``,
@@ -514,6 +539,15 @@ class EtSTEDDeviceInfo:
 
     laserFast: str
     """ Name of the widefield laser to use. """
+
+
+@dataclass(frozen=True)
+class ScanEngineInfo:
+    managerName: str
+    """ The scan engine's manager: a registered ``scan_engine`` id or alias. """
+
+    managerProperties: Dict[str, Any] = field(default_factory=dict)
+    """ Properties to be read by the engine (its board's capabilities). """
 
 
 @dataclass(frozen=True)
@@ -706,6 +740,12 @@ class SetupInfo:
 
     triggerScope: Optional[TriggerScopeInfo] = field(default_factory=lambda: None)
     """ TriggerScope DAQ board settings. Required to use TriggerScope hardware. """
+
+    scanEngines: Dict[str, ScanEngineInfo] = field(default_factory=dict)
+    """ Scan engines besides the NI-DAQ, by name: what runs a scan program
+    (docs/design/plans/scan-engines-and-expert-scan.md). Empty: the NI-DAQ
+    alone, built from ``nidaq``. ``scan.engine`` chooses the one a scan panel
+    runs on. A channel two engines claim is a setup error. """
 
     shortcuts: Optional[Dict[str, Union[str, List[str], None]]] = field(default_factory=lambda: None)
     """ Keyboard shortcut configuration. Maps action IDs to key sequences.

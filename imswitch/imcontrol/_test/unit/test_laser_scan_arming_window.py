@@ -463,7 +463,7 @@ def test_device_list_is_published_before_arming():
     """Arming after arm() would put the writes back inside the busy window."""
     source = inspect.getsource(SuperScanController._armScanIteration)
     publish = source.index('sigScanDevicesResolved')
-    arm = source.index('_scanCoordinator.arm(')
+    arm = source.index('_scanCoordinator.armWithStarter(')
     assert publish < arm
 
 

@@ -93,7 +93,10 @@ class ScanLimits:
     config: Mapping[str, Any]
 
     @classmethod
-    def from_setup(cls, setupInfo) -> 'ScanLimits':
+    def from_setup(cls, setupInfo, drivable=None) -> 'ScanLimits':
+        """The panel's limits. ``drivable(line)`` says whether the scan engine
+        drives a digital line; a laser on a line it does not drive is not
+        offered, since the scan could not switch it."""
         axes = []
         for name, info in setupInfo.positioners.items():
             if not info.forScanning:
@@ -114,6 +117,8 @@ class ScanLimits:
                 speed_limit=fast_axis_speed_limit(name, props),
             ))
         ttl = setupInfo.getTTLDevices()
+        if drivable is not None:
+            ttl = {name: info for name, info in ttl.items() if drivable(info.getDigitalLine())}
         gates = []
         for name, info in (getattr(setupInfo, 'lasers', None) or {}).items():
             if name not in ttl:
@@ -331,7 +336,11 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
     analog['phase_delay'] = plan.phase_delay_us
     analog['d3step_delay'] = plan.d3step_delay_us
 
-    steps = len(plan.channels)
+    # A plan with no channel still scans: one line pass that fires nothing
+    # (a scanner without digital lines, or every laser taken out). Zero line
+    # passes is not a scan the designers can build.
+    lanes = list(plan.channels) or [()]
+    steps = len(lanes)
     fired = plan.lasers()
     targets = [name for name in limits.ttl_devices if name in fired]
     power_capable = [gate.name for gate in limits.gates if gate.power_capable]
@@ -345,7 +354,7 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
         # as they were, so a laser ticked there before would fire too. The
         # TTL designer, and what gets armed, read ``target_device`` only.
         'linestep_enable': {
-            name: [name in lane for lane in plan.channels] for name in limits.ttl_devices
+            name: [name in lane for lane in lanes] for name in limits.ttl_devices
         },
         'pulse_starts_s': {name: [[] for _ in range(steps)] for name in limits.ttl_devices},
         'pulse_ends_s': {name: [[] for _ in range(steps)] for name in limits.ttl_devices},
@@ -433,12 +442,13 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
             name for name in targets
             if step < len(enable.get(name) or ()) and enable[name][step]
         )
-        if not lane:
+        if not lane and steps > 1:
             raise PlanNotRepresentable(
                 f'Line pass {step + 1} of this scan fires no laser, which the '
                 'point-scan panel cannot show; open it in the Advanced scan panel.'
             )
-        lanes.append(lane)
+        if lane:
+            lanes.append(lane)
 
     names = list(analog['target_device'])
     dims = [name for name in analog.get('scan_dim_target_device', []) if name and name != 'None']

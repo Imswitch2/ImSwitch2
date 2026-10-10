@@ -84,4 +84,20 @@ BUILTIN_DEVICE_MANAGERS: list[DeviceManagerContribution] = [
             "builtin.leica-dmi-stand-mock",
         ),
     ),
+    DeviceManagerContribution(
+        id="NidaqScanEngine",
+        kind="scan_engine",
+        display_name="NI-DAQ (streams sampled waveforms)",
+        python_name="imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine:NidaqScanEngine",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("builtin.nidaq-scan-engine",),
+    ),
+    DeviceManagerContribution(
+        id="SimulatedStepEngine",
+        kind="scan_engine",
+        display_name="Simulated step board (an independent executor for tests and mocks)",
+        python_name="imswitch.imcontrol.model.managers.scan_engines.SimulatedStepEngine:SimulatedStepEngine",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("builtin.simulated-step-board",),
+    ),
 ]

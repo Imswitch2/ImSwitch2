@@ -87,6 +87,16 @@ class MasterController:
             self.standManager = StandManager(self.__setupInfo.microscopeStand,
                                              **lowLevelManagers)
 
+        # What runs a scan: the NI-DAQ and any scanEngines of the setup
+        # (docs/design/plans/scan-engines-and-expert-scan.md). A channel two
+        # engines claim fails the setup here, by name.
+        from imswitch.imcontrol.model.managers.scan_engines.loader import build_scan_engines
+        self.scanEngines = build_scan_engines(
+            self.__setupInfo, nidaqManager=self.nidaqManager,
+            lowLevelManagers=lowLevelManagers,
+        )
+        self.scanEngine = self.scanEngines.engine
+
         # Generate scanManager type according to setupInfo
         if self.__setupInfo.scan:
             # A scan cloak runs on its backend panel's scan path (plan §10).

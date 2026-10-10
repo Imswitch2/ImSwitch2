@@ -1,0 +1,13 @@
+{
+  "category": "scanEngines",
+  "device": {
+    "managerName": "SimulatedStepEngine",
+    "managerProperties": {
+      "analogChannels": {},
+      "digitalLines": [],
+      "maxSteps": 1,
+      "timingGridS": 1.5,
+      "triggerLatencyS": 1.5
+    }
+  }
+}

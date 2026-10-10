@@ -84,6 +84,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             overviewAxes=state['limits'].overview_axes,
             detectorNote=self._detectorNote(),
             detectors=self._pointDetectorNames(),
+            laserNote='' if state['limits'].gates else self.ANALOG_ONLY_NOTE,
         )
         if state['reference'] is not None:
             self._view.setReferenceDetector(state['reference'])
@@ -125,7 +126,8 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         """
         state = self.__dict__.get('_simpleState')
         if state is None:
-            limits = ScanLimits.from_setup(self._setupInfo)
+            limits = ScanLimits.from_setup(self._setupInfo,
+                                           drivable=self._engineForScans().owns)
             state = self.__dict__['_simpleState'] = {
                 'limits': limits,
                 'mode': OVERVIEW,

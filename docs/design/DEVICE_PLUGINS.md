@@ -589,6 +589,9 @@ detector, laser, positioner, rotator, rs232, flip_mirror, slm
 
 `stand` is also registry-backed, but it is resolved by `StandManager` because
 `microscopeStand` is a single setup object instead of a named device map.
+`scan_engine` (the `scanEngines` section) is registry-backed through its own
+loader too (`managers/scan_engines/loader.py`); its base class is in
+`imswitch.pluginapi.experimental` (docs/design/plans/scan-engines-and-expert-scan.md).
 
 - The pulse generator (`TeensyPulseManager`) is constructed directly in
   `MasterController` and injected as a low-level manager

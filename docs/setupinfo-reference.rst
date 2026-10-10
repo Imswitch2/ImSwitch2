@@ -78,6 +78,14 @@ Each detector takes:
 * ``managerName`` (required): Manager class (e.g., ``"HamamatsuManager"``, ``"AVManager"``)
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/detectors`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``ttlActiveLevel`` (``"high"`` or ``"low"``, default ``"high"``): the
+  level of the ``digitalLine`` that means *on*. ``"low"`` is for an inverted
+  input; a scan, the Laser panel's on/off and cleanup all drive it low for on.
+* ``preparation`` (optional): the time, from the request of the device's state
+  until it is ready (a shutter fully open, a laser at its set level), that a
+  scan program waits for after a trigger wait: ``"notRequired"``,
+  ``{"durationS": <seconds>}`` or ``"unknown"`` (a program that needs it is
+  refused). Absent is not zero; see :doc:`devices/scan_engines`.
 * ``forAcquisition``: ``true`` if used for live imaging (default ``false``)
 * ``forFocusLock``: ``true`` if used for focus lock (default ``false``)
 
@@ -121,6 +129,14 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``ttlActiveLevel`` (``"high"`` or ``"low"``, default ``"high"``): the
+  level of the ``digitalLine`` that means *on*. ``"low"`` is for an inverted
+  input; a scan, the Laser panel's on/off and cleanup all drive it low for on.
+* ``preparation`` (optional): the time, from the request of the device's state
+  until it is ready (a shutter fully open, a laser at its set level), that a
+  scan program waits for after a trigger wait: ``"notRequired"``,
+  ``{"durationS": <seconds>}`` or ``"unknown"`` (a program that needs it is
+  refused). Absent is not zero; see :doc:`devices/scan_engines`.
 * ``valueRangeStep`` (default ``1.0``): step of the power control in the
   **Laser** panel
 * ``freqRangeMin`` / ``freqRangeMax`` / ``freqRangeInit`` (default ``0``):
@@ -352,6 +368,10 @@ Key fields:
   above 10 million spatial positions.
 * ``lineClockLine``: NI-DAQ port line for line clock output (integer or ``"Dev1/port0/line{N}"`` string; ``null`` if not used)
 * ``frameStartClockLine`` / ``frameEndClockLine``: Frame clock outputs (same format as ``lineClockLine``)
+* ``engine``: the scan engine the ``Scan`` panel runs on, a name from
+  `scanEngines`_; omitted, the NI-DAQ. The Advanced and SimplePointScan panels
+  build sampled waveforms and need a streaming engine; a name the setup does
+  not have stops the setup from loading.
 * ``simplePointScan``: Optional options for the ``SimplePointScan`` panel; every key is optional:
 
   * ``objectiveNA``: sets the pixel slider's finest end to the confocal Nyquist pixel, shortest selected wavelength / (8 · NA);
@@ -604,6 +624,7 @@ documented below with full field lists and examples:
 * `flipMirrors`_
 * `triggerScope`_
 * `teensyPulse`_
+* `scanEngines`_
 * `pyroServerInfo`_
 * `smartMicroscopyModes`_ (and its two companion sections)
 * `processing`_ (ImProcess)
@@ -994,11 +1015,33 @@ The board drives every laser, detector and positioner whose
 ``analogChannel`` is ``"Triggerscope/DAC<n>"`` or whose ``digitalLine`` is
 ``"Triggerscope/TTL<n>"``.  Each analog device's ``minVolt`` / ``maxVolt``
 in ``managerProperties`` (default ±10 V) bounds the voltages it is sent.
+Switching a device on or off by hand honours its ``ttlActiveLevel``; the
+board's built-in scan routines drive their lines active-high regardless.
 
 .. code-block:: json
 
    "triggerScope": {
        "rs232device": "triggerscope"
+   }
+
+
+scanEngines
+-----------
+
+Optional map from an engine name to ``ScanEngineInfo``: ``managerName`` (a
+registered ``scan_engine``) and ``managerProperties``. Every setup also has
+the NI-DAQ engine, ``nidaq``; ``scan.engine`` chooses the engine the ``Scan``
+panel runs on. A channel two engines claim stops the setup from loading.
+The engines, their properties and channel ownership are documented in
+:doc:`devices/scan_engines`.
+
+.. code-block:: json
+
+   "scanEngines": {
+       "board": {
+           "managerName": "SimulatedStepEngine",
+           "managerProperties": {"timingGridS": 1e-05, "digitalLines": ["Sim/TTL0"]}
+       }
    }
 
 

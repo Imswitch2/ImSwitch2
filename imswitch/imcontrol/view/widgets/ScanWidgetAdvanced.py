@@ -505,6 +505,14 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
         currentRow += 1
 
+        # Why TTL parts are greyed, when the scan engine cannot drive them
+        # (setTTLAvailability).
+        self.ttlNoteLabel = QtWidgets.QLabel('')
+        self.ttlNoteLabel.setWordWrap(True)
+        self.ttlNoteLabel.setVisible(False)
+        self.grid.addWidget(self.ttlNoteLabel, currentRow, 0, 1, 8)
+        currentRow += 1
+
         # Initial sync pulse edit panel
         self._syncPulseEditsFromModel()
 
@@ -744,6 +752,38 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
     def setAdvancedTTLMode(self, enabled: bool) -> None:
         return self.setadvancedOptionsMode(enabled)
+
+    def setTTLAvailability(self, unavailable, note=''):
+        """Grey out the TTL devices the scan engine cannot drive, each with
+        its reason as the tooltip. With no TTL device left (an analog-only
+        scanner), the TTL parts -- line steps, the Advanced Line Program, the
+        pulse editors, the plot's TTL option -- are greyed and ``note`` says
+        why. The run refuses the same devices; this is the courtesy."""
+        unavailable = dict(unavailable or {})
+        for name, (label, row) in self._line_step_device_widgets.items():
+            if name not in self._ttl_device_names:
+                continue
+            reason = unavailable.get(name, '')
+            for widget in (label, row):
+                widget.setEnabled(not reason)
+                widget.setToolTip(reason)
+        available = [n for n in self._ttl_device_names if n not in unavailable]
+        self._ttlUnavailable = unavailable
+        noTTL = not available
+        for widget in (self.advancedOptionsBox, self.advancedProgramModeCombo, self._advGroup,
+                       self.plotIncludeTTLBox, self.lineProgramDevicesBox,
+                       self._lineRepeatsLabel, self.linestep_counter):
+            widget.setEnabled(not noTTL)
+            widget.setToolTip(note if noTTL else '')
+        if noTTL:
+            self.plotIncludeTTLBox.setChecked(False)
+            self.advancedOptionsBox.setChecked(False)
+        text = note if noTTL else '; '.join(f'{n}: {r}' for n, r in unavailable.items())
+        self.ttlNoteLabel.setText(text)
+        self.ttlNoteLabel.setVisible(bool(text))
+
+    def ttlUnavailable(self):
+        return dict(getattr(self, '_ttlUnavailable', {}))
 
     def setLinestepPowerCapableDevices(self, deviceNames):
         self._linestep_power_capable_devices = set(deviceNames or [])
