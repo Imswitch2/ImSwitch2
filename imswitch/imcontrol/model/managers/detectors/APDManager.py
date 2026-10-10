@@ -283,6 +283,7 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
         self._scanWorker.scanGeneration = generation
         if self._trajectoryMode:
             self._scanWorker.trajectoryImage.connect(self._onTrajectoryImage)
+            self._trackTrajectory(generation, self._scanWorker._trajectory)
         self._scanTeardownOperation = None
         self._scanThread = Thread()
         self._scanWorker.moveToThread(self._scanThread)
@@ -916,6 +917,8 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
             return
         if generation in self.__dict__.get('_rawFailedGenerations', ()):
             return
+        # A trajectory's raw frame is finished from its measurement first.
+        self._finishTrajectory(generation)
         self._rawGeneration = generation
         self._rawReady = True
         self._rawDelivered = False
@@ -958,9 +961,13 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
             # carry -- without it a (C, Z, Y, X) volume would be delivered as C
             # separate frames.
             raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
+            auxiliary = self._rawFrameAuxiliary(self.__dict__.get('_rawGeneration'))
+        else:
+            auxiliary = None
 
         return ChunkPayload(
-            display=display, raw=raw, display_geometry=displayGeometry
+            display=display, raw=raw, display_geometry=displayGeometry,
+            raw_auxiliary=auxiliary,
         )
 
     def flushBuffers(self):
@@ -1595,7 +1602,7 @@ class TrajectoryScanWorker(ScanWorker):
     """Reads a trajectory window by window (plan §6, M4): the counts in each
     window over its integration time, binned onto the grid as a count rate."""
 
-    trajectoryImage = Signal(object, object, str, object, int)
+    trajectoryImage = Signal(object, object, str, object, int, object)
 
     def __init__(self, manager, scanInfoDict, signalDict):
         super().__init__(manager, scanInfoDict, signalDict)
@@ -1613,7 +1620,7 @@ class TrajectoryScanWorker(ScanWorker):
     def _publishTrajectory(self, measurement):
         accumulator = measurement.accumulator
         self.trajectoryImage.emit(accumulator.image(), accumulator.coverage(), accumulator.unit,
-                                  measurement.provenance, self.scanGeneration)
+                                  measurement.provenance, self.scanGeneration, measurement)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

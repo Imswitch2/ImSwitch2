@@ -11,7 +11,11 @@ detector -- and bins it (``scan_program.trajectory.GridAccumulator``):
 - the image is the count rate (counts/s) or the time-weighted mean (V), NaN
   where no window landed;
 - the coverage, each bin's integration time in seconds, is kept beside it
-  and recorded as an auxiliary array with its unit.
+  and recorded as an auxiliary array with its unit;
+- when the program asks for it (``record_measurements``, M6), every window's
+  measurement too, in acquisition order: one row per recorded frame, kept
+  with the scan that took it, with each window's integration time and
+  commanded centre beside them.
 
 The detector's worker keeps everything else of a scan: its task, its
 lifecycle, its end-of-scan acknowledgement.
@@ -49,6 +53,11 @@ class TrajectoryMeasurement:
         self.bin = np.asarray(info['bin'], dtype=np.int64)
         self.total = int(scanInfoDict['scan_samples_total']) * per
         self.provenance = dict(info[f'provenance_{measurement}'])
+        self.record = bool(info.get('record_measurements', False))
+        self.centres_um = np.asarray(info['centres_um'], dtype=float) if self.record else None
+        self.devices = list(info.get('devices') or self.grid.devices)
+        # Filled in place as windows are read; a window not read stays NaN.
+        self.values = np.full(len(self.start), np.nan) if self.record else None
         # Read a grid row's worth of windows at a time: the live image then
         # grows about a row per read, whatever the path.
         self.per_read = max(1, self.grid.shape[0])
@@ -60,6 +69,8 @@ class TrajectoryMeasurement:
 
     def add(self, windows: slice, values: np.ndarray):
         self.accumulator.add(self.bin[windows], values, self.seconds[windows])
+        if self.values is not None:
+            self.values[windows] = values
 
 
 def run_trajectory(worker, window_values: Callable, publish: Callable):
@@ -90,13 +101,53 @@ class TrajectoryDetectorMixin:
     _trajectoryMode = False
     _trajectoryState: Optional[Dict] = None
 
-    def _onTrajectoryImage(self, image, coverage, unit, provenance, generation):
+    def _trackTrajectory(self, generation, measurement):
+        """The measurement scan ``generation``'s worker fills: what its raw
+        frame is finished from, whatever the queued live images have reached."""
+        self.__dict__.setdefault('_trajectoryByGeneration', {})[generation] = measurement
+
+    def _onTrajectoryImage(self, image, coverage, unit, provenance, generation,
+                           measurement=None):
         if generation != getattr(self, '_scanGeneration', generation):
+            return
+        # A live image queued before its scan finished, delivered after:
+        # the finished image is already in place.
+        if generation <= self.__dict__.get('_trajectoryFinishedThrough', -1):
             return
         self._image[...] = np.asarray(image, dtype=self._image.dtype).reshape(self._image.shape)
         self._trajectoryState = {'coverage': np.asarray(coverage), 'unit': unit,
-                                 'provenance': provenance, 'generation': generation}
+                                 'provenance': provenance, 'generation': generation,
+                                 'measurement': measurement}
         self._publishTrajectoryImage()
+
+    def _finishTrajectory(self, generation):
+        """Scan ``generation`` is complete and its worker done: its image,
+        coverage and measurements from the measurement itself, before its raw
+        frame is published. The live images arrive queued, and a scan can
+        complete (a teardown on another thread) before the last of them.
+        Its measurements are kept apart from the state the next scan resets,
+        so a frame drained after the next scan began still carries its own."""
+        measurement = self.__dict__.get('_trajectoryByGeneration', {}).pop(generation, None)
+        if measurement is None:
+            return
+        self.__dict__['_trajectoryFinishedThrough'] = generation
+        accumulator = measurement.accumulator
+        self._image[...] = np.asarray(accumulator.image(), dtype=self._image.dtype).reshape(
+            self._image.shape)
+        self._trajectoryState = {'coverage': accumulator.coverage(), 'unit': accumulator.unit,
+                                 'provenance': measurement.provenance,
+                                 'generation': generation, 'measurement': measurement}
+        if measurement.values is not None:
+            self.__dict__['_trajectoryMeasurements'] = (generation, measurement.values.copy())
+        self._publishTrajectoryImage()
+
+    def _rawFrameAuxiliary(self, generation):
+        """What travels with this generation's raw frame to a recording:
+        ``[{'measurements': values}]``, or ``None``."""
+        kept = self.__dict__.get('_trajectoryMeasurements')
+        if kept is None or kept[0] != generation:
+            return None
+        return [{'measurements': kept[1]}]
 
     def _publishTrajectoryImage(self):
         """Hand the image to the live view (throttled), as a line would."""
@@ -109,7 +160,7 @@ class TrajectoryDetectorMixin:
         if not self._trajectoryMode or state is None:
             return None
         provenance = json.dumps(state['provenance'])
-        return {
+        out = {
             'attrs': {'measurement:unit': state['unit'], 'measurement:reduction': provenance},
             'arrays': {
                 'coverage': (np.asarray(state['coverage'], dtype=np.float64), {
@@ -118,6 +169,31 @@ class TrajectoryDetectorMixin:
                     'of': 'data', 'reduction': provenance}),
             },
         }
+        measurement = state.get('measurement')
+        if measurement is not None and measurement.record:
+            windows = len(measurement.seconds)
+            order = 'acquisition order: window k of every recorded frame'
+            out['arrays']['measurement_seconds'] = (measurement.seconds.copy(), {
+                'unit': 's', 'auxiliary': True, 'order': order,
+                'meaning': 'each window\'s realized integration time'})
+            out['arrays']['measurement_centre_um'] = (measurement.centres_um.copy(), {
+                'unit': 'um', 'auxiliary': True, 'order': order,
+                'axes': json.dumps(measurement.devices),
+                'meaning': 'each window\'s commanded position at its centre'})
+            out['streams'] = {
+                'measurements': ((windows,), 'float64', {
+                    'unit': _RAW_UNITS[measurement.measurement], 'auxiliary': True,
+                    'order': order, 'frames': 'one row per recorded frame',
+                    'meaning': _RAW_MEANINGS[measurement.measurement],
+                    'missing': 'NaN: a frame whose measurements did not arrive'}),
+            }
+        return out
+
+
+#: What one window's measurement is, per measurement type (plan §6).
+_RAW_UNITS = {'counts': 'counts', 'mean': 'V'}
+_RAW_MEANINGS = {'counts': 'the counts in each window',
+                 'mean': 'each window\'s mean voltage, the offset removed'}
 
 
 __all__ = ['TrajectoryDetectorMixin', 'TrajectoryMeasurement', 'is_trajectory',

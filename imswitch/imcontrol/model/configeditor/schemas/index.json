@@ -2,18 +2,18 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 47,
-    "docs_agree": 149,
-    "docs_documented": 149,
-    "keys": 229,
+    "docs_agree": 151,
+    "docs_documented": 151,
+    "keys": 231,
     "managers": 66,
-    "none_default_only": 40,
+    "none_default_only": 42,
     "none_only": 16,
-    "optional": 167,
+    "optional": 169,
     "reads_any": 60,
     "refs": 15,
     "required": 62,
     "typed_by_code": 97,
-    "typed_with_docs": 173,
+    "typed_with_docs": 175,
     "typed_with_examples": 133,
     "uncertain": 0,
     "unresolved_reads": 3,
@@ -55,7 +55,7 @@
     },
     "scan_engine": {
       "class": "ScanEngineInfo",
-      "fields": 2,
+      "fields": 3,
       "required": 1
     },
     "slm": {
@@ -607,7 +607,7 @@
         "StepEngineBase"
       ],
       "overridden": false,
-      "properties": 5,
+      "properties": 7,
       "required": 0
     },
     "SmarACTPositionerManager": {

@@ -50,6 +50,8 @@ class EngineCapabilities:
     max_samples: Optional[int] = None
     max_steps: Optional[int] = None
     trigger_latency_s: Optional[float] = None
+    #: The shortest pulse the trigger input takes (a follower's, §5.4).
+    trigger_min_pulse_s: Optional[float] = None
     clock_accuracy_ppm: Optional[float] = None
     deadlines: bool = False
     waits: FrozenSet[str] = frozenset()      # 'time', 'start-trigger', 'step-trigger'

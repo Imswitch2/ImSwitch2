@@ -1169,28 +1169,87 @@ stands for the boards people have.
   builds only the Teensy (`MasterController.py:40-47`). Registry resolution
   for `pulse_generator` comes with M1.
 
-### 5.4 Several engines in one scan (later, a hypothesis)
+### 5.4 Several engines in one scan (M6)
 
 **The goal:** one program spanning engines, for example NI-DAQ galvos with
-TriggerScope piezo steps, or Teensy-gated lasers on an NI-DAQ scan. That
-the model needs no change for it is a hypothesis until these contracts are
-designed:
+TriggerScope piezo steps, or two step boards. The model needs no change for
+it; the contracts below are what running it takes. (Draft 7 left them as a
+hypothesis; M6 designed them, §7.7.)
 
-- **A shared start trigger is not a shared clock.**
-  - A start trigger aligns the starts. The clocks then drift apart by
-    their combined error, from each engine's declared `clock_accuracy_ppm`,
-    times the run time. The report computes it; an engine that declares no
-    accuracy makes the bound unknown.
-  - A shared sample clock (or a reference clock both lock to) keeps them in
-    step. It is wired differently and not every board can take it.
+**One engine leads; the others follow step by step.**
 
-  The capability model declares which an engine accepts, and the report
-  states the drift bound a program would have.
-- **Waits must propagate.** A wait on one engine has to stall the others, so
-  one engine gates the rest, or the program is split at its barriers.
-- **Stop and failure must be coordinated:** one engine stopping or failing
-  stops all, into each engine's safe state, with one run outcome.
-- **The compiler splitting the program** is the last piece, not the first.
+- **The leader** is the engine the panel runs on (`scan.engine`). It runs
+  the whole program, so its timing is the program's -- including the moves,
+  returns and preparation of devices it does not drive, which it waits for
+  and does not write ("timing-only" drives).
+- **A follower** is an engine that drives a device the program uses. Its
+  trigger input is wired to a line the leader drives, and the setup says
+  which: `scanEngines.<name>.triggerInput`. Without the wire it takes no
+  part, and a program using its devices is refused, saying so.
+- **The leader pulses that line at the start of every step.** A follower
+  waits for the pulse before every step (a step-trigger wait) and runs its
+  part of the step shifted by its declared trigger latency: an event at `t`
+  in the step happens `t - latency` after its release, which is `t` after the
+  leader's pulse; its step is `latency` shorter, so it ends with the
+  leader's. An event earlier in the step than the latency cannot happen on
+  the follower: refused, naming both times. Moves need no shift: they are
+  placed from the step's end, which both share.
+
+**Why every step, not once at the start.** A shared start trigger is not a
+shared clock: two crystals drift apart by their combined accuracy times the
+time since they last agreed. Synchronised once, a strict program would have
+to fit its whole run into half a tick of drift -- 50 ms for two ±50 ppm
+boards on a 10 µs grid. Synchronised every step, the drift is bounded by the
+longest time between two pulses (a step, plus a return or a between-step
+move):
+
+    bound = (ppm_leader + ppm_follower) × 1e-6 × longest pulse interval
+
+and the report checks it against half the finer of the two grid ticks: an
+edge off by less than that still lands on its tick, which is the strict
+policy's edge rule (derived, not a new tolerance). An engine that declares no
+clock accuracy makes the bound unknown, and the program is refused as such.
+
+**Waits propagate by themselves.** A wait is the leader's: while it waits it
+sends no pulse, and every follower is held at its next step. A follower has
+no waits of its own besides the pulses, and no preparation stage: its
+positions for a step are written at the end of the step before, as always,
+and a device's preparation after a barrier is the leader's to wait for.
+
+**The pulse** lasts the longest minimum trigger pulse the followers
+declare, rounded up onto the leader's grid (at least that long, so up is the
+derivation); an undeclared minimum makes it unknown. The leader's timeline
+gets it as a `marker` on the wired line at step time 0.
+
+**Stop and failure: one run.** The leader and its followers run as one
+composite engine with one outcome. **Stop** stops every engine (a follower
+waiting for its pulse at once). The first engine to fail stops the others,
+and the run fails with its reason. Done is every engine done. Each engine
+goes to its own safe state.
+
+**What runs where.**
+
+- *Leaders:* step engines (the simulated step board and protocol boards).
+  The NI-DAQ cannot lead yet: its scan drives only devices' lines, and the
+  sync line belongs to no device. That needs `NidaqManager` to drive an
+  engine line; until then it is refused with that reason.
+- *Followers:* step engines with a trigger input (`step-trigger` waits).
+  The NI-DAQ and the pulse generators cannot follow: they cannot wait for a
+  trigger before every step.
+- *Simulated wires:* between simulated engines the pulse is simulated -- the
+  follower's trigger arrivals are the leader's pulse edges, on its own
+  ticks. A real follower needs a real leader: a simulated one cannot pulse a
+  wire, and is refused.
+- *Later:* a shared sample clock (`sync_in: clock`, no drift at all), NI-DAQ
+  leading, followers of followers, a program split at its barriers instead
+  of per step.
+
+**The compiler split** is per engine and per device: the leader compiles
+the whole program with the followers' devices as timing only and the pulse
+added; each follower compiles the program with only its devices, its steps
+shortened and its events shifted by its latency, and a step-trigger wait.
+Every engine realizes its share on its own grid under the program's policy,
+so a time one of them cannot represent is refused by it.
 
 ---
 
@@ -1256,6 +1315,14 @@ designed:
   acquisition order can be recorded as a second payload, a detector-frame
   stream, which the layout contract already has. That is an option, off by
   default, and not part of the first trajectory phase.
+
+  **M6 recorded them as auxiliary streams instead** (§7.7): arrays in the
+  detector's group with one row per recorded frame, beside the coverage.
+  A detector-frame stream would need a loop kind for path windows, which the
+  layout contract does not have (a window is not a `time` step: windows
+  differ in length), and a second payload per detector through every
+  storer. The rows carry their meaning as attributes instead: acquisition
+  order, unit, and the per-window time and centre arrays beside them.
 
 ---
 
@@ -1709,6 +1776,78 @@ tested against the simulated board.
 - the progress messages are read but not shown; a board that falls silent
   in the middle of a run is noticed only when the link is closed;
 - `expert_mock_scan_setup.json` has no step board; the tests build one.
+
+### 7.7 M6 status (2026-10-09)
+
+**Delivered, in three parts:**
+
+| Part | Where | What |
+|---|---|---|
+| Raw measurements (§6) | `Trajectory.record_measurements`, the preset form's 'flag' field | Off by default. Each window's measurement in acquisition order, with its integration time and commanded centre, beside the gridded image |
+| | `_trajectory_measure.py`, APD, PMT | The worker fills the values in place; the manager keeps a scan's values when the scan completes and attaches them to that scan's raw frame |
+| | `ChunkPayload.raw_auxiliary`, `frame_auxiliary_of`, the recording writer | What travels with a raw frame reaches the storer with that frame, through truncation, queueing and batching |
+| | HDF5, Zarr, TIFF storers | Streams a detector declares with its auxiliary arrays: resizable datasets created before SWMR, Zarr arrays, TIFF sidecars; a row per frame, NaN for a frame that carried nothing |
+| Event-driven programs (§1.6) | EtSnouty widget and controller | **Slow scan**: the TriggerScope routine (default) or a scan panel. An event runs that panel's program once through the channel's scan-source resolver; the run carries the event as `ScanEvent:triggeredBy` (JSON), blank when it ends |
+| Several engines (§5.4) | `scan_program/split.py` | Who drives what; the leader's share (the whole program and the pulses) and each follower's (its devices, steps and step-anchored events shortened by its latency, a wait for every pulse); the pulse length; the drift bound |
+| | `CompositeScanEngine` | Assess, compile, prepare and run across engines; one report; one outcome (Stop stops all, the first failure stops the rest); a simulated wire between simulated engines; the leader alone for programs on its devices |
+| | `StepExecutor`, the protocol | Timing-only drives (`output: false`; `time<k>` channels on the wire); `trigger_min_ticks` and `clock_ppm` in `*CAPS?` |
+| | `SimulatedStepEngine`, `StepProtocolScanEngine` | `triggerMinPulseS`/`clockAccuracyPpm`; quiet member runs with an outcome and an end callback |
+| | `ScanEngineInfo.triggerInput`, the loader | A wired follower makes the selected engine a composite; a wire to any other engine is a setup error |
+
+**Checked:**
+
+- **Raw measurements:** in each format, the recorded measurements bin back
+  to the recorded image; the two scans of a lapse in one file keep their own
+  (they differ); nothing is recorded unless asked. Mutation-checked: values
+  dropped by the writer, values out of order.
+- **Events:** the real EtSnouty controller in the Expert rig runs the program
+  on an event; the run carries the event while it lasts and not after.
+  Mutation-checked: the event not published.
+- **Several engines:** a simulated step board leading and a protocol board
+  (or a second simulated board) following on a finer grid play an
+  MS-RESOLFT program: every device's writes and edges, in absolute time,
+  where the interpreter puts them; also with a leader trigger wait holding
+  the follower. The follower is released by each pulse, its events its
+  latency early. Refused, with the reason: an event before the follower can
+  start, an undeclared latency, pulse minimum or clock accuracy, a drift that
+  would move an edge off its tick (with the numbers), a follower that cannot
+  wait before every step, a simulated leader pulsing a real board, the NI-DAQ
+  leading, a separation across engines. Stop stops both with one outcome; a
+  leader's failure and a follower that misses its pulse fail the run. The
+  Expert panel runs one program on a leader and its follower. Mutation-checked:
+  events not shifted, steps not shortened, the leader ignoring the follower's
+  timing.
+
+**Found:**
+
+- **A shared start trigger would not have been enough.** Drift over a whole
+  run must stay under half a tick for strict timing: 50 ms of run for two
+  ±50 ppm clocks on a 10 µs grid. Pulsing every step bounds it by the time
+  between two pulses instead -- and propagates the leader's waits for free.
+- **Per-frame data must travel with its frame.** Auxiliary arrays were
+  fetched once per recording, which suits the coverage (the same every
+  frame) but would have kept the first frame's measurements for every frame.
+- **A blocking simulated run fails a wait nothing releases**, by design
+  (M1). The composite therefore runs its leader as on its own, and hands a
+  follower every pulse there will be, so a missed pulse fails it instead of
+  hanging the simulation.
+- **A scan can complete before its last live image arrives** (M4's, found
+  by the raw-measurement test failing once in three full lanes). The live
+  images reach the detector queued, and a teardown on another thread can
+  complete the scan first: the raw frame then took the image the live
+  images had reached, and -- with measurements -- none of them. The raw
+  frame is now finished from the measurement itself, which the detector
+  holds from the worker's start, and a late live image is ignored; a test
+  completes a scan before any live image.
+
+**Still open:** the NI-DAQ leading (`NidaqManager` driving an engine line),
+the NI-DAQ and pulse generators following, a shared sample clock, followers
+of followers; the connected (real-board) composite run is untested on
+hardware -- its aggregation is tested with fakes; raw measurements for
+trajectories only, and a layout-contract loop kind for path windows; the
+event's position is recorded, not used to place the program; skipping a
+gated step on a timeout (`on_timeout: skip`); the EtSnouty widget screenshot
+predates **Slow scan**.
 
 ## 8. Risks
 

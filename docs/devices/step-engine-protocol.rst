@@ -38,7 +38,11 @@ Framing and numbers
 - ``-`` is "none"; ``;`` separates the items of a list; loops are numbered
   from 0, outermost first.
 - A **text** (a reason) is always the last field and may contain commas.
-- **Channels** are ``dac<i>`` and ``ttl<j>``, as the board declares them.
+- **Channels** are ``dac<i>`` and ``ttl<j>``, as the board declares them, and
+  ``time<k>``: a channel that drives nothing. A drive on it is **timing
+  only** -- the board moves it in its head, waits for its move, settle and
+  return, and writes nothing. A leader runs the devices of the boards that
+  follow it that way (see :doc:`scan_engines`).
 
 
 Commands
@@ -74,6 +78,11 @@ program runs, when the board reports on its own (`While it runs`_).
        * - ``CAPS,trigger_latency_ticks,<n>``
          - From a trigger's arrival to the release. Not declared, the host
            refuses trigger waits as unknown rather than guess it.
+       * - ``CAPS,trigger_min_ticks,<n>``
+         - The shortest pulse the trigger input takes (to follow another
+           engine step by step).
+       * - ``CAPS,clock_ppm,<x>``
+         - The clock's accuracy, in parts per million (to lead or follow).
 
     A capability the board does not declare is unknown, and a program that
     needs it is refused as such. A host ignores ``CAPS`` keys it does not
@@ -156,7 +165,8 @@ line names it, and a ``DRIVE`` before its ``WEIGHT`` and ``TABLE`` lines.
        leave it.
 
 A board refuses (``ERR,channel``) a channel it does not have, an event or a
-safe level on a DAC, a drive, captured or park position on a line;
+safe level on a DAC or a ``time`` channel, a drive, captured or park position
+on a line;
 (``ERR,capacity``) more steps than ``max_steps``, or a trigger wait without a
 trigger input; (``ERR,range``) a number that does not fit; (``ERR,syntax``)
 anything else that is not this table.

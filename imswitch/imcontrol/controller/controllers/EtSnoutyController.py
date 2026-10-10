@@ -3,6 +3,7 @@
 import configparser
 import enum
 import importlib
+import json
 import os
 import sys
 import time
@@ -27,6 +28,13 @@ from imswitch.imcontrol.view import guitools
 
 from .SmartModeRoleMixin import SmartModeRoleMixin
 
+
+#: The slow scan that is not a scan panel: the TriggerScope pLSR routine,
+#: started by its own signal (the default, as before).
+SLOW_SCAN_ROUTINE = 'TriggerScope pLSR routine'
+#: The shared attribute a run started by an event carries (a JSON object),
+#: blank between such runs (SharedAttributes has no removal; blank = none).
+SCAN_EVENT_KEY = ('ScanEvent', 'triggeredBy')
 
 _logsDir = getEtSnoutyPath('recordings', 'logs_et')
 _paramsDir = getEtSnoutyPath('pipelinesParams')
@@ -85,6 +93,10 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self._widget.setFastLaserList(
             self._master.lasersManager.execOnAll(lambda c: c.name)
         )
+        self._refreshSlowScanSources()
+        # The scan panels may be created after this one: list them again once
+        # every controller exists.
+        QTimer.singleShot(0, self._refreshSlowScanSources)
 
         sys.path.append(self._widget.analysisDir)
         sys.path.append(self._widget.transformDir)
@@ -452,8 +464,12 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self._triggeredScanInFlight = True
         self._triggeredScanSource = None
         self._triggeredScanSourceObservedRunning = False
+        sourceKey = self._slowScanSourceKey()
         try:
-            self._commChannel.sigRunScanTriggerScopePLSRMulticolor.emit()
+            if sourceKey is None:
+                self._commChannel.sigRunScanTriggerScopePLSRMulticolor.emit()
+            else:
+                self._runScanPanelForEvent(sourceKey)
         except Exception:
             self._resetTriggeredScanIdentity()
             self.__logger.error(
@@ -488,6 +504,61 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                 )
                 return False
         return True
+
+    # -- a scan panel's program as the slow scan (plan §1.6, M6) ---------------
+
+    def _refreshSlowScanSources(self):
+        if self.__dict__.get('_closed', False):
+            return
+        setSources = getattr(self.__dict__.get('_widget'), 'setSlowScanSources', None)
+        if not callable(setSources):
+            return
+        names = []
+        getNames = getattr(self.__dict__.get('_commChannel'), 'getScanSourceNames', None)
+        if callable(getNames):
+            try:
+                names = [str(name) for name in getNames()]
+            except Exception:
+                self.__logger.error('Could not list the scan panels.', exc_info=True)
+        setSources([SLOW_SCAN_ROUTINE] + names)
+
+    def _slowScanSourceKey(self):
+        """The scan panel a detected event runs, or ``None`` for the
+        TriggerScope routine."""
+        getSource = getattr(self.__dict__.get('_widget'), 'getSlowScanSource', None)
+        key = getSource() if callable(getSource) else ''
+        return None if key in ('', None, SLOW_SCAN_ROUTINE) else str(key)
+
+    def _runScanPanelForEvent(self, key):
+        """One run of panel ``key``'s scan, started by the event just
+        detected, which the run carries as ``ScanEvent:triggeredBy``."""
+        source = self._commChannel.getScanSource(key)
+        self._setScanEvent(json.dumps(self._scanEvent(key)))
+        source.runScanExternal(True, False)
+
+    def _scanEvent(self, key):
+        detLog = self.__dict__.get('_EtSnoutyController__detLog') or {}
+        return {
+            'workflow': 'EtSnouty',
+            'scan_source': key,
+            'pipeline': self.__dict__.get('_EtSnoutyController__pipelinename', ''),
+            'detector': self.__dict__.get('detectorFast', ''),
+            'position_px': [detLog.get('fastscan_x_center'),
+                            detLog.get('fastscan_y_center')],
+            'detected': detLog.get('coord_transf_start', ''),
+            'started': detLog.get('scan_start', ''),
+            'started_utc': datetime.utcnow().isoformat(timespec='microseconds') + 'Z',
+        }
+
+    def _setScanEvent(self, value):
+        # Through __dict__: teardown paths run on half-built controllers too.
+        attrs = getattr(self.__dict__.get('_commChannel'), 'sharedAttrs', None)
+        if attrs is None:
+            return
+        try:
+            attrs[SCAN_EVENT_KEY] = value
+        except Exception:
+            self.__logger.error('Could not publish the scan event.', exc_info=True)
 
     def _onTriggeredScanStarting(self):
         """Pin the source that accepted this controller's exact trigger."""
@@ -559,6 +630,9 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self._triggeredScanInFlight = False
         self._triggeredScanSource = None
         self._triggeredScanSourceObservedRunning = False
+        # The run the event started is over (or never started): later runs
+        # are not this event's.
+        self._setScanEvent('')
 
     def endRecording(self):
         self.setDetLogLine('pipeline', self.getPipelineName())

@@ -126,7 +126,40 @@ as a ``coverage`` array in the detector's group, in TIFF as a
 ``…_coverage.tif`` beside the recording. The image carries its unit
 (``measurement:unit``) and the reduction (``measurement:reduction``: that it
 was gridded from a trajectory, the grid, the weighting, the assumptions, and
-that the raw measurements were not stored).
+whether the measurements themselves were stored).
+
+**Every measurement, when asked.** The gridded image is a reduction: windows
+in one bin are averaged, and from the image a reconstructor knows every
+window's position but not its value, so it cannot re-grid finer or correct
+the path. Tick **Record every measurement** in the form, and the recording
+also holds what the image was reduced from:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 52 20
+
+   * - Array
+     - What
+     - Unit
+   * - ``measurements``
+     - each window's measurement, in the order it was taken -- the counts
+       (APD) or the mean voltage, offset removed (PMT); one row per
+       recorded frame
+     - counts or V
+   * - ``measurement_seconds``
+     - each window's realized integration time
+     - s
+   * - ``measurement_centre_um``
+     - each window's commanded position at its centre, one column per
+       scanner
+     - µm
+
+In HDF5 and Zarr they are arrays in the detector's group, beside the
+coverage; in TIFF, ``…_measurements.tif`` and so on beside the recording.
+Each frame's row travels with that frame from the detector to the file, so a
+lapse of several scans keeps every scan's own. A frame whose measurements did
+not arrive has a row of NaN. Off by default: a 1 s path in 20 µs windows is
+50 000 numbers per frame.
 
 **Limits.** The approach joins the path with its speed, so the scanners never
 jump. The report shows each scanner's peak speed and acceleration against its
@@ -173,11 +206,24 @@ takes several frames per step, and the steps it takes them in when not
 every step); an APD or PMT records its assembled image.
 
 On a step engine the engine runs the compiled program itself, and **Stop**
-stops it at its next step. A step board that speaks the step-engine protocol
+stops it at its next step. A program whose devices are on several engines
+runs on all of them as one: the engine the panel runs on leads, and every
+engine wired to follow it is stepped by its pulses (:doc:`devices/scan_engines`).
+The report then lists each engine's verdicts, the pulse, and each
+follower's drift between two pulses. A step board that speaks the step-engine protocol
 (:doc:`devices/step-engine-protocol`) is uploaded the program and runs it
 on its own; ``"port": "simulated"`` runs a simulated one. See
 :doc:`devices/scan_engines` for what each engine can play, and what it
 refuses.
+
+
+Started by an event
+===================
+
+The EtSnouty widget's **Slow scan** set to ``Scan`` runs the Expert program
+once for every event its pipeline detects, instead of the TriggerScope
+routine. The run carries the event (``ScanEvent:triggeredBy``). See
+:ref:`the EtSnouty widget <etsnouty-widget>`.
 
 
 Saving and opening

@@ -551,6 +551,11 @@ class ScanEngineInfo:
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Properties to be read by the engine (its board's capabilities). """
 
+    triggerInput: Optional[str] = None
+    """ The line, driven by the engine the scan panel runs on, that this
+    engine's trigger input is wired to. It then follows that engine step by
+    step in a program that uses its devices (a pulse at every step). """
+
 
 @dataclass(frozen=True)
 class MicroscopeStandInfo:

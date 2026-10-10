@@ -154,13 +154,18 @@ class Trajectory:
     window after window along the path (the last may be shorter), and each
     window is binned at the commanded position of its centre onto a grid of
     ``pixel_um``. ``approach_s`` is the move onto the path from where the
-    devices were captured, and back off it at the end."""
+    devices were captured, and back off it at the end.
+
+    ``record_measurements`` (off by default, §6, M6) records every window's
+    measurement, in acquisition order, beside the gridded image: the image is
+    a reduction, and these are what it was reduced from."""
     devices: Tuple[str, ...]
     pattern: str
     params: Mapping[str, object]
     duration_s: float
     approach_s: float
     pixel_um: float
+    record_measurements: bool = False
 
 
 @dataclass(frozen=True)
@@ -360,6 +365,9 @@ def _validate_trajectory(program: ScanProgram) -> ScanProgram:
             problems.append(f'The trajectory\'s {name} must be positive.')
     if float(trajectory.approach_s) < 0:
         problems.append('The trajectory\'s approach_s must not be negative.')
+    if not isinstance(trajectory.record_measurements, bool):
+        problems.append(f'The trajectory\'s record_measurements is true or false, not '
+                        f'{trajectory.record_measurements!r}.')
     if not float(program.step_s) > 0:
         problems.append(f'The measurement window (step_s) must be positive, not '
                         f'{program.step_s}')

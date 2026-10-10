@@ -281,7 +281,7 @@ class RealizedTrajectory:
             'coverage_unit': 's',
             'windows': int(len(self.window_ticks)),
             'assumptions': list(ASSUMPTIONS),
-            'raw_measurements_stored': False,
+            'raw_measurements_stored': bool(self.program.trajectory.record_measurements),
         }
 
 

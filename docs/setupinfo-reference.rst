@@ -1037,7 +1037,10 @@ the NI-DAQ engine, ``nidaq``; ``scan.engine`` chooses the engine the ``Scan``
 panel runs on. A channel two engines claim stops the setup from loading.
 The engines, their properties and channel ownership are documented in
 :doc:`devices/scan_engines`; a board joins without Python by speaking the
-step-engine protocol (:doc:`devices/step-engine-protocol`).
+step-engine protocol (:doc:`devices/step-engine-protocol`). An engine's
+optional ``triggerInput`` -- the line of the engine the panel runs on that
+its trigger input is wired to -- has it follow that engine step by step in a
+program that uses its devices.
 
 .. code-block:: json
 

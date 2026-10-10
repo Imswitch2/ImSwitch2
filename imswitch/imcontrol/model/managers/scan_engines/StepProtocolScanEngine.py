@@ -32,9 +32,9 @@ wired to one by its ``analogChannel`` or ``digitalLine``.
   rate, and how long a command waits for its answer;
 - ``simulatedBoard`` (required for ``"simulated"``): what the simulated board
   declares -- ``gridNs`` (required), ``dacs`` (``{index: [minV, maxV]}``),
-  ``ttlLines``, ``maxSteps``, ``triggerIn``, ``triggerLatencyTicks``, and
-  ``actualTriggerLatencyTicks`` when it has a trigger input whose latency it
-  does not declare.
+  ``ttlLines``, ``maxSteps``, ``triggerIn``, ``triggerLatencyTicks``,
+  ``triggerMinTicks``, ``clockPpm``, and ``actualTriggerLatencyTicks`` when it
+  has a trigger input whose latency it does not declare.
 """
 
 from __future__ import annotations
@@ -129,7 +129,8 @@ def simulated_board(props) -> SimulatedStepBoard:
         dacs={int(i): (float(r[0]), float(r[1])) for i, r in (props.get('dacs') or {}).items()},
         ttl_lines=int(props.get('ttlLines', 0)), max_steps=props.get('maxSteps'),
         trigger_in=bool(props.get('triggerIn', False)),
-        trigger_latency_ticks=props.get('triggerLatencyTicks'))
+        trigger_latency_ticks=props.get('triggerLatencyTicks'),
+        trigger_min_ticks=props.get('triggerMinTicks'), clock_ppm=props.get('clockPpm'))
     return SimulatedStepBoard(caps, latency_ticks=props.get('actualTriggerLatencyTicks'))
 
 
@@ -184,7 +185,11 @@ class StepProtocolScanEngine(StepEngineBase):
         self._closing = False
         self._follower = None
         self._log: Optional[RunLog] = None
+        self._quiet = False
+        self._onEnd = None
         self.progress = None
+        #: How the last run ended: ('done' | 'stopped' | 'failed', reason).
+        self.outcome = None
         self.connect()
 
     @property
@@ -229,6 +234,9 @@ class StepProtocolScanEngine(StepEngineBase):
         latency = None if caps is None else caps.trigger_latency_ticks
         self._latency = None if latency is None or grid is None else latency * grid
         self._maxSteps = None if caps is None else caps.max_steps
+        minimum = None if caps is None else caps.trigger_min_ticks
+        self._triggerMinPulse = None if minimum is None or grid is None else minimum * grid
+        self._clockPpm = None if caps is None else caps.clock_ppm
         self._waits = frozenset({'time'} | ({'start-trigger', 'step-trigger'}
                                             if caps is not None and caps.trigger_in else set()))
 
@@ -238,7 +246,9 @@ class StepProtocolScanEngine(StepEngineBase):
         return dataclasses.replace(
             caps, safe_state='every line at the safe level the host sent, DACs holding',
             sources={'timing_grid_s': f'{source} grid_ns', 'max_steps': f'{source} max_steps',
-                     'trigger_latency_s': f'{source} trigger_latency_ticks'})
+                     'trigger_latency_s': f'{source} trigger_latency_ticks',
+                     'trigger_min_pulse_s': f'{source} trigger_min_ticks',
+                     'clock_accuracy_ppm': f'{source} clock_ppm'})
 
     def owns(self, channel_name: str) -> bool:
         prefix, _, token = str(channel_name).partition('/')
@@ -254,8 +264,8 @@ class StepProtocolScanEngine(StepEngineBase):
 
     # -- what it can run ------------------------------------------------------------
 
-    def assess(self, program, channels):
-        report = super().assess(program, channels)
+    def assess(self, program, channels, *, timing_only=frozenset()):
+        report = super().assess(program, channels, timing_only=timing_only)
         if self._caps is None:
             report.add('board', UNKNOWN, f'{self.name} has not answered: {self._unreachable}',
                        'Connect the board; the next compile asks it again.')
@@ -275,10 +285,12 @@ class StepProtocolScanEngine(StepEngineBase):
                            f'{wait.hold!r}.')
         return report
 
-    def compile(self, program, channels, captured_um=None, devices=None) -> ProtocolCompiled:
+    def compile(self, program, channels, captured_um=None, devices=None, *,
+                timing_only=frozenset()) -> ProtocolCompiled:
         if self._caps is None:
             self.connect()
-        compiled = super().compile(program, channels, captured_um, devices)
+        compiled = super().compile(program, channels, captured_um, devices,
+                                   timing_only=timing_only)
         wire, back, refusals, unknown = self._wire(compiled.plan, channels)
         if unknown:
             compiled.report.add('conversion', UNKNOWN, ' '.join(unknown))
@@ -297,7 +309,15 @@ class StepProtocolScanEngine(StepEngineBase):
             return str(line).partition('/')[2]
 
         drives, factors = [], {}
+        timing = [d for d in plan.drives if not d.get('output', True)]
+        for index, d in enumerate(timing):
+            # Another engine drives it: this board only waits for its moves,
+            # on a channel that drives nothing, in the plan's own unit.
+            name = f'time{index}'
+            drives.append(dict(d, device=name, channel=name))
         for d in plan.drives:
+            if not d.get('output', True):
+                continue
             factor = self._conversion(d['device'])
             if factor is None:
                 unknown.append(f'{d["device"]} declares no conversionFactor (µm per volt).')
@@ -317,7 +337,14 @@ class StepProtocolScanEngine(StepEngineBase):
                     for back_name, (device, _) in back.items() if device in positions}
 
         captured, park = volts(plan.captured_um), volts(plan.park_um)
-        for d, wire in zip(plan.drives, drives):
+        for index, d in enumerate(timing):
+            name = f'time{index}'
+            if d['device'] in plan.captured_um:
+                captured[name] = plan.captured_um[d['device']]
+            if d['device'] in plan.park_um:
+                park[name] = plan.park_um[d['device']]
+        outputs = [d for d in plan.drives if d.get('output', True)]
+        for d, wire in zip(outputs, drives[len(timing):]):
             low, high = _extremes(wire, plan, captured.get(wire['device'], 0.0))
             parked = park.get(wire['device'])
             if parked is not None:
@@ -378,7 +405,7 @@ class StepProtocolScanEngine(StepEngineBase):
 
     # -- a run ----------------------------------------------------------------------
 
-    def prepare(self, compiled: ProtocolCompiled):
+    def prepare(self, compiled: ProtocolCompiled, *, quiet=False):
         """Upload the program; StepBoardError when the board refuses it."""
         self._idle('upload a program')
         self._abortPending = False
@@ -387,17 +414,22 @@ class StepProtocolScanEngine(StepEngineBase):
         self._expect('PROGRAM')
         self._prepared = compiled
         devices = sorted({e['device'] for e in compiled.plan.events}
-                         | {d['device'] for d in compiled.plan.drives})
-        self.sigScanBuilt.emit({'engine': self.name}, compiled.plan, devices)
+                         | {d['device'] for d in compiled.plan.drives if d.get('output', True)})
+        if not quiet:
+            self.sigScanBuilt.emit({'engine': self.name}, compiled.plan, devices)
 
     def ready(self) -> bool:
         return self._prepared is not None
 
     def run(self, compiled: ProtocolCompiled = None, *, arrivals=(), blocking=False,
-            fail_at_step=None):
+            fail_at_step=None, quiet=False, on_end=None):
         """Start the uploaded program. ``arrivals`` and ``fail_at_step`` are
-        the simulated board's trigger input and an injected failure."""
+        the simulated board's trigger input and an injected failure. ``quiet``:
+        emit no lifecycle signals, and call ``on_end(engine)`` when the run
+        ends (a composite's member, §5.4)."""
         self._idle('start a run')
+        self._quiet, self._onEnd = bool(quiet), on_end
+        self.outcome = None
         if compiled is not None and compiled is not self._prepared:
             self.prepare(compiled)
         if self._prepared is None:
@@ -408,13 +440,14 @@ class StepProtocolScanEngine(StepEngineBase):
                              'board\'s; a real board takes its trigger input.')
         if board is not None:
             board.arrivals, board.fail_at_step = tuple(arrivals), fail_at_step
+            # A blocking run is handed every arrival there will be.
+            board.arrivals_final = bool(blocking)
         if self._abortPending:
             # Stopped before it started: the board is not started at all
             # (RUN then STOP would race it), and nothing ran.
             self._abortPending = False
             self._log = RunLog()
-            self.sigScanStopped.emit()
-            self.sigScanDone.emit()
+            self._end('stopped', '')
             return
         self._log = None
         self._write('RUN')
@@ -453,11 +486,13 @@ class StepProtocolScanEngine(StepEngineBase):
                     continue
                 kind, fields = message(line)
                 if kind == 'STARTED':
-                    self.sigScanStarted.emit()
+                    if not self._quiet:
+                        self.sigScanStarted.emit()
                 elif kind == 'STEP':
                     self.progress = (int(fields[0]), int(fields[1]))
                 elif kind == 'RELEASE':
-                    self.sigBarrierReleased.emit(int(fields[0]), int(fields[1]))
+                    if not self._quiet:
+                        self.sigBarrierReleased.emit(int(fields[0]), int(fields[1]))
                 elif kind in ('DONE', 'STOPPED'):
                     outcome = kind.lower()
                     break
@@ -472,13 +507,24 @@ class StepProtocolScanEngine(StepEngineBase):
             reason = f'the link failed: {text(error)}'
         finally:
             self._running = False
+        if outcome == 'failed':
+            self.__logger.error(f'{self.name}: {reason}')
+        self._end(outcome, reason)
+
+    def _end(self, outcome, reason):
+        """The run is over: record how, then signal it -- or, quiet, tell
+        whoever asked."""
+        self.outcome = (outcome, reason)
+        if self._onEnd is not None:
+            self._onEnd(self)
+        if self._quiet:
+            return
         if outcome == 'done':
             self.sigScanDone.emit()
         elif outcome == 'stopped':
             self.sigScanStopped.emit()
             self.sigScanDone.emit()
         else:
-            self.__logger.error(f'{self.name}: {reason}')
             self.sigScanFailed.emit(reason)
             self.sigScanBuildFailed.emit()
 

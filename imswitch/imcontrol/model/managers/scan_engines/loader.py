@@ -6,6 +6,10 @@ the setup names an engine ``nidaq`` itself. Every ``scanEngines`` entry is
 resolved through the device-plugin registry (kind ``scan_engine``), so a
 board joins by its plugin. Channel ownership must be unambiguous: a channel
 two engines claim is a setup error, raised when the setup loads.
+
+An engine whose ``triggerInput`` is wired to a line of the engine the panel
+runs on follows it (§5.4, M6): the panel then runs on a composite of the two,
+which is the leader alone for every program that uses only its devices.
 """
 
 from __future__ import annotations
@@ -27,10 +31,12 @@ class ScanEngines:
     engines: Dict[str, ScanEngine]
     selected: str
     owners: Dict[str, Optional[str]] = field(default_factory=dict)
+    #: The selected engine with the engines that follow it, when any do.
+    composite: Optional[ScanEngine] = None
 
     @property
     def engine(self) -> ScanEngine:
-        return self.engines[self.selected]
+        return self.composite or self.engines[self.selected]
 
     def owner_of(self, channel) -> Optional[str]:
         return self.owners.get(channel)
@@ -75,7 +81,32 @@ def build_scan_engines(setupInfo, *, nidaqManager, lowLevelManagers: Mapping = N
     if selected not in engines:
         raise SetupError(f'scan.engine names {selected!r}; the setup has the scan engines '
                          f'{", ".join(sorted(engines))}.')
-    return ScanEngines(engines, selected, owners)
+    followers = _followers(declared, engines, selected)
+    composite = None
+    if followers:
+        from .CompositeScanEngine import CompositeScanEngine
+        composite = CompositeScanEngine(engines[selected], followers)
+    return ScanEngines(engines, selected, owners, composite)
+
+
+def _followers(declared, engines, selected):
+    """``{name: (engine, line)}`` for every engine wired to follow the
+    selected one; a wire to any other engine's line is a setup error."""
+    out = {}
+    for name, info in declared.items():
+        line = getattr(info, 'triggerInput', None)
+        if not line:
+            continue
+        drivers = [other for other, engine in engines.items() if engine.owns(str(line))]
+        if name == selected:
+            raise SetupError(f'{name} is what the scan panel runs on (scan.engine), so it '
+                             f'leads; its triggerInput {line!r} would have it follow.')
+        if drivers != [selected]:
+            driver = drivers[0] if drivers else 'no engine'
+            raise SetupError(f'{name}\'s trigger input is wired to {line}, which {driver} '
+                             f'drives; only {selected}, which the scan panel runs on, leads.')
+        out[name] = (engines[name], str(line))
+    return out
 
 
 __all__ = ['NIDAQ', 'ScanEngines', 'build_scan_engines']

@@ -175,6 +175,10 @@ def trajectory_scan_info(realized, labels) -> Dict[str, object]:
         'rate_hz': realized.rate_hz,
         'provenance_counts': realized.provenance('counts'),
         'provenance_mean': realized.provenance('mean'),
+        'record_measurements': bool(realized.program.trajectory.record_measurements),
+        # Every window's commanded centre: what a recorded measurement is at.
+        'centres_um': realized.centres_um.copy(),
+        'devices': list(grid.devices),
     }
     # The image is the grid: its pixels sit where the bins are.
     info[FRAME_GEOMETRY_KEY] = FrameGeometry(axes=tuple(

@@ -56,6 +56,55 @@ engine does not declare is unknown, and a scan that needs it is refused as
 unknown rather than run on a guess.
 
 
+Several engines in one scan
+===========================
+
+A program can drive devices on more than one engine. One engine leads -- the
+one ``scan.engine`` names -- and the others **follow it step by step**: a
+follower's trigger input is wired to a line the leader drives, and the setup
+says which with ``triggerInput`` on the follower's entry:
+
+.. code-block:: json
+
+    "scanEngines": {
+        "lead":   {"managerName": "StepProtocolScanEngine",
+                   "managerProperties": {"port": "COM5", "baudrate": 115200,
+                                         "replyTimeoutS": 0.5}},
+        "piezo":  {"managerName": "StepProtocolScanEngine", "triggerInput": "lead/ttl3",
+                   "managerProperties": {"port": "COM6", "baudrate": 115200,
+                                         "replyTimeoutS": 0.5}}
+    },
+    "scan": {"engine": "lead", "...": "..."}
+
+* The leader runs the whole program -- the followers' devices as timing only:
+  it waits for their moves and returns and writes nothing for them -- and
+  **pulses the wired line at the start of every step**. A follower waits for
+  the pulse before every step and runs its devices' part, shifted by its
+  declared trigger latency so that it happens when the program says.
+* **Why every step:** a shared start trigger is not a shared clock. Two
+  clocks that agree once drift apart by their combined accuracy over the
+  whole run; agreeing at every pulse, they drift only between two pulses.
+  The report states that bound and refuses a program whose drift would move
+  an edge off its tick (half the finer tick).
+* **Waits** are the leader's: while it waits it sends no pulse, and every
+  follower is held. A follower has no waits of its own.
+* **One run:** **Stop** stops every engine; the first to fail stops the
+  others, and the run fails with its reason.
+* **What it needs, from the follower:** a trigger input it can wait on before
+  every step, its trigger latency, the shortest pulse its input takes, and
+  its clock's accuracy; **from the leader:** its clock's accuracy. Undeclared,
+  each is unknown and the program is refused as such. An event earlier in
+  the step than the follower's latency cannot happen on it and is refused,
+  naming both times.
+* **Who can lead:** step engines (the simulated step board, protocol boards).
+  The NI-DAQ cannot lead yet -- its scan drives only devices' lines, and the
+  pulse line is no device's -- nor can it, or a pulse generator, follow. A
+  simulated engine only leads or follows simulated ones.
+* A program that uses only the leader's devices is the leader's alone,
+  exactly as without followers. A follower wired to any engine but the one
+  ``scan.engine`` names is a setup error.
+
+
 NidaqScanEngine
 ===============
 
@@ -112,6 +161,15 @@ times the tests choose. It is registered as ``SimulatedStepEngine`` and
      - not declared
      - From a trigger's arrival to the release, in seconds. Not declared,
        trigger waits are unknown and refused.
+   * - ``triggerMinPulseS``
+     - float
+     - not declared
+     - The shortest pulse its trigger input takes, in seconds (to follow
+       another engine).
+   * - ``clockAccuracyPpm``
+     - float
+     - not declared
+     - Its clock's accuracy, in parts per million (to lead or follow).
    * - ``maxSteps``
      - int
      - not declared
@@ -204,9 +262,9 @@ Expert panel and the conformance tests run against.
      - required on ``"simulated"``
      - What the simulated board declares: ``gridNs`` (required, its timing
        grid in ns), ``dacs`` (``{index: [minV, maxV]}``), ``ttlLines``,
-       ``maxSteps``, ``triggerIn``, ``triggerLatencyTicks``, and
-       ``actualTriggerLatencyTicks`` for a trigger input whose latency it
-       does not declare.
+       ``maxSteps``, ``triggerIn``, ``triggerLatencyTicks``,
+       ``triggerMinTicks``, ``clockPpm``, and ``actualTriggerLatencyTicks``
+       for a trigger input whose latency it does not declare.
 
 
 PulseGeneratorScanEngine

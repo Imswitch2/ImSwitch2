@@ -17,6 +17,7 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     ChunkConsumerOverflowError,
     ChunkKind,
     ChunkPayload,
+    frame_auxiliary_of,
 )
 
 
@@ -245,6 +246,36 @@ def test_raw_and_display_consumers_each_get_their_own():
     assert len(recFirst) == 0                               # not yet whole
     assert len(viewSecond) == 1
     assert len(recSecond) == 1 and recSecond[0].ndim == 4    # the volume
+
+
+def test_each_raw_frame_carries_what_travels_with_it():
+    """A scan's raw frame and what its scan measured beside it (a
+    trajectory's measurements, M6) reach a raw consumer together, frame by
+    frame, even when several scans' frames are drained at once; display frames
+    carry none."""
+    detector = _detector(planes=1)
+    scans = iter(range(10))
+    plain = detector.drainChunk
+
+    def drain():
+        payload = plain()
+        if len(payload.raw):
+            payload = ChunkPayload(display=payload.display, raw=payload.raw,
+                                   raw_auxiliary=[{'measurements': np.full(3, next(scans))}])
+        return payload
+
+    detector.drainChunk = drain
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.startChunkConsumer('view', kind=ChunkKind.DISPLAY)
+    detector.writePlane()
+    for _ in range(2):                    # two scans end before anyone reads
+        detector.finishScan()
+        detector._distributeChunkLocked(detector.drainChunk())
+    frames = detector.readChunk('rec')
+    assert [frame_auxiliary_of(f)['measurements'][0] for f in frames] == [0, 1]
+    assert all(frame_auxiliary_of(f) is None for f in detector.readChunk('view'))
+    # Derived arrays do not claim it: only the delivered frame carries it.
+    assert frame_auxiliary_of(frames[0] + 0) is None
 
 
 def test_polling_raw_again_yields_nothing():

@@ -47,7 +47,7 @@ import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
-    ChunkKind, RawFrameUnavailableError, _queueBudgetBytes,
+    ChunkKind, RawFrameUnavailableError, _queueBudgetBytes, frame_auxiliary_of,
 )
 from imswitch.imcontrol.model.managers import recording_metadata as _ome
 from imswitch.imcommon.model.zarr_compat import (
@@ -306,7 +306,12 @@ def recording_auxiliary(detectorManager, detectorName):
     """What a detector records beside its image (plan §6): ``{'attrs': {...},
     'arrays': {name: (array, attrs)}}`` -- a trajectory's unit, reduction and
     coverage -- or ``None``. Asked once, when its first frame is written: a
-    scan-driven detector's frame comes after its scan, complete."""
+    scan-driven detector's frame comes after its scan, complete.
+
+    ``'streams': {name: (row shape, dtype, attrs)}`` declares arrays with one
+    row per recorded frame, filled from what travels with each frame (a
+    trajectory's measurements, M6): created with the image, appended as its
+    frames are written (``writeFrameAuxiliary``)."""
     try:
         get = getattr(detectorManager[detectorName], 'recordingAuxiliary', None)
         return get() if callable(get) else None
@@ -314,6 +319,17 @@ def recording_auxiliary(detectorManager, detectorName):
         logger.error(f'Could not read what {detectorName} records beside its image',
                      exc_info=True)
         return None
+
+
+def auxiliary_stream_rows(carried, name, shape):
+    """Stream ``name``'s rows for frames that carried ``carried`` (one
+    ``{name: array}`` or ``None`` per frame): NaN for a frame without it, so
+    rows and frames stay in step."""
+    rows = np.full((len(carried), *shape), np.nan)
+    for index, item in enumerate(carried):
+        if item and name in item:
+            rows[index] = np.asarray(item[name], dtype=float).reshape(shape)
+    return rows
 
 
 class Storer(abc.ABC):
@@ -845,6 +861,14 @@ class ZarrStorer(Storer):
                 extra[...] = array
                 for key, value in arrayAttrs.items():
                     extra.attrs[key] = self._zarr_attr_value(value)
+            for name, (shape, dtype, streamAttrs) in (auxiliary.get('streams') or {}).items():
+                shape = tuple(int(n) for n in shape)
+                stream = self._create_array(det_group, name, shape=(0, *shape),
+                                            chunks=(1, *shape), dtype=np.dtype(dtype))
+                for key, value in streamAttrs.items():
+                    stream.attrs[key] = self._zarr_attr_value(value)
+                self.__dict__.setdefault('_auxStreams', {}).setdefault(
+                    detectorName, {})[name] = (stream, shape)
         imagePath = f'{groupPath}/{detectorName}' if groupPath else detectorName
         self._register_root_series(root, imagePath)
         return dataset
@@ -985,6 +1009,16 @@ class ZarrStorer(Storer):
 
         self._currentFrames[detectorName] += len(frames)
     
+    def writeFrameAuxiliary(self, detectorName, carried):
+        """Append what travelled with the frames just written to the
+        detector's declared streams, one row per frame."""
+        for name, (stream, shape) in self.__dict__.get('_auxStreams', {}).get(
+                detectorName, {}).items():
+            rows = auxiliary_stream_rows(carried, name, shape)
+            start = stream.shape[0]
+            stream.resize((start + len(rows), *shape))
+            stream[start:start + len(rows), ...] = rows
+
     def finalizeStream(self, currentFrames: Dict[str, int], filePaths: Dict[str, str],
                        recordingManager, saveMode: 'SaveMode') -> None:
         """Close Zarr stores and emit memory-recording signals when applicable."""
@@ -1478,6 +1512,18 @@ class HDF5Storer(Storer):
                     extra = det_group.create_dataset(name, data=np.asarray(array))
                     for key, value in arrayAttrs.items():
                         extra.attrs[key] = value
+                # Streams grow with the frames; created now, as SWMR allows
+                # resizing a dataset but not creating one.
+                for name, (shape, dtype, streamAttrs) in (
+                        auxiliary.get('streams') or {}).items():
+                    shape = tuple(int(n) for n in shape)
+                    stream = det_group.create_dataset(
+                        name, shape=(0, *shape), maxshape=(None, *shape),
+                        chunks=(1, *shape), dtype=np.dtype(dtype))
+                    for key, value in streamAttrs.items():
+                        stream.attrs[key] = value
+                    self.__dict__.setdefault('_auxStreams', {}).setdefault(
+                        detectorName, {})[name] = (stream, shape)
 
             # Enable SWMR mode after creating datasets and metadata
             # (SWMR forbids creating objects after swmr_mode=True)
@@ -1517,6 +1563,18 @@ class HDF5Storer(Storer):
             if self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
                 self._files[detectorName].flush()
     
+    def writeFrameAuxiliary(self, detectorName, carried):
+        """Append what travelled with the frames just written to the
+        detector's declared streams, one row per frame."""
+        streams = self.__dict__.get('_auxStreams', {}).get(detectorName, {})
+        for name, (stream, shape) in streams.items():
+            rows = auxiliary_stream_rows(carried, name, shape)
+            start = stream.shape[0]
+            stream.resize(start + len(rows), axis=0)
+            stream[start:start + len(rows), ...] = rows
+        if streams and self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+            self._files[detectorName].flush()
+
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close HDF5 files and emit signals."""
         finalized_attrs = self._finalize_recording_attrs(currentFrames)
@@ -1884,6 +1942,16 @@ class TiffStorer(Storer):
         for frame in frames:
             tw.write(frame, contiguous=True)
 
+    def writeFrameAuxiliary(self, detectorName, carried):
+        """Keep what travelled with the frames just written, for the
+        detector's declared streams; each is a sidecar TIFF at finalize."""
+        streams = ((self.__dict__.get('_auxiliary', {}).get(detectorName) or {})
+                   .get('streams') or {})
+        kept = self.__dict__.setdefault('_auxStreamRows', {}).setdefault(detectorName, {})
+        for name, (shape, _dtype, _attrs) in streams.items():
+            kept.setdefault(name, []).append(
+                auxiliary_stream_rows(carried, name, tuple(int(n) for n in shape)))
+
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close writers, then embed OME-XML now that the frame count is known."""
         self._finalize_recording_attrs(currentFrames)
@@ -1918,11 +1986,17 @@ class TiffStorer(Storer):
                     stored_meta,
                     (getattr(self, '_attrs', None) or {}).get(detectorName))
                 tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
-                for name, (array, arrayAttrs) in (
-                        self.__dict__.get('_auxiliary', {}).get(detectorName) or {}
-                ).get('arrays', {}).items():
+                auxiliary = self.__dict__.get('_auxiliary', {}).get(detectorName) or {}
+                for name, (array, arrayAttrs) in auxiliary.get('arrays', {}).items():
                     tiff.imwrite(auxiliary_tiff_path(path, name), np.asarray(array),
                                  description=json.dumps(_json_safe(arrayAttrs)))
+                rows = self.__dict__.get('_auxStreamRows', {}).get(detectorName, {})
+                for name, (_shape, _dtype, streamAttrs) in (
+                        auxiliary.get('streams') or {}).items():
+                    if rows.get(name):
+                        tiff.imwrite(auxiliary_tiff_path(path, name),
+                                     np.concatenate(rows[name], axis=0),
+                                     description=json.dumps(_json_safe(streamAttrs)))
             except Exception as e:
                 errors.append((
                     f'failed to embed OME-XML for "{detectorName}" at {path}',
@@ -3426,7 +3500,7 @@ class WriterThread(threading.Thread):
                     self._flush_stale_batches()
                     continue
                 self._progress += 1
-                if isinstance(item, tuple) and len(item) == 3:
+                if isinstance(item, tuple) and len(item) in (3, 4):
                     # Release the producer's reservation as soon as the chunk
                     # leaves the queue: from here the frames are this thread's
                     # to batch and write.
@@ -3434,7 +3508,7 @@ class WriterThread(threading.Thread):
                         self._queuedBytes = max(
                             0, self._queuedBytes - int(item[2])
                         )
-                    item = (item[0], item[1])
+                    item = (item[0], item[1]) + tuple(item[3:])
 
                 if item is None:
                     # Sentinel. On abort, discard partial output; otherwise flush
@@ -3496,13 +3570,16 @@ class WriterThread(threading.Thread):
                 if self._abort_event.is_set():
                     continue
 
-                # Real frame item: (detectorName, frames)
-                detectorName, frames = item
+                # Real frame item: (detectorName, frames[, auxiliary])
+                detectorName, frames = item[0], item[1]
+                carried = item[2] if len(item) > 2 else None
                 
                 # Append to batch
                 if not self._batches[detectorName]:
                     self._batch_started[detectorName] = time.monotonic()
                 self._batches[detectorName].append(frames)
+                self.__dict__.setdefault('_batchAuxiliary', {}).setdefault(
+                    detectorName, []).extend(carried or [None] * len(frames))
                 self._batch_frame_counts[detectorName] += len(frames)
                 
                 # Flush batch if threshold reached
@@ -3534,6 +3611,13 @@ class WriterThread(threading.Thread):
         
         # Write batch (compression + I/O happens here, off acquisition thread)
         self._storer.writeFrames(detectorName, batch)
+        # Then what travels with those frames, in the same order.
+        carried = self.__dict__.setdefault('_batchAuxiliary', {}).pop(detectorName, [])
+        writeAuxiliary = getattr(self._storer, 'writeFrameAuxiliary', None)
+        if callable(writeAuxiliary):
+            # Every batch, carried or not: a declared stream keeps a row per
+            # frame (NaN for one that carried nothing), in step with them.
+            writeAuxiliary(detectorName, carried or [None] * len(batch))
         
         # Update counters
         self._currentFrames[detectorName] += len(batch)
@@ -3576,8 +3660,10 @@ class WriterThread(threading.Thread):
             )
         self._raise_if_failed()
     
-    def enqueue_frames(self, detectorName, frames):
-        """Enqueue frames for the writer thread.
+    def enqueue_frames(self, detectorName, frames, auxiliary=None):
+        """Enqueue frames for the writer thread. ``auxiliary``: what travels
+        with each frame (one ``{name: array}`` or ``None`` per frame), written
+        in step with it.
 
         Blocks while the queue is full (intended backpressure), but NEVER
         forever: if the writer thread has died, raises so the failure surfaces
@@ -3612,7 +3698,10 @@ class WriterThread(threading.Thread):
                 if admitted:
                     self._queuedBytes += payloadBytes
             if admitted:
-                self._queue.put((detectorName, frames, payloadBytes))
+                if auxiliary is None:
+                    self._queue.put((detectorName, frames, payloadBytes))
+                else:
+                    self._queue.put((detectorName, frames, payloadBytes, list(auxiliary)))
                 # Cover the race where the writer failed while this put was
                 # completing. finish() performs the same check for a failure
                 # that occurs after the producer's final enqueue.
@@ -4347,6 +4436,7 @@ class RecordingWorker(Worker):
                     
                     # Get new frames
                     newFrames = self._getNewFrames(detectorName)
+                    frameAuxiliary = list(self.__dict__.get('_newFrameAuxiliary') or ())
                     n = len(newFrames)
                     if n > 0:
                         # Clip frames if needed for SpecFrames mode
@@ -4379,10 +4469,15 @@ class RecordingWorker(Worker):
                                         f'trigger mode.'
                                     )
                                 newFrames = newFrames[:remaining]
+                                frameAuxiliary = frameAuxiliary[:remaining]
                                 n = remaining
                         
                         # Enqueue frames for writer thread (blocks if queue full, providing backpressure)
-                        writerThread.enqueue_frames(detectorName, newFrames)
+                        if any(item is not None for item in frameAuxiliary):
+                            writerThread.enqueue_frames(detectorName, newFrames,
+                                                        auxiliary=frameAuxiliary)
+                        else:
+                            writerThread.enqueue_frames(detectorName, newFrames)
                         currentFrame[detectorName] += n
                         lastFrameTime[detectorName] = time.time()  # Update watchdog timestamp
                 
@@ -4594,6 +4689,9 @@ class RecordingWorker(Worker):
         newFrames = self.__recordingManager.detectorsManager[detectorName].readChunk(
             _RECORDING_CHUNK_CONSUMER
         )
+        # What travels with each frame (a trajectory's measurements), read
+        # before stacking, which keeps only the pixels.
+        self._newFrameAuxiliary = [frame_auxiliary_of(frame) for frame in newFrames]
         # Preserve native dtype: no silent promotion to float64.
         # readChunk returns List[ndarray] already in detector's native dtype.
         if len(newFrames) == 0:

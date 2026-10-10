@@ -39,8 +39,8 @@ class Field:
     """One preset parameter. ``kind``: 'positioner', 'laser', 'detector',
     'optional-laser' (a device of the setup; the last two may be empty),
     'count', 'number', 'seconds', 'micrometres', 'pair' (two numbers),
-    'points' (a list of [x, y]), 'code', 'choice' or 'pulses' (a list of
-    ``[device, on_s, gap_after_s]``)."""
+    'points' (a list of [x, y]), 'code', 'choice', 'flag' (on or off; off
+    when not given) or 'pulses' (a list of ``[device, on_s, gap_after_s]``)."""
     name: str
     label: str
     kind: str
@@ -161,17 +161,19 @@ def raster(*, x_device, y_device, x_pixels, y_pixels, x_step_um, y_step_um, x_st
 
 
 def trajectory(pattern, *, x_device, y_device, duration_s, window_s, approach_s, pixel_um,
-               laser, **pattern_params) -> ScanProgram:
+               laser, record_measurements=None, **pattern_params) -> ScanProgram:
     """X and Y along a ``pattern`` path for ``duration_s``, measured in
     windows of ``window_s`` and gridded at ``pixel_um``; ``laser`` (if any)
-    on along the path."""
+    on along the path; every measurement recorded too if
+    ``record_measurements``."""
     duration_s = float(duration_s)
     events = ((TimelineEvent(str(laser), 'ttl', 0.0, duration_s, anchor=PATH_ANCHOR),)
               if laser else ())
     return validate(ScanProgram(
         loops=(), drives=(), step_s=float(window_s), timeline=events,
         trajectory=Trajectory((str(x_device), str(y_device)), pattern, dict(pattern_params),
-                              duration_s, float(approach_s), float(pixel_um)),
+                              duration_s, float(approach_s), float(pixel_um),
+                              bool(record_measurements)),
         timing_policy=STRICT))
 
 
@@ -196,7 +198,10 @@ def _trajectory_preset(pattern):
                  Field('approach_s', 'Approach', 'seconds',
                        help='Onto the path from where the stage is, and back.'),
                  Field('pixel_um', 'Grid pixel', 'micrometres'),
-                 Field('laser', 'Laser on along the path', 'optional-laser')))
+                 Field('laser', 'Laser on along the path', 'optional-laser'),
+                 Field('record_measurements', 'Record every measurement', 'flag',
+                       help='Beside the gridded image, each window\'s measurement in the '
+                            'order it was taken, with its time and position.')))
     return Preset(f'trajectory-{pattern}', f'Trajectory: {path.title}', fields,
                   functools.partial(trajectory, pattern),
                   'Point detectors measure window by window: APDs as a count rate, PMTs as a '
@@ -253,7 +258,7 @@ PRESETS: Dict[str, Preset] = {
 }
 
 #: Kinds a preset may leave empty.
-OPTIONAL_KINDS = ('detector', 'optional-laser')
+OPTIONAL_KINDS = ('detector', 'optional-laser', 'flag')
 
 
 def make(preset_id: str, params: Mapping[str, object]) -> ScanProgram:

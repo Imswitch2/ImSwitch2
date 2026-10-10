@@ -42,7 +42,7 @@ UINT64_MAX = 2 ** 64 - 1
 #: Error codes (``ERR,<code>,<text>``).
 SYNTAX, RANGE, STATE, CAPACITY, CHANNEL = 'syntax', 'range', 'state', 'capacity', 'channel'
 
-_CHANNEL = re.compile(r'^(dac|ttl)(\d+)$')
+_CHANNEL = re.compile(r'^(dac|ttl|time)(\d+)$')
 
 
 class ProtocolError(ValueError):
@@ -61,10 +61,12 @@ def text(value) -> str:
 
 
 def channel(token) -> Tuple[str, int]:
-    """``('dac', 0)`` for ``dac0``; ProtocolError for anything else."""
+    """``('dac', 0)`` for ``dac0``; ProtocolError for anything else. A
+    ``time<k>`` channel drives nothing: a drive on it is timing only."""
     match = _CHANNEL.match(str(token))
     if match is None:
-        raise ProtocolError(f'{token!r} is not a channel (dac<i> or ttl<j>)', CHANNEL)
+        raise ProtocolError(f'{token!r} is not a channel (dac<i>, ttl<j> or time<k>)',
+                            CHANNEL)
     return match.group(1), int(match.group(2))
 
 
@@ -224,7 +226,8 @@ def lines_to_plan(lines: Sequence[str]) -> WirePlan:
             plan['step_ticks'], plan['return_ticks'] = _uint(f[0], where), _uint(f[1], where)
         elif kind == 'DRIVE' and len(f) == 7:
             drives[device(f[0])] = dict(
-                device=f[0], channel=f[0], offset=_float(f[1], where), weights={},
+                device=f[0], channel=f[0], output=channel(f[0])[0] != 'time',
+                offset=_float(f[1], where), weights={},
                 table_loop=None, table=None, move=_uint(f[2], where),
                 settle=_uint(f[3], where), placement=_choice(f[4], 'placement', where),
                 origin=_choice(f[5], 'origin', where), restore=_choice(f[6], 'restore', where))
@@ -301,6 +304,10 @@ class BoardCaps:
     max_steps: Optional[int] = None
     trigger_in: bool = False
     trigger_latency_ticks: Optional[int] = None
+    #: The shortest pulse its trigger input takes, in ticks (M6).
+    trigger_min_ticks: Optional[int] = None
+    #: Its clock's accuracy, in parts per million (M6).
+    clock_ppm: Optional[float] = None
 
     def idn(self) -> str:
         return f'{PROTOCOL},{self.board},{self.firmware}'
@@ -317,6 +324,10 @@ class BoardCaps:
         out.append(f'CAPS,trigger_in,{_num(self.trigger_in)}')
         if self.trigger_latency_ticks is not None:
             out.append(f'CAPS,trigger_latency_ticks,{self.trigger_latency_ticks}')
+        if self.trigger_min_ticks is not None:
+            out.append(f'CAPS,trigger_min_ticks,{self.trigger_min_ticks}')
+        if self.clock_ppm is not None:
+            out.append(f'CAPS,clock_ppm,{_num(self.clock_ppm)}')
         return out + ['CAPS,END']
 
     def has(self, token) -> bool:
@@ -324,6 +335,8 @@ class BoardCaps:
             kind, index = channel(token)
         except ProtocolError:
             return False
+        if kind == 'time':
+            return True             # it drives nothing, so every board has it
         return index in self.dacs if kind == 'dac' else index < self.ttl_lines
 
 
@@ -347,8 +360,9 @@ def parse_caps(board: str, firmware: str, lines: Iterable[str]) -> BoardCaps:
         where = f'CAPS {key}'
         if key == 'END':
             return caps
-        if key in ('grid_ns', 'ttl', 'max_steps', 'trigger_in',
-                   'trigger_latency_ticks') and len(f) != 1 or key == 'dac' and len(f) != 3:
+        if key in ('grid_ns', 'ttl', 'max_steps', 'trigger_in', 'trigger_latency_ticks',
+                   'trigger_min_ticks', 'clock_ppm') and len(f) != 1 \
+                or key == 'dac' and len(f) != 3:
             raise ProtocolError(f'{where}: {line!r} has the wrong number of fields')
         if key == 'grid_ns':
             caps.grid_ns = _uint(f[0], where)
@@ -362,6 +376,10 @@ def parse_caps(board: str, firmware: str, lines: Iterable[str]) -> BoardCaps:
             caps.trigger_in = bool(_uint(f[0], where))
         elif key == 'trigger_latency_ticks':
             caps.trigger_latency_ticks = _uint(f[0], where)
+        elif key == 'trigger_min_ticks':
+            caps.trigger_min_ticks = _uint(f[0], where)
+        elif key == 'clock_ppm':
+            caps.clock_ppm = _float(f[0], where)
         # Any other key is a capability this host does not use.
     raise ProtocolError('The capabilities end without CAPS,END.')
 

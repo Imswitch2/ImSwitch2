@@ -1312,6 +1312,8 @@ The controls work as in EtSTED, with these differences:
    :align: center
    :width: 600px
 
+.. _etsnouty-widget:
+
 EtSnouty widget
 ---------------
 
@@ -1347,6 +1349,15 @@ does not load the pipeline itself.
   saves every analysed and raw frame as PNG in ``recordings/logs_et/frames``.
 * The value beside **Fast laser, power(mW)** is never applied; set the power in
   the Laser widget.
+* **Slow scan** chooses what an event starts. **TriggerScope pLSR routine**,
+  the default, is the scan described above. A scan panel instead --
+  ``Scan``, for the Expert panel (:doc:`expert-scanning`) -- runs that
+  panel's program once per event, on whatever engine runs it, through the
+  same request any workflow makes. The run carries the event that started it
+  as the shared attribute ``ScanEvent:triggeredBy`` (JSON: the pipeline, the
+  fast detector, the event's position in its pixels, when it was detected),
+  so a recording of that run says why it was taken; the attribute is blank
+  again when the run ends.
 
 .. image:: ./images/auto/EtSnoutyWidget.png
    :align: center

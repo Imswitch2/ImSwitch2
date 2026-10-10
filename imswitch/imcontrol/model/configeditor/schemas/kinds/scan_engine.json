@@ -19,6 +19,19 @@
       "x-imswitch-source": [
         "dataclass:ScanEngineInfo.managerProperties: Dict[str, Any]"
       ]
+    },
+    "triggerInput": {
+      "default": null,
+      "description": "The line, driven by the engine the scan panel runs on, that this engine's trigger input is wired to. It then follows that engine step by step in a program that uses its devices (a pulse at every step).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:ScanEngineInfo.triggerInput: Optional[str]"
+      ]
     }
   },
   "required": [

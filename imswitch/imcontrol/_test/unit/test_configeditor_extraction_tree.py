@@ -88,19 +88,22 @@ def test_the_coverage_the_plan_is_built_on(report):
     # analogChannels, digitalLines, triggerLatencyS and maxSteps. 223: the
     # pulse-generator engine's pulseGenerator and channels. 227: the
     # step-protocol engine's port, baudrate, replyTimeoutS and simulatedBoard.
-    assert report.keys == 227
+    # 229: the simulated step engine's triggerMinPulseS and clockAccuracyPpm
+    # (to lead or follow another engine, M6).
+    assert report.keys == 229
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    # +5 simulated step, +2 pulse-generator, +4 step-protocol engine properties
-    assert report.optional == 165
+    # +7 simulated step, +2 pulse-generator, +4 step-protocol engine properties
+    assert report.optional == 167
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
     # the pulse-generator engine's channels (absent: every channel). 40: the
     # step-protocol engine's port, baudrate and replyTimeoutS (required as
-    # the port says, checked by the engine).
-    assert report.none_default_only == 40
+    # the port says, checked by the engine). 42: the simulated step engine's
+    # triggerMinPulseS and clockAccuracyPpm (absent: undeclared, unknown).
+    assert report.none_default_only == 42
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -113,7 +116,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # too; 136: and the APD's mockSample. 141: the simulated step engine's
     # five properties (docs/devices/scan_engines.rst). 143: the
     # pulse-generator engine's two. 147: the step-protocol engine's four.
-    assert (report.docs_agree, report.docs_documented) == (147, 147)
+    # 149: the simulated step engine's two clock and trigger properties.
+    assert (report.docs_agree, report.docs_documented) == (149, 149)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):

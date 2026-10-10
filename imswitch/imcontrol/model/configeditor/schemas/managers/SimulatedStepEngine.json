@@ -11,6 +11,15 @@
         "docs:object"
       ]
     },
+    "clockAccuracyPpm": {
+      "description": "Its clock's accuracy, in parts per million (to lead or follow).",
+      "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number"
+      ]
+    },
     "digitalLines": {
       "description": "The digital lines it drives.",
       "x-imswitch-kind": "array",
@@ -44,6 +53,15 @@
     },
     "triggerLatencyS": {
       "description": "From a trigger's arrival to the release, in seconds. Not declared,",
+      "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number"
+      ]
+    },
+    "triggerMinPulseS": {
+      "description": "The shortest pulse its trigger input takes, in seconds (to follow",
       "x-imswitch-kind": "number",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [

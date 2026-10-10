@@ -44,6 +44,9 @@ class SimulatedStepBoard:
                               else int(latency_ticks))
         self.arrivals = ()
         self.fail_at_step = None
+        #: The arrivals are all there will be: a wait none releases fails
+        #: instead of waiting for a stop (as a blocking simulated run does).
+        self.arrivals_final = False
         self.log = RunLog()
         #: Every channel's value once a run is over: the lines at their safe
         #: level, the DACs where they stopped.
@@ -130,14 +133,15 @@ class SimulatedStepBoard:
         for name in names:
             if not self.caps.has(name):
                 raise ProtocolError(f'{name}: this board has no such channel', CHANNEL)
-        for kind, what, names in (
-                ('dac', 'a DAC is driven', [d['device'] for d in plan.drives]),
-                ('dac', 'a DAC has a captured or park position',
+        for kinds, what, names in (
+                (('dac', 'time'), 'a DAC or a time channel is driven',
+                 [d['device'] for d in plan.drives]),
+                (('dac', 'time'), 'a DAC or a time channel has a captured or park position',
                  list(plan.captured_um) + list(plan.park_um)),
-                ('ttl', 'a line takes an event', [e['device'] for e in plan.events]),
-                ('ttl', 'a line has a safe level (a DAC holds)', list(plan.safe))):
+                (('ttl',), 'a line takes an event', [e['device'] for e in plan.events]),
+                (('ttl',), 'a line has a safe level (a DAC holds)', list(plan.safe))):
             for name in names:
-                if channel(name)[0] != kind:
+                if channel(name)[0] not in kinds:
                     raise ProtocolError(f'{name}: only {what}', CHANNEL)
         steps = math.prod(count for _, count, _, _ in plan.loops)
         if self.caps.max_steps is not None and steps > self.caps.max_steps:
@@ -170,7 +174,7 @@ class SimulatedStepBoard:
     def _execute(self):
         plan = self._plan
         self._executor = StepExecutor(plan, latency_ticks=self.latency_ticks or 0,
-                                      stop=self._stop, blocking=False,
+                                      stop=self._stop, blocking=self.arrivals_final,
                                       listener=_Wire(self), log=self.log,
                                       release=self._release)
         self._executor.run(self.arrivals, self.fail_at_step)

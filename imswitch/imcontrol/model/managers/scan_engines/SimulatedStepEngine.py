@@ -19,11 +19,14 @@ makes trigger waits unknown, as the feasibility report says.
 - ``analogChannels``: ``{channel: [minV, maxV]}`` it drives;
 - ``digitalLines``: lines it drives;
 - ``triggerLatencyS``: from a trigger's arrival to the release (optional);
+- ``triggerMinPulseS``: the shortest pulse its trigger input takes (optional);
+- ``clockAccuracyPpm``: its clock's accuracy, in ppm (optional);
 - ``maxSteps``: steps it can hold (optional).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 import threading
@@ -74,6 +77,8 @@ class StepEngineBase(SignalInterface, ScanEngine):
         self._digital = ()
         self._latency = None
         self._maxSteps = None
+        self._triggerMinPulse = None
+        self._clockPpm = None
 
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(
@@ -82,6 +87,9 @@ class StepEngineBase(SignalInterface, ScanEngine):
             timing_grid_s=self._grid, min_pulse_s=self._grid,
             max_steps=self._maxSteps,
             trigger_latency_s=None if self._latency is None else float(self._latency),
+            trigger_min_pulse_s=None if self._triggerMinPulse is None
+            else float(self._triggerMinPulse),
+            clock_accuracy_ppm=None if self._clockPpm is None else float(self._clockPpm),
             deadlines=False, waits=frozenset(self._waits),
             abort='step-boundary',
             sources={'timing_grid_s': f'{self.name}.{self._capsSource}'},
@@ -89,6 +97,11 @@ class StepEngineBase(SignalInterface, ScanEngine):
 
     def owns(self, channel: str) -> bool:
         return channel in self._analog or channel in self._digital
+
+    def assess(self, program, channels, *, timing_only=frozenset()):
+        """As every engine, without the devices another engine drives for it
+        (``timing_only``, a leader's followers' devices, §5.4)."""
+        return super().assess(_without(program, timing_only), channels)
 
     # -- compile ----------------------------------------------------------------
 
@@ -101,9 +114,12 @@ class StepEngineBase(SignalInterface, ScanEngine):
                             f'({math.floor(product)} or {math.ceil(product)} ticks).')
         return ticks
 
-    def compile(self, program, channels, captured_um=None, devices=None) -> Compiled:
-        """``devices``: ``{name: DeviceFacts}`` from the setup (preparation)."""
-        report = self.assess(program, channels)
+    def compile(self, program, channels, captured_um=None, devices=None, *,
+                timing_only=frozenset()) -> Compiled:
+        """``devices``: ``{name: DeviceFacts}`` from the setup (preparation).
+        ``timing_only``: devices another engine drives; this one waits for
+        their moves and writes nothing for them (a leader, §5.4)."""
+        report = self.assess(program, channels, timing_only=timing_only)
         used = {e.device for e in program.timeline}
         for name, facts in (devices or {}).items():
             if name in used and facts.preparation == 'unknown' and program.waits:
@@ -119,8 +135,11 @@ class StepEngineBase(SignalInterface, ScanEngine):
                         if inner in d.weights_um or d.table_loop == inner]
         drives = []
         for d in program.drives:
+            output = d.device not in timing_only
             drives.append(dict(
-                device=d.device, channel=channels[d.device].analog, offset=float(d.offset_um),
+                device=d.device, output=output,
+                channel=channels[d.device].analog if output else None,
+                offset=float(d.offset_um),
                 weights={k: float(v) for k, v in d.weights_um.items()},
                 table_loop=d.table_loop, table=None if d.table_um is None else list(d.table_um),
                 move=ticks(d.motion.move_s, f'{d.device} move'),
@@ -129,6 +148,8 @@ class StepEngineBase(SignalInterface, ScanEngine):
             ))
         events = []
         for e in program.timeline:
+            if e.device in timing_only:
+                continue
             anchor_loop = None if e.anchor == 'step' else e.anchor.split(':', 1)[1]
             events.append(dict(
                 device=e.device, kind=e.kind,
@@ -167,6 +188,15 @@ class StepEngineBase(SignalInterface, ScanEngine):
         return Compiled(program, plan, report)
 
 
+def _without(program, devices):
+    """``program`` without the drives and events of ``devices``."""
+    if not devices:
+        return program
+    return dataclasses.replace(
+        program, drives=tuple(d for d in program.drives if d.device not in devices),
+        timeline=tuple(e for e in program.timeline if e.device not in devices))
+
+
 class SimulatedStepEngine(StepEngineBase):
     """The simulated step board, in process (M1)."""
 
@@ -183,32 +213,44 @@ class SimulatedStepEngine(StepEngineBase):
                         for ch, r in (props.get('analogChannels') or {}).items()}
         self._digital = tuple(str(line) for line in props.get('digitalLines') or ())
         self._latency = props.get('triggerLatencyS')
+        self._triggerMinPulse = props.get('triggerMinPulseS')
+        self._clockPpm = props.get('clockAccuracyPpm')
         self._maxSteps = props.get('maxSteps')
         self._stop = threading.Event()
         self._blocking = False
         self._prepared = None
         self._thread = None
+        self._quiet = False
+        self._onEnd = None
         self.log = RunLog()
+        #: How the last run ended: ('done' | 'stopped' | 'failed', reason).
+        self.outcome = None
 
     # -- run --------------------------------------------------------------------
 
-    def prepare(self, compiled: Compiled):
+    def prepare(self, compiled: Compiled, *, quiet=False):
         self._prepared = compiled
         self._stop.clear()
         self.log = RunLog()
         devices = sorted({e['device'] for e in compiled.plan.events}
-                         | {d['device'] for d in compiled.plan.drives})
-        self.sigScanBuilt.emit({'engine': self.name}, compiled.plan, devices)
+                         | {d['device'] for d in compiled.plan.drives if d.get('output', True)})
+        if not quiet:
+            self.sigScanBuilt.emit({'engine': self.name}, compiled.plan, devices)
 
     def ready(self) -> bool:
         return self._prepared is not None
 
-    def run(self, compiled: Compiled = None, *, arrivals=(), blocking=False, fail_at_step=None):
+    def run(self, compiled: Compiled = None, *, arrivals=(), blocking=False, fail_at_step=None,
+            quiet=False, on_end=None):
+        """``quiet``: emit no lifecycle signals, and call ``on_end(engine)``
+        when the run ends (a composite's member, §5.4)."""
         compiled = compiled or self._prepared
         if compiled is None:
             raise RuntimeError(f'{self.name}: nothing prepared to run.')
         args = (compiled.plan, sorted(int(a) for a in arrivals), fail_at_step)
         self._blocking = bool(blocking)
+        self._quiet, self._onEnd = bool(quiet), on_end
+        self.outcome = None
         if blocking:
             self._execute(*args)
         else:
@@ -241,27 +283,42 @@ class SimulatedStepEngine(StepEngineBase):
 
 
 class _Signals(Listener):
-    """The executor's reports as the engine's signals."""
+    """The executor's reports as the engine's signals -- or, quiet, as its
+    outcome and one call when it ends."""
 
     def __init__(self, engine):
         self.engine = engine
+        self.quiet = engine._quiet
+
+    def _end(self, outcome, reason=''):
+        self.engine.outcome = (outcome, reason)
+        if self.engine._onEnd is not None:
+            self.engine._onEnd(self.engine)
 
     def started(self):
-        self.engine.sigScanStarted.emit()
+        if not self.quiet:
+            self.engine.sigScanStarted.emit()
 
     def released(self, segment, wall):
-        self.engine.sigBarrierReleased.emit(segment, wall)
+        if not self.quiet:
+            self.engine.sigBarrierReleased.emit(segment, wall)
 
     def done(self, wall):
-        self.engine.sigScanDone.emit()
+        self._end('done')
+        if not self.quiet:
+            self.engine.sigScanDone.emit()
 
     def stopped(self, step):
-        self.engine.sigScanStopped.emit()
-        self.engine.sigScanDone.emit()
+        self._end('stopped')
+        if not self.quiet:
+            self.engine.sigScanStopped.emit()
+            self.engine.sigScanDone.emit()
 
     def failed(self, message):
-        self.engine.sigScanFailed.emit(message)
-        self.engine.sigScanBuildFailed.emit()
+        self._end('failed', message)
+        if not self.quiet:
+            self.engine.sigScanFailed.emit(message)
+            self.engine.sigScanBuildFailed.emit()
 
 
 __all__ = ['Compiled', 'RunLog', 'SimulatedStepEngine', 'StepPlan']

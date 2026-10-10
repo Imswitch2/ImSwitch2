@@ -146,11 +146,19 @@ class ChunkPayload:
     the scan that produced them carries one (``scan_frame.FrameGeometry``).
     The display latch re-attaches it, so a frame shown from the latch keeps
     it. ``None`` for every scan without one, and for cameras.
+
+    ``raw_auxiliary`` is what travels with each ``raw`` frame to a recording,
+    one ``{name: array}`` per frame -- a trajectory's measurements, recorded
+    as one row per frame of a stream the detector declares in its
+    ``recordingAuxiliary()`` (plan §6, M6). A raw consumer receives each
+    frame carrying its own (:func:`frame_auxiliary_of`), so they cannot be
+    paired with another scan's frame. ``None`` when there is none.
     """
 
     display: Any
     raw: Any = None
     display_geometry: Any = None
+    raw_auxiliary: Any = None
 
     def of(self, kind: 'ChunkKind'):
         if kind is ChunkKind.RAW:
@@ -160,6 +168,35 @@ class ChunkPayload:
 
 #: Stand-in for "this drain produced nothing of that kind".
 _EMPTY_CHUNK = np.empty((0, 0, 0))
+
+
+class _FrameWithAuxiliary(np.ndarray):
+    """A raw frame and what travels with it to a recording. Only the exact
+    delivered object carries it; anything derived from it does not."""
+
+    frame_auxiliary = None
+
+    def __array_finalize__(self, obj):
+        self.frame_auxiliary = None
+
+
+def frame_auxiliary_of(frame) -> Any:
+    """What a raw frame carries to a recording (``{name: array}``), or
+    ``None``."""
+    if isinstance(frame, _FrameWithAuxiliary):
+        return frame.frame_auxiliary
+    return None
+
+
+def _frames_with_auxiliary(frames, auxiliary):
+    if not auxiliary:
+        return frames
+    out = []
+    for frame, carried in zip(frames, auxiliary):
+        item = np.asarray(frame).view(_FrameWithAuxiliary)
+        item.frame_auxiliary = carried
+        out.append(item)
+    return out
 
 
 def scanPixelSizesToZYX(pixel_sizes: List[float]) -> List[float]:
@@ -818,6 +855,8 @@ class DetectorManager(SignalInterface):
         for key, consumerQueue in self._chunkConsumers.items():
             kind = kinds.get(key, ChunkKind.DISPLAY)
             newFrames = payload.of(kind)
+            if kind is ChunkKind.RAW and newFrames is not None:
+                newFrames = _frames_with_auxiliary(newFrames, payload.raw_auxiliary)
             # A raw drain is routinely empty while a display one is not: the
             # volume is not whole until the scan ends. That is the contract,
             # not a fault.

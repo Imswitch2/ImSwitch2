@@ -26,7 +26,11 @@ from typing import Callable, Dict, List, Optional, Tuple
 @dataclass
 class StepPlan:
     """What the board is uploaded: everything in ticks. Positions are in the
-    plan's own unit (µm on the simulated step board, volts on the wire)."""
+    plan's own unit (µm on the simulated step board, volts on the wire).
+
+    A drive whose ``output`` is false is timing only (M6): the board moves
+    it as it would a DAC -- waits for its move, settle and return -- and
+    writes nothing. A leader runs another engine's devices that way."""
     loops: List[Tuple[str, int, str, Tuple[str, ...]]]
     phase_loop: Optional[str]
     drives: List[dict]
@@ -175,13 +179,16 @@ class StepExecutor:
                      for v in visits]
         first = positions[0] if positions else {}
 
+        silent = {d['device'] for d in plan.drives if not d.get('output', True)}
+
         def write(device, value, tick=None):
             # A write at a time inside the current span names its tick; it
             # never moves the board's clocks.
             if held.get(device) != value:
                 held[device] = value
-                self.log.add('dac', self._segment, self._tick if tick is None else tick,
-                             device, value)
+                if device not in silent:
+                    self.log.add('dac', self._segment,
+                                 self._tick if tick is None else tick, device, value)
 
         for d in plan.drives:
             write(d['device'], first[d['device']])

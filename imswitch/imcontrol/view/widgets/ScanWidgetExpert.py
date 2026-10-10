@@ -274,6 +274,10 @@ class PresetDialog(QtWidgets.QDialog):
             if value not in (None, ''):
                 combo.setCurrentText(str(value))
             return combo
+        if field.kind == 'flag':
+            box = QtWidgets.QCheckBox()
+            box.setChecked(bool(value))
+            return box
         if field.kind == 'pulses':
             table = _RowTable([
                 _Column('device', 'Laser', 'choice', tuple(self._devices.get('laser', ()))),
@@ -300,7 +304,9 @@ class PresetDialog(QtWidgets.QDialog):
     def params(self) -> Dict:
         out = {}
         for name, (field, editor) in self._editors.items():
-            if isinstance(editor, QtWidgets.QComboBox):
+            if isinstance(editor, QtWidgets.QCheckBox):
+                out[name] = editor.isChecked()
+            elif isinstance(editor, QtWidgets.QComboBox):
                 out[name] = editor.currentText()
             elif isinstance(editor, _RowTable):
                 out[name] = [[r['device'], r['on'], r['gap']] for r in editor.rows()]

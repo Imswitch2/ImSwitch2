@@ -475,6 +475,97 @@ def test_the_report_refuses_what_the_board_does_not_have(board_rig):
 
 
 # ---------------------------------------------------------------------------
+# Two engines in one program (M6): a leader and a follower, step by step
+# ---------------------------------------------------------------------------
+
+def test_the_panel_runs_one_program_on_a_leader_and_its_follower(qtbot):
+    """A simulated step board leads (one laser, the pulse line); a protocol
+    board, its trigger input wired to that line, follows with Z, the other
+    laser and the camera. One run; the follower is stepped by the pulses."""
+    setup = _setup_dict(engine='lead')
+    setup['scanEngines'] = {
+        'lead': {'managerName': 'SimulatedStepEngine', 'managerProperties': {
+            'timingGridS': 1e-5, 'digitalLines': ['lead/ttl0', 'lead/ttl3'],
+            'clockAccuracyPpm': 20.0}},
+        'follow': {'managerName': 'StepProtocolScanEngine', 'triggerInput': 'lead/ttl3',
+                   'managerProperties': {'port': 'simulated', 'simulatedBoard': {
+                       'gridNs': 10_000, 'dacs': {'0': [0, 10]}, 'ttlLines': 2,
+                       'triggerIn': True, 'triggerLatencyTicks': 2, 'triggerMinTicks': 1,
+                       'clockPpm': 20.0}}}}
+    setup['positioners']['Z']['analogChannel'] = 'follow/dac0'
+    first, second = list(setup['lasers'])[:2]
+    setup['lasers'][first]['digitalLine'] = 'lead/ttl0'
+    setup['lasers'][second]['digitalLine'] = 'follow/ttl0'
+    setup['detectors']['Camera']['digitalLine'] = 'follow/ttl1'
+    rig = ExpertRig(setup)
+    try:
+        engine = rig.master.scanEngine
+        assert rig.widget.engineLabel.text() == 'Runs on lead (CompositeScanEngine).'
+        rig.scan.setProgram(_ms_resolft(rig, timepoints=1))
+        report = rig.widget.reportText()
+        assert report.startswith('Runnable on lead.'), report
+        assert 'follow follows lead step by step' in report
+        assert rig.run(timeoutS=10.0) and rig.rejected == []
+        assert engine.partsOutcome() == {'lead': ('done', ''), 'follow': ('done', '')}
+        follower, _ = engine.followers['follow']
+        frames = [e for e in follower.log.entries if e[0] == 'on' and e[3] == 'Camera']
+        assert len(frames) == 2 * 3                    # cycles x planes
+        assert len(follower.log.of('release')) == 2 * 3
+    finally:
+        rig.close()
+
+
+# ---------------------------------------------------------------------------
+# Event-driven programs (M6): a detected event runs the panel's program
+# ---------------------------------------------------------------------------
+
+def test_an_etsnouty_event_runs_the_expert_program_and_the_run_carries_it(
+        rig, monkeypatch, tmp_path):
+    """EtSnouty with the Scan panel as its slow scan: the event runs the
+    Expert program once through the scan source the channel resolves, the run
+    carries the event while it lasts, and EtSnouty takes the run's end as its
+    own."""
+    etsnouty = importlib.import_module(
+        'imswitch.imcontrol.controller.controllers.EtSnoutyController')
+    from imswitch.imcontrol.model.EtSnoutyPaths import ETSNOUTY_ROOT_ENV
+    from imswitch.imcontrol.view.widgets.EtSnoutyWidget import EtSnoutyWidget
+    monkeypatch.setenv(ETSNOUTY_ROOT_ENV, str(tmp_path))
+    monkeypatch.setattr(etsnouty, '_logsDir', str(tmp_path / 'logs'))
+    (tmp_path / 'analysis_pipelines').mkdir()
+    (tmp_path / 'analysis_pipelines' / 'detect_nothing.py').write_text(
+        'def detect_nothing(img):\n    return [], None\n')
+    widget = EtSnoutyWidget(optionsBasic)
+    controller = rig.factory.createController(etsnouty.EtSnoutyController, widget)
+    rig.main.controllers['EtSnouty'] = controller
+    controller._refreshSlowScanSources()
+    assert [widget.slowScanPar.itemText(i) for i in range(widget.slowScanPar.count())] == \
+        [etsnouty.SLOW_SCAN_ROUTINE, 'Scan']
+    widget.slowScanPar.setCurrentText('Scan')
+
+    rig.scan.setProgram(_ms_resolft(rig, timepoints=1))
+    controller.laserFast, controller.detectorFast = rig.lasers[0], 'Camera'
+    controller._experimentActive = True
+    rig.channel.sigScanStarting.connect(controller._onTriggeredScanStarting)
+    rig.channel.sigScanEnded.connect(controller.scanEnded)
+    during = []
+    rig.channel.sigScanStarted.connect(
+        lambda *a: during.append(rig.channel.sharedAttrs[etsnouty.SCAN_EVENT_KEY]))
+
+    rig.ended.clear()
+    assert controller.runSlowScan() is True
+    deadline = time.monotonic() + 10.0
+    while not rig.ended and time.monotonic() < deadline:
+        QtTest.QTest.qWait(50)
+    assert rig.ended and rig.rejected == []
+    event = json.loads(during[0])
+    assert event['workflow'] == 'EtSnouty' and event['scan_source'] == 'Scan'
+    assert event['detector'] == 'Camera'
+    assert rig.channel.sharedAttrs[etsnouty.SCAN_EVENT_KEY] == ''
+    assert controller._triggeredScanInFlight is False
+    assert list((tmp_path / 'logs').glob('*_log.txt'))       # its own bookkeeping ran
+
+
+# ---------------------------------------------------------------------------
 # Trajectories (M4): point detectors measure window by window, gridded
 # ---------------------------------------------------------------------------
 
@@ -603,6 +694,119 @@ def test_a_trajectory_recording_holds_its_unit_and_coverage(rig, tmp_path, saveF
     assert reduction['reduction'] == 'gridded from a trajectory'
     assert reduction['raw_measurements_stored'] is False
     assert reduction['weighting'] == 'Σ counts / Σ integration time'
+
+
+_MEASUREMENT_ARRAYS = ('measurements', 'measurement_seconds', 'measurement_centre_um')
+
+
+def _measurement_group(group):
+    """A detector group's image, reduction, measurement arrays and the
+    measurements' attributes (HDF5 or Zarr)."""
+    arrays = {name: np.asarray(group[name][...]) for name in _MEASUREMENT_ARRAYS}
+    return (np.asarray(group['data'][...]),
+            json.loads(group['data'].attrs['measurement:reduction']), arrays,
+            dict(group['measurements'].attrs))
+
+
+def _read_measurement_recording(tmp_path, saveFormat):
+    if saveFormat == SaveFormat.HDF5:
+        import h5py
+        with h5py.File(next(tmp_path.rglob('*.hdf5')), 'r') as f:
+            return _measurement_group(f['APD'])
+    if saveFormat == SaveFormat.ZARR:
+        import zarr
+        path = next(p for p in tmp_path.rglob('*.zarr') if p.is_dir())
+        return _measurement_group(zarr.open(str(path), mode='r')['APD'])
+    import tifffile
+    sidecars = ('_coverage',) + tuple(f'_{name}' for name in _MEASUREMENT_ARRAYS)
+    main = next(p for p in tmp_path.rglob('*.tif*') if not any(c in p.name for c in sidecars))
+    arrays, attrs = {}, {}
+    for name in _MEASUREMENT_ARRAYS:
+        with tifffile.TiffFile(str(next(tmp_path.rglob(f'*_{name}.tif')))) as tif:
+            arrays[name] = tif.asarray()
+            if name == 'measurements':
+                attrs = json.loads(tif.pages[0].description)
+    with tifffile.TiffFile(str(next(tmp_path.rglob('*_coverage.tif')))) as tif:
+        reduction = json.loads(json.loads(tif.pages[0].description)['reduction'])
+    return tifffile.imread(str(main)), reduction, arrays, attrs
+
+
+def _rebuilt_images(reduction, arrays):
+    """Each recorded row of measurements, binned again onto the grid."""
+    from imswitch.imcontrol.model.scan_program.trajectory import Grid, GridAccumulator
+    grid = reduction['grid']
+    grid = Grid(tuple(grid['devices']), tuple(grid['first_um']), float(grid['pixel_um']),
+                tuple(grid['shape']))
+    bins = grid.flat_index(arrays['measurement_centre_um'])
+    images = []
+    for row in np.atleast_2d(arrays['measurements']):
+        accumulator = GridAccumulator(grid, 'counts')
+        accumulator.add(bins, row, arrays['measurement_seconds'])
+        images.append(accumulator.image().ravel())
+    return np.array(images)
+
+
+def _record_spiral(rig, tmp_path, saveFormat, **lapse):
+    recording = rig.master.recordingManager
+    recording.startRecording(
+        detectorNames=['APD'], recMode=RecMode.ScanLapse if lapse else RecMode.ScanOnce,
+        savename=str(tmp_path / 'spiral'), saveMode=SaveMode.Disk, saveFormat=saveFormat,
+        attrs={'APD': {}}, recFrames=rig.scan.getNumScanPositions(),
+        numCamTTL=rig.scan.getNumCamTTL(), stallTimeout=2.0,
+        acquisitionLayouts=rig.scan.getAcquisitionLayouts(['APD']), **lapse)
+    assert recording.waitForAcquisitionStarted(2.0)
+    try:
+        assert rig.run()
+        _wait_for(lambda: not recording.record, timeout=10.0)
+    finally:
+        recording.endRecording(emitSignal=False, wait=True)
+
+
+@pytest.mark.parametrize('saveFormat', [SaveFormat.HDF5, SaveFormat.ZARR, SaveFormat.TIFF])
+def test_recorded_measurements_rebuild_the_image(rig, tmp_path, saveFormat):
+    """M6: every window's measurement, recorded beside the gridded image, in
+    acquisition order with its time and position -- what the image was
+    reduced from, binned back to the same image."""
+    rig.scan.setProgram(_spiral(rig, duration_s=0.2, turns=10, pixel_um=0.5,
+                                record_measurements=True))
+    _record_spiral(rig, tmp_path, saveFormat)
+    data, reduction, arrays, attrs = _read_measurement_recording(tmp_path, saveFormat)
+    windows = len(arrays['measurement_seconds'])
+    assert arrays['measurements'].shape == (1, windows)
+    assert not np.isnan(arrays['measurements']).any()
+    assert attrs['unit'] == 'counts' and attrs['order'].startswith('acquisition order')
+    assert arrays['measurement_seconds'].sum() == pytest.approx(0.2)
+    assert arrays['measurement_centre_um'].shape == (windows, 2)
+    assert reduction['raw_measurements_stored'] is True
+    np.testing.assert_allclose(np.reshape(data, (1, -1)), _rebuilt_images(reduction, arrays),
+                               rtol=1e-6, equal_nan=True)
+
+
+def test_each_scan_of_a_lapse_keeps_its_own_measurements(rig, tmp_path):
+    """Two scans in one file: each group's measurements rebuild that group's
+    image. The two scans of a noisy sample differ, so measurements paired with
+    the other scan's frame would not."""
+    import h5py
+    rig.scan.setProgram(_spiral(rig, duration_s=0.2, turns=10, pixel_um=0.5,
+                                record_measurements=True))
+    for index in range(2):
+        _record_spiral(rig, tmp_path, SaveFormat.HDF5, singleLapseFile=True, recLapseTotal=2,
+                       recLapseIndex=index)
+    with h5py.File(next(tmp_path.rglob('*.hdf5')), 'r') as f:
+        scans = [_measurement_group(f[f'scan{index}/APD']) for index in range(2)]
+    for data, reduction, arrays, _ in scans:
+        np.testing.assert_allclose(np.reshape(data, (1, -1)),
+                                   _rebuilt_images(reduction, arrays), rtol=1e-6,
+                                   equal_nan=True)
+    assert not np.array_equal(scans[0][2]['measurements'], scans[1][2]['measurements'])
+
+
+def test_measurements_are_not_recorded_unless_asked(rig, tmp_path):
+    import h5py
+    rig.scan.setProgram(_spiral(rig, duration_s=0.2, turns=10, pixel_um=0.5))
+    _record_spiral(rig, tmp_path, SaveFormat.HDF5)
+    with h5py.File(next(tmp_path.rglob('*.hdf5')), 'r') as f:
+        assert 'coverage' in f['APD'] and not set(_MEASUREMENT_ARRAYS) & set(f['APD'])
 
 
 def test_editing_the_tables_keeps_the_trajectory(rig, qtbot):

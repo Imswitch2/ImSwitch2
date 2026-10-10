@@ -77,6 +77,7 @@ def test_a_script_without_a_path_says_so():
     (dict(pattern='hexagon'), 'Unknown pattern'),
     (dict(devices=('X',)), 'moves 2 devices, not 1'),
     (dict(pixel_um=0.0), 'pixel_um must be positive'),
+    (dict(record_measurements='yes'), "record_measurements is true or false, not 'yes'"),
 ])
 def test_a_trajectory_is_validated(change, message):
     program = _spiral()
@@ -93,8 +94,18 @@ def test_a_trajectory_switches_lines_on_the_path_only():
 
 
 def test_a_trajectory_program_reads_back_from_its_json():
-    program = _spiral()
-    assert program_from_dict(json.loads(json.dumps(program_to_dict(program)))) == program
+    for program in (_spiral(), _spiral(record_measurements=True)):
+        assert program_from_dict(json.loads(json.dumps(program_to_dict(program)))) == program
+
+
+def test_measurements_are_recorded_only_when_asked():
+    """Off by default (plan §6): a program saved before M6 reads back
+    without them, the preset's box unticked makes none."""
+    saved = program_to_dict(_spiral())
+    del saved['trajectory']['record_measurements']
+    assert program_from_dict(saved).trajectory.record_measurements is False
+    assert _spiral(record_measurements=None).trajectory.record_measurements is False
+    assert _spiral(record_measurements=True).trajectory.record_measurements is True
 
 
 # ---------------------------------------------------------------------------
@@ -213,12 +224,53 @@ def test_the_nidaq_plays_a_spiral_and_tells_the_detectors_its_windows():
     geometry = info[FRAME_GEOMETRY_KEY]['axes']
     assert [axis['device'] for axis in geometry] == ['X', 'Y']
     assert geometry[0]['first_um'] == pytest.approx(realized.grid.first_um[0])
+    # what a recorded measurement is at: the window's centre, on the grid
+    assert measured['record_measurements'] is False
+    assert measured['centres_um'].shape == (5000, 2) and measured['devices'] == ['X', 'Y']
+    assert np.array_equal(realized.grid.flat_index(measured['centres_um']), measured['bin'])
+    recording = NIDAQ.compile(_spiral(record_measurements=True), setup_channels(SETUP),
+                              captured_um={'X': 0, 'Y': 0}).scanInfoDict[TRAJECTORY_KEY]
+    assert recording['record_measurements'] is True
+    assert recording['provenance_counts']['raw_measurements_stored'] is True
 
 
 def test_the_nidaq_refuses_a_path_its_stage_cannot_follow():
     with pytest.raises(ScanEngineRefused, match='above its acc_max'):
         NIDAQ.compile(_spiral(speed='linear'), setup_channels(SETUP),
                       captured_um={'X': 0, 'Y': 0})
+
+
+def test_a_scan_that_completes_before_its_live_images_arrive_keeps_its_own():
+    """The live images arrive queued; a teardown on another thread can
+    complete the scan first. Its raw frame is finished from the measurement
+    itself, and a live image delivered late does not overwrite it."""
+    from types import SimpleNamespace
+    from imswitch.imcontrol.model.managers.detectors._trajectory_measure import (
+        TrajectoryDetectorMixin,
+    )
+    grid = Grid(('X', 'Y'), (0.0, 0.0), 1.0, (2, 2))
+    accumulator = GridAccumulator(grid, 'counts')
+    accumulator.add(np.array([0, 3]), np.array([5.0, 7.0]), np.array([1.0, 2.0]))
+    measurement = SimpleNamespace(accumulator=accumulator, values=np.array([5.0, 7.0]),
+                                  provenance={'reduction': 'gridded from a trajectory'})
+
+    class Manager(TrajectoryDetectorMixin):
+        _scanGeneration = 1
+        _image = np.zeros((2, 2), np.float32)
+
+        def _publishTrajectoryImage(self):
+            pass
+
+    manager = Manager()
+    manager._trackTrajectory(1, measurement)
+    manager._finishTrajectory(1)             # no live image has arrived yet
+    final = accumulator.image().astype(np.float32)
+    np.testing.assert_array_equal(manager._image, final)
+    assert manager._rawFrameAuxiliary(1)[0]['measurements'].tolist() == [5.0, 7.0]
+    partial = np.full((2, 2), np.nan)
+    manager._onTrajectoryImage(partial, partial, 'counts/s', {}, 1, measurement)
+    np.testing.assert_array_equal(manager._image, final)
+    assert manager._trajectoryState['coverage'].sum() == 3.0
 
 
 def test_every_pattern_has_a_preset_with_its_parameters():
