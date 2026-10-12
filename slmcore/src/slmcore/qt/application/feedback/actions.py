@@ -126,6 +126,8 @@ class FeedbackActionRouter:
             }
             if "affine_transform" in values:
                 kwargs["affine_transform"] = values.get("affine_transform")
+            if "manual_transform" in values:
+                kwargs["manual_transform"] = values.get("manual_transform")
             self._references.set_position_reference(section_key,**kwargs)
         elif request is MeasurementsAction.POSITION_REFERENCE_FIT_CENTER:
             self._references.fit_position_reference_center(section_key)

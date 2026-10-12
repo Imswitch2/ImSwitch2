@@ -73,6 +73,11 @@ class PositionReferenceCoordinator:
                 if selection.affine_transform is None
                 else tuple(tuple(row) for row in selection.affine_transform)
             ),
+            "manual_transform":(
+                None
+                if selection.manual_transform is None
+                else selection.manual_transform.to_dict()
+            ),
             "correspondence_options":context.correspondence_options,
             "correspondence_resolved":context.correspondence_resolved,
             "correspondence_diagnostics":(
@@ -109,6 +114,7 @@ class PositionReferenceCoordinator:
         correction_mode: str | None=None,
         polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
+        manual_transform: Any=_UNSET,
     ) -> None:
         """Flush editor changes before applying a reference selection mapping."""
         try:
@@ -124,6 +130,8 @@ class PositionReferenceCoordinator:
             }
             if affine_transform is not _UNSET:
                 kwargs["affine_transform"] = affine_transform
+            if manual_transform is not _UNSET:
+                kwargs["manual_transform"] = manual_transform
             self._feedback.set_position_reference(section_key,**kwargs)
         except Exception as error:
             self._report_error("Changing position reference failed",error)

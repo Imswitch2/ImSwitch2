@@ -1206,3 +1206,91 @@ def test_named_reference_affine_correction_uses_one_continuous_field(tmp_path):
 
     reference_session.dispose()
     current_session.dispose()
+
+
+def test_current_reference_supports_free_affine_editing():
+    runtime=_runtime()
+    session=SLMSession(runtime=runtime)
+    localization=_attach_reference_localization(runtime)
+    from dataclasses import replace
+    diagnostics=dict(localization.diagnostics)
+    diagnostics.update({
+        "affine_linear":((32.0,0.0),(0.0,32.0)),
+        "affine_translation":(12.0,12.0),
+    })
+    localization=replace(localization,diagnostics=diagnostics)
+    parameters=dict(runtime.get_section_feedback_status("sec_0").localization_params)
+    runtime.commit_section_feedback_localization("sec_0",localization,parameters)
+
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",
+    )
+    assert selection.mode.value=="current"
+    preview=session.feedback.position_reference_preview("sec_0")
+    assert preview is not None
+    np.testing.assert_allclose(
+        preview["raw_reference_positions_px"],localization.measured_positions_px,
+    )
+    np.testing.assert_allclose(
+        preview["reference_positions_px"],localization.measured_positions_px,
+        atol=1e-12,
+    )
+    assert preview["fitted_transform"]["model"]=="affine"
+
+    transform=dict(preview["fitted_transform"])
+    matrix=np.asarray(transform["matrix"],dtype=np.float64)
+    shift=np.array([2.5,-1.25])
+    matrix[:,2]+=shift
+    transform["matrix"]=matrix.tolist()
+    session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",
+        manual_transform=transform,
+    )
+    edited=session.feedback.position_reference_preview("sec_0")
+    assert edited is not None
+    np.testing.assert_allclose(
+        edited["reference_positions_px"]-edited["measured_positions_px"],
+        np.repeat(shift[:,None],edited["measured_positions_px"].shape[1],axis=1),
+        atol=1e-10,
+    )
+    assert edited["manual_transform"] is not None
+
+    session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",manual_transform=None,
+    )
+    reset=session.feedback.position_reference_preview("sec_0")
+    assert reset is not None
+    np.testing.assert_allclose(
+        reset["reference_positions_px"],reset["measured_positions_px"],atol=1e-12,
+    )
+    session.dispose()
+
+
+def test_global_fit_can_use_continuous_correction_model():
+    runtime=_runtime()
+    session=SLMSession(runtime=runtime)
+    localization=_attach_reference_localization(runtime)
+    from dataclasses import replace
+    diagnostics=dict(localization.diagnostics)
+    diagnostics.update({
+        "affine_linear":((32.0,0.0),(0.0,32.0)),
+        "affine_translation":(12.0,12.0),
+    })
+    localization=replace(localization,diagnostics=diagnostics)
+    parameters=dict(runtime.get_section_feedback_status("sec_0").localization_params)
+    runtime.commit_section_feedback_localization("sec_0",localization,parameters)
+
+    session.feedback.set_position_reference(
+        "sec_0",mode="global_fit",correction_mode="affine",
+    )
+    preview=session.feedback.position_reference_preview("sec_0")
+    assert preview is not None
+    assert preview["correction_mode"]=="affine"
+    assert preview["fitted_transform"]["model"]=="affine"
+    # The helper localization is a pure translation from registered to measured,
+    # so an affine fit reproduces the registered/global-fit reference exactly.
+    np.testing.assert_allclose(
+        preview["reference_positions_px"],localization.expected_positions_px,
+        atol=1e-10,
+    )
+    session.dispose()

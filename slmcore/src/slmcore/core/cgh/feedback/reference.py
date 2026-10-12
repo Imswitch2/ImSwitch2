@@ -24,13 +24,19 @@ class PositionReferenceMode(str,Enum):
     GLOBAL_FIT = "global_fit"
     EDITABLE = "editable"
     REFERENCE = "reference"
+    CURRENT = "current"
 
     @classmethod
     def normalize(cls,value: Any) -> "PositionReferenceMode":
         if isinstance(value,cls):
             return value
         text = str(value or cls.GLOBAL_FIT.value).strip().lower()
-        aliases = {"global":cls.GLOBAL_FIT.value,"saved":cls.REFERENCE.value}
+        aliases = {
+            "global":cls.GLOBAL_FIT.value,
+            "saved":cls.REFERENCE.value,
+            "self":cls.CURRENT.value,
+            "free":cls.CURRENT.value,
+        }
         return cls(aliases.get(text,text))
 
 

@@ -233,3 +233,24 @@ def test_localization_adapters_retain_staggered_lattice_topology():
         target.lattice.cell_indices,np.array([[0,1,1,2],[0,0,0,0]]),
     )
     np.testing.assert_allclose(source.lattice.logical_positions,target.lattice.logical_positions)
+
+
+def test_selection_facade_accepts_generic_manual_polynomial_transform():
+    from slmcore import PositionReferenceSelection
+    from slmcore.core.transform2d import FittedTransform2D
+
+    transform=FittedTransform2D(
+        model="polynomial",polynomial_degree=2,
+        coefficients=np.zeros((2,6),dtype=np.float64),
+        normalization_center=np.array([20.0,30.0]),
+        normalization_scale=np.array([10.0,12.0]),
+    )
+    selection=PositionReferenceSelection(
+        mode="current",correction_mode="polynomial",polynomial_degree=2,
+        manual_transform=transform.to_dict(),
+    )
+
+    assert selection.mode.value=="current"
+    assert selection.manual_transform is not None
+    assert selection.manual_transform.model=="polynomial"
+    assert selection.affine_transform is None

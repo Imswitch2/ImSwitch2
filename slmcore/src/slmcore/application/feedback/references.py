@@ -26,7 +26,7 @@ from ...core.measurement.position_alignment import (
 )
 from ...core.measurement.position_reference import (
     ReferenceGeometry,position_reference_target_from_localization,
-    reference_geometry_from_editable_lattice,
+    reference_geometry_from_current_target,reference_geometry_from_editable_lattice,
     reference_geometry_from_global_fit,reference_geometry_from_localization,
     reference_geometry_from_position_reference,resolve_exact_lattice,
     resolve_exact_lattice_correspondence,
@@ -120,6 +120,28 @@ def _normalize_affine_transform(value: Any) -> tuple[tuple[float,...],...] | Non
         raise ValueError("Affine position-reference transform is singular")
     return tuple(tuple(float(item) for item in row) for row in array)
 
+
+def _normalize_manual_transform(
+    value: Any,*,model: str,polynomial_degree: int,
+) -> FittedTransform2D | None:
+    if value is None:
+        return None
+    transform=(
+        value if isinstance(value,FittedTransform2D)
+        else FittedTransform2D.from_dict(value)
+    )
+    normalized_model=_normalize_position_reference_correction_mode(model)
+    if normalized_model==_POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT:
+        raise ValueError("Per-spot correction cannot use a manual transform")
+    if transform.model!=normalized_model:
+        raise ValueError("Manual transform model must match correction model")
+    if (
+        normalized_model==_POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL
+        and int(transform.polynomial_degree)!=int(polynomial_degree)
+    ):
+        raise ValueError("Manual polynomial transform order must match correction order")
+    return transform
+
 @dataclass(frozen=True)
 class PositionReferenceSourceSelection:
     """Transient choice of where desired detector positions come from."""
@@ -196,6 +218,7 @@ class PositionReferenceSelection:
         correction_mode: str=_POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT,
         polynomial_degree: int=2,
         affine_transform: Any=None,
+        manual_transform: Any=None,
         *,
         source: PositionReferenceSourceSelection | None=None,
         correction: PositionCorrectionSelection | None=None,
@@ -210,6 +233,9 @@ class PositionReferenceSelection:
             raise TypeError("source must be a PositionReferenceSourceSelection")
         if correction is None:
             model=_normalize_position_reference_correction_mode(correction_mode)
+            degree=_normalize_position_reference_polynomial_degree(polynomial_degree)
+            if affine_transform is not None and manual_transform is not None:
+                raise ValueError("Specify either affine_transform or manual_transform, not both")
             manual=None
             if affine_transform is not None:
                 if model!=TRANSFORM_AFFINE:
@@ -217,8 +243,12 @@ class PositionReferenceSelection:
                 manual=fitted_matrix_transform(
                     TRANSFORM_AFFINE,np.asarray(_normalize_affine_transform(affine_transform)),
                 )
+            elif manual_transform is not None:
+                manual=_normalize_manual_transform(
+                    manual_transform,model=model,polynomial_degree=degree,
+                )
             correction=PositionCorrectionSelection(
-                model=model,polynomial_degree=polynomial_degree,manual_transform=manual,
+                model=model,polynomial_degree=degree,manual_transform=manual,
             )
         elif not isinstance(correction,PositionCorrectionSelection):
             raise TypeError("correction must be a PositionCorrectionSelection")
@@ -245,6 +275,9 @@ class PositionReferenceSelection:
         if transform is None or transform.model!=TRANSFORM_AFFINE:
             return None
         return tuple(tuple(float(v) for v in row) for row in np.asarray(transform.matrix))
+    @property
+    def manual_transform(self):
+        return self.correction.manual_transform
 
 @dataclass(frozen=True)
 class PositionReferenceContext:
@@ -296,6 +329,8 @@ class PositionReferencePreview(TypedDict):
     correction_mode: str
     polynomial_degree: int
     affine_transform: np.ndarray | None
+    fitted_transform: dict[str,Any] | None
+    manual_transform: dict[str,Any] | None
     reference: PositionReferenceResolutionMetadata
 
 class PositionReferenceService(FeedbackComponent):
@@ -364,9 +399,7 @@ class PositionReferenceService(FeedbackComponent):
                 editable_geometry=selection.editable_geometry,
                 editable_locks=selection.editable_locks,
                 correspondence=selection.correspondence,
-                correction_mode=selection.correction_mode,
-                polynomial_degree=selection.polynomial_degree,
-                affine_transform=selection.affine_transform,
+                correction=_automatic_correction_selection(selection),
             )
             self._position_reference_selections[key] = selection
         return selection
@@ -455,6 +488,7 @@ class PositionReferenceService(FeedbackComponent):
         correction_mode: str | None=None,
         polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
+        manual_transform: Any=_UNSET,
     ) -> PositionReferenceSelection:
         """Select a reference for this plane without persisting or applying a correction."""
         self._require_editor_mode()
@@ -465,6 +499,13 @@ class PositionReferenceService(FeedbackComponent):
             normalized_mode is PositionReferenceMode.REFERENCE
             and previous.mode is PositionReferenceMode.REFERENCE
             and str(previous.reference_name or "") == str(reference_name or "")
+        )
+        same_source = bool(
+            normalized_mode is previous.mode
+            and (
+                normalized_mode is not PositionReferenceMode.REFERENCE
+                or same_named_reference
+            )
         )
         if editable_geometry is None and previous.editable_geometry is not None:
             editable_geometry = previous.editable_geometry
@@ -486,19 +527,32 @@ class PositionReferenceService(FeedbackComponent):
         polynomial_degree = _normalize_position_reference_polynomial_degree(
             polynomial_degree
         )
-        if affine_transform is _UNSET:
-            affine_transform = (
-                previous.affine_transform
-                if same_named_reference
+        if manual_transform is not _UNSET and affine_transform is not _UNSET:
+            raise ValueError("Specify either affine_transform or manual_transform, not both")
+        if affine_transform is not _UNSET:
+            manual_transform=(
+                None
+                if affine_transform is None
+                else fitted_matrix_transform(
+                    TRANSFORM_AFFINE,
+                    np.asarray(_normalize_affine_transform(affine_transform)),
+                )
+            )
+        elif manual_transform is _UNSET:
+            manual_transform=(
+                previous.manual_transform
+                if same_source
                 and correction_mode == previous.correction_mode
+                and polynomial_degree == previous.polynomial_degree
                 else None
             )
-        elif affine_transform is not None:
-            affine_transform = _normalize_affine_transform(affine_transform)
-        if correction_mode != _POSITION_REFERENCE_CORRECTION_MODE_AFFINE:
-            # Manual transforms belong only to affine mode. Polynomial is
-            # intentionally automatic-only in this experimental pass.
-            affine_transform = None
+        else:
+            manual_transform=_normalize_manual_transform(
+                manual_transform,model=correction_mode,
+                polynomial_degree=polynomial_degree,
+            )
+        if correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT:
+            manual_transform=None
         if normalized_mode is PositionReferenceMode.EDITABLE and editable_geometry is None:
             inspection = self._runtime.get_section_feedback_inspection(section)
             measurement = inspection.measurement
@@ -518,7 +572,7 @@ class PositionReferenceService(FeedbackComponent):
             correspondence=correspondence,
             correction_mode=correction_mode,
             polynomial_degree=polynomial_degree,
-            affine_transform=affine_transform,
+            manual_transform=manual_transform,
         )
         plane = self._active_feedback_plane(section)
         if selection.mode is PositionReferenceMode.REFERENCE:
@@ -687,7 +741,7 @@ class PositionReferenceService(FeedbackComponent):
                 measurement.localization,self._feedback_orientation(section_key),
             )
             (
-                reference_positions,raw_reference_positions,metadata,affine_transform,
+                reference_positions,raw_reference_positions,metadata,fitted_transform,
             ) = self._resolve_position_reference_details(section_key)
             reference = (
                 np.asarray(localization.expected_positions_px,dtype=np.float64)
@@ -741,8 +795,17 @@ class PositionReferenceService(FeedbackComponent):
                 "polynomial_degree":selection.polynomial_degree,
                 "affine_transform":(
                     None
-                    if affine_transform is None
-                    else np.asarray(affine_transform,dtype=np.float64)
+                    if fitted_transform is None
+                    or fitted_transform.model!=TRANSFORM_AFFINE
+                    else np.asarray(fitted_transform.matrix,dtype=np.float64)
+                ),
+                "fitted_transform":(
+                    None if fitted_transform is None else fitted_transform.to_dict()
+                ),
+                "manual_transform":(
+                    None
+                    if selection.manual_transform is None
+                    else selection.manual_transform.to_dict()
                 ),
                 "reference":metadata,
             }
@@ -751,9 +814,9 @@ class PositionReferenceService(FeedbackComponent):
 
     def _resolve_position_reference(
         self,section_key: str,
-    ) -> tuple[np.ndarray | None,dict[str,Any]]:
-        """Resolve oriented detector coordinates and provenance; None selects global fit."""
-        positions,_raw,metadata,_affine = self._resolve_position_reference_details(
+    ) -> tuple[np.ndarray,dict[str,Any]]:
+        """Resolve oriented detector coordinates and provenance for position feedback."""
+        positions,_raw,metadata,_transform = self._resolve_position_reference_details(
             section_key
         )
         return positions,metadata
@@ -761,9 +824,9 @@ class PositionReferenceService(FeedbackComponent):
     def _resolve_position_reference_details(
         self,section_key: str,
     ) -> tuple[
-        np.ndarray | None,np.ndarray | None,dict[str,Any],np.ndarray | None,
+        np.ndarray,np.ndarray,dict[str,Any],FittedTransform2D | None,
     ]:
-        """Resolve reference and correction through the neutral backend core."""
+        """Resolve source geometry and correction through the neutral backend core."""
         section=str(section_key)
         inspection=self._runtime.get_section_feedback_inspection(section)
         measurement=inspection.measurement
@@ -780,18 +843,19 @@ class PositionReferenceService(FeedbackComponent):
         )
         key=self._position_reference_key(section)
 
+        metadata: dict[str,Any]={
+            "mode":selection.mode.value,
+            "correspondence_options":(),
+        }
         if selection.mode is PositionReferenceMode.GLOBAL_FIT:
-            # Keep the legacy sentinel contract while retaining the neutral
-            # zero-correction alignment for future common-editor inspection.
             source=reference_geometry_from_global_fit(localization,full_image=True)
             resolved=resolve_exact_lattice(source,target)
-            alignment=align_resolved_position_reference(
-                target,resolved,model=_POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT,
-            )
-            self._position_alignment_results[key]=alignment
-            return None,None,{"mode":selection.mode.value,"label":"Global fit"},None
-
-        if selection.mode is PositionReferenceMode.EDITABLE:
+            metadata["label"]="Global fit"
+        elif selection.mode is PositionReferenceMode.CURRENT:
+            source=reference_geometry_from_current_target(target)
+            resolved=resolve_exact_lattice(source,target)
+            metadata["label"]="Current (free edit)"
+        elif selection.mode is PositionReferenceMode.EDITABLE:
             geometry=selection.editable_geometry
             if geometry is None:
                 geometry=editable_position_reference_geometry(localization)
@@ -799,128 +863,115 @@ class PositionReferenceService(FeedbackComponent):
                 localization,geometry,full_image=True,
             )
             resolved=resolve_exact_lattice(source,target)
-            # Editable-lattice correction historically remains direct per-site;
-            # preserve that behavior even if a named-reference correction mode
-            # is still present in the compatibility facade.
-            alignment=align_resolved_position_reference(
-                target,resolved,model=_POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT,
-            )
-            self._position_alignment_results[key]=alignment
-            positions=np.asarray(alignment.predicted_positions_px)-crop_offset
-            raw=np.asarray(resolved.desired_positions_px)-crop_offset
-            return positions,raw,{
-                "mode":selection.mode.value,
+            metadata.update({
                 "label":"Editable lattice",
                 "geometry":geometry.to_dict(),
-            },None
-
-        plane=self._active_feedback_plane(section)
-        if plane is None:
-            raise RuntimeError("Named position references require an active measurement plane")
-        if self._position_reference_store is None:
-            raise RuntimeError("Position-reference storage is unavailable")
-        record=self._position_reference_store.get_record(plane,selection.reference_name)
-        reference=record.reference
-        if tuple(reference.image_shape)!=tuple(measurement.acquisition.image.shape):
-            raise RuntimeError(
-                "Reference image shape %s does not match current measurement %s"
-                % (reference.image_shape,measurement.acquisition.image.shape)
+            })
+        else:
+            plane=self._active_feedback_plane(section)
+            if plane is None:
+                raise RuntimeError(
+                    "Named position references require an active measurement plane"
+                )
+            if self._position_reference_store is None:
+                raise RuntimeError("Position-reference storage is unavailable")
+            record=self._position_reference_store.get_record(
+                plane,selection.reference_name
             )
-        current_detector=str(measurement.acquisition.detector or "").strip() or None
-        if (
-            reference.detector_name is not None and current_detector is not None
-            and reference.detector_name!=current_detector
-        ):
-            raise RuntimeError(
-                'Reference detector "%s" does not match current detector "%s"'
-                % (reference.detector_name,current_detector)
-            )
-        if not np.array_equal(reference.lattice_indices,localization.lattice_indices):
-            raise ValueError("Reference lattice does not match the current target")
+            reference=record.reference
+            if tuple(reference.image_shape)!=tuple(measurement.acquisition.image.shape):
+                raise RuntimeError(
+                    "Reference image shape %s does not match current measurement %s"
+                    % (reference.image_shape,measurement.acquisition.image.shape)
+                )
+            current_detector=str(measurement.acquisition.detector or "").strip() or None
+            if (
+                reference.detector_name is not None and current_detector is not None
+                and reference.detector_name!=current_detector
+            ):
+                raise RuntimeError(
+                    'Reference detector "%s" does not match current detector "%s"'
+                    % (reference.detector_name,current_detector)
+                )
+            if not np.array_equal(
+                reference.lattice_indices,localization.lattice_indices
+            ):
+                raise ValueError("Reference lattice does not match the current target")
 
-        source=reference_geometry_from_position_reference(reference)
-        source_orientation=dict(reference.metadata or {}).get("feedback_orientation")
-        source_ordering=SpotOrdering.CANONICAL
-        if source.lattice is not None and source_orientation not in (None,""):
-            # Pass-4/5 references persisted topology reconstructed from an already
-            # oriented localization, but the topology itself had not been permuted
-            # with the detector positions.  Repair those records once on load.
-            normalized_orientation=FeedbackOrientation.normalize(source_orientation)
-            lattice_orientation=dict(source.lattice.diagnostics or {}).get(
+            source=reference_geometry_from_position_reference(reference)
+            source_orientation=dict(reference.metadata or {}).get(
                 "feedback_orientation"
             )
-            if (
-                normalized_orientation is not FeedbackOrientation.IDENTITY
-                and lattice_orientation!=normalized_orientation.value
-            ):
-                permutation=orientation_permutation(
-                    reference.lattice_indices,normalized_orientation,
+            source_ordering=SpotOrdering.CANONICAL
+            if source.lattice is not None and source_orientation not in (None,""):
+                # Older topology-aware references can carry detector positions
+                # that were oriented without permuting the persisted topology.
+                normalized_orientation=FeedbackOrientation.normalize(
+                    source_orientation
                 )
-                source=ReferenceGeometry(
-                    positions_px=source.positions_px,site_ids=source.site_ids,
-                    lattice=orient_lattice_representation(
-                        source.lattice,permutation,normalized_orientation,
-                    ),
-                    valid_mask=source.valid_mask,weights=source.weights,
-                    metadata=dict(source.metadata),
+                lattice_orientation=dict(source.lattice.diagnostics or {}).get(
+                    "feedback_orientation"
                 )
-        if source.lattice is None and source_orientation not in (None,""):
-            # Legacy references have no persisted topology, so retain the old
-            # explicit source/target orientation reindex.  Topology-aware
-            # references normalize source and target directly from their detector
-            # geometry inside the neutral resolver and must not apply this again.
-            permutation=orientation_reindex_permutation(
-                localization.lattice_indices,source_orientation,
-                self._feedback_orientation(section),
+                if (
+                    normalized_orientation is not FeedbackOrientation.IDENTITY
+                    and lattice_orientation!=normalized_orientation.value
+                ):
+                    permutation=orientation_permutation(
+                        reference.lattice_indices,normalized_orientation,
+                    )
+                    source=ReferenceGeometry(
+                        positions_px=source.positions_px,site_ids=source.site_ids,
+                        lattice=orient_lattice_representation(
+                            source.lattice,permutation,normalized_orientation,
+                        ),
+                        valid_mask=source.valid_mask,weights=source.weights,
+                        metadata=dict(source.metadata),
+                    )
+            if source.lattice is None and source_orientation not in (None,""):
+                permutation=orientation_reindex_permutation(
+                    localization.lattice_indices,source_orientation,
+                    self._feedback_orientation(section),
+                )
+                source_ordering=_spot_ordering_for_permutation(
+                    localization.lattice_indices,permutation,
+                )
+            resolved=resolve_exact_lattice_correspondence(
+                source,target,selection.correspondence.value,
+                source_ordering=source_ordering.value,
             )
-            source_ordering=_spot_ordering_for_permutation(
-                localization.lattice_indices,permutation,
-            )
-        resolved=resolve_exact_lattice_correspondence(
-            source,target,selection.correspondence.value,
-            source_ordering=source_ordering.value,
-        )
+            correspondence=dict(resolved.correspondence or {})
+            metadata.update({
+                "label":reference.name,
+                "name":reference.name,
+                "observation_plane_name":reference.observation_plane_name,
+                "created_at":reference.created_at,
+                "lifetime":record.lifetime.value,
+                "correspondence":correspondence,
+                "correspondence_options":tuple(
+                    item.value for item in reference_correspondence_options(localization)
+                ),
+            })
+
         alignment=align_resolved_position_reference(
             target,resolved,model=selection.correction_mode,
             polynomial_degree=selection.polynomial_degree,
-            fitted_transform=selection.correction.manual_transform,
+            fitted_transform=selection.manual_transform,
         )
         self._position_alignment_results[key]=alignment
+        transform=alignment.transform
+        metadata["correction_model"]={
+            "mode":selection.correction_mode,
+            "manual":selection.manual_transform is not None,
+            "transform":None if transform is None else transform.to_dict(),
+            "polynomial_degree":(
+                selection.polynomial_degree
+                if selection.correction_mode==_POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL
+                else None
+            ),
+        }
         effective=np.asarray(alignment.predicted_positions_px)-crop_offset
         raw=np.asarray(resolved.desired_positions_px)-crop_offset
-        affine_transform=(
-            np.asarray(alignment.transform.matrix,dtype=np.float64)
-            if alignment.transform is not None
-            and alignment.transform.model==TRANSFORM_AFFINE else None
-        )
-        correspondence=dict(resolved.correspondence or {})
-        metadata={
-            "mode":selection.mode.value,
-            "label":reference.name,
-            "name":reference.name,
-            "observation_plane_name":reference.observation_plane_name,
-            "created_at":reference.created_at,
-            "lifetime":record.lifetime.value,
-            "correspondence":correspondence,
-            "correspondence_options":tuple(
-                item.value for item in reference_correspondence_options(localization)
-            ),
-            "correction_model":{
-                "mode":selection.correction_mode,
-                "affine_transform":(
-                    None if affine_transform is None else tuple(
-                        tuple(float(value) for value in row)
-                        for row in affine_transform
-                    )
-                ),
-                "polynomial_degree":(
-                    selection.polynomial_degree
-                    if selection.correction_mode==_POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL
-                    else None
-                ),
-            },
-        }
-        return effective,raw,metadata,affine_transform
+        return effective,raw,metadata,transform
 
     def position_alignment_result(
         self,section_key: str,
@@ -1002,33 +1053,25 @@ class PositionReferenceService(FeedbackComponent):
         selection = self._position_reference_selections.get(key)
         if selection is None:
             return
-        if selection.mode is PositionReferenceMode.REFERENCE:
-            if selection.affine_transform is None:
-                return
-            # Manual affine handles describe the previous localization. Keep the
-            # selected model/reference but refit its base transform to the new
-            # measurement before the user makes any further manual adjustment.
+        if selection.mode is PositionReferenceMode.EDITABLE:
+            oriented = orient_localization(
+                localization,self._feedback_orientation(section_key),
+            )
             self._position_reference_selections[key] = PositionReferenceSelection(
-                mode=selection.mode,
-                reference_name=selection.reference_name,
-                editable_geometry=selection.editable_geometry,
+                mode=PositionReferenceMode.EDITABLE,
+                editable_geometry=editable_position_reference_geometry(oriented),
                 editable_locks=selection.editable_locks,
                 correspondence=selection.correspondence,
-                correction_mode=selection.correction_mode,
-                polynomial_degree=selection.polynomial_degree,
-                affine_transform=None,
+                correction=_automatic_correction_selection(selection),
             )
             return
-        if selection.mode is not PositionReferenceMode.EDITABLE:
+        if selection.manual_transform is None:
             return
-        oriented = orient_localization(
-            localization,self._feedback_orientation(section_key),
-        )
+        # Interactive transforms are fitted against the previous localization.
+        # Keep the source/model choice, but return to its automatic baseline fit
+        # whenever a new localization is accepted.
         self._position_reference_selections[key] = PositionReferenceSelection(
-            mode=PositionReferenceMode.EDITABLE,
-            editable_geometry=editable_position_reference_geometry(oriented),
-            editable_locks=selection.editable_locks,
-            correspondence=selection.correspondence,
+            source=selection.source,
             correction=_automatic_correction_selection(selection),
         )
 

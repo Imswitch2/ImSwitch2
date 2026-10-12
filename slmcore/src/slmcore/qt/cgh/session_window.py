@@ -126,6 +126,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "correction_mode":"per_spot",
             "polynomial_degree":2,
             "affine_transform":None,
+            "manual_transform":None,
             "fit_geometry":None,
             "observation_plane_name":None,
             "compatible":True,
@@ -591,8 +592,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_reference_view.sigCenterOffsetRequested.connect(
             self._on_position_reference_center_dragged,
         )
-        self.position_reference_view.sigAffineTransformRequested.connect(
-            self._on_position_reference_affine_transform_dragged,
+        self.position_reference_view.sigManualTransformRequested.connect(
+            self._on_position_reference_manual_transform_dragged,
         )
         self.position_correction_view = PositionCorrectionView(viewer)
         self.position_view_stack.addWidget(self.position_reference_view)
@@ -861,8 +862,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "Edit interactively"
         )
         self.position_reference_interactive_edit_checkbox.setToolTip(
-            "Pass 1 exposes the existing affine handles here. A common affine / "
-            "polynomial editor will replace them in the next pass."
+            "Edit the fitted correction directly in the detector view. Affine uses "
+            "a cage; polynomial uses a sparse deformation mesh."
         )
         self.position_reference_interactive_edit_checkbox.toggled.connect(
             self._on_position_reference_interactive_edit_toggled
@@ -873,7 +874,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "Reset fit"
         )
         self.position_reference_affine_reset_button.setToolTip(
-            "Discard manual affine-handle edits and refit from Current to Reference."
+            "Discard interactive edits and return to the automatic Current → Reference fit."
         )
         self.position_reference_affine_reset_button.clicked.connect(
             self._reset_position_reference_affine_fit,
@@ -881,8 +882,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         controls_layout.addWidget(self.position_reference_affine_reset_button)
 
         self.position_reference_affine_hint = QtWidgets.QLabel(
-            "Temporary affine editor: drag Move to translate, X or Y to change "
-            "the affine axes. Predicted updates in the detector view."
+            "Drag the editor handles in the detector view. Predicted updates live; "
+            "Reset fit returns to the automatic fit."
         )
         self.position_reference_affine_hint.setWordWrap(True)
         self.position_reference_affine_hint.setStyleSheet(
@@ -1007,206 +1008,196 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._refresh_status_controls()
 
     def _refresh_position_reference_controls(self) -> None:
-        combo = getattr(self,"position_reference_combo",None)
+        combo=getattr(self,"position_reference_combo",None)
         if combo is None:
             return
-        context = dict(self._position_reference_context or {})
-        mode = str(context.get("mode") or "global_fit")
-        reference_name = str(context.get("reference_name") or "").strip()
-        references = tuple(
-            dict(item) for item in (context.get("references") or ())
-        )
+        context=dict(self._position_reference_context or {})
+        mode=str(context.get("mode") or "global_fit")
+        reference_name=str(context.get("reference_name") or "").strip()
+        references=tuple(dict(item) for item in (context.get("references") or ()))
 
-        # The first combo selects only the reference *kind*. Saved records live
-        # exclusively in the conditional Saved reference panel below.
-        blocker = QtCore.QSignalBlocker(combo)
+        blocker=QtCore.QSignalBlocker(combo)
         try:
-            saved_index = combo.findData("reference")
-            if saved_index >= 0:
-                item = combo.model().item(saved_index)
+            saved_index=combo.findData("reference")
+            if saved_index>=0:
+                item=combo.model().item(saved_index)
                 if item is not None:
                     item.setEnabled(bool(references))
-            current_index = combo.findData("current")
-            if current_index >= 0:
-                item = combo.model().item(current_index)
+            current_index=combo.findData("current")
+            if current_index>=0:
+                item=combo.model().item(current_index)
                 if item is not None:
-                    item.setEnabled(False)
+                    item.setEnabled(True)
                     item.setToolTip(
-                        "Free editing will be enabled with the common interactive "
-                        "correction editor in Pass 2."
+                        "Use the current localized pattern as the reference baseline, "
+                        "then edit a continuous correction freely."
                     )
-            index = combo.findData(mode)
-            combo.setCurrentIndex(index if index >= 0 else 0)
+            index=combo.findData(mode)
+            combo.setCurrentIndex(index if index>=0 else 0)
         finally:
             del blocker
 
-        saved_combo = getattr(self,"position_reference_saved_combo",None)
+        saved_combo=getattr(self,"position_reference_saved_combo",None)
         if saved_combo is not None:
-            previous_name = self._selected_managed_position_reference_name()
-            preferred_name = reference_name or previous_name
-            saved_blocker = QtCore.QSignalBlocker(saved_combo)
+            previous_name=self._selected_managed_position_reference_name()
+            preferred_name=reference_name or previous_name
+            saved_blocker=QtCore.QSignalBlocker(saved_combo)
             try:
                 saved_combo.clear()
                 for entry in references:
-                    name = str(entry.get("name") or "").strip()
+                    name=str(entry.get("name") or "").strip()
                     if not name:
                         continue
-                    lifetime = str(entry.get("lifetime") or "session")
-                    suffix = "Persistent" if lifetime == "persistent" else "Session"
+                    lifetime=str(entry.get("lifetime") or "session")
+                    suffix="Persistent" if lifetime=="persistent" else "Session"
                     saved_combo.addItem("%s · %s" % (name,suffix),name)
-                    item_index = saved_combo.count()-1
                     saved_combo.setItemData(
-                        item_index,lifetime,QtCore.Qt.UserRole+1,
+                        saved_combo.count()-1,lifetime,QtCore.Qt.UserRole+1,
                     )
-                selected_index = saved_combo.findData(preferred_name)
-                if selected_index < 0 and saved_combo.count():
-                    selected_index = 0
+                selected_index=saved_combo.findData(preferred_name)
+                if selected_index<0 and saved_combo.count():
+                    selected_index=0
                 saved_combo.setCurrentIndex(selected_index)
             finally:
                 del saved_blocker
 
-        editable_widget = getattr(self,"position_reference_editable_widget",None)
-        saved_widget = getattr(self,"position_reference_saved_widget",None)
-        geometry = context.get("editable_geometry")
-        if mode == "editable" and geometry is None:
-            geometry = context.get("fit_geometry")
+        editable_widget=getattr(self,"position_reference_editable_widget",None)
+        saved_widget=getattr(self,"position_reference_saved_widget",None)
+        geometry=context.get("editable_geometry")
+        if mode=="editable" and geometry is None:
+            geometry=context.get("fit_geometry")
         if geometry:
             self._set_editable_geometry_controls(geometry)
         self._set_editable_lock_controls(context.get("editable_locks") or {})
         if editable_widget is not None:
-            editable_widget.setVisible(mode == "editable")
+            editable_widget.setVisible(mode=="editable")
         if saved_widget is not None:
-            saved_widget.setVisible(mode == "reference")
+            saved_widget.setVisible(mode=="reference")
 
-        correction_mode = str(context.get("correction_mode") or "per_spot")
-        # Global-fit and editable-lattice sources still use their historical
-        # direct per-site correction in Pass 1.  Show the effective model rather
-        # than a remembered named-reference model that is not actually applied.
-        displayed_correction_mode = (
-            correction_mode if mode == "reference" else "per_spot"
-        )
-        correction_model_combo = getattr(
+        correction_mode=str(context.get("correction_mode") or "per_spot")
+        correction_model_combo=getattr(
             self,"position_reference_correction_model_combo",None,
         )
         if correction_model_combo is not None:
-            correction_blocker = QtCore.QSignalBlocker(correction_model_combo)
+            correction_blocker=QtCore.QSignalBlocker(correction_model_combo)
             try:
-                correction_index = correction_model_combo.findData(
-                    displayed_correction_mode
-                )
+                correction_index=correction_model_combo.findData(correction_mode)
                 correction_model_combo.setCurrentIndex(
-                    correction_index if correction_index >= 0 else 0
+                    correction_index if correction_index>=0 else 0
                 )
             finally:
                 del correction_blocker
 
-        polynomial_degree = int(context.get("polynomial_degree") or 2)
-        polynomial_degree_combo = getattr(
+        polynomial_degree=int(context.get("polynomial_degree") or 2)
+        polynomial_degree_combo=getattr(
             self,"position_reference_polynomial_degree_combo",None,
         )
         if polynomial_degree_combo is not None:
-            polynomial_blocker = QtCore.QSignalBlocker(polynomial_degree_combo)
+            polynomial_blocker=QtCore.QSignalBlocker(polynomial_degree_combo)
             try:
-                polynomial_index = polynomial_degree_combo.findData(polynomial_degree)
+                polynomial_index=polynomial_degree_combo.findData(polynomial_degree)
                 polynomial_degree_combo.setCurrentIndex(
-                    polynomial_index if polynomial_index >= 0 else 0
+                    polynomial_index if polynomial_index>=0 else 0
                 )
             finally:
                 del polynomial_blocker
 
-        change_allowed = bool(
+        change_allowed=bool(
             context.get("change_allowed",True)
             and not self._cgh_computing
             and self._selected_is_current_context()
         )
-        reason = str(context.get("change_unavailable_reason") or "")
+        reason=str(context.get("change_unavailable_reason") or "")
+        source_valid=bool(mode!="reference" or reference_name)
         combo.setEnabled(change_allowed)
         combo.setToolTip(reason)
         if saved_combo is not None:
             saved_combo.setEnabled(change_allowed and bool(references))
             saved_combo.setToolTip(reason)
+
         if correction_model_combo is not None:
-            correction_model_combo.setEnabled(
-                change_allowed and mode == "reference" and bool(reference_name)
-            )
-            if reason:
-                correction_tooltip = reason
-            elif mode != "reference":
-                correction_tooltip = (
-                    "Pass 1 keeps Global fit and Editable lattice on their existing "
-                    "per-spot correction. Model selection is available for Saved "
-                    "reference; the common editor comes in Pass 2."
-                )
-            else:
-                correction_tooltip = (
+            correction_model_combo.setEnabled(change_allowed and source_valid)
+            correction_model_combo.setToolTip(
+                reason or (
                     "Translation fits one common shift; Rigid fits translation + "
-                    "rotation; Affine also allows scale and shear; Polynomial fits "
-                    "a smooth nonlinear field of selectable order 2, 3, or 4; "
-                    "Per-spot applies each saved-reference error independently."
+                    "rotation; Affine allows scale and shear; Polynomial fits a "
+                    "smooth nonlinear field; Per-spot applies each reference error "
+                    "independently."
                 )
-            correction_model_combo.setToolTip(correction_tooltip)
-        polynomial_degree_label = getattr(
+            )
+
+        polynomial_visible=correction_mode=="polynomial"
+        polynomial_degree_label=getattr(
             self,"position_reference_polynomial_degree_label",None,
-        )
-        polynomial_visible = (
-            mode == "reference" and displayed_correction_mode == "polynomial"
         )
         if polynomial_degree_label is not None:
             polynomial_degree_label.setVisible(polynomial_visible)
         if polynomial_degree_combo is not None:
             polynomial_degree_combo.setVisible(polynomial_visible)
             polynomial_degree_combo.setEnabled(
-                change_allowed and polynomial_visible and bool(reference_name)
+                change_allowed and source_valid and polynomial_visible
             )
             polynomial_degree_combo.setToolTip(
                 reason or (
-                    "Polynomial order 2 needs at least 6 matched spots, order 3 "
-                    "needs 10, and order 4 needs 15."
+                    "Polynomial order 2 needs at least 6 fit constraints, order 3 "
+                    "needs 10, and order 4 needs 15. Interactive editing uses a "
+                    "sparse deformation mesh."
                 )
             )
 
-        interactive = getattr(
+        interactive=getattr(
             self,"position_reference_interactive_edit_checkbox",None,
         )
-        affine_supported = bool(
-            mode == "reference"
-            and displayed_correction_mode == "affine"
-            and reference_name
+        interactive_supported=bool(
+            source_valid
+            and correction_mode in {"affine","polynomial"}
+            and self._position_reference_preview is not None
         )
         if interactive is not None:
-            interactive.setVisible(
-                mode == "reference" and displayed_correction_mode == "affine"
-            )
-            interactive.setEnabled(change_allowed and affine_supported)
+            interactive.setVisible(correction_mode in {"affine","polynomial"})
+            interactive.setEnabled(change_allowed and interactive_supported)
             interactive.setToolTip(
                 reason or (
-                    "Use the existing affine handles as a temporary interactive "
-                    "editor. Pass 2 will replace this with the common editor."
+                    "Affine: drag the cage center and axis handles. Polynomial: "
+                    "drag deformation-mesh handles. Predicted updates live."
                 )
             )
-            if not affine_supported and interactive.isChecked():
-                interactive_blocker = QtCore.QSignalBlocker(interactive)
+            if not interactive_supported and interactive.isChecked():
+                interactive_blocker=QtCore.QSignalBlocker(interactive)
                 interactive.setChecked(False)
                 del interactive_blocker
 
-        affine_reset = getattr(self,"position_reference_affine_reset_button",None)
-        if affine_reset is not None:
-            affine_reset.setVisible(affine_supported)
-            affine_reset.setEnabled(change_allowed and affine_supported)
-        affine_hint = getattr(self,"position_reference_affine_hint",None)
-        if affine_hint is not None:
-            affine_hint.setVisible(
-                affine_supported and interactive is not None and interactive.isChecked()
+        has_manual=context.get("manual_transform") is not None
+        reset_button=getattr(self,"position_reference_affine_reset_button",None)
+        if reset_button is not None:
+            reset_button.setVisible(correction_mode in {"affine","polynomial"})
+            reset_button.setEnabled(
+                change_allowed and interactive_supported and has_manual
             )
+        hint=getattr(self,"position_reference_affine_hint",None)
+        if hint is not None:
+            if correction_mode=="affine":
+                hint.setText(
+                    "Drag the cage center to translate; drag the two axis handles "
+                    "to scale, rotate, or shear."
+                )
+            elif correction_mode=="polynomial":
+                hint.setText(
+                    "Drag deformation-mesh handles to reshape the smooth correction "
+                    "field locally."
+                )
+            hint.setVisible(
+                interactive_supported and interactive is not None
+                and interactive.isChecked()
+            )
+
         for editor in self._position_geometry_editors():
             editor.setEnabled(change_allowed)
             editor.setToolTip(reason)
         for lock in self._position_geometry_lock_checkboxes():
             lock.setEnabled(change_allowed)
-            lock.setToolTip(
-                reason or "Keep this value fixed when using Fit center."
-            )
-        button_tooltips = {
+            lock.setToolTip(reason or "Keep this value fixed when using Fit center.")
+        button_tooltips={
             "position_reference_square_straight_button":(
                 "Set rotation to 0°, lattice angle to 90°, and lock both values."
             ),
@@ -1220,7 +1211,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             ),
         }
         for button_name,default_tooltip in button_tooltips.items():
-            button = getattr(self,button_name,None)
+            button=getattr(self,button_name,None)
             if button is not None:
                 button.setEnabled(change_allowed)
                 button.setToolTip(reason or default_tooltip)
@@ -1229,47 +1220,43 @@ class CGHSessionWindow(QtWidgets.QDialog):
             mode=mode,change_allowed=change_allowed,
         )
 
-        compatible = bool(context.get("compatible",True))
-        compatibility_error = str(context.get("compatibility_error") or "")
-        plane = str(context.get("observation_plane_name") or "").strip()
-        if mode == "global_fit":
-            info = "Reference: current localization global fit"
-        elif mode == "editable":
-            info = "Reference: editable lattice"
+        compatible=bool(context.get("compatible",True))
+        compatibility_error=str(context.get("compatibility_error") or "")
+        plane=str(context.get("observation_plane_name") or "").strip()
+        if mode=="global_fit":
+            info="Reference: current localization global fit"
+        elif mode=="editable":
+            info="Reference: editable lattice"
+        elif mode=="current":
+            info="Reference: current localization · free-edit baseline"
         elif reference_name:
-            # Name + lifetime already appear in the saved-reference selector.
-            info = ""
+            info=""
         else:
-            info = ""
+            info=""
         if plane:
-            info = ((info + " · ") if info else "") + "Plane: %s" % plane
+            info=((info+" · ") if info else "")+"Plane: %s" % plane
         if not compatible and compatibility_error:
-            info = compatibility_error
+            info=compatibility_error
         self.position_reference_info_label.setText(info)
         self.position_reference_info_label.setStyleSheet(
             "color: %s;" % (_WARNING_COLOR if not compatible else _MUTED_COLOR)
         )
 
-        detector_view = getattr(self,"position_reference_view",None)
+        detector_view=getattr(self,"position_reference_view",None)
         if detector_view is not None:
-            detector_view.set_center_editable(
-                mode == "editable" and change_allowed
-            )
-            interactive = getattr(
-                self,"position_reference_interactive_edit_checkbox",None,
-            )
-            detector_view.set_affine_editable(
-                mode == "reference"
-                and displayed_correction_mode == "affine"
-                and change_allowed
-                and interactive is not None
-                and interactive.isChecked()
+            detector_view.set_center_editable(mode=="editable" and change_allowed)
+            detector_view.set_interactive_editing(
+                bool(
+                    interactive_supported and change_allowed
+                    and interactive is not None and interactive.isChecked()
+                ),
+                correction_mode,
             )
 
-        add_button = getattr(self,"position_reference_add_button",None)
+        add_button=getattr(self,"position_reference_add_button",None)
         if add_button is not None:
-            create_reason = str(context.get("create_unavailable_reason") or "")
-            create_allowed = bool(
+            create_reason=str(context.get("create_unavailable_reason") or "")
+            create_allowed=bool(
                 context.get("create_allowed",False)
                 and self._selected_is_current_context()
                 and not self._cgh_computing
@@ -1503,169 +1490,139 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 "mode":"editable",
                 "editable_geometry":self._editable_geometry_payload(),
                 "editable_locks":self._editable_locks_payload(),
+                "correction_mode":self._selected_position_reference_correction_mode(),
+                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
+                "manual_transform":None,
             },
         )
 
-    def _on_position_reference_changed(self,_index: int) -> None:
-        mode = str(self.position_reference_combo.currentData() or "global_fit")
-        payload: dict[str,Any] = {"mode":mode}
-        if mode == "editable":
-            geometry = self._position_reference_context.get("editable_geometry")
-            if geometry is not None:
-                payload["editable_geometry"] = dict(geometry)
-            payload["editable_locks"] = dict(
-                self._position_reference_context.get("editable_locks") or {}
-            )
-        elif mode == "reference":
-            name = self._selected_managed_position_reference_name()
+    def _position_reference_request_payload(
+        self,*,reset_manual: bool=False,correspondence: str | None=None,
+    ) -> dict[str,Any] | None:
+        mode=str(self.position_reference_combo.currentData() or "global_fit")
+        payload: dict[str,Any]={
+            "mode":mode,
+            "correction_mode":self._selected_position_reference_correction_mode(),
+            "polynomial_degree":self._selected_position_reference_polynomial_degree(),
+        }
+        if mode=="editable":
+            payload["editable_geometry"]=self._editable_geometry_payload()
+            payload["editable_locks"]=self._editable_locks_payload()
+        elif mode=="reference":
+            name=self._selected_managed_position_reference_name()
             if not name:
-                return
-            payload.update({
-                "reference_name":name,
-                "correspondence":"auto",
-                "correction_mode":self._selected_position_reference_correction_mode(),
-                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
-            })
+                return None
+            payload["reference_name"]=name
+            payload["correspondence"]=(
+                correspondence
+                if correspondence is not None
+                else str(
+                    getattr(self,"position_reference_correspondence_combo").currentData()
+                    or "auto"
+                )
+            )
+        if reset_manual:
+            payload["manual_transform"]=None
+        return payload
+
+    def _on_position_reference_changed(self,_index: int) -> None:
+        payload=self._position_reference_request_payload(reset_manual=True)
+        if payload is None:
+            return
+        if payload["mode"]=="reference":
+            payload["correspondence"]="auto"
         self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _on_saved_position_reference_changed(self,_index: int) -> None:
-        if str(self.position_reference_combo.currentData()) != "reference":
+        if str(self.position_reference_combo.currentData())!="reference":
             return
-        name = self._selected_managed_position_reference_name()
+        name=self._selected_managed_position_reference_name()
         if not name:
             return
-        active = str(self._position_reference_context.get("reference_name") or "")
-        if name == active:
+        active=str(self._position_reference_context.get("reference_name") or "")
+        if name==active:
             return
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {
-                "mode":"reference",
-                "reference_name":name,
-                "correspondence":"auto",
-                "correction_mode":self._selected_position_reference_correction_mode(),
-                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
-            },
+        payload=self._position_reference_request_payload(
+            reset_manual=True,correspondence="auto",
         )
+        if payload is not None:
+            self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _selected_position_reference_correction_mode(self) -> str:
-        combo = getattr(self,"position_reference_correction_model_combo",None)
+        combo=getattr(self,"position_reference_correction_model_combo",None)
         if combo is None:
             return "per_spot"
         return str(combo.currentData() or "per_spot")
 
     def _selected_position_reference_polynomial_degree(self) -> int:
-        combo = getattr(self,"position_reference_polynomial_degree_combo",None)
+        combo=getattr(self,"position_reference_polynomial_degree_combo",None)
         if combo is None:
             return 2
-        value = combo.currentData()
+        value=combo.currentData()
         return int(2 if value is None else value)
 
     def _on_position_reference_interactive_edit_toggled(
         self,checked: bool,
     ) -> None:
-        mode = str(self.position_reference_combo.currentData() or "global_fit")
-        correction_mode = self._selected_position_reference_correction_mode()
-        enabled = bool(
+        correction_mode=self._selected_position_reference_correction_mode()
+        enabled=bool(
             checked
-            and mode == "reference"
-            and correction_mode == "affine"
+            and correction_mode in {"affine","polynomial"}
             and self._selected_is_current_context()
             and not self._cgh_computing
+            and self._position_reference_preview is not None
         )
-        self.position_reference_view.set_affine_editable(enabled)
-        hint = getattr(self,"position_reference_affine_hint",None)
+        self.position_reference_view.set_interactive_editing(
+            enabled,correction_mode,
+        )
+        hint=getattr(self,"position_reference_affine_hint",None)
         if hint is not None:
             hint.setVisible(enabled)
 
     def _on_position_reference_polynomial_degree_changed(self,_index: int) -> None:
-        if str(self.position_reference_combo.currentData()) != "reference":
+        if self._selected_position_reference_correction_mode()!="polynomial":
             return
-        if self._selected_position_reference_correction_mode() != "polynomial":
+        degree=self._selected_position_reference_polynomial_degree()
+        current=int(self._position_reference_context.get("polynomial_degree") or 2)
+        if degree==current:
             return
-        name = self._selected_managed_position_reference_name()
-        if not name:
-            return
-        degree = self._selected_position_reference_polynomial_degree()
-        current = int(self._position_reference_context.get("polynomial_degree") or 2)
-        if degree == current:
-            return
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {
-                "mode":"reference",
-                "reference_name":name,
-                "correction_mode":"polynomial",
-                "polynomial_degree":degree,
-                "affine_transform":None,
-            },
-        )
+        payload=self._position_reference_request_payload(reset_manual=True)
+        if payload is not None:
+            self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _on_position_reference_correction_mode_changed(self,_index: int) -> None:
-        if str(self.position_reference_combo.currentData()) != "reference":
+        correction_mode=self._selected_position_reference_correction_mode()
+        current=str(self._position_reference_context.get("correction_mode") or "per_spot")
+        if correction_mode==current:
             return
-        name = self._selected_managed_position_reference_name()
-        if not name:
-            return
-        correction_mode = self._selected_position_reference_correction_mode()
-        current = str(
-            self._position_reference_context.get("correction_mode") or "per_spot"
-        )
-        if correction_mode == current:
-            return
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {
-                "mode":"reference",
-                "reference_name":name,
-                "correction_mode":correction_mode,
-                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
-                # Entering a model always starts from its automatic fit rather
-                # than reviving manual handles from another model state.
-                "affine_transform":None,
-            },
-        )
+        payload=self._position_reference_request_payload(reset_manual=True)
+        if payload is not None:
+            self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _reset_position_reference_affine_fit(self,*_args: Any) -> None:
-        if str(self.position_reference_combo.currentData()) != "reference":
+        if self._selected_position_reference_correction_mode() not in {
+            "affine","polynomial",
+        }:
             return
-        if self._selected_position_reference_correction_mode() != "affine":
-            return
-        name = self._selected_managed_position_reference_name()
-        if not name:
-            return
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {
-                "mode":"reference",
-                "reference_name":name,
-                "correction_mode":"affine",
-                "affine_transform":None,
-            },
-        )
+        payload=self._position_reference_request_payload(reset_manual=True)
+        if payload is not None:
+            self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _on_position_reference_correspondence_changed(self,_index: int) -> None:
-        if str(self.position_reference_combo.currentData()) != "reference":
+        if str(self.position_reference_combo.currentData())!="reference":
             return
-        name = self._selected_managed_position_reference_name()
-        combo = getattr(self,"position_reference_correspondence_combo",None)
-        if not name or combo is None:
+        combo=getattr(self,"position_reference_correspondence_combo",None)
+        if combo is None:
             return
-        correspondence = str(combo.currentData() or "auto")
-        current = str(self._position_reference_context.get("correspondence") or "auto")
-        if correspondence == current:
+        correspondence=str(combo.currentData() or "auto")
+        current=str(self._position_reference_context.get("correspondence") or "auto")
+        if correspondence==current:
             return
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {
-                "mode":"reference",
-                "reference_name":name,
-                "correspondence":correspondence,
-                "correction_mode":self._selected_position_reference_correction_mode(),
-                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
-                "affine_transform":None,
-            },
+        payload=self._position_reference_request_payload(
+            reset_manual=True,correspondence=correspondence,
         )
+        if payload is not None:
+            self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _square_and_straight_editable_geometry(self,*_args: Any) -> None:
         if str(self.position_reference_combo.currentData()) != "editable":
@@ -1730,28 +1687,21 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 del blocker
         self._emit_editable_geometry()
 
-    def _on_position_reference_affine_transform_dragged(
+    def _on_position_reference_manual_transform_dragged(
         self,transform: Any,
     ) -> None:
-        if str(self.position_reference_combo.currentData()) != "reference":
+        correction_mode=self._selected_position_reference_correction_mode()
+        if correction_mode not in {"affine","polynomial"}:
             return
-        if self._selected_position_reference_correction_mode() != "affine":
+        if not isinstance(transform,Mapping):
             return
-        name = self._selected_managed_position_reference_name()
-        if not name:
+        if str(transform.get("model") or "")!=correction_mode:
             return
-        matrix = np.asarray(transform,dtype=np.float64)
-        if matrix.shape != (2,3) or not np.all(np.isfinite(matrix)):
+        payload=self._position_reference_request_payload(reset_manual=False)
+        if payload is None:
             return
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {
-                "mode":"reference",
-                "reference_name":name,
-                "correction_mode":"affine",
-                "affine_transform":matrix.tolist(),
-            },
-        )
+        payload["manual_transform"]=dict(transform)
+        self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _on_position_view_changed(self,index: int) -> None:
         stack = getattr(self,"position_view_stack",None)

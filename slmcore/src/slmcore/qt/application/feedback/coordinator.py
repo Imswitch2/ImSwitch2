@@ -441,7 +441,9 @@ class FeedbackCoordinator(QtCore.QObject):
         editable_locks: Mapping[str,Any] | None=None,
         correspondence: str | None=None,
         correction_mode: str | None=None,
+        polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
+        manual_transform: Any=_UNSET,
     ) -> None:
         kwargs = {
             "mode":mode,
@@ -450,9 +452,12 @@ class FeedbackCoordinator(QtCore.QObject):
             "editable_locks":editable_locks,
             "correspondence":correspondence,
             "correction_mode":correction_mode,
+            "polynomial_degree":polynomial_degree,
         }
         if affine_transform is not _UNSET:
             kwargs["affine_transform"] = affine_transform
+        if manual_transform is not _UNSET:
+            kwargs["manual_transform"] = manual_transform
         self._references.set_position_reference(section_key,**kwargs)
 
     def fit_position_reference_center(self,section_key: str) -> None:
