@@ -1,5 +1,5 @@
 from .DataFrameController import DataFrameController
-from .LiveModeController import LiveModeController
+from .DirectoryWatcherController import DirectoryWatcherController
 from .MemoryLiveController import MemoryLiveController
 from .ReconstructionViewController import ReconstructionViewController
 from .GraphController import GraphController
@@ -23,11 +23,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.reconstructionController = self._factory.createController(
             ReconstructionViewController, self._widget.reconstructionWidget
         )
-        self.liveModeController = self._factory.createController(
-            LiveModeController, self._widget.directoryWatcherFrame, main_controller=self
+        self.directoryWatcherController = self._factory.createController(
+            DirectoryWatcherController, self._widget.directoryWatcherWidget, main_controller=self
         )
         self.memoryLiveController = self._factory.createController(
-            MemoryLiveController, self._widget.directoryWatcherFrame, mainController=self
+            MemoryLiveController, self._widget.directoryWatcherWidget, mainController=self
         )
         self.wfsBatchController = self._factory.createController(
             WidefieldStarssBatchController, self._widget, mainController=self

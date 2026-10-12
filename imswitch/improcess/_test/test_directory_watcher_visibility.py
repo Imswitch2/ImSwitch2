@@ -62,7 +62,7 @@ class _View:
 
     def __init__(self, *, panel_enabled=True, live_checked=False, dock=True):
         self._showFileWatcherPanel = panel_enabled
-        self.directoryWatcherFrame = _Frame(live_checked)
+        self.directoryWatcherWidget = _Frame(live_checked)
         self.docks = {"Directory watcher": _Dock()} if dock else {}
         self.synced = 0
 
@@ -115,7 +115,7 @@ def test_a_running_watch_is_stopped_when_the_panel_goes_away():
 
     _apply(view, False)
 
-    assert view.directoryWatcherFrame.liveCheck.isChecked() is False
+    assert view.directoryWatcherWidget.liveCheck.isChecked() is False
 
 
 def test_an_idle_watch_is_left_alone():
@@ -124,7 +124,7 @@ def test_an_idle_watch_is_left_alone():
 
     _apply(view, False)
 
-    assert view.directoryWatcherFrame.liveCheck.isChecked() is False
+    assert view.directoryWatcherWidget.liveCheck.isChecked() is False
 
 
 def test_showing_does_not_start_a_watch():
@@ -132,7 +132,7 @@ def test_showing_does_not_start_a_watch():
 
     _apply(view, True)
 
-    assert view.directoryWatcherFrame.liveCheck.isChecked() is False
+    assert view.directoryWatcherWidget.liveCheck.isChecked() is False
 
 
 def test_the_view_menu_checkboxes_are_resynced():
@@ -243,7 +243,7 @@ def test_accepting_stops_the_watch_and_proceeds():
 
     assert manager._confirm_reconstructor_change() is True
     assert widget.asked == 1
-    assert widget.directoryWatcherFrame.liveCheck.isChecked() is False
+    assert widget.directoryWatcherWidget.liveCheck.isChecked() is False
     assert widget.restored == []
 
 
@@ -252,7 +252,7 @@ def test_declining_restores_the_picker_and_leaves_the_watch_running():
     manager = _manager(widget, active_name="MoNaLISA")
 
     assert manager._confirm_reconstructor_change() is False
-    assert widget.directoryWatcherFrame.liveCheck.isChecked() is True
+    assert widget.directoryWatcherWidget.liveCheck.isChecked() is True
     assert widget.restored == ["MoNaLISA"]
 
 

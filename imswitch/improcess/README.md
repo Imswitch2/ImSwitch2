@@ -370,7 +370,7 @@ For a recording that is still being written, ImProcess can reconstruct it
 incrementally instead of waiting for it to close. Two drivers feed the same
 streaming machinery:
 
-- **`LiveModeController`** ([`controller/LiveModeController.py`](controller/LiveModeController.py))
+- **`DirectoryWatcherController`** ([`controller/DirectoryWatcherController.py`](controller/DirectoryWatcherController.py))
   — polls a watched folder tree for new recording stores (Zarr/HDF5, including
   per-file timelapses), queues them, and processes one store at a time once it
   is complete enough to open (see `_is_store_complete` / `_lapse_key` for the
@@ -423,7 +423,7 @@ per-file timelapse streamed as one continuous frame range across files).
 Failure semantics: startup/source failures and `session.finish()` exceptions are
 routed to `_finish_without_result()`, so `LiveReconstructionController.sigFinished`
 still fires without a final `sigResultProduced` payload. This keeps
-`LiveModeController`'s queue moving even when one live reconstruction fails.
+`DirectoryWatcherController`'s queue moving even when one live reconstruction fails.
 
 ---
 

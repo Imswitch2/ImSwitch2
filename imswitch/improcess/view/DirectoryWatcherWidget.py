@@ -6,11 +6,11 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.view import guitools
 
 
-class DirectoryWatcherFrame(QtWidgets.QFrame):
+class DirectoryWatcherWidget(QtWidgets.QFrame):
     """Frame for live-reconstructing timelapse folders as they appear.
 
     Pick a root folder, tick "Watch directory (live)", and
-    ``LiveModeController`` watches it for new timelapse sub-folders and streams
+    ``DirectoryWatcherController`` watches it for new timelapse sub-folders and streams
     each one through the active reconstructor.
 
     The folder here is the *root* holding timelapse sub-folders, i.e. one level

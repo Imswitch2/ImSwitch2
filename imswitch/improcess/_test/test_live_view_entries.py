@@ -3,7 +3,7 @@
 Every job follows the same two-step sequence: its first result creates one data
 object named after the job, and every later result updates that same object.
 The job is identified by the result's name (the timelapse folder), which
-``LiveModeController`` guarantees is unique per job -- so the live path adds no
+``DirectoryWatcherController`` guarantees is unique per job -- so the live path adds no
 de-duplicating ``.N`` suffix.
 
 These tests drive the real ``_renderPendingLiveResult`` against the real

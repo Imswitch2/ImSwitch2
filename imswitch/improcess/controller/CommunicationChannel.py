@@ -200,7 +200,7 @@ class CommunicationChannel(SignalInterface):
     The viewer owns the accumulated buffer (the session hands over copies), so
     it -- not the reconstruction controller -- is what can actually write it.
 
-    Emitters: LiveModeController
+    Emitters: DirectoryWatcherController
     Listeners: ReconstructionViewController
     """
 

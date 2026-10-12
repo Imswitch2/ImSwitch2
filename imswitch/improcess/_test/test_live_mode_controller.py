@@ -1,4 +1,4 @@
-"""Tests for LiveModeController: DirectoryWatcher + JobQueue integration.
+"""Tests for DirectoryWatcherController: DirectoryWatcher + JobQueue integration.
 
 The controller is built with ``__new__`` (no Qt widget) and a fake
 ``LiveReconstructionController`` that just records ``start`` calls.
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from qtpy import QtCore
 
-from imswitch.improcess.controller.LiveModeController import LiveModeController
+from imswitch.improcess.controller.DirectoryWatcherController import DirectoryWatcherController
 from imswitch.improcess.live.discovery import JobQueue
 from imswitch.improcess.live.source_type import (
     LAYOUT_MULTIFILE_LAPSE,
@@ -55,7 +55,7 @@ class _FakeCheck:
 
 
 class _FakeWidget:
-    """The slice of DirectoryWatcherFrame that LiveModeController drives."""
+    """The slice of DirectoryWatcherWidget that DirectoryWatcherController drives."""
 
     def __init__(self, path=""):
         self.path = path
@@ -64,10 +64,10 @@ class _FakeWidget:
 
 
 def _controller(reconstructor=None):
-    c = LiveModeController.__new__(LiveModeController)
+    c = DirectoryWatcherController.__new__(DirectoryWatcherController)
     c._logger = MagicMock()
     # _activeReconstructor / _widget stay camelCase: they belong to
-    # ImProcessMainViewController, not to LiveModeController.
+    # ImProcessMainViewController, not to DirectoryWatcherController.
     c._main_controller = SimpleNamespace(
         _activeReconstructor=reconstructor or object(), _widget=None
     )
@@ -203,7 +203,7 @@ def test_seed_is_the_lowest_indexed_store_via_multifile_source(tmp_path):
 
     c = _controller()
     with patch(
-        "imswitch.improcess.controller.LiveModeController.make_live_source"
+        "imswitch.improcess.controller.DirectoryWatcherController.make_live_source"
     ) as mock_factory:
         c._on_entry_found(str(folder))
 
@@ -236,7 +236,7 @@ def test_a_single_dataset_job_is_started_too(tmp_path):
 
     c = _controller()
     with patch(
-        "imswitch.improcess.controller.LiveModeController.make_live_source"
+        "imswitch.improcess.controller.DirectoryWatcherController.make_live_source"
     ) as mock_factory:
         c._on_entry_found(seed)
 

@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from imswitch.improcess.controller.LiveModeController import LiveModeController
+from imswitch.improcess.controller.DirectoryWatcherController import DirectoryWatcherController
 from imswitch.improcess.controller.MemoryLiveController import MemoryLiveController
 from imswitch.improcess.controller.ReconstructorManagerController import (
     ReconstructorManagerController,
@@ -33,8 +33,8 @@ class _LegacyWidget:
 
 
 def _live_mode_controller(widget):
-    """LiveModeController names its own attributes/methods in PEP 8 snake_case."""
-    controller = LiveModeController.__new__(LiveModeController)
+    """DirectoryWatcherController names its own attributes/methods in PEP 8 snake_case."""
+    controller = DirectoryWatcherController.__new__(DirectoryWatcherController)
     controller._main_controller = _Main(widget)
     controller._logger = MagicMock()
     return controller

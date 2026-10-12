@@ -3,7 +3,7 @@
 from .basecontrollers import ImProcessWidgetController
 
 
-class LiveModeController(ImProcessWidgetController):
+class DirectoryWatcherController(ImProcessWidgetController):
     """Empty. Built up from the requirements, one at a time."""
 
     def __init__(self, *args, main_controller=None, **kwargs):

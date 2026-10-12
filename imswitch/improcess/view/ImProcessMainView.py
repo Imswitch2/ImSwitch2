@@ -22,7 +22,7 @@ from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
-from .DirectoryWatcherFrame import DirectoryWatcherFrame
+from .DirectoryWatcherWidget import DirectoryWatcherWidget
 from .FolderPreferencesDialog import FolderPreferencesDialog
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
@@ -315,7 +315,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
-        self.directoryWatcherFrame = DirectoryWatcherFrame()
+        self.directoryWatcherWidget = DirectoryWatcherWidget()
 
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
@@ -490,7 +490,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         # "hidden because the config switched the panel off".
         self._showFileWatcherPanel = bool(showFileWatcherPanel)
         self.directoryWatcherDock = Dock('Directory watcher', size=(2, 3))
-        self.directoryWatcherDock.addWidget(self.directoryWatcherFrame)
+        self.directoryWatcherDock.addWidget(self.directoryWatcherWidget)
         self.dockArea.addDock(self.directoryWatcherDock, 'bottom', actionsDock)
         self.docks['Directory watcher'] = self.directoryWatcherDock
         if not showFileWatcherPanel:
@@ -1590,7 +1590,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def isDirectoryWatcherRunning(self) -> bool:
         """Whether a directory watch is currently monitoring."""
-        live = getattr(self.directoryWatcherFrame, 'liveCheck', None)
+        live = getattr(self.directoryWatcherWidget, 'liveCheck', None)
         return bool(live is not None and live.isChecked())
 
     def stopDirectoryWatcher(self) -> None:
@@ -1601,7 +1601,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         never owns the run. Already-idle is left alone, so no spurious
         signal is emitted.
         """
-        live = getattr(self.directoryWatcherFrame, 'liveCheck', None)
+        live = getattr(self.directoryWatcherWidget, 'liveCheck', None)
         if live is not None and live.isChecked():
             live.setChecked(False)
 

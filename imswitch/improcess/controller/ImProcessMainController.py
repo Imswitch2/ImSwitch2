@@ -643,7 +643,7 @@ class ImProcessMainController(MainController):
                 None,
             ),
             getattr(
-                getattr(main_view_controller, 'liveModeController', None),
+                getattr(main_view_controller, 'directoryWatcherController', None),
                 'isLiveReconstructionRunning',
                 None,
             ),

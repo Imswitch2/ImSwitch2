@@ -125,7 +125,7 @@ def test_live_reconstruction_end_to_end(tmp_path):
 
 
 def test_format_selector_picks_zarr():
-    """LiveModeController selects ZarrLiveSource for .zarr paths."""
+    """DirectoryWatcherController selects ZarrLiveSource for .zarr paths."""
     path_lower = "/path/to/recording.zarr".lower()
     
     if path_lower.endswith('.zarr'):
@@ -136,7 +136,7 @@ def test_format_selector_picks_zarr():
 
 
 def test_format_selector_picks_hdf5():
-    """LiveModeController selects Hdf5LiveSource for .h5/.hdf5 paths."""
+    """DirectoryWatcherController selects Hdf5LiveSource for .h5/.hdf5 paths."""
     from imswitch.improcess.live import Hdf5LiveSource
     
     path_lower = "/path/to/recording.h5".lower()
@@ -153,7 +153,7 @@ def test_format_selector_picks_hdf5():
 
 
 def test_format_selector_rejects_tiff():
-    """LiveModeController rejects unsupported formats."""
+    """DirectoryWatcherController rejects unsupported formats."""
     path_lower = "/path/to/recording.tif".lower()
     
     source = None

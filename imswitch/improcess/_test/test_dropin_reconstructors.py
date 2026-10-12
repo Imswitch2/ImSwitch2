@@ -460,7 +460,7 @@ def _controller(*, running=False, live_running=False):
             isReconstructionRunning=lambda: running,
             pluginsReloaded=lambda: reloaded.append(True),
         ),
-        liveModeController=SimpleNamespace(
+        directoryWatcherController=SimpleNamespace(
             isLiveReconstructionRunning=lambda: live_running
         ),
     )
