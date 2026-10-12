@@ -9,7 +9,9 @@ from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import Reconstructor
 from imswitch.improcess.reconstructors.snouty._pipeline import (
     _validate_geometry,
+    display_levels,
     load_restack_deskew_timelapse,
+    stack_timepoints,
 )
 from imswitch.improcess.reconstructors.snouty.metadata import (
     DEFAULT_PARAMS,
@@ -139,16 +141,12 @@ class SnoutyDeconvolutionReconstructor(Reconstructor):
             logger=self._logger,
         )
 
-        if len(volumes) > 1:
-            result_data = np.stack(volumes, axis=0)
-        else:
-            result_data = volumes[0]
+        result_data = stack_timepoints(volumes)
         if context is not None:
             context.report('finalize', 1, 1, 'Deconvolution complete')
         self._logger.info(f'Deconvolution complete: {result_data.shape}')
 
-        data_min = float(np.percentile(result_data, 1))
-        data_max = float(np.percentile(result_data, 99.9))
+        data_min, data_max = display_levels(result_data)
         return SnoutyResult(
             name=f"{data_obj.name}_deconvolved",
             data=result_data.astype(np.float32, copy=False),

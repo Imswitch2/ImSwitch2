@@ -1301,8 +1301,29 @@ def adapt_snouty_metadata(
     if source_shape is None or len(source_shape) < 3:
         return None
     observed = source_shape[0]
-    timepoints = _positive_int(normalized.get("recording:num_timepoints")) or 1
     per_partition = cycles * planes
+    # The recorder writes ``recording:num_timepoints``; the legacy MS-RESOLFT
+    # scan wrote its lapse count as ``MS-RESOLFT_Scan:timeLapsePoints``. A
+    # file with neither but a whole number of cycle x plane blocks is a lapse
+    # of that many timepoints, said so as a warning rather than refused.
+    timepoints = _positive_int(normalized.get("recording:num_timepoints"))
+    extra_issues: list[LayoutIssue] = []
+    if timepoints is None:
+        timepoints = _positive_int(normalized.get("MS-RESOLFT_Scan:timeLapsePoints"))
+    if timepoints is None:
+        if observed > per_partition and observed % per_partition == 0:
+            timepoints = observed // per_partition
+            extra_issues.append(
+                _issue(
+                    "warning",
+                    "SNOUTY_TIMEPOINTS_INFERRED",
+                    f"No timepoint count recorded; {observed} frames read as "
+                    f"{timepoints} timepoints of {per_partition} frames",
+                    "MS-RESOLFT_Scan",
+                )
+            )
+        else:
+            timepoints = 1
     partitions: tuple[AcquisitionPartition, ...] = ()
     loops: list[AcquisitionLoop] = []
     if observed == per_partition * timepoints and timepoints > 1:
@@ -1379,6 +1400,7 @@ def adapt_snouty_metadata(
                 "Cycle/plane order was adapted from the legacy SNOUTY contract",
                 "MS-RESOLFT_Scan",
             ),
+            *extra_issues,
         ),
     )
 

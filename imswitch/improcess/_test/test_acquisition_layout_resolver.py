@@ -297,6 +297,34 @@ def test_snouty_time_is_a_loop_only_for_a_combined_array():
     assert partitioned.layout.partitions[0].index == 0
 
 
+def test_snouty_legacy_lapse_count_is_read_from_the_scan_attributes():
+    """A legacy MS-RESOLFT lapse stores its count as timeLapsePoints, not as
+    the recorder's num_timepoints; 10 x 20 x 45 frames used to be refused."""
+    attrs = {
+        "MS-RESOLFT_Scan:cycleSteps": 10,
+        "MS-RESOLFT_Scan:roSteps": 20,
+        "MS-RESOLFT_Scan:timeLapsePoints": 45,
+    }
+    resolved = resolve_acquisition_layout(attrs, shape=(9000, 4, 4), detector="Cam")
+    loops = {loop.kind: loop.count for loop in resolved.layout.event_loops}
+    assert loops == {"time": 45, "cycle": 10, "plane": 20}
+    assert not any(issue.code == "SNOUTY_TIMEPOINTS_INFERRED" for issue in resolved.issues)
+
+
+def test_snouty_lapse_count_is_inferred_from_whole_blocks_with_a_warning():
+    attrs = {"MS-RESOLFT_Scan:cycleSteps": 3, "MS-RESOLFT_Scan:roSteps": 5}
+    resolved = resolve_acquisition_layout(attrs, shape=(45, 2, 3), detector="Cam")
+    loops = {loop.kind: loop.count for loop in resolved.layout.event_loops}
+    assert loops == {"time": 3, "cycle": 3, "plane": 5}
+    assert any(issue.code == "SNOUTY_TIMEPOINTS_INFERRED" for issue in resolved.issues)
+
+    single = resolve_acquisition_layout(attrs, shape=(15, 2, 3), detector="Cam")
+    assert [loop.kind for loop in single.layout.event_loops] == ["cycle", "plane"]
+
+    with pytest.raises(AcquisitionLayoutResolutionError):
+        resolve_acquisition_layout(attrs, shape=(40, 2, 3), detector="Cam")
+
+
 def test_container_time_axis_requires_explicit_axis_metadata():
     generic = resolve_acquisition_layout(
         {},

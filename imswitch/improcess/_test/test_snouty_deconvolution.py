@@ -309,14 +309,29 @@ class TestRichardsonLucy:
         reference = np.ones(processor.out_shape)
         for _ in range(4):
             reference = reference * adjoint(data / np.maximum(forward(reference), 1e-12)) / ht1
-        assert np.allclose(processor.run(stack, 4), reference, rtol=1e-4, atol=1e-3)
+        assert np.allclose(processor.run(stack, 4, mask_boundary=False), reference, rtol=1e-4, atol=1e-3)
+
+    def test_sparsely_sampled_boundary_is_zeroed(self, processor):
+        """Voxels under the normalisation floor (the sheared canvas rim) come out zero;
+        the measured interior is untouched by the mask."""
+        _true, stack = _phantom(processor)
+        data = processor.camera_values(stack)
+        raw = processor.adjoint(np.ones_like(data))
+        below = raw < 0.3 * raw.max()
+        assert 0 < below.mean() < 0.9
+        estimate = processor.run(stack, 3)
+        assert np.all(estimate[below] == 0)
+        assert np.array_equal(processor.measured_region, ~below)
+        bare = processor.run(stack, 3, mask_boundary=False)
+        assert np.any(bare[below] > 0)
+        assert np.array_equal(bare[~below], estimate[~below])
 
     def test_adjoint_canvas_is_rebuilt_every_iteration(self, processor):
         """Two iterations from a flat start equal one iteration continued from the first."""
         _true, stack = _phantom(processor)
-        two = processor.run(stack, 2)
-        first = processor.run(stack, 1)
-        continued = processor.run(stack, 1, initial=first)
+        two = processor.run(stack, 2, mask_boundary=False)
+        first = processor.run(stack, 1, mask_boundary=False)
+        continued = processor.run(stack, 1, initial=first, mask_boundary=False)
         assert np.allclose(two, continued, rtol=1e-5, atol=1e-4)
 
     def test_gradient_consent_runs_and_is_bounded(self):
@@ -374,6 +389,48 @@ def data_obj(tmp_path):
     with h5py.File(path, "w") as f:
         f.create_dataset("data", data=stack)
     return DataObj(str(path), "deconv")
+
+
+class TestPipelineStreaming:
+    """The shared SNOUTY pipeline reads a lazy source one timepoint at a time."""
+
+    def test_streamed_and_preloaded_sources_reconstruct_identically(self, data_obj):
+        from imswitch.improcess.reconstructors.snouty import SnoutyReconstructor
+
+        params = {**SnoutyReconstructor.default_params(), "n_timepoints": 2,
+                  "cycles": 2, "planes_in_cycle": 2}
+        streamed = SnoutyReconstructor().process(data_obj, params)
+        assert not data_obj.dataLoaded, "a lazy source must not be decoded whole"
+
+        data_obj.checkAndLoadData()
+        assert data_obj.dataLoaded
+        try:
+            preloaded = SnoutyReconstructor().process(data_obj, params)
+        finally:
+            data_obj.checkAndUnloadData()
+        assert streamed.data.shape == preloaded.data.shape == (2,) + streamed.data.shape[1:]
+        assert np.array_equal(streamed.data, preloaded.data)
+
+    def test_stack_timepoints_releases_inputs(self):
+        from imswitch.improcess.reconstructors.snouty._pipeline import stack_timepoints
+
+        single = [np.ones((2, 3, 4), np.float32)]
+        assert stack_timepoints(single).shape == (2, 3, 4)
+        volumes = [np.full((2, 3), t, np.float32) for t in range(3)]
+        stacked = stack_timepoints(volumes)
+        assert stacked.shape == (3, 2, 3)
+        assert [float(stacked[t, 0, 0]) for t in range(3)] == [0.0, 1.0, 2.0]
+        assert volumes == [None, None, None]
+
+    def test_display_levels_match_the_full_percentiles_on_small_data(self):
+        from imswitch.improcess.reconstructors.snouty._pipeline import display_levels
+
+        data = np.random.default_rng(0).random((20, 30, 40)).astype(np.float32)
+        low, high = display_levels(data)
+        assert low == pytest.approx(float(np.percentile(data, 1)))
+        assert high == pytest.approx(float(np.percentile(data, 99.9)))
+        big_low, big_high = display_levels(data, max_samples=1000)
+        assert abs(big_low - low) < 0.05 and abs(big_high - high) < 0.05
 
 
 class _Context:

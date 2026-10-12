@@ -516,10 +516,16 @@ The parameter panel is the deskew panel plus a *Deconvolution* group:
   clip factor** of its peak and normalised to unit sum, so the estimate comes
   out in camera intensity units.
 * **Normalisation clip** floors the normalisation volume at that fraction of
-  its maximum, which keeps voxels the camera barely sees from exploding.
+  its maximum, which keeps voxels the camera barely sees from exploding
+  during the iterations. Those voxels, the sheared rim of the canvas, are
+  zero in the result: on real data they came out an order of magnitude too
+  bright when left in.
 * **Gradient consent** splits the data into two binomial halves and only
   accepts an update where both agree on its direction, a noise-robust
   stopping heuristic.
+
+Like the other SNOUTY reconstructors it reads an HDF5 or zarr source one
+timepoint at a time, so only the result has to fit in memory.
 
 *Device* picks the NumPy or the CuPy backend; both run the same code. The
 result is a ``SnoutyResult`` on exactly the deskew grid, so it lines up with a

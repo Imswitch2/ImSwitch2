@@ -52,7 +52,8 @@ class ShearedRichardsonLucy:
         kernel: Odd-sized, non-negative effective kernel on the output grid.
         xp: ``numpy`` or ``cupy``.
         normalisation_clip: Lower clip of ``H^T 1`` as a fraction of its maximum,
-            which stops voxels the camera barely sees from exploding.
+            which stops voxels the camera barely sees from exploding during the
+            iterations; the returned estimate is zero in those voxels.
         gradient_consent: Split the data into two binomial halves and accept an
             update only where both halves agree on its direction.
         seed: Seed of the binomial split.
@@ -156,6 +157,11 @@ class ShearedRichardsonLucy:
         ht1 = self.adjoint(ones)
         floor = self.normalisation_clip * float(ht1.max())
         self._ht1 = xp.maximum(ht1, xp.float32(floor))
+        # Voxels the camera sampled too sparsely to normalise honestly: the
+        # sheared boundary of the canvas. Clipping their normalisation keeps
+        # the iterations stable but still inflates them (an order of magnitude
+        # on real data), so the final estimate is zeroed there.
+        self._measured = ht1 >= xp.float32(floor)
 
     # -------------------------------------------------------------- operators
     def _convolve_same(self, volume, spectrum):
@@ -207,8 +213,14 @@ class ShearedRichardsonLucy:
         progress: ProgressFn | None = None,
         cancel: CancelFn | None = None,
         initial=None,
+        mask_boundary: bool = True,
     ):
-        """Deconvolve one ``(planes, cam_y, cam_x)`` stack; returns the sample volume."""
+        """Deconvolve one ``(planes, cam_y, cam_x)`` stack; returns the sample volume.
+
+        ``mask_boundary`` zeroes the voxels under the normalisation floor in the
+        returned volume (see :attr:`measured_region`); pass ``False`` to get the
+        bare multiplicative iterate, for instance to continue it with ``initial``.
+        """
         xp = self.xp
         iterations = int(iterations)
         if iterations < 1:
@@ -243,7 +255,14 @@ class ShearedRichardsonLucy:
             estimate *= factor.astype(xp.float32)
             if progress is not None:
                 progress(iteration + 1, iterations)
+        if mask_boundary:
+            estimate *= self._measured
         return estimate
+
+    @property
+    def measured_region(self):
+        """Boolean volume: where the camera sampled densely enough to normalise."""
+        return self._measured
 
 
 class DeconvolutionProcessorCPU(ShearedRichardsonLucy):

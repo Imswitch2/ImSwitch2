@@ -7,7 +7,11 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import Reconstructor
-from imswitch.improcess.reconstructors.snouty._pipeline import load_restack_deskew_timelapse
+from imswitch.improcess.reconstructors.snouty._pipeline import (
+    display_levels,
+    load_restack_deskew_timelapse,
+    stack_timepoints,
+)
 from imswitch.improcess.reconstructors.snouty.params_widget import SnoutyParamsWidget
 from .result import SnoutyProjectionsResult
 
@@ -102,16 +106,11 @@ class SnoutyProjectionsReconstructor(Reconstructor):
 
         # The pipeline may take the timepoint count from the recording rather
         # than the widget, so what was actually reconstructed decides the rank.
-        if len(projection_timepoints) > 1:
-            # Stack into 4D: (T, 3, H, W)
-            result_data = np.stack(projection_timepoints, axis=0)
-        else:
-            result_data = projection_timepoints[0]
+        # 4D (T, 3, H, W) for a timelapse, 3D otherwise.
+        result_data = stack_timepoints(projection_timepoints)
         self._logger.info(f'Projections complete: {result_data.shape}')
 
-        # Compute display levels
-        data_min = float(np.percentile(result_data, 1))
-        data_max = float(np.percentile(result_data, 99.9))
+        data_min, data_max = display_levels(result_data)
         
         # Create result
         return SnoutyProjectionsResult(
