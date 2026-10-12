@@ -27,12 +27,17 @@ class DirectoryWatcherWidget(QtWidgets.QFrame):
 
         self.liveCheck.toggled.connect(self.sigLiveChanged)
         self.browseFolderButton.clicked.connect(self.browse)
+        # The box is the single source of self.path: typing and Browse both
+        # end up here, so neither can leave the other stale.
+        self.folderEdit.textChanged.connect(self._setPath)
 
     def browse(self):
         path = guitools.askForFolderPath(self, defaultFolder=self.path)
         if path:
-            self.path = path
-            self.folderEdit.setText(self.path)
+            self.folderEdit.setText(path)
+
+    def _setPath(self, text: str) -> None:
+        self.path = text.strip()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
