@@ -54,7 +54,7 @@ class _Check:
 
 class _Frame:
     def __init__(self, live_checked=False):
-        self.liveCheck = _Check(live_checked)
+        self.monitorFolderCheck = _Check(live_checked)
 
 
 class _View:
@@ -109,22 +109,22 @@ def test_the_startup_flag_still_wins():
 
 def test_a_running_watch_is_stopped_when_the_panel_goes_away():
     """Hiding a live run would leave it going with no way to see or stop it.
-    Clearing the checkbox emits sigLiveChanged(False) through the frame's own
+    Clearing the checkbox emits sigMonitorChanged(False) through the frame's own
     wiring, which is what actually stops the watcher."""
     view = _View(live_checked=True)
 
     _apply(view, False)
 
-    assert view.directoryWatcherWidget.liveCheck.isChecked() is False
+    assert view.directoryWatcherWidget.monitorFolderCheck.isChecked() is False
 
 
 def test_an_idle_watch_is_left_alone():
-    """Only a checked box is cleared, so no spurious sigLiveChanged is emitted."""
+    """Only a checked box is cleared, so no spurious sigMonitorChanged is emitted."""
     view = _View(live_checked=False)
 
     _apply(view, False)
 
-    assert view.directoryWatcherWidget.liveCheck.isChecked() is False
+    assert view.directoryWatcherWidget.monitorFolderCheck.isChecked() is False
 
 
 def test_showing_does_not_start_a_watch():
@@ -132,7 +132,7 @@ def test_showing_does_not_start_a_watch():
 
     _apply(view, True)
 
-    assert view.directoryWatcherWidget.liveCheck.isChecked() is False
+    assert view.directoryWatcherWidget.monitorFolderCheck.isChecked() is False
 
 
 def test_the_view_menu_checkboxes_are_resynced():
@@ -243,7 +243,7 @@ def test_accepting_stops_the_watch_and_proceeds():
 
     assert manager._confirm_reconstructor_change() is True
     assert widget.asked == 1
-    assert widget.directoryWatcherWidget.liveCheck.isChecked() is False
+    assert widget.directoryWatcherWidget.monitorFolderCheck.isChecked() is False
     assert widget.restored == []
 
 
@@ -252,7 +252,7 @@ def test_declining_restores_the_picker_and_leaves_the_watch_running():
     manager = _manager(widget, active_name="MoNaLISA")
 
     assert manager._confirm_reconstructor_change() is False
-    assert widget.directoryWatcherWidget.liveCheck.isChecked() is True
+    assert widget.directoryWatcherWidget.monitorFolderCheck.isChecked() is True
     assert widget.restored == ["MoNaLISA"]
 
 

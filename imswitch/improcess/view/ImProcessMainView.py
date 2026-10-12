@@ -1590,18 +1590,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def isDirectoryWatcherRunning(self) -> bool:
         """Whether a directory watch is currently monitoring."""
-        live = getattr(self.directoryWatcherWidget, 'liveCheck', None)
+        live = getattr(self.directoryWatcherWidget, 'monitorFolderCheck', None)
         return bool(live is not None and live.isChecked())
 
     def stopDirectoryWatcher(self) -> None:
         """Stop any running watch by clearing the monitoring checkbox.
 
-        Clearing it emits ``sigLiveChanged(False)`` through the frame's own
+        Clearing it emits ``sigMonitorChanged(False)`` through the frame's own
         wiring, which is what actually shuts the watcher down -- the view
         never owns the run. Already-idle is left alone, so no spurious
         signal is emitted.
         """
-        live = getattr(self.directoryWatcherWidget, 'liveCheck', None)
+        live = getattr(self.directoryWatcherWidget, 'monitorFolderCheck', None)
         if live is not None and live.isChecked():
             live.setChecked(False)
 
@@ -1633,7 +1633,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         Hiding a *running* watch would be worse than showing it, so the
         monitoring checkbox is cleared on the way out. That emits
-        ``sigLiveChanged(False)`` through the frame's existing wiring, which
+        ``sigMonitorChanged(False)`` through the frame's existing wiring, which
         is what actually stops the watcher -- the dock never owns the run.
 
         The startup flag still wins: a panel the config switched off stays

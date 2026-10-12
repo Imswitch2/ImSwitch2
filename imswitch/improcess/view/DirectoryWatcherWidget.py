@@ -9,23 +9,23 @@ from imswitch.imcommon.view import guitools
 class DirectoryWatcherWidget(QtWidgets.QFrame):
     """Pick a root folder and start monitoring it."""
 
-    sigLiveChanged = QtCore.Signal(bool)  # (enabled)
+    sigMonitorChanged = QtCore.Signal(bool)  # (enabled)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.path = ''
+        self.path = ""
         self.folderEdit = QtWidgets.QLineEdit(self.path)
-        self.browseFolderButton = guitools.BetterPushButton('Browse')
-        self.liveCheck = QtWidgets.QCheckBox('Start monitoring')
+        self.browseFolderButton = guitools.BetterPushButton("Browse")
+        self.monitorFolderCheck = QtWidgets.QCheckBox("Monitor")
 
         layout = QtWidgets.QGridLayout()
         self.setLayout(layout)
         layout.addWidget(self.browseFolderButton, 0, 0)
         layout.addWidget(self.folderEdit, 0, 1)
-        layout.addWidget(self.liveCheck, 1, 0)
+        layout.addWidget(self.monitorFolderCheck, 1, 0)
 
-        self.liveCheck.toggled.connect(self.sigLiveChanged)
+        self.monitorFolderCheck.toggled.connect(self.sigMonitorChanged)
         self.browseFolderButton.clicked.connect(self.browse)
         # The box is the single source of self.path: typing and Browse both
         # end up here, so neither can leave the other stale.

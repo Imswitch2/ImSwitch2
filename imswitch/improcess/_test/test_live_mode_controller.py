@@ -59,7 +59,7 @@ class _FakeWidget:
 
     def __init__(self, path=""):
         self.path = path
-        self.liveCheck = _FakeCheck()
+        self.monitorFolderCheck = _FakeCheck()
         self.saveCheck = _FakeCheck(checked=False)
 
 
@@ -345,7 +345,7 @@ def test_reset_shuts_live_mode_down(tmp_path):
 
     assert c._live_rec_ctr.stops == 1          # run in flight ended
     assert c._currently_processing is False      # slot freed
-    assert c._widget.liveCheck.isChecked() is False   # UI reflects the stop
+    assert c._widget.monitorFolderCheck.isChecked() is False   # UI reflects the stop
 
 
 def test_reset_leaves_nothing_queued_or_running(tmp_path):
@@ -368,7 +368,7 @@ def test_reset_is_safe_with_nothing_running():
     c = _controller()
     c._on_reset_clicked()          # must not raise
     assert c._currently_processing is False
-    assert c._widget.liveCheck.isChecked() is False
+    assert c._widget.monitorFolderCheck.isChecked() is False
 
 
 # --- skip directory ------------------------------------------------------
@@ -422,7 +422,7 @@ def test_skip_does_not_stop_watching(tmp_path):
     _store(tmp_path / "c")
     c._on_entry_found(str(tmp_path / "c"))      # discovered after the skip
 
-    assert c._widget.liveCheck.isChecked() is True
+    assert c._widget.monitorFolderCheck.isChecked() is True
     assert c._live_rec_ctr.start_names == ["a", "c"]
 
 
