@@ -1150,15 +1150,18 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         interactive_supported=bool(
             source_valid
-            and correction_mode in {"affine","polynomial"}
+            and correction_mode in {"translation","rigid","affine","polynomial"}
             and self._position_reference_preview is not None
         )
         if interactive is not None:
-            interactive.setVisible(correction_mode in {"affine","polynomial"})
+            interactive.setVisible(
+                correction_mode in {"translation","rigid","affine","polynomial"}
+            )
             interactive.setEnabled(change_allowed and interactive_supported)
             interactive.setToolTip(
                 reason or (
-                    "Affine: drag the cage center and axis handles. Polynomial: "
+                    "Translation: drag the center. Rigid: drag the center and "
+                    "rotation handle. Affine: drag the cage handles. Polynomial: "
                     "drag deformation-mesh handles. Predicted updates live."
                 )
             )
@@ -1170,13 +1173,22 @@ class CGHSessionWindow(QtWidgets.QDialog):
         has_manual=context.get("manual_transform") is not None
         reset_button=getattr(self,"position_reference_affine_reset_button",None)
         if reset_button is not None:
-            reset_button.setVisible(correction_mode in {"affine","polynomial"})
+            reset_button.setVisible(
+                correction_mode in {"translation","rigid","affine","polynomial"}
+            )
             reset_button.setEnabled(
                 change_allowed and interactive_supported and has_manual
             )
         hint=getattr(self,"position_reference_affine_hint",None)
         if hint is not None:
-            if correction_mode=="affine":
+            if correction_mode=="translation":
+                hint.setText("Drag the cage center to translate the correction.")
+            elif correction_mode=="rigid":
+                hint.setText(
+                    "Drag the cage center to translate; drag the rotation handle "
+                    "to rotate without changing scale."
+                )
+            elif correction_mode=="affine":
                 hint.setText(
                     "Drag the cage center to translate; drag the two axis handles "
                     "to scale, rotate, or shear."
@@ -1567,7 +1579,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         correction_mode=self._selected_position_reference_correction_mode()
         enabled=bool(
             checked
-            and correction_mode in {"affine","polynomial"}
+            and correction_mode in {"translation","rigid","affine","polynomial"}
             and self._selected_is_current_context()
             and not self._cgh_computing
             and self._position_reference_preview is not None
@@ -1601,7 +1613,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
     def _reset_position_reference_affine_fit(self,*_args: Any) -> None:
         if self._selected_position_reference_correction_mode() not in {
-            "affine","polynomial",
+            "translation","rigid","affine","polynomial",
         }:
             return
         payload=self._position_reference_request_payload(reset_manual=True)
@@ -1691,7 +1703,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self,transform: Any,
     ) -> None:
         correction_mode=self._selected_position_reference_correction_mode()
-        if correction_mode not in {"affine","polynomial"}:
+        if correction_mode not in {"translation","rigid","affine","polynomial"}:
             return
         if not isinstance(transform,Mapping):
             return

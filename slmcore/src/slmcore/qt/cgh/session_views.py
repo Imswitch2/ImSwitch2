@@ -11,7 +11,8 @@ from qtpy import QtCore,QtWidgets
 from ...core.engine.parameters.converters import METRIC_UNIT,SLM_UNIT
 from ...core.engine.registry import TargetPresentation,TargetPresentationFieldKind
 from ...core.transform2d import (
-    FittedTransform2D,TRANSFORM_AFFINE,TRANSFORM_POLYNOMIAL,fit_transform2d,
+    FittedTransform2D,TRANSFORM_AFFINE,TRANSFORM_POLYNOMIAL,TRANSFORM_RIGID,
+    TRANSFORM_TRANSLATION,fit_transform2d,
 )
 
 
@@ -942,7 +943,9 @@ class PositionReferenceView(QtWidgets.QWidget):
             self._hide_affine_overlay()
             self._clear_polynomial_overlay()
             return
-        if transform.model==TRANSFORM_AFFINE:
+        if transform.model in {
+            TRANSFORM_TRANSLATION,TRANSFORM_RIGID,TRANSFORM_AFFINE,
+        }:
             self._clear_polynomial_overlay()
             self._set_affine_transform(global_positions,transform)
         elif transform.model==TRANSFORM_POLYNOMIAL:
@@ -956,16 +959,22 @@ class PositionReferenceView(QtWidgets.QWidget):
         transform=self._fitted_transform
         model=None if transform is None else transform.model
         requested=self._interactive_model or model
-        affine_visible=bool(
+        matrix_visible=bool(
             self._interactive_editable and self._preview is not None
-            and model==TRANSFORM_AFFINE and requested==TRANSFORM_AFFINE
+            and model in {TRANSFORM_TRANSLATION,TRANSFORM_RIGID,TRANSFORM_AFFINE}
+            and requested==model
         )
-        self.affine_frame_item.setVisible(affine_visible)
-        for item in (
-            self.affine_origin_item,self.affine_x_item,self.affine_y_item,
-        ):
-            item.setVisible(affine_visible)
-            item.movable=affine_visible
+        self.affine_frame_item.setVisible(matrix_visible)
+        self.affine_origin_item.setVisible(matrix_visible)
+        self.affine_origin_item.movable=matrix_visible
+        rigid_or_affine=bool(
+            matrix_visible and model in {TRANSFORM_RIGID,TRANSFORM_AFFINE}
+        )
+        self.affine_x_item.setVisible(rigid_or_affine)
+        self.affine_x_item.movable=rigid_or_affine
+        affine_only=bool(matrix_visible and model==TRANSFORM_AFFINE)
+        self.affine_y_item.setVisible(affine_only)
+        self.affine_y_item.movable=affine_only
         polynomial_visible=bool(
             self._interactive_editable and self._preview is not None
             and model==TRANSFORM_POLYNOMIAL and requested==TRANSFORM_POLYNOMIAL
@@ -984,7 +993,9 @@ class PositionReferenceView(QtWidgets.QWidget):
         self,global_positions: np.ndarray,transform: FittedTransform2D,
     ) -> None:
         points=np.asarray(global_positions,dtype=np.float64)
-        if points.shape[0]!=2 or transform.model!=TRANSFORM_AFFINE:
+        if points.shape[0]!=2 or transform.model not in {
+            TRANSFORM_TRANSLATION,TRANSFORM_RIGID,TRANSFORM_AFFINE,
+        }:
             self._hide_affine_overlay()
             return
         xmin,xmax=np.min(points[0]),np.max(points[0])
@@ -1027,16 +1038,50 @@ class PositionReferenceView(QtWidgets.QWidget):
             item.setVisible(False)
 
     def _current_affine_transform(self) -> FittedTransform2D | None:
+        """Return the currently edited matrix-backed transform.
+
+        The historical method name is kept for compatibility, but the same cage
+        now constrains translation, rigid and affine editing according to the
+        selected model.
+        """
         source=self._affine_source_anchors
         if source is None:
             return None
-        target=np.column_stack([
-            self._target_position(self.affine_origin_item),
-            self._target_position(self.affine_x_item),
-            self._target_position(self.affine_y_item),
-        ])
-        design=np.column_stack([source.T,np.ones(3,dtype=np.float64)])
+        model=(
+            self._interactive_model
+            or (None if self._fitted_transform is None else self._fitted_transform.model)
+        )
+        origin=self._target_position(self.affine_origin_item)
         try:
+            if model==TRANSFORM_TRANSLATION:
+                shift=origin-source[:,0]
+                matrix=np.column_stack([np.eye(2,dtype=np.float64),shift])
+                return FittedTransform2D(model=model,matrix=matrix)
+
+            if model==TRANSFORM_RIGID:
+                source_vector=source[:,1]-source[:,0]
+                target_vector=self._target_position(self.affine_x_item)-origin
+                source_norm=float(np.linalg.norm(source_vector))
+                target_norm=float(np.linalg.norm(target_vector))
+                if source_norm<1e-12 or target_norm<1e-12:
+                    return None
+                source_angle=float(np.arctan2(source_vector[1],source_vector[0]))
+                target_angle=float(np.arctan2(target_vector[1],target_vector[0]))
+                angle=target_angle-source_angle
+                c,s=np.cos(angle),np.sin(angle)
+                rotation=np.asarray([[c,-s],[s,c]],dtype=np.float64)
+                translation=origin-rotation@source[:,0]
+                matrix=np.column_stack([rotation,translation])
+                return FittedTransform2D(model=model,matrix=matrix)
+
+            if model!=TRANSFORM_AFFINE:
+                return None
+            target=np.column_stack([
+                origin,
+                self._target_position(self.affine_x_item),
+                self._target_position(self.affine_y_item),
+            ])
+            design=np.column_stack([source.T,np.ones(3,dtype=np.float64)])
             coefficients=np.linalg.solve(design,target.T)
             return FittedTransform2D(
                 model=TRANSFORM_AFFINE,matrix=coefficients.T,
@@ -1072,8 +1117,23 @@ class PositionReferenceView(QtWidgets.QWidget):
         self._update_affine_live_preview()
 
     def _on_affine_axis_changed(self,*_args: Any) -> None:
-        if not self._affine_updating:
-            self._update_affine_live_preview()
+        if self._affine_updating:
+            return
+        if self._interactive_model==TRANSFORM_RIGID:
+            source=self._affine_source_anchors
+            if source is not None:
+                origin=self._target_position(self.affine_origin_item)
+                vector=self._target_position(self.affine_x_item)-origin
+                norm=float(np.linalg.norm(vector))
+                radius=float(np.linalg.norm(source[:,1]-source[:,0]))
+                if norm>1e-12 and radius>1e-12:
+                    snapped=origin+(radius/norm)*vector
+                    self._affine_updating=True
+                    try:
+                        self.affine_x_item.setPos(float(snapped[0]),float(snapped[1]))
+                    finally:
+                        self._affine_updating=False
+        self._update_affine_live_preview()
 
     def _update_affine_live_preview(self) -> None:
         self._update_affine_frame()
@@ -1087,7 +1147,8 @@ class PositionReferenceView(QtWidgets.QWidget):
         transform=self._current_affine_transform()
         if transform is None:
             return
-        self.sigAffineTransformRequested.emit(np.asarray(transform.matrix).copy())
+        if transform.model==TRANSFORM_AFFINE:
+            self.sigAffineTransformRequested.emit(np.asarray(transform.matrix).copy())
         self.sigManualTransformRequested.emit(transform.to_dict())
 
     def _set_polynomial_transform(
