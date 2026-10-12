@@ -523,6 +523,20 @@ The parameter panel is the deskew panel plus a *Deconvolution* group:
 * **Gradient consent** splits the data into two binomial halves and only
   accepts an update where both agree on its direction, a noise-robust
   stopping heuristic.
+* **Sweep iterations** is for choosing the iteration count: it outputs one
+  volume per iteration up to *Iterations*, as a stack with an *Iteration*
+  axis in place of time, for the first timepoint only.
+* **Alignment file** and **Wavelengths** handle a multicolour frame, whose
+  colour channels sit side by side along the camera columns. Reconstruct a
+  bead recording with the SNOUTY deskew, run *Multicolor Registration* on
+  it and save its alignment file; given that file, the deconvolution cuts
+  the camera frame into the same strips, deconvolves each with its own
+  emission wavelength (one value per strip, comma-separated; empty uses
+  *Wavelength* for all) and writes them back onto the columns they occupy
+  in the full frame. The result is still one full-width volume on the
+  deskew grid, so *Multicolor Apply* splits and aligns it with the same
+  file, exactly as it does a deskewed volume. The deskew itself has no
+  wavelength dependence and needs no alignment input.
 
 Like the other SNOUTY reconstructors it reads an HDF5 or zarr source one
 timepoint at a time, so only the result has to fit in memory.

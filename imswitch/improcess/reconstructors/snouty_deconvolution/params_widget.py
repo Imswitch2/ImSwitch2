@@ -41,6 +41,15 @@ class SnoutyDeconvolutionParamsWidget(SnoutyParamsWidget):
              'tip': 'Lower clip of the normalisation volume as a fraction of its maximum'},
             {'name': 'Gradient consent', 'type': 'bool', 'value': d['gradient_consent'],
              'tip': 'Accept an update only where two binomial halves of the data agree on it'},
+            {'name': 'Sweep iterations', 'type': 'bool', 'value': d['sweep_iterations'],
+             'tip': 'Debugging: output one volume per iteration up to Iterations, as a stack '
+                    '(first timepoint only)'},
+            {'name': 'Alignment file', 'type': 'str', 'value': d['alignment_path'],
+             'tip': 'Optional multicolor alignment .h5 from Multicolor Registration: each colour '
+                    'strip is deconvolved with its own wavelength'},
+            {'name': 'Wavelengths', 'type': 'str', 'value': d['wavelengths_nm'],
+             'tip': 'Comma-separated emission wavelengths in nm, one per strip of the alignment '
+                    'file; empty uses Wavelength for every strip'},
         ]})
 
     def get_values(self) -> dict:
@@ -59,6 +68,9 @@ class SnoutyDeconvolutionParamsWidget(SnoutyParamsWidget):
             'kernel_clip_factor': dec.param('Kernel clip factor').value(),
             'normalisation_clip': dec.param('Normalisation clip').value(),
             'gradient_consent': dec.param('Gradient consent').value(),
+            'sweep_iterations': dec.param('Sweep iterations').value(),
+            'alignment_path': dec.param('Alignment file').value(),
+            'wavelengths_nm': dec.param('Wavelengths').value(),
         })
         return values
 

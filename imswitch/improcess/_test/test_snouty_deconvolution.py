@@ -481,6 +481,100 @@ class TestPipelineStreaming:
         assert abs(big_low - low) < 0.05 and abs(big_high - high) < 0.05
 
 
+def _write_alignment(path, x_bounds, roi_width, source_shape):
+    from imswitch.improcess.analysis.multicolor import save_alignment
+
+    n = len(x_bounds) - 1
+    save_alignment({
+        "mode": "maxproj", "reference_channel": 0, "split_axis": "X",
+        "roi_width": roi_width, "source_shape": source_shape, "x_bounds": list(x_bounds),
+        "transforms": [{"affine_2d": np.eye(3), "z_shift": 0, "affine_3d": None} for _ in range(n)],
+    }, path)
+
+
+class TestColourStrips:
+    """A multicolor alignment file names the colour strips; each gets its own kernel."""
+
+    def test_strips_scale_from_the_alignment_grid_to_camera_columns(self, tmp_path):
+        from imswitch.improcess.analysis.multicolor import load_alignment
+        from imswitch.improcess.reconstructors.snouty_deconvolution.strips import (
+            camera_strips, parse_wavelengths,
+        )
+
+        path = tmp_path / "align.h5"
+        _write_alignment(path, [0, 10, 20, 30], roi_width=10, source_shape=(5, 6, 30))
+        alignment = load_alignment(path)
+        strips = camera_strips(alignment, 90, [510.0, 600.0, 670.0], 510.0)
+        assert [(s.start, s.stop, s.wavelength_nm) for s in strips] == [
+            (0, 30, 510.0), (30, 60, 600.0), (60, 90, 670.0)
+        ]
+        assert [s.wavelength_nm for s in camera_strips(alignment, 90, [], 555.0)] == [555.0] * 3
+        with pytest.raises(ValueError, match="3 colour strips but 2 wavelengths"):
+            camera_strips(alignment, 90, [510.0, 600.0], 510.0)
+        assert parse_wavelengths("510, 600 670") == [510.0, 600.0, 670.0]
+        assert parse_wavelengths("") == []
+        with pytest.raises(ValueError):
+            parse_wavelengths("510, blue")
+
+    def test_a_strip_reconstructs_onto_its_full_frame_columns(self):
+        """With a kernel that does not blur along x, a strip deconvolved on its own
+        equals the same columns of the full-frame deconvolution."""
+        kernel = _small_kernel((5, 7, 1))
+        full = DeconvolutionProcessorCPU(GEOMETRY, kernel)
+        full.camera_values(np.full((24, 32, 20), 100.0, np.float32))
+        _true, stack = _phantom(full)
+        whole = full.run(stack, 3)
+        strip = DeconvolutionProcessorCPU(GEOMETRY, kernel, column_origin=7, frame_columns=20)
+        part = strip.run(stack[:, :, 7:15], 3)
+        offset = strip.column_offset
+        assert offset == int(np.rint(full.M[2, 2] * 7))
+        assert part.shape[2] == int(np.rint(full.M[2, 2] * 14)) - offset + 1
+        assert np.allclose(part, whole[:, :, offset:offset + part.shape[2]], rtol=1e-4, atol=1e-3)
+        # The last strip ends where the full canvas does, even when its last
+        # camera column would round one voxel past it.
+        tail = DeconvolutionProcessorCPU(GEOMETRY, kernel, column_origin=15, frame_columns=20)
+        end = tail.run(stack[:, :, 15:20], 3)
+        assert tail.column_offset + end.shape[2] == whole.shape[2]
+
+    def test_reconstructor_deconvolves_each_strip_with_its_wavelength(self, data_obj, tmp_path):
+        from imswitch.improcess.reconstructors.snouty import SnoutyReconstructor
+
+        plugin = SnoutyDeconvolutionReconstructor()
+        base = plugin.default_params()
+        base.update(psf_size_px=9, iterations=2)
+        deskew_shape = SnoutyReconstructor().process(
+            data_obj, {k: base[k] for k in SnoutyReconstructor.default_params()}
+        ).data.shape
+        # Two strips over the 16-column frame, bounds in the deskew grid (8 columns wide).
+        path = tmp_path / "align.h5"
+        _write_alignment(path, [0, 4, 8], roi_width=4, source_shape=deskew_shape)
+        params = {**base, "alignment_path": str(path), "wavelengths_nm": "510, 640"}
+        result = plugin.process(data_obj, params)
+        assert result.data.shape == deskew_shape
+
+        # Strip 1 on its own, at 640 nm, from the cropped camera columns 8..15.
+        with_640 = {**base, "wavelength_nm": 640.0}
+        kernel = effective_kernel(with_640)
+        geometry = {k: base[k] for k in ("c_px", "alpha_deg", "dy", "sample_vx_size", "camera_offset", "flip_data")}
+        processor = DeconvolutionProcessorCPU(geometry, kernel, column_origin=8, frame_columns=16)
+        data_obj.checkAndLoadData()
+        try:
+            stack = np.asarray(data_obj.data)
+        finally:
+            data_obj.checkAndUnloadData()
+        alone = processor.run(stack[:, :, 8:16], 2)
+        offset = processor.column_offset
+        assert np.allclose(result.data[:, :, offset:offset + alone.shape[2]], alone, rtol=1e-5, atol=1e-4)
+        # Strip 0 with 510 nm differs from what 640 nm would have given it.
+        other = DeconvolutionProcessorCPU(geometry, kernel, column_origin=0, frame_columns=16).run(stack[:, :, 0:8], 2)
+        assert not np.allclose(result.data[:, :, :other.shape[2]], other)
+
+        with pytest.raises(ValueError, match="wavelengths"):
+            plugin.process(data_obj, {**params, "wavelengths_nm": "510"})
+        with pytest.raises(ValueError, match="no alignment file"):
+            plugin.process(data_obj, {**base, "wavelengths_nm": "510, 640"})
+
+
 class _Context:
     def __init__(self):
         self.reports = []
@@ -579,6 +673,19 @@ class TestReconstructor:
         assemble = [r for r in context.reports if r[0] == "assemble"]
         assert [(r[1], r[2]) for r in assemble] == [(1, 4), (2, 4), (3, 4), (4, 4)]
         assert assemble[-1][3].startswith("Timepoint 2/2")
+
+    def test_sweep_outputs_one_volume_per_iteration_of_the_first_timepoint(self, data_obj):
+        plain = SnoutyDeconvolutionReconstructor().process(data_obj, self._params(n_timepoints=2))
+        sweep = SnoutyDeconvolutionReconstructor().process(
+            data_obj, self._params(n_timepoints=2, sweep_iterations=True)
+        )
+        assert sweep.data.ndim == 4
+        assert sweep.data.shape == (3,) + plain.data.shape[1:]
+        assert sweep.axis_labels == ["Iteration", "Z", "Y", "X"]
+        assert sweep.name.endswith("_deconvolved_sweep")
+        # The last swept volume is the plain result of that (first) timepoint.
+        assert np.allclose(sweep.data[-1], plain.data[0], rtol=1e-5, atol=1e-4)
+        assert not np.allclose(sweep.data[0], sweep.data[-1])
 
     def test_bad_geometry_is_rejected_before_any_work(self, data_obj):
         with pytest.raises(ValueError, match="alpha_deg"):

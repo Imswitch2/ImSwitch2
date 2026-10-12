@@ -52,8 +52,12 @@ def load_restack_deskew_timelapse(
     *,
     per_timepoint_fn: Callable,
     logger=None,
+    timepoint_limit: int | None = None,
 ) -> List:
     """Load, restack, select a deskew processor, and run the per-timepoint loop.
+
+    ``timepoint_limit`` processes only the first that many timepoints of a
+    longer recording (a debugging sweep wants one), saying so in the log.
 
     Args:
         data_obj: DataObj containing raw scan data (3D: planes, cam_y, cam_x).
@@ -117,7 +121,7 @@ def load_restack_deskew_timelapse(
 
         return _run_timepoints(
             stack, handle, shape, params, n_timepoints, cycles, planes_in_cycle,
-            restack, per_timepoint_fn, logger,
+            restack, per_timepoint_fn, logger, timepoint_limit,
         )
     finally:
         if not preloaded:
@@ -126,7 +130,7 @@ def load_restack_deskew_timelapse(
 
 def _run_timepoints(
     stack, handle, shape, params, n_timepoints, cycles, planes_in_cycle,
-    restack, per_timepoint_fn, logger,
+    restack, per_timepoint_fn, logger, timepoint_limit=None,
 ) -> List:
     # Pick processor (CPU or GPU)
     device = params.get('device', 'CPU').upper()
@@ -182,8 +186,15 @@ def _run_timepoints(
     if logger is not None:
         logger.info(f'Processing {n_timepoints} timepoint(s) with {device} deskew...')
     planes_per_timepoint = n_frames // n_timepoints
+    to_process = n_timepoints
+    if timepoint_limit is not None and timepoint_limit < n_timepoints:
+        to_process = max(1, int(timepoint_limit))
+        if logger is not None:
+            logger.warning(
+                f'Processing only the first {to_process} of {n_timepoints} timepoint(s)'
+            )
     outputs = []
-    for t in range(n_timepoints):
+    for t in range(to_process):
         if n_timepoints > 1 and logger is not None:
             logger.info(f'  Timepoint {t+1}/{n_timepoints}...')
         start = t * planes_per_timepoint

@@ -30,7 +30,8 @@ class SnoutyResult(ProcessingResult):
         name: str,
         data: np.ndarray,
         params: dict,
-        display_levels: tuple[float, float] | None = None
+        display_levels: tuple[float, float] | None = None,
+        leading_axis: str = "T",
     ):
         """
         Args:
@@ -38,6 +39,8 @@ class SnoutyResult(ProcessingResult):
             data: Deskewed volume (3D or 4D)
             params: Parameter dict used for deskewing (saved for metadata)
             display_levels: Optional (min, max) display range
+            leading_axis: Label of the first axis of 4D data; ``"T"`` for a
+                timelapse, ``"Iteration"`` for a deconvolution sweep.
         """
         ndim = data.ndim
         sample_vx_um = float(params.get("sample_vx_size", 1.0)) / 1000.0
@@ -50,7 +53,7 @@ class SnoutyResult(ProcessingResult):
                 ViewMode("YZ", (2, 0, 1)),  # X, Z, Y — slider X, displays (Z, Y)
             ]
         elif ndim == 4:
-            axis_labels = ["T", "Z", "Y", "X"]
+            axis_labels = [str(leading_axis), "Z", "Y", "X"]
             axis_scales = [1.0, sample_vx_um, sample_vx_um, sample_vx_um]
             view_modes = [
                 ViewMode("XY", (0, 1, 2, 3)),  # T, Z, Y, X — sliders T/Z, displays (Y, X)

@@ -13,6 +13,9 @@ DECONVOLUTION_DEFAULTS = {
     "kernel_clip_factor": 0.01,
     "normalisation_clip": 0.3,
     "gradient_consent": False,
+    "sweep_iterations": False,
+    "alignment_path": "",
+    "wavelengths_nm": "",
 }
 
 

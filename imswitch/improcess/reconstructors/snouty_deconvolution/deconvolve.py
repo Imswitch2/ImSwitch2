@@ -68,8 +68,18 @@ class ShearedRichardsonLucy:
         normalisation_clip: float = 0.3,
         gradient_consent: bool = False,
         seed: int = 0,
+        column_origin: int = 0,
+        frame_columns: int | None = None,
     ) -> None:
+        """``column_origin`` is the camera column of the stack's first column
+        within the full frame of ``frame_columns`` columns: a strip cut from a
+        wider frame then lands on exactly the output columns it would occupy
+        in the full reconstruction (see :attr:`column_offset`), and the canvas
+        ends where the full frame's does."""
         self.xp = xp
+        self.column_origin = int(column_origin)
+        self.frame_columns = None if frame_columns is None else int(frame_columns)
+        self.column_offset = 0
         self.c_px = float(geometry["c_px"])
         self.alpha = float(np.deg2rad(geometry["alpha_deg"]))
         self.dy = float(geometry["dy"])
@@ -111,7 +121,7 @@ class ShearedRichardsonLucy:
         return sfft.irfftn(a, s=shape, workers=-1)
 
     def output_shape(self, stack_shape: tuple[int, int, int]) -> tuple[int, int, int]:
-        """Deskew canvas shape for a ``(planes, cam_y, cam_x)`` stack."""
+        """Deskew canvas shape for a full-frame ``(planes, cam_y, cam_x)`` stack."""
         planes, cam_y, cam_x = stack_shape
         size = np.asarray((cam_y, planes, cam_x), dtype=np.float32)
         return tuple(int(s) for s in np.ceil(self.M @ size).astype(int))
@@ -124,6 +134,19 @@ class ShearedRichardsonLucy:
         nz, ny, nx = data_shape
         size = np.asarray(data_shape, dtype=np.float32)
         out_shape = tuple(int(s) for s in np.ceil(self.M @ size).astype(int))
+        M = self.M
+        # Output columns as the full frame maps them, so a strip reconstructs
+        # onto the same columns it has in the whole; its canvas is the span
+        # of those columns and column_offset says where that span starts.
+        columns = np.arange(nx, dtype=np.float32) + np.float32(self.column_origin)
+        sx_full = np.rint(float(M[2, 2]) * columns).astype(np.int64)
+        frame_columns = self.frame_columns or (self.column_origin + nx)
+        # The deskew canvas is ceil(M x width) wide and drops the odd column
+        # that rounds past it; the strip canvas ends at the same place.
+        last_column = int(np.ceil(float(M[2, 2]) * frame_columns)) - 1
+        self.column_offset = int(sx_full.min())
+        width = min(int(sx_full.max()), last_column) - self.column_offset + 1
+        out_shape = (out_shape[0], out_shape[1], max(1, width))
         sz_n, sy_n, sx_n = out_shape
 
         iz, iy, ix = xp.meshgrid(
@@ -132,10 +155,9 @@ class ShearedRichardsonLucy:
             xp.arange(nx, dtype=xp.float32),
             indexing="ij",
         )
-        M = self.M
         sz = xp.rint(float(M[0, 0]) * iz + float(M[0, 1]) * iy).astype(xp.int64)
         sy = xp.rint(float(M[1, 0]) * iz + float(M[1, 1]) * iy).astype(xp.int64)
-        sx = xp.rint(float(M[2, 2]) * ix).astype(xp.int64)
+        sx = xp.asarray(sx_full - self.column_offset)[ix.astype(xp.int64)]
         mask = (sz >= 0) & (sz < sz_n) & (sy >= 0) & (sy < sy_n) & (sx >= 0) & (sx < sx_n)
         flat_idx = ((sz * sy_n + sy) * sx_n + sx)[mask]
 
@@ -214,12 +236,16 @@ class ShearedRichardsonLucy:
         cancel: CancelFn | None = None,
         initial=None,
         mask_boundary: bool = True,
+        on_iteration: Callable[[int, object], None] | None = None,
     ):
         """Deconvolve one ``(planes, cam_y, cam_x)`` stack; returns the sample volume.
 
         ``mask_boundary`` zeroes the voxels under the normalisation floor in the
         returned volume (see :attr:`measured_region`); pass ``False`` to get the
         bare multiplicative iterate, for instance to continue it with ``initial``.
+        ``on_iteration(iteration, volume)`` is called after every update with
+        the 1-based iteration count and a masked copy of the estimate, which is
+        how a sweep collects one volume per iteration.
         """
         xp = self.xp
         iterations = int(iterations)
@@ -253,6 +279,9 @@ class ShearedRichardsonLucy:
             else:
                 factor = self._update_factor(data, expected)
             estimate *= factor.astype(xp.float32)
+            if on_iteration is not None:
+                snapshot = estimate * self._measured if mask_boundary else estimate.copy()
+                on_iteration(iteration + 1, snapshot)
             if progress is not None:
                 progress(iteration + 1, iterations)
         if mask_boundary:
