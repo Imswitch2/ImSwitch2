@@ -330,6 +330,7 @@ class SLMFeedbackService:
         polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
         manual_transform: Any=_UNSET,
+        notify: bool=True,
     ) -> PositionReferenceSelection:
         kwargs = {
             "mode":mode,
@@ -344,6 +345,7 @@ class SLMFeedbackService:
             kwargs["affine_transform"] = affine_transform
         if manual_transform is not _UNSET:
             kwargs["manual_transform"] = manual_transform
+        kwargs["notify"] = bool(notify)
         return self._references.set_position_reference(section_key,**kwargs)
 
     def fit_position_reference_center(

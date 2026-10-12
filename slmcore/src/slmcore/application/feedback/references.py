@@ -315,6 +315,7 @@ class PositionReferencePreview(TypedDict):
     """Detector-space reference preview with legacy kxy displacement diagnostics."""
 
     cropped_image: np.ndarray
+    crop_offset_px: np.ndarray
     measured_positions_px: np.ndarray
     global_positions_px: np.ndarray
     reference_positions_px: np.ndarray
@@ -489,6 +490,7 @@ class PositionReferenceService(FeedbackComponent):
         polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
         manual_transform: Any=_UNSET,
+        notify: bool=True,
     ) -> PositionReferenceSelection:
         """Select a reference for this plane without persisting or applying a correction."""
         self._require_editor_mode()
@@ -584,7 +586,8 @@ class PositionReferenceService(FeedbackComponent):
                 raise RuntimeError("Position-reference storage is unavailable")
             self._position_reference_store.get(plane,selection.reference_name)
         self._position_reference_selections[(section,plane)] = selection
-        self._section_changed(section)
+        if bool(notify):
+            self._section_changed(section)
         return selection
 
     def fit_position_reference_center(
@@ -769,6 +772,10 @@ class PositionReferenceService(FeedbackComponent):
             )
             return {
                 "cropped_image":np.asarray(localization.cropped_image,dtype=np.float64),
+                "crop_offset_px":np.asarray(
+                    [float(localization.crop_coord[2]),float(localization.crop_coord[0])],
+                    dtype=np.float64,
+                ),
                 "measured_positions_px":np.asarray(localization.measured_positions_px,dtype=np.float64),
                 "global_positions_px":np.asarray(localization.expected_positions_px,dtype=np.float64),
                 "reference_positions_px":reference,

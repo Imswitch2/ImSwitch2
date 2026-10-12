@@ -998,13 +998,17 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 warning.setVisible(missing)
 
     def set_position_reference_state(
-        self,context: Mapping[str,Any] | None,preview: Any=None,
+        self,context: Mapping[str,Any] | None,preview: Any=None,*,
+        lightweight: bool=False,
     ) -> None:
         values = dict(context or {})
         self._position_reference_context.update(values)
         self._position_reference_preview = preview
         self._refresh_position_reference_controls()
-        self._refresh_feedback_visualizations()
+        if lightweight:
+            self._refresh_position_reference_visualization()
+        else:
+            self._refresh_feedback_visualizations()
         self._refresh_status_controls()
 
     def _refresh_position_reference_controls(self) -> None:
@@ -1713,6 +1717,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if payload is None:
             return
         payload["manual_transform"]=dict(transform)
+        payload["lightweight"]=True
         self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _on_position_view_changed(self,index: int) -> None:
@@ -2388,6 +2393,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
             else self._session_inspection.rounds
         )
 
+        self._refresh_position_reference_visualization()
+
+    def _refresh_position_reference_visualization(self) -> None:
+        """Refresh only the position-reference views, not the whole session UI."""
         preview = (
             self._position_reference_preview
             if self._selected_is_current_context() else None

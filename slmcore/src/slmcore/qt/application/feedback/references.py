@@ -115,10 +115,12 @@ class PositionReferenceCoordinator:
         polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
         manual_transform: Any=_UNSET,
+        lightweight: bool=False,
     ) -> None:
         """Flush editor changes before applying a reference selection mapping."""
         try:
-            self._flush_section(section_key)
+            if not lightweight:
+                self._flush_section(section_key)
             kwargs = {
                 "mode":mode,
                 "reference_name":reference_name,
@@ -132,7 +134,17 @@ class PositionReferenceCoordinator:
                 kwargs["affine_transform"] = affine_transform
             if manual_transform is not _UNSET:
                 kwargs["manual_transform"] = manual_transform
-            self._feedback.set_position_reference(section_key,**kwargs)
+            self._feedback.set_position_reference(
+                section_key,**kwargs,notify=not bool(lightweight),
+            )
+            if lightweight:
+                window=self._window_for(section_key)
+                if window is not None:
+                    window.set_position_reference_state(
+                        self.ui_context(section_key),
+                        self._feedback.position_reference_preview(section_key),
+                        lightweight=True,
+                    )
         except Exception as error:
             self._report_error("Changing position reference failed",error)
             self._synchronize_section(section_key)

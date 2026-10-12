@@ -583,6 +583,8 @@ class InspectView(QtWidgets.QWidget):
 class PositionReferenceView(QtWidgets.QWidget):
     """Detector-space Current / Reference / Predicted alignment workbench."""
 
+    LIVE_PREVIEW_INTERVAL_MS = 100
+
     sigCenterOffsetRequested = QtCore.Signal(float,float)
     # Compatibility signal retained for hosts that still listen for affine matrices.
     sigAffineTransformRequested = QtCore.Signal(object)
@@ -597,6 +599,7 @@ class PositionReferenceView(QtWidgets.QWidget):
         self._global_positions = None
         self._fit_center = None
         self._reference_center = None
+        self._crop_offset_px = np.zeros(2,dtype=np.float64)
         self._updating_center = False
         self._interactive_editable = False
         self._interactive_model: str | None = None
@@ -612,6 +615,15 @@ class PositionReferenceView(QtWidgets.QWidget):
         self._polynomial_grid_shape = None
         self._polynomial_degree = 2
         self._polynomial_handles: list[pg.TargetItem] = []
+
+        # Interactive transforms may emit many mouse-move events.  Keep the
+        # handles themselves responsive, but coalesce the heavier scatter/vector
+        # redraw path to 10 Hz.
+        self._display_predicted_positions = None
+        self._live_preview_timer = QtCore.QTimer(self)
+        self._live_preview_timer.setSingleShot(True)
+        self._live_preview_timer.setInterval(self.LIVE_PREVIEW_INTERVAL_MS)
+        self._live_preview_timer.timeout.connect(self._flush_interactive_live_preview)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0,0,0,0)
@@ -760,9 +772,80 @@ class PositionReferenceView(QtWidgets.QWidget):
         layout.addLayout(footer)
         self.clear()
 
+    @staticmethod
+    def _transform_in_shifted_frame(
+        transform: FittedTransform2D,offset_px: np.ndarray,*,to_local: bool,
+    ) -> FittedTransform2D:
+        """Re-express a displacement transform after a detector-origin shift.
+
+        Backend alignment transforms live in full-detector coordinates while the
+        detector workbench displays localization-crop coordinates.  The two
+        frames differ only by ``full = local + offset``.
+        """
+        offset=np.asarray(offset_px,dtype=np.float64).reshape(2)
+        if transform.model==TRANSFORM_POLYNOMIAL:
+            center=np.asarray(transform.normalization_center,dtype=np.float64)
+            center=center-offset if to_local else center+offset
+            return FittedTransform2D(
+                model=transform.model,
+                coefficients=np.asarray(transform.coefficients,dtype=np.float64),
+                normalization_center=center,
+                normalization_scale=np.asarray(
+                    transform.normalization_scale,dtype=np.float64,
+                ),
+                polynomial_degree=transform.polynomial_degree,
+                rms_residual=transform.rms_residual,
+                max_residual=transform.max_residual,
+            )
+
+        matrix=np.asarray(transform.matrix,dtype=np.float64).copy()
+        linear=matrix[:,:2]
+        origin_term=(linear-np.eye(2,dtype=np.float64))@offset
+        matrix[:,2] += origin_term if to_local else -origin_term
+        return FittedTransform2D(
+            model=transform.model,matrix=matrix,
+            rms_residual=transform.rms_residual,
+            max_residual=transform.max_residual,
+        )
+
+    def _transform_to_local_frame(
+        self,transform: FittedTransform2D | None,
+    ) -> FittedTransform2D | None:
+        if transform is None:
+            return None
+        return self._transform_in_shifted_frame(
+            transform,self._crop_offset_px,to_local=True,
+        )
+
+    def _transform_to_backend_frame(
+        self,transform: FittedTransform2D | None,
+    ) -> FittedTransform2D | None:
+        if transform is None:
+            return None
+        return self._transform_in_shifted_frame(
+            transform,self._crop_offset_px,to_local=False,
+        )
+
+    def _same_interactive_transform(
+        self,left: FittedTransform2D | None,right: FittedTransform2D | None,
+    ) -> bool:
+        if left is None or right is None or left.model!=right.model:
+            return False
+        positions=self._global_positions
+        if positions is None:
+            return False
+        try:
+            return bool(np.allclose(
+                left.displacement(positions),right.displacement(positions),
+                rtol=1e-10,atol=1e-8,
+            ))
+        except (TypeError,ValueError):
+            return False
+
     def set_preview(
         self,preview: Mapping[str,Any] | None,*,center_editable: bool=False,
     ) -> None:
+        self._live_preview_timer.stop()
         if not preview:
             self.clear()
             return
@@ -798,8 +881,20 @@ class PositionReferenceView(QtWidgets.QWidget):
             or self._measured_positions.shape != measured.shape
             or not np.array_equal(self._measured_positions,measured)
         )
+        reference_changed = (
+            self._raw_reference_positions is None
+            or self._raw_reference_positions.shape != reference.shape
+            or not np.array_equal(self._raw_reference_positions,reference)
+        )
+        current_editor_transform=(
+            self._current_interactive_transform()
+            if self._preview is not None else None
+        )
 
         self._preview = dict(preview)
+        self._crop_offset_px=np.asarray(
+            preview.get("crop_offset_px",(0.0,0.0)),dtype=np.float64,
+        ).reshape(2)
         self._measured_positions = np.array(measured,copy=True)
         self._global_positions = np.array(global_positions,copy=True)
         self._reference_positions = np.array(predicted,copy=True)
@@ -809,15 +904,26 @@ class PositionReferenceView(QtWidgets.QWidget):
             preview.get("reference_center_px"),dtype=np.float64,
         ).reshape(2)
 
-        self.image_item.setImage(image,autoLevels=True)
-        self.global_item.setData(x=global_positions[0],y=global_positions[1])
-        self.measured_item.setData(x=measured[0],y=measured[1])
+        # A manual-transform commit refreshes the same localization. Avoid
+        # re-uploading/re-autoleveling the detector image and rebuilding static
+        # scatter items in that common release path.
+        if reset_view:
+            self.image_item.setImage(image,autoLevels=True)
+            self.global_item.setData(x=global_positions[0],y=global_positions[1])
+            self.measured_item.setData(x=measured[0],y=measured[1])
         self._set_reference_overlay(predicted)
-        self.raw_reference_item.setData(x=reference[0],y=reference[1])
+        if reset_view or reference_changed:
+            self.raw_reference_item.setData(x=reference[0],y=reference[1])
         self._set_residual_overlay(predicted,reference)
 
-        self._fitted_transform = self._preview_transform(preview)
-        self._prepare_interactive_editor()
+        backend_transform=self._preview_transform(preview)
+        incoming_transform=self._transform_to_local_frame(backend_transform)
+        keep_editor=self._same_interactive_transform(
+            current_editor_transform,incoming_transform,
+        )
+        self._fitted_transform=incoming_transform
+        if not keep_editor:
+            self._prepare_interactive_editor()
 
         self._updating_center = True
         try:
@@ -858,6 +964,8 @@ class PositionReferenceView(QtWidgets.QWidget):
     def set_interactive_editing(self,enabled: bool,model: str | None=None) -> None:
         self._interactive_editable=bool(enabled)
         self._interactive_model=None if model is None else str(model)
+        if not self._interactive_editable:
+            self._live_preview_timer.stop()
         self._refresh_interactive_visibility()
 
     def set_affine_editable(self,enabled: bool) -> None:
@@ -865,13 +973,16 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.set_interactive_editing(enabled,TRANSFORM_AFFINE)
 
     def clear(self) -> None:
+        self._live_preview_timer.stop()
         self._preview = None
         self._reference_positions = None
+        self._display_predicted_positions = None
         self._raw_reference_positions = None
         self._measured_positions = None
         self._global_positions = None
         self._fit_center = None
         self._reference_center = None
+        self._crop_offset_px = np.zeros(2,dtype=np.float64)
         self._fitted_transform = None
         self.image_item.clear()
         self.global_item.setData(x=[],y=[])
@@ -890,17 +1001,27 @@ class PositionReferenceView(QtWidgets.QWidget):
         measured = self._measured_positions
         if measured is None:
             return
-        self.reference_item.setData(x=predicted[0],y=predicted[1])
-        count = predicted.shape[1]
-        x = np.empty(2*count,dtype=np.float64)
-        y = np.empty(2*count,dtype=np.float64)
-        x[0::2],x[1::2] = measured[0],predicted[0]
-        y[0::2],y[1::2] = measured[1],predicted[1]
-        self.vector_item.setData(x=x,y=y,connect="pairs")
+        predicted=np.asarray(predicted,dtype=np.float64)
+        self._display_predicted_positions=np.array(predicted,copy=True)
+
+        # Hidden overlays should not participate in the live-drag hot path.
+        # _apply_overlay_visibility() repopulates them from the cached latest
+        # positions when the user enables them.
+        if self.predicted_checkbox.isChecked():
+            self.reference_item.setData(x=predicted[0],y=predicted[1])
+        if self.correction_vectors_checkbox.isChecked():
+            count = predicted.shape[1]
+            x = np.empty(2*count,dtype=np.float64)
+            y = np.empty(2*count,dtype=np.float64)
+            x[0::2],x[1::2] = measured[0],predicted[0]
+            y[0::2],y[1::2] = measured[1],predicted[1]
+            self.vector_item.setData(x=x,y=y,connect="pairs")
 
     def _set_residual_overlay(
         self,predicted: np.ndarray,reference: np.ndarray,
     ) -> None:
+        if not self.residuals_checkbox.isChecked():
+            return
         count = predicted.shape[1]
         x = np.empty(2*count,dtype=np.float64)
         y = np.empty(2*count,dtype=np.float64)
@@ -935,6 +1056,17 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.vector_item.setVisible(self.correction_vectors_checkbox.isChecked())
         self.residual_item.setVisible(self.residuals_checkbox.isChecked())
         self.global_item.setVisible(self.global_fit_checkbox.isChecked())
+
+        predicted=self._display_predicted_positions
+        if predicted is not None:
+            if (
+                self.predicted_checkbox.isChecked()
+                or self.correction_vectors_checkbox.isChecked()
+            ):
+                self._set_reference_overlay(predicted)
+            reference=self._raw_reference_positions
+            if reference is not None and self.residuals_checkbox.isChecked():
+                self._set_residual_overlay(predicted,reference)
 
     def _prepare_interactive_editor(self) -> None:
         transform=self._fitted_transform
@@ -1137,19 +1269,20 @@ class PositionReferenceView(QtWidgets.QWidget):
 
     def _update_affine_live_preview(self) -> None:
         self._update_affine_frame()
-        transform=self._current_affine_transform()
-        if transform is not None:
-            self._update_transform_live_preview(transform)
+        self._schedule_interactive_live_preview()
 
     def _on_affine_edit_finished(self,*_args: Any) -> None:
         if self._affine_updating or not self._interactive_editable:
             return
-        transform=self._current_affine_transform()
-        if transform is None:
+        transform=self._flush_interactive_live_preview()
+        backend_transform=self._transform_to_backend_frame(transform)
+        if backend_transform is None:
             return
-        if transform.model==TRANSFORM_AFFINE:
-            self.sigAffineTransformRequested.emit(np.asarray(transform.matrix).copy())
-        self.sigManualTransformRequested.emit(transform.to_dict())
+        if backend_transform.model==TRANSFORM_AFFINE:
+            self.sigAffineTransformRequested.emit(
+                np.asarray(backend_transform.matrix).copy()
+            )
+        self.sigManualTransformRequested.emit(backend_transform.to_dict())
 
     def _set_polynomial_transform(
         self,global_positions: np.ndarray,transform: FittedTransform2D,
@@ -1246,16 +1379,45 @@ class PositionReferenceView(QtWidgets.QWidget):
         if self._polynomial_updating:
             return
         self._update_polynomial_mesh()
-        transform=self._current_polynomial_transform()
-        if transform is not None:
-            self._update_transform_live_preview(transform)
+        self._schedule_interactive_live_preview()
 
     def _on_polynomial_edit_finished(self,*_args: Any) -> None:
         if self._polynomial_updating or not self._interactive_editable:
             return
-        transform=self._current_polynomial_transform()
+        transform=self._flush_interactive_live_preview()
+        backend_transform=self._transform_to_backend_frame(transform)
+        if backend_transform is not None:
+            self.sigManualTransformRequested.emit(backend_transform.to_dict())
+
+    def _schedule_interactive_live_preview(self) -> None:
+        """Coalesce drag-driven redraw work to at most 10 Hz."""
+        if not self._interactive_editable or self._preview is None:
+            return
+        if not self._live_preview_timer.isActive():
+            self._live_preview_timer.start()
+
+    def _current_interactive_transform(self) -> FittedTransform2D | None:
+        model=(
+            self._interactive_model
+            or (None if self._fitted_transform is None else self._fitted_transform.model)
+        )
+        if model==TRANSFORM_POLYNOMIAL:
+            return self._current_polynomial_transform()
+        if model in {TRANSFORM_TRANSLATION,TRANSFORM_RIGID,TRANSFORM_AFFINE}:
+            return self._current_affine_transform()
+        return None
+
+    def _flush_interactive_live_preview(self) -> FittedTransform2D | None:
+        """Render the latest drag state and return its transform.
+
+        Drag-finished handlers call this directly so the final visual state is
+        always rendered even if the 100 ms timer has not fired yet.
+        """
+        self._live_preview_timer.stop()
+        transform=self._current_interactive_transform()
         if transform is not None:
-            self.sigManualTransformRequested.emit(transform.to_dict())
+            self._update_transform_live_preview(transform)
+        return transform
 
     def _update_transform_live_preview(self,transform: FittedTransform2D) -> None:
         global_positions=self._global_positions
