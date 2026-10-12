@@ -1017,3 +1017,114 @@ def test_visual_snap_action_is_capture_only_position_background_request():
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_position_correction_edit_controls_are_compact_and_report_edit_state():
+    runtime,section_key=_runtime()
+    _commit_job(runtime,section_key)
+    _QtWidgets,window=_window(runtime,section_key)
+    try:
+        preview=_test_position_preview(np.zeros((8,8),dtype=np.float64))
+        preview["reference"]={"mode":"current"}
+        context={
+            "mode":"current",
+            "reference_name":None,
+            "references":(),
+            "change_allowed":True,
+            "correction_mode":"affine",
+            "polynomial_degree":2,
+            "manual_transform":None,
+        }
+        window.set_position_reference_state(context,preview)
+        assert window.position_reference_interactive_edit_checkbox.text()=="Edit"
+        assert window.position_reference_reset_button.text()=="Reset"
+        assert window.position_reference_edit_state_label.text()=="Automatic"
+
+        context["manual_transform"]={
+            "model":"affine",
+            "matrix":((1.0,0.0,1.0),(0.0,1.0,0.0)),
+        }
+        window.set_position_reference_state(context,preview)
+        assert window.position_reference_edit_state_label.text()=="Edited"
+        assert window.position_reference_reset_button.isEnabled()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_current_free_edit_disables_per_spot_and_enters_with_translation():
+    runtime,section_key=_runtime()
+    _commit_job(runtime,section_key)
+    _QtWidgets,window=_window(runtime,section_key)
+    emitted=[]
+    window.sigActionRequested.connect(
+        lambda action,options:emitted.append((action,dict(options)))
+    )
+    try:
+        preview=_test_position_preview(np.zeros((8,8),dtype=np.float64))
+        window.set_position_reference_state({
+            "mode":"global_fit",
+            "reference_name":None,
+            "references":(),
+            "change_allowed":True,
+            "correction_mode":"per_spot",
+            "polynomial_degree":2,
+            "manual_transform":None,
+        },preview)
+
+        current_index=window.position_reference_combo.findData("current")
+        assert current_index>=0
+        window.position_reference_combo.setCurrentIndex(current_index)
+        assert emitted[-1][0]=="position_reference_set"
+        assert emitted[-1][1]["mode"]=="current"
+        assert emitted[-1][1]["correction_mode"]=="translation"
+
+        window.set_position_reference_state({
+            "mode":"current",
+            "reference_name":None,
+            "references":(),
+            "change_allowed":True,
+            "correction_mode":"translation",
+            "polynomial_degree":2,
+            "manual_transform":None,
+        },preview)
+        per_spot_index=window.position_reference_correction_model_combo.findData(
+            "per_spot"
+        )
+        item=window.position_reference_correction_model_combo.model().item(
+            per_spot_index
+        )
+        assert item is not None
+        assert not item.isEnabled()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_current_free_edit_summary_reports_displacement_not_residual():
+    runtime,section_key=_runtime()
+    _commit_job(runtime,section_key)
+    _QtWidgets,window=_window(runtime,section_key)
+    try:
+        preview=_test_position_preview(np.zeros((8,8),dtype=np.float64))
+        preview["reference"]={"mode":"current"}
+        preview["reference_positions_px"]=(
+            np.asarray(preview["measured_positions_px"],dtype=np.float64)
+            + np.asarray([[1.0],[0.0]])
+        )
+        window.set_position_reference_state({
+            "mode":"current",
+            "reference_name":None,
+            "references":(),
+            "change_allowed":True,
+            "correction_mode":"translation",
+            "polynomial_degree":2,
+            "manual_transform":None,
+        },preview)
+        text=window.position_reference_view.summary_label.text()
+        assert "displacement median" in text
+        assert "displacement RMS" in text
+        assert "residual" not in text
+    finally:
+        window.close()
+        window.deleteLater()

@@ -1294,3 +1294,100 @@ def test_global_fit_can_use_continuous_correction_model():
         atol=1e-10,
     )
     session.dispose()
+
+
+def test_manual_position_transform_lifecycle_is_source_and_localization_bound():
+    runtime=_runtime()
+    session=SLMSession(runtime=runtime)
+    localization=_attach_reference_localization(runtime)
+    from dataclasses import replace
+    diagnostics=dict(localization.diagnostics)
+    diagnostics.update({
+        "affine_linear":((32.0,0.0),(0.0,32.0)),
+        "affine_translation":(12.0,12.0),
+    })
+    localization=replace(localization,diagnostics=diagnostics)
+    parameters=dict(runtime.get_section_feedback_status("sec_0").localization_params)
+    runtime.commit_section_feedback_localization("sec_0",localization,parameters)
+
+    session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",
+    )
+    preview=session.feedback.position_reference_preview("sec_0")
+    transform=dict(preview["fitted_transform"])
+    matrix=np.asarray(transform["matrix"],dtype=np.float64)
+    matrix[:,2]+=np.asarray([1.0,-0.5])
+    transform["matrix"]=matrix.tolist()
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",
+        manual_transform=transform,
+    )
+    assert selection.manual_transform is not None
+
+    # Lightweight/same-selection refreshes preserve the manual edit.
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",
+    )
+    assert selection.manual_transform is not None
+
+    # A different reference source invalidates the source-bound edit.
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode="global_fit",correction_mode="affine",
+    )
+    assert selection.manual_transform is None
+
+    # A different correction model likewise returns to its automatic fit.
+    preview=session.feedback.position_reference_preview("sec_0")
+    transform=dict(preview["fitted_transform"])
+    matrix=np.asarray(transform["matrix"],dtype=np.float64)
+    matrix[:,2]+=np.asarray([0.25,0.75])
+    transform["matrix"]=matrix.tolist()
+    session.feedback.set_position_reference(
+        "sec_0",mode="global_fit",correction_mode="affine",
+        manual_transform=transform,
+    )
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode="global_fit",correction_mode="rigid",
+    )
+    assert selection.manual_transform is None
+
+    # Polynomial manual edits are also tied to the polynomial degree.
+    from slmcore.core.transform2d import FittedTransform2D
+    polynomial=FittedTransform2D(
+        model="polynomial",polynomial_degree=2,
+        coefficients=np.zeros((2,6),dtype=np.float64),
+        normalization_center=np.asarray([20.0,20.0]),
+        normalization_scale=np.asarray([10.0,10.0]),
+    )
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="polynomial",
+        polynomial_degree=2,manual_transform=polynomial,
+    )
+    assert selection.manual_transform is not None
+    selection=session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="polynomial",
+        polynomial_degree=3,
+    )
+    assert selection.manual_transform is None
+
+    # Interactive edits are fitted against one accepted localization and must
+    # not survive accepting a new localization, even if geometry is identical.
+    session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",
+    )
+    preview=session.feedback.position_reference_preview("sec_0")
+    transform=dict(preview["fitted_transform"])
+    matrix=np.asarray(transform["matrix"],dtype=np.float64)
+    matrix[:,2]+=np.asarray([0.5,0.5])
+    transform["matrix"]=matrix.tolist()
+    session.feedback.set_position_reference(
+        "sec_0",mode="current",correction_mode="affine",
+        manual_transform=transform,
+    )
+    assert session.feedback.accept_localization(
+        "sec_0",localization,parameters,raise_errors=True,
+    )
+    assert session.feedback.position_reference_selection(
+        "sec_0"
+    ).manual_transform is None
+    session.dispose()

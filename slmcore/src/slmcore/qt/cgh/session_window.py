@@ -889,38 +889,49 @@ class CGHSessionWindow(QtWidgets.QDialog):
         polynomial_row.addWidget(self.position_reference_polynomial_degree_combo,1)
         controls_layout.addLayout(polynomial_row)
 
+        edit_row = QtWidgets.QHBoxLayout()
+        edit_row.setContentsMargins(0,0,0,0)
+        edit_row.setSpacing(5)
         self.position_reference_interactive_edit_checkbox = QtWidgets.QCheckBox(
-            "Edit interactively"
+            "Edit"
         )
         self.position_reference_interactive_edit_checkbox.setToolTip(
-            "Edit the fitted correction directly in the detector view. Affine uses "
-            "a cage; polynomial uses a sparse deformation mesh."
+            "Edit the fitted correction directly in the detector view."
         )
         self.position_reference_interactive_edit_checkbox.toggled.connect(
             self._on_position_reference_interactive_edit_toggled
         )
-        controls_layout.addWidget(self.position_reference_interactive_edit_checkbox)
+        edit_row.addWidget(self.position_reference_interactive_edit_checkbox)
 
-        self.position_reference_affine_reset_button = QtWidgets.QPushButton(
-            "Reset fit"
-        )
-        self.position_reference_affine_reset_button.setToolTip(
+        self.position_reference_reset_button = QtWidgets.QPushButton("Reset")
+        self.position_reference_reset_button.setToolTip(
             "Discard interactive edits and return to the automatic Current → Reference fit."
         )
-        self.position_reference_affine_reset_button.clicked.connect(
-            self._reset_position_reference_affine_fit,
+        self.position_reference_reset_button.clicked.connect(
+            self._reset_position_reference_manual_edit,
         )
-        controls_layout.addWidget(self.position_reference_affine_reset_button)
+        edit_row.addWidget(self.position_reference_reset_button)
+        edit_row.addStretch(1)
 
-        self.position_reference_affine_hint = QtWidgets.QLabel(
-            "Drag the editor handles in the detector view. Predicted updates live; "
-            "Reset fit returns to the automatic fit."
+        self.position_reference_edit_state_label = QtWidgets.QLabel("Automatic")
+        self.position_reference_edit_state_label.setToolTip(
+            "Automatic uses the fitted correction. Edited means an interactive "
+            "manual transform is currently overriding that fit."
         )
-        self.position_reference_affine_hint.setWordWrap(True)
-        self.position_reference_affine_hint.setStyleSheet(
+        self.position_reference_edit_state_label.setStyleSheet(
             "color: %s;" % _MUTED_COLOR
         )
-        controls_layout.addWidget(self.position_reference_affine_hint)
+        edit_row.addWidget(self.position_reference_edit_state_label)
+        controls_layout.addLayout(edit_row)
+
+        self.position_reference_edit_hint = QtWidgets.QLabel(
+            "Drag the editor handles in the detector view. Predicted updates live."
+        )
+        self.position_reference_edit_hint.setWordWrap(True)
+        self.position_reference_edit_hint.setStyleSheet(
+            "color: %s;" % _MUTED_COLOR
+        )
+        controls_layout.addWidget(self.position_reference_edit_hint)
 
         applied_separator = QtWidgets.QFrame(controls)
         applied_separator.setFrameShape(QtWidgets.QFrame.HLine)
@@ -1126,6 +1137,15 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 correction_model_combo.setCurrentIndex(
                     correction_index if correction_index>=0 else 0
                 )
+                per_spot_index=correction_model_combo.findData("per_spot")
+                if per_spot_index>=0:
+                    per_spot_item=correction_model_combo.model().item(per_spot_index)
+                    if per_spot_item is not None:
+                        per_spot_item.setEnabled(mode!="current")
+                        per_spot_item.setToolTip(
+                            "Free editing requires Translation, Rigid, Affine, or "
+                            "Polynomial." if mode=="current" else ""
+                        )
             finally:
                 del correction_blocker
 
@@ -1212,15 +1232,20 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 del interactive_blocker
 
         has_manual=context.get("manual_transform") is not None
-        reset_button=getattr(self,"position_reference_affine_reset_button",None)
+        continuous_mode=correction_mode in {
+            "translation","rigid","affine","polynomial",
+        }
+        reset_button=getattr(self,"position_reference_reset_button",None)
         if reset_button is not None:
-            reset_button.setVisible(
-                correction_mode in {"translation","rigid","affine","polynomial"}
-            )
+            reset_button.setVisible(continuous_mode)
             reset_button.setEnabled(
                 change_allowed and interactive_supported and has_manual
             )
-        hint=getattr(self,"position_reference_affine_hint",None)
+        edit_state=getattr(self,"position_reference_edit_state_label",None)
+        if edit_state is not None:
+            edit_state.setVisible(continuous_mode)
+            edit_state.setText("Edited" if has_manual else "Automatic")
+        hint=getattr(self,"position_reference_edit_hint",None)
         if hint is not None:
             if correction_mode=="translation":
                 hint.setText("Drag the cage center to translate the correction.")
@@ -1638,10 +1663,13 @@ class CGHSessionWindow(QtWidgets.QDialog):
                     del interactive_blocker
                 interactive.setEnabled(False)
             reset_button=getattr(
-                self,"position_reference_affine_reset_button",None,
+                self,"position_reference_reset_button",None,
             )
             if reset_button is not None:
                 reset_button.setEnabled(False)
+            edit_state=getattr(self,"position_reference_edit_state_label",None)
+            if edit_state is not None:
+                edit_state.setVisible(False)
             detector_view=getattr(self,"position_reference_view",None)
             if detector_view is not None:
                 detector_view.set_center_editable(False)
@@ -1649,6 +1677,22 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
             self._refresh_position_reference_manager_actions()
             return
+
+        if (
+            mode=="current"
+            and self._selected_position_reference_correction_mode()=="per_spot"
+        ):
+            correction_combo=getattr(
+                self,"position_reference_correction_model_combo",None,
+            )
+            if correction_combo is not None:
+                translation_index=correction_combo.findData("translation")
+                if translation_index>=0:
+                    correction_blocker=QtCore.QSignalBlocker(correction_combo)
+                    try:
+                        correction_combo.setCurrentIndex(translation_index)
+                    finally:
+                        del correction_blocker
 
         payload=self._position_reference_request_payload(reset_manual=True)
         if payload is None:
@@ -1697,7 +1741,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_reference_view.set_interactive_editing(
             enabled,correction_mode,
         )
-        hint=getattr(self,"position_reference_affine_hint",None)
+        hint=getattr(self,"position_reference_edit_hint",None)
         if hint is not None:
             hint.setVisible(enabled)
 
@@ -1714,6 +1758,11 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
     def _on_position_reference_correction_mode_changed(self,_index: int) -> None:
         correction_mode=self._selected_position_reference_correction_mode()
+        if (
+            str(self.position_reference_combo.currentData())=="current"
+            and correction_mode=="per_spot"
+        ):
+            return
         current=str(self._position_reference_context.get("correction_mode") or "per_spot")
         if correction_mode==current:
             return
@@ -1721,7 +1770,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if payload is not None:
             self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
-    def _reset_position_reference_affine_fit(self,*_args: Any) -> None:
+    def _reset_position_reference_manual_edit(self,*_args: Any) -> None:
         if self._selected_position_reference_correction_mode() not in {
             "translation","rigid","affine","polynomial",
         }:
