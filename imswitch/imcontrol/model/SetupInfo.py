@@ -514,10 +514,10 @@ class ScanInfo:
     devices, timing defaults, and modes selecting step subsets), with
     ``defaultProfile`` selecting the startup profile. Profiles are editable
     live from the SimpleMoNaLISA panel and are persisted back into this block;
-    profile ids remain stable when only the display name changes. The older
-    ``onLaser``/``offLaser``/``readoutLaser``/``readoutDetector`` and timing
-    fields remain supported and are migrated in memory to one implicit default
-    profile. Geometry defaults include ``defaultScanType``,
+    profile ids remain stable when only the display name changes. An empty or
+    omitted ``profiles`` mapping is valid and starts SimpleMoNaLISA in a
+    restricted state until the user creates a profile. Geometry defaults include
+    ``defaultScanType``,
     ``defaultLateralStepUm``, ``defaultZScanLengthUm`` and
     ``defaultZStepUm``. """
 

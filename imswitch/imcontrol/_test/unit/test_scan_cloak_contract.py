@@ -343,7 +343,14 @@ def test_the_switch_waits_for_a_running_scan(rig):
         assert rig.panel.page() == 'simple' and rig.panel.simpleButton.isChecked()
         assert 'Stop the scan' in rig.panel.noteLabel.text()
     finally:
-        rig.view.stopButton.click()
+        if rig.type == 'SimpleMoNaLISA':
+            # MoNaLISA Stop is deliberately screening-light OFF only and is
+            # disabled while Acquire owns the hardware. Abort explicitly in
+            # this generic cloak lifecycle test.
+            assert not rig.view.stopButton.isEnabled()
+            rig.scan.abortScan()
+        else:
+            rig.view.stopButton.click()
         assert rig.waitForEnd()
 
 
@@ -542,6 +549,68 @@ def test_blocking_the_scan_panel_blocks_both_pages(rig):
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+
+
+
+def _monalisaSetupWithPowerMode(mode):
+    data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
+    data['laserPowerMode'] = mode
+    return json.dumps(data)
+
+
+def _monalisaSetupWithoutProfiles():
+    data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
+    simple = dict(data['scan'].get('simpleMoNaLISA') or {})
+    simple['profiles'] = {}
+    simple.pop('defaultProfile', None)
+    data['scan']['simpleMoNaLISA'] = simple
+    data['laserPowerMode'] = 'separated'
+    return json.dumps(data)
+
+
+def test_monalisa_without_profiles_starts_restricted_and_does_not_adopt_advanced(qtbot):
+    rig = CloakRig('SimpleMoNaLISA', _monalisaSetupWithoutProfiles())
+    try:
+        assert rig.scan.acquisitionPlan() is None
+        assert not rig.scan.cloakOwnsBackend()
+        assert rig.view.profileCombo.currentData() is None
+        assert rig.view.profileCombo.currentText() == 'No profile configured'
+        assert not rig.view.profileCombo.isEnabled()
+        assert rig.view.newProfileAction.isEnabled()
+        assert not rig.view.editProfileAction.isEnabled()
+        assert not rig.view.deleteProfileAction.isEnabled()
+        assert not rig.view.startButton.isEnabled()
+        assert not rig.view.screeningButton.isEnabled()
+        assert 'Create a profile' in rig.view.bindingLabel.text()
+
+        assert rig.scan.setScanPage('advanced')
+        assert rig.scan.setScanPage('simple')
+        assert rig.scan.acquisitionPlan() is None
+        assert not rig.scan.cloakOwnsBackend()
+    finally:
+        rig.close()
+
+
+def test_monalisa_live_is_disabled_when_live_and_scan_power_are_coupled(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        assert not rig.view.screeningButton.isEnabled()
+        assert 'separated Live/Scan laser powers' in rig.view.screeningButton.toolTip()
+    finally:
+        rig.close()
+
+
+def test_monalisa_live_defaults_to_on_and_readout_roles_in_separated_mode(qtbot):
+    rig = CloakRig(
+        'SimpleMoNaLISA', _monalisaSetupWithPowerMode('separated')
+    )
+    try:
+        assert rig.view.screeningButton.isEnabled()
+        assert rig.view.selectedLiveRoles() == {'on', 'readout'}
+        assert set(rig.view._liveRoleChecks) == {'on', 'off', 'readout'}
+        assert not rig.view._liveRoleChecks['off'].isChecked()
+    finally:
+        rig.close()
 
 def test_monalisa_profiles_and_modes_are_explicit_simple_choices(qtbot):
     rig = CloakRig('SimpleMoNaLISA')

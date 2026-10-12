@@ -6,7 +6,6 @@ from imswitch.imcontrol.model.monalisa_profiles import (
     MoNaLISAProfileStore,
     MoNaLISASequenceNotCompatible,
     compile_profile_sequence,
-    legacy_monalisa_profile,
     parse_profile_sequence,
 )
 
@@ -282,7 +281,7 @@ def test_mode_device_override_must_be_subset_of_enabled_step_devices():
         })
 
 
-def test_profile_store_uses_explicit_profiles_or_migrates_legacy_definition():
+def test_profile_store_uses_only_explicit_profiles_and_allows_empty_state():
     profile = _dual_color_profile()
     store = MoNaLISAProfileStore.from_config({
         'defaultProfile': 'dual_color',
@@ -290,13 +289,11 @@ def test_profile_store_uses_explicit_profiles_or_migrates_legacy_definition():
     })
     assert store.profile().id == 'dual_color'
 
-    legacy = legacy_monalisa_profile(
-        on_laser='405', off_laser='488', readout_laser='488', readout_detector='Camera',
-        on_time_s=0.001, off_time_s=0.002, readout_time_s=0.001,
-    )
-    migrated = MoNaLISAProfileStore.from_config({}, legacy_profile=legacy)
-    assert migrated.default_profile == 'default'
-    assert migrated.profile().mode('confocal').enabled_steps == ('on', 'readout')
+    empty = MoNaLISAProfileStore.from_config({})
+    assert empty.profiles == {}
+    assert empty.default_profile == ''
+    with pytest.raises(MoNaLISAProfileError, match='No MoNaLISA profile'):
+        empty.profile()
 
 
 def test_profile_binding_tracks_explicit_profile_and_mode_identity():
@@ -305,6 +302,10 @@ def test_profile_binding_tracks_explicit_profile_and_mode_identity():
         MONALISA_BINDING_INCOMPATIBLE,
         MoNaLISAProfileBinding,
     )
+
+    unbound = MoNaLISAProfileBinding.unbound()
+    assert not unbound.is_bound
+    assert unbound.profile_id is None
 
     profile = _dual_color_profile()
     binding = MoNaLISAProfileBinding.bound(profile, 'resolft')
@@ -348,23 +349,34 @@ def test_profile_store_live_mutations_are_atomic_and_keep_stable_ids():
     assert tuple(deleted.profiles) == ('dual_colour_copy',)
 
     merged = config_with_profile_store(
-        {'fovUm': [40, 40], 'interPulseDelayMs': 0.1, 'legacyThing': 7},
+        {
+            'fovUm': [40, 40], 'interPulseDelayMs': 0.1, 'legacyThing': 7,
+            'onLaser': '405', 'offLaser': '488', 'readoutLaser': '488',
+            'readoutDetector': 'Camera', 'defaultOnTimeMs': 1,
+        },
         deleted,
     )
     assert merged['fovUm'] == [40, 40]
     assert merged['legacyThing'] == 7
     assert merged['defaultProfile'] == 'dual_colour_copy'
     assert 'dual_colour_copy' in merged['profiles']
+    assert 'onLaser' not in merged
+    assert 'offLaser' not in merged
+    assert 'readoutLaser' not in merged
+    assert 'readoutDetector' not in merged
+    assert 'defaultOnTimeMs' not in merged
 
 
-def test_profile_store_refuses_deleting_last_profile():
+def test_profile_store_allows_deleting_last_profile():
     profile = _dual_color_profile()
     store = MoNaLISAProfileStore.from_config({
         'defaultProfile': 'dual_color',
         'profiles': {'dual_color': profile.to_config()},
     })
-    with pytest.raises(MoNaLISAProfileError, match='At least one'):
-        store.without_profile('dual_color')
+    empty = store.without_profile('dual_color')
+    assert empty.profiles == {}
+    assert empty.default_profile == ''
+    assert empty.to_config() == {'profiles': {}}
 
 
 def test_new_profile_ids_are_unique_but_rename_does_not_change_identity():

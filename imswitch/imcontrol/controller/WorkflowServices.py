@@ -186,6 +186,51 @@ class ScanRequestResult:
         return '; '.join(messages) or 'No scan controller accepted the request.'
 
 
+class LiveScreeningWorkflowService:
+    """Narrow controller-to-controller seam for simple live screening.
+
+    The service deliberately owns no power values and no acquisition lease. It
+    only coordinates existing Laser and Settings controller capabilities: Live
+    laser ON/OFF state and exact-target detector trigger changes.
+    """
+
+    def __init__(self, comm_channel) -> None:
+        self._comm_channel = comm_channel
+
+    def _controller(self, key, display_name):
+        controller = self._comm_channel.controllerRegistry().get(key)
+        if controller is None:
+            raise RuntimeError(f'Required {display_name} widget not available')
+        return controller
+
+    def resolve_live_lasers(self, device_names):
+        return self._controller('Laser', 'laser').resolveLiveIlluminationLasers(
+            device_names
+        )
+
+    def get_laser_active(self, laser_name: str) -> bool:
+        return bool(self._controller('Laser', 'laser').getLaserActive(laser_name))
+
+    def set_laser_active(self, laser_name: str, active: bool) -> None:
+        self._controller('Laser', 'laser').setLaserActive(laser_name, bool(active))
+
+    def get_trigger_setting(self, detector_name: str):
+        return self._controller(
+            'Settings', 'detector settings'
+        ).getDetectorTriggerSetting(detector_name)
+
+    def set_trigger_mode(self, detector_name: str, mode: str) -> None:
+        self._controller(
+            'Settings', 'detector settings'
+        ).setDetectorTriggerMode(detector_name, mode)
+
+    def restore_trigger_setting(self, detector_name: str, setting) -> None:
+        parameter_name, value = setting
+        self._controller(
+            'Settings', 'detector settings'
+        ).setDetectorParameterExact(detector_name, parameter_name, value)
+
+
 class ScanWorkflowService(SignalInterface):
     """Small service wrapper for scan/recording workflow signals.
 

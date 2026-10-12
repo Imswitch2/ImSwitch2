@@ -713,6 +713,69 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                        self.updateParamsFromDetector(detector=c))
         )
         self.updateSharedAttrs()
+
+    def setDetectorParameterExact(
+        self, detectorName: str, parameterName: str, value: Any
+    ) -> None:
+        """Set one detector parameter without the UI's "update all" policy.
+
+        Workflow/orchestration code must target the detector it resolved from
+        its own acquisition profile. In particular, changing a camera trigger
+        must not unexpectedly fan out because the Settings widget happens to
+        have "Update all detectors" checked.
+        """
+        detector = self._master.detectorsManager[detectorName]
+        if parameterName not in detector.parameters:
+            raise ValueError(
+                f'Detector "{detectorName}" has no parameter "{parameterName}".'
+            )
+        detector.setParameter(parameterName, value)
+        # The hardware manager is authoritative; make the Settings widget show
+        # the value it actually accepted without writing it straight back.
+        self.updateParamsFromDetector(detector=detector, blockSignals=True)
+        self.updateSharedAttrs()
+
+    def getDetectorTriggerSetting(self, detectorName: str) -> Tuple[str, Any]:
+        """Return the detector's trigger parameter name and exact current value."""
+        detector = self._master.detectorsManager[detectorName]
+        parameterName, _internal, _external = self._detectorTriggerSpec(detector)
+        return parameterName, detector.parameters[parameterName].value
+
+    def setDetectorTriggerMode(self, detectorName: str, mode: str) -> None:
+        """Set a semantic camera trigger mode on exactly one detector.
+
+        Supported semantic modes are ``internal`` (free-running/software) and
+        ``external_frame`` (one exposure per external frame trigger). The
+        mapping intentionally lives next to detector Settings rather than in a
+        scan widget, because camera families expose different parameter names.
+        """
+        detector = self._master.detectorsManager[detectorName]
+        parameterName, internalValue, externalFrameValue = self._detectorTriggerSpec(detector)
+        mode = str(mode).strip().lower()
+        if mode == 'internal':
+            value = internalValue
+        elif mode == 'external_frame':
+            value = externalFrameValue
+        else:
+            raise ValueError(f'Unknown detector trigger mode {mode!r}.')
+        self.setDetectorParameterExact(detectorName, parameterName, value)
+
+    @staticmethod
+    def _detectorTriggerSpec(detector):
+        """Return ``(parameter, internal, external-frame)`` for one camera."""
+        parameters = getattr(detector, 'parameters', {})
+        if 'Trigger source' in parameters:
+            return (
+                'Trigger source',
+                'Internal trigger',
+                'External "frame-trigger"',
+            )
+        if 'Operation Mode' in parameters:
+            return ('Operation Mode', 'Software', 'Hardware')
+        raise ValueError(
+            f'Detector "{getattr(detector, "name", "?")}" does not expose a '
+            'supported internal/external-frame trigger control.'
+        )
     
     def refreshAdvancedProperties(self, detectorName):
         """

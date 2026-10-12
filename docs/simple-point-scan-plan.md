@@ -1287,15 +1287,22 @@ a `SimpleMoNaLISA` registry entry compatible with `Advanced`, with its own `Scan
 representable subset is different. It needs the timing windows the point-scan
 cloak refuses, and it has no swept fast axis.
 
-**First implementation:** only the simplified acquisition view. It can expose
-parameters such as pixel/scan step, OFF power and ON switching/power and map
-those to the Advanced scan. It deliberately has **no overview mode** at first.
-The cloak registry records that capability (`has_overview=False`), while the
-base `runPlan()` simply runs the acquisition unless a cloak overrides it.
+**First implementation:** the simplified acquisition view exposes the compact
+MoNaLISA parameters and maps them to the Advanced scan. It deliberately has no
+scan-based overview mode: the cloak registry records `has_overview=False`, while
+`runPlan()` remains the acquisition.
 
-A later widefield overview is a separate design question because it is camera
-live + illumination + stage navigation rather than a scan. It may compose with
-the MoNaLISA scan cloak instead of becoming part of the scan cloak itself.
+The first screening workflow therefore stays outside the scan plan. Profiles are
+explicit: no legacy ON/OFF/readout fields are converted into an implicit profile.
+If none are configured, the Simple page stays in a restricted create-profile
+state and does not adopt or overwrite the Advanced scan. With separated
+Live/Scan laser powers, **Live** switches the profile Readout camera to internal
+trigger and enables user-selected profile illumination roles at their existing
+Live powers; **Stop** only darkens those screening lasers; **Acquire** runs the
+normal externally triggered Advanced acquisition and then restores the preceding
+camera trigger. This keeps widefield screening convenient without pretending
+that it is an overview scan. Richer stage/navigation orchestration can still be
+added later as a separate workflow concern.
 
 **Reuse and gaps:**
 

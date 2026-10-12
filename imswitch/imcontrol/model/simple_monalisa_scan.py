@@ -21,7 +21,6 @@ from .monalisa_profiles import (
     MoNaLISAProfileStore,
     MoNaLISASequenceNotCompatible,
     compile_profile_sequence,
-    legacy_monalisa_profile,
     parse_profile_sequence,
 )
 
@@ -33,16 +32,8 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
     'defaultScanType': 'XY',
     'defaultLateralStepUm': 0.04,
     'defaultZStepUm': 0.15,
-    'defaultMode': 'resolft',
-    'defaultOffTimeMs': 2.0,
-    'defaultOnTimeMs': 1.0,
-    'readoutTimeMs': 1.0,
     'interPulseDelayMs': 0.1,
     'cameraReadoutTimeMs': 6.0,
-    'offLaser': None,
-    'onLaser': None,
-    'readoutLaser': None,
-    'readoutDetector': None,
 }
 
 SCAN_TYPES = ('XY', 'YZ', 'XZ', 'XYZ')
@@ -61,13 +52,6 @@ def _configured_tuple(value, *, default=(40.0, 40.0)) -> Tuple[float, float]:
         return values[0], values[0]
     return values[0], values[1]
 
-
-def _first_named(mapping, token: str) -> Optional[str]:
-    token = token.upper()
-    for name in mapping:
-        if token in str(name).upper():
-            return str(name)
-    return None
 
 
 def _round_um(value: float) -> float:
@@ -114,37 +98,8 @@ class MoNaLISALimits:
             if logical in ('X', 'Y', 'Z') and logical not in axes:
                 axes[logical] = str(name)
 
-        lasers = getattr(setupInfo, 'lasers', None) or {}
-        detectors = getattr(setupInfo, 'detectors', None) or {}
         ttl = tuple(setupInfo.getTTLDevices())
-
-        # Older setup files are represented as one implicit data-driven
-        # profile; explicit profiles take precedence.
-        legacy_off = raw.get('offLaser') or _first_named(lasers, 'OFF')
-        legacy_on = raw.get('onLaser') or _first_named(lasers, 'ON')
-        legacy_readout = raw.get('readoutLaser') or _first_named(lasers, 'EXC')
-        legacy_detector = raw.get('readoutDetector')
-        if legacy_detector is None:
-            legacy_detector = next(
-                (str(name) for name, info in detectors.items()
-                 if getattr(info, 'forAcquisition', False) and name in ttl),
-                None,
-            )
-
-        requested_mode = str(raw.get('defaultMode') or 'resolft').lower()
-        legacy_profile = legacy_monalisa_profile(
-            on_laser=str(legacy_on) if legacy_on else None,
-            off_laser=str(legacy_off) if legacy_off else None,
-            readout_laser=str(legacy_readout) if legacy_readout else None,
-            readout_detector=str(legacy_detector) if legacy_detector else None,
-            on_time_s=max(0.0, float(raw.get('defaultOnTimeMs') or 0.0) * 1e-3),
-            off_time_s=max(0.0, float(raw.get('defaultOffTimeMs') or 0.0) * 1e-3),
-            readout_time_s=max(0.0, float(raw.get('readoutTimeMs') or 0.0) * 1e-3),
-            default_mode=requested_mode,
-        )
-        profile_store = MoNaLISAProfileStore.from_config(
-            configured, legacy_profile=legacy_profile
-        )
+        profile_store = MoNaLISAProfileStore.from_config(configured)
 
         scan_type = str(raw.get('defaultScanType') or 'XY').upper()
         if scan_type not in SCAN_TYPES:
@@ -181,9 +136,10 @@ class MoNaLISALimits:
             if axis not in self.axis_devices:
                 missing.append(f'{axis} scanning axis')
         selected = profile_id or self.profile_store.default_profile
-        missing.extend(self.profile_store.missing_devices(
-            self.ttl_devices, profile_id=selected
-        ))
+        if selected:
+            missing.extend(self.profile_store.missing_devices(
+                self.ttl_devices, profile_id=selected
+            ))
         return tuple(missing)
 
 

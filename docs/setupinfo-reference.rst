@@ -335,7 +335,8 @@ Key fields:
   from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
 * ``cloak``: Optional simplified frontend over that backend. ``"SimplePointScan"``
   and ``"SimpleMoNaLISA"`` are registered for ``"Advanced"``. PointScan has
-  overview and acquisition modes; the first MoNaLISA cloak is acquisition-only.
+  overview and acquisition scan modes; SimpleMoNaLISA keeps one acquisition scan
+  plan and adds a non-scan Live screening workflow.
   Old setups that used ``scanWidgetType: "SimplePointScan"`` are still accepted
   while they migrate.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
@@ -371,7 +372,7 @@ Key fields:
   Other scan panels ignore the ``simplePointScan`` block.
 
 * ``simpleMoNaLISA``: Setup facts and profile definitions for the
-  acquisition-only ``SimpleMoNaLISA`` cloak. ``fovUm`` and ``ulensPeriodUm``
+  ``SimpleMoNaLISA`` cloak. ``fovUm`` and ``ulensPeriodUm``
   are displayed but not editable; ``interPulseDelayMs`` is used once before
   the first active step and between subsequent active steps, and
   ``cameraReadoutTimeMs`` is the end-of-pixel overhead. ``profiles`` is a map
@@ -387,10 +388,11 @@ Key fields:
   profiles with one shared timing step and modes such as OFF-only, ON+OFF or
   readout-only. Geometry defaults remain ``defaultScanType``,
   ``defaultLateralStepUm``, ``defaultZScanLengthUm`` (1 µm by default) and
-  ``defaultZStepUm``. The older ``onLaser``/``offLaser``/``readoutLaser``/
-  ``readoutDetector`` and timing fields remain accepted and are migrated in
-  memory to one implicit ``Default`` profile. The SimpleMoNaLISA panel exposes
-  the configured profiles and modes directly. Profile selection is owned by
+  ``defaultZStepUm``. There is no implicit/legacy profile mapping: if
+  ``profiles`` is omitted or empty, the SimpleMoNaLISA panel starts in a
+  restricted state where Live/Acquire and scan parameters are disabled until
+  the user creates a profile from the profile menu. The SimpleMoNaLISA panel
+  exposes configured profiles and modes directly. Profile selection is owned by
   Simple: Advanced edits are parsed only against the currently selected
   profile/mode. Compatible edits come back into Simple; incompatible edits
   return to Simple as ``Advanced / custom`` until the user explicitly selects
@@ -398,7 +400,14 @@ Key fields:
   and deleted live from the SimpleMoNaLISA profile menu. The editor keeps
   profile ids stable across renames, restricts devices to TTL devices in the
   current setup, and persists the complete profile store back into the active
-  setup file. Structural edits are disabled while a scan is running.
+  setup file. Structural edits are disabled while a scan is running. When the
+  setup uses ``laserPowerMode: "separated"``, the Simple page also offers Live
+  screening: profile roles select which laser paths are enabled at their existing
+  Live powers, while the profile Readout camera is switched to internal trigger.
+  **Stop** switches off only those screening lasers and leaves camera acquisition
+  running; **Acquire** temporarily uses external frame trigger and the normal Scan
+  powers, then restores the preceding trigger state. Coupled power mode leaves
+  this Live action disabled rather than duplicating or rewriting Live power.
 
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:

@@ -774,7 +774,7 @@ its header switches between the two, on the same scan.
 simulated APDs image a synthetic sample, so the region drawn on the overview
 is visibly the region acquired.
 
-``SimpleMoNaLISA`` is the acquisition-only MoNaLISA cloak over Advanced. Its
+``SimpleMoNaLISA`` is the profile-driven MoNaLISA cloak over Advanced. Its
 profile selector chooses an ordered illumination recipe while the mode selector
 enables a subset of that recipe (for example RESOLFT versus Confocal). Sequence
 steps have ON/OFF/READOUT/CUSTOM roles, but roles may repeat and a step may
@@ -785,7 +785,13 @@ duplicates, edits, renames and deletes profiles in the active setup. Profile
 editing changes setup configuration, whereas normal duration/geometry edits
 change only the current acquisition. Advanced edits that no longer match the
 explicitly selected profile/mode return Simple to **Advanced / custom** rather
-than silently selecting another profile.
+than silently selecting another profile. With separated Live/Scan laser powers,
+the **Live screening** row lets ON/OFF/Readout roles participate independently.
+Those checkboxes change only laser enable state; power stays editable in the
+Laser widget. **Live** keeps the existing camera acquisition running but switches
+the Readout camera to internal trigger, **Stop** switches off only the screening
+lasers, and **Acquire** uses external frame trigger plus the normal scan powers.
+The Live action is disabled for coupled laser-power setups.
 
 Controls shared by the variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

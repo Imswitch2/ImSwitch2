@@ -41,13 +41,10 @@ class _Setup:
             scanDesignerParams={'return_time': 0.001},
             simpleMoNaLISA={
                 'fovUm': [40, 45], 'ulensPeriodUm': 0.72,
-                'offLaser': '488 OFF', 'onLaser': '405 ON',
-                'readoutLaser': '488 EXC', 'readoutDetector': 'Camera',
                 'defaultLateralStepUm': 0.04,
                 'defaultZScanLengthUm': 1.0, 'defaultZStepUm': 0.15,
-                'defaultOffTimeMs': 2, 'defaultOnTimeMs': 1,
-                'readoutTimeMs': 1, 'interPulseDelayMs': 0.1,
-                'cameraReadoutTimeMs': 6,
+                'interPulseDelayMs': 0.1, 'cameraReadoutTimeMs': 6,
+                **_profiles_config(),
             },
         )
 
@@ -99,7 +96,20 @@ def _profiles_config():
     }
 
 
-def test_legacy_resolft_plan_round_trips_and_uses_fixed_setup_lengths():
+def test_empty_profile_config_stays_empty_and_requires_explicit_profile():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA = {
+        'fovUm': [40, 45], 'ulensPeriodUm': 0.72,
+        'interPulseDelayMs': 0.1, 'cameraReadoutTimeMs': 6,
+    }
+    limits = MoNaLISALimits.from_setup(setup)
+    assert limits.profile_store.profiles == {}
+    assert limits.profile_store.default_profile == ''
+    with pytest.raises(Exception, match='No MoNaLISA profile'):
+        default_plan(limits)
+
+
+def test_default_profile_plan_round_trips_and_uses_fixed_setup_lengths():
     limits = MoNaLISALimits.from_setup(_Setup())
     plan = default_plan(limits)
     analog, digital = plan_to_dicts(plan, limits)
@@ -143,7 +153,7 @@ def test_xyz_uses_lateral_step_for_xy_and_separate_z_step():
 
 def test_same_physical_device_can_appear_in_multiple_steps():
     setup = _Setup()
-    setup.scan.simpleMoNaLISA['readoutLaser'] = '488 OFF'
+    setup.scan.simpleMoNaLISA['profiles']['green']['steps'][2]['ttlDevices'] = ['488 OFF', 'Camera']
     limits = MoNaLISALimits.from_setup(setup)
     plan = default_plan(limits)
     analog, digital = plan_to_dicts(plan, limits)

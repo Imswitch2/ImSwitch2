@@ -77,6 +77,16 @@ class MoNaLISAProfileBinding:
     reason: Optional[str] = None
 
     @classmethod
+    def unbound(cls):
+        return cls(
+            profile_id=None,
+            mode_id=None,
+            profile_fingerprint=None,
+            status=MONALISA_BINDING_NONE,
+            reason=None,
+        )
+
+    @classmethod
     def bound(cls, profile: "MoNaLISAProfileDefinition", mode_id: str):
         return cls(
             profile_id=profile.id,
@@ -305,29 +315,28 @@ class MoNaLISAProfileStore:
     default_profile: str
 
     @classmethod
-    def from_config(
-        cls,
-        configured: Mapping[str, Any],
-        *,
-        legacy_profile: Optional[MoNaLISAProfileDefinition] = None,
-    ) -> 'MoNaLISAProfileStore':
-        raw_profiles = configured.get('profiles') or {}
-        if raw_profiles:
-            if not isinstance(raw_profiles, Mapping):
-                raise MoNaLISAProfileError('simpleMoNaLISA.profiles must be an object.')
-            profiles = {
-                str(profile_id): MoNaLISAProfileDefinition.from_config(str(profile_id), raw or {})
-                for profile_id, raw in raw_profiles.items()
-            }
-            default_profile = str(
-                configured.get('defaultProfile') or next(iter(profiles), '')
-            )
-        elif legacy_profile is not None:
-            profiles = {legacy_profile.id: legacy_profile}
-            default_profile = legacy_profile.id
-        else:
-            raise MoNaLISAProfileError('No MoNaLISA profiles are configured.')
+    def from_config(cls, configured: Mapping[str, Any]) -> 'MoNaLISAProfileStore':
+        """Parse only explicit profile definitions.
 
+        An empty profile set is a valid setup state: SimpleMoNaLISA stays
+        disabled until the user creates a profile from the profile menu.
+        No legacy ON/OFF/readout mapping is inferred or migrated here.
+        """
+        raw_profiles = configured.get('profiles', {})
+        if raw_profiles is None:
+            raw_profiles = {}
+        if not isinstance(raw_profiles, Mapping):
+            raise MoNaLISAProfileError('simpleMoNaLISA.profiles must be an object.')
+        profiles = {
+            str(profile_id): MoNaLISAProfileDefinition.from_config(str(profile_id), raw or {})
+            for profile_id, raw in raw_profiles.items()
+        }
+        if not profiles:
+            return cls(profiles={}, default_profile='')
+
+        default_profile = str(
+            configured.get('defaultProfile') or next(iter(profiles))
+        )
         if default_profile not in profiles:
             raise MoNaLISAProfileError(
                 f'Default MoNaLISA profile {default_profile!r} does not exist.'
@@ -356,16 +365,16 @@ class MoNaLISAProfileStore:
         return MoNaLISAProfileStore(profiles=profiles, default_profile=default_profile)
 
     def without_profile(self, profile_id: str) -> 'MoNaLISAProfileStore':
-        """Return a store without one profile; the last profile cannot be removed."""
+        """Return a store without one profile; an empty store is valid."""
         profile_id = str(profile_id)
         if profile_id not in self.profiles:
             raise MoNaLISAProfileError(f'No MoNaLISA profile {profile_id!r}.')
-        if len(self.profiles) <= 1:
-            raise MoNaLISAProfileError('At least one MoNaLISA profile must remain.')
         profiles = dict(self.profiles)
         del profiles[profile_id]
         default_profile = self.default_profile
-        if default_profile == profile_id:
+        if not profiles:
+            default_profile = ''
+        elif default_profile == profile_id:
             default_profile = next(iter(profiles))
         return MoNaLISAProfileStore(profiles=profiles, default_profile=default_profile)
 
@@ -396,13 +405,21 @@ class MoNaLISAProfileStore:
         return tuple(dict.fromkeys(missing))
 
     def to_config(self) -> dict:
-        return {
-            'defaultProfile': self.default_profile,
+        result = {
             'profiles': {
                 profile_id: profile.to_config()
                 for profile_id, profile in self.profiles.items()
             },
         }
+        if self.default_profile:
+            result['defaultProfile'] = self.default_profile
+        return result
+
+
+LEGACY_MONALISA_PROFILE_KEYS = (
+    'onLaser', 'offLaser', 'readoutLaser', 'readoutDetector',
+    'defaultMode', 'defaultOnTimeMs', 'defaultOffTimeMs', 'readoutTimeMs',
+)
 
 
 def config_with_profile_store(
@@ -410,10 +427,13 @@ def config_with_profile_store(
 ) -> dict:
     """Merge a runtime store into ``simpleMoNaLISA`` setup configuration.
 
-    Setup-level microscope facts and legacy keys are deliberately preserved;
-    explicit ``profiles`` take precedence on the next load.
+    Setup-level microscope facts are preserved. Removed pre-profile mapping
+    keys are dropped so a profile save also cleans an older setup file.
     """
     result = dict(configured or {})
+    for key in LEGACY_MONALISA_PROFILE_KEYS:
+        result.pop(key, None)
+    result.pop('defaultProfile', None)
     result.update(store.to_config())
     return result
 
@@ -522,53 +542,6 @@ def starter_monalisa_profile(
         default_mode='default',
     )
 
-
-def legacy_monalisa_profile(
-    *,
-    on_laser: Optional[str],
-    off_laser: Optional[str],
-    readout_laser: Optional[str],
-    readout_detector: Optional[str],
-    on_time_s: float,
-    off_time_s: float,
-    readout_time_s: float,
-    default_mode: str = 'resolft',
-) -> MoNaLISAProfileDefinition:
-    """Build the implicit profile represented by the pre-profile setup fields."""
-
-    steps = (
-        MoNaLISASequenceStepDefinition(
-            id='on', label='ON', role='on',
-            ttl_devices=_unique_strings((on_laser,)),
-            default_duration_s=float(on_time_s), duration_editable=True,
-        ),
-        MoNaLISASequenceStepDefinition(
-            id='off', label='OFF', role='off',
-            ttl_devices=_unique_strings((off_laser,)),
-            default_duration_s=float(off_time_s), duration_editable=True,
-        ),
-        MoNaLISASequenceStepDefinition(
-            id='readout', label='Read-out', role='readout',
-            ttl_devices=_unique_strings((readout_laser, readout_detector)),
-            default_duration_s=float(readout_time_s), duration_editable=False,
-        ),
-    )
-    # Legacy setups can be incomplete; keep the profile object constructible so
-    # the existing setup-refusal path can report missing devices cleanly.
-    modes = {
-        'resolft': MoNaLISAModeDefinition(
-            id='resolft', label='RESOLFT', enabled_steps=('on', 'off', 'readout'),
-            enabled_devices={},
-        ),
-        'confocal': MoNaLISAModeDefinition(
-            id='confocal', label='Confocal', enabled_steps=('on', 'readout'),
-            enabled_devices={},
-        ),
-    }
-    return MoNaLISAProfileDefinition(
-        id='default', label='Default', steps=steps, modes=modes,
-        default_mode=default_mode if default_mode in modes else 'resolft',
-    )
 
 
 @dataclass(frozen=True)
@@ -783,7 +756,6 @@ __all__ = [
     'MoNaLISASequenceStepDefinition',
     'ParsedMoNaLISASequence',
     'compile_profile_sequence',
-    'legacy_monalisa_profile',
     'parse_profile_sequence',
     'validate_profile_definition',
 ]

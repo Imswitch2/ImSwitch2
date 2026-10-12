@@ -1,6 +1,8 @@
-"""SimpleMoNaLISA scan cloak: compact profile-driven acquisition panel."""
+"""SimpleMoNaLISA cloak: compact profile-driven acquisition and screening panel."""
 
 from __future__ import annotations
+
+from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
@@ -33,7 +35,7 @@ def _format_time(seconds: float) -> str:
 
 
 class MoNaLISAView(ScanCloakView):
-    """Acquisition-only MoNaLISA page with explicit profile/mode binding."""
+    """MoNaLISA acquisition page with profile-driven Live screening controls."""
 
     sigPlanEdited = QtCore.Signal(object)
     sigProfileRequested = QtCore.Signal(str)
@@ -43,6 +45,8 @@ class MoNaLISAView(ScanCloakView):
     sigProfileEditRequested = QtCore.Signal(str)
     sigProfileRenameRequested = QtCore.Signal(str)
     sigProfileDeleteRequested = QtCore.Signal(str)
+    sigScreeningRequested = QtCore.Signal()
+    sigLiveRoleToggled = QtCore.Signal(str, bool)
 
     def __init__(self, parent=None, *, napariViewer=None):
         super().__init__(parent)
@@ -53,10 +57,25 @@ class MoNaLISAView(ScanCloakView):
         self._stepWidgets = {}
         self._renderedProfileId = None
         self._renderedProfileFingerprint = None
+        self._screeningActive = False
+        self._liveAvailable = False
+        self._liveUnavailableReason = ''
+        self._liveRoleChecks = {}
 
         self.liveBox.hide()
         self.startButton.setText('Acquire')
         self.startButton.setToolTip('Run one MoNaLISA acquisition with these settings.')
+        self.screeningButton = QtWidgets.QPushButton('Live')
+        self.screeningButton.setToolTip(
+            'Use the selected profile roles for screening at their current Live laser powers.'
+        )
+        self.screeningButton.clicked.connect(self.sigScreeningRequested.emit)
+        # Base layout: stretch, hidden generic Live, Acquire, Stop.
+        self.runRow.insertWidget(2, self.screeningButton)
+        self.stopButton.setToolTip(
+            'Switch off the lasers enabled by MoNaLISA Live screening. '
+            'The camera live view and trigger mode are left running.'
+        )
         self.estimateTitle.setText('Total scan time')
 
         self._buildUi()
@@ -194,6 +213,82 @@ class MoNaLISAView(ScanCloakView):
         layout.addWidget(self.dwellValue, 5, 1)
         self.content.addWidget(box)
 
+        box, layout = self._group('Live screening')
+        self.liveScreeningBox = box
+        self.liveRolesWidget = QtWidgets.QWidget()
+        self.liveRolesLayout = QtWidgets.QHBoxLayout(self.liveRolesWidget)
+        self.liveRolesLayout.setContentsMargins(0, 0, 0, 0)
+        self.liveRolesLayout.setSpacing(10)
+        self.liveRolesLayout.addStretch(1)
+        layout.addWidget(QtWidgets.QLabel('Illumination'), 0, 0)
+        layout.addWidget(self.liveRolesWidget, 0, 1)
+        box.setToolTip(
+            'Choose which illumination roles participate in screening. '
+            'Only laser ON/OFF state is controlled here; Live power stays in the Laser widget.'
+        )
+        self.content.addWidget(box)
+
+    def setLiveRoles(self, roles, selected_roles, *, available=True, reason=''):
+        """Render profile-role screening choices.
+
+        ``roles`` is an iterable of ``(role, label, devices)`` tuples. The
+        profile/mode owns the candidate roles; the controller owns the saved
+        selection and hardware behavior.
+        """
+        self._updating = True
+        try:
+            while self.liveRolesLayout.count():
+                item = self.liveRolesLayout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._liveRoleChecks = {}
+            selected = set(selected_roles or ())
+            for role, label, devices in roles:
+                devices = tuple(devices or ())
+                text = str(label)
+                if devices:
+                    text += f' ({" + ".join(devices)})'
+                check = QtWidgets.QCheckBox(text)
+                check.setChecked(str(role) in selected)
+                check.setToolTip(
+                    f'{label} screening illumination. Uses the current Live power.\n'
+                    + ('Devices: ' + ' + '.join(devices) if devices else 'No laser devices.')
+                )
+                check.toggled.connect(
+                    lambda checked, role=str(role): self._liveRoleChanged(role, checked)
+                )
+                self.liveRolesLayout.addWidget(check)
+                self._liveRoleChecks[str(role)] = check
+            self.liveRolesLayout.addStretch(1)
+            self._liveAvailable = bool(available)
+            self._liveUnavailableReason = str(reason or '')
+            baseTip = (
+                'Choose which illumination roles participate in screening. '
+                'Only laser ON/OFF state is controlled here; Live power stays in the Laser widget.'
+            )
+            self.liveScreeningBox.setToolTip(
+                self._liveUnavailableReason if self._liveUnavailableReason else baseTip
+            )
+        finally:
+            self._updating = False
+        self._updateControlState()
+
+    def _liveRoleChanged(self, role, checked):
+        if self._updating:
+            return
+        self.sigLiveRoleToggled.emit(str(role), bool(checked))
+
+    def selectedLiveRoles(self):
+        return {
+            role for role, check in self._liveRoleChecks.items()
+            if check.isChecked()
+        }
+
+    def setScreeningActive(self, active: bool):
+        self._screeningActive = bool(active)
+        self._updateControlState()
+
     def configure(self, limits):
         self._limits = limits
         fx, fy = limits.fov_um
@@ -206,8 +301,15 @@ class MoNaLISAView(ScanCloakView):
             self.profileCombo.clear()
             for profile_id, profile in limits.profile_store.profiles.items():
                 self.profileCombo.addItem(profile.label, profile_id)
+            if not limits.profile_store.profiles:
+                self.profileCombo.addItem('No profile configured', None)
+                self.modeCombo.clear()
+                self._clearStepRows()
+                self._renderedProfileId = None
+                self._renderedProfileFingerprint = None
         finally:
             self._updating = False
+        self._updateControlState()
 
     def _profile(self, profile_id=None):
         if self._limits is None:
@@ -260,9 +362,27 @@ class MoNaLISAView(ScanCloakView):
             self.stepsLayout.addWidget(duration, row, 3)
             self._stepWidgets[step.id] = (role, label, devices, duration)
 
-    def setPlan(self, plan: MoNaLISAScanPlan):
+    def setPlan(self, plan: Optional[MoNaLISAScanPlan]):
         self._plan = plan
         if self._limits is None:
+            return
+        if plan is None:
+            self._updating = True
+            try:
+                index = self.scanTypeCombo.findText(self._limits.default_scan_type)
+                self.scanTypeCombo.setCurrentIndex(max(0, index))
+                self.lateralStepSpin.setValue(self._limits.default_lateral_step_um * 1000.0)
+                self.zLengthSpin.setValue(self._limits.default_z_scan_length_um)
+                self.zStepSpin.setValue(self._limits.default_z_step_um * 1000.0)
+                self.modeCombo.clear()
+                self._clearStepRows()
+                self._renderedProfileId = None
+                self._renderedProfileFingerprint = None
+                self.pointsLabel.setText('–')
+                self.dwellValue.setText('–')
+            finally:
+                self._updating = False
+            self._updateControlState()
             return
         self._updating = True
         try:
@@ -324,7 +444,15 @@ class MoNaLISAView(ScanCloakView):
             return
         self._updating = True
         try:
-            if binding is not None and binding.status != MONALISA_BINDING_BOUND:
+            if not self._limits.profile_store.profiles:
+                self.profileCombo.clear()
+                self.profileCombo.addItem('No profile configured', None)
+                self.modeCombo.clear()
+                self._clearStepRows()
+                self.bindingLabel.setText(
+                    'Create a profile from the ⋯ menu to enable Simple MoNaLISA.'
+                )
+            elif binding is not None and binding.status != MONALISA_BINDING_BOUND:
                 if self.profileCombo.findData(None) < 0:
                     self.profileCombo.insertItem(0, 'Advanced / custom', None)
                 self.profileCombo.setCurrentIndex(self.profileCombo.findData(None))
@@ -411,10 +539,7 @@ class MoNaLISAView(ScanCloakView):
         self.duplicateProfileAction.setEnabled(available)
         self.editProfileAction.setEnabled(available)
         self.renameProfileAction.setEnabled(available)
-        self.deleteProfileAction.setEnabled(
-            available and self._limits is not None
-            and len(self._limits.profile_store.profiles) > 1
-        )
+        self.deleteProfileAction.setEnabled(available)
         self.newProfileAction.setEnabled(not self.isRunning())
 
     def _profileChanged(self, index):
@@ -468,10 +593,22 @@ class MoNaLISAView(ScanCloakView):
     def _updateControlState(self):
         bound = self._bindingIsBound()
         running = self.isRunning()
-        editable = bound and not running
-        self.startButton.setEnabled(editable)
-        self.profileCombo.setEnabled(not running)
-        self.profileMenuButton.setEnabled(not running)
+        screening = self._screeningActive
+        editable = bound and not running and not screening
+        self.startButton.setEnabled(bound and not running)
+        self.stopButton.setEnabled(screening and not running)
+        self.screeningButton.setEnabled(
+            bound and self._liveAvailable and not running and not screening
+        )
+        liveTip = self._liveUnavailableReason if not self._liveAvailable else (
+            'Use the selected profile roles for screening at their current Live laser powers.'
+        )
+        self.screeningButton.setToolTip(liveTip)
+        hasProfiles = bool(
+            self._limits is not None and self._limits.profile_store.profiles
+        )
+        self.profileCombo.setEnabled(hasProfiles and not running and not screening)
+        self.profileMenuButton.setEnabled(not running and not screening)
         self._updateProfileActions()
         self.modeCombo.setEnabled(editable)
         self.scanTypeCombo.setEnabled(editable)
@@ -490,6 +627,8 @@ class MoNaLISAView(ScanCloakView):
             step_enabled = editable and bool(mode.devices_for_step(step))
             for widget in widgets:
                 widget.setEnabled(step_enabled)
+        for check in self._liveRoleChecks.values():
+            check.setEnabled(bound and self._liveAvailable and not running)
 
     def _runningChanged(self, running: bool):
         self._updateControlState()

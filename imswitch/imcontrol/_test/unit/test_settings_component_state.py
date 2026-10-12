@@ -738,5 +738,41 @@ def test_component_name_and_schema_version():
     assert SettingsController.legacyStateNames == ()
 
 
+def test_semantic_trigger_switch_targets_exact_camera_even_when_update_all_is_checked(cameras):
+    controller, camera1, camera2 = cameras
+    controller.getCurrentParams().allDetectorsFrame.setValue(True)
+    camera1.calls.clear()
+    camera2.calls.clear()
+
+    snapshot = controller.getDetectorTriggerSetting('Camera1')
+    controller.setDetectorTriggerMode('Camera1', 'external_frame')
+
+    assert snapshot == ('Trigger source', 'Internal trigger')
+    assert ('setParameter', 'Trigger source', 'External "frame-trigger"') in camera1.calls
+    assert not [
+        call for call in camera2.calls
+        if call[:2] == ('setParameter', 'Trigger source')
+    ]
+    assert camera1.parameters['Trigger source'].value == 'External "frame-trigger"'
+    assert camera2.parameters['Trigger source'].value == 'Internal trigger'
+
+    controller.setDetectorParameterExact('Camera1', *snapshot)
+    assert camera1.parameters['Trigger source'].value == 'Internal trigger'
+
+
+def test_semantic_trigger_mapping_supports_thorcam_operation_mode():
+    detector = MagicMock()
+    detector.name = 'ThorCam'
+    detector.parameters = {
+        'Operation Mode': DetectorListParameter(
+            group='Trigger', value='Software', options=['Software', 'Hardware'], editable=True
+        )
+    }
+
+    assert SettingsController._detectorTriggerSpec(detector) == (
+        'Operation Mode', 'Software', 'Hardware'
+    )
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
