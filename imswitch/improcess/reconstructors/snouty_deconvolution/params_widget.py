@@ -26,7 +26,9 @@ class SnoutyDeconvolutionParamsWidget(SnoutyParamsWidget):
              'limits': (1.0, 2.0), 'step': 0.01},
             {'name': 'PSF size', 'type': 'int', 'value': d['psf_size_px'],
              'suffix': 'vx', 'limits': (3, 1001)},
-            {'name': 'PSF file', 'type': 'str', 'value': d['psf_path'],
+            {'name': 'PSF file', 'type': 'file', 'value': d['psf_path'],
+             'winTitle': 'Optical PSF (3D TIFF at the output voxel size)',
+             'nameFilter': 'TIFF (*.tif *.tiff);;All files (*)',
              'tip': 'Optional 3D TIFF at the output voxel size; empty generates a Richards & Wolf PSF'},
             {'name': 'Confined sheet FWHM', 'type': 'float', 'value': d['confined_sheet_fwhm_nm'],
              'suffix': 'nm', 'limits': (1, 100000)},
@@ -44,7 +46,9 @@ class SnoutyDeconvolutionParamsWidget(SnoutyParamsWidget):
             {'name': 'Sweep iterations', 'type': 'bool', 'value': d['sweep_iterations'],
              'tip': 'Debugging: output one volume per iteration up to Iterations, as a stack '
                     '(first timepoint only)'},
-            {'name': 'Alignment file', 'type': 'str', 'value': d['alignment_path'],
+            {'name': 'Alignment file', 'type': 'file', 'value': d['alignment_path'],
+             'winTitle': 'Multicolor alignment file',
+             'nameFilter': 'HDF5 (*.h5 *.hdf5);;All files (*)',
              'tip': 'Optional multicolor alignment .h5 from Multicolor Registration: each colour '
                     'strip is deconvolved with its own wavelength'},
             {'name': 'Wavelengths', 'type': 'str', 'value': d['wavelengths_nm'],

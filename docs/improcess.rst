@@ -526,7 +526,8 @@ The parameter panel is the deskew panel plus a *Deconvolution* group:
 * **Sweep iterations** is for choosing the iteration count: it outputs one
   volume per iteration up to *Iterations*, as a stack with an *Iteration*
   axis in place of time, for the first timepoint only.
-* **Alignment file** and **Wavelengths** handle a multicolour frame, whose
+* **Alignment file** (with a browse button, as has *PSF file*) and
+  **Wavelengths** handle a multicolour frame, whose
   colour channels sit side by side along the camera columns. Reconstruct a
   bead recording with the SNOUTY deskew, run *Multicolor Registration* on
   it and save its alignment file; given that file, the deconvolution cuts
