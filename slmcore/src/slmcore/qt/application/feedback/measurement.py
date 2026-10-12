@@ -83,6 +83,27 @@ class MeasurementCoordinator:
         except Exception as error:
             self.set_error(section_key,error)
 
+    def capture_visual_background(self,section_key: str,source: str) -> None:
+        """Capture a presentation-only image without committing feedback state."""
+        if not self._editor_writes_allowed():
+            return
+        try:
+            metadata=dict(self._feedback.feedback_measurement_metadata(section_key))
+            metadata["purpose"]="position_visual_background"
+
+            def on_result(measurement: ImageMeasurement) -> None:
+                window=self._window_for(section_key)
+                if window is not None:
+                    window.set_position_visual_background(measurement)
+
+            self._feedback.request_measurement(
+                section_key,source,metadata=metadata,
+                on_result=on_result,
+                on_error=lambda error:self.set_error(section_key,error),
+            )
+        except Exception as error:
+            self.set_error(section_key,error)
+
     def load(
         self,section_key: str,*,reuse_previous_localization: bool,
     ) -> None:

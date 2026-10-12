@@ -76,6 +76,9 @@ class FeedbackActionRouter:
                     values.get("reuse_previous_localization",False)
                 ),
             )
+        elif request is MeasurementsAction.VISUAL_BACKGROUND_ACQUIRE:
+            source = str(values.get("detector") or "")
+            self._measurement.capture_visual_background(section_key,source)
         elif request is MeasurementsAction.LOAD:
             self._measurement.load(
                 section_key,

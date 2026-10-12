@@ -887,3 +887,133 @@ def test_session_window_observation_selector_is_explicit_and_emits_selection():
     finally:
         window.close()
         window.deleteLater()
+
+
+def _test_position_preview(cropped_image, *, crop_offset=(0.0, 0.0)):
+    image = np.asarray(cropped_image, dtype=np.float64)
+    positions = np.array(
+        [[1.0, max(1.0, image.shape[1] - 2.0)],
+         [1.0, max(1.0, image.shape[0] - 2.0)]],
+        dtype=np.float64,
+    )
+    center = np.mean(positions, axis=1)
+    return {
+        "cropped_image": image,
+        "crop_offset_px": np.asarray(crop_offset, dtype=np.float64),
+        "measured_positions_px": positions,
+        "global_positions_px": positions,
+        "reference_positions_px": positions,
+        "raw_reference_positions_px": positions,
+        "fit_center_px": center,
+        "reference_center_px": center,
+        "baseline_positions_kxy": np.zeros_like(positions),
+        "ideal_positions_kxy": np.zeros_like(positions),
+        "displacement_kxy": np.zeros_like(positions),
+        "correction_mode": "per_spot",
+        "polynomial_degree": 2,
+        "affine_transform": None,
+        "fitted_transform": None,
+    }
+
+
+def test_position_background_selector_keeps_localization_image_as_default():
+    runtime, section_key = _runtime()
+    _commit_job(runtime, section_key)
+    _attach_localized_measurement(runtime, section_key)
+    _QtWidgets, window = _window(runtime, section_key)
+    try:
+        localization_image = np.arange(20, dtype=np.float64).reshape(4, 5)
+        preview = _test_position_preview(
+            localization_image, crop_offset=(3.0, 2.0),
+        )
+        window.set_position_reference_state({
+            "mode": "current",
+            "reference_name": None,
+            "references": (),
+            "change_allowed": True,
+            "correction_mode": "per_spot",
+        }, preview)
+
+        assert window.position_background_combo.currentData() == "localization"
+        assert window.position_background_combo.findData("visual_snap") < 0
+
+        full_image = np.arange(120, dtype=np.float64).reshape(10, 12)
+        visual = ImageMeasurement(
+            image=full_image, source="test", detector="Camera",
+        )
+        window.set_position_visual_background(visual)
+
+        # Capturing a visual image must not silently replace the immutable
+        # localization-image default.
+        assert window.position_background_combo.currentData() == "localization"
+        visual_index = window.position_background_combo.findData("visual_snap")
+        assert visual_index >= 0
+        expected_crop = full_image[2:6, 3:8]
+        assert np.array_equal(window._visual_background_crop(), expected_crop)
+
+        window.position_background_combo.setCurrentIndex(visual_index)
+        assert window._position_background_mode == "visual_snap"
+        assert np.array_equal(
+            np.asarray(window.position_reference_view.image_item.image),
+            expected_crop,
+        )
+
+        localization_index = window.position_background_combo.findData("localization")
+        window.position_background_combo.setCurrentIndex(localization_index)
+        assert np.array_equal(
+            np.asarray(window.position_reference_view.image_item.image),
+            localization_image,
+        )
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_position_background_selector_is_only_shown_for_detector_overlay():
+    runtime, section_key = _runtime()
+    _commit_job(runtime, section_key)
+    _QtWidgets, window = _window(runtime, section_key)
+    try:
+        detector_index = window.position_view_combo.findData("detector")
+        correction_index = window.position_view_combo.findData("kxy")
+        window.position_view_combo.setCurrentIndex(detector_index)
+        assert not window.position_background_label.isHidden()
+        assert not window.position_background_combo.isHidden()
+
+        window.position_view_combo.setCurrentIndex(correction_index)
+        assert window.position_background_label.isHidden()
+        assert window.position_background_combo.isHidden()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_visual_snap_action_is_capture_only_position_background_request():
+    runtime, section_key = _runtime()
+    _commit_job(runtime, section_key)
+    _attach_localized_measurement(runtime, section_key)
+    _QtWidgets, window = _window(runtime, section_key)
+    emitted = []
+    window.sigActionRequested.connect(
+        lambda action, options: emitted.append((action, dict(options)))
+    )
+    try:
+        preview = _test_position_preview(
+            np.zeros((8, 8), dtype=np.float64), crop_offset=(0.0, 0.0),
+        )
+        window.set_position_reference_state({
+            "mode": "current",
+            "reference_name": None,
+            "references": (),
+            "change_allowed": True,
+            "correction_mode": "per_spot",
+        }, preview)
+        assert window.position_visual_snap_button.isEnabled()
+
+        window.position_visual_snap_button.click()
+        assert emitted[-1] == (
+            "visual_background_acquire", {"detector": "Camera"},
+        )
+    finally:
+        window.close()
+        window.deleteLater()

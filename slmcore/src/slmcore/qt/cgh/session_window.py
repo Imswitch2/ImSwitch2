@@ -51,6 +51,7 @@ class MeasurementsAction(str,Enum):
     """Host operations requested by :class:`MeasurementsCorrectionsWindow`."""
 
     ACQUIRE = "acquire"
+    VISUAL_BACKGROUND_ACQUIRE = "visual_background_acquire"
     LOAD = "load"
     LOCALIZATION_RUN = "localization_run"
     LOCALIZATION_INFER_MISSING = "localization_infer_missing"
@@ -137,6 +138,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "create_unavailable_reason":"",
         }
         self._position_reference_preview = None
+        # Optional presentation-only detector image used behind the Position
+        # detector overlay. It never replaces the measurement/localization.
+        self._position_visual_background_measurement = None
+        self._position_background_mode = "localization"
         self._normal_localization_context = dict(localization_context or {})
         self._cgh_computing = False
         self._candidate_current = False
@@ -353,6 +358,21 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.measurement_view.sigAcceptRequested.connect(
             self._accept_localization_candidate,
         )
+        self.position_visual_snap_button = QtWidgets.QPushButton(
+            "Snap visual image"
+        )
+        self.position_visual_snap_button.setMinimumHeight(23)
+        self.position_visual_snap_button.setToolTip(
+            "Acquire a detector image for optional use as the Position overlay "
+            "background. This does not replace the localization measurement."
+        )
+        self.position_visual_snap_button.clicked.connect(
+            self._position_visual_snap_requested,
+        )
+        self.measurement_view.add_action_widget(
+            self.position_visual_snap_button
+        )
+
         self.position_reference_add_button = QtWidgets.QPushButton(
             "Add Session Reference…"
         )
@@ -584,6 +604,16 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._on_position_view_changed,
         )
         view_row.addWidget(self.position_view_combo)
+        self.position_background_label = QtWidgets.QLabel("Background:")
+        view_row.addWidget(self.position_background_label)
+        self.position_background_combo = QtWidgets.QComboBox()
+        self.position_background_combo.addItem(
+            "Localization image","localization"
+        )
+        self.position_background_combo.currentIndexChanged.connect(
+            self._on_position_background_changed,
+        )
+        view_row.addWidget(self.position_background_combo)
         view_row.addStretch(1)
         viewer_layout.addLayout(view_row)
 
@@ -738,9 +768,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         editable_layout.addWidget(editable_hint)
         controls_layout.addWidget(self.position_reference_editable_widget)
 
-        # Saved references are intentionally a separate panel: the source combo
-        # no longer duplicates every session/persistent record. Selecting a name
-        # here activates it immediately.
+        # Saved references are intentionally a separate panel: choosing the
+        # source only reveals this selector. A concrete reference is activated
+        # only after the user explicitly chooses one.
         self.position_reference_saved_widget = QtWidgets.QWidget(controls)
         saved_layout = QtWidgets.QVBoxLayout(self.position_reference_saved_widget)
         saved_layout.setContentsMargins(0,0,0,0)
@@ -752,6 +782,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         saved_row.setContentsMargins(0,0,0,0)
         saved_row.setSpacing(4)
         self.position_reference_saved_combo = QtWidgets.QComboBox()
+        self.position_reference_saved_combo.setPlaceholderText("Select reference…")
         self.position_reference_saved_combo.currentIndexChanged.connect(
             self._on_saved_position_reference_changed
         )
@@ -1005,6 +1036,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._position_reference_context.update(values)
         self._position_reference_preview = preview
         self._refresh_position_reference_controls()
+        self._refresh_position_background_controls()
         if lightweight:
             self._refresh_position_reference_visualization()
         else:
@@ -1048,6 +1080,11 @@ class CGHSessionWindow(QtWidgets.QDialog):
             saved_blocker=QtCore.QSignalBlocker(saved_combo)
             try:
                 saved_combo.clear()
+                # Keep an explicit unselected entry. In an already-active saved
+                # reference context we restore the active name; otherwise the
+                # user must choose one deliberately.
+                saved_combo.addItem("Select reference…",None)
+                saved_combo.setItemData(0,"",QtCore.Qt.UserRole+1)
                 for entry in references:
                     name=str(entry.get("name") or "").strip()
                     if not name:
@@ -1059,7 +1096,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                         saved_combo.count()-1,lifetime,QtCore.Qt.UserRole+1,
                     )
                 selected_index=saved_combo.findData(preferred_name)
-                if selected_index<0 and saved_combo.count():
+                if selected_index<0:
                     selected_index=0
                 saved_combo.setCurrentIndex(selected_index)
             finally:
@@ -1542,11 +1579,80 @@ class CGHSessionWindow(QtWidgets.QDialog):
         return payload
 
     def _on_position_reference_changed(self,_index: int) -> None:
+        mode=str(self.position_reference_combo.currentData() or "global_fit")
+        if mode=="reference":
+            # Merely choosing the Saved reference source must not silently
+            # activate whichever reference happens to be first/previously shown.
+            # Reveal the panel in a deliberately unselected state and wait for
+            # _on_saved_position_reference_changed().
+            saved_combo=getattr(self,"position_reference_saved_combo",None)
+            if saved_combo is not None:
+                blocker=QtCore.QSignalBlocker(saved_combo)
+                try:
+                    saved_combo.setCurrentIndex(0 if saved_combo.count() else -1)
+                finally:
+                    del blocker
+            editable_widget=getattr(self,"position_reference_editable_widget",None)
+            if editable_widget is not None:
+                editable_widget.setVisible(False)
+            saved_widget=getattr(self,"position_reference_saved_widget",None)
+            if saved_widget is not None:
+                saved_widget.setVisible(True)
+
+            # This is a UI-only pending state: the backend keeps the previous
+            # source until a concrete name is chosen, so do not allow correction
+            # edits against that stale source in the meantime.
+            correspondence=getattr(
+                self,"position_reference_correspondence_combo",None,
+            )
+            if correspondence is not None:
+                correspondence.setEnabled(False)
+            correspondence_info=getattr(
+                self,"position_reference_correspondence_info",None,
+            )
+            if correspondence_info is not None:
+                correspondence_info.setText("")
+            info=getattr(self,"position_reference_info_label",None)
+            if info is not None:
+                info.setText("Select a saved reference.")
+                info.setStyleSheet("color: %s;" % _MUTED_COLOR)
+
+            correction_combo=getattr(
+                self,"position_reference_correction_model_combo",None,
+            )
+            if correction_combo is not None:
+                correction_combo.setEnabled(False)
+            polynomial_combo=getattr(
+                self,"position_reference_polynomial_degree_combo",None,
+            )
+            if polynomial_combo is not None:
+                polynomial_combo.setEnabled(False)
+            interactive=getattr(
+                self,"position_reference_interactive_edit_checkbox",None,
+            )
+            if interactive is not None:
+                interactive_blocker=QtCore.QSignalBlocker(interactive)
+                try:
+                    interactive.setChecked(False)
+                finally:
+                    del interactive_blocker
+                interactive.setEnabled(False)
+            reset_button=getattr(
+                self,"position_reference_affine_reset_button",None,
+            )
+            if reset_button is not None:
+                reset_button.setEnabled(False)
+            detector_view=getattr(self,"position_reference_view",None)
+            if detector_view is not None:
+                detector_view.set_center_editable(False)
+                detector_view.set_interactive_editing(False)
+
+            self._refresh_position_reference_manager_actions()
+            return
+
         payload=self._position_reference_request_payload(reset_manual=True)
         if payload is None:
             return
-        if payload["mode"]=="reference":
-            payload["correspondence"]="auto"
         self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
     def _on_saved_position_reference_changed(self,_index: int) -> None:
@@ -1724,6 +1830,116 @@ class CGHSessionWindow(QtWidgets.QDialog):
         stack = getattr(self,"position_view_stack",None)
         if stack is not None:
             stack.setCurrentIndex(max(0,min(int(index),stack.count()-1)))
+        self._refresh_position_background_controls()
+
+    def _position_visual_snap_requested(self,*_args: Any) -> None:
+        detector = self.measurement_view.current_detector
+        if detector:
+            self._emit(
+                MeasurementsAction.VISUAL_BACKGROUND_ACQUIRE,{
+                    "detector":str(detector),
+                },
+            )
+
+    def set_position_visual_background(self,measurement: Any) -> None:
+        """Install a transient detector image without changing localization state."""
+        image=np.asarray(getattr(measurement,"image",None),dtype=np.float64)
+        if image.ndim!=2:
+            raise ValueError("Visual background measurement image must be two-dimensional")
+        self._position_visual_background_measurement=measurement
+        self._refresh_position_background_controls()
+        self._apply_position_background_image()
+
+    def _on_position_background_changed(self,_index: int) -> None:
+        mode=str(self.position_background_combo.currentData() or "localization")
+        self._position_background_mode=mode
+        self._apply_position_background_image()
+
+    def _visual_background_crop(self) -> np.ndarray | None:
+        measurement=self._position_visual_background_measurement
+        preview=self._position_reference_preview
+        if measurement is None or preview is None:
+            return None
+        image=np.asarray(getattr(measurement,"image",None),dtype=np.float64)
+        localization_image=np.asarray(preview.get("cropped_image"),dtype=np.float64)
+        offset=np.asarray(
+            preview.get("crop_offset_px",(0.0,0.0)),dtype=np.float64,
+        ).reshape(2)
+        if image.ndim!=2 or localization_image.ndim!=2:
+            return None
+        x0=int(round(float(offset[0])))
+        y0=int(round(float(offset[1])))
+        height,width=localization_image.shape
+        x1=x0+int(width)
+        y1=y0+int(height)
+        if x0<0 or y0<0 or x1>image.shape[1] or y1>image.shape[0]:
+            return None
+        crop=np.asarray(image[y0:y1,x0:x1],dtype=np.float64)
+        if crop.shape!=localization_image.shape:
+            return None
+        return crop
+
+    def _refresh_position_background_controls(self) -> None:
+        combo=getattr(self,"position_background_combo",None)
+        label=getattr(self,"position_background_label",None)
+        if combo is None:
+            return
+        detector_mode=str(self.position_view_combo.currentData() or "detector")=="detector"
+        if label is not None:
+            label.setVisible(detector_mode)
+        combo.setVisible(detector_mode)
+
+        visual_available=self._visual_background_crop() is not None
+        blocker=QtCore.QSignalBlocker(combo)
+        try:
+            current=str(self._position_background_mode or "localization")
+            combo.clear()
+            combo.addItem("Localization image","localization")
+            if visual_available:
+                combo.addItem("Latest visual snap","visual_snap")
+            if current=="visual_snap" and visual_available:
+                index=combo.findData("visual_snap")
+                combo.setCurrentIndex(index if index>=0 else 0)
+            else:
+                if current=="visual_snap":
+                    self._position_background_mode="localization"
+                combo.setCurrentIndex(0)
+        finally:
+            del blocker
+
+        snap_button=getattr(self,"position_visual_snap_button",None)
+        if snap_button is not None:
+            allowed=bool(
+                self._position_reference_preview is not None
+                and self._selected_is_interactive()
+                and not self._cgh_computing
+                and self.measurement_view.current_detector
+            )
+            snap_button.setEnabled(allowed)
+            if allowed:
+                snap_button.setToolTip(
+                    "Acquire a detector image for optional use as the Position "
+                    "overlay background. This does not replace the localization measurement."
+                )
+            else:
+                snap_button.setToolTip(
+                    "A current accepted localization and detector are required."
+                )
+
+    def _apply_position_background_image(self) -> None:
+        view=getattr(self,"position_reference_view",None)
+        preview=self._position_reference_preview
+        if view is None or preview is None or not self._selected_is_current_context():
+            return
+        image=np.asarray(preview.get("cropped_image"),dtype=np.float64)
+        if self._position_background_mode=="visual_snap":
+            visual=self._visual_background_crop()
+            if visual is not None:
+                image=visual
+            else:
+                self._position_background_mode="localization"
+                self._refresh_position_background_controls()
+        view.set_background_image(image)
 
     def _add_position_reference_requested(self,*_args: Any) -> None:
         name,ok = QtWidgets.QInputDialog.getText(
@@ -2417,6 +2633,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 preview,
                 center_editable=(mode == "editable" and change_allowed),
             )
+            self._apply_position_background_image()
             self.position_correction_view.set_data(
                 ideal_positions_kxy=preview.get(
                     "baseline_positions_kxy",preview.get("ideal_positions_kxy")
@@ -2425,6 +2642,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             )
         else:
             self.position_reference_view.clear()
+            self._refresh_position_background_controls()
             correction = self._session_inspection.position_correction
             if correction is None:
                 self.position_correction_view.clear()

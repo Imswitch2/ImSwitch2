@@ -712,12 +712,21 @@ class PositionReferenceView(QtWidgets.QWidget):
         overlay_row = QtWidgets.QHBoxLayout()
         overlay_row.setContentsMargins(0,2,0,0)
         overlay_row.setSpacing(8)
-        self.current_checkbox = QtWidgets.QCheckBox("Current")
-        self.reference_checkbox = QtWidgets.QCheckBox("Reference")
-        self.predicted_checkbox = QtWidgets.QCheckBox("Predicted")
-        self.correction_vectors_checkbox = QtWidgets.QCheckBox("Correction vectors")
-        self.residuals_checkbox = QtWidgets.QCheckBox("Residuals")
-        self.global_fit_checkbox = QtWidgets.QCheckBox("Global fit")
+        # Match the localization workbench convention: the checkbox text itself
+        # doubles as a compact legend using the exact symbol/color shown in the
+        # detector overlay.
+        self.current_checkbox = QtWidgets.QCheckBox("×  Current")
+        self.reference_checkbox = QtWidgets.QCheckBox("○  Reference")
+        self.predicted_checkbox = QtWidgets.QCheckBox("+  Predicted")
+        self.correction_vectors_checkbox = QtWidgets.QCheckBox("—  Correction vectors")
+        self.residuals_checkbox = QtWidgets.QCheckBox("—  Residuals")
+        self.global_fit_checkbox = QtWidgets.QCheckBox("+  Global fit")
+        self.current_checkbox.setStyleSheet("color: #55aa55;")
+        self.reference_checkbox.setStyleSheet("color: #e06cdb;")
+        self.predicted_checkbox.setStyleSheet("color: #55c7d9;")
+        self.correction_vectors_checkbox.setStyleSheet("color: #ff9966;")
+        self.residuals_checkbox.setStyleSheet("color: #cc6666;")
+        self.global_fit_checkbox.setStyleSheet("color: #aaaaaa;")
         for checkbox in (
             self.current_checkbox,self.reference_checkbox,self.predicted_checkbox,
         ):
@@ -756,11 +765,8 @@ class PositionReferenceView(QtWidgets.QWidget):
         footer = QtWidgets.QHBoxLayout()
         footer.setContentsMargins(0,0,0,0)
         footer.setSpacing(8)
-        self.legend_label = QtWidgets.QLabel(
-            "Current ×   Reference ○   Predicted +"
-        )
-        self.legend_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
-        footer.addWidget(self.legend_label)
+        # Overlay checkboxes above now carry the legend symbols/colors, so the
+        # footer is reserved for quantitative status and view controls.
         footer.addStretch(1)
         self.summary_label = QtWidgets.QLabel("")
         self.summary_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
@@ -955,6 +961,13 @@ class PositionReferenceView(QtWidgets.QWidget):
             return FittedTransform2D(model=TRANSFORM_AFFINE,matrix=affine)
         except (TypeError,ValueError):
             return None
+
+    def set_background_image(self,image: Any) -> None:
+        """Replace only the detector image beneath the alignment overlays."""
+        array=np.asarray(image,dtype=np.float64)
+        if array.ndim!=2:
+            raise ValueError("Position-reference background image must be two-dimensional")
+        self.image_item.setImage(array,autoLevels=True)
 
     def set_center_editable(self,enabled: bool) -> None:
         visible = bool(enabled and self._preview is not None)
