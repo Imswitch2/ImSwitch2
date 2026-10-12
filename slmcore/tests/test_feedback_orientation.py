@@ -149,13 +149,16 @@ def test_staggered_feedback_orientation_keeps_topology_paired_with_positions():
         oriented.diagnostics["lattice_representation"]
     )
 
+    # Orientation establishes target-site order in the detector arrays.  The
+    # attached lattice is the authoritative target topology, not a permuted copy
+    # of the source-frame motif.
     np.testing.assert_allclose(
-        oriented_lattice.logical_positions,lattice.logical_positions[:,permutation],
+        oriented_lattice.logical_positions,lattice.logical_positions,
     )
     np.testing.assert_allclose(
         oriented.measured_positions_px,localization.measured_positions_px[:,permutation],
     )
-    assert oriented_lattice.diagnostics["feedback_orientation"]=="flip_horizontal"
+    assert oriented.diagnostics["feedback_effective_orientation"]=="flip_horizontal"
 
 
 def test_staggered_target_order_drives_position_feedback_sign_consistently():
@@ -205,6 +208,7 @@ def test_staggered_target_order_drives_position_feedback_sign_consistently():
             "matched_mask":tuple(True for _ in range(indices.shape[1])),
             "resolved_stagger":-0.5,
             "lattice_representation":lattice.to_dict(),
+            "spot_ordering_detector_frame":"rotate_180",
         },
     )
 
@@ -214,8 +218,9 @@ def test_staggered_target_order_drives_position_feedback_sign_consistently():
     np.testing.assert_allclose(
         oriented.expected_positions_px,physical_target_positions,atol=1e-12,
     )
-    assert oriented.diagnostics["feedback_orientation_topology_aware"] is True
+    assert oriented.diagnostics["feedback_orientation_topology_aware"] is False
     assert oriented.diagnostics["feedback_source_detector_frame"]=="rotate_180"
+    assert oriented.diagnostics["feedback_effective_orientation"]=="flip_vertical"
 
     # Use an independent ideal-kxy affine so the sign check is not tautological.
     ideal_linear=np.array([[0.045,0.006],[-0.004,0.052]])

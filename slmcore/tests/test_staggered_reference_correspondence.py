@@ -38,36 +38,34 @@ def _target(indices,lattice,shift=(0.7,-0.4)):
     )
 
 
-def test_signed_stagger_reference_uses_cell_phase_not_rectangular_permutation():
+def test_exact_reference_uses_target_site_identity_for_signed_stagger():
     indices=_indices()
     source_lattice=LatticeRepresentation.alternating_rows(indices,+0.5)
     target_lattice=LatticeRepresentation.alternating_rows(indices,-0.5)
+    # Exact-reference correspondence operates after both sides have been put in
+    # target-site order. The motif difference is provenance/topology, not another
+    # request to phase-shift or wrap finite site identities.
+    base=_detector_positions(source_lattice)
+    shift=np.array([[0.7],[-0.4]])
     source=ReferenceGeometry(
-        positions_px=_detector_positions(source_lattice),
-        site_ids=_site_ids(indices),lattice=source_lattice,
+        positions_px=base,site_ids=_site_ids(indices),lattice=source_lattice,
     )
-    target=_target(indices,target_lattice)
+    target=PositionReferenceTarget(
+        registered_positions_px=base+shift,measured_positions_px=base+shift,
+        matched_mask=np.ones(indices.shape[1],dtype=bool),
+        site_ids=_site_ids(indices),lattice_indices=indices,lattice=target_lattice,
+    )
 
-    # Reference correspondence exposes shape-compatible orientations even though
-    # they are not self-symmetries of one fixed stagger motif.
     assert exact_lattice_correspondence_options(target)==(
         "auto","canonical","flip_x","flip_y","rotate_180",
     )
-
     resolved=resolve_exact_lattice_correspondence(source,target,"canonical")
-    expected=np.array([
-        0,1,2,3,4,
-        -1,5,6,7,8,
-        10,11,12,13,14,
-        -1,15,16,17,18,
-    ],dtype=np.int64)
-    np.testing.assert_array_equal(resolved.source_indices,expected)
-    assert resolved.valid_count==18
-    assert resolved.correspondence["topology_aware"] is True
-    assert resolved.correspondence["logical_translation"]==(0.0,0.0)
+    np.testing.assert_array_equal(
+        resolved.source_indices,np.arange(indices.shape[1],dtype=np.int64),
+    )
+    assert resolved.valid_count==indices.shape[1]
+    assert resolved.correspondence["topology_aware"] is False
 
-    # The smooth correction still evaluates at every target site, including the
-    # two finite-edge sites that have no direct source counterpart.
     aligned=align_resolved_position_reference(target,resolved,model="translation")
     np.testing.assert_allclose(
         aligned.correction_px,
@@ -76,21 +74,25 @@ def test_signed_stagger_reference_uses_cell_phase_not_rectangular_permutation():
     )
 
 
-def test_stagger_auto_prefers_correct_topology_phase():
+def test_stagger_auto_prefers_smallest_actual_motion():
     indices=_indices()
     source_lattice=LatticeRepresentation.alternating_rows(indices,+0.5)
     target_lattice=LatticeRepresentation.alternating_rows(indices,-0.5)
+    base=_detector_positions(source_lattice)
     source=ReferenceGeometry(
-        positions_px=_detector_positions(source_lattice),
-        site_ids=_site_ids(indices),lattice=source_lattice,
+        positions_px=base,site_ids=_site_ids(indices),lattice=source_lattice,
     )
-    target=_target(indices,target_lattice)
+    target=PositionReferenceTarget(
+        registered_positions_px=base+np.array([[0.7],[-0.4]]),
+        measured_positions_px=base+np.array([[0.7],[-0.4]]),
+        matched_mask=np.ones(indices.shape[1],dtype=bool),
+        site_ids=_site_ids(indices),lattice_indices=indices,lattice=target_lattice,
+    )
 
     resolved=resolve_exact_lattice_correspondence(source,target,"auto")
     assert resolved.correspondence["resolved"]=="canonical"
-    assert resolved.correspondence["fit_count"]==18
-    assert abs(resolved.correspondence["relative_rotation_deg"])<1e-6
-    assert resolved.correspondence["rms_px"]<1e-9
+    assert resolved.correspondence["fit_count"]==indices.shape[1]
+    assert resolved.correspondence["median_displacement_px"]<1.0
 
 
 def test_saved_reference_restores_persisted_lattice_topology():
@@ -111,26 +113,17 @@ def test_saved_reference_restores_persisted_lattice_topology():
     assert geometry.lattice.diagnostics["odd_basis_cell_shift_x"]==-1
 
 
-def test_detector_frame_normalization_makes_aligned_signed_stagger_canonical():
+def test_exact_reference_does_not_reinfer_detector_frame_from_stagger_geometry():
     indices=_indices(nx=5,ny=5)
     source_lattice=LatticeRepresentation.alternating_rows(indices,+0.5)
     target_lattice=LatticeRepresentation.alternating_rows(indices,-0.5)
-    linear=np.array([[20.0,3.0],[-2.0,18.0]])
-
-    def centered(lattice):
-        logical=np.asarray(lattice.logical_positions,dtype=np.float64)
-        return logical-np.mean(logical,axis=1,keepdims=True)
-
-    # Reproduce the real failure mode: localization numbered the source in the
-    # camera-canonical frame but the target in an equivalent 180-degree frame.
-    # The physical finite lattices still coincide after the signed-stagger phase.
-    source_positions=linear@centered(source_lattice)+np.array([[100.0],[80.0]])
-    target_positions=linear@(-centered(target_lattice))+np.array([[100.7],[79.6]])
+    base=_detector_positions(source_lattice)
+    shift=np.array([[0.7],[-0.4]])
     source=ReferenceGeometry(
-        positions_px=source_positions,site_ids=_site_ids(indices),lattice=source_lattice,
+        positions_px=base,site_ids=_site_ids(indices),lattice=source_lattice,
     )
     target=PositionReferenceTarget(
-        registered_positions_px=target_positions,measured_positions_px=target_positions,
+        registered_positions_px=base+shift,measured_positions_px=base+shift,
         matched_mask=np.ones(indices.shape[1],dtype=bool),site_ids=_site_ids(indices),
         lattice_indices=indices,lattice=target_lattice,
     )
@@ -139,14 +132,12 @@ def test_detector_frame_normalization_makes_aligned_signed_stagger_canonical():
     automatic=resolve_exact_lattice_correspondence(source,target,"auto")
 
     assert resolved.valid_count==indices.shape[1]
-    assert resolved.correspondence["source_detector_frame"]=="canonical"
-    assert resolved.correspondence["target_detector_frame"]=="rotate_180"
+    np.testing.assert_array_equal(
+        resolved.source_indices,np.arange(indices.shape[1],dtype=np.int64),
+    )
     assert automatic.correspondence["resolved"]=="canonical"
     np.testing.assert_array_equal(automatic.source_indices,resolved.source_indices)
-    displacement=np.linalg.norm(
-        resolved.desired_positions_px-target.measured_positions_px,axis=0,
-    )
-    assert float(np.median(displacement))<1.0
+    assert resolved.correspondence["source_detector_frame"]=="target_indexed"
 
 
 def test_staggered_reference_feedback_flip_keeps_edge_sites_local():
@@ -193,5 +184,6 @@ def test_staggered_reference_feedback_flip_keeps_edge_sites_local():
     )
 
     assert resolved.valid_count==indices.shape[1]
+    assert resolved.correspondence["resolved"]=="canonical"
     assert float(np.max(displacement))<1.0
     np.testing.assert_allclose(displacement,np.hypot(0.7,0.4),atol=1e-10)

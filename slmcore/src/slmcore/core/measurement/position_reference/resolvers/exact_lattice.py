@@ -6,10 +6,6 @@ from typing import Any
 
 import numpy as np
 
-from ....cgh.lattice_mapping import (
-    detector_frame_transform,finite_lattice_mapping_candidates,
-    lattice_transform_matrix,
-)
 from ....cgh.localization import (
     SpotOrdering,available_spot_orderings,spot_ordering_label,
     spot_ordering_permutation,
@@ -170,77 +166,50 @@ def resolve_exact_lattice_correspondence(
     target_matched=np.asarray(target.matched_mask,dtype=bool)
     candidates=[]
 
-    topology_available=reference.lattice is not None and target.lattice is not None
-    source_frame=SpotOrdering.CANONICAL
-    target_frame=SpotOrdering.CANONICAL
-    if topology_available:
-        source_frame=SpotOrdering.normalize(detector_frame_transform(
-            reference.lattice,reference.positions_px,reference.valid_mask,
-        ))
-        target_frame=SpotOrdering.normalize(detector_frame_transform(
-            target.lattice,target.measured_positions_px,target.matched_mask,
-        ))
-        target_inverse=np.linalg.inv(lattice_transform_matrix(target_frame.value))
+    topology_available=False
 
     for ordering in orderings:
-        if topology_available:
-            # User-visible correspondence is defined in one common detector/camera
-            # frame.  Localization may have numbered source and target lattices in
-            # different D4 conventions (especially for signed stagger, where not
-            # every rectangular permutation is a finite self-symmetry).  Normalize
-            # those conventions here before applying the requested correspondence.
-            linear=(
-                target_inverse
-                @lattice_transform_matrix(ordering.value)
-                @lattice_transform_matrix(source_frame.value)
-            )
-            mappings=finite_lattice_mapping_candidates(
-                reference.lattice,target.lattice,linear,
-            )
-        else:
-            mappings=[(
-                _combined_permutation(target.lattice_indices,fixed_source,ordering),
-                np.zeros(2,dtype=np.float64),
-            )]
-        for source_indices,logical_translation in mappings:
-            source_indices=np.asarray(source_indices,dtype=np.int64)
-            resolved_mask=source_indices>=0
-            valid_source=np.zeros(target.point_count,dtype=bool)
-            if np.any(resolved_mask):
-                valid_source[resolved_mask]=np.asarray(reference.valid_mask,dtype=bool)[
-                    source_indices[resolved_mask]
-                ]
-            fit_mask=target_matched & resolved_mask & valid_source
-            fit_count=int(np.count_nonzero(fit_mask))
-            if fit_count<3:
-                continue
-            candidate=np.array(current,copy=True)
-            candidate[:,resolved_mask]=np.asarray(reference.positions_px,dtype=np.float64)[
-                :,source_indices[resolved_mask]
+        source_indices=_combined_permutation(
+            target.lattice_indices,fixed_source,ordering,
+        )
+        source_indices=np.asarray(source_indices,dtype=np.int64)
+        resolved_mask=source_indices>=0
+        valid_source=np.zeros(target.point_count,dtype=bool)
+        if np.any(resolved_mask):
+            valid_source[resolved_mask]=np.asarray(reference.valid_mask,dtype=bool)[
+                source_indices[resolved_mask]
             ]
-            linear_fit,_translation,rms=_fit_affine(
-                current[:,fit_mask],candidate[:,fit_mask],
-            )
-            metrics=_transform_metrics(linear_fit,rms)
-            median_displacement=float(np.median(np.linalg.norm(
-                candidate[:,fit_mask]-current[:,fit_mask],axis=0,
-            )))
-            # Geometry is authoritative for reference correspondence. Reflection
-            # and large relative rotations are valid between different SLM/camera
-            # conventions and are therefore tie-breakers rather than hard priors.
-            ordering_priority={value:index for index,value in enumerate(SpotOrdering)}[ordering]
-            score=(
-                1 if metrics["reflection"] else 0,
-                round(abs(float(metrics["rotation_deg"])),6),
-                round(float(metrics["deformation_score"]),8),
-                round(float(rms),6),-fit_count,
-                round(median_displacement,6),ordering_priority,
-                float(np.linalg.norm(logical_translation)),
-            )
-            candidates.append((
-                score,ordering,source_indices,logical_translation,metrics,fit_count,
-                median_displacement,
-            ))
+        fit_mask=target_matched & resolved_mask & valid_source
+        fit_count=int(np.count_nonzero(fit_mask))
+        if fit_count<3:
+            continue
+        candidate=np.array(current,copy=True)
+        candidate[:,resolved_mask]=np.asarray(reference.positions_px,dtype=np.float64)[
+            :,source_indices[resolved_mask]
+        ]
+        linear_fit,_translation,rms=_fit_affine(
+            current[:,fit_mask],candidate[:,fit_mask],
+        )
+        metrics=_transform_metrics(linear_fit,rms)
+        median_displacement=float(np.median(np.linalg.norm(
+            candidate[:,fit_mask]-current[:,fit_mask],axis=0,
+        )))
+        ordering_priority={value:index for index,value in enumerate(SpotOrdering)}[ordering]
+        # Exact-reference AUTO is a local alignment choice, not a detector-frame
+        # estimator. Prefer the correspondence requiring the smallest actual spot
+        # motion; use affine diagnostics only as deterministic tie-breakers.
+        score=(
+            round(median_displacement,6),
+            round(float(rms),6),
+            round(float(metrics["deformation_score"]),8),
+            1 if metrics["reflection"] else 0,
+            round(abs(float(metrics["rotation_deg"])),6),
+            ordering_priority,
+        )
+        candidates.append((
+            score,ordering,source_indices,np.zeros(2,dtype=np.float64),metrics,
+            fit_count,median_displacement,
+        ))
     if not candidates:
         raise RuntimeError(
             "Reference correspondence needs at least three genuinely localized, "
@@ -255,8 +224,8 @@ def resolve_exact_lattice_correspondence(
         "requested":requested,"resolved":resolved.value,
         "resolved_label":spot_ordering_label(resolved),
         "source_ordering":fixed_source.value,
-        "source_detector_frame":source_frame.value,
-        "target_detector_frame":target_frame.value,
+        "source_detector_frame":"target_indexed",
+        "target_detector_frame":"target_indexed",
         "relative_rotation_deg":float(metrics["rotation_deg"]),
         "rms_px":float(metrics["rms_px"]),
         "reflection":bool(metrics["reflection"]),
@@ -266,7 +235,7 @@ def resolve_exact_lattice_correspondence(
         "fit_count":fit_count,
         "median_displacement_px":median_displacement,
         "logical_translation":tuple(float(v) for v in logical_translation),
-        "topology_aware":bool(topology_available),
+        "topology_aware":False,
     }
     return _resolved_from_source_indices(
         reference,target,source_indices,correspondence=details,

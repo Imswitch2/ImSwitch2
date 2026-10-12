@@ -199,6 +199,9 @@ def localize_measurement(
         "spot_ordering_registration_transform":registration.diagnostics.get(
             "spot_ordering_registration_transform","canonical"
         ),
+        "spot_ordering_detector_frame":registration.diagnostics.get(
+            "spot_ordering_detector_frame","canonical"
+        ),
         "spot_ordering_available":tuple(
             registration.diagnostics.get("spot_ordering_available",("canonical",))
         ),

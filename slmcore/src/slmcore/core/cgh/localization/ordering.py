@@ -138,6 +138,39 @@ def available_spot_orderings(
     return tuple(valid)
 
 
+def _detector_frame_for_registration(
+    logical_positions: np.ndarray,
+    detector_positions: np.ndarray,
+) -> SpotOrdering:
+    """Identify the residual D4 logical frame once at localization time.
+
+    This does not reorder detector points.  It records which abstract lattice
+    frame the accepted localization uses relative to the canonical camera basis.
+    Downstream feedback must consume this explicit result rather than re-infer
+    orientation from detector geometry.
+    """
+    logical=np.asarray(logical_positions,dtype=np.float64)
+    detector=np.asarray(detector_positions,dtype=np.float64)
+    best=None
+    for priority,candidate in enumerate(SpotOrdering):
+        permutation_matrix={
+            SpotOrdering.CANONICAL:np.array([[1.0,0.0],[0.0,1.0]]),
+            SpotOrdering.FLIP_X:np.array([[-1.0,0.0],[0.0,1.0]]),
+            SpotOrdering.FLIP_Y:np.array([[1.0,0.0],[0.0,-1.0]]),
+            SpotOrdering.ROTATE_180:np.array([[-1.0,0.0],[0.0,-1.0]]),
+            SpotOrdering.TRANSPOSE:np.array([[0.0,1.0],[1.0,0.0]]),
+            SpotOrdering.ROTATE_90_CW:np.array([[0.0,-1.0],[1.0,0.0]]),
+            SpotOrdering.ROTATE_90_CCW:np.array([[0.0,1.0],[-1.0,0.0]]),
+            SpotOrdering.ANTI_TRANSPOSE:np.array([[0.0,-1.0],[-1.0,0.0]]),
+        }[candidate]
+        transformed=permutation_matrix@logical
+        linear,_translation,rms=_fit_affine(transformed,detector)
+        score=(*_canonical_basis_score(linear),round(float(rms),9),priority)
+        if best is None or score<best[0]:
+            best=(score,candidate)
+    return SpotOrdering.CANONICAL if best is None else best[1]
+
+
 def canonicalize_registration(registration: LatticeRegistration) -> LatticeRegistration:
     """Normalize one successful registration to a deterministic camera convention.
 
@@ -185,11 +218,13 @@ def canonicalize_registration(registration: LatticeRegistration) -> LatticeRegis
     norms = np.sqrt(np.sum(residuals[:,matched]**2,axis=0)) if np.any(matched) else np.array([])
     rms = float(np.sqrt(np.mean(norms*norms))) if norms.size else float("inf")
 
+    detector_frame=_detector_frame_for_registration(logical,expected)
     diagnostics = dict(registration.diagnostics or {})
     diagnostics.update({
         "spot_ordering_mode":"auto",
         "spot_ordering":SpotOrdering.CANONICAL.value,
         "spot_ordering_registration_transform":raw_transform.value,
+        "spot_ordering_detector_frame":detector_frame.value,
         "spot_ordering_available":tuple(item.value for item in options),
         "ordering_logical_positions":_matrix_tuple(logical),
     })
@@ -359,7 +394,14 @@ def _canonical_basis_score(linear: np.ndarray):
     )
     # +X-to-camera-right is the primary convention.  Handedness then chooses
     # detector-down +Y when the X convention admits two mirror-equivalent forms.
-    return (float(angle_x),handedness_penalty,float(angle_y))
+    # Equivalent D4 representations can differ only at floating-point noise
+    # level after affine fitting.  Never let ~1e-14 degree noise choose a
+    # reflected convention before the handedness tie-breaker.
+    return (
+        round(float(angle_x),9),
+        handedness_penalty,
+        round(float(angle_y),9),
+    )
 
 
 def _wrapped_abs_degrees(value: float) -> float:

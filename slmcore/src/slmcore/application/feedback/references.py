@@ -9,13 +9,12 @@ from typing import Any,Callable,Mapping,Sequence,TYPE_CHECKING,TypedDict
 import numpy as np
 
 from ...core.cgh.feedback import (
-    EditablePositionReferenceGeometry,FeedbackCapability,FeedbackOrientation,PositionReference,
+    EditablePositionReferenceGeometry,FeedbackCapability,PositionReference,
     PositionReferenceMode,ReferenceCorrespondence,
     editable_position_reference_geometry,
     editable_reference_center_px,editable_reference_positions,
     fit_center_reference_geometry,localization_positions_full_px,
-    orient_lattice_representation,orient_localization,orientation_permutation,
-    orientation_reindex_permutation,
+    orient_localization,orientation_reindex_permutation,
     reference_correspondence_options,
 )
 from ...core.cgh.localization import (
@@ -910,31 +909,11 @@ class PositionReferenceService(FeedbackComponent):
                 "feedback_orientation"
             )
             source_ordering=SpotOrdering.CANONICAL
-            if source.lattice is not None and source_orientation not in (None,""):
-                # Older topology-aware references can carry detector positions
-                # that were oriented without permuting the persisted topology.
-                normalized_orientation=FeedbackOrientation.normalize(
-                    source_orientation
-                )
-                lattice_orientation=dict(source.lattice.diagnostics or {}).get(
-                    "feedback_orientation"
-                )
-                if (
-                    normalized_orientation is not FeedbackOrientation.IDENTITY
-                    and lattice_orientation!=normalized_orientation.value
-                ):
-                    permutation=orientation_permutation(
-                        reference.lattice_indices,normalized_orientation,
-                    )
-                    source=ReferenceGeometry(
-                        positions_px=source.positions_px,site_ids=source.site_ids,
-                        lattice=orient_lattice_representation(
-                            source.lattice,permutation,normalized_orientation,
-                        ),
-                        valid_mask=source.valid_mask,weights=source.weights,
-                        metadata=dict(source.metadata),
-                    )
             if source.lattice is None and source_orientation not in (None,""):
+                # Legacy references without persisted topology predate target-indexed
+                # reference storage. Preserve their explicit orientation compatibility
+                # path. New topology-bearing references are already target-indexed and
+                # must never be re-oriented on load.
                 permutation=orientation_reindex_permutation(
                     localization.lattice_indices,source_orientation,
                     self._feedback_orientation(section),
