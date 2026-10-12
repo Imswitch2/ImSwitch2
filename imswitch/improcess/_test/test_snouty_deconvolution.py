@@ -391,6 +391,54 @@ def data_obj(tmp_path):
     return DataObj(str(path), "deconv")
 
 
+class TestScanDirectionCheck:
+    """The drift of the signal across camera rows says which way the scan ran."""
+
+    def _sphere_stack(self, flip):
+        """Camera stack of one sphere rendered through the forward model."""
+        proc = DeconvolutionProcessorCPU({**GEOMETRY, "flip_data": flip}, _small_kernel())
+        proc.camera_values(np.full((60, 48, 12), 100.0, np.float32))
+        z, y, x = np.meshgrid(*(np.arange(n) for n in proc.out_shape), indexing="ij")
+        sphere = (((z - 8) ** 2 + (y - 40) ** 2 + (x - 4) ** 2) <= 36).astype(np.float32) * 500
+        cam = np.zeros(proc._mask.shape, np.float32)
+        cam[proc._mask] = proc.forward(sphere)
+        stack = np.transpose(cam, (1, 0, 2)) + GEOMETRY["camera_offset"]
+        return stack[::-1] if flip else stack
+
+    def test_expected_drift_is_minus_dy_cos_alpha_over_c(self):
+        from imswitch.improcess.reconstructors.snouty.scan_direction import expected_row_drift
+
+        drift = expected_row_drift(116.0, 35.0, 210.0, False)
+        assert drift == pytest.approx(-210 * np.cos(np.deg2rad(35)) / 116)
+        assert expected_row_drift(116.0, 35.0, 210.0, True) == pytest.approx(-drift)
+
+    @pytest.mark.parametrize("flip", [False, True])
+    def test_a_sphere_scanned_either_way_passes_with_the_matching_flip(self, flip):
+        from imswitch.improcess.reconstructors.snouty.scan_direction import check_scan_direction
+
+        stack = self._sphere_stack(flip)
+        good = check_scan_direction(stack, {**GEOMETRY, "flip_data": flip})
+        assert good.ok, good.message
+        assert good.measured == pytest.approx(good.expected, rel=0.25)
+        bad = check_scan_direction(stack, {**GEOMETRY, "flip_data": not flip})
+        assert not bad.ok
+        assert "Flip data" in bad.message
+
+    def test_a_wrong_step_is_reported_as_a_geometry_mismatch(self):
+        from imswitch.improcess.reconstructors.snouty.scan_direction import check_scan_direction
+
+        stack = self._sphere_stack(False)
+        check = check_scan_direction(stack, {**GEOMETRY, "dy": 2 * GEOMETRY["dy"]})
+        assert not check.ok
+        assert "scan step" in check.message
+
+    def test_empty_data_is_not_judged(self):
+        from imswitch.improcess.reconstructors.snouty.scan_direction import check_scan_direction
+
+        flat = np.full((20, 16, 8), 100.0, np.float32)
+        assert check_scan_direction(flat, GEOMETRY).ok
+
+
 class TestPipelineStreaming:
     """The shared SNOUTY pipeline reads a lazy source one timepoint at a time."""
 

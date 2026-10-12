@@ -527,6 +527,19 @@ The parameter panel is the deskew panel plus a *Deconvolution* group:
 Like the other SNOUTY reconstructors it reads an HDF5 or zarr source one
 timepoint at a time, so only the result has to fit in memory.
 
+**Flip data and the scan-direction check.** A recording scanned against
+the convention of the geometry has to be reconstructed with *Flip data*
+on; with the wrong setting the scan and camera-row contributions to ``y``
+add instead of cancelling, and every round object comes out about three
+times too long along ``y`` and sheared, while ``xz`` still looks right.
+The data says which way it was scanned: a fixed object drifts across the
+camera rows by ``dy cos(alpha) / c_px`` rows per plane, in a direction set
+by the scan. All SNOUTY reconstructors measure that drift on the first
+timepoint and log a warning naming the Flip setting to use when the sign
+disagrees, or a geometry warning when the magnitude does not match the
+scan step, tilt angle and camera pixel size. The MS-RESOLFT recordings
+made so far need *Flip data* on.
+
 *Device* picks the NumPy or the CuPy backend; both run the same code. The
 result is a ``SnoutyResult`` on exactly the deskew grid, so it lines up with a
 deskewed volume of the same recording voxel for voxel and the multicolor

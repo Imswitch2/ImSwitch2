@@ -16,6 +16,7 @@ import numpy as np
 from .deskew_cpu import DeskewProcessorCPU
 from .metadata import recorded_snouty_geometry
 from .restack import restack_interleaved
+from .scan_direction import check_scan_direction
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -197,6 +198,17 @@ def _run_timepoints(
             tp_stack = restack_interleaved(
                 tp_stack, cycles, planes_in_cycle, timepoints=1
             )
+        if t == 0 and logger is not None:
+            # The data says which way it was scanned; a wrong Flip setting
+            # triples the y extent of everything, so say so where it is seen.
+            check = check_scan_direction(np.asarray(tp_stack), params)
+            if check.message:
+                logger.warning(check.message)
+            else:
+                logger.info(
+                    f'Scan-direction check: signal drifts {check.measured:+.2f} '
+                    f'rows/plane, geometry expects {check.expected:+.2f}'
+                )
         outputs.append(per_timepoint_fn(processor, tp_stack, use_gpu, cp))
         del tp_stack
         # Free GPU memory between timepoints
