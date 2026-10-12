@@ -161,20 +161,21 @@ def binding_lines(program, schedules, detectors: Sequence[str], *,
         binding = binding_of(program, name)
         if name in point:
             if binding is not None:
-                lines.append(f'{name}: an image, each pixel every sample of its step (bound).')
+                lines.append(f'{name}: one image pixel per step, integrating the whole step.')
             continue
         fired = wire_frames(schedules, name)
         if not any(fired):
             continue
         if binding is not None:
             lines.append(f'{name}: {binding.per_step} frame{"s" if binding.per_step > 1 else ""}'
-                         f' per step{_phases_text(program, binding)}, as bound; its line '
+                         f' per step{_phases_text(program, binding)}; its trigger line '
                          'agrees.')
         else:
             counts = sorted(set(fired))
             each = (f'{counts[0]} frame{"s" if counts[0] > 1 else ""} per step'
                     if len(counts) == 1 else f'{min(counts)} to {max(counts)} frames per step')
-            lines.append(f'{name}: no binding; recorded as its line fires ({each}).')
+            lines.append(f'{name}: not in Recording; recorded as its trigger line fires '
+                         f'({each}).')
     return lines
 
 

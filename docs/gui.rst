@@ -735,8 +735,9 @@ derive from the abstract ``SignalDesigner``).
 Six widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
 ``Advanced``, ``SimplePointScan`` and ``Expert`` — selected by
 ``scan.scanWidgetType`` in the setup JSON; see :doc:`setupinfo-reference`.
-``Expert`` edits a whole scan program (loops, drives, a step timeline,
-waits) and runs it on the setup's scan engine; see :doc:`expert-scanning`. ``SimplePointScan`` is a
+``Expert`` edits a whole scan program (dimensions, positioners, what happens
+within one step, pauses and triggers, recording) and runs it on the scan
+engine its devices are on; see :doc:`expert-scanning`. ``SimplePointScan`` is a
 beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
 its header switches between the two, on the same scan.
 

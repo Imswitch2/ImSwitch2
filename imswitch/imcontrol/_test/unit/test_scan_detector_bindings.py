@@ -60,7 +60,7 @@ def test_a_binding_that_agrees_with_its_line_is_what_the_layout_records():
     layout = build_program_layouts(program, schedule, ['Camera'], scan_source='x')['Camera']
     assert recorded_frame_count(layout) == 12
     assert binding_lines(program, schedule, ['Camera']) == [
-        'Camera: 1 frame per step, as bound; its line agrees.']
+        'Camera: 1 frame per step; its trigger line agrees.']
 
 
 def test_a_binding_that_expects_frames_its_line_does_not_fire_is_refused_at_the_step():
@@ -103,7 +103,7 @@ def test_a_detector_without_a_binding_is_recorded_as_its_line_fires():
     assert binding_problems(program, schedule) == []
     assert frames_per_step(program, schedule, 'Camera') == [1] * 12
     assert binding_lines(program, schedule, ['Camera']) == [
-        'Camera: no binding; recorded as its line fires (1 frame per step).']
+        'Camera: not in Recording; recorded as its trigger line fires (1 frame per step).']
 
 
 # --- what is not built ------------------------------------------------------------------
@@ -151,7 +151,7 @@ def test_the_panel_refuses_a_run_whose_binding_disagrees_and_reports_what_is_rec
         program = made(rig, timepoints=1)
         rig.scan.setProgram(program)
         report = rig.widget.reportText()
-        assert 'Camera: 1 frame per step, as bound; its line agrees.' in report
+        assert 'Camera: 1 frame per step; its trigger line agrees.' in report
         assert rig.scan.getNumCamTTL() == {'Camera': 1}
 
         rig.scan.setProgram(dataclasses.replace(program, detectors=(
@@ -191,7 +191,7 @@ def test_a_camera_on_a_follower_is_checked_against_the_followers_line(qtbot):
         rig.scan.setProgram(program)
         report = rig.widget.reportText()
         assert report.startswith('Runnable on lead.'), report
-        assert 'Camera: 1 frame per step, as bound; its line agrees.' in report
+        assert 'Camera: 1 frame per step; its trigger line agrees.' in report
         rig.scan.setProgram(dataclasses.replace(program, detectors=(
             DetectorBinding('Camera', events='exposure', per_step=2),)))
         assert 'but its line fires 1 in step 1 of 6' in rig.widget.reportText()

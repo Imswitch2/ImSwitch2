@@ -1,18 +1,20 @@
 """The Expert scan panel (docs/design/plans/scan-engines-and-expert-scan.md §4,
-§7.11): the whole scan program, described top to bottom.
+§7.11, §7.12): the whole scan program, described top to bottom in the user's
+words (a loop is a *dimension*, a drive a *positioner*, the step length the
+*dwell*; the model keeps its own names).
 
 - A header: what the scan is, whether it can run and where, its steps,
   duration and frames, and Run.
-- **Scan order**: the loops as nested blocks, outermost first, each with its
-  count and order, and the positions a drive visits in that order.
-- **Positions**: each drive as offset + µm per count of each loop, and how
-  it moves.
-- **Inside every step**: the timeline drawn and edited by dragging, the time
-  a drive moves shaded.
-- **Waits** and **Recording** (detector bindings) as sentences.
-- **Check** (the engine's report) and a **Preview** with every device on its
-  own lane, beside the editor when the panel is wide enough, below it when
-  not.
+- **Scan order**: the dimensions as nested blocks, slowest first, each with
+  its count and order, and the positions a positioner visits in that order.
+- **Positions**: each positioner as a sentence (starts at, moves per
+  dimension), and how it moves.
+- **Within one step**: the timeline drawn and edited by dragging, the time
+  a positioner moves hatched.
+- **Pauses and triggers** and **Recording** (detector bindings) as sentences.
+- **Can it run?** (the engine's report) and a **Preview** with every device
+  on its own lane, beside the editor when the panel is wide enough, below it
+  when not.
 
 **Tables** shows the same program as the tables underneath: the one state
 the parts above edit (``_expert_scan_parts``). The panel edits the program's
@@ -77,6 +79,9 @@ WINDOWS = ('event', 'step')
 
 #: The progress bar's resolution: per mille.
 _PROGRESS_RANGE = 1000
+
+#: The timing policy a scan built by hand gets: the model's own default.
+DEFAULT_POLICY = 'strict-v1'
 
 
 class _Column:
@@ -299,22 +304,55 @@ class _RowTable(QtWidgets.QWidget):
 
 
 class PresetDialog(QtWidgets.QDialog):
-    """A preset's parameters as a form; OK only when they make a program."""
+    """A template's values as a form, in sections; OK only when they make a
+    program. An empty field is filled in from the rig where the rig knows
+    the value: a positioner field with a distinct positioner, a first
+    position with that positioner's tracked position (and it follows the
+    positioner chosen until the field is typed in), a move, settle or return
+    time with what the setup declares in ``scanDesignerParams``. Nothing is
+    guessed: what the rig does not know stays empty and says *required*."""
 
     def __init__(self, preset, devices: Dict[str, Sequence[str]], initial: Dict,
-                 validate: Callable[[Dict], str], parent=None):
+                 validate: Callable[[Dict], str], parent=None, *,
+                 positions: Optional[Dict[str, float]] = None,
+                 setup: Optional[Dict[str, float]] = None):
         super().__init__(parent)
         self.setWindowTitle(preset.title)
         self._preset, self._devices, self._validate = preset, devices, validate
+        self._positions = dict(positions or {})
+        self._setup = dict(setup or {})
         self._editors = {}
+        self._filled = {}            # position fields filled from the rig, by name
         form = QtWidgets.QFormLayout()
+        group = None
+        positioners = 0
         for field in preset.fields:
-            editor = self._editor(field, initial.get(field.name))
+            if field.group and field.group != group:
+                group = field.group
+                title = QtWidgets.QLabel(group)
+                title.setObjectName('expertCardTitle')
+                form.addRow(title)
+            value = initial.get(field.name)
+            if field.kind == 'positioner' and value in (None, ''):
+                names = list(self._devices.get('positioner', ()))
+                value = names[positioners % len(names)] if names else None
+            if field.kind == 'positioner':
+                positioners += 1
+            if field.from_setup and value in (None, '') and field.from_setup in self._setup:
+                value = self._setup[field.from_setup]
+            editor = self._editor(field, value)
             if field.help:
                 editor.setToolTip(field.help)
             unit = {'seconds': ' (ms)', 'micrometres': ' (µm)'}.get(field.kind, '')
             form.addRow(field.label + unit, editor)
             self._editors[field.name] = (field, editor)
+        for name, (field, editor) in self._editors.items():
+            if field.position_of and isinstance(editor, QtWidgets.QLineEdit):
+                device = self._editors.get(field.position_of)
+                if device is not None and isinstance(device[1], QtWidgets.QComboBox):
+                    self._followPosition(name, device[1])
+                    device[1].currentIndexChanged.connect(
+                        lambda _i, n=name, c=device[1]: self._followPosition(n, c))
         self.error = QtWidgets.QLabel('')
         self.error.setWordWrap(True)
         buttons = QtWidgets.QDialogButtonBox(
@@ -329,6 +367,21 @@ class PresetDialog(QtWidgets.QDialog):
         layout.addLayout(form)
         layout.addWidget(self.error)
         layout.addWidget(buttons)
+
+    def _followPosition(self, name, combo):
+        """A first-position field left to the rig shows the chosen
+        positioner's tracked position; one typed in is left alone."""
+        field, editor = self._editors[name]
+        if editor.text().strip() and self._filled.get(name) != editor.text():
+            return
+        position = self._positions.get(combo.currentText())
+        text = '' if position is None else f'{position:.6g}'
+        editor.setText(text)
+        editor.setModified(False)
+        self._filled[name] = text
+        editor.setToolTip((field.help + ' ' if field.help else '')
+                          + (f'Filled in from where {combo.currentText()} is now.' if text else
+                             f'Where {combo.currentText()} is now is not known.'))
 
     def _editor(self, field, value):
         if field.kind in ('positioner', 'laser', 'detector', 'optional-laser', 'choice'):
@@ -364,6 +417,7 @@ class PresetDialog(QtWidgets.QDialog):
                 text.setPlainText(str(value))
             return text
         line = QtWidgets.QLineEdit()
+        line.setPlaceholderText('required')
         if field.kind == 'pair' and value:
             line.setText(', '.join(f'{float(v):g}' for v in value))
             return line
@@ -440,9 +494,13 @@ QToolButton::menu-indicator {{ image: none; width: 0px; }}
 
 #: The tables' names in messages: a value that does not parse is named by its
 #: part, row and column.
-_TABLE_TITLES = {'loops': 'Scan order, loop', 'drives': 'Positions, drive',
-                 'timeline': 'Inside every step, event', 'waits': 'Waits, wait',
-                 'detectors': 'Recording, binding'}
+_TABLE_TITLES = {'loops': 'Scan order, dimension', 'drives': 'Positions, positioner',
+                 'timeline': 'Within one step, event', 'waits': 'Pauses and triggers, pause',
+                 'detectors': 'Recording, detector'}
+
+#: Each table's tab in the Tables view.
+_TAB_NAMES = {'loops': 'Dimensions', 'drives': 'Positioners', 'timeline': 'Timeline',
+              'waits': 'Pauses', 'detectors': 'Detectors'}
 
 
 class ScanWidgetExpert(SuperScanWidget):
@@ -477,16 +535,16 @@ class ScanWidgetExpert(SuperScanWidget):
         self.waits = _RowTable(self._waitColumns(()), title=_TABLE_TITLES['waits'])
         self.bindings = _RowTable(self._bindingColumns(), title=_TABLE_TITLES['detectors'])
         self.tabs = QtWidgets.QTabWidget()
-        for name, table in (('Loops', self.loops), ('Drives', self.drives),
-                            ('Timeline', self.timeline), ('Waits', self.waits),
-                            ('Detectors', self.bindings)):
-            self.tabs.addTab(table, name)
+        for name, table in (('loops', self.loops), ('drives', self.drives),
+                            ('timeline', self.timeline), ('waits', self.waits),
+                            ('detectors', self.bindings)):
+            self.tabs.addTab(table, _TAB_NAMES[name])
         self.loops.sigEdited.connect(self._loopsEdited)
         for table in (self.drives, self.timeline, self.waits, self.bindings):
             table.sigEdited.connect(self._edited)
 
         self.stepPar = QtWidgets.QLineEdit('')
-        self.stepPar.setToolTip('The length of every innermost step, in ms.')
+        self.stepPar.setToolTip('The dwell: the length of every step, in ms.')
         self.stepPar.textChanged.connect(lambda _t: self._edited())
         self.policyPar = QtWidgets.QComboBox()
         self.policyPar.setToolTip(
@@ -495,21 +553,28 @@ class ScanWidgetExpert(SuperScanWidget):
         self.policyPar.currentIndexChanged.connect(lambda _i: self._edited())
 
         # -- the header ---------------------------------------------------------
-        self.titleLabel = QtWidgets.QLabel('Scan program')
+        self.titleLabel = QtWidgets.QLabel('New scan')
         self.titleLabel.setObjectName('expertTitle')
         self.subtitleLabel = QtWidgets.QLabel('')
         self.subtitleLabel.setObjectName('expertMuted')
+        self.templateValuesButton = QtWidgets.QToolButton()
+        self.templateValuesButton.setText('Change template values…')
+        self.templateValuesButton.setAutoRaise(True)
+        self.templateValuesButton.setVisible(False)
+        self.templateValuesButton.clicked.connect(
+            lambda: self.sigPresetRequested.emit(self._check.get('preset', '')))
         self.statusChip = Chip('Not checked yet', 'muted')
-        self.statusChip.setToolTip('Click for the check.')
+        self.statusChip.setToolTip('Click for whether it can run, and why not.')
         self.noticeLabel = QtWidgets.QLabel('')
         self.noticeLabel.setObjectName('expertNotice')
         self.noticeLabel.setVisible(False)
         self.factsHost = QtWidgets.QWidget()
         self.facts = FlowLayout(self.factsHost)
         self.templateButton = QtWidgets.QToolButton()
-        self.templateButton.setText('Templates ▾')
-        self.templateButton.setToolTip('Make a program from a template\'s parameters; a '
-                                       'program made from one reopens with its values.')
+        self.templateButton.setText('New from template ▾')
+        self.templateButton.setToolTip('Write a new scan from a template\'s values, replacing '
+                                       'this one; a scan made from a template reopens its form '
+                                       'with its values.')
         self.templateButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.templateButton.setMenu(QtWidgets.QMenu(self.templateButton))
         self.tablesButton = QtWidgets.QToolButton()
@@ -545,7 +610,7 @@ class ScanWidgetExpert(SuperScanWidget):
         self.report = QtWidgets.QPlainTextEdit()
         self.report.setReadOnly(True)
         self.report.setMinimumHeight(0)
-        self.plotButton = QtWidgets.QPushButton('Draw')
+        self.plotButton = QtWidgets.QPushButton('Show preview')
         self.plotButton.setToolTip('Draw what every device does, from the same compile the '
                                    'run uses.')
         self.plotButton.clicked.connect(self.sigPlotClicked)
@@ -566,7 +631,7 @@ class ScanWidgetExpert(SuperScanWidget):
         tablesLayout = QtWidgets.QGridLayout(tablesPage)
         tablesLayout.setContentsMargins(0, 0, 0, 0)
         tablesLayout.addWidget(self.tabs, 0, 0, 1, 4)
-        tablesLayout.addWidget(QtWidgets.QLabel('Step (ms):'), 1, 0)
+        tablesLayout.addWidget(QtWidgets.QLabel('Dwell (ms):'), 1, 0)
         tablesLayout.addWidget(self.stepPar, 1, 1)
         tablesLayout.addWidget(QtWidgets.QLabel('Timing:'), 1, 2)
         tablesLayout.addWidget(self.policyPar, 1, 3)
@@ -604,7 +669,11 @@ class ScanWidgetExpert(SuperScanWidget):
         headerLayout = QtWidgets.QVBoxLayout(header)
         top = QtWidgets.QHBoxLayout()
         titles = QtWidgets.QVBoxLayout()
-        titles.addWidget(self.titleLabel)
+        titleRow = QtWidgets.QHBoxLayout()
+        titleRow.addWidget(self.titleLabel)
+        titleRow.addWidget(self.templateValuesButton)
+        titleRow.addStretch(1)
+        titles.addLayout(titleRow)
         titles.addWidget(self.subtitleLabel)
         top.addLayout(titles, 1)
         top.addWidget(self.statusChip, 0, QtCore.Qt.AlignVCenter)
@@ -628,21 +697,25 @@ class ScanWidgetExpert(SuperScanWidget):
         self.grid.setRowStretch(0, 1)
         menu = self.templateButton.menu()
         trajectories = None
-        starters = []
+        starters, paths = [], []
         for preset_id, title in presets:
             self._presets[preset_id] = title
             if preset_id.startswith('trajectory-'):
                 trajectories = trajectories or menu.addMenu('Trajectories')
                 target, text = trajectories, title.split(': ', 1)[-1]
+                paths.append((preset_id, text))
             else:
                 target, text = menu, title
                 starters.append((preset_id, title))
             action = target.addAction(text)
             action.setData(preset_id)
             action.triggered.connect(lambda _c=False, p=preset_id: self.sigPresetRequested.emit(p))
-        self.start.setTemplates(starters)
+        self.start.setTemplates(starters, paths)
         self.policyPar.addItems(list(policies))
+        if self.policyPar.findText(DEFAULT_POLICY) >= 0:
+            self.policyPar.setCurrentText(DEFAULT_POLICY)
         self.engineLabel.setText(engine)
+        self.engineLabel.setVisible(bool(engine))
         self.drives.setColumns(self._driveColumns(()))
         self.timeline.setColumns(self._timelineColumns())
         self.bindings.setColumns(self._bindingColumns())
@@ -699,6 +772,17 @@ class ScanWidgetExpert(SuperScanWidget):
 
     def _loopIds(self):
         return [row['id'] for row in self.loops.rows(raw=True) if row['id']]
+
+    def loopNames(self) -> Dict[str, str]:
+        """Each dimension's id and what to call one iteration of it: its
+        kind's word (*cycle*), with its id when two share a kind."""
+        rows = [row for row in self.tableRows('loops') if row['id']]
+        kinds = [row['kind'] for row in rows]
+        names = {}
+        for row in rows:
+            one = KIND_NAMES.get(row['kind'], (row['kind'],) * 2)[0]
+            names[row['id']] = f'{one} ({row["id"]})' if kinds.count(row['kind']) > 1 else one
+        return names
 
     def _loopsEdited(self):
         ids = self._loopIds()
@@ -816,11 +900,11 @@ class ScanWidgetExpert(SuperScanWidget):
             timeline.append(event)
         step = self.stepPar.text().strip()
         if not step:
-            raise ValueError('Set the length of a step (Inside every step, in ms).')
+            raise ValueError('Set the dwell (Within one step, in ms).')
         try:
             step_s = stored(step, MS)
         except ValueError:
-            raise ValueError(f'The step length {step!r} is not a number of ms.') from None
+            raise ValueError(f'The dwell {step!r} is not a number of ms.') from None
         return {'loops': loops, 'drives': drives, 'step_s': step_s, 'timeline': timeline,
                 'waits': self.waits.rows(), 'detectors': self.bindings.rows(),
                 'timing_policy': self.policyPar.currentText()}
@@ -936,20 +1020,20 @@ class ScanWidgetExpert(SuperScanWidget):
             if loop['traversal'] == 'serpentine':
                 self.loops.setValue(row, 'traversal', 'forward')
                 self.loops.setValue(row, 'parity_loops', '')
-                self.showNotice(f'Loop {loop["id"]!r} moved out of serpentine order: the loops '
-                                'outside it changed.')
+                self.showNotice(f'Dimension {loop["id"]!r} moved out of serpentine order: '
+                                'the dimensions outside it changed.')
 
     def removeLoop(self, index):
-        """A loop removed with what names it: the waits before it, the events
-        anchored on its passes (now every step), the serpentines alternating
-        with it."""
+        """A dimension removed with what names it: the pauses before it, the
+        events anchored on its passes (now every step), the serpentines
+        alternating with it."""
         loops = self.tableRows('loops')
         loop = loops[index]['id']
         said = []
         for row in reversed(range(len(self.tableRows('waits')))):
             if self.tableRows('waits')[row]['at'] == loop:
                 self.waits.removeRow(row)
-                said.append('the wait before it')
+                said.append('the pause before it')
         for row, event in enumerate(self.tableRows('timeline')):
             if (event['anchor'] or '').partition(':')[2] == loop:
                 self.timeline.setValue(row, 'anchor', 'step')
@@ -961,12 +1045,12 @@ class ScanWidgetExpert(SuperScanWidget):
                 self.loops.setValue(row, 'parity_loops', '')
                 said.append(f'{other["id"]}\'s serpentine')
         self.removeTableRow('loops', index)
-        self.showNotice(f'Removed loop {loop!r}' + (f', and {", ".join(sorted(set(said)))}'
-                                                    if said else '') + '. Undo brings it back.')
+        self.showNotice(f'Removed dimension {loop!r}' + (f', and {", ".join(sorted(set(said)))}'
+                                                         if said else '') + '. Undo brings it back.')
 
     def renameLoop(self, index, name):
         if name in self._loopIds():
-            self.showNotice(f'There is a loop {name!r} already.')
+            self.showNotice(f'There is a dimension {name!r} already.')
             return
         self.setTableValue('loops', index, 'id', name)
 
@@ -999,11 +1083,27 @@ class ScanWidgetExpert(SuperScanWidget):
         self.addTableRow('waits', {'at': ids[0] if ids else 'start', 'trigger': trigger,
                                    'on_timeout': 'fail', 'hold': 'idle'})
 
+    def isPointDetector(self, name) -> bool:
+        return name in self._pointDetectors
+
     def addBinding(self, detector):
-        point = detector in self._pointDetectors
+        point = self.isPointDetector(detector)
         self.addTableRow('detectors', {
             'detector': detector, 'events': detector, 'per_step': 1,
             'window': 'step' if point else 'event', 'assembly': 'image' if point else 'stream'})
+
+    def setBindingDetector(self, row, detector):
+        """A binding's detector, with the window and assembly its kind takes
+        (the only ones the model accepts for it) and its own events."""
+        point = self.isPointDetector(detector)
+        blocker = QtCore.QSignalBlocker(self.bindings)
+        try:
+            self.bindings.setValue(row, 'window', 'step' if point else 'event')
+            self.bindings.setValue(row, 'assembly', 'image' if point else 'stream')
+            self.bindings.setValue(row, 'events', detector)
+        finally:
+            del blocker
+        self.bindings.setValue(row, 'detector', detector)
 
     def timelineDevices(self) -> List[str]:
         names = (self._devices.get('laser', []) + self._devices.get('detector', [])
@@ -1074,10 +1174,10 @@ class ScanWidgetExpert(SuperScanWidget):
         moving = []
         step = self.stepSeconds()
         if step is None:
-            notes.append('Set the length of a step.')
+            notes.append('Set the dwell.')
         elif latest is not None and latest > step:
             notes.append((f'The events end at {ms_text(latest)} ms, after the step.',
-                          f'Make the step {ms_text(latest)} ms',
+                          f'Make the dwell {ms_text(latest)} ms',
                           lambda _c=False, t=ms_text(latest): self.stepPar.setText(t)))
         for row in self.tableRows('drives'):
             try:
@@ -1094,8 +1194,10 @@ class ScanWidgetExpert(SuperScanWidget):
         return events, moving, notes
 
     def driveRange(self, index) -> str:
-        """Where a drive goes over the whole scan: from its loops' counts and
-        weights (every order visits the same counters), or its table."""
+        """Where a positioner goes over the whole scan: from its dimensions'
+        counts and weights (every order visits the same counters), or its
+        table; and how far apart its positions are when they are evenly
+        spaced."""
         try:
             row = self.tableRows('drives')[index]
             counts = {loop['id']: int(loop['count']) for loop in self.tableRows('loops')}
@@ -1104,9 +1206,11 @@ class ScanWidgetExpert(SuperScanWidget):
                 table = [float(v) for v in row['table_um'].split(',') if v.strip()]
                 low, high = offset + min(table), offset + max(table)
                 steps = counts.get(row['table_loop'], len(table))
+                positions = sorted(set(offset + v for v in table))
             else:
                 low = high = offset
                 steps = 1
+                positions = [offset]
                 for loop, count in counts.items():
                     text = row.get(f'w:{loop}', '').strip()
                     if not text or float(text) == 0:
@@ -1114,32 +1218,39 @@ class ScanWidgetExpert(SuperScanWidget):
                     reach = float(text) * (count - 1)
                     low, high = low + min(0.0, reach), high + max(0.0, reach)
                     steps *= count
+                    positions = sorted({p + float(text) * k for p in positions
+                                        for k in range(count)})
         except (ValueError, KeyError, IndexError):
             return ''
         if steps <= 1:
             return f'Stays at {low:.6g} µm.'
-        return f'{steps} positions, from {low:.6g} to {high:.6g} µm.'
+        text = f'{steps} positions from {low:.6g} to {high:.6g} µm'
+        gaps = {round(b - a, 9) for a, b in zip(positions, positions[1:])}
+        if len(gaps) == 1:
+            text += f', {gaps.pop():.6g} µm apart'
+        return text + '.'
 
     def visitStrip(self, fit):
-        """The positions the first drive visits over the two innermost loops
-        that move it (the others at their first iteration), at most ``fit`` of
-        them: the scan's order, as bars. ``(None, why not)`` when it cannot
-        be drawn."""
+        """The positions the first positioner visits over the two fastest
+        dimensions that move it (the others at their first iteration), at
+        most ``fit`` of them: the scan's order, as a line through points.
+        ``(None, why not)`` when it cannot be drawn."""
         drives = self.tableRows('drives')
         if not drives:
             return None, ''
         try:
-            # the loops and the drive alone: an event or a wait that does not
-            # read yet does not hide the order
+            # the dimensions and the positioner alone: an event or a pause
+            # that does not read yet does not hide the order
             loops = self._loopDicts()
             drive = self._driveDicts()[0]
         except ValueError as error:
-            return None, f'The visit order is drawn once the loops and drives read: {error}'
+            return None, ('The order visited is drawn once the dimensions and positioners '
+                          f'read: {error}')
         moving = [loop['id'] for loop in loops
                   if loop['id'] in drive['weights_um'] and drive['weights_um'][loop['id']]
                   or loop['id'] == drive['table_loop']]
         if not moving:
-            return None, f'{drive["device"]} does not move with the loops.'
+            return None, f'{drive["device"]} does not move with the dimensions.'
         inner = moving[-2:]
         counts = {loop['id']: max(1, int(loop['count'])) for loop in loops}
         innermost = counts[inner[-1]]
@@ -1159,7 +1270,7 @@ class ScanWidgetExpert(SuperScanWidget):
                 'timing_policy': self.policyPar.currentText() or 'strict-v1',
                 'drives': [{**drive, 'table_um': table}]})
         except Exception as error:
-            return None, f'The visit order cannot be drawn: {error}'
+            return None, f'The order visited cannot be drawn: {error}'
         model = program.drives[0]
         positions, shades = [], []
         for counters in visits(program):
@@ -1173,9 +1284,10 @@ class ScanWidgetExpert(SuperScanWidget):
         total = math.prod(counts[i] for i in inner)
         kinds = {loop['id']: loop['kind'] for loop in loops}
         names = [KIND_NAMES.get(kinds[i], (i, i))[1] for i in inner]
-        text = (f'{model.device} over the {" and ".join(names)}' if len(positions) == total
-                else f'{model.device}: the first {len(positions)} of {total} positions over the '
-                     f'{" and ".join(names)}')
+        text = f'{model.device} position at each step over the {" and ".join(names)}, in the ' \
+               'order visited'
+        if len(positions) != total:
+            text += f' (the first {len(positions)} of {total})'
         return positions, shades, self.deviceColor(model.device), text
 
     # -- what the controller shows ----------------------------------------------
@@ -1196,6 +1308,8 @@ class ScanWidgetExpert(SuperScanWidget):
             self.trajectoryCard.setTrajectory(self._check['trajectory'])
         for part in (self.order, self.positions, self.step):
             part.setVisible(mode == 'program')
+        for part in (self.waitsCard, self.recording):
+            part.setVisible(mode != 'empty')
         for part in (self.order, self.positions, self.step, self.waitsCard, self.recording):
             part.refresh()
         self._refreshHeader()
@@ -1209,9 +1323,16 @@ class ScanWidgetExpert(SuperScanWidget):
         for row in loops:
             many = KIND_NAMES.get(row['kind'], (row['kind'],) * 2)
             parts.append(f'{row["count"]} {many[1] if row["count"] != "1" else many[0]}')
-        self.titleLabel.setText(check.get('title') or 'Scan program')
-        self.subtitleLabel.setText(' × '.join(parts) if parts else
+        self.titleLabel.setText(check.get('title') or 'New scan')
+        self.subtitleLabel.setText(' › '.join(parts) if parts else
                                    check.get('subtitle') or 'Nothing to scan yet')
+        preset = check.get('preset') or ''
+        self.templateValuesButton.setVisible(bool(preset) and self._mode() != 'empty')
+        self.templateValuesButton.setToolTip(
+            'Open the template\'s form with the values this scan was made from. The scan has '
+            'been edited since: the form holds the template\'s values, not the edits.'
+            if check.get('edited') else
+            'Open the template\'s form with the values this scan was made from.')
         if self._running:
             self.statusChip.setText('Running')
             self.statusChip.setRole('accent')
@@ -1222,16 +1343,15 @@ class ScanWidgetExpert(SuperScanWidget):
             self.statusChip.setText('Not checked yet')
             self.statusChip.setRole('muted')
         elif check.get('runnable'):
-            self.statusChip.setText(f'Ready on {check.get("engine")}')
+            self.statusChip.setText(f'Ready to run on {check.get("engine")}')
             self.statusChip.setRole('ok')
         else:
             engine = check.get('engine')
-            self.statusChip.setText(f'Not runnable on {engine}' if engine else 'Not runnable')
+            self.statusChip.setText(f'Cannot run on {engine}' if engine else 'Cannot run')
             self.statusChip.setRole('bad')
         problems = check.get('problems') or []
         if self._mode() != 'empty' and problems:
-            first = problems[0].splitlines()[0] if problems[0] else ''
-            self._setNotice(first, problems[0])
+            self._setNotice(_first_reason(problems[0]), problems[0])
         _clear_layout(self.facts)
         facts = check.get('facts') or {}
         if facts.get('steps') is not None:
@@ -1241,12 +1361,20 @@ class ScanWidgetExpert(SuperScanWidget):
         for detector, frames in (facts.get('frames') or {}).items():
             self.facts.addWidget(Chip(f'{frames} frames, {detector}'))
         if facts.get('grid_s'):
-            exact = facts.get('policy') == 'strict-v1'
-            chip = Chip(f'{"exact" if exact else "rounded"} timing, '
-                        f'{duration_text(facts["grid_s"])} clock')
-            chip.setToolTip(f'Timing policy {facts.get("policy")}: '
-                            + ('every time sits on the engine\'s clock.' if exact else
-                               'times are rounded as the policy says; the check lists them.'))
+            # the policy: the program's, else the panel's own choice (a
+            # program that does not parse has none yet)
+            policy = facts.get('policy') or self.policyPar.currentText()
+            clock = f'{duration_text(facts["grid_s"])} clock'
+            if not policy:
+                chip = Chip(clock)
+                chip.setToolTip('The engine\'s clock: every time is played on it.')
+            else:
+                exact = policy == 'strict-v1'
+                chip = Chip(f'{"exact" if exact else "rounded"} timing, {clock}')
+                chip.setToolTip(f'Timing policy {policy}: '
+                                + ('every time sits on the engine\'s clock.' if exact else
+                                   'times are rounded as the policy says; the check lists '
+                                   'them.'))
             self.facts.addWidget(chip)
 
     def _setNotice(self, text, tooltip=''):
@@ -1267,7 +1395,8 @@ class ScanWidgetExpert(SuperScanWidget):
 
     def setCheck(self, check: Dict):
         """What the engine makes of the program (the controller's report, as
-        data): ``runnable``, ``engine``, ``title``, ``problems``, ``verdicts``
+        data): ``runnable``, ``engine``, ``title``, ``preset`` (the template
+        it was made from, if any) and ``edited``, ``problems``, ``verdicts``
         ``[(verdict, feature, reason)]``, ``notes``, ``recorded``, ``facts``
         (``steps``, ``duration_s``, ``frames``, ``grid_s``, ``policy``) and,
         for a path, ``trajectory`` (``text``, ``events``, ``preset``)."""
@@ -1276,7 +1405,11 @@ class ScanWidgetExpert(SuperScanWidget):
         if grid:
             self._lastGrid = grid
         self._setNotice('')
-        self.check.setCheck(self._check)
+        # an empty scan is not a scan the engine refused: no verdict for it
+        shown = dict(self._check)
+        if self._mode() == 'empty':
+            shown.pop('runnable', None)
+        self.check.setCheck(shown)
         self.recording.setLines(self._check.get('recorded') or [])
         self.refreshParts()
         if self._check.get('runnable') and self.preview.live.isChecked() \
@@ -1289,8 +1422,13 @@ class ScanWidgetExpert(SuperScanWidget):
     def reportText(self):
         return self.report.toPlainText()
 
-    def askPresetParams(self, preset, initial, validate) -> Optional[Dict]:
-        dialog = PresetDialog(preset, self._devices, initial or {}, validate, self)
+    def askPresetParams(self, preset, initial, validate, *, positions=None,
+                        setup=None) -> Optional[Dict]:
+        """The template's form; ``positions``: each positioner's tracked
+        position (µm), ``setup``: the setup's declared ``scanDesignerParams``
+        -- what fills an empty field in, never a guess."""
+        dialog = PresetDialog(preset, self._devices, initial or {}, validate, self,
+                              positions=positions, setup=setup)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             return dialog.params()
         return None
@@ -1366,6 +1504,17 @@ class ScanWidgetExpert(SuperScanWidget):
     def setScanCenterPos(self, positionerName, centerPos):
         # Expert positions are the program's offsets; nothing to center.
         pass
+
+
+def _first_reason(problem: str) -> str:
+    """The first reason of a problem: its first line, or the first item
+    under a heading that ends in a colon (*The scan cannot run yet:*)."""
+    lines = [line for line in str(problem).splitlines() if line.strip()]
+    if not lines:
+        return ''
+    if lines[0].rstrip().endswith(':') and len(lines) > 1:
+        return lines[1].strip().lstrip('- ').strip()
+    return lines[0]
 
 
 def _clear_layout(layout):

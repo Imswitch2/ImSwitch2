@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Optional, Tuple
 
 from .motion import TRANSITIONS
+from .units import format_seconds
 
 #: Loop kinds, as the acquisition layout names them.
 LOOP_KINDS = ('scan_x', 'scan_y', 'scan_z', 'cycle', 'plane', 'time', 'condition',
@@ -303,7 +304,7 @@ def validate(program: ScanProgram) -> ScanProgram:
         if not float(event.end_s) > float(event.start_s):
             problems.append(f'{where}: end must be after start')
         if event.anchor == 'step' and (event.start_s < 0 or event.end_s > program.step_s):
-            problems.append(f'{where}: outside its step (0 to {program.step_s:g} s)')
+            problems.append(f'{where}: outside its step (0 to {format_seconds(program.step_s)})')
         if event.kind in ('level', 'offset') and event.value is None:
             problems.append(f'{where}: a {event.kind} event needs a value')
         if event.phases is not None:
@@ -339,7 +340,7 @@ def validate(program: ScanProgram) -> ScanProgram:
             problems.append(f'{where}: per_step must be at least 1')
 
     if problems:
-        raise ProgramError('The scan program is not well formed:\n- ' + '\n- '.join(problems))
+        raise ProgramError('The scan cannot run yet:\n- ' + '\n- '.join(problems))
     return program
 
 
@@ -391,7 +392,7 @@ def _validate_trajectory(program: ScanProgram) -> ScanProgram:
         if not 0 <= float(event.start_s) < float(event.end_s) <= float(trajectory.duration_s):
             problems.append(f'{where}: outside the path (0 to {trajectory.duration_s:g} s)')
     if problems:
-        raise ProgramError('The scan program is not well formed:\n- ' + '\n- '.join(problems))
+        raise ProgramError('The scan cannot run yet:\n- ' + '\n- '.join(problems))
     return program
 
 

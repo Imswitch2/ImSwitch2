@@ -131,7 +131,7 @@ def test_code_written_in_the_form_counts_as_approved(rig, tmp_path, store):
     marker = tmp_path / 'ran'
     params = dict(x_device='X', y_device='Y', code=_code(marker), duration_s=0.02,
                   window_s=1e-4, approach_s=5e-3, pixel_um=0.5, laser=rig.lasers[1])
-    rig.widget.askPresetParams = lambda preset, initial, validate: params
+    rig.widget.askPresetParams = lambda preset, initial, validate, **_rig: params
     rig.scan.makeFromPreset('trajectory-script')
     assert rig.asked == [] and store.approved(_code(marker))
     assert marker.exists()                                    # the report compiled it

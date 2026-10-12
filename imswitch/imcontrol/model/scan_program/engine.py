@@ -211,9 +211,9 @@ def assess_program(program, caps: EngineCapabilities, owns, channels) -> Feasibi
 
     if stepped:
         verdict = {'native': NATIVE, 'emulated': EMULATED}.get(caps.stepping, IMPOSSIBLE)
-        report.add('stepped loop', verdict,
+        report.add('stepped positions', verdict,
                    '' if verdict != IMPOSSIBLE else f'{caps.name} cannot step a position.',
-                   cost='densified into samples' if verdict == EMULATED else '')
+                   cost='played as sampled waveforms' if verdict == EMULATED else '')
     if swept:
         report.add('swept loop', NATIVE if caps.streaming else IMPOSSIBLE,
                    '' if caps.streaming else f'{caps.name} cannot sweep: it does not stream.',

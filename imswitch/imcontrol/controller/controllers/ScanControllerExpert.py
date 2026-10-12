@@ -25,6 +25,8 @@ the Advanced panel.
 
 from __future__ import annotations
 
+from typing import Dict
+
 import copy
 import math
 import time
@@ -177,15 +179,16 @@ class ScanControllerExpert(SuperScanController):
         engines = getattr(self._master, 'scanEngines', None)
         used = sorted({name for name in (engines.owners.values() if engines else ())
                        if name is not None})
+        # Said under the toolbar only when it is not obvious: with one
+        # engine the header's chip names it.
+        where = ''
         if len(used) > 1:
             where = (f'Runs on the scan engine its devices are on ({", ".join(used)}); '
                      f'without devices on {engines.selected}.')
-        else:
-            engine = engines.engines[used[0]] if used else self._engineForScans()
-            where = f'Runs on {engine.name}.'
         wavelengths = {name: getattr(info, 'wavelength', None)
                        for name, info in (self._setupInfo.lasers or {}).items()}
         self._titleBase = None          # the template the program was made from
+        self._templateValues: Dict[str, Dict] = {}   # the last values used per template
         self._widget.initControls(
             list(self.positioners), lasers, 'ms', detectorNames=detectors,
             presets=[(p.id, p.title) for p in presets.PRESETS.values()],
@@ -235,7 +238,7 @@ class ScanControllerExpert(SuperScanController):
         self.setParameters()
         self.updateReport()
 
-    _EMPTY = 'The program has no loops yet: choose a preset, or add a loop.'
+    _EMPTY = 'The scan has no dimensions yet: start from a template, or add a dimension.'
 
     def getParameters(self):
         if getattr(self, 'settingParameters', False):
@@ -296,7 +299,12 @@ class ScanControllerExpert(SuperScanController):
         if preset is None:
             return
         made_from, params = presets.preset_of(self._program) if self._program else ('', {})
-        initial = params if made_from == preset_id else {}
+        # The form opens with the values this scan was made from, else the
+        # last values used for the template; what is still empty is filled
+        # from the rig (tracked positions, declared setup times), never
+        # guessed (§7.12).
+        initial = params if made_from == preset_id else dict(
+            self._templateValues.get(preset_id) or {})
 
         def validate(candidate):
             try:
@@ -305,13 +313,42 @@ class ScanControllerExpert(SuperScanController):
                 return str(error)
             return ''
 
-        params = self._widget.askPresetParams(preset, initial, validate)
+        params = self._widget.askPresetParams(
+            preset, initial, validate, positions=self._trackedPositions(),
+            setup=self._declaredSetupTimes())
         if params is not None:
             # Code written or read in the form has been seen here (§7.10).
             for field in preset.fields:
                 if field.kind == 'code' and params.get(field.name):
                     approvals().approve(params[field.name])
+            self._templateValues[preset_id] = copy.deepcopy(params)
             self.setProgram(presets.make(preset_id, params))
+
+    def _trackedPositions(self) -> Dict[str, float]:
+        """Each positioner's tracked position on its scan axis, in µm, where
+        it is known."""
+        positions = {}
+        for device, info in (self._setupInfo.positioners or {}).items():
+            try:
+                manager = self._master.positionersManager[device]
+                axes = list(getattr(info, 'axes', None) or manager.axes)
+                positions[device] = float(manager.position[axes[0]])
+            except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+                continue
+        return positions
+
+    def _declaredSetupTimes(self) -> Dict[str, float]:
+        """The move, settle and return times the setup declares for stepped
+        scans (``scanDesignerParams``), in seconds -- only what it declares."""
+        declared = getattr(self._setupInfo.scan, 'scanDesignerParams', None) or {}
+        times = {}
+        for key in ('move_time', 'settle_time', 'return_time'):
+            try:
+                if declared.get(key) is not None:
+                    times[key] = float(declared[key])
+            except (TypeError, ValueError):
+                continue
+        return times
 
     def _approveScript(self):
         """Whether the program may run its trajectory script: approved
@@ -498,7 +535,20 @@ class ScanControllerExpert(SuperScanController):
         if made_from in presets.PRESETS:
             return presets.PRESETS[made_from].title
         return f'{self._titleBase}, edited' if self.__dict__.get('_titleBase') else \
-            'Scan program'
+            'New scan'
+
+    def _presetOf(self, program) -> str:
+        """The template a program was made from (its path's for a
+        trajectory), or the one it was made from before it was edited."""
+        if program is not None and program.trajectory is not None:
+            preset = f'trajectory-{program.trajectory.pattern}'
+            return preset if preset in presets.PRESETS else ''
+        made_from = presets.preset_of(program)[0] if program is not None else ''
+        if made_from in presets.PRESETS:
+            return made_from
+        base = self.__dict__.get('_titleBase')
+        return next((p.id for p in presets.PRESETS.values() if p.title == base), '') \
+            if base else ''
 
     @staticmethod
     def _trajectorySummary(program):
@@ -520,8 +570,11 @@ class ScanControllerExpert(SuperScanController):
         as text (the report) and as data (the header and the check)."""
         self.getParameters()
         choice = self._choice(self._program)
-        check = {'title': self._title(self._program),
+        title = self._title(self._program)
+        check = {'title': title,
                  'engine': choice.engine.name if choice.engine is not None else '',
+                 'preset': self._presetOf(self._program),
+                 'edited': title.endswith(', edited'),
                  'trajectory': self._trajectorySummary(self._program)}
         try:
             compiled = self._compile()
@@ -980,6 +1033,7 @@ class ScanControllerExpert(SuperScanController):
             'program': program_to_dict(program) if program is not None else None,
             'timingPolicy': program.timing_policy if program is not None else None,
             'mode': {'repeatEnabled': self._widget.repeatEnabled()},
+            'templateValues': copy.deepcopy(self._templateValues),
             'requiredFeatures': {PROGRAM_FEATURE: PROGRAM_FEATURE_REASON},
         }
         origin = self._advancedOrigin
@@ -999,6 +1053,10 @@ class ScanControllerExpert(SuperScanController):
         if refusal:
             return [refusal]
         warnings = []
+        remembered = state.get('templateValues')
+        if isinstance(remembered, dict):
+            self._templateValues = {str(k): dict(v) for k, v in remembered.items()
+                                    if isinstance(v, dict)}
         try:
             if state.get('program'):
                 program = program_from_dict(state['program'])

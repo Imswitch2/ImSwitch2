@@ -2286,6 +2286,80 @@ Found while writing draft 1; where each stands at the end of the branch
 
 ---
 
+### 7.12 Panel vocabulary and flow (2026-10-12, built)
+
+Lenny, after the makeover: the panel is "still not very intuitive. It's
+mostly the naming and a bit the flow of setting up a scan." A microscopy
+expert "still only understands half of it". Lenny agreed to the proposal
+below as written ("build it all with the renames as proposed") with one
+change: the order visited is a line through points, not bars. Built the
+same day; the table's *Proposed* column is what the panel now says.
+
+**Diagnosis.** The panel speaks the model's words (program, loop, drive,
+event, binding, anchor, emulated, densified) where a microscopist has words
+already (scan, dimension, positioner, pulse/exposure, record, dwell, step
+size). Three words are overloaded: *step* means a time slot in the panel
+and a distance in the template forms (*Cycle step (µm)*); *order* means
+loop traversal on one card and loop nesting on another; *positions* names
+a card, a combo (*positions absolute*) and a fact. The template forms ask
+for every number blank, with no defaults from the setup and X and Y
+devices both defaulting to the first positioner.
+
+**Vocabulary (model term → panel word).** The model, files and API keep
+their names; only what the panel shows changes.
+
+| Model | Today on the panel | Proposed | Why |
+|---|---|---|---|
+| program | *Scan program*, *program* | *scan*; the title is the template name or *New scan* | "program" reads as code |
+| loop | *Scan order, outermost first*; *+ Loop* | *Scan order (slowest to fastest)*; *+ Dimension*; chips read *2 timepoints › 2 cycles › 3 planes* | OME/ImageJ word for T, Z, C, tiles, positions; outer = slowest is the microscopy idiom |
+| traversal | *→* button, *Order* | a combo in words: *forward / backward / serpentine* | an arrow glyph without a label explains nothing |
+| drive | *Positions*, *+ Drive*, *Z = 1 µm + 0 µm × time + 0.25 µm × cycle + 0.5 µm × plane* | *+ Positioner*; *Z starts at 1 µm, moves 0.25 µm per cycle and 0.5 µm per plane* with zero terms hidden behind *+ also per…*; range line gains the spacing (*6 positions from 1 to 2.25 µm, 0.25 µm apart*) | "per cycle" is how one thinks; the formula stays the model, the sentence is the view |
+| motion | *jumps · at the end of each step · move 0.5 ms · settle 0.5 ms · return 1 ms · positions absolute · after the scan to its first position* | two sentences: *Moves: jumps, at the end of each step, taking 0.5 ms, then settles 0.5 ms. Return to the line start: 1 ms.* and *Positions are absolute. After the scan: back to its first position.* | "positions absolute" (origin) and a bare "return" were the two most cryptic fields |
+| step_s | *Inside every step*, *step 7 ms* | *Within one step*, *dwell 7 ms*; the facts chip stays *12 steps* | *dwell* is the Advanced panel's word for the same thing; *step size* keeps meaning µm |
+| preset distances | *Cycle step (µm)*, *X step (µm)* | *Position spacing (µm)*, *X spacing (µm)* | frees *step* for the iteration |
+| event | *+ Event ▾ (Pulse / Camera exposure / Power level / Move by)*; inspector kind words *on / exposes / power level / moves by / marker* | four buttons *+ Pulse, + Exposure, + Power level, + Move*; kind words *pulse / exposure / power / move / marker* | the inspector read "405 (ON) on from 0 to 1 ms" |
+| during / still | *only while the drives stand still*, *still: every drive* | *while the stage stands still / any time, even while moving*; *waits for: every positioner* | |
+| anchor | *every step / first step of each pass of cycle* | unchanged | already in words |
+| wait | *Waits*, *+ Wait ▾ (A pause / Wait for a trigger)* | *Pauses and triggers*; *+ Pause*, *+ Wait for trigger* | |
+| binding | *Camera takes 1 per step from exposure in phases every · one per pulse · as frames* | *Camera records 1 frame per step, triggered by exposure · in every phase*; window and assembly are NOT shown as choices: a camera is event+stream, a point detector step+image, every other combination is refused (docs, "The program") | two combos that only ever have one legal value |
+| recorded line | *Camera: 1 frame per step, as bound; its line agrees.* | *Camera: 1 frame per step; its trigger line agrees. 12 frames in all.* | |
+| check | *Check*; chip *1 played another way*; *~ stepped loop: densified into samples* | *Can it run?*; chip *Yes, on nidaq* / *No: <first reason>*; verdict wording at the source: NI-DAQ *stepped positions are played as sampled waveforms*; an emulated verdict with no cost is a muted note, not an amber chip | the amber chip on every stepped scan on the NI-DAQ cries wolf |
+| preview | *Draw*, *Keep drawn* | *Show preview*, *Auto-update* | |
+| status chip | *Ready on nidaq*, *Not runnable on nidaq* | *Ready to run on nidaq*, *Cannot run on nidaq* | |
+| toolbar | *Templates ▾* (docs say *Make…*) | *New from template ▾*; the docs follow | one name |
+| engine line | *Runs on nidaq.* under the toolbar | shown only when devices span several engines; otherwise the chip says it | redundant |
+| ProgramError | *The scan program is not well formed:* …*outside its step (0 to 0.007 s)* | *The scan cannot run yet:* …*outside its step (0 to 7 ms)* (format_seconds) | seconds on a panel that shows ms |
+| timing chip | *rounded timing, 10 µs clock* on an empty or refused program | *10 µs clock* when the policy is not known; the panel falls back to its own policy combo | today it says "rounded" for strict-v1 whenever the program does not parse |
+
+**Flow.**
+
+1. *Empty panel*: only the start card (*Start from a template*: the three
+   templates, a *Trajectory ▾* menu, and *or build it yourself: + Dimension*).
+   The empty Pauses and Recording cards are hidden until there is a scan.
+2. *Template forms* prefill from real sources, never from a guess (no magic
+   numbers): positioner fields default to distinct positioners (X, Y; the
+   first for a single one); *First position* from the positioner's tracked
+   position; move and settle times from the positioner's declared
+   properties when it declares them, else blank with the placeholder
+   *not declared in the setup*; the last values used for that template are
+   remembered in the widget state and offered again (today only when the
+   current scan came from the same template). The form is grouped
+   (Positions / Pulses / Camera / Time lapse / Motion) and says which fields
+   are required.
+3. *Template-made scans* carry *Change template values…* in the header
+   (as a trajectory has *Edit the path…*); once edited by hand the button
+   says the form holds the template's values, not the edits.
+4. *Editing*: unchanged (drag the timeline, type in the sentences).
+5. *Check and run*: the check stays automatic; the preview gets
+   *Auto-update*; Run unchanged.
+
+**Cost.** Panel strings in `ScanWidgetExpert.py` / `_expert_scan_parts.py`;
+the two verdict strings in `NidaqScanEngine`; `ProgramError` wording in
+`program.py`; `presets.py` labels; the form defaults in `PresetDialog` and
+the controller; `docs/expert-scanning.rst`, `docs/gui.rst`, the changelog;
+about 30 label assertions in `test_scan_widget_expert_composer.py` and
+`test_scan_controller_expert.py`.
+
 ## Appendix: today's hardware, in short (from draft 1)
 
 - **NI-DAQ:**

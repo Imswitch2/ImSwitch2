@@ -396,7 +396,7 @@ def test_channel_ownership_must_be_unambiguous():
 def test_what_the_board_runs_is_native(make):
     report = make().assess(_raster(), CHANNELS)
     assert report.runnable
-    assert report.verdict('stepped loop').verdict == NATIVE
+    assert report.verdict('stepped positions').verdict == NATIVE
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

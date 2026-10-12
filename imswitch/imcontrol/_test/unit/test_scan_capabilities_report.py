@@ -109,7 +109,7 @@ def test_every_feature_is_the_verdict_the_engine_itself_gives():
     report = _report(SIMPLE_MOCK)
     nidaq = report.section('nidaq')
     stepped = _entry(nidaq.features, 'stepped positions')
-    assert (stepped.verdict, stepped.text) == (EMULATED, 'densified into samples')
+    assert (stepped.verdict, stepped.text) == (EMULATED, 'played as sampled waveforms')
     assert _entry(nidaq.features, 'swept axes and trajectories').verdict == NATIVE
     trigger = _entry(nidaq.features, 'trigger wait between steps')
     assert trigger.verdict == IMPOSSIBLE and 'cannot wait for an external trigger' in trigger.text

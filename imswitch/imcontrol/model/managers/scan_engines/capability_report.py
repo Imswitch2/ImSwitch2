@@ -122,7 +122,7 @@ _SEVERITY = {NATIVE: 0, EMULATED: 1, UNKNOWN: 2, IMPOSSIBLE: 3}
 #: assessment reports it under (the generic ones, a pulse generator's own).
 _PROBED = (
     ('swept axes and trajectories', ('swept loop',)),
-    ('stepped positions', ('stepped loop',)),
+    ('stepped positions', ('stepped positions',)),
     *((f'{shape} transition', (f'{shape} transition',)) for shape in TRANSITIONS),
     ('intra-step offsets', ('offset probe stage',)),
     ('time waits', ('time wait',)),

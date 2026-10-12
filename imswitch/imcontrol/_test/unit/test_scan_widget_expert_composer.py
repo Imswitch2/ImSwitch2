@@ -62,13 +62,14 @@ def _event(rig, row):
 
 def test_the_parts_describe_the_program(rig):
     w = rig.widget
-    assert [chip.name.text() for chip in _chips(rig)] == ['Timepoints', 'Cycles', 'Planes']
+    assert [chip.name.text() for chip in _chips(rig)] == ['timepoints', 'cycles', 'planes']
     assert [chip.count.value() for chip in _chips(rig)] == [2, 2, 3]
     editor = w.positions._editors[0]
     assert editor.device.currentText() == 'Z'
     assert editor.weights['cycle'][1].text() == '0.25' and editor.weights['plane'][1].text() == '0.5'
     assert editor.weights['time'][1].text() == ''          # time does not move Z
-    assert editor.range.text() == '6 positions, from 1 to 2.25 µm.'
+    assert editor.range.text() == '6 positions from 1 to 2.25 µm, 0.25 µm apart.'
+    assert editor.weights['time'][0].isHidden() and not editor.alsoButton.isHidden()
     events, moving, _notes = w.stepContent()
     assert [e['device'] for e in events] == rig.lasers[:2] + [rig.lasers[1], 'Camera']
     assert list(w.step.canvas._rows) == rig.lasers[:2] + ['Camera']     # a row per device
@@ -76,7 +77,8 @@ def test_the_parts_describe_the_program(rig):
     assert moving == [(pytest.approx(step - 1e-3), step, 'Z moves')]   # move + settle, at the end
     assert w.recording._editors[0].detector.currentText() == 'Camera'
     assert w.titleLabel.text() == 'MS-RESOLFT (cycles x planes)'
-    assert w.subtitleLabel.text() == '2 timepoints × 2 cycles × 3 planes'
+    assert w.subtitleLabel.text() == '2 timepoints › 2 cycles › 3 planes'
+    assert not w.templateValuesButton.isHidden()
 
 
 def test_the_visit_strip_shows_the_order_of_the_loops_the_drive_moves_with(rig):
@@ -84,15 +86,15 @@ def test_the_visit_strip_shows_the_order_of_the_loops_the_drive_moves_with(rig):
     # start 1 + 0.25 * (cycle + 2 * plane): cycle by cycle, its planes inside
     assert positions == pytest.approx([1.0, 1.5, 2.0, 1.25, 1.75, 2.25])
     assert shades == [0, 0, 0, 1, 1, 1]
-    assert text == 'Z over the cycles and planes'
+    assert text == 'Z position at each step over the cycles and planes, in the order visited'
     positions, _shades, _color, text = rig.widget.visitStrip(fit=4)
-    assert len(positions) == 3 and text == 'Z: the first 3 of 6 positions over the cycles and planes'
+    assert len(positions) == 3 and text.endswith('in the order visited (the first 3 of 6)')
 
 
 def test_the_visit_strip_survives_what_does_not_concern_it(rig):
     w = rig.widget
     w.addLoop('condition')                        # a phase loop, innermost: Z does not move with it
-    assert w.visitStrip(fit=100)[3] == 'Z over the cycles and planes'
+    assert w.visitStrip(fit=100)[3].startswith('Z position at each step over the cycles and planes')
     w.timeline.table.item(0, 2).setText('soon')   # an event that does not read
     assert w.visitStrip(fit=100)[0] is not None
 
@@ -113,21 +115,20 @@ def test_a_count_edited_on_a_block_is_the_tables(rig):
     assert '24 steps' in rig.widget.reportText()          # 2 x 4 x 3 after the edit
 
 
-def test_the_order_button_makes_only_orders_the_model_takes(rig):
+def test_the_order_combo_offers_only_orders_the_model_takes(rig):
     w = rig.widget
     cycles, timepoints = _chips(rig)[1], _chips(rig)[0]
-    cycles.order.click()
-    cycles.order.click()
+    cycles.order.setCurrentIndex(cycles.order.findData('serpentine'))
     row = w.loops.rows(raw=True)[1]
     assert (row['traversal'], row['parity_loops']) == ('serpentine', 'time')
     w.flushRefresh()
     QtTest.QTest.qWait(rig.scan._reportTimer.interval() + 100)
-    assert w.statusChip.text() == 'Ready on nidaq', w.reportText()
-    cycles.order.click()                                    # back to forward: no parity
+    assert w.statusChip.text() == 'Ready to run on nidaq', w.reportText()
+    cycles.order.setCurrentIndex(cycles.order.findData('forward'))   # back: no parity
     assert w.loops.rows(raw=True)[1]['parity_loops'] == ''
-    timepoints.order.click()
-    timepoints.order.click()                               # the outermost: never serpentine
-    assert w.loops.rows(raw=True)[0]['traversal'] == 'forward'
+    assert timepoints.order.findData('serpentine') < 0     # the slowest: never serpentine
+    timepoints.order.setCurrentIndex(timepoints.order.findData('reverse'))
+    assert w.loops.rows(raw=True)[0]['traversal'] == 'reverse'
 
 
 def test_the_wheel_scrolls_past_a_field_not_clicked_into(shown):
@@ -263,7 +264,7 @@ def test_events_past_the_step_offer_to_lengthen_it(rig):
     w.setTableValue('timeline', 3, 'end_s', '9')
     w.flushRefresh()
     offers = [n for n in w.stepContent()[2] if isinstance(n, tuple)]
-    assert offers and offers[0][1] == 'Make the step 9 ms'
+    assert offers and offers[0][1] == 'Make the dwell 9 ms'
     offers[0][2]()
     assert w.stepPar.text() == '9'
 
@@ -278,7 +279,7 @@ def test_removing_a_loop_takes_what_names_it(qtbot):
         assert [x['at'] for x in w.waits.rows(raw=True)] == ['time']
         w.removeLoop(0)
         assert w.waits.rows() == [] and 'time' not in w._loopIds()
-        assert 'the wait before it' in w.noticeLabel.toolTip()
+        assert 'the pause before it' in w.noticeLabel.toolTip()
         w.undo()
         assert w._loopIds()[0] == 'time' and len(w.waits.rows()) == 1
         w.redo()
@@ -309,12 +310,13 @@ def test_undo_takes_back_an_edit(rig):
 
 def test_the_header_and_the_check_say_what_the_engine_makes_of_it(rig):
     w = rig.widget
-    assert w.statusChip.text() == 'Ready on nidaq'
+    assert w.statusChip.text() == 'Ready to run on nidaq'
+    assert w.check.verdict.text() == 'Yes, on nidaq'
     facts = [w.facts.itemAt(i).widget().text() for i in range(w.facts.count())]
     assert facts[0] == '12 steps' and facts[1].endswith('ms')
     assert facts[2:] == ['12 frames, Camera', 'exact timing, 10 µs clock']
     assert w.check.problems.isHidden() and w.noticeLabel.isHidden()
-    assert w.engineLabel.text() == 'Runs on nidaq.'
+    assert w.engineLabel.isHidden()                          # one engine: the chip names it
 
 
 def test_a_refused_program_says_why_once_and_knows_the_clock(qtbot):
@@ -323,7 +325,8 @@ def test_a_refused_program_says_why_once_and_knows_the_clock(qtbot):
         w = rig.widget
         program = _ms_resolft(rig)
         rig.scan.setProgram(dataclasses.replace(program, step_s=program.step_s + 3e-6))
-        assert w.statusChip.text() == 'Not runnable on nidaq'
+        assert w.statusChip.text() == 'Cannot run on nidaq'
+        assert w.check.verdict.text() == 'No, on nidaq'
         problems = w.check.problems.text()
         assert 'not on' in problems and not w.noticeLabel.isHidden()
         details = [w.check.details.itemAt(i).widget().text()
@@ -345,7 +348,7 @@ def test_running_shows_in_the_header(rig):
     w.showScanProgress(0.5, 'Step 6 of 12')
     assert w.statusChip.text() == 'Running'
     w.hideScanProgress()
-    assert w.statusChip.text() == 'Ready on nidaq'
+    assert w.statusChip.text() == 'Ready to run on nidaq'
 
 
 def test_a_trajectory_is_shown_as_its_path(rig):
@@ -355,7 +358,7 @@ def test_a_trajectory_is_shown_as_its_path(rig):
     assert w.titleLabel.text() == 'Trajectory: Spiral'
     assert 'follow a spiral' in w.trajectoryCard.text.text()
     requested = []
-    w.askPresetParams = lambda preset, initial, validate: requested.append(
+    w.askPresetParams = lambda preset, initial, validate, **_rig: requested.append(
         (preset.id, initial['radius_um']))                 # the form, filled in
     w.trajectoryCard.editButton.click()
     assert requested == [('trajectory-spiral', 10.0)]
@@ -365,15 +368,100 @@ def test_an_empty_program_offers_the_templates(rig):
     w = rig.widget
     rig.scan.setProgram(None)
     assert not w.start.isHidden() and w.order.isHidden()
-    assert w.statusChip.text() == 'Empty'
+    assert w.waitsCard.isHidden() and w.recording.isHidden()   # nothing to pause or record
+    assert w.statusChip.text() == 'Empty' and w.check.verdict.isHidden()
+    assert w.titleLabel.text() == 'New scan' and w.templateValuesButton.isHidden()
     titles = [w.start.flow.itemAt(i).widget().text() for i in range(w.start.flow.count())]
-    assert 'MS-RESOLFT (cycles x planes)' in titles
+    assert 'MS-RESOLFT (cycles x planes)' in titles and 'Trajectory ▾' in titles
+    facts = [w.facts.itemAt(i).widget().text() for i in range(w.facts.count())]
+    assert facts == ['exact timing, 10 µs clock']           # the panel's own policy, strict
 
 
 def test_a_missing_step_says_so_in_words(rig):
     rig.widget.stepPar.setText('')
-    with pytest.raises(ValueError, match='Set the length of a step'):
+    with pytest.raises(ValueError, match='Set the dwell'):
         rig.widget.programDict()
+
+
+def test_a_refusal_is_said_in_the_panels_units_and_its_first_reason_in_the_header(rig):
+    w = rig.widget
+    w.setTableValue('timeline', 0, 'end_s', '50')
+    w.flushRefresh()
+    QtTest.QTest.qWait(rig.scan._reportTimer.interval() + 100)
+    assert w.statusChip.text() == 'Cannot run on nidaq'
+    assert 'outside its step (0 to 7 ms)' in w.check.problems.text()      # ms, not 0.007 s
+    assert w.noticeLabel.text().startswith('event pulse1')                 # the reason, not the heading
+    facts = [w.facts.itemAt(i).widget().text() for i in range(w.facts.count())]
+    assert 'exact timing, 10 µs clock' in facts     # strict-v1 still: the panel's policy combo
+
+
+def test_change_template_values_reopens_the_form(rig):
+    w = rig.widget
+    asked = []
+    # the form itself is modal: stub it, or the click would wait for a hand
+    w.askPresetParams = lambda preset, initial, validate, **_rig: asked.append(
+        (preset.id, initial['cycles'])) or None
+    w.templateValuesButton.click()
+    assert asked == [('ms-resolft', 2)]                    # the values it was made from
+    assert 'edited' not in w.templateValuesButton.toolTip()
+    _chips(rig)[2].count.setValue(4)
+    w.flushRefresh()
+    QtTest.QTest.qWait(rig.scan._reportTimer.interval() + 100)
+    assert w.titleLabel.text().endswith(', edited')
+    assert not w.templateValuesButton.isHidden() and 'edited' in w.templateValuesButton.toolTip()
+
+
+def test_choosing_another_kind_of_detector_takes_its_window_and_assembly(rig):
+    w = rig.widget
+    w.setBindingDetector(0, 'APD')
+    row = w.bindings.rows()[0]
+    assert (row['detector'], row['events'], row['window'], row['assembly']) == (
+        'APD', 'APD', 'step', 'image')
+    w.refreshParts()
+    editor = w.recording._editors[0]
+    assert not editor.pixels.isHidden() and editor.frames.isHidden()
+
+
+def test_the_template_form_fills_in_from_the_rig_and_guesses_nothing(rig):
+    from imswitch.imcontrol.view.widgets.ScanWidgetExpert import PresetDialog
+    dialog = PresetDialog(presets.PRESETS['raster'], rig.widget.devices, {}, lambda p: '',
+                          positions={'X': 3.0, 'Y': -1.5}, setup={'move_time': 0.002})
+    field = {name: editor for name, (_f, editor) in dialog._editors.items()}
+    assert (field['x_device'].currentText(), field['y_device'].currentText()) == ('X', 'Y')
+    assert (field['x_start_um'].text(), field['y_start_um'].text()) == ('3', '-1.5')
+    assert field['move_s'].text() == '2'                               # declared: 2 ms
+    assert field['settle_s'].text() == '' and field['settle_s'].placeholderText() == 'required'
+    field['x_device'].setCurrentText('Y')                              # follows the positioner
+    assert field['x_start_um'].text() == '-1.5'
+    field['y_start_um'].setText('7')                                   # typed: left alone
+    field['y_device'].setCurrentText('X')
+    assert field['y_start_um'].text() == '7'
+    titles = [dialog.layout().itemAt(1).layout().itemAt(i).widget().text()
+              for i in range(dialog.layout().itemAt(1).layout().count())
+              if dialog.layout().itemAt(1).layout().itemAt(i).widget() is not None
+              and dialog.layout().itemAt(1).layout().itemAt(i).widget().objectName()
+              == 'expertCardTitle']
+    assert titles == ['Positions', 'Pulses', 'Camera', 'Motion']
+
+
+def test_the_last_template_values_are_offered_again_and_kept_in_the_state(rig):
+    params = dict(x_device='X', y_device='Y', x_pixels=3, y_pixels=2, x_step_um=0.5,
+                  y_step_um=0.5, x_start_um=0.0, y_start_um=0.0,
+                  pulses=[[rig.lasers[0], 1e-3, 0.0]], camera='', exposure_pulse=1,
+                  move_s=5e-4, settle_s=5e-4, return_s=1e-3, traversal='forward',
+                  transition='jump')
+    rig.widget.askPresetParams = lambda preset, initial, validate, **_rig: params
+    rig.scan.makeFromPreset('raster')
+    rig.scan.setProgram(_ms_resolft(rig))                 # another scan in between
+    offered = []
+    rig.widget.askPresetParams = lambda preset, initial, validate, **_rig: offered.append(initial)
+    rig.scan.makeFromPreset('raster')
+    assert offered == [params]
+    state = rig.scan.getComponentState()
+    assert state['templateValues']['raster'] == params
+    rig.scan._templateValues = {}
+    rig.scan.applyComponentState(state, applyMode=None)
+    assert rig.scan._templateValues['raster'] == params
 
 
 # --- one state, two views ------------------------------------------------------------------
@@ -447,7 +535,7 @@ def test_an_edit_marks_the_preview_out_of_date(rig):
     rig.scan.plotProgram()
     assert w.preview.stale.text() == ''
     _chips(rig)[2].count.setValue(4)
-    assert w.preview.stale.text() == 'changed since drawn'
+    assert w.preview.stale.text() == 'out of date'
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

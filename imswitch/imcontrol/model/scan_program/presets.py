@@ -51,6 +51,14 @@ class Field:
     #: preset did before it existed, which a parameter set saved without it
     #: therefore means. ``None``: the field was always there.
     absent: Optional[str] = None
+    #: The form's section this field sits in ('Positions', 'Pulses', ...).
+    group: str = ''
+    #: The name of the positioner field whose tracked position fills this
+    #: field in when it is empty (a real position, never a guess).
+    position_of: Optional[str] = None
+    #: The key of the setup's ``scanDesignerParams`` that fills this field
+    #: in when it is empty and the setup declares it (``move_time``, ...).
+    from_setup: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -195,28 +203,30 @@ def trajectory(pattern, *, x_device, y_device, duration_s, window_s, approach_s,
 
 def _pattern_field(name, label, kind):
     if kind.startswith('choice:'):
-        return Field(name, label, 'choice', tuple(kind.split(':', 1)[1].split(',')))
+        return Field(name, label, 'choice', tuple(kind.split(':', 1)[1].split(',')),
+                     group='Path')
     if kind in ('pair-micrometres', 'pair-hertz'):
         unit = ' (µm, µm)' if kind == 'pair-micrometres' else ' (Hz, Hz)'
-        return Field(name, label + unit, 'pair')
-    return Field(name, label, kind)
+        return Field(name, label + unit, 'pair', group='Path')
+    return Field(name, label, kind, group='Path')
 
 
 def trajectory_preset(pattern):
     """The Make… preset of trajectory ``pattern`` (built in or a drop-in)."""
     import functools
     path = PATTERNS[pattern]
-    fields = ((Field('x_device', 'X device', 'positioner'),
-               Field('y_device', 'Y device', 'positioner'))
+    fields = ((Field('x_device', 'X scanner', 'positioner', group='Path'),
+               Field('y_device', 'Y scanner', 'positioner', group='Path'))
               + tuple(_pattern_field(*parameter) for parameter in path.parameters)
-              + (Field('duration_s', 'Time on the path', 'seconds'),
-                 Field('window_s', 'Measurement window', 'seconds',
+              + (Field('duration_s', 'Time on the path', 'seconds', group='Timing'),
+                 Field('window_s', 'Measurement window', 'seconds', group='Timing',
                        help='Each window is one measurement, binned at its centre.'),
-                 Field('approach_s', 'Approach', 'seconds',
-                       help='Onto the path from where the stage is, and back.'),
-                 Field('pixel_um', 'Grid pixel', 'micrometres'),
-                 Field('laser', 'Laser on along the path', 'optional-laser'),
+                 Field('approach_s', 'Approach', 'seconds', group='Timing',
+                       help='Onto the path from where the scanners are, and back.'),
+                 Field('pixel_um', 'Grid pixel', 'micrometres', group='Image'),
+                 Field('laser', 'Laser on along the path', 'optional-laser', group='Image'),
                  Field('record_measurements', 'Record every measurement', 'flag',
+                       group='Image',
                        help='Beside the gridded image, each window\'s measurement in the '
                             'order it was taken, with its time and position.')))
     return Preset(f'trajectory-{pattern}', f'Trajectory: {path.title}', fields,
@@ -226,51 +236,61 @@ def trajectory_preset(pattern):
                   'recorded beside the image.')
 
 
-_PULSES = Field('pulses', 'Pulse sequence', 'pulses',
+_PULSES = Field('pulses', 'Pulse sequence', 'pulses', group='Pulses',
                 help='Lasers one after another: on time, then a gap before the next.')
-_CAMERA = Field('camera', 'Camera', 'detector', help='Leave empty for no camera.')
-_EXPOSURE = Field('exposure_pulse', 'Camera exposes during pulse', 'count',
+_CAMERA = Field('camera', 'Camera', 'detector', group='Camera',
+                help='Leave empty for no camera.')
+_EXPOSURE = Field('exposure_pulse', 'Camera exposes during pulse', 'count', group='Camera',
                   help='The number of the pulse the camera exposes with (1 = the first).')
-_MOVE = Field('move_s', 'Move time', 'seconds',
-              help='How long the device takes from one position to the next.')
-_SETTLE = Field('settle_s', 'Settle time', 'seconds',
+_MOVE = Field('move_s', 'Move time', 'seconds', group='Motion', from_setup='move_time',
+              help='How long the positioner takes from one position to the next.')
+_SETTLE = Field('settle_s', 'Settle time', 'seconds', group='Motion', from_setup='settle_time',
                 help='How long it rests at a new position before the pulses start.')
 
 PRESETS: Dict[str, Preset] = {
     'ms-resolft': Preset(
         'ms-resolft', 'MS-RESOLFT (cycles x planes)',
-        (Field('device', 'Readout device', 'positioner'),
-         Field('cycles', 'Cycles', 'count'),
-         Field('planes', 'Planes per cycle', 'count'),
-         Field('cycle_step_um', 'Cycle step', 'micrometres',
-               help='Between neighbouring positions; planes are cycles x this apart.'),
-         Field('start_um', 'First position', 'micrometres'),
+        (Field('device', 'Readout positioner', 'positioner', group='Positions'),
+         Field('cycles', 'Cycles', 'count', group='Positions'),
+         Field('planes', 'Planes per cycle', 'count', group='Positions'),
+         Field('cycle_step_um', 'Position spacing', 'micrometres', group='Positions',
+               help='Between neighbouring positions once every cycle has run; within one '
+                    'cycle the planes are cycles x this apart.'),
+         Field('start_um', 'First position', 'micrometres', group='Positions',
+               position_of='device'),
          _PULSES, _CAMERA, _EXPOSURE,
-         Field('timepoints', 'Timepoints', 'count'),
-         Field('pause_s', 'Pause before each timepoint', 'seconds'),
+         Field('timepoints', 'Timepoints', 'count', group='Time lapse'),
+         Field('pause_s', 'Pause before each timepoint', 'seconds', group='Time lapse'),
          _MOVE, _SETTLE,
-         Field('transition', 'Move shape', 'choice', ('jump', 'linear', 'smooth'))),
+         Field('transition', 'Move shape', 'choice', ('jump', 'linear', 'smooth'),
+               group='Motion')),
         ms_resolft,
         'Positions start + dy * (cycle + cycles * plane), cycle by cycle; the camera '
         'layout carries cycle and plane, which the SNOUTY reconstructor reads.'),
     'pulse-sequence': Preset(
         'pulse-sequence', 'Pulse sequence (widefield RESOLFT)',
-        (_PULSES, _CAMERA, _EXPOSURE, Field('frames', 'Frames', 'count'),
-         Field('pause_s', 'Pause before each frame', 'seconds')),
+        (_PULSES, _CAMERA, _EXPOSURE, Field('frames', 'Frames', 'count', group='Repeats'),
+         Field('pause_s', 'Pause before each frame', 'seconds', group='Repeats')),
         pulse_sequence,
         'Lasers and camera only: a pulse generator can play it alone.'),
     'raster': Preset(
         'raster', 'Stepped raster',
-        (Field('x_device', 'X device', 'positioner'), Field('y_device', 'Y device', 'positioner'),
-         Field('x_pixels', 'X pixels', 'count'), Field('y_pixels', 'Y pixels', 'count'),
-         Field('x_step_um', 'X step', 'micrometres'), Field('y_step_um', 'Y step', 'micrometres'),
-         Field('x_start_um', 'X first position', 'micrometres'),
-         Field('y_start_um', 'Y first position', 'micrometres'),
+        (Field('x_device', 'X positioner', 'positioner', group='Positions'),
+         Field('y_device', 'Y positioner', 'positioner', group='Positions'),
+         Field('x_pixels', 'X pixels', 'count', group='Positions'),
+         Field('y_pixels', 'Y pixels', 'count', group='Positions'),
+         Field('x_step_um', 'X spacing', 'micrometres', group='Positions'),
+         Field('y_step_um', 'Y spacing', 'micrometres', group='Positions'),
+         Field('x_start_um', 'X first position', 'micrometres', group='Positions',
+               position_of='x_device'),
+         Field('y_start_um', 'Y first position', 'micrometres', group='Positions',
+               position_of='y_device'),
          _PULSES, _CAMERA, _EXPOSURE, _MOVE, _SETTLE,
-         Field('return_s', 'Line return time', 'seconds'),
-         Field('traversal', 'X order', 'choice', ('forward', 'serpentine')),
+         Field('return_s', 'Line return time', 'seconds', group='Motion',
+               from_setup='return_time'),
+         Field('traversal', 'X order', 'choice', ('forward', 'serpentine'), group='Motion'),
          Field('transition', 'Move shape', 'choice', ('smooth', 'linear', 'jump'),
-               absent='smooth')),
+               absent='smooth', group='Motion')),
         raster,
         'A pulse sequence at every pixel; APDs and PMTs assemble it as an image.'),
     **{f'trajectory-{pattern}': trajectory_preset(pattern) for pattern in PATTERNS},

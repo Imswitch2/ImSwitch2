@@ -137,8 +137,8 @@ def test_the_panel_offers_what_the_model_accepts():
 
 
 def test_an_empty_panel_says_what_to_do(rig):
-    assert 'no loops yet' in rig.widget.reportText()
-    assert rig.widget.engineLabel.text() == 'Runs on nidaq.'
+    assert 'no dimensions yet' in rig.widget.reportText()
+    assert rig.widget.engineLabel.isHidden()                 # one engine: the chip names it
 
 
 def test_a_preset_fills_the_tables_and_the_report(rig):
@@ -206,7 +206,7 @@ def test_a_cell_that_does_not_parse_is_named(rig, qtbot):
     rig.scan.setProgram(_ms_resolft(rig))
     rig.widget.loops.table.item(1, 2).setText('two')
     qtbot.waitUntil(lambda: 'Not runnable' in rig.widget.reportText(), timeout=3000)
-    assert "Scan order, loop 2, Count: 'two' is not a whole number" in rig.widget.reportText()
+    assert "Scan order, dimension 2, Count: 'two' is not a whole number" in rig.widget.reportText()
 
 
 def test_what_the_engine_cannot_run_is_reported_with_every_reason(rig):
@@ -221,7 +221,7 @@ def test_the_preset_form_reopens_with_its_values_and_refuses_what_is_missing(rig
     rig.scan.setProgram(program)
     seen = {}
 
-    def ask(preset, initial, validate):
+    def ask(preset, initial, validate, **_rig):
         seen['initial'] = initial
         seen['missing'] = validate(dict(initial, cycles=None))
         return dict(initial, planes=4)

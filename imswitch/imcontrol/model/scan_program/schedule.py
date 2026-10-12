@@ -28,6 +28,7 @@ import numpy as np
 
 from .interpreter import Expansion, Span, inner_drives
 from .policy import TimingPolicy, resolve_policy
+from .units import format_seconds
 
 #: The relative error of a time in ticks, however it is computed: the
 #: schedule's ``seconds * rate``, an engine's ``seconds / grid``. At most four
@@ -208,18 +209,7 @@ def realized_duration(seconds, rate_hz, policy, quantity='step', where='the dwel
     return ticks / conv.rate, (conv.refusals[0] if conv.refusals else '')
 
 
-def format_seconds(seconds) -> str:
-    """A duration in the unit that reads best (``4.03 ms``)."""
-    return _fmt(seconds)
-
-
-def _fmt(seconds):
-    seconds = float(seconds)
-    if seconds == 0:
-        return '0 s'
-    for unit, factor in (('s', 1.0), ('ms', 1e-3), ('µs', 1e-6), ('ns', 1e-9)):
-        if abs(seconds) >= factor or unit == 'ns':
-            return f'{seconds / factor:.6g} {unit}'
+_fmt = format_seconds
 
 
 def realize(expansion: Expansion, rate_hz: float, policy=None, *,

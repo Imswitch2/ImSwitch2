@@ -1,8 +1,12 @@
 """The parts of the Expert scan panel (docs/design/plans/
-scan-engines-and-expert-scan.md §4, §7.11): the scan described top to bottom
--- the order of its loops, where each drive goes, what happens inside every
-step, its waits and what each detector records -- beside what the scan engine
-makes of it and a preview with every device on its own lane.
+scan-engines-and-expert-scan.md §4, §7.11, §7.12): the scan described top to
+bottom -- the order of its dimensions, where each positioner goes, what happens
+within one step, its pauses and what each detector records -- beside whether
+the scan engine can run it and a preview with every device on its own lane.
+
+The panel speaks the user's words and the model keeps its own (§7.12): a
+loop is a *dimension* here, a drive a *positioner*, the step length the
+*dwell*, an event a *pulse*, an *exposure*, a *power level* or a *move*.
 
 Every part edits the panel's tables (``ScanWidgetExpert``): they stay the one
 state, so a value typed here and in the tables is the same value, and one that
@@ -30,25 +34,21 @@ KIND_NAMES = {
     'tile': ('tile', 'tiles'), 'position': ('position', 'positions'),
 }
 
-#: A loop's order, as a glyph and in words.
-TRAVERSAL_GLYPHS = {'forward': '→', 'reverse': '←', 'serpentine': '⇄'}
-TRAVERSAL_WORDS = {'forward': 'forward', 'reverse': 'backward',
-                   'serpentine': 'serpentine: every other pass back'}
+#: A dimension's order, in words.
+TRAVERSAL_WORDS = {'forward': 'forward', 'reverse': 'backward', 'serpentine': 'serpentine'}
 
 #: The model's values in words, for the choices the parts offer.
 TRANSITION_WORDS = {'jump': 'jumps', 'linear': 'moves linearly', 'smooth': 'moves smoothly'}
 PLACEMENT_WORDS = {'in-step': 'at the end of each step', 'between-steps': 'between steps'}
-ORIGIN_WORDS = {'absolute': 'absolute', 'captured': 'from where it starts'}
-RESTORE_WORDS = {'captured': 'back to where it started', 'first': 'to its first position',
-                 'park': 'to its park position', 'hold': 'stays where it ended'}
-EVENT_WORDS = {'ttl': 'on', 'detector': 'exposes', 'level': 'power level',
-               'offset': 'moves by', 'marker': 'marker'}
+ORIGIN_WORDS = {'absolute': 'absolute', 'captured': 'relative to where it starts'}
+RESTORE_WORDS = {'captured': 'back to where it started', 'first': 'back to its first position',
+                 'park': 'to its park position', 'hold': 'it stays where it ended'}
+EVENT_WORDS = {'ttl': 'pulse', 'detector': 'exposure', 'level': 'power',
+               'offset': 'move', 'marker': 'marker'}
 SHAPE_WORDS = {'hold': 'held', 'ramp': 'ramped'}
-DURING_WORDS = {'stationary': 'only while the drives stand still', 'any': 'any time'}
+DURING_WORDS = {'stationary': 'while the stage stands still', 'any': 'any time, even while moving'}
 TIMEOUT_WORDS = {'fail': 'the scan fails', 'continue': 'it carries on'}
 HOLD_WORDS = {'idle': 'off', 'hold': 'held as they are'}
-WINDOW_WORDS = {'event': 'one per pulse', 'step': 'over the whole step'}
-ASSEMBLY_WORDS = {'stream': 'as frames', 'image': 'as an image'}
 
 #: What a verdict looks like in the check: (glyph, colour role).
 VERDICT_STYLE = {'native': ('✓', 'ok'), 'emulated': ('~', 'warn'),
@@ -370,9 +370,10 @@ def _clear(layout, keep=()):
 # ---------------------------------------------------------------------------
 
 class VisitStrip(QtWidgets.QWidget):
-    """The positions one drive visits, step by step, as bars: an interleaved
-    or serpentine order is seen at a glance. Bars are shaded by the outer of
-    the two loops shown."""
+    """The positions one positioner visits, step by step, as a line through
+    points: an interleaved or serpentine order is seen at a glance. The
+    points are shaded by the outer of the two dimensions shown, and the
+    lowest and highest positions are written at the right edge."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -390,42 +391,71 @@ class VisitStrip(QtWidgets.QWidget):
 
     def sizeHint(self):
         return QtCore.QSize(self.fontMetrics().averageCharWidth() * 40,
-                            self.fontMetrics().height() * 3)
+                            self.fontMetrics().height() * 4)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(0, self.fontMetrics().height() * 3)
+        return QtCore.QSize(0, self.fontMetrics().height() * 4)
 
     def paintEvent(self, _event):
         if not self._positions:
             return
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        metrics = self.fontMetrics()
         low, high = min(self._positions), max(self._positions)
         span = (high - low) or 1.0
-        width = self.width() / len(self._positions)
-        bottom = self.height() - 1
-        for index, (position, shade) in enumerate(zip(self._positions, self._shades)):
+        labels = [f'{high:.6g}', f'{low:.6g}'] if high > low else [f'{low:.6g} µm']
+        labelW = max(metrics.horizontalAdvance(t) for t in labels) + metrics.averageCharWidth()
+        radius = max(2.0, metrics.height() / 5)
+        plotW = max(1.0, self.width() - labelW - 2 * radius)
+        top, bottom = radius + 1, self.height() - radius - 1
+        gap = plotW / len(self._positions)
+        text = self.palette().color(QtGui.QPalette.WindowText)
+        muted = QtGui.QColor(text)
+        muted.setAlphaF(0.6)
+
+        def point(index, position):
+            return QtCore.QPointF(radius + gap * (index + 0.5),
+                                  bottom - (position - low) / span * (bottom - top))
+
+        points = [point(i, p) for i, p in enumerate(self._positions)]
+        line = QtGui.QColor(self._color)
+        line.setAlphaF(0.6)
+        painter.setPen(QtGui.QPen(line, 1.2))
+        if len(points) > 1:
+            painter.drawPolyline(QtGui.QPolygonF(points))
+        painter.setPen(QtCore.Qt.NoPen)
+        for centre, shade in zip(points, self._shades):
             color = QtGui.QColor(self._color)
             color = color.lighter(100 + 35 * (shade % 3)) if shade % 2 else color.darker(
                 100 + 25 * (shade % 3))
-            height = 2 + (position - low) / span * (bottom - 4)
-            rect = QtCore.QRectF(index * width + width * 0.15, bottom - height,
-                                 max(1.0, width * 0.7), height)
-            painter.fillRect(rect, color)
+            painter.setBrush(color)
+            painter.drawEllipse(centre, radius, radius)
+        painter.setPen(muted)
+        x = self.width() - labelW + metrics.averageCharWidth()
+        if high > low:
+            painter.drawText(QtCore.QPointF(x, top + metrics.ascent() / 2), labels[0])
+            painter.drawText(QtCore.QPointF(x, bottom + metrics.ascent() / 2), labels[1])
+        else:
+            painter.drawText(QtCore.QPointF(x, (top + bottom) / 2 + metrics.ascent() / 2),
+                             labels[0])
         painter.end()
 
 
 class OrderCard(Card):
-    """The loops as nested blocks, each with its count and order; the waits
-    before a loop's iterations as a badge; the visit order of the first drive."""
+    """The dimensions as nested blocks, slowest first, each with its count
+    and order; the pauses before a dimension's iterations as a badge; the
+    order the first positioner visits its positions in."""
 
     def __init__(self, panel, parent=None):
-        super().__init__('Scan order, outermost first', parent)
+        super().__init__('Scan order', parent)
         self._panel = panel
+        self.header.addWidget(_muted('slowest to fastest'))
         self.flowHost = QtWidgets.QWidget()
         self.flow = FlowLayout(self.flowHost)
         self.body.addWidget(self.flowHost)
-        self.addButton = _menu_button('+ Loop', 'Add a loop inside the others.')
+        self.addButton = _menu_button('+ Dimension', 'Add a dimension inside the others: '
+                                                    'timepoints, planes, cycles, tiles, ...')
         for kind, (_one, many) in KIND_NAMES.items():
             action = self.addButton.menu().addAction(many.capitalize())
             action.triggered.connect(lambda _c=False, k=kind: panel.addLoop(k))
@@ -486,56 +516,56 @@ class _LoopChip(QtWidgets.QFrame):
         self._panel, self._index = panel, index
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 4, 2)
-        self.name = QtWidgets.QLabel()
         self.count = QtWidgets.QSpinBox()
         self.count.setRange(1, 2 ** 31 - 1)
         self.count.setKeyboardTracking(False)
         self.count.valueChanged.connect(
             lambda v: panel.setTableValue('loops', self._index, 'count', str(v)))
-        self.order = QtWidgets.QToolButton()
-        self.order.setAutoRaise(True)
-        self.order.clicked.connect(self._nextOrder)
+        self.name = QtWidgets.QLabel()
+        # the outermost dimension has none outside it to alternate with
+        orders = ('forward', 'reverse', 'serpentine') if index else ('forward', 'reverse')
+        self.order = _combo(orders, TRAVERSAL_WORDS,
+                            'The order its iterations run in. Serpentine: every other pass '
+                            'of the dimension outside it runs backwards.')
+        self.order.currentIndexChanged.connect(
+            lambda _i: self._setOrder(self.order.currentData(), 1))
         self.badge = QtWidgets.QLabel()
         self.badge.setObjectName('expertMuted')
-        self.more = _menu_button('⋯', 'Rename, move, change or remove this loop.')
+        self.more = _menu_button('⋯', 'Rename, move, change or remove this dimension.')
         self.more.setAutoRaise(True)
         self.more.menu().aboutToShow.connect(self._fillMenu)
-        for widget in (self.name, self.count, self.order, self.badge, self.more):
+        for widget in (self.count, self.name, self.order, self.badge, self.more):
             layout.addWidget(widget)
 
     def update_from(self, row, waits, ambiguous):
         kind = row['kind']
-        many = KIND_NAMES.get(kind, (kind, kind))[1].capitalize()
-        self.name.setText(f'{many} ({row["id"]})' if ambiguous else many)
-        self.name.setToolTip(f'Loop {row["id"]!r} ({kind}). The drives\' formulas and the '
-                             'events\' anchors name it by its id.')
+        one, many = KIND_NAMES.get(kind, (kind, kind))
         try:
-            _quiet_set(self.count, self.count.setValue, int(row['count']))
+            count = int(row['count'])
+            _quiet_set(self.count, self.count.setValue, count)
             self.count.setStyleSheet('')
             self.count.setToolTip('How many iterations.')
         except ValueError:
+            count = 0
             self.count.setStyleSheet(f'color: {role_color("bad")};')
             self.count.setToolTip(f'The table holds {row["count"]!r}, not a count.')
+        name = one if count == 1 else many
+        self.name.setText(f'{name} ({row["id"]})' if ambiguous else name)
+        self.name.setToolTip(f'Dimension {row["id"]!r} ({kind}). The positioners\' formulas '
+                             'and the events\' anchors name it by its id.')
         traversal = row['traversal'] or 'forward'
-        self.order.setText(TRAVERSAL_GLYPHS.get(traversal, traversal))
+        _set_combo(self.order, traversal)
         alternates = f', alternating with {row["parity_loops"]}' if row['parity_loops'] else ''
         self.order.setToolTip(f'Order: {TRAVERSAL_WORDS.get(traversal, traversal)}'
-                              f'{alternates}. Click for the next order.')
+                              f'{alternates}.')
         here = [w for w in waits if w['at'] == row['id']]
         self.badge.setText(', '.join(_wait_badge(w) for w in here))
         self.badge.setVisible(bool(here))
 
-    def _nextOrder(self):
-        loops = self._panel.tableRows('loops')
-        row = loops[self._index]
-        # the outermost loop has no loop outside it to alternate with
-        order = list(TRAVERSAL_GLYPHS) if self._index else ['forward', 'reverse']
-        current = row['traversal'] if row['traversal'] in order else order[-1]
-        self._setOrder(order[(order.index(current) + 1) % len(order)], 1)
-
     def _setOrder(self, traversal, outside):
-        """``traversal``; a serpentine alternates with the ``outside`` loops
-        right outside it, outermost first -- the only parity the model takes."""
+        """``traversal``; a serpentine alternates with the ``outside``
+        dimensions right outside it, outermost first -- the only parity the
+        model takes."""
         loops = self._panel.tableRows('loops')
         parity = ([loop['id'] for loop in loops[self._index - outside:self._index]]
                   if traversal == 'serpentine' else [])
@@ -550,10 +580,10 @@ class _LoopChip(QtWidgets.QFrame):
         row = loops[self._index]
         rename = menu.addAction('Rename…')
         rename.triggered.connect(self._rename)
-        outwards = menu.addAction('Move outwards')
+        outwards = menu.addAction('Make slower (move outwards)')
         outwards.setEnabled(self._index > 0)
         outwards.triggered.connect(lambda: panel.moveLoop(self._index, -1))
-        inwards = menu.addAction('Move inwards')
+        inwards = menu.addAction('Make faster (move inwards)')
         inwards.setEnabled(self._index < len(loops) - 1)
         inwards.triggered.connect(lambda: panel.moveLoop(self._index, +1))
         kinds = menu.addMenu('Kind')
@@ -582,8 +612,8 @@ class _LoopChip(QtWidgets.QFrame):
     def _rename(self):
         row = self._panel.tableRows('loops')[self._index]
         name, ok = QtWidgets.QInputDialog.getText(
-            self, 'Rename loop', 'Its id, as the drives\' formulas and the events name it:',
-            text=row['id'])
+            self, 'Rename dimension', 'Its id, as the positioners\' formulas and the events '
+                                      'name it:', text=row['id'])
         if ok and name.strip() and name.strip() != row['id']:
             self._panel.renameLoop(self._index, name.strip())
 
@@ -595,7 +625,7 @@ def _wait_badge(wait) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Positions: each drive as a formula of the loop counters
+# Positions: each positioner as a sentence over the dimensions
 # ---------------------------------------------------------------------------
 
 class PositionsCard(Card):
@@ -604,7 +634,7 @@ class PositionsCard(Card):
         self._panel = panel
         self.rowsHost = QtWidgets.QVBoxLayout()
         self.body.addLayout(self.rowsHost)
-        self.addButton = _menu_button('+ Drive', 'Move a positioner with the loops.')
+        self.addButton = _menu_button('+ Positioner', 'Move a positioner with the dimensions.')
         self.addButton.menu().aboutToShow.connect(self._fillAdd)
         self.header.addWidget(self.addButton)
         self.empty = _muted('No positioner moves: the scan switches lasers and detectors only.')
@@ -621,8 +651,8 @@ class PositionsCard(Card):
 
     def refresh(self):
         drives = self._panel.tableRows('drives')
-        loops = [row['id'] for row in self._panel.tableRows('loops') if row['id']]
-        signature = (len(drives), tuple(loops))
+        loops = self._panel.loopNames()
+        signature = (len(drives), tuple(loops.items()))
         if signature != self._signature:
             for editor in self._editors:
                 editor.setParent(None)
@@ -638,10 +668,15 @@ class PositionsCard(Card):
 
 
 class _DriveEditor(QtWidgets.QFrame):
-    def __init__(self, panel, index, loops):
+    """One positioner as two sentences: where it goes (*Z starts at 1 µm,
+    moves 0.25 µm per cycle and 0.5 µm per plane*; a dimension that does not
+    move it is behind *+ also per…*) and how it moves."""
+
+    def __init__(self, panel, index, loops: Dict[str, str]):
         super().__init__()
         self.setObjectName('expertRow')
-        self._panel, self._index, self._loops = panel, index, list(loops)
+        self._panel, self._index, self._loops = panel, index, dict(loops)
+        self._revealed = set()
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
 
@@ -650,18 +685,22 @@ class _DriveEditor(QtWidgets.QFrame):
         self.device = _combo(panel.devices.get('positioner', ()))
         self.device.currentIndexChanged.connect(
             lambda _i: self._write('device', self.device.currentData()))
-        self.offset = _field(6, 'Where it is at the first iteration of every loop, in µm.')
+        self.offset = _field(6, 'Where it is at the first iteration of every dimension, in µm.')
         _on_commit(self.offset, lambda t: self._write('offset_um', t))
-        formula.addWidget(_group(self.device, '=', self.offset, 'µm'))
+        formula.addWidget(_group(self.device, 'starts at', self.offset, 'µm'))
         self.weights = {}
-        for loop in self._loops:
-            weight = _field(5, f'µm per {loop}: how far it moves for each count of {loop}. '
-                               'Blank: this loop does not move it.')
+        for loop, name in self._loops.items():
+            weight = _field(5, f'How far it moves for each {name} ({loop}), in µm. '
+                               'Blank: this dimension does not move it.')
             weight.setPlaceholderText('0')
             _on_commit(weight, lambda t, lp=loop: self._write(f'w:{lp}', t))
-            group = _group('+', weight, f'µm × {loop}')
+            lead = QtWidgets.QLabel('moves')
+            group = _group(lead, weight, f'µm per {name}')
             formula.addWidget(group)
-            self.weights[loop] = (group, weight)
+            self.weights[loop] = (group, weight, lead)
+        self.alsoButton = _menu_button('+ also per…', 'Move it with another dimension too.')
+        self.alsoButton.menu().aboutToShow.connect(self._fillAlso)
+        formula.addWidget(self.alsoButton)
         self.tableText = QtWidgets.QLabel()
         self.tableText.setObjectName('expertMuted')
         formula.addWidget(self.tableText)
@@ -676,7 +715,7 @@ class _DriveEditor(QtWidgets.QFrame):
         self.transition.currentIndexChanged.connect(
             lambda _i: self._write('transition', self.transition.currentData()))
         self.placement = _combo(('in-step', 'between-steps'), PLACEMENT_WORDS,
-                                'At the end of each step (inside its length), or in a pause '
+                                'At the end of each step (inside its dwell), or in a pause '
                                 'between steps.')
         self.placement.currentIndexChanged.connect(
             lambda _i: self._write('placement', self.placement.currentData()))
@@ -684,8 +723,8 @@ class _DriveEditor(QtWidgets.QFrame):
         _on_commit(self.move, lambda t: self._write('move_s', t))
         self.settle = _field(4, 'Time it then needs to stand still, in ms.')
         _on_commit(self.settle, lambda t: self._write('settle_s', t))
-        self.ret = _field(4, 'Time to return at the end of every pass of the innermost loop, '
-                             'in ms.')
+        self.ret = _field(4, 'Time to return to the start of a line, after every pass of the '
+                             'fastest dimension, in ms.')
         _on_commit(self.ret, lambda t: self._write('return_s', t))
         self.origin = _combo(('absolute', 'captured'), ORIGIN_WORDS,
                              'Positions as written, or added to where it is when the scan '
@@ -696,28 +735,68 @@ class _DriveEditor(QtWidgets.QFrame):
                               'Where it goes after the scan.')
         self.restore.currentIndexChanged.connect(
             lambda _i: self._write('restore', self.restore.currentData()))
-        for widget in (_group(self.transition, self.placement),
-                       _group('move', self.move, 'ms'), _group('settle', self.settle, 'ms'),
-                       _group('return', self.ret, 'ms'), _group('positions', self.origin),
-                       _group('after the scan', self.restore),
-                       _remove_button('Remove this drive.',
-                                      lambda: panel.removeTableRow('drives', self._index))):
+        for widget in (_group('Moves:', self.transition, self.placement),
+                       _group('taking', self.move, 'ms,'),
+                       _group('then settles', self.settle, 'ms.'),
+                       _group('Return to the line start:', self.ret, 'ms.')):
             motion.addWidget(widget)
         outer.addWidget(motionHost)
+        afterHost = QtWidgets.QWidget()
+        after = FlowLayout(afterHost)
+        for widget in (_group('Positions are', self.origin, '.'),
+                       _group('After the scan:', self.restore),
+                       _remove_button('Remove this positioner from the scan.',
+                                      lambda: panel.removeTableRow('drives', self._index))):
+            after.addWidget(widget)
+        outer.addWidget(afterHost)
 
     def _write(self, key, text):
         self._panel.setTableValue('drives', self._index, key, text)
+
+    def _hidden(self):
+        """The dimensions that do not move this positioner and are not
+        revealed: a blank or zero weight."""
+        row = self._panel.tableRows('drives')[self._index]
+        hidden = []
+        for loop in self._loops:
+            text = row.get(f'w:{loop}', '').strip()
+            try:
+                moves = bool(text) and float(text) != 0
+            except ValueError:
+                moves = True                   # a value that does not read stays in view
+            if not moves and loop not in self._revealed:
+                hidden.append(loop)
+        return hidden
+
+    def _fillAlso(self):
+        menu = self.alsoButton.menu()
+        menu.clear()
+        for loop in self._hidden():
+            action = menu.addAction(self._loops[loop])
+            action.triggered.connect(lambda _c=False, lp=loop: self._reveal(lp))
+
+    def _reveal(self, loop):
+        self._revealed.add(loop)
+        self._panel.refreshParts()
+        self.weights[loop][1].setFocus()
 
     def update_from(self, row, span):
         _set_combo(self.device, row['device'])
         _quiet_set(self.offset, self.offset.setText, row['offset_um'])
         tabled = bool(row['table_loop'])
-        for loop, (group, weight) in self.weights.items():
+        hidden = set(self._hidden())
+        first = True
+        for loop, (group, weight, lead) in self.weights.items():
             _quiet_set(weight, weight.setText, row.get(f'w:{loop}', ''))
-            group.setVisible(not tabled)
+            shown = not tabled and loop not in hidden
+            group.setVisible(shown)
+            if shown:
+                lead.setText('and moves' if first else 'and')
+                first = False
+        self.alsoButton.setVisible(not tabled and len(hidden) > 0)
         self.tableText.setVisible(tabled)
         if tabled:
-            self.tableText.setText(f'+ the table over {row["table_loop"]}: '
+            self.tableText.setText(f'and follows the table over {row["table_loop"]}: '
                                    f'{row["table_um"]} µm (edit it in Tables)')
         self.range.setText(span)
         self.range.setVisible(bool(span))
@@ -1055,32 +1134,41 @@ def _nice_ticks(t0, t1, most):
     return [i * step for i in range(first, int(t1 / step + 1e-9) + 1)]
 
 
+#: What the step card adds: (button, event kind, the devices it offers).
+ADD_EVENT_BUTTONS = (('+ Pulse', 'ttl', 'laser'), ('+ Exposure', 'detector', 'detector'),
+                     ('+ Power level', 'level', 'laser'), ('+ Move', 'offset', 'positioner'))
+
+
 class StepCard(Card):
-    """Inside every step: its length, the timeline drawn and edited, and the
+    """Within one step: its dwell, the timeline drawn and edited, and the
     selected event's fields."""
 
     def __init__(self, panel, parent=None):
-        super().__init__('Inside every step', parent)
+        super().__init__('Within one step', parent)
         self._panel = panel
-        self.stepField = _field(6, 'The length of every innermost step, in ms.')
+        self.stepField = _field(6, 'The dwell: the length of every step, in ms.')
         self.stepField.setPlaceholderText('set')
         _on_commit(self.stepField, panel.stepPar.setText)
         self.phase = QtWidgets.QComboBox()
         self.phase.setToolTip('Show the step as one phase plays it.')
         self.phase.currentIndexChanged.connect(lambda _i: self.refresh())
-        self.addButton = _menu_button('+ Event', 'Add a pulse, an exposure, a power level or '
-                                                 'a move.')
-        self.addButton.menu().aboutToShow.connect(self._fillAdd)
-        for widget in (_group('step', self.stepField, 'ms'), self.phase, self.addButton):
-            self.header.addWidget(widget)
+        self.addButtons: Dict[str, QtWidgets.QToolButton] = {}
+        self.header.addWidget(_group('dwell', self.stepField, 'ms'))
+        self.header.addWidget(self.phase)
+        for title, kind, group in ADD_EVENT_BUTTONS:
+            button = _menu_button(title, f'Add a {title[2:].lower()} of a {group} to every step.')
+            button.menu().aboutToShow.connect(
+                lambda b=button, k=kind, g=group: self._fillAdd(b, k, g))
+            self.addButtons[kind] = button
+            self.header.addWidget(button)
         self.canvas = StepCanvas()
         self.canvas.beforePress = panel.flushRefresh
         self.canvas.sigSelected.connect(self._select)
         self.canvas.sigChanged.connect(self._dragged)
         self.canvas.sigDelete.connect(lambda row: panel.removeTableRow('timeline', row))
         self.body.addWidget(self.canvas)
-        self.hint = _muted('Drag a bar to move it, an edge to resize it; arrow keys nudge the '
-                           'selected one.')
+        self.hint = _muted('Hatched: a positioner moves and settles. Drag a bar to move it, an '
+                           'edge to resize it; arrow keys nudge the selected one.')
         self.body.addWidget(self.hint)
         self.noteHost = QtWidgets.QWidget()
         self.notes = FlowLayout(self.noteHost)
@@ -1088,19 +1176,15 @@ class StepCard(Card):
         self.inspector = _EventInspector(panel)
         self.body.addWidget(self.inspector)
 
-    def _fillAdd(self):
-        menu = self.addButton.menu()
+    def _fillAdd(self, button, kind, group):
+        menu = button.menu()
         menu.clear()
-        devices = self._panel.devices
-        for title, kind, group in (('Pulse', 'ttl', 'laser'),
-                                   ('Camera exposure', 'detector', 'detector'),
-                                   ('Power level', 'level', 'laser'),
-                                   ('Move by', 'offset', 'positioner')):
-            sub = menu.addMenu(title)
-            for name in devices.get(group, ()):
-                action = sub.addAction(name)
-                action.triggered.connect(lambda _c=False, n=name, k=kind: self._add(n, k))
-            sub.setEnabled(bool(devices.get(group)))
+        names = self._panel.devices.get(group, ())
+        for name in names:
+            action = menu.addAction(name)
+            action.triggered.connect(lambda _c=False, n=name, k=kind: self._add(n, k))
+        if not names:
+            menu.addAction(f'No {group} in this setup').setEnabled(False)
 
     def _add(self, device, kind):
         row = self._panel.addEvent(device, kind)
@@ -1188,13 +1272,15 @@ class _EventInspector(QtWidgets.QFrame):
         self.phases.setPlaceholderText('every')
         _on_commit(self.phases, lambda t: self._write('phases', t))
         self.phasesGroup = _group('phases', self.phases)
-        self.during = _combo(('stationary', 'any'), DURING_WORDS)
+        self.during = _combo(('stationary', 'any'), DURING_WORDS,
+                             'Whether it may play while a positioner moves or settles.')
         self.during.currentIndexChanged.connect(
             lambda _i: self._write('during', self.during.currentData()))
-        self.still = _field(8, 'The drives that must stand still under it. Blank: every drive.')
-        self.still.setPlaceholderText('every drive')
+        self.still = _field(8, 'The positioners that must stand still under it. Blank: every '
+                               'positioner.')
+        self.still.setPlaceholderText('every positioner')
         _on_commit(self.still, lambda t: self._write('still', t))
-        self.stillGroup = _group('still:', self.still)
+        self.stillGroup = _group('waits for:', self.still)
         self.anchor = QtWidgets.QComboBox()
         self.anchor.setToolTip('Every step, or only the first or last step of each pass of '
                                'a loop.')
@@ -1266,23 +1352,28 @@ class _EventInspector(QtWidgets.QFrame):
 
 
 # ---------------------------------------------------------------------------
-# Waits and recording, as sentences
+# Pauses and triggers, and recording, as sentences
 # ---------------------------------------------------------------------------
 
 class WaitsCard(Card):
     def __init__(self, panel, parent=None):
-        super().__init__('Waits', parent)
+        super().__init__('Pauses and triggers', parent)
         self._panel = panel
         self.rowsHost = QtWidgets.QVBoxLayout()
         self.body.addLayout(self.rowsHost)
-        self.empty = _muted('No waits: the steps follow one another.')
+        self.empty = _muted('None: the steps follow one another.')
         self.body.addWidget(self.empty)
-        self.addButton = _menu_button('+ Wait')
-        pause = self.addButton.menu().addAction('A pause')
-        pause.triggered.connect(lambda: panel.addWait('time'))
-        trigger = self.addButton.menu().addAction('Wait for a trigger')
-        trigger.triggered.connect(lambda: panel.addWait('external'))
-        self.header.addWidget(self.addButton)
+        self.pauseButton = QtWidgets.QToolButton()
+        self.pauseButton.setText('+ Pause')
+        self.pauseButton.setToolTip('A fixed pause before the scan, every step or every '
+                                    'iteration of a dimension.')
+        self.pauseButton.clicked.connect(lambda: panel.addWait('time'))
+        self.triggerButton = QtWidgets.QToolButton()
+        self.triggerButton.setText('+ Wait for trigger')
+        self.triggerButton.setToolTip('Wait for an external trigger before going on.')
+        self.triggerButton.clicked.connect(lambda: panel.addWait('external'))
+        self.header.addWidget(self.pauseButton)
+        self.header.addWidget(self.triggerButton)
         self._editors: List[_WaitEditor] = []
         self._signature = None
 
@@ -1332,13 +1423,14 @@ class _WaitEditor(QtWidgets.QWidget):
         self.onTimeout = _combo(('fail', 'continue'), TIMEOUT_WORDS)
         self.onTimeout.currentIndexChanged.connect(
             lambda _i: self._write('on_timeout', self.onTimeout.currentData()))
-        self.hold = _combo(('idle', 'hold'), HOLD_WORDS, 'Lasers and windows while it waits.')
+        self.hold = _combo(('idle', 'hold'), HOLD_WORDS,
+                           'The lasers and camera windows while it waits.')
         self.hold.currentIndexChanged.connect(lambda _i: self._write('hold',
                                                                      self.hold.currentData()))
         self.timeoutGroup = _group('then after', self.timeout, 'ms', self.onTimeout)
         for widget in (_group('Before', self.at), _group(self.trigger, self.interval, 'ms'),
-                       self.timeoutGroup, _group('outputs', self.hold),
-                       _remove_button('Remove this wait.',
+                       self.timeoutGroup, _group('meanwhile the lasers are', self.hold),
+                       _remove_button('Remove this pause.',
                                       lambda: panel.removeTableRow('waits', self._index))):
             flow.addWidget(widget)
 
@@ -1363,7 +1455,9 @@ class RecordingCard(Card):
         self.body.addLayout(self.rowsHost)
         self.status = QtWidgets.QVBoxLayout()
         self.body.addLayout(self.status)
-        self.addButton = _menu_button('+ Detector', 'Say what a detector records.')
+        self.addButton = _menu_button('+ Detector', 'Say what a detector records; without '
+                                                    'it, a detector is recorded as its trigger '
+                                                    'line fires.')
         self.addButton.menu().aboutToShow.connect(self._fillAdd)
         self.header.addWidget(self.addButton)
         self._editors: List[_BindingEditor] = []
@@ -1383,7 +1477,7 @@ class RecordingCard(Card):
 
     def _drawLines(self):
         _clear(self.status)
-        lines = self._lines or (['Each detector is recorded as its line fires.']
+        lines = self._lines or (['Each detector is recorded as its trigger line fires.']
                                 if not self._panel.tableRows('detectors') else [])
         for line in lines:
             self.status.addWidget(_muted(line))
@@ -1407,19 +1501,25 @@ class RecordingCard(Card):
 
 
 class _BindingEditor(QtWidgets.QWidget):
+    """What one detector records, as a sentence. A camera records frames,
+    one per trigger window; a point detector (APD, PMT) integrates each whole
+    step into one pixel of an image. Those are the only combinations the
+    model accepts (bindings), so the window and assembly are said, not
+    offered; choosing the other kind of detector rewrites them."""
+
     def __init__(self, panel, index, events):
         super().__init__()
         self._panel, self._index = panel, index
         flow = FlowLayout(self)
         self.detector = _combo(panel.devices.get('detector', ()))
         self.detector.currentIndexChanged.connect(
-            lambda _i: self._write('detector', self.detector.currentData()))
+            lambda _i: panel.setBindingDetector(self._index, self.detector.currentData()))
         self.perStep = QtWidgets.QSpinBox()
         self.perStep.setRange(1, 2 ** 31 - 1)
         self.perStep.setKeyboardTracking(False)
         self.perStep.valueChanged.connect(lambda v: self._write('per_step', str(v)))
-        self.events = _combo(events, tooltip='The events it takes: an event\'s id, or a '
-                                             'device whose events trigger it.')
+        self.events = _combo(events, tooltip='What triggers it: an event\'s id, or a device '
+                                             'whose events trigger it.')
         self.events.setEditable(True)
         self.events.lineEdit().editingFinished.connect(
             lambda: self._write('events', self.events.currentText()))
@@ -1427,18 +1527,15 @@ class _BindingEditor(QtWidgets.QWidget):
         self.phases = _field(5, 'The phases it takes part in, as 0, 2, … Blank: every phase.')
         self.phases.setPlaceholderText('every')
         _on_commit(self.phases, lambda t: self._write('phases', t))
-        self.window = _combo(('event', 'step'), WINDOW_WORDS, 'A frame for each pulse on its '
-                                                              'line, or a value over each step.')
-        self.window.currentIndexChanged.connect(
-            lambda _i: self._write('window', self.window.currentData()))
-        self.assembly = _combo(('stream', 'image'), ASSEMBLY_WORDS)
-        self.assembly.currentIndexChanged.connect(
-            lambda _i: self._write('assembly', self.assembly.currentData()))
-        for widget in (_group(self.detector, 'takes', self.perStep, 'per step'),
-                       _group('from', self.events), _group('in phases', self.phases),
-                       _group(self.window, self.assembly),
-                       _remove_button('Remove this binding: the detector is then recorded as '
-                                      'its line fires.',
+        self.framesWord = QtWidgets.QLabel('frames per step, triggered by')
+        self.frames = _group('records', self.perStep, self.framesWord, self.events)
+        self.pixels = QtWidgets.QLabel('integrates each whole step into one pixel of an image')
+        self.odd = QtWidgets.QLabel()
+        self.odd.setObjectName('expertProblems')
+        for widget in (self.detector, self.frames, self.pixels, self.odd,
+                       _group('in phases', self.phases),
+                       _remove_button('Remove: the detector is then recorded as its trigger '
+                                      'line fires.',
                                       lambda: panel.removeTableRow('detectors', self._index))):
             flow.addWidget(widget)
 
@@ -1449,6 +1546,8 @@ class _BindingEditor(QtWidgets.QWidget):
         _set_combo(self.detector, row['detector'])
         try:
             _quiet_set(self.perStep, self.perStep.setValue, int(row['per_step']))
+            self.framesWord.setText(('frame' if int(row['per_step']) == 1 else 'frames')
+                                    + ' per step, triggered by')
         except ValueError:
             pass
         if not self.events.lineEdit().hasFocus():
@@ -1456,8 +1555,15 @@ class _BindingEditor(QtWidgets.QWidget):
             self.events.setEditText(row['events'])
             del blocker
         _quiet_set(self.phases, self.phases.setText, row['phases'])
-        _set_combo(self.window, row['window'])
-        _set_combo(self.assembly, row['assembly'])
+        point = self._panel.isPointDetector(row['detector'])
+        expected = ('step', 'image') if point else ('event', 'stream')
+        usual = (row['window'], row['assembly']) == expected
+        self.frames.setVisible(not point and usual)
+        self.pixels.setVisible(point and usual)
+        self.odd.setVisible(not usual)
+        if not usual:
+            self.odd.setText(f'window {row["window"]!r}, assembly {row["assembly"]!r} (set in '
+                             'Tables): the check says whether the model takes it')
 
 
 # ---------------------------------------------------------------------------
@@ -1489,29 +1595,44 @@ class TrajectoryCard(Card):
 
 
 class StartCard(Card):
-    """An empty program: start from a template, or add a loop."""
+    """An empty scan: start from a template or a trajectory, or add the
+    first dimension and build it by hand."""
 
     def __init__(self, panel, parent=None):
-        super().__init__('Start a scan', parent)
+        super().__init__('Start from a template', parent)
         self.flowHost = QtWidgets.QWidget()
         self.flow = FlowLayout(self.flowHost)
         self.body.addWidget(self.flowHost)
-        self.body.addWidget(_muted('A template asks for a few values and writes the program; '
-                                   'or add a loop and build it part by part.'))
+        self.body.addWidget(_muted('A template asks for a few values and writes the scan, '
+                                   'which you then edit below; a trajectory follows a path '
+                                   'instead of dimensions.'))
+        self.buildHost = QtWidgets.QWidget()
+        self.build = FlowLayout(self.buildHost)
+        self.body.addWidget(self.buildHost)
         self._panel = panel
 
-    def setTemplates(self, templates):
+    def setTemplates(self, templates, trajectories=()):
         _clear(self.flow)
+        _clear(self.build)
         for preset_id, title in templates:
             button = QtWidgets.QPushButton(title)
             button.clicked.connect(
                 lambda _c=False, p=preset_id: self._panel.sigPresetRequested.emit(p))
             self.flow.addWidget(button)
-        add = _menu_button('+ Loop')
+        if trajectories:
+            paths = _menu_button('Trajectory ▾', 'Two scanners along a free path: a circle, a '
+                                                 'spiral, a Lissajous figure, points, Python.')
+            for preset_id, title in trajectories:
+                action = paths.menu().addAction(title)
+                action.triggered.connect(
+                    lambda _c=False, p=preset_id: self._panel.sigPresetRequested.emit(p))
+            self.flow.addWidget(paths)
+        self.build.addWidget(_muted('Or build it yourself:'))
+        add = _menu_button('+ Dimension')
         for kind, (_one, many) in KIND_NAMES.items():
             action = add.menu().addAction(many.capitalize())
             action.triggered.connect(lambda _c=False, k=kind: self._panel.addLoop(k))
-        self.flow.addWidget(add)
+        self.build.addWidget(add)
 
 
 # ---------------------------------------------------------------------------
@@ -1536,12 +1657,15 @@ def collapse(lines: Sequence[str]) -> List[str]:
 
 
 class CheckCard(Card):
-    """The engine's verdict: what stops the run, in red, each the once; then
-    each feature that is played differently, and the notes; the whole report
-    on request."""
+    """Whether the engine can run it: yes or no in the title, what stops the
+    run in red (each the once), then each feature that is played differently
+    or not known, and the notes; the whole report on request."""
 
     def __init__(self, report: QtWidgets.QPlainTextEdit, parent=None):
-        super().__init__('Check', parent)
+        super().__init__('Can it run?', parent)
+        self.verdict = Chip('', 'muted')
+        self.verdict.setVisible(False)
+        self.header.addWidget(self.verdict)
         self.problems = QtWidgets.QLabel()
         self.problems.setObjectName('expertProblems')
         self.problems.setWordWrap(True)
@@ -1564,6 +1688,12 @@ class CheckCard(Card):
         self.body.addWidget(self.report)
 
     def setCheck(self, check):
+        engine = check.get('engine')
+        if 'runnable' in check:
+            where = f', on {engine}' if engine else ''
+            self.verdict.setText(f'Yes{where}' if check['runnable'] else f'No{where}')
+            self.verdict.setRole('ok' if check['runnable'] else 'bad')
+        self.verdict.setVisible('runnable' in check)
         problems = collapse(check.get('problems') or [])
         self.problems.setText('\n'.join(problems))
         self.problems.setVisible(bool(problems))
@@ -1579,8 +1709,11 @@ class CheckCard(Card):
             for verdict, _feature, _reason in others:
                 counts[verdict] = counts.get(verdict, 0) + 1
             for verdict, count in counts.items():
-                role = VERDICT_STYLE.get(verdict, ('', 'muted'))[1]
-                word = {'emulated': 'played another way', 'impossible': 'impossible here',
+                # played differently is a fact to know, not a warning: the
+                # NI-DAQ plays every stepped scan that way
+                role = 'muted' if verdict == 'emulated' else VERDICT_STYLE.get(
+                    verdict, ('', 'muted'))[1]
+                word = {'emulated': 'played differently', 'impossible': 'impossible here',
                         'unknown': 'not known'}.get(verdict, verdict)
                 self.summary.addWidget(Chip(f'{count} {word}', role))
         details = []
@@ -1596,6 +1729,8 @@ class CheckCard(Card):
             base = re.sub(r' \(and \d+ more like it\)$', '', text)
             verdict = verdict_of.get(base, 'unknown')
             glyph, role = VERDICT_STYLE.get(verdict, ('·', 'muted'))
+            if verdict == 'emulated':
+                role = 'muted'
             label = QtWidgets.QLabel(f'{glyph}  {text}')
             label.setWordWrap(True)
             label.setStyleSheet(f'color: {role_color(role)};')
@@ -1626,9 +1761,9 @@ class LanePreview(Card):
             self.zoom.addButton(button, index)
             self.header.addWidget(button)
         self.zoom.buttonClicked.connect(lambda _b: self._applyZoom())
-        self.live = QtWidgets.QCheckBox('Keep drawn')
-        self.live.setToolTip('Draw again after every edit the engine accepts. A long scan takes '
-                             'longer to draw.')
+        self.live = QtWidgets.QCheckBox('Auto-update')
+        self.live.setToolTip('Show the preview again after every edit the engine accepts. A '
+                             'long scan takes longer to draw.')
         self.header.addWidget(self.live)
         self.plotButton = plotButton
         self.header.addWidget(plotButton)
@@ -1645,7 +1780,7 @@ class LanePreview(Card):
         self.plot.setLabel('bottom', 'time', units='s')
         self.plot.setMouseEnabled(x=True, y=False)
         self.plot.setVisible(False)
-        self.empty = _muted('Draw the preview to see every device, lane by lane.')
+        self.empty = _muted('Show the preview to see every device, lane by lane.')
         self.body.addWidget(self.empty)
         self.body.addWidget(self.plot)
         self._time = np.zeros(0)
@@ -1655,7 +1790,7 @@ class LanePreview(Card):
         return not self.plot.isHidden()
 
     def setStale(self, stale):
-        self.stale.setText('changed since drawn' if stale and self.drawn() else '')
+        self.stale.setText('out of date' if stale and self.drawn() else '')
 
     def setWindows(self, step, pass_, run):
         """Each zoom's (start_s, end_s), where known."""
