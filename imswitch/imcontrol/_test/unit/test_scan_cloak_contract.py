@@ -143,8 +143,10 @@ class CloakRig:
         return self.scan.cloakLimits()
 
     def held(self):
-        """The plan the backend widget holds."""
-        return self.cloak.from_backend(*self.scan._readBackendWidget(), self.limits())
+        """The plan the backend widget holds under the current Simple interpretation."""
+        return self.scan.parseBackendPlan(
+            *self.scan._readBackendWidget(), referencePlan=self.scan.acquisitionPlan()
+        )
 
     def acquisition(self):
         return self.cloak.normalize(self.scan.acquisitionPlan())
@@ -277,7 +279,7 @@ def test_an_edit_on_the_advanced_page_comes_back(rig):
     assert check(before, rig.acquisition())
 
 
-def test_an_edit_it_cannot_show_is_refused_unless_discarded(rig, monkeypatch):
+def test_an_edit_it_cannot_show_has_the_cloaks_declared_behavior(rig, monkeypatch):
     before = rig.acquisition()
     rig.scan.setScanPage('advanced')
     _, unrepresentable = EDITS[rig.type]
@@ -285,6 +287,28 @@ def test_an_edit_it_cannot_show_is_refused_unless_discarded(rig, monkeypatch):
     asked = []
     monkeypatch.setattr(rig.panel, 'confirmDiscardAdvanced',
                         lambda text: asked.append(text) or False)
+
+    if rig.type == 'SimpleMoNaLISA':
+        # Profiles are explicit bindings: Advanced may preserve or break one,
+        # but Simple never guesses another profile.  A broken binding remains
+        # visible as Advanced/custom and leaves the backend untouched.
+        assert rig.scan.setScanPage('simple')
+        assert rig.scan.scanPage() == 'simple' and rig.panel.page() == 'simple'
+        assert not rig.scan.cloakOwnsBackend()
+        assert not asked
+        assert rig.view.profileCombo.currentData() is None
+        assert rig.view.profileCombo.currentText() == 'Advanced / custom'
+        assert reason in rig.scan.profileBinding().reason
+
+        # Explicitly selecting/reapplying a profile re-establishes ownership
+        # and overwrites the custom sequence/geometry with the Simple plan.
+        profile_id = before.profile_id
+        rig.view.profileCombo.setCurrentIndex(rig.view.profileCombo.findData(profile_id))
+        rig.settle()
+        assert rig.scan.cloakOwnsBackend()
+        assert rig.acquisition().profile_id == profile_id
+        assert rig.held() == rig.acquisition()
+        return
 
     assert not rig.scan.setScanPage('simple')
     assert rig.scan.scanPage() == 'advanced' and rig.panel.page() == 'advanced'
@@ -294,7 +318,7 @@ def test_an_edit_it_cannot_show_is_refused_unless_discarded(rig, monkeypatch):
     assert rig.scan.setScanPage('simple')
     assert rig.panel.page() == 'simple'
     assert rig.acquisition() == before
-    assert rig.held() == before                        # the Advanced page is the simple scan again
+    assert rig.held() == before
 
 
 def test_discarding_can_be_asked_for_directly(rig):
@@ -302,7 +326,11 @@ def test_discarding_can_be_asked_for_directly(rig):
     rig.scan.setScanPage('advanced')
     EDITS[rig.type][1](rig)
     assert rig.scan.setScanPage('simple', discardAdvanced=True)
-    assert rig.acquisition() == before
+    if rig.type == 'SimpleMoNaLISA':
+        assert not rig.scan.cloakOwnsBackend()
+        assert rig.acquisition() == before
+    else:
+        assert rig.acquisition() == before
 
 
 def test_the_switch_waits_for_a_running_scan(rig):
@@ -513,3 +541,29 @@ def test_blocking_the_scan_panel_blocks_both_pages(rig):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_monalisa_profiles_and_modes_are_explicit_simple_choices(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        assert [rig.view.profileCombo.itemData(i) for i in range(rig.view.profileCombo.count())] == [
+            'green', 'dual_off', 'dual_color'
+        ]
+        before = rig.acquisition()
+        index = rig.view.profileCombo.findData('dual_color')
+        rig.view.profileCombo.setCurrentIndex(index)
+        rig.settle()
+        selected = rig.acquisition()
+        assert selected.profile_id == 'dual_color'
+        assert selected.mode_id == 'resolft'
+        assert selected.scan_type == before.scan_type
+        assert rig.held() == selected
+
+        mode_index = rig.view.modeCombo.findData('confocal')
+        rig.view.modeCombo.setCurrentIndex(mode_index)
+        rig.settle()
+        assert rig.acquisition().profile_id == 'dual_color'
+        assert rig.acquisition().mode_id == 'confocal'
+        assert rig.held() == rig.acquisition()
+    finally:
+        rig.close()

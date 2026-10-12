@@ -762,6 +762,19 @@ its header switches between the two, on the same scan.
 simulated APDs image a synthetic sample, so the region drawn on the overview
 is visibly the region acquired.
 
+``SimpleMoNaLISA`` is the acquisition-only MoNaLISA cloak over Advanced. Its
+profile selector chooses an ordered illumination recipe while the mode selector
+enables a subset of that recipe (for example RESOLFT versus Confocal). Sequence
+steps have ON/OFF/READOUT/CUSTOM roles, but roles may repeat and a step may
+drive several TTL devices synchronously. A mode may also enable only selected
+devices inside one enabled step, which supports alignment pulses where several
+lasers share one timing window. The ``…`` menu beside Profile creates,
+duplicates, edits, renames and deletes profiles in the active setup. Profile
+editing changes setup configuration, whereas normal duration/geometry edits
+change only the current acquisition. Advanced edits that no longer match the
+explicitly selected profile/mode return Simple to **Advanced / custom** rather
+than silently selecting another profile.
+
 Controls shared by the variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

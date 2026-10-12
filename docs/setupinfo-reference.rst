@@ -370,16 +370,35 @@ Key fields:
 
   Other scan panels ignore the ``simplePointScan`` block.
 
-* ``simpleMoNaLISA``: Setup facts and defaults for the acquisition-only
-  ``SimpleMoNaLISA`` cloak. ``fovUm`` and ``ulensPeriodUm`` are displayed but
-  not editable. Device names are ``offLaser``, ``onLaser``, ``readoutLaser``
-  and optional ``readoutDetector``. ``readoutTimeMs``, ``interPulseDelayMs``
-  and ``cameraReadoutTimeMs`` are fixed timing. ``interPulseDelayMs`` is used
-  once before the first ON pulse and between subsequent active pulses. Defaults
-  for the editable
-  controls are ``defaultScanType``, ``defaultLateralStepUm``,
-  ``defaultZScanLengthUm`` (1 µm by default), ``defaultZStepUm``,
-  ``defaultMode``, ``defaultOffTimeMs`` and ``defaultOnTimeMs``.
+* ``simpleMoNaLISA``: Setup facts and profile definitions for the
+  acquisition-only ``SimpleMoNaLISA`` cloak. ``fovUm`` and ``ulensPeriodUm``
+  are displayed but not editable; ``interPulseDelayMs`` is used once before
+  the first active step and between subsequent active steps, and
+  ``cameraReadoutTimeMs`` is the end-of-pixel overhead. ``profiles`` is a map
+  of named MoNaLISA profiles and ``defaultProfile`` selects the startup one.
+  Each profile contains an ordered ``steps`` list. Every step has a required
+  ``role`` (``on``, ``off``, ``readout`` or ``custom``), one or more synchronized
+  ``ttlDevices``, ``defaultDurationMs`` and ``durationEditable``. Roles may
+  repeat, so sequences such as ON -> green OFF -> green READOUT -> red OFF ->
+  red READOUT are valid. ``modes`` select subsets of those steps while keeping
+  profile order. Existing modes can continue to use only ``enabledSteps``;
+  optionally, ``enabledDevices`` maps an enabled step id to the subset of that
+  step's TTL devices that should fire in that mode. This supports alignment
+  profiles with one shared timing step and modes such as OFF-only, ON+OFF or
+  readout-only. Geometry defaults remain ``defaultScanType``,
+  ``defaultLateralStepUm``, ``defaultZScanLengthUm`` (1 µm by default) and
+  ``defaultZStepUm``. The older ``onLaser``/``offLaser``/``readoutLaser``/
+  ``readoutDetector`` and timing fields remain accepted and are migrated in
+  memory to one implicit ``Default`` profile. The SimpleMoNaLISA panel exposes
+  the configured profiles and modes directly. Profile selection is owned by
+  Simple: Advanced edits are parsed only against the currently selected
+  profile/mode. Compatible edits come back into Simple; incompatible edits
+  return to Simple as ``Advanced / custom`` until the user explicitly selects
+  or reapplies a profile. Profiles can be created, duplicated, edited, renamed
+  and deleted live from the SimpleMoNaLISA profile menu. The editor keeps
+  profile ids stable across renames, restricts devices to TTL devices in the
+  current setup, and persists the complete profile store back into the active
+  setup file. Structural edits are disabled while a scan is running.
 
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:

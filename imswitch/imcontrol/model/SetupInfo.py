@@ -508,12 +508,18 @@ class ScanInfo:
 
     simpleMoNaLISA: Optional[Dict[str, Any]] = None
     """ Options for the ``SimpleMoNaLISA`` cloak. Fixed setup facts include
-    ``fovUm``, ``ulensPeriodUm``, ``offLaser``, ``onLaser``, ``readoutLaser``,
-    ``readoutDetector``, ``readoutTimeMs``, ``interPulseDelayMs`` and
-    ``cameraReadoutTimeMs``. Defaults for the simple acquisition can set
-    ``defaultScanType``, ``defaultLateralStepUm``, ``defaultZScanLengthUm``,
-    ``defaultZStepUm``, ``defaultMode``, ``defaultOffTimeMs`` and
-    ``defaultOnTimeMs``. """
+    ``fovUm``, ``ulensPeriodUm``, ``interPulseDelayMs`` and
+    ``cameraReadoutTimeMs``. ``profiles`` may define ordered MoNaLISA sequence
+    steps (each with an ON/OFF/READOUT role, one or more synchronized TTL
+    devices, timing defaults, and modes selecting step subsets), with
+    ``defaultProfile`` selecting the startup profile. Profiles are editable
+    live from the SimpleMoNaLISA panel and are persisted back into this block;
+    profile ids remain stable when only the display name changes. The older
+    ``onLaser``/``offLaser``/``readoutLaser``/``readoutDetector`` and timing
+    fields remain supported and are migrated in memory to one implicit default
+    profile. Geometry defaults include ``defaultScanType``,
+    ``defaultLateralStepUm``, ``defaultZScanLengthUm`` and
+    ``defaultZStepUm``. """
 
 
 

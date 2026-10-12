@@ -1,9 +1,10 @@
-"""Simplified MoNaLISA acquisition plan over the Advanced scan backend.
+"""Simplified MoNaLISA acquisition over the Advanced scan backend.
 
-This is deliberately only the acquisition half of the future beginner workflow:
-there is no widefield overview here.  The setup owns the fixed microscope facts
-(FOV, uLens period, laser identities and readout/camera dead times); the user
-chooses scan dimensionality, sampling and the editable RESOLFT timing.
+The scan geometry is setup constrained, while illumination is described by a
+selected :class:`MoNaLISAProfileDefinition` and one of its modes.  Profiles are
+ordered sequences of ON/OFF/READOUT steps; roles are semantic metadata and may
+repeat.  The current plan stores live durations for every profile step, even
+when a mode temporarily disables some of them.
 """
 
 from __future__ import annotations
@@ -15,6 +16,14 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .scan_cloak import PlanNotRepresentable, ScanCloak
 from .scan_parameters import pixels_for_length_step
+from .monalisa_profiles import (
+    MoNaLISAProfileError,
+    MoNaLISAProfileStore,
+    MoNaLISASequenceNotCompatible,
+    compile_profile_sequence,
+    legacy_monalisa_profile,
+    parse_profile_sequence,
+)
 
 
 CONFIG_DEFAULTS: Dict[str, Any] = {
@@ -37,7 +46,6 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
 }
 
 SCAN_TYPES = ('XY', 'YZ', 'XZ', 'XYZ')
-MODES = ('resolft', 'confocal')
 
 
 def _configured_tuple(value, *, default=(40.0, 40.0)) -> Tuple[float, float]:
@@ -75,16 +83,12 @@ def _snap_time_s(value_s: float, sample_rate: float) -> float:
 class MoNaLISALimits:
     """Fixed microscope/setup facts used by the simplified MoNaLISA panel."""
 
-    axis_devices: Mapping[str, str]       # logical X/Y/Z -> positioner name
+    axis_devices: Mapping[str, str]
     ttl_devices: Tuple[str, ...]
     sample_rate: float
     fov_um: Tuple[float, float]
     ulens_period_um: float
-    off_laser: Optional[str]
-    on_laser: Optional[str]
-    readout_laser: Optional[str]
-    readout_detector: Optional[str]
-    readout_time_s: float
+    profile_store: MoNaLISAProfileStore
     inter_pulse_delay_s: float
     camera_readout_time_s: float
     return_time_s: float
@@ -92,18 +96,12 @@ class MoNaLISALimits:
     default_lateral_step_um: float
     default_z_scan_length_um: float
     default_z_step_um: float
-    default_mode: str
-    default_off_time_s: float
-    default_on_time_s: float
 
     @classmethod
     def from_setup(cls, setupInfo) -> 'MoNaLISALimits':
         raw = dict(CONFIG_DEFAULTS)
         configured = getattr(setupInfo.scan, 'simpleMoNaLISA', None) or {}
         raw.update(configured)
-        # Compatibility with the first visual prototype, where Z span was a
-        # fixed setup fact.  It is now an editable plan value, but an existing
-        # zScanLengthUm still makes a sensible initial value.
         if 'defaultZScanLengthUm' not in configured and 'zScanLengthUm' in configured:
             raw['defaultZScanLengthUm'] = configured['zScanLengthUm']
 
@@ -120,26 +118,38 @@ class MoNaLISALimits:
         detectors = getattr(setupInfo, 'detectors', None) or {}
         ttl = tuple(setupInfo.getTTLDevices())
 
-        off_laser = raw.get('offLaser') or _first_named(lasers, 'OFF')
-        on_laser = raw.get('onLaser') or _first_named(lasers, 'ON')
-        readout_laser = raw.get('readoutLaser') or _first_named(lasers, 'EXC')
-        readout_detector = raw.get('readoutDetector')
-        if readout_detector is None:
-            readout_detector = next(
+        # Older setup files are represented as one implicit data-driven
+        # profile; explicit profiles take precedence.
+        legacy_off = raw.get('offLaser') or _first_named(lasers, 'OFF')
+        legacy_on = raw.get('onLaser') or _first_named(lasers, 'ON')
+        legacy_readout = raw.get('readoutLaser') or _first_named(lasers, 'EXC')
+        legacy_detector = raw.get('readoutDetector')
+        if legacy_detector is None:
+            legacy_detector = next(
                 (str(name) for name, info in detectors.items()
                  if getattr(info, 'forAcquisition', False) and name in ttl),
                 None,
             )
 
+        requested_mode = str(raw.get('defaultMode') or 'resolft').lower()
+        legacy_profile = legacy_monalisa_profile(
+            on_laser=str(legacy_on) if legacy_on else None,
+            off_laser=str(legacy_off) if legacy_off else None,
+            readout_laser=str(legacy_readout) if legacy_readout else None,
+            readout_detector=str(legacy_detector) if legacy_detector else None,
+            on_time_s=max(0.0, float(raw.get('defaultOnTimeMs') or 0.0) * 1e-3),
+            off_time_s=max(0.0, float(raw.get('defaultOffTimeMs') or 0.0) * 1e-3),
+            readout_time_s=max(0.0, float(raw.get('readoutTimeMs') or 0.0) * 1e-3),
+            default_mode=requested_mode,
+        )
+        profile_store = MoNaLISAProfileStore.from_config(
+            configured, legacy_profile=legacy_profile
+        )
+
         scan_type = str(raw.get('defaultScanType') or 'XY').upper()
         if scan_type not in SCAN_TYPES:
             scan_type = 'XY'
-        mode = str(raw.get('defaultMode') or 'resolft').lower()
-        if mode not in MODES:
-            mode = 'resolft'
-
         period = max(0.001, float(raw.get('ulensPeriodUm') or CONFIG_DEFAULTS['ulensPeriodUm']))
-
         designer = getattr(setupInfo.scan, 'scanDesignerParams', None) or {}
         return cls(
             axis_devices=axes,
@@ -147,23 +157,14 @@ class MoNaLISALimits:
             sample_rate=float(setupInfo.scan.sampleRate),
             fov_um=_configured_tuple(raw.get('fovUm')),
             ulens_period_um=period,
-            off_laser=str(off_laser) if off_laser else None,
-            on_laser=str(on_laser) if on_laser else None,
-            readout_laser=str(readout_laser) if readout_laser else None,
-            readout_detector=str(readout_detector) if readout_detector else None,
-            readout_time_s=max(0.0, float(raw.get('readoutTimeMs') or 0.0) * 1e-3),
+            profile_store=profile_store,
             inter_pulse_delay_s=max(0.0, float(raw.get('interPulseDelayMs') or 0.0) * 1e-3),
             camera_readout_time_s=max(0.0, float(raw.get('cameraReadoutTimeMs') or 0.0) * 1e-3),
             return_time_s=max(0.0, float(designer.get('return_time', 0.0) or 0.0)),
             default_scan_type=scan_type,
             default_lateral_step_um=max(0.001, float(raw.get('defaultLateralStepUm') or 0.04)),
-            default_z_scan_length_um=max(
-                0.001, float(raw.get('defaultZScanLengthUm') or 1.0)
-            ),
+            default_z_scan_length_um=max(0.001, float(raw.get('defaultZScanLengthUm') or 1.0)),
             default_z_step_um=max(0.001, float(raw.get('defaultZStepUm') or 0.15)),
-            default_mode=mode,
-            default_off_time_s=max(0.0, float(raw.get('defaultOffTimeMs') or 0.0) * 1e-3),
-            default_on_time_s=max(0.0, float(raw.get('defaultOnTimeMs') or 0.0) * 1e-3),
         )
 
     def axis_device(self, logical_axis: str) -> str:
@@ -174,22 +175,15 @@ class MoNaLISALimits:
                 f'The SimpleMoNaLISA panel needs a scanning {logical_axis.upper()} axis.'
             ) from exc
 
-    def missing_setup_items(self) -> Tuple[str, ...]:
+    def missing_setup_items(self, profile_id: Optional[str] = None) -> Tuple[str, ...]:
         missing = []
         for axis in ('X', 'Y', 'Z'):
             if axis not in self.axis_devices:
                 missing.append(f'{axis} scanning axis')
-        for label, name in (
-            ('OFF laser', self.off_laser),
-            ('ON laser', self.on_laser),
-            ('read-out laser', self.readout_laser),
-        ):
-            if not name:
-                missing.append(label)
-            elif name not in self.ttl_devices:
-                missing.append(f'{label} {name!r} with a digital line')
-        if self.readout_detector and self.readout_detector not in self.ttl_devices:
-            missing.append(f'read-out detector {self.readout_detector!r} with a digital line')
+        selected = profile_id or self.profile_store.default_profile
+        missing.extend(self.profile_store.missing_devices(
+            self.ttl_devices, profile_id=selected
+        ))
         return tuple(missing)
 
 
@@ -199,27 +193,20 @@ class MoNaLISAScanPlan:
     lateral_step_um: float
     z_length_um: float
     z_step_um: float
-    mode: str
-    off_time_s: float
-    on_time_s: float
+    profile_id: str
+    mode_id: str
+    step_durations_s: Mapping[str, float]
 
     @property
     def axes(self) -> Tuple[str, ...]:
         return tuple(self.scan_type)
 
+    def profile(self, limits: MoNaLISALimits):
+        return limits.profile_store.profile(self.profile_id)
+
     def dwell_s(self, limits: MoNaLISALimits) -> float:
-        optical = self.on_time_s + limits.readout_time_s
-        # One delay precedes the first pulse and another separates each
-        # subsequent active pulse.
-        gaps = 2
-        if self.mode == 'resolft':
-            optical += self.off_time_s
-            gaps += 1
-        return (
-            optical
-            + gaps * limits.inter_pulse_delay_s
-            + limits.camera_readout_time_s
-        )
+        compiled = compile_plan_sequence(self, limits)
+        return compiled.end_time_s + limits.camera_readout_time_s
 
     def pixels(self, limits: MoNaLISALimits) -> Tuple[int, ...]:
         result = []
@@ -243,9 +230,9 @@ class MoNaLISAScanPlan:
             'lateral_step_um': self.lateral_step_um,
             'z_length_um': self.z_length_um,
             'z_step_um': self.z_step_um,
-            'mode': self.mode,
-            'off_time_s': self.off_time_s,
-            'on_time_s': self.on_time_s,
+            'profile_id': self.profile_id,
+            'mode_id': self.mode_id,
+            'step_durations_s': dict(self.step_durations_s),
         }
 
     @classmethod
@@ -255,9 +242,12 @@ class MoNaLISAScanPlan:
             lateral_step_um=float(data['lateral_step_um']),
             z_length_um=float(data.get('z_length_um', 1.0)),
             z_step_um=float(data['z_step_um']),
-            mode=str(data['mode']).lower(),
-            off_time_s=float(data['off_time_s']),
-            on_time_s=float(data['on_time_s']),
+            profile_id=str(data['profile_id']),
+            mode_id=str(data['mode_id']),
+            step_durations_s={
+                str(key): float(value)
+                for key, value in (data.get('step_durations_s') or {}).items()
+            },
         )
 
 
@@ -265,42 +255,191 @@ def normalize_plan(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> MoNaLISASc
     scan_type = str(plan.scan_type).upper()
     if scan_type not in SCAN_TYPES:
         scan_type = limits.default_scan_type
-    mode = str(plan.mode).lower()
-    if mode not in MODES:
-        mode = limits.default_mode
+    try:
+        profile = limits.profile_store.profile(plan.profile_id)
+    except MoNaLISAProfileError as exc:
+        raise PlanNotRepresentable(str(exc)) from exc
+    mode_id = str(plan.mode_id)
+    try:
+        profile.mode(mode_id)
+    except MoNaLISAProfileError as exc:
+        raise PlanNotRepresentable(str(exc)) from exc
+
+    durations = {}
+    supplied = dict(plan.step_durations_s or {})
+    for step in profile.steps:
+        requested = supplied.get(step.id, step.default_duration_s)
+        if not step.duration_editable:
+            requested = step.default_duration_s
+        duration = _snap_time_s(max(0.0, float(requested)), limits.sample_rate)
+        if duration <= 0:
+            raise PlanNotRepresentable(
+                f'Step {step.label!r} must have a positive duration.'
+            )
+        durations[step.id] = duration
+
     return dataclasses.replace(
         plan,
         scan_type=scan_type,
-        mode=mode,
+        profile_id=profile.id,
+        mode_id=mode_id,
+        step_durations_s=durations,
         lateral_step_um=max(0.001, _round_um(plan.lateral_step_um)),
         z_length_um=max(0.001, _round_um(plan.z_length_um)),
         z_step_um=max(0.001, _round_um(plan.z_step_um)),
-        off_time_s=_snap_time_s(max(0.0, plan.off_time_s), limits.sample_rate),
-        on_time_s=_snap_time_s(max(0.0, plan.on_time_s), limits.sample_rate),
     )
 
 
 def default_plan(limits: MoNaLISALimits) -> MoNaLISAScanPlan:
+    profile = limits.profile_store.profile()
     return normalize_plan(MoNaLISAScanPlan(
         scan_type=limits.default_scan_type,
         lateral_step_um=limits.default_lateral_step_um,
         z_length_um=limits.default_z_scan_length_um,
         z_step_um=limits.default_z_step_um,
-        mode=limits.default_mode,
-        off_time_s=limits.default_off_time_s,
-        on_time_s=limits.default_on_time_s,
+        profile_id=profile.id,
+        mode_id=profile.default_mode,
+        step_durations_s={step.id: step.default_duration_s for step in profile.steps},
     ), limits)
 
 
-def _append_window(windows: Dict[str, list], device: Optional[str], start: float, end: float):
-    if not device or end <= start:
-        return
-    windows.setdefault(device, []).append((float(start), float(end)))
+def adapt_plan_to_profile_definition(
+    plan: MoNaLISAScanPlan,
+    profile,
+    limits: MoNaLISALimits,
+) -> MoNaLISAScanPlan:
+    """Adapt the live plan after an explicit edit of its active profile.
+
+    Geometry is preserved. Durations are preserved for unchanged editable step
+    ids, new steps use profile defaults, and fixed-duration steps always adopt
+    their new profile default. The current mode is kept when it still exists.
+    """
+    mode_id = plan.mode_id if plan.mode_id in profile.modes else profile.default_mode
+    durations = {}
+    current = dict(plan.step_durations_s or {})
+    for step in profile.steps:
+        if step.duration_editable and step.id in current:
+            durations[step.id] = current[step.id]
+        else:
+            durations[step.id] = step.default_duration_s
+    return normalize_plan(dataclasses.replace(
+        plan,
+        profile_id=profile.id,
+        mode_id=mode_id,
+        step_durations_s=durations,
+    ), limits)
+
+
+def select_profile(
+    plan: MoNaLISAScanPlan,
+    profile_id: str,
+    limits: MoNaLISALimits,
+    *,
+    preserve_if_same: bool = True,
+) -> MoNaLISAScanPlan:
+    profile = limits.profile_store.profile(profile_id)
+    if preserve_if_same and profile.id == plan.profile_id:
+        durations = dict(plan.step_durations_s)
+        mode_id = plan.mode_id if plan.mode_id in profile.modes else profile.default_mode
+    else:
+        durations = {step.id: step.default_duration_s for step in profile.steps}
+        mode_id = profile.default_mode
+    return normalize_plan(dataclasses.replace(
+        plan,
+        profile_id=profile.id,
+        mode_id=mode_id,
+        step_durations_s=durations,
+    ), limits)
+
+
+def select_mode(
+    plan: MoNaLISAScanPlan, mode_id: str, limits: MoNaLISALimits
+) -> MoNaLISAScanPlan:
+    profile = limits.profile_store.profile(plan.profile_id)
+    profile.mode(mode_id)
+    return normalize_plan(dataclasses.replace(plan, mode_id=str(mode_id)), limits)
+
+
+def compile_plan_sequence(plan: MoNaLISAScanPlan, limits: MoNaLISALimits):
+    plan = normalize_plan(plan, limits)
+    try:
+        return compile_profile_sequence(
+            limits.profile_store.profile(plan.profile_id),
+            plan.mode_id,
+            plan.step_durations_s,
+            inter_pulse_delay_s=limits.inter_pulse_delay_s,
+            sample_rate=limits.sample_rate,
+        )
+    except MoNaLISAProfileError as exc:
+        raise PlanNotRepresentable(str(exc)) from exc
+
+
+def _parse_geometry(
+    analog: Mapping[str, Any], limits: MoNaLISALimits
+) -> Tuple[str, float, float, float]:
+    reverse_axes = {device: axis for axis, device in limits.axis_devices.items()}
+    dims = [name for name in (analog.get('scan_dim_target_device') or ()) if name and name != 'None']
+    try:
+        logical = ''.join(reverse_axes[name] for name in dims)
+    except KeyError as exc:
+        raise PlanNotRepresentable(f'This scan uses an unknown scan axis {exc.args[0]!r}.') from exc
+    if logical not in SCAN_TYPES:
+        raise PlanNotRepresentable(
+            f'This scan uses dimensions {logical or "none"}; choose XY, XZ, YZ or XYZ.'
+        )
+
+    devices = list(analog.get('target_device') or ())
+    lengths = list(analog.get('axis_length') or ())
+    steps = list(analog.get('axis_step_size') or ())
+    by_device = {name: i for i, name in enumerate(devices)}
+    lateral_steps = []
+    z_length = limits.default_z_scan_length_um
+    z_step = limits.default_z_step_um
+    for axis in logical:
+        device = limits.axis_device(axis)
+        if device not in by_device:
+            raise PlanNotRepresentable(f'This scan does not contain the configured {axis} axis.')
+        index = by_device[device]
+        if index >= len(lengths) or index >= len(steps):
+            raise PlanNotRepresentable(f'This scan has incomplete geometry for the configured {axis} axis.')
+        length = float(lengths[index])
+        if axis == 'Z':
+            if length <= 0:
+                raise PlanNotRepresentable('Z scan length must be positive.')
+            z_length = length
+        elif not math.isclose(length, limits.ulens_period_um, abs_tol=1e-3):
+            raise PlanNotRepresentable(
+                f'{axis} scan length must stay at the uLens period '
+                f'{limits.ulens_period_um:g} µm.'
+            )
+        step = float(steps[index])
+        if axis == 'Z':
+            z_step = step
+        else:
+            lateral_steps.append(step)
+    if lateral_steps and any(not math.isclose(step, lateral_steps[0], abs_tol=1e-3)
+                             for step in lateral_steps[1:]):
+        raise PlanNotRepresentable('X and Y must use the same lateral step in SimpleMoNaLISA.')
+    lateral = lateral_steps[0] if lateral_steps else limits.default_lateral_step_um
+    return logical, lateral, z_length, z_step
+
+
+def plan_with_backend_geometry(
+    plan: MoNaLISAScanPlan, analog: Mapping[str, Any], limits: MoNaLISALimits
+) -> MoNaLISAScanPlan:
+    logical, lateral, z_length, z_step = _parse_geometry(analog, limits)
+    return normalize_plan(dataclasses.replace(
+        plan,
+        scan_type=logical,
+        lateral_step_um=lateral,
+        z_length_um=z_length,
+        z_step_um=z_step,
+    ), limits)
 
 
 def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict, dict]:
     plan = normalize_plan(plan, limits)
-    missing = limits.missing_setup_items()
+    missing = limits.missing_setup_items(plan.profile_id)
     if missing:
         raise PlanNotRepresentable('Setup is missing: ' + ', '.join(missing) + '.')
 
@@ -327,30 +466,17 @@ def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict,
         analog['axis_step_size'].append(
             float(plan.z_step_um if axis == 'Z' else plan.lateral_step_um) if active else 1.0
         )
-        # Zero is a relative offset from the position snapshot with Beta's
-        # default position_anchor='center'.
         analog['axis_centerpos'].append(0.0)
         analog['axis_startpos'].append([0.0])
+
     dwell = plan.dwell_s(limits)
     analog['sequence_time'] = dwell
     analog['phase_delay'] = 0.0
     analog['d3step_delay'] = 0.0
 
-    windows: Dict[str, list] = {}
-    # MoNaLISA sequence: initial delay -> ON -> delay -> [OFF -> delay ->] read-out.
-    t = limits.inter_pulse_delay_s
-    _append_window(windows, limits.on_laser, t, t + plan.on_time_s)
-    t += plan.on_time_s + limits.inter_pulse_delay_s
-    if plan.mode == 'resolft':
-        _append_window(windows, limits.off_laser, t, t + plan.off_time_s)
-        t += plan.off_time_s + limits.inter_pulse_delay_s
-    _append_window(windows, limits.readout_laser, t, t + limits.readout_time_s)
-    _append_window(windows, limits.readout_detector, t, t + limits.readout_time_s)
-
+    compiled = compile_plan_sequence(plan, limits)
+    windows = compiled.windows_by_device
     targets = [name for name in limits.ttl_devices if name in windows]
-    # Name every TTL device in the widget-state maps so switching modes also
-    # clears pulses/enables left by the previous plan. target_device remains
-    # only the devices actually armed for this scan.
     starts = {name: [[]] for name in limits.ttl_devices}
     ends = {name: [[]] for name in limits.ttl_devices}
     enabled = {name: [False] for name in limits.ttl_devices}
@@ -387,58 +513,17 @@ def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict,
     return analog, digital
 
 
-def _windows(digital: Mapping[str, Any], device: Optional[str]) -> Tuple[Tuple[float, float], ...]:
-    """Return all timing windows for one device in the first line-step.
+def dicts_to_plan(
+    analog: Mapping[str, Any],
+    digital: Mapping[str, Any],
+    limits: MoNaLISALimits,
+    reference_plan: Optional[MoNaLISAScanPlan] = None,
+) -> MoNaLISAScanPlan:
+    """Parse Advanced against exactly the profile/mode in ``reference_plan``.
 
-    One physical laser can legitimately have more than one semantic role in a
-    MoNaLISA sequence (for example OFF and read-out can both be 488 nm).  The
-    simple cloak therefore cannot assume one window per device; roles are
-    identified from the ordered sequence below.
+    No other profile or mode is searched.  This is the model-level invariant
+    that prevents Advanced edits from silently changing the Simple binding.
     """
-    if not device:
-        return ()
-    enabled = (digital.get('linestep_enable') or {}).get(device)
-    if enabled is not None and len(enabled) > 0 and not bool(enabled[0]):
-        return ()
-    starts = (digital.get('pulse_starts_s') or {}).get(device) or []
-    ends = (digital.get('pulse_ends_s') or {}).get(device) or []
-    if not starts or not ends:
-        return ()
-    starts0 = starts[0] if isinstance(starts[0], (list, tuple)) else starts
-    ends0 = ends[0] if isinstance(ends[0], (list, tuple)) else ends
-    if len(starts0) != len(ends0):
-        raise PlanNotRepresentable(f'{device} has unmatched timing-window starts and ends.')
-    result = tuple(sorted(
-        (float(start), float(end))
-        for start, end in zip(starts0, ends0)
-        if float(end) > float(start)
-    ))
-    return result
-
-
-def _matching_window(
-    windows: Tuple[Tuple[float, float], ...],
-    *,
-    duration: Optional[float] = None,
-    end_at: Optional[float] = None,
-    prefer_latest: bool = False,
-    tolerance: float,
-) -> Optional[Tuple[float, float]]:
-    matches = []
-    for window in windows:
-        start, end = window
-        if duration is not None and not math.isclose(end - start, duration, abs_tol=tolerance):
-            continue
-        if end_at is not None and not math.isclose(end, end_at, abs_tol=tolerance):
-            continue
-        matches.append(window)
-    if not matches:
-        return None
-    return matches[-1] if prefer_latest else matches[0]
-
-
-def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
-                  limits: MoNaLISALimits) -> MoNaLISAScanPlan:
     digital = digital or {}
     if int(digital.get('n_linesteps', 1)) != 1:
         raise PlanNotRepresentable('SimpleMoNaLISA represents one sequence per scan position.')
@@ -449,168 +534,36 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
     if any((digital.get('advanced_device_lock_master') or {}).values()):
         raise PlanNotRepresentable('This scan locks devices together in Advanced.')
 
-    reverse_axes = {device: axis for axis, device in limits.axis_devices.items()}
-    dims = [name for name in (analog.get('scan_dim_target_device') or ()) if name and name != 'None']
+    reference = normalize_plan(reference_plan or default_plan(limits), limits)
+    geometry = plan_with_backend_geometry(reference, analog, limits)
+    profile = limits.profile_store.profile(reference.profile_id)
     try:
-        logical = ''.join(reverse_axes[name] for name in dims)
-    except KeyError as exc:
-        raise PlanNotRepresentable(f'This scan uses an unknown scan axis {exc.args[0]!r}.') from exc
-    if logical not in SCAN_TYPES:
-        raise PlanNotRepresentable(
-            f'This scan uses dimensions {logical or "none"}; choose XY, XZ, YZ or XYZ.'
+        parsed = parse_profile_sequence(
+            digital,
+            profile,
+            reference.mode_id,
+            inter_pulse_delay_s=limits.inter_pulse_delay_s,
+            sample_rate=limits.sample_rate,
         )
+    except MoNaLISASequenceNotCompatible as exc:
+        raise PlanNotRepresentable(str(exc)) from exc
 
-    devices = list(analog.get('target_device') or ())
-    lengths = list(analog.get('axis_length') or ())
-    steps = list(analog.get('axis_step_size') or ())
-    by_device = {name: i for i, name in enumerate(devices)}
-    lateral_steps = []
-    z_length = limits.default_z_scan_length_um
-    z_step = limits.default_z_step_um
-    for axis in logical:
-        device = limits.axis_device(axis)
-        if device not in by_device:
-            raise PlanNotRepresentable(f'This scan does not contain the configured {axis} axis.')
-        index = by_device[device]
-        if index >= len(lengths):
-            raise PlanNotRepresentable(f'This scan has no length for the configured {axis} axis.')
-        length = float(lengths[index])
-        if axis == 'Z':
-            if length <= 0:
-                raise PlanNotRepresentable('Z scan length must be positive.')
-            z_length = length
-        elif not math.isclose(length, limits.ulens_period_um, abs_tol=1e-3):
-            raise PlanNotRepresentable(
-                f'{axis} scan length must stay at the uLens period '
-                f'{limits.ulens_period_um:g} µm.'
-            )
-        step = float(steps[index])
-        if axis == 'Z':
-            z_step = step
-        else:
-            lateral_steps.append(step)
-    if lateral_steps and any(not math.isclose(step, lateral_steps[0], abs_tol=1e-3)
-                             for step in lateral_steps[1:]):
-        raise PlanNotRepresentable('X and Y must use the same lateral step in SimpleMoNaLISA.')
-    lateral = lateral_steps[0] if lateral_steps else limits.default_lateral_step_um
-
-    targets = set(digital.get('target_device') or ())
-    allowed = {name for name in (
-        limits.off_laser, limits.on_laser, limits.readout_laser, limits.readout_detector
-    ) if name}
-    strangers = sorted(targets - allowed)
-    if strangers:
-        raise PlanNotRepresentable(
-            'This scan fires devices outside the configured MoNaLISA sequence: '
-            + ', '.join(strangers) + '.'
-        )
-
-    tolerance = 1.0 / limits.sample_rate + 1e-9
-    by_ttl_device = {
-        name: _windows(digital, name)
-        for name in allowed
-    }
-
-    # Parse by sequence role rather than by "one window per device".  This is
-    # what lets the same 488 laser act as both OFF and read-out without making
-    # the simple view ambiguous after visiting Advanced.
-    readout = _matching_window(
-        by_ttl_device.get(limits.readout_laser, ()),
-        duration=limits.readout_time_s,
-        prefer_latest=True,
-        tolerance=tolerance,
-    )
-    if readout is None:
-        raise PlanNotRepresentable('This scan does not contain the configured read-out pulse.')
-
-    # RESOLFT is ON -> OFF -> read-out; confocal omits the OFF pulse.
-    # The setup-configured delay also precedes the first ON pulse.
-    off = _matching_window(
-        by_ttl_device.get(limits.off_laser, ()),
-        end_at=readout[0] - limits.inter_pulse_delay_s,
-        prefer_latest=True,
-        tolerance=tolerance,
-    )
-    next_after_on = off[0] if off is not None else readout[0]
-    on = _matching_window(
-        by_ttl_device.get(limits.on_laser, ()),
-        end_at=next_after_on - limits.inter_pulse_delay_s,
-        prefer_latest=True,
-        tolerance=tolerance,
-    )
-    if on is None:
-        raise PlanNotRepresentable('This scan does not contain the configured ON sequence.')
-    if not math.isclose(on[0], limits.inter_pulse_delay_s, abs_tol=tolerance):
-        raise PlanNotRepresentable(
-            'The first ON pulse must start after the setup-configured initial delay.'
-        )
-
-    camera = None
-    if limits.readout_detector:
-        camera = _matching_window(
-            by_ttl_device.get(limits.readout_detector, ()),
-            duration=limits.readout_time_s,
-            prefer_latest=True,
-            tolerance=tolerance,
-        )
-        if camera is None or not (
-            math.isclose(camera[0], readout[0], abs_tol=tolerance)
-            and math.isclose(camera[1], readout[1], abs_tol=tolerance)
-        ):
-            raise PlanNotRepresentable(
-                'The configured camera pulse must overlap the read-out pulse.'
-            )
-
-    mode = 'resolft' if off is not None else 'confocal'
-    off_time = max(0.0, off[1] - off[0]) if off else limits.default_off_time_s
-    on_time = max(0.0, on[1] - on[0])
-    expected_readout = limits.readout_time_s
-    if not math.isclose(readout[1] - readout[0], expected_readout, abs_tol=1.0 / limits.sample_rate + 1e-9):
-        raise PlanNotRepresentable(
-            f'Read-out time is fixed by setup at {expected_readout * 1e3:g} ms.'
-        )
-
-    recognized = {}
-    for device, window in (
-        (limits.off_laser, off),
-        (limits.on_laser, on),
-        (limits.readout_laser, readout),
-        (limits.readout_detector, camera),
+    durations = dict(reference.step_durations_s)
+    durations.update(parsed.step_durations_s)
+    plan = normalize_plan(dataclasses.replace(
+        geometry,
+        step_durations_s=durations,
+    ), limits)
+    expected_dwell = plan.dwell_s(limits)
+    if not math.isclose(
+        float(analog.get('sequence_time', expected_dwell)),
+        expected_dwell,
+        abs_tol=1.0 / limits.sample_rate + 1e-9,
     ):
-        if device and window is not None:
-            recognized.setdefault(device, []).append(window)
-    for device, windows in by_ttl_device.items():
-        known = recognized.get(device, ())
-        extras = [
-            window for window in windows
-            if not any(
-                math.isclose(window[0], expected[0], abs_tol=tolerance)
-                and math.isclose(window[1], expected[1], abs_tol=tolerance)
-                for expected in known
-            )
-        ]
-        if extras:
-            raise PlanNotRepresentable(
-                f'{device} has extra timing windows that SimpleMoNaLISA cannot show.'
-            )
-
-    plan = MoNaLISAScanPlan(
-        scan_type=logical,
-        lateral_step_um=lateral,
-        z_length_um=z_length,
-        z_step_um=z_step,
-        mode=mode,
-        off_time_s=off_time,
-        on_time_s=on_time,
-    )
-    normalized = normalize_plan(plan, limits)
-    if not math.isclose(float(analog.get('sequence_time', normalized.dwell_s(limits))),
-                        normalized.dwell_s(limits),
-                        abs_tol=1.0 / limits.sample_rate + 1e-9):
         raise PlanNotRepresentable(
-            'Pixel dwell no longer matches initial delay + ON + optional OFF + read-out + camera readout.'
+            'Pixel dwell no longer matches the selected profile/mode sequence and camera readout.'
         )
-    return normalized
+    return plan
 
 
 class MoNaLISAScanCloak(ScanCloak):
@@ -623,19 +576,21 @@ class MoNaLISAScanCloak(ScanCloak):
         return plan_to_dicts(plan, limits)
 
     def from_backend(self, analog, digital, limits):
-        return dicts_to_plan(analog, digital, limits)
+        # Generic cloak contract: round-trip the setup's default binding.  The
+        # controller uses ``dicts_to_plan(..., reference_plan=...)`` so an
+        # explicit user selection is never inferred from Advanced.
+        return dicts_to_plan(analog, digital, limits, default_plan(limits))
 
     def normalize(self, plan):
-        # The limits are needed for timing quantisation; controllers call the
-        # explicit helper before storing plans, so this method is intentionally
-        # a light canonicalisation for the generic contract.
         return dataclasses.replace(
             plan,
             scan_type=str(plan.scan_type).upper(),
-            mode=str(plan.mode).lower(),
+            profile_id=str(plan.profile_id),
+            mode_id=str(plan.mode_id),
             lateral_step_um=max(0.001, _round_um(plan.lateral_step_um)),
             z_length_um=max(0.001, _round_um(plan.z_length_um)),
             z_step_um=max(0.001, _round_um(plan.z_step_um)),
+            step_durations_s=dict(plan.step_durations_s),
         )
 
     def plan_to_dict(self, plan) -> dict:
@@ -646,6 +601,8 @@ class MoNaLISAScanCloak(ScanCloak):
 
 
 __all__ = [
-    'CONFIG_DEFAULTS', 'MODES', 'SCAN_TYPES', 'MoNaLISALimits', 'MoNaLISAScanCloak',
-    'MoNaLISAScanPlan', 'default_plan', 'dicts_to_plan', 'normalize_plan', 'plan_to_dicts',
+    'CONFIG_DEFAULTS', 'SCAN_TYPES', 'MoNaLISALimits', 'MoNaLISAScanCloak',
+    'MoNaLISAScanPlan', 'compile_plan_sequence', 'default_plan', 'dicts_to_plan',
+    'normalize_plan', 'plan_to_dicts', 'plan_with_backend_geometry', 'select_mode',
+    'select_profile',
 ]
