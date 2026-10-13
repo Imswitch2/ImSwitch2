@@ -1847,7 +1847,9 @@ Coordinate tables written by other SMLM software open straight into the
 reconstruction list.  A localization table is a *result*, not raw data to
 reconstruct, so it bypasses the data loader and is published the same way a
 reconstructor publishes its output: filter, drift-correct, group, render and
-view it exactly as if the ``smlm-localizer`` had produced it.
+view it exactly as if the ``smlm-localizer`` had produced it -- including its
+first rendering, which is binned at the localizer panel's *Rendering → Preview
+pixel size* (10 nm unless changed), the same as for a table localized here.
 
 Two formats are recognised by content and need no interaction:
 
@@ -1886,10 +1888,14 @@ drift at the render pixel and only as well as the first segment represents
 the sample.  ``smlm-drift-comet`` runs `COMET
 <https://github.com/gpufit/Comet>`_ (Cost-function Optimized Maximal Overlap
 Drift EsTimation; `preprint <https://doi.org/10.64898/2026.03.27.714864>`_)
-through the optional ``comet-smlm`` package, installed by the ``comet``
-extra::
+through the optional ``comet-smlm`` package::
 
-    pip install "imswitch2[comet]"
+    pip install comet-smlm
+
+(the ``comet`` extra, ``pip install "imswitch2[comet]"`` or ``pip install -e
+".[comet]"`` in a checkout, installs the same thing; an editable install
+made before the extra existed does not know it until it is reinstalled,
+which is why the panel names the package itself).
 
 COMET estimates one drift vector per time window by maximising the overlap
 of every pair of localizations closer than *Max drift* across windows,

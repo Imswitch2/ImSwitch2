@@ -45,7 +45,10 @@ from imswitch.improcess.processors.smlm_drift.result import (
 #: Import name of the ``comet-smlm`` distribution.
 _PACKAGE = "comet"
 
-INSTALL_HINT = 'pip install "imswitch2[comet]"'
+#: Names the package itself rather than the ``imswitch2[comet]`` extra: an
+#: editable install made before the extra existed does not know it, and
+#: pip then reports "does not provide the extra" and installs nothing.
+INSTALL_HINT = "pip install comet-smlm"
 
 #: Kernel width (nm) the coarse-to-fine refinement stops at, for every run
 #: from this processor. Fixed for now; COMET's own default is 1 nm.
