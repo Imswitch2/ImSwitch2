@@ -1,9 +1,13 @@
 """The COMET drift-correction processor (optional ``comet-smlm`` package)."""
 
+import os
 import sys
+import types
 
 import numpy as np
 import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from imswitch.imcommon.model.cancellation import (
     CancelToken,
@@ -16,12 +20,21 @@ from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.processors.smlm_drift import DriftCorrectedLocalizationResult
 from imswitch.improcess.processors.smlm_drift_comet import (
     INSTALL_HINT,
+    TARGET_SIGMA_NM,
     SmlmCometDriftProcessor,
     comet_installed,
+    comet_problem,
 )
 from imswitch.improcess.processors.smlm_drift_comet.processor import summarize_run
 
 N_EMITTERS = 60
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from qtpy import QtWidgets
+
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
 def _drifting_cloud(n_frames=40, drift_per_frame=(4.0, -3.0, 0.0), seed=0, with_z=False):
@@ -55,6 +68,32 @@ def _slope(trace, frames):
     return (trace[-1] - trace[0]) / span
 
 
+def _fake_comet(captured: dict, n_frames=40):
+    """A stand-in ``comet`` module that records what it was called with."""
+
+    class Details:
+        frame_range = (0, n_frames - 1)
+        backend = "cpu"
+        n_pairs = 1234
+        sigma_accepted_nm = TARGET_SIGMA_NM
+        auto_downsampled = False
+        timings_s = {"pairs": 0.1, "optimization": 0.2}
+        knot_frames = np.arange(8)
+        segmentation = None
+
+    def comet_run_kd(dataset, **kwargs):
+        captured.update(kwargs)
+        drift = np.zeros((n_frames, 4))
+        drift[:, 3] = np.arange(n_frames)
+        return drift, dataset, Details()
+
+    fake = types.ModuleType("comet")
+    fake.comet_run_kd = comet_run_kd
+    fake.available_backends = lambda: ["cpu"]
+    fake.__version__ = "fake"
+    return fake
+
+
 # --- no package needed ---------------------------------------------------------
 
 
@@ -69,30 +108,139 @@ def test_comet_processor_is_registered_and_accepts_only_localizations():
     assert not processor.accepts(image)
 
 
-def test_window_size_is_refused_when_unset_before_the_package_is_needed(monkeypatch):
-    # The refusal names the missing value; it must not depend on comet being
-    # importable, since defaults are checked before the import.
+def test_the_panel_defaults_to_500_localizations_per_window():
+    defaults = SmlmCometDriftProcessor.default_params()
+    assert defaults["window_mode"] == "localizations"
+    assert defaults["window_size"] == 500
+    # The former advanced group is gone from the contract; the two settings a
+    # script may still want are accepted without being offered.
+    assert set(defaults) == {"window_mode", "window_size", "max_drift_nm", "backend"}
+    assert SmlmCometDriftProcessor.param_keys() == set(defaults) | {"max_locs_per_window", "seed"}
+
+
+def test_a_non_positive_window_size_is_refused_before_the_package_is_needed(monkeypatch):
     monkeypatch.setitem(sys.modules, "comet", None)
-    with pytest.raises(ValueError, match="no default window size"):
-        SmlmCometDriftProcessor().apply(_result(_drifting_cloud()), {"backend": "cpu"})
+    with pytest.raises(ValueError, match="positive count"):
+        SmlmCometDriftProcessor().apply(
+            _result(_drifting_cloud()), {"window_size": 0, "backend": "cpu"}
+        )
 
 
 def test_missing_package_fails_with_the_install_hint(monkeypatch):
     monkeypatch.setitem(sys.modules, "comet", None)
     assert comet_installed() is False
+    assert INSTALL_HINT in comet_problem()
     with pytest.raises(RuntimeError, match="comet-smlm") as info:
         SmlmCometDriftProcessor().apply(_result(_drifting_cloud()), _PARAMS)
     assert INSTALL_HINT in str(info.value)
 
 
-def test_widget_builds_without_the_package_and_says_so(monkeypatch, qapp):
+def test_a_broken_install_is_reported_as_broken_not_missing(monkeypatch):
+    import importlib
+
+    original = importlib.import_module
+
+    def explode(name, package=None):
+        if name == "comet":
+            raise OSError("numba could not load its DLL")
+        return original(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", explode)
+    problem = comet_problem()
+    assert "installed but cannot be imported" in problem
+    assert "numba could not load its DLL" in problem
+    assert INSTALL_HINT in problem
+
+
+def test_check_inputs_refuses_a_run_without_the_package(monkeypatch):
+    monkeypatch.setitem(sys.modules, "comet", None)
+    ok, reason = SmlmCometDriftProcessor().check_inputs([_result(_drifting_cloud())])
+    assert ok is False
+    assert "comet-smlm" in reason
+
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}))
+    assert SmlmCometDriftProcessor().check_inputs([_result(_drifting_cloud())]) == (True, "")
+
+
+def test_the_widget_says_so_and_disables_its_controls_without_the_package(monkeypatch, qapp):
     from qtpy import QtWidgets
 
     monkeypatch.setitem(sys.modules, "comet", None)
     widget = SmlmCometDriftProcessor().make_param_widget(None)
     labels = [label.text() for label in widget.findChildren(QtWidgets.QLabel)]
     assert any("comet-smlm" in text for text in labels)
+    assert widget.problem
+    assert not widget.form.isEnabled()
+    assert widget.installEdit.text() == INSTALL_HINT
+    # The declared defaults are what the (disabled) controls hold.
     assert widget.get_values() == SmlmCometDriftProcessor.default_params()
+
+
+def test_check_again_enables_the_widget_once_the_package_appears(monkeypatch, qapp):
+    monkeypatch.setitem(sys.modules, "comet", None)
+    widget = SmlmCometDriftProcessor().make_param_widget(None)
+    changes = []
+    widget.sigRunStateChanged.connect(lambda: changes.append(True))
+
+    widget.recheck()
+    assert widget.problem and not widget.form.isEnabled()
+    assert changes == []  # still missing: nothing to re-decide
+
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}))
+    widget.recheck()
+    assert widget.problem == ""
+    assert widget.form.isEnabled()
+    assert widget.availabilityBox.isHidden()
+    assert changes == [True]
+
+
+def test_the_panel_keeps_run_off_until_the_package_is_found(monkeypatch, qapp):
+    from imswitch.improcess.view.ResultProcessorWidget import ResultProcessorWidget
+
+    monkeypatch.setitem(sys.modules, "comet", None)
+    panel = ResultProcessorWidget(SmlmCometDriftProcessor())
+    panel.setCurrentResult(_result(_drifting_cloud()))
+    assert not panel.runButton.isEnabled()
+    assert "comet-smlm" in panel.statusLabel.text()
+
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}))
+    panel.paramWidget.recheck()
+    assert panel.runButton.isEnabled()
+    assert "comet-smlm" not in panel.statusLabel.text()
+
+
+def test_apply_hands_comet_the_fixed_target_sigma_and_its_own_defaults(monkeypatch):
+    captured = {}
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet(captured))
+
+    corrected = SmlmCometDriftProcessor().apply(
+        _result(_drifting_cloud()), SmlmCometDriftProcessor.default_params()
+    )
+
+    assert captured["segmentation_mode"] == 1  # localizations per window
+    assert captured["segmentation_var"] == 500
+    assert captured["max_drift_nm"] == 300.0
+    assert captured["target_sigma_nm"] == TARGET_SIGMA_NM == 10.0
+    assert captured["mode"] is None  # auto
+    # Not passed, so COMET's own: initial sigma = max drift / 3, no boxcar,
+    # cubic interpolation.
+    for key in ("initial_sigma_nm", "boxcar_width", "interpolation_method"):
+        assert key not in captured
+    assert captured["max_locs_per_segment"] is None
+    assert captured["random_state"] is None
+    assert corrected.metadata["drift_target_sigma_nm"] == 10.0
+    assert corrected.metadata["drift_windows"] == 8
+
+
+def test_the_extra_keys_reach_comet_without_being_in_the_panel(monkeypatch):
+    captured = {}
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet(captured))
+    SmlmCometDriftProcessor().apply(
+        _result(_drifting_cloud()),
+        {**_PARAMS, "max_locs_per_window": 100, "seed": 7},
+    )
+    assert captured["max_locs_per_segment"] == 100
+    assert captured["random_state"] == 7
 
 
 def test_summarize_run_reads_the_recorded_metadata():
@@ -142,6 +290,7 @@ def test_processor_recovers_linear_drift_and_leaves_the_input_alone():
     assert meta["drift_backend"] == "cpu"
     assert meta["drift_windows"] == 8
     assert meta["drift_pairs"] > 0
+    assert meta["drift_target_sigma_nm"] == TARGET_SIGMA_NM
     # COMET references the trace to the acquisition's centre, not its first
     # window: over 39 frames at 4 nm/frame the trace spans 156 nm, ±78 nm.
     assert corrected.drift_x_nm[-1] - corrected.drift_x_nm[0] == pytest.approx(39 * 4.0, rel=0.05)
@@ -151,6 +300,16 @@ def test_processor_recovers_linear_drift_and_leaves_the_input_alone():
     payload = corrected.plot_payloads()[0]
     assert payload.title == "Estimated drift"
     assert {series.name for series in payload.series} == {"X drift", "Y drift"}
+
+
+def test_the_default_window_runs_on_a_real_cloud():
+    # 60 emitters per frame over 40 frames: 500 localizations per window is
+    # about eight frames per window, which resolves a linear drift.
+    corrected = SmlmCometDriftProcessor().apply(
+        _result(_drifting_cloud()), {**SmlmCometDriftProcessor.default_params(), "backend": "cpu"}
+    )
+    assert _slope(corrected.drift_x_nm, corrected.drift_frames) == pytest.approx(4.0, rel=0.1)
+    assert corrected.metadata["drift_params"]["window_mode"] == "localizations"
 
 
 def test_processor_corrects_z_on_a_3d_table():

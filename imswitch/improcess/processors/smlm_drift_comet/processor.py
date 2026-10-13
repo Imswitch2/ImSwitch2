@@ -8,25 +8,30 @@ from coarse to fine, and interpolating the window drifts to a per-frame
 curve. It corrects x, y and z. It runs on numba-cuda, PyTorch or a
 numba-compiled CPU kernel; COMET picks the fastest it finds unless told.
 
-The package is optional. This processor imports it only when a run starts,
-so the panel opens without it and says how to install it; a run without it
-fails with the same message.
+The package is optional and is looked for the moment the panel is built:
+without it the panel says how to install it, keeps its controls and the
+Run button off, and offers **Check again** for after a ``pip install`` in
+the running session. The processor's ``check_inputs`` gate says the same, so
+a workflow is refused before it starts; a headless ``apply`` without the
+package fails with the same message.
 
-Every parameter default here is COMET's own (``comet_run_kd`` in
-``comet-smlm`` 1.2.0) and is labelled as such. The one value COMET has no
-default for, the window size, is left unset and the run is refused until
-it is chosen: COMET's command line requires it and its examples disagree
-(50 and 60 frames per window), because the right value depends on how many
-localizations a dataset has per frame and how fast it drifts.
+The panel asks for four things: how the acquisition is cut into windows
+(500 localizations per window by default), the largest drift expected, and
+the backend. The kernel width the refinement stops at is fixed at
+:data:`TARGET_SIGMA_NM`. Everything else -- the initial kernel width (a
+third of the maximum drift), no boxcar smoothing, cubic interpolation -- is
+COMET's own default (``comet_run_kd`` in ``comet-smlm`` 1.2.0) and is not
+offered. A headless caller may additionally cap the localizations per window
+and seed that cap (:attr:`SmlmCometDriftProcessor.extra_param_keys`).
 """
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 from typing import Callable
 
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model.cancellation import checkpoint
 from imswitch.improcess.model.localization_result import LocalizationResult
@@ -42,47 +47,72 @@ _PACKAGE = "comet"
 
 INSTALL_HINT = 'pip install "imswitch2[comet]"'
 
+#: Kernel width (nm) the coarse-to-fine refinement stops at, for every run
+#: from this processor. Fixed for now; COMET's own default is 1 nm.
+TARGET_SIGMA_NM = 10.0
+
 #: Window (segmentation) modes, as ``comet_run_kd(segmentation_mode=...)``
-#: numbers them. COMET's command line defaults to frames per window.
-WINDOW_MODES: dict[str, int] = {"frames": 2, "localizations": 1, "windows": 0}
+#: numbers them. The panel defaults to localizations per window.
+WINDOW_MODES: dict[str, int] = {"localizations": 1, "frames": 2, "windows": 0}
 
 _WINDOW_MODE_LABELS: dict[str, str] = {
-    "frames": "Frames per window",
     "localizations": "Localizations per window",
+    "frames": "Frames per window",
     "windows": "Number of windows",
 }
+
+DEFAULT_WINDOW_MODE = "localizations"
+DEFAULT_WINDOW_SIZE = 500
 
 #: ``comet_run_kd(mode=...)`` options plus ``auto`` (COMET's own choice,
 #: :func:`comet.best_backend`). The ``_qc`` variants flag and drop windows
 #: whose optimisation looks flawed.
 BACKENDS: tuple[str, ...] = ("auto", "cuda", "cuda_qc", "torch", "torch_qc", "cpu")
 
-INTERPOLATIONS: tuple[str, ...] = ("cubic", "catmull-rom")
 
-_WINDOW_SIZE_UNSET = (
-    "COMET has no default window size: set 'Window size' (frames per window, "
-    "localizations per window or the number of windows). Enough windows to "
-    "resolve the drift, enough localizations per window to constrain it."
-)
+def comet_problem() -> str:
+    """Why COMET cannot run here, or ``""`` when it can.
+
+    The package is imported for real rather than merely looked up, so an
+    installation that is present but broken (a numba that does not load,
+    say) is reported as that and not as ready. Once imported it sits in
+    ``sys.modules``, so asking again is free.
+    """
+    try:
+        importlib.import_module(_PACKAGE)
+    except ImportError:
+        return (
+            "COMET drift correction needs the optional 'comet-smlm' package "
+            f"({INSTALL_HINT})."
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken install is reported, not raised
+        return (
+            "The optional 'comet-smlm' package is installed but cannot be "
+            f"imported ({exc!r}); reinstall it with {INSTALL_HINT}."
+        )
+    return ""
+
+
+def recheck_comet() -> str:
+    """:func:`comet_problem` after the import system forgets what it cached.
+
+    A package installed while ImSwitch2 was running is otherwise invisible
+    to it until a restart.
+    """
+    importlib.invalidate_caches()
+    return comet_problem()
 
 
 def comet_installed() -> bool:
-    """Whether ``comet-smlm`` can be imported, without importing it."""
-    try:
-        return importlib.util.find_spec(_PACKAGE) is not None
-    except (ImportError, ValueError):
-        return False
+    """Whether ``comet-smlm`` imports."""
+    return not comet_problem()
 
 
 def _require_comet():
-    try:
-        import comet
-    except ImportError as exc:
-        raise RuntimeError(
-            "COMET drift correction needs the optional 'comet-smlm' package "
-            f"({INSTALL_HINT})"
-        ) from exc
-    return comet
+    problem = comet_problem()
+    if problem:
+        raise RuntimeError(problem)
+    return importlib.import_module(_PACKAGE)
 
 
 def _optional_positive(value, cast):
@@ -100,43 +130,42 @@ class SmlmCometDriftProcessor(Processor):
     id = "smlm-drift-comet"
     category = "Localization"
     kinds = ("localization",)
+    #: Taken from a workflow or a script, not offered in the panel: a random
+    #: cap on the localizations per window, to bound memory and time (COMET
+    #: lowers it by itself if the pair search runs out of memory), and a seed
+    #: that makes a capped run repeat exactly.
+    extra_param_keys = ("max_locs_per_window", "seed")
 
     @classmethod
     def default_params(cls) -> dict:
         return {
-            "window_mode": "frames",
-            "window_size": None,
+            "window_mode": DEFAULT_WINDOW_MODE,
+            "window_size": DEFAULT_WINDOW_SIZE,
             "max_drift_nm": 300.0,
             "backend": "auto",
-            "target_sigma_nm": 1.0,
-            "initial_sigma_nm": None,
-            "boxcar_width": 1,
-            "interpolation": "cubic",
-            "max_locs_per_window": None,
-            "seed": None,
         }
 
     @classmethod
     def param_spec(cls) -> tuple:
         return (
             ParamField(
-                "window_mode", "select", "frames", label="Window mode",
+                "window_mode", "select", DEFAULT_WINDOW_MODE, label="Window mode",
                 options=tuple(WINDOW_MODES),
-                help="What 'Window size' counts (COMET segmentation_mode; "
-                     "COMET's command line defaults to frames per window).",
+                help="What 'Window size' counts (COMET segmentation_mode).",
             ),
             ParamField(
-                "window_size", "int", None, label="Window size", min=0, max=None,
-                nullable=True,
-                help="Frames per window, localizations per window or the number of "
-                     "windows, by 'Window mode'. COMET has no default: the run is "
-                     "refused until it is set.",
+                "window_size", "int", DEFAULT_WINDOW_SIZE, label="Window size", min=1,
+                max=None,
+                help="Localizations per window, frames per window or the number of "
+                     "windows, by 'Window mode'. Enough windows to resolve the drift, "
+                     "enough localizations per window to constrain it.",
             ),
             ParamField(
                 "max_drift_nm", "float", 300.0, label="Max drift", min=1, max=1_000_000,
                 decimals=1, suffix="nm",
                 help="Largest drift expected over the acquisition; also the "
-                     "neighbour-search radius (COMET default 300 nm).",
+                     "neighbour-search radius (COMET default 300 nm). The refinement "
+                     "starts from a kernel a third as wide.",
             ),
             ParamField(
                 "backend", "select", "auto", label="Backend", options=BACKENDS,
@@ -144,207 +173,46 @@ class SmlmCometDriftProcessor(Processor):
                      "else the CPU kernel). _qc variants drop windows whose fit "
                      "looks flawed.",
             ),
-            ParamField(
-                "target_sigma_nm", "float", 1.0, label="Target sigma", min=0.01,
-                max=100_000, decimals=2, suffix="nm", advanced=True,
-                help="Kernel width the refinement stops at (COMET default 1 nm).",
-            ),
-            ParamField(
-                "initial_sigma_nm", "float", None, label="Initial sigma", min=0,
-                max=1_000_000, decimals=1, suffix="nm", nullable=True, advanced=True,
-                help="Kernel width the refinement starts from; unset = COMET's "
-                     "rule, max drift / 3.",
-            ),
-            ParamField(
-                "boxcar_width", "int", 1, label="Boxcar width", min=1, max=10_000,
-                advanced=True,
-                help="Temporal smoothing of the window drifts between optimizer "
-                     "steps, in windows (COMET default 1 = none).",
-            ),
-            ParamField(
-                "interpolation", "select", "cubic", label="Interpolation",
-                options=INTERPOLATIONS, advanced=True,
-                help="Spline from window drifts to per-frame drift (COMET default cubic).",
-            ),
-            ParamField(
-                "max_locs_per_window", "int", None, label="Max localizations per window",
-                min=0, max=None, nullable=True, advanced=True,
-                help="Random cap per window to bound memory and time; unset = all "
-                     "(COMET default). COMET lowers it by itself if the pair "
-                     "search runs out of memory.",
-            ),
-            ParamField(
-                "seed", "int", None, label="Seed", min=-1, max=None,
-                nullable=True, advanced=True,
-                help="Seed for the random cap, so a capped run repeats exactly; "
-                     "unset = COMET's global random state.",
-            ),
         )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: isinstance(result, LocalizationResult)
 
+    def check_inputs(self, results) -> tuple[bool, str]:
+        """The usual gate, and then whether COMET is here to run at all."""
+        ok, reason = super().check_inputs(results)
+        if not ok:
+            return ok, reason
+        problem = comet_problem()
+        if problem:
+            return False, problem
+        return True, ""
+
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget(parent)
-        layout = QtWidgets.QFormLayout(widget)
-
-        if not comet_installed():
-            # Said in the panel rather than only at run time: a panel that
-            # looks ready and then fails reads as a bug.
-            note = QtWidgets.QLabel(
-                "Needs the optional 'comet-smlm' package "
-                f"({INSTALL_HINT}). The run will fail until it is installed."
-            )
-            note.setWordWrap(True)
-            layout.addRow(note)
-
-        mode_combo = QtWidgets.QComboBox()
-        for key, label in _WINDOW_MODE_LABELS.items():
-            mode_combo.addItem(label, key)
-        mode_combo.setToolTip("What 'Window size' counts")
-        layout.addRow("Window mode:", mode_combo)
-
-        size_spin = QtWidgets.QSpinBox()
-        size_spin.setRange(0, 1_000_000_000)
-        size_spin.setSpecialValueText("not set")
-        size_spin.setToolTip(_WINDOW_SIZE_UNSET)
-        layout.addRow("Window size:", size_spin)
-
-        drift_spin = QtWidgets.QDoubleSpinBox()
-        drift_spin.setRange(1.0, 1_000_000.0)
-        drift_spin.setDecimals(1)
-        drift_spin.setValue(300.0)
-        drift_spin.setSuffix(" nm")
-        drift_spin.setToolTip(
-            "Largest drift expected over the acquisition; also the "
-            "neighbour-search radius (COMET default 300 nm)"
-        )
-        layout.addRow("Max drift:", drift_spin)
-
-        backend_combo = QtWidgets.QComboBox()
-        backend_combo.addItems(list(BACKENDS))
-        backend_combo.setToolTip(
-            "auto = the fastest COMET finds on this machine; a backend that is "
-            "not available is refused at run time"
-        )
-        layout.addRow("Backend:", backend_combo)
-
-        advanced = QtWidgets.QGroupBox("Advanced (COMET defaults)")
-        advanced_layout = QtWidgets.QFormLayout(advanced)
-
-        target_spin = QtWidgets.QDoubleSpinBox()
-        target_spin.setRange(0.01, 100_000.0)
-        target_spin.setDecimals(2)
-        target_spin.setValue(1.0)
-        target_spin.setSuffix(" nm")
-        target_spin.setToolTip("Kernel width the refinement stops at (COMET default 1 nm)")
-        advanced_layout.addRow("Target sigma:", target_spin)
-
-        initial_spin = QtWidgets.QDoubleSpinBox()
-        initial_spin.setRange(0.0, 1_000_000.0)
-        initial_spin.setDecimals(1)
-        initial_spin.setSuffix(" nm")
-        initial_spin.setSpecialValueText("max drift / 3")
-        initial_spin.setToolTip(
-            "Kernel width the refinement starts from; 'max drift / 3' is COMET's rule"
-        )
-        advanced_layout.addRow("Initial sigma:", initial_spin)
-
-        boxcar_spin = QtWidgets.QSpinBox()
-        boxcar_spin.setRange(1, 10_000)
-        boxcar_spin.setValue(1)
-        boxcar_spin.setToolTip(
-            "Temporal smoothing of the window drifts, in windows (1 = none)"
-        )
-        advanced_layout.addRow("Boxcar width:", boxcar_spin)
-
-        interp_combo = QtWidgets.QComboBox()
-        interp_combo.addItems(list(INTERPOLATIONS))
-        advanced_layout.addRow("Interpolation:", interp_combo)
-
-        cap_spin = QtWidgets.QSpinBox()
-        cap_spin.setRange(0, 1_000_000_000)
-        cap_spin.setSpecialValueText("all")
-        cap_spin.setToolTip(
-            "Random cap on localizations per window; COMET lowers it by itself "
-            "if the pair search runs out of memory"
-        )
-        advanced_layout.addRow("Max localizations per window:", cap_spin)
-
-        seed_spin = QtWidgets.QSpinBox()
-        seed_spin.setRange(-1, 2_147_483_647)
-        seed_spin.setValue(-1)
-        seed_spin.setSpecialValueText("unseeded")
-        seed_spin.setToolTip("Seed for the random cap, so a capped run repeats exactly")
-        advanced_layout.addRow("Seed:", seed_spin)
-
-        layout.addRow(advanced)
-
-        status = QtWidgets.QLabel("")
-        status.setWordWrap(True)
-        layout.addRow(status)
-
-        def get_values():
-            size = int(size_spin.value())
-            initial = float(initial_spin.value())
-            cap = int(cap_spin.value())
-            seed = int(seed_spin.value())
-            return {
-                "window_mode": str(mode_combo.currentData()),
-                "window_size": size if size > 0 else None,
-                "max_drift_nm": float(drift_spin.value()),
-                "backend": str(backend_combo.currentText()),
-                "target_sigma_nm": float(target_spin.value()),
-                "initial_sigma_nm": initial if initial > 0 else None,
-                "boxcar_width": int(boxcar_spin.value()),
-                "interpolation": str(interp_combo.currentText()),
-                "max_locs_per_window": cap if cap > 0 else None,
-                "seed": seed if seed >= 0 else None,
-            }
-
-        def before_run():
-            status.setText(
-                "Running COMET… (the first CPU run also compiles its kernel)"
-            )
-
-        def after_run(results, failures):
-            if failures:
-                status.setText(f"Failed: {failures[0][1]}")
-                return
-            if not results:
-                status.setText("")
-                return
-            status.setText(summarize_run(getattr(results[0], "metadata", {}) or {}))
-
-        widget.get_values = get_values
-        widget.before_run = before_run
-        widget.after_run = after_run
-        return widget
+        return CometParamWidget(parent)
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
         if not isinstance(result, LocalizationResult):
             raise TypeError("COMET drift correction requires a LocalizationResult input")
 
-        window_mode = str(params.get("window_mode", "frames"))
+        window_mode = str(params.get("window_mode", DEFAULT_WINDOW_MODE))
         if window_mode not in WINDOW_MODES:
             raise ValueError(
                 f"Unknown window mode {window_mode!r}; expected one of {list(WINDOW_MODES)}"
             )
-        window_size = _optional_positive(params.get("window_size"), int)
+        window_size = _optional_positive(params.get("window_size", DEFAULT_WINDOW_SIZE), int)
         if window_size is None:
-            raise ValueError(_WINDOW_SIZE_UNSET)
+            raise ValueError(
+                "window_size must be a positive count: localizations per window, "
+                "frames per window or the number of windows, by window_mode"
+            )
         max_drift_nm = float(params.get("max_drift_nm", 300.0))
         if max_drift_nm <= 0:
             raise ValueError("max_drift_nm must be positive")
         backend = str(params.get("backend", "auto"))
         if backend not in BACKENDS:
             raise ValueError(f"Unknown backend {backend!r}; expected one of {BACKENDS}")
-        interpolation = str(params.get("interpolation", "cubic"))
-        if interpolation not in INTERPOLATIONS:
-            raise ValueError(
-                f"Unknown interpolation {interpolation!r}; expected one of {INTERPOLATIONS}"
-            )
 
         locs = result.locs
         if len(locs) == 0:
@@ -371,15 +239,14 @@ class SmlmCometDriftProcessor(Processor):
             # where a long run spends its time, so Cancel lands within one.
             checkpoint()
 
+        # What is not passed is COMET's own default: the initial kernel width
+        # (max drift / 3), boxcar_width 1 (no smoothing), cubic interpolation.
         drift, corrected, details = comet.comet_run_kd(
             dataset,
             segmentation_mode=WINDOW_MODES[window_mode],
             segmentation_var=int(window_size),
             max_drift_nm=max_drift_nm,
-            initial_sigma_nm=_optional_positive(params.get("initial_sigma_nm"), float),
-            target_sigma_nm=float(params.get("target_sigma_nm", 1.0)),
-            boxcar_width=int(params.get("boxcar_width", 1)),
-            interpolation_method=interpolation,
+            target_sigma_nm=TARGET_SIGMA_NM,
             max_locs_per_segment=_optional_positive(params.get("max_locs_per_window"), int),
             mode=mode,
             return_corrected_locs=True,
@@ -412,6 +279,7 @@ class SmlmCometDriftProcessor(Processor):
             **result.metadata,
             "drift_method": "comet",
             "drift_params": dict(params),
+            "drift_target_sigma_nm": TARGET_SIGMA_NM,
             "drift_backend": str(details.backend),
             "drift_windows": int(getattr(segmentation, "n_segments", len(details.knot_frames))),
             "drift_pairs": int(details.n_pairs),
@@ -439,6 +307,135 @@ class SmlmCometDriftProcessor(Processor):
         )
 
 
+class CometParamWidget(QtWidgets.QWidget):
+    """The COMET panel: whether it can run at all, then its four settings.
+
+    Built with the package looked for, so a missing or broken install is
+    said on the spot, with the install line ready to copy, and the controls
+    are off until **Check again** finds it.
+    """
+
+    sigRunStateChanged = QtCore.Signal()
+    """Whether a run is possible changed; the panel re-decides its Run button."""
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.availabilityBox = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(self.availabilityBox)
+        box.setContentsMargins(0, 0, 0, 0)
+        self.problemLabel = QtWidgets.QLabel("")
+        self.problemLabel.setWordWrap(True)
+        self.problemLabel.setStyleSheet("font-weight: bold;")
+        self.installEdit = QtWidgets.QLineEdit(INSTALL_HINT)
+        self.installEdit.setReadOnly(True)
+        self.installEdit.setToolTip(
+            "Run this in a terminal with the ImSwitch2 environment active, "
+            "then press Check again"
+        )
+        self.recheckButton = QtWidgets.QPushButton("Check again")
+        self.recheckButton.setToolTip("Look for the package again without restarting")
+        self.recheckButton.clicked.connect(self.recheck)
+        box.addWidget(self.problemLabel)
+        box.addWidget(self.installEdit)
+        box.addWidget(self.recheckButton)
+        layout.addWidget(self.availabilityBox)
+
+        self.form = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(self.form)
+        form.setContentsMargins(0, 0, 0, 0)
+
+        self.modeCombo = QtWidgets.QComboBox()
+        for key, label in _WINDOW_MODE_LABELS.items():
+            self.modeCombo.addItem(label, key)
+        self.modeCombo.setToolTip("What 'Window size' counts")
+        form.addRow("Window mode:", self.modeCombo)
+
+        self.sizeSpin = QtWidgets.QSpinBox()
+        self.sizeSpin.setRange(1, 1_000_000_000)
+        self.sizeSpin.setValue(DEFAULT_WINDOW_SIZE)
+        self.sizeSpin.setToolTip(
+            "Localizations per window, frames per window or the number of windows, "
+            "by 'Window mode'. Enough windows to resolve the drift, enough "
+            "localizations per window to constrain it."
+        )
+        form.addRow("Window size:", self.sizeSpin)
+
+        self.driftSpin = QtWidgets.QDoubleSpinBox()
+        self.driftSpin.setRange(1.0, 1_000_000.0)
+        self.driftSpin.setDecimals(1)
+        self.driftSpin.setValue(300.0)
+        self.driftSpin.setSuffix(" nm")
+        self.driftSpin.setToolTip(
+            "Largest drift expected over the acquisition; also the "
+            "neighbour-search radius (COMET default 300 nm). The refinement "
+            "starts from a kernel a third as wide."
+        )
+        form.addRow("Max drift:", self.driftSpin)
+
+        self.backendCombo = QtWidgets.QComboBox()
+        self.backendCombo.addItems(list(BACKENDS))
+        self.backendCombo.setToolTip(
+            "auto = the fastest COMET finds on this machine; a backend that is "
+            "not available is refused at run time"
+        )
+        form.addRow("Backend:", self.backendCombo)
+        layout.addWidget(self.form)
+
+        self.statusLabel = QtWidgets.QLabel("")
+        self.statusLabel.setWordWrap(True)
+        layout.addWidget(self.statusLabel)
+
+        self._problem = ""
+        self._showProblem(comet_problem())
+
+    @property
+    def problem(self) -> str:
+        """Why COMET cannot run, as last checked, or ``""``."""
+        return self._problem
+
+    def _showProblem(self, problem: str) -> None:
+        self._problem = problem
+        self.problemLabel.setText(problem)
+        self.availabilityBox.setVisible(bool(problem))
+        self.form.setEnabled(not problem)
+
+    def recheck(self) -> None:
+        """Look for the package again; tell the panel if the answer changed."""
+        before = self._problem
+        self._showProblem(recheck_comet())
+        if self._problem:
+            self.statusLabel.setText("Checked again: still not importable.")
+        elif before:
+            self.statusLabel.setText("COMET found.")
+        if bool(before) != bool(self._problem):
+            self.sigRunStateChanged.emit()
+
+    def get_values(self) -> dict:
+        return {
+            "window_mode": str(self.modeCombo.currentData()),
+            "window_size": int(self.sizeSpin.value()),
+            "max_drift_nm": float(self.driftSpin.value()),
+            "backend": str(self.backendCombo.currentText()),
+        }
+
+    def before_run(self) -> None:
+        self.statusLabel.setText(
+            "Running COMET… (the first CPU run also compiles its kernel)"
+        )
+
+    def after_run(self, results, failures) -> None:
+        if failures:
+            self.statusLabel.setText(f"Failed: {failures[0][1]}")
+            return
+        if not results:
+            self.statusLabel.setText("")
+            return
+        self.statusLabel.setText(summarize_run(getattr(results[0], "metadata", {}) or {}))
+
+
 def summarize_run(metadata: dict) -> str:
     """One line for the panel: what backend ran, over what, how long."""
     if metadata.get("drift_method") != "comet":
@@ -458,10 +455,15 @@ def summarize_run(metadata: dict) -> str:
 
 __all__ = [
     "BACKENDS",
+    "DEFAULT_WINDOW_MODE",
+    "DEFAULT_WINDOW_SIZE",
     "INSTALL_HINT",
-    "INTERPOLATIONS",
+    "TARGET_SIGMA_NM",
     "WINDOW_MODES",
+    "CometParamWidget",
     "SmlmCometDriftProcessor",
     "comet_installed",
+    "comet_problem",
+    "recheck_comet",
     "summarize_run",
 ]
