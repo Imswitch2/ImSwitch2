@@ -25,7 +25,11 @@ from imswitch.improcess.processors.smlm_drift_comet import (
     comet_installed,
     comet_problem,
 )
-from imswitch.improcess.processors.smlm_drift_comet.processor import summarize_run
+from imswitch.improcess.processors.smlm_drift_comet.processor import (
+    PAIR_WARNING_THRESHOLD,
+    ProgressReporter,
+    summarize_run,
+)
 
 N_EMITTERS = 60
 
@@ -68,8 +72,12 @@ def _slope(trace, frames):
     return (trace[-1] - trace[0]) / span
 
 
-def _fake_comet(captured: dict, n_frames=40):
-    """A stand-in ``comet`` module that records what it was called with."""
+def _fake_comet(captured: dict, n_frames=40, estimated_pairs=1234):
+    """A stand-in ``comet`` module that records what it was called with.
+
+    Its ``comet_run_kd`` reports a few progress stages the way the real one
+    does before returning a flat drift.
+    """
 
     class Details:
         frame_range = (0, n_frames - 1)
@@ -83,12 +91,28 @@ def _fake_comet(captured: dict, n_frames=40):
 
     def comet_run_kd(dataset, **kwargs):
         captured.update(kwargs)
+        progress = kwargs.get("progress")
+        if progress is not None:
+            progress("segmentation", {"n_segments": 8, "n_locs_valid": len(dataset),
+                                      "median_locs_per_segment": 300.0})
+            progress("pairs_start", {"n_locs_valid": len(dataset), "radius_nm": 300.0})
+            progress("pairs_done", {"n_pairs": 1234, "auto_downsampled": False,
+                                    "max_locs_per_segment": None})
+            progress("run_start", {"run": 1, "sigma_nm": 100.0, "n_failures": 0})
+            for count in range(1, 51):
+                progress("evaluation", {"run": 1, "sigma_nm": 100.0,
+                                        "n_evaluations": count, "cost": -1.5})
+            progress("run_end", {"run": 1, "sigma_nm": 100.0, "success": True,
+                                 "nit": 12, "nfev": 50, "accepted": True})
+            progress("interpolation", {"n_valid_segments": 8})
+            progress("apply", {"n_locs": len(dataset)})
         drift = np.zeros((n_frames, 4))
         drift[:, 3] = np.arange(n_frames)
         return drift, dataset, Details()
 
     fake = types.ModuleType("comet")
     fake.comet_run_kd = comet_run_kd
+    fake.estimate_pairs = lambda coordinates, radius: estimated_pairs
     fake.available_backends = lambda: ["cpu"]
     fake.__version__ = "fake"
     return fake
@@ -243,6 +267,78 @@ def test_the_extra_keys_reach_comet_without_being_in_the_panel(monkeypatch):
     assert captured["random_state"] == 7
 
 
+def test_the_pair_estimate_and_the_progress_are_printed_for_the_panel(monkeypatch, capsys):
+    captured = {}
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet(captured))
+
+    corrected = SmlmCometDriftProcessor().apply(_result(_drifting_cloud()), _PARAMS)
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "Estimated pairs within 300 nm: 1,234"
+    assert not any(line.startswith("Warning") for line in lines)
+    assert "8 windows over 2,400 localizations (median 300 per window)" in lines
+    assert "Searching pairs within 300 nm..." in lines
+    assert "1,234 pairs found" in lines
+    assert "Optimizer step 1: kernel 100 nm" in lines
+    # Fifty evaluations thinned to two lines, not fifty.
+    assert [line for line in lines if "evaluations, cost" in line] == [
+        "  step 1: 25 evaluations, cost -1.5",
+        "  step 1: 50 evaluations, cost -1.5",
+    ]
+    assert "  step 1 done at 100 nm: accepted after 12 iterations (50 evaluations)" in lines
+    assert "Correcting 2,400 localizations" in lines
+    assert corrected.metadata["drift_pairs_estimated"] == 1234
+
+
+def test_a_huge_pair_estimate_is_warned_about_before_the_run(monkeypatch, capsys):
+    huge = PAIR_WARNING_THRESHOLD + 1
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}, estimated_pairs=huge))
+    warnings = []
+    processor = SmlmCometDriftProcessor()
+    monkeypatch.setattr(processor._logger, "warning", lambda message, *a: warnings.append(message))
+
+    corrected = processor.apply(_result(_drifting_cloud()), _PARAMS)
+
+    out = capsys.readouterr().out
+    assert f"Warning: {huge:,} pairs is very many" in out
+    assert len(warnings) == 1 and "max drift" in warnings[0]
+    assert corrected.metadata["drift_pairs_estimated"] == huge
+
+
+def test_a_comet_without_an_estimate_runs_without_one(monkeypatch, capsys):
+    fake = _fake_comet({})
+    del fake.estimate_pairs
+    monkeypatch.setitem(sys.modules, "comet", fake)
+    # The real package may already be imported in this process; its
+    # estimator must not be found behind the stand-in's back.
+    monkeypatch.setitem(sys.modules, "comet.core.pair_indices", None)
+
+    corrected = SmlmCometDriftProcessor().apply(_result(_drifting_cloud()), _PARAMS)
+
+    assert "Estimated pairs" not in capsys.readouterr().out
+    assert corrected.metadata["drift_pairs_estimated"] is None
+
+
+def test_the_reporter_says_when_windows_were_capped_and_a_step_was_rejected():
+    assert ProgressReporter.describe(
+        "pairs_done", {"n_pairs": 5000, "auto_downsampled": True, "max_locs_per_segment": 900}
+    ) == "5,000 pairs found; windows were capped to 900 localizations to fit in memory"
+    assert ProgressReporter.describe(
+        "run_end", {"run": 3, "sigma_nm": 10.0, "accepted": False, "nit": 4, "nfev": 9}
+    ) == "  step 3 done at 10 nm: not accepted after 4 iterations (9 evaluations)"
+    assert ProgressReporter.describe("done", {"details": None}) == ""
+
+
+def test_the_widget_shows_what_the_run_prints(monkeypatch, qapp):
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}))
+    widget = SmlmCometDriftProcessor().make_param_widget(None)
+    widget.output_appended("Estimated pairs within 300 nm: 1,234\n")
+    widget.output_appended("8 windows")
+    assert widget.logView.toPlainText() == "Estimated pairs within 300 nm: 1,234\n8 windows"
+    widget.before_run()
+    assert widget.logView.toPlainText() == ""
+
+
 def test_summarize_run_reads_the_recorded_metadata():
     line = summarize_run(
         {
@@ -300,6 +396,19 @@ def test_processor_recovers_linear_drift_and_leaves_the_input_alone():
     payload = corrected.plot_payloads()[0]
     assert payload.title == "Estimated drift"
     assert {series.name for series in payload.series} == {"X drift", "Y drift"}
+
+
+def test_a_real_run_prints_its_pair_estimate_and_progress(capsys):
+    corrected = SmlmCometDriftProcessor().apply(_result(_drifting_cloud()), _PARAMS)
+
+    out = capsys.readouterr().out
+    assert out.startswith("Estimated pairs within 300 nm: ")
+    assert "8 windows over 2,400 localizations" in out
+    assert f"{corrected.metadata['drift_pairs']:,} pairs found" in out
+    assert "Optimizer step 1: kernel 100 nm" in out
+    assert "Correcting 2,400 localizations" in out
+    # The estimate counts exactly what the search finds.
+    assert corrected.metadata["drift_pairs_estimated"] == corrected.metadata["drift_pairs"]
 
 
 def test_the_default_window_runs_on_a_real_cloud():

@@ -1906,6 +1906,19 @@ x, y **and z**.  It runs on numba-cuda (an NVIDIA GPU), on PyTorch (its own
 kernel, and *Backend* ``auto`` takes the fastest COMET finds on the machine;
 a backend asked for by name that is not available is refused with the ones
 that are.  The first CPU run compiles the kernel, which takes a moment.
+
+The panel shows the run as it goes.  First comes COMET's own safety check:
+the exact number of localization pairs within *Max drift*, which is what
+decides how long the run takes and whether it fits in memory, counted before
+the first optimizer step.  Above 500 million pairs the panel warns (and the
+log records it) that the run will be slow and may run out of memory, in which
+case COMET caps the localizations per window by itself and starts again; a
+smaller *Max drift*, or ``max_locs_per_window`` from a workflow, brings the
+count down.  Then come the windows and the localizations they hold, the
+pairs found, each optimizer step with its kernel width, every 25th
+cost-function evaluation with its cost, whether the step was accepted, the
+interpolation and the correction.  The estimate is recorded in the result's
+metadata (``drift_pairs_estimated``) beside the pairs actually found.
 **Cancel** in the panel lands at COMET's next progress report, after any
 cost-function evaluation, and leaves the input untouched.
 

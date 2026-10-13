@@ -33,6 +33,7 @@ from typing import Callable
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.model.cancellation import checkpoint
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.param_spec import ParamField
@@ -66,6 +67,14 @@ _WINDOW_MODE_LABELS: dict[str, str] = {
 
 DEFAULT_WINDOW_MODE = "localizations"
 DEFAULT_WINDOW_SIZE = 500
+
+#: Pair count above which COMET's own safety check warns: runs above it are
+#: slow and usually need the per-window cap; billions exhaust memory.
+PAIR_WARNING_THRESHOLD = 500_000_000
+
+#: Progress lines are printed every this many cost-function evaluations of
+#: an optimizer step; every evaluation would flood the panel.
+_EVALUATION_REPORT_EVERY = 25
 
 #: ``comet_run_kd(mode=...)`` options plus ``auto`` (COMET's own choice,
 #: :func:`comet.best_backend`). The ``_qc`` variants flag and drop windows
@@ -116,6 +125,88 @@ def _require_comet():
     if problem:
         raise RuntimeError(problem)
     return importlib.import_module(_PACKAGE)
+
+
+def _estimate_pairs(comet, coordinates: np.ndarray, radius_nm: float) -> int | None:
+    """COMET's exact count of the pairs its search will find, or ``None``.
+
+    ``None`` when this COMET has no ``estimate_pairs`` to ask (an older
+    release, or a stand-in in a test); the run then simply goes ahead.
+    """
+    estimate = getattr(comet, "estimate_pairs", None)
+    if estimate is None:
+        try:
+            estimate = importlib.import_module(f"{_PACKAGE}.core.pair_indices").estimate_pairs
+        except Exception:  # noqa: BLE001 - the estimate is a courtesy, not the run
+            return None
+    return int(estimate(coordinates, float(radius_nm)))
+
+
+class ProgressReporter:
+    """Turns COMET's ``progress(stage, info)`` reports into lines for the panel.
+
+    Printed, because the panel streams what a processor prints while it runs
+    (its ``output_appended`` hook); every report is also a cancellation
+    checkpoint, so **Cancel** lands at the next one. Evaluations, which COMET
+    reports after every cost-function call, are thinned to one line in
+    :data:`_EVALUATION_REPORT_EVERY`.
+    """
+
+    def __init__(self, write=print):
+        self._write = write
+
+    def __call__(self, stage: str, info: dict) -> None:
+        checkpoint()
+        line = self.describe(stage, dict(info or {}))
+        if line:
+            self._write(line)
+
+    @staticmethod
+    def describe(stage: str, info: dict) -> str:
+        if stage == "segmentation":
+            return (
+                f"{info.get('n_segments', '?')} windows over "
+                f"{int(info.get('n_locs_valid', 0)):,} localizations "
+                f"(median {info.get('median_locs_per_segment', 0.0):.0f} per window)"
+            )
+        if stage == "pairs_start":
+            return f"Searching pairs within {info.get('radius_nm', 0.0):g} nm..."
+        if stage == "pairs_done":
+            line = f"{int(info.get('n_pairs', 0)):,} pairs found"
+            if info.get("auto_downsampled"):
+                line += (
+                    f"; windows were capped to {info.get('max_locs_per_segment')} "
+                    f"localizations to fit in memory"
+                )
+            return line
+        if stage == "run_start":
+            line = f"Optimizer step {info.get('run', '?')}: kernel {info.get('sigma_nm', 0.0):g} nm"
+            if info.get("n_failures"):
+                line += f" ({info['n_failures']} failed so far)"
+            return line
+        if stage == "evaluation":
+            count = int(info.get("n_evaluations", 0))
+            if count % _EVALUATION_REPORT_EVERY:
+                return ""
+            return (
+                f"  step {info.get('run', '?')}: {count} evaluations, "
+                f"cost {float(info.get('cost', float('nan'))):.4g}"
+            )
+        if stage == "run_end":
+            verdict = "accepted" if info.get("accepted") else "not accepted"
+            return (
+                f"  step {info.get('run', '?')} done at {info.get('sigma_nm', 0.0):g} nm: "
+                f"{verdict} after {info.get('nit', '?')} iterations "
+                f"({info.get('nfev', '?')} evaluations)"
+            )
+        if stage == "interpolation":
+            return (
+                f"Interpolating {info.get('n_valid_segments', '?')} window drifts "
+                f"to a per-frame curve"
+            )
+        if stage == "apply":
+            return f"Correcting {int(info.get('n_locs', 0)):,} localizations"
+        return ""
 
 
 def _optional_positive(value, cast):
@@ -178,6 +269,9 @@ class SmlmCometDriftProcessor(Processor):
             ),
         )
 
+    def __init__(self):
+        self._logger = initLogger(self, tryInheritParent=False)
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: isinstance(result, LocalizationResult)
@@ -237,10 +331,22 @@ class SmlmCometDriftProcessor(Processor):
             [locs.x_nm, locs.y_nm, locs.z_nm, locs.frame]
         ).astype(np.float64)
 
-        def progress(stage, info):
-            # COMET reports after every cost-function evaluation, which is
-            # where a long run spends its time, so Cancel lands within one.
-            checkpoint()
+        # COMET's own safety check, done here so the panel sees it: the pair
+        # count decides how long the run takes and whether it fits in memory,
+        # and is known before the first optimizer step.
+        estimated_pairs = _estimate_pairs(comet, dataset[:, :3], max_drift_nm)
+        if estimated_pairs is not None:
+            print(f"Estimated pairs within {max_drift_nm:g} nm: {estimated_pairs:,}")
+            if estimated_pairs > PAIR_WARNING_THRESHOLD:
+                warning = pair_warning(estimated_pairs)
+                print(f"Warning: {warning}")
+                self._logger.warning(warning)
+        checkpoint()
+
+        # Every report is a cancellation checkpoint; COMET reports after every
+        # cost-function evaluation, where a long run spends its time, so
+        # Cancel lands within one.
+        progress = ProgressReporter()
 
         # What is not passed is COMET's own default: the initial kernel width
         # (max drift / 3), boxcar_width 1 (no smoothing), cubic interpolation.
@@ -286,6 +392,7 @@ class SmlmCometDriftProcessor(Processor):
             "drift_backend": str(details.backend),
             "drift_windows": int(getattr(segmentation, "n_segments", len(details.knot_frames))),
             "drift_pairs": int(details.n_pairs),
+            "drift_pairs_estimated": estimated_pairs,
             "drift_sigma_accepted_nm": (
                 None if details.sigma_accepted_nm is None else float(details.sigma_accepted_nm)
             ),
@@ -388,6 +495,16 @@ class CometParamWidget(QtWidgets.QWidget):
         form.addRow("Backend:", self.backendCombo)
         layout.addWidget(self.form)
 
+        # What COMET reports while it runs: the pair estimate and its
+        # warning, the windows, the pairs found, each optimizer step.
+        self.logView = QtWidgets.QPlainTextEdit()
+        self.logView.setReadOnly(True)
+        self.logView.setMaximumBlockCount(2000)
+        self.logView.setFixedHeight(130)
+        self.logView.setPlaceholderText("COMET's progress appears here while it runs.")
+        self.logView.setToolTip("What COMET reports while it runs")
+        layout.addWidget(self.logView)
+
         self.statusLabel = QtWidgets.QLabel("")
         self.statusLabel.setWordWrap(True)
         layout.addWidget(self.statusLabel)
@@ -426,9 +543,18 @@ class CometParamWidget(QtWidgets.QWidget):
         }
 
     def before_run(self) -> None:
+        self.logView.clear()
         self.statusLabel.setText(
             "Running COMET… (the first CPU run also compiles its kernel)"
         )
+
+    def output_appended(self, text: str) -> None:
+        """A piece of what the run printed, as it is printed."""
+        cursor = self.logView.textCursor()
+        cursor.movePosition(cursor.End)
+        cursor.insertText(str(text))
+        self.logView.setTextCursor(cursor)
+        self.logView.ensureCursorVisible()
 
     def after_run(self, results, failures) -> None:
         if failures:
@@ -438,6 +564,17 @@ class CometParamWidget(QtWidgets.QWidget):
             self.statusLabel.setText("")
             return
         self.statusLabel.setText(summarize_run(getattr(results[0], "metadata", {}) or {}))
+
+
+def pair_warning(estimated_pairs: int) -> str:
+    """What a pair count above :data:`PAIR_WARNING_THRESHOLD` means for the run."""
+    return (
+        f"{estimated_pairs:,} pairs is very many (above {PAIR_WARNING_THRESHOLD:,}): "
+        f"the run will be slow and may run out of memory, in which case COMET caps "
+        f"the localizations per window by itself and starts again. A smaller max "
+        f"drift, or a cap set from a workflow (max_locs_per_window), brings the "
+        f"count down."
+    )
 
 
 def summarize_run(metadata: dict) -> str:
@@ -462,12 +599,15 @@ __all__ = [
     "DEFAULT_WINDOW_MODE",
     "DEFAULT_WINDOW_SIZE",
     "INSTALL_HINT",
+    "PAIR_WARNING_THRESHOLD",
     "TARGET_SIGMA_NM",
     "WINDOW_MODES",
     "CometParamWidget",
+    "ProgressReporter",
     "SmlmCometDriftProcessor",
     "comet_installed",
     "comet_problem",
+    "pair_warning",
     "recheck_comet",
     "summarize_run",
 ]
