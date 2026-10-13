@@ -18,7 +18,7 @@ from imswitch.improcess._test import _lapse_recordings as L
 from imswitch.improcess.controller.DirectoryWatcherController import (
     DirectoryWatcherController,
 )
-from imswitch.improcess.live.dataset_resolver import DatasetResolver, Status, resolve
+from imswitch.improcess.live.dataset_resolver import DatasetResolver, NotRawData, resolve
 
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
@@ -46,9 +46,9 @@ def _ext(fmt):
 
 
 def _dataset(entry):
-    result = resolve(str(entry))
-    assert result.status is Status.RESOLVED, (result.status, result.reason)
-    return result.dataset
+    dataset = resolve(str(entry))
+    assert dataset is not None, "still pending"
+    return dataset
 
 
 # --- real ImControl output --------------------------------------------------
@@ -180,7 +180,7 @@ def test_without_frames_per_stack_a_growing_array_is_pending(tmp_path):
     path = _container(tmp_path / "rec.h5",
                       {"Cam/data": ((7, 8, 8), {"writing": True})})
 
-    assert resolve(path).status is Status.PENDING
+    assert resolve(path) is None
 
 
 def test_an_array_without_a_writing_marker_counts_as_finished(tmp_path):
@@ -195,7 +195,8 @@ def test_an_array_without_a_writing_marker_counts_as_finished(tmp_path):
 def test_a_plain_file_is_not_raw_data(tmp_path):
     (tmp_path / "notes.txt").write_text("hello")
 
-    assert resolve(str(tmp_path / "notes.txt")).status is Status.NOT_RAW
+    with pytest.raises(NotRawData):
+        resolve(str(tmp_path / "notes.txt"))
 
 
 def test_several_unindexed_arrays_are_not_supported_yet(tmp_path):
@@ -203,14 +204,13 @@ def test_several_unindexed_arrays_are_not_supported_yet(tmp_path):
         "CamA/data": ((3, 8, 8), {}), "CamB/data": ((3, 8, 8), {}),
     })
 
-    result = resolve(path)
-
-    assert result.status is Status.NOT_RAW
-    assert "detectors" in result.reason
+    with pytest.raises(NotRawData, match="detectors"):
+        resolve(path)
 
 
 def test_an_entry_that_vanished_is_dropped_not_kept_pending(tmp_path):
-    assert resolve(str(tmp_path / "gone.h5")).status is Status.NOT_RAW
+    with pytest.raises(NotRawData):
+        resolve(str(tmp_path / "gone.h5"))
 
 
 # --- pending ----------------------------------------------------------------
@@ -218,7 +218,7 @@ def test_an_entry_that_vanished_is_dropped_not_kept_pending(tmp_path):
 def test_an_empty_folder_is_pending(tmp_path):
     (tmp_path / "lapse").mkdir()
 
-    assert resolve(str(tmp_path / "lapse")).status is Status.PENDING
+    assert resolve(str(tmp_path / "lapse")) is None
 
 
 def test_a_container_without_a_data_array_yet_is_pending(tmp_path):
@@ -226,14 +226,14 @@ def test_a_container_without_a_data_array_yet_is_pending(tmp_path):
     with h5py.File(path, "w") as f:
         f.create_group("Cam")
 
-    assert resolve(path).status is Status.PENDING
+    assert resolve(path) is None
 
 
 def test_an_unreadable_container_is_pending(tmp_path):
     path = tmp_path / "rec.h5"
     path.write_bytes(b"not an hdf5 file yet")
 
-    assert resolve(str(path)).status is Status.PENDING
+    assert resolve(str(path)) is None
 
 
 # --- the DR: keeping and retrying -------------------------------------------
