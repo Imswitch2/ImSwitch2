@@ -2,17 +2,22 @@
 
 import os
 
+from imswitch.improcess.live.dataset_resolver import Dataset, DatasetResolver
 from imswitch.improcess.live.directory_observer import DirectoryObserver
 from .basecontrollers import ImProcessWidgetController
 
 
 class DirectoryWatcherController(ImProcessWidgetController):
-    """Built up from the requirements, one at a time. So far: monitoring."""
+    """Built up from the requirements, one at a time.
+
+    So far: the DO reports entries, and the DR resolves them into datasets.
+    """
 
     def __init__(self, *args, main_controller=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main_controller = main_controller
         self._observer: DirectoryObserver | None = None
+        self._resolver: DatasetResolver | None = None
 
         self._widget.sigMonitorChanged.connect(self._on_monitor_changed)
 
@@ -29,23 +34,39 @@ class DirectoryWatcherController(ImProcessWidgetController):
             self._widget.monitorFolderCheck.setChecked(False)
             return
 
-        # Same root: keep the DO, and with it what has already been seen.
+        # Same root: keep the DO and the DR, and with them what has already
+        # been seen and what is still pending. A new root starts both fresh.
         if self._observer is None or not _same_path(self._observer.root, root):
-            if self._observer is not None:
-                self._observer.deleteLater()
+            for unit in (self._observer, self._resolver):
+                if unit is not None:
+                    unit.deleteLater()
             self._observer = DirectoryObserver(root, parent=self)
+            self._resolver = DatasetResolver(parent=self)
             self._observer.sigEntryFound.connect(self._on_entry_found)
+            self._resolver.sigResolved.connect(self._on_dataset_resolved)
 
         self._logger.info(f"Monitoring {self._observer.root}")
+        self._resolver.start()
         self._observer.start()
 
     def _stop_monitoring(self) -> None:
         if self._observer is not None:
             self._observer.stop()
+            self._resolver.stop()
             self._logger.info("Monitoring stopped")
 
     def _on_entry_found(self, path: str) -> None:
-        self._logger.info(f"Entry found: {path}")
+        self._logger.info(f"Entry found: {os.path.basename(path)}")
+        self._resolver.add(path)
+
+    def _on_dataset_resolved(self, dataset: Dataset) -> None:
+        S = "".join(f", {name}={size}" for name, size in dataset.S)
+        T = "?" if dataset.T is None else dataset.T
+        self._logger.info(
+            f"Dataset: {os.path.basename(dataset.entry)} -- {dataset.packaging} "
+            f"{dataset.format}, (T={T}{S}, Y={dataset.frame_shape[0]}, "
+            f"X={dataset.frame_shape[1]}) {dataset.dtype}"
+        )
 
 
 def _same_path(a: str, b: str) -> bool:
