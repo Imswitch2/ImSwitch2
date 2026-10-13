@@ -5,11 +5,7 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamingSession, StreamPlan
 
-from .gauss_processor import (
-    DEFAULT_FOOTPRINT_NUM_RECTS,
-    DEFAULT_GAUSSIAN_SIGMA_PX,
-    make_gauss_processor,
-)
+from .gauss_processor import DEFAULT_GAUSSIAN_SIGMA_PX, make_fast_gauss_extractor
 from .localizer import localization_from_pattern, localizer
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
@@ -304,14 +300,7 @@ class MonalisaLiveSession(StreamingSession):
             f"nx_c={loc_result.nx_c}, ny_c={loc_result.ny_c}"
         )
 
-        num_rects = params.get(
-            "fast_gauss_footprint_num_rects",
-            params.get("num_rects", DEFAULT_FOOTPRINT_NUM_RECTS),
-        )
-        gaussian_sigma_px = self._resolve_gaussian_sigma_px(params)
-        pinhole_radius_px = self._resolve_pinhole_radius_px(params, gaussian_sigma_px)
-        fit_background = self._resolve_fit_background(params)
-        self.processor = make_gauss_processor(
+        self.processor = make_fast_gauss_extractor(
             loc_result.xp,
             loc_result.xo,
             loc_result.yp,
@@ -322,12 +311,13 @@ class MonalisaLiveSession(StreamingSession):
             self.ny_s,
             loc_result.num_rows,
             loc_result.num_cols,
-            num_rects=num_rects,
-            gaussian_sigma_px=gaussian_sigma_px,
-            pinhole_radius_px=pinhole_radius_px,
-            fit_background=fit_background,
+            gaussian_sigma_px=self._resolve_gaussian_sigma_px(params),
+            fit_background=self._resolve_fit_background(params),
             use_gpu=self.use_gpu,
         )
+        # The device solve may have declined (no CuPy, or a factorization
+        # that failed); everything downstream follows the extractor.
+        self.use_gpu = bool(self.processor.use_gpu)
 
         orientation_indices = self._condition_frame_indices(0)
         if (
@@ -590,23 +580,9 @@ class MonalisaLiveSession(StreamingSession):
         self._hot_plane_dirty = False
 
     def _resolve_gaussian_sigma_px(self, params: dict) -> float:
-        """Fit-Gaussian sigma in pixels.
-
-        An explicit ``fast_gauss_gaussian_sigma_px``/``gaussian_sigma_px`` > 0
-        wins; otherwise derive it from the optical PSF using the slow-path
-        convention ``sigma_px = PSF_FWHM_nm / (2.355 * pixel_size_nm)`` so the
-        fast and slow paths share one physical parameterization.
-        """
-        explicit = params.get(
-            "fast_gauss_gaussian_sigma_px", params.get("gaussian_sigma_px", 0.0)
-        )
-        try:
-            explicit = float(explicit)
-        except (TypeError, ValueError):
-            explicit = 0.0
-        if explicit > 0:
-            return explicit
-
+        """Spot width in pixels, from the optical PSF: ``sigma_px =
+        PSF_FWHM_nm / (2.355 * pixel_size_nm)``, the same convention as the
+        classic path, so the two share one physical parameterization."""
         fwhm_nm = params.get("psf_fwhm_nm")
         pixel_size_nm = params.get("pixel_size_nm")
         try:
@@ -636,20 +612,6 @@ class MonalisaLiveSession(StreamingSession):
                 num_cols=data.shape[-1],
             )
         return localizer(data)
-
-    @staticmethod
-    def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:
-        """Circular pinhole radius = k * sigma (k from params; None disables)."""
-        mode = params.get("fast_gauss_footprint_mode")
-        if mode is not None and str(mode).strip().lower() != "circular pinhole":
-            return None
-
-        k = params.get("fast_gauss_pinhole_radius_sigma", 0.0)
-        try:
-            k = float(k)
-        except (TypeError, ValueError):
-            k = 0.0
-        return k * gaussian_sigma_px if k > 0 else None
 
     @staticmethod
     def _resolve_fit_background(params: dict) -> bool:
@@ -960,10 +922,7 @@ class MonalisaLiveSession(StreamingSession):
     def close(self) -> None:
         """Free optional GPU resources."""
         if self.use_gpu and CUPY_AVAILABLE:
-            if hasattr(self.processor, "x_interp"):
-                del self.processor.x_interp
-                del self.processor.y_interp
-                del self.processor.lsq_weights
+            self.processor = None
             self._hot_plane = None
             self._frame_inds_gpu = None
             cp.get_default_memory_pool().free_all_blocks()

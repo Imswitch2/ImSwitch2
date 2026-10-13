@@ -1586,9 +1586,7 @@ recording make a `T` axis. Recordings with line-step conditions are refused.
 | | Step (nm) | 0 | from the recording |
 | | Camera pixel (nm) | 0 | 0: the scan is taken to cover the cell once |
 | | Orientation | from the frames | or one of the eight |
-| Estimator | Footprint (spot sigma) | 2.5 | |
-| | Fit foci jointly | on | off: the isolated fit, for comparison |
-| | Background | constant | `none`, or `auto` for a haze term on evidence |
+| Estimator | Background | constant | `none`, or `auto` for a haze term on evidence |
 | Corrections | Frame gain | on | section 9, D7 |
 | | Cell offsets | on | sections 9, D8 and 10, E3 |
 | | Reassignment | auto | `off`, or `fixed` with the shift factor below |
@@ -1743,9 +1741,46 @@ same extraction (`_fast_gauss_by_placement`), through the classic path's
 `coeffs_to_image_from_placement`, and agrees with the classic
 reconstruction on the same raster (correlation 0.62 to 0.82, no offset).
 
-**Not in it yet.** Live reconstruction; line-step conditions; a GPU; a
-serpentine fast axis (the layout resolves it, but the gain of the frames
-is still fitted as if every line ran the same way).
+### 11.2 Fewer knobs, and what the shift factor says about resolution
+
+Date: 2026-10-13. The panel lost its *Footprint* and *Fit foci jointly*
+entries. The footprint is 2.5 spot widths, which holds 96 % of a Gaussian
+spot and is where the sweeps stopped gaining; the joint fit is what makes
+a wide footprint safe, and the isolated fit stays in the library
+(`ExtractionOperator.build(joint=False)`) for the tests that compare the
+two, not as a choice.
+
+The fast-Gauss method of the MoNaLISA reconstructor, and its live session,
+now run the same joint fit (`gauss_processor.FastGaussExtractor`): the
+grid from the pattern finder, the spot width from the PSF FWHM and the
+pixel size, a constant background, all foci of a frame in one sparse
+solve, on the CPU or on the GPU (CuPy: the projector and the factorized
+normal matrix live on the device, a chunk of frames is one sparse product
+and one solve). The isolated per-focus fit with its footprint shells,
+circular pinhole and Gaussian-sigma override is gone, with the four panel
+entries that went with it. What separates the two reconstructors is now
+what the lattice one reads from the frames (lattice, spot width, shift
+factor, orientation by seams) and its corrections (gain, cell offsets,
+reassignment, placement checked against the lattice), not the estimator.
+
+The results table gains two rows from the measured shift factor. The spot
+on the camera is the emitting region of a focus imaged through the
+detection PSF, so for a specimen uniform over the focus (the mean frame of
+a scan is that average) `σ_spot² = σ_e² + σ_d²`, and with
+`α = σ_e² / (σ_e² + σ_d²)` (section 2.5) the effective excitation width is
+`σ_e = √α · σ_spot`. *excitation FWHM* is `2.355 σ_e` in nanometres when
+the camera pixel is known: the PSF of the placed amplitudes, and so the
+resolution to expect. *expected resolution* is the same, narrowed by
+`√(1 − α)` when the stack was reassigned. A shift factor within twice its
+own spread cannot tell the foci from confined ones; both rows then give
+the upper bound the noise allows. On the earlier XY recordings with
+shift factors of 0.11 to 0.29 and 220 nm detection this reads 80 to
+130 nm.
+
+**Not in it yet.** Live reconstruction with the lattice pipeline;
+line-step conditions; a GPU for it; a serpentine fast axis (the layout
+resolves it, but the gain of the frames is still fitted as if every line
+ran the same way).
 
 ---
 

@@ -52,10 +52,11 @@ def pipeline_params(params: dict) -> PipelineParams:
     background = str(params["background"])
     if background not in ("constant", "none", "auto"):
         raise ValueError(f"Unknown background {background!r}")
+    # The footprint is 2.5 spot widths (96 % of a Gaussian spot; the joint
+    # fit makes a wide footprint safe) and the foci are always fitted
+    # together: neither is a choice the panel offers.
     return PipelineParams(
-        reach_sigma=float(params["reach_sigma"]),
         background=background,
-        joint=bool(params["joint_fit"]),
         reassignment=reassignment,
         frame_gain="smooth" if params["frame_gain"] else "off",
         cell_offsets="seams" if params["cell_offsets"] else "off",
@@ -441,6 +442,45 @@ class MonalisaLatticeReconstructor(Reconstructor):
             )
 
     @staticmethod
+    def _resolution_rows(factor, spot_sigma_px, camera_pixel_nm, *, reassigned) -> dict:
+        """What the shift factor says about the foci and the resolution.
+
+        The spot on the camera is the emitting region of a focus imaged
+        through the detection PSF: for a specimen uniform over the focus
+        (the mean frame of a scan is that average) its variance is the sum
+        of the two, ``sigma_spot^2 = sigma_e^2 + sigma_d^2``. The shift
+        factor is ``sigma_e^2 / (sigma_e^2 + sigma_d^2)``
+        (``docs/monalisa_optimal_reconstruction.md``, section 2.5), so the
+        effective excitation width is ``sqrt(alpha) * sigma_spot``: the PSF
+        of the placed amplitudes. Reassignment narrows it by
+        ``sqrt(1 - alpha)``. A factor within its own noise gives an upper
+        bound.
+        """
+        if factor is None:
+            return {}
+        unit = "nm" if camera_pixel_nm else "px"
+        scale = float(camera_pixel_nm) if camera_pixel_nm else 1.0
+        alpha = float(np.clip(factor.alpha, 0.0, 0.999))
+        noise = 2.0 * float(factor.spread) if np.isfinite(factor.spread) else 0.0
+
+        def fwhm(value: float) -> float:
+            return 2.355 * float(np.sqrt(min(value, 0.999))) * float(spot_sigma_px) * scale
+
+        rows = {}
+        if alpha <= noise:
+            bound = fwhm(alpha + noise)
+            rows[f"excitation FWHM ({unit})"] = (
+                f"below {bound:.0f} (shift factor within its noise: confined foci)"
+            )
+            rows[f"expected resolution ({unit})"] = f"below {bound:.0f}"
+            return rows
+        excitation = fwhm(alpha)
+        rows[f"excitation FWHM ({unit})"] = round(excitation, 0)
+        resolution = excitation * float(np.sqrt(1.0 - alpha)) if reassigned else excitation
+        rows[f"expected resolution ({unit})"] = round(resolution, 0)
+        return rows
+
+    @staticmethod
     def _diagnostics(scan, result, camera_pixel_nm, output_pixel_nm, seconds) -> dict:
         geometry = result.geometry.diagnostics
         found = result.diagnostics
@@ -532,6 +572,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                     f"{found['shift_factor_xy'][0]:.3f}, "
                     f"{found['shift_factor_xy'][1]:.3f}"
                 )
+            rows.update(MonalisaLatticeReconstructor._resolution_rows(
+                result.geometry.shift_factor, sigma, camera_pixel_nm,
+                reassigned=found["placement"] == "reassigned",
+            ))
         rows["image"] = (
             "reassigned" if found["placement"] == "reassigned"
             else "amplitudes placed" if found["placement"] == "exact"

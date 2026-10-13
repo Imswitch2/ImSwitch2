@@ -21,7 +21,6 @@ from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
 from .result import MonalisaProcessingResult
-from .gauss_processor import DEFAULT_FOOTPRINT_NUM_RECTS
 from .signal_extractor import SignalExtractor
 
 if TYPE_CHECKING:
@@ -73,10 +72,6 @@ class MonalisaReconstructor(StreamingReconstructor):
         'psf_fwhm_nm': 220,
         'bg_modelling': 'Constant',
         'bg_gaussian_size_nm': 500,
-        'fast_gauss_footprint_mode': 'Rectangular shells',
-        'fast_gauss_footprint_num_rects': 3,
-        'fast_gauss_gaussian_sigma_px': 2.0,
-        'fast_gauss_pinhole_radius_sigma': 1.5,
         'bleaching_correction': False,
         'auto_scan_orientation': True}
 
@@ -549,7 +544,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         one helper in imcommon that interprets them, as for the classic path.
         """
         from .coeffs_to_image import coeffs_to_image_from_placement
-        from .gauss_processor import CUPY_AVAILABLE, cp, make_gauss_processor
+        from .gauss_processor import make_fast_gauss_extractor
         from .scan_geometry import scan_params_from_layout
 
         self._logger.info(
@@ -564,21 +559,14 @@ class MonalisaReconstructor(StreamingReconstructor):
         if params.get('bleaching_correction', False):
             working = session._apply_bleaching_correction(data)
         localization = MonalisaLiveSession._resolve_localization(working, session_params)
-        gaussian_sigma_px = session._resolve_gaussian_sigma_px(params)
-        use_gpu = str(params.get('device', '')).lower() == 'gpu'
-        processor = make_gauss_processor(
+        processor = make_fast_gauss_extractor(
             localization.xp, localization.xo, localization.yp, localization.yo,
             localization.nx_c, localization.ny_c,
             placement.cols, placement.rows,
             localization.num_rows, localization.num_cols,
-            num_rects=params.get(
-                'fast_gauss_footprint_num_rects',
-                params.get('num_rects', DEFAULT_FOOTPRINT_NUM_RECTS),
-            ),
-            gaussian_sigma_px=gaussian_sigma_px,
-            pinhole_radius_px=session._resolve_pinhole_radius_px(params, gaussian_sigma_px),
+            gaussian_sigma_px=session._resolve_gaussian_sigma_px(params),
             fit_background=session._resolve_fit_background(params),
-            use_gpu=use_gpu,
+            use_gpu=str(params.get('device', '')).lower() == 'gpu',
         )
         self._logger.info(
             f'{name}: localized xp={localization.xp:.2f}, xo={localization.xo:.2f}, '
@@ -589,13 +577,9 @@ class MonalisaReconstructor(StreamingReconstructor):
         coeffs = np.empty(
             (num_frames, localization.ny_c, localization.nx_c), dtype=np.float32
         )
-        on_gpu = use_gpu and CUPY_AVAILABLE
         chunk = max(1, int(FAST_GAUSS_PLACEMENT_CHUNK_BYTES // max(working[0].nbytes, 1)))
         for start in range(0, num_frames, chunk):
-            block = working[start:start + chunk]
-            if on_gpu:
-                block = cp.asarray(block)
-            amplitudes = processor.process_chunk(block)
+            amplitudes = processor.process_chunk(working[start:start + chunk])
             coeffs[start:start + chunk] = np.asarray(amplitudes).reshape(
                 -1, localization.ny_c, localization.nx_c
             )

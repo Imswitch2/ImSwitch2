@@ -15,10 +15,18 @@ from imswitch.improcess.reconstructors.monalisa.extraction import (
     _haze_shape,
     calibrate_haze_sigma,
 )
-from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
-    calculate_gaussian_lsq_weights,
-)
 from imswitch.improcess.reconstructors.monalisa.lattice import Lattice
+
+
+def calculate_gaussian_lsq_weights(x_offsets, y_offsets, gaussian_sigma_px, fit_background=True):
+    """The isolated per-focus weights of the old fast-Gauss path: the
+    projection of a footprint onto a Gaussian (plus a constant), kept here
+    as the reference the joint fit is compared against."""
+    gauss = np.exp(-((x_offsets**2 + y_offsets**2) / (2 * gaussian_sigma_px**2)))
+    rows = [gauss]
+    if fit_background and len(gauss) >= 2:
+        rows.append(np.ones(len(gauss)))
+    return np.linalg.pinv(np.stack(rows))[:, 0]
 
 SHAPE = (100, 100)
 PERIOD = 11.05

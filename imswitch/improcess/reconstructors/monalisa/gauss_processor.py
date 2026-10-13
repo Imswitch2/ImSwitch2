@@ -1,124 +1,120 @@
-"""Fast Gaussian-weighted reassignment processor for MoNaLISA live reconstruction."""
+"""The fast-Gauss extractor of MoNaLISA: the joint Gaussian fit, scattered by scan index.
 
-from typing import TYPE_CHECKING, Any
+What the live session and the offline *Fast Gauss* method run on every frame.
+The geometry is fixed for a recording and typed in or found once: an
+axis-aligned grid of foci from the pattern finder, a spot width from the PSF
+FWHM and the pixel size, the steps of the scan. The extraction operator is
+built once from them, and every frame is then one sparse product and one
+pre-factorized solve (:class:`~.extraction.ExtractionOperator`), which fits
+the amplitudes of *all* foci of the frame together on a constant background.
+On a GPU the same product and solve run on the device (CuPy), so the frames
+of a live acquisition never have to come back to the host per frame.
+
+This is the lattice pipeline's extraction without what the lattice
+reconstructor reads from the frames (the lattice, the spot width, the shift
+factor) and without its corrections (frame gain, cell offsets, reassignment):
+the fast alternative, for live reconstruction. It replaced the isolated
+per-focus fit on a small footprint, which read a share of every neighbour's
+light as its own -- a ghost of the image one period away -- and the
+footprint and pinhole options that existed to keep that in check.
+"""
+
+from __future__ import annotations
 
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
 
-from .scan_geometry import (
-    get_1d_indices,
-    get_interp_coords,
-    get_pinhole_footprint,
-    get_rectangles_coords,
-)
+from .extraction import DEFAULT_REACH_SIGMA, ExtractionOperator
+from .scan_geometry import get_1d_indices, get_center_coords
 
 try:
     import cupy as cp
+    import cupyx.scipy.sparse as cusparse
+    import cupyx.scipy.sparse.linalg as cusparse_linalg
 
     CUPY_AVAILABLE = True
 except ImportError:
     CUPY_AVAILABLE = False
     cp = None
+    cusparse = None
+    cusparse_linalg = None
 
-if TYPE_CHECKING:
-    if CUPY_AVAILABLE:
-        import cupy as cp
-
-
-DEFAULT_FOOTPRINT_NUM_RECTS = 3
+#: The spot width used when neither the PSF FWHM nor the pixel size is known.
 DEFAULT_GAUSSIAN_SIGMA_PX = 2.0
-DEFAULT_PINHOLE_RADIUS_SIGMA = 1.5
 
 
-def validate_gaussian_fit_options(
-    num_rects: int | float | str | None = DEFAULT_FOOTPRINT_NUM_RECTS,
-    gaussian_sigma_px: int | float | str | None = DEFAULT_GAUSSIAN_SIGMA_PX,
-    pinhole_radius_px: int | float | str | None = None,
-) -> tuple[int, float, float | None]:
-    """Validate and normalize fast-Gauss footprint options.
+class _DeviceSolve:
+    """The operator's per-frame product and solve, on the device.
 
-    ``pinhole_radius_px`` is optional: when ``None`` (or non-positive) the
-    legacy ``num_rects`` shell footprint is used; when positive it selects a
-    circular pinhole footprint of that radius (which then governs the
-    footprint instead of ``num_rects``).
+    Mirrors ``ExtractionOperator._solve``: the projector (the weighted
+    design, transposed) and the factorized normal matrix are copied to the
+    device once; a chunk of frames is then one sparse product and one solve
+    with the factors, for all frames of the chunk at once.
     """
-    if num_rects is None:
-        num_rects = DEFAULT_FOOTPRINT_NUM_RECTS
-    if gaussian_sigma_px is None:
-        gaussian_sigma_px = DEFAULT_GAUSSIAN_SIGMA_PX
 
-    num_rects = int(num_rects)
-    gaussian_sigma_px = float(gaussian_sigma_px)
-    if num_rects < 1:
-        raise ValueError("num_rects must be >= 1")
-    if gaussian_sigma_px <= 0:
-        raise ValueError("gaussian_sigma_px must be > 0")
+    def __init__(self, operator: ExtractionOperator):
+        import scipy.sparse as sparse
 
-    if pinhole_radius_px is not None:
-        pinhole_radius_px = float(pinhole_radius_px)
-        if pinhole_radius_px <= 0:
-            pinhole_radius_px = None  # treat non-positive as "no pinhole"
-    return num_rects, gaussian_sigma_px, pinhole_radius_px
+        self.row_pixel = cp.asarray(operator._row_pixel)
+        # Float64 throughout, as on the CPU: the factors are, and a sparse
+        # product is not where a GPU's float32 speed would be felt.
+        self.projector = cusparse.csr_matrix(operator._projector.astype(np.float64))
+        normal = (operator._projector @ operator._design).tocsc()
+        diagonal = normal.diagonal()
+        normal = normal + sparse.diags(1e-10 * diagonal + 1e-300, format="csc")
+        self.solver = cusparse_linalg.splu(cusparse.csc_matrix(normal.astype(np.float64)))
+        columns = operator._amplitude_column
+        have = operator.valid & (columns >= 0)
+        self.amplitude_column = cp.asarray(np.where(have, columns, 0))
+        self.have = cp.asarray(have)
+        self.num_coefficients = int(operator._design.shape[1])
+        self.frame_shape = operator.frame_shape
 
-
-def calculate_gaussian_lsq_weights(
-    x_offsets: np.ndarray,
-    y_offsets: np.ndarray,
-    gaussian_sigma_px: float,
-    fit_background: bool = True,
-) -> np.ndarray:
-    """
-    Build weights that project footprint samples onto a Gaussian amplitude.
-
-    With ``fit_background`` the fitted model is
-    ``sample = amplitude * gaussian + constant_background`` and the returned
-    vector extracts the amplitude term. With ``fit_background=False`` (or a
-    footprint too small to also fit a background, i.e. < 2 samples) it reduces
-    to a pure Gaussian matched filter ``amplitude = (g·sample)/(g·g)``.
-    """
-    gauss_vec = np.exp(
-        -((x_offsets**2 + y_offsets**2) / (2 * gaussian_sigma_px**2))
-    )
-    rows = [gauss_vec]
-    if fit_background and len(gauss_vec) >= 2:
-        rows.append(np.ones(len(gauss_vec)))
-    design = np.stack(rows)
-    return np.linalg.pinv(design)[:, 0]
+    def amplitudes(self, chunk) -> "cp.ndarray":
+        chunk = cp.asarray(chunk)
+        if chunk.ndim == 2:
+            chunk = chunk[None]
+        flat = chunk.reshape(chunk.shape[0], -1)
+        data = flat[:, self.row_pixel].astype(cp.float64).T
+        projected = self.projector @ data
+        solution = self.solver.solve(projected)                 # (coefficients, frames)
+        amplitude = solution[self.amplitude_column].T            # (frames, num_foci)
+        return cp.where(self.have[None, :], amplitude, 0.0).astype(cp.float32)
 
 
-def _build_footprint(
-    num_rects: int,
-    pinhole_radius_px: float | None,
+def _margin_points(
+    xp: float, xo: float, yp: float, yo: float, num_rows: int, num_cols: int,
+    margin: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Footprint offsets shared by the interp coords and the fit weights.
+    """Grid points outside the frame but within ``margin`` of it.
 
-    A circular pinhole (``pinhole_radius_px``) takes precedence over the legacy
-    ``num_rects`` shell footprint so both consumers sample the exact same set.
+    Their tails reach into the frame, and the joint fit accounts for them so
+    that the foci at the border are not read brighter than they are.
     """
-    if pinhole_radius_px is not None:
-        return get_pinhole_footprint(pinhole_radius_px)
-    return get_rectangles_coords(num_rects)
+    xs = np.arange(np.floor(-(xo + margin) / xp), np.ceil((num_cols + margin - xo) / xp) + 1)
+    ys = np.arange(np.floor(-(yo + margin) / yp), np.ceil((num_rows + margin - yo) / yp) + 1)
+    gx, gy = np.meshgrid(xo + xs * xp, yo + ys * yp)
+    gx, gy = gx.ravel(), gy.ravel()
+    near = (gx >= -margin) & (gx < num_cols + margin) & (gy >= -margin) & (gy < num_rows + margin)
+    outside = (gx < 0) | (gx >= num_cols) | (gy < 0) | (gy >= num_rows)
+    keep = near & outside
+    return gx[keep], gy[keep]
 
 
-class GaussProcessorCPU:
-    """
-    CPU-based image reconstruction using Gaussian least-squares weighting and bilinear interpolation.
+class FastGaussExtractor:
+    """Joint Gaussian extraction on a fixed grid, with the scan's index map.
 
     Args:
-        xp: X-axis period.
-        xo: X-axis offset.
-        yp: Y-axis period.
-        yo: Y-axis offset.
-        nx_c: Number of foci along x.
-        ny_c: Number of foci along y.
-        nx_s: Scanner steps along x.
-        ny_s: Scanner steps along y.
-        num_cols: Total number of columns in the frame.
-        num_rows: Total number of rows in the frame.
-        num_rects: Number of rectangles used to model the foci.
-        gaussian_sigma_px: Gaussian sigma in footprint pixels.
-        scan_ori: Scan orientation string (e.g. "+x+y").
+        xp, xo, yp, yo: Period and offset of the grid along x and y, px.
+        nx_c, ny_c: Number of foci along x and y (inside the frame).
+        nx_s, ny_s: Scanner steps along x and y.
+        num_rows, num_cols: Frame size.
+        gaussian_sigma_px: Spot width, px.
+        fit_background: Fit a constant background per focus; off is the pure
+            matched filter.
+        scan_ori: Scan orientation string (e.g. ``"+x+y"``), for the index
+            map; :meth:`update_frame_inds` changes it once it is detected.
     """
 
     def __init__(
@@ -133,305 +129,73 @@ class GaussProcessorCPU:
         ny_s: int,
         num_rows: int,
         num_cols: int,
-        num_rects: int = DEFAULT_FOOTPRINT_NUM_RECTS,
         gaussian_sigma_px: float = DEFAULT_GAUSSIAN_SIGMA_PX,
-        pinhole_radius_px: float | None = None,
         fit_background: bool = True,
         scan_ori: str = "+x+y",
+        use_gpu: bool = False,
     ):
-        num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
-            num_rects, gaussian_sigma_px, pinhole_radius_px
-        )
-        self.num_rows = num_rows
-        self.num_cols = num_cols
-        self.num_foci = nx_c * ny_c
-        self.num_rects = num_rects
+        gaussian_sigma_px = float(gaussian_sigma_px)
+        if not gaussian_sigma_px > 0:
+            raise ValueError("gaussian_sigma_px must be > 0")
+        self.num_rows = int(num_rows)
+        self.num_cols = int(num_cols)
+        self.num_foci = int(nx_c) * int(ny_c)
         self.gaussian_sigma_px = gaussian_sigma_px
-        self.pinhole_radius_px = pinhole_radius_px
-        self.fit_background = fit_background
+        self.fit_background = bool(fit_background)
         self.scan_ori = scan_ori
-        footprint = _build_footprint(num_rects, pinhole_radius_px)
-        self.x_interp, self.y_interp = get_interp_coords(
-            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects, footprint=footprint
-        )
-        self.lsq_weights, self.pts_per_focus = self._calculate_weights(
-            footprint, gaussian_sigma_px, fit_background
+        self.use_gpu = bool(use_gpu) and CUPY_AVAILABLE
+        self._device = None
+
+        # The foci in the frame in the order the index map expects (row-major
+        # over the grid), then the ones just outside it.
+        x_in, y_in = get_center_coords(xp, xo, yp, yo, nx_c, ny_c)
+        margin = 3.0 * gaussian_sigma_px
+        x_out, y_out = _margin_points(xp, xo, yp, yo, num_rows, num_cols, margin)
+        self.operator = ExtractionOperator.build(
+            np.concatenate([x_in, x_out]),
+            np.concatenate([y_in, y_out]),
+            gaussian_sigma_px,
+            (self.num_rows, self.num_cols),
+            reach_sigma=DEFAULT_REACH_SIGMA,
+            background="constant" if self.fit_background else "none",
+            joint=True,
         )
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
-        self.num_frames_in_stack = nx_s * ny_s
+        self.num_frames_in_stack = int(nx_s) * int(ny_s)
+        if self.use_gpu:
+            self._device = _DeviceSolve(self.operator)
 
-        # Bilinear interpolation corners and fractional offsets depend only on
-        # x_interp/y_interp and the frame size, all fixed for the lifetime of
-        # this processor, so precompute them once instead of every call.
-        self.x0 = np.clip(np.floor(self.x_interp).astype(np.int32), 0, self.num_cols - 1)
-        self.x1 = np.clip(self.x0 + 1, 0, self.num_cols - 1)
-        self.y0 = np.clip(np.floor(self.y_interp).astype(np.int32), 0, self.num_rows - 1)
-        self.y1 = np.clip(self.y0 + 1, 0, self.num_rows - 1)
-        self.dx = self.x_interp - self.x0
-        self.dy = self.y_interp - self.y0
+    def process_chunk(self, chunk) -> np.ndarray:
+        """Amplitudes of the foci of every frame of ``chunk``: ``(frames, num_foci)``.
 
-    def _calculate_weights(
-        self,
-        footprint: tuple[np.ndarray, np.ndarray],
-        gaussian_sigma_px: float,
-        fit_background: bool,
-    ) -> tuple[np.ndarray, int]:
+        A focus the fit cannot place (too few pixels in the frame) is 0.
+        A chunk on the device is solved there and the result copied back.
         """
-        Calculate the least-squares weights based on a Gaussian profile.
+        if self._device is not None:
+            return cp.asnumpy(self.process_chunk_gpu(chunk))
+        chunk = np.asarray(chunk)
+        amplitude = self.operator.apply(chunk).amplitude[:, : self.num_foci]
+        return np.nan_to_num(amplitude, nan=0.0).astype(np.float32, copy=False)
 
-        Args:
-            footprint: ``(x_offsets, y_offsets)`` sampled around each focus.
-            gaussian_sigma_px: Gaussian sigma in footprint pixels.
-            fit_background: Whether to also fit a constant background term.
-
-        Returns:
-            Tuple containing the 1D weight array and the number of points per focus.
-        """
-        Xr, Yr = footprint
-        lsq_weights = calculate_gaussian_lsq_weights(
-            Xr, Yr, gaussian_sigma_px, fit_background
-        )
-        return np.array(lsq_weights), len(Xr)
+    def process_chunk_gpu(self, chunk_gpu):
+        """The same on the device; the result stays there (a CuPy array)."""
+        if self._device is None:
+            raise RuntimeError("This extractor was built without a GPU")
+        return self._device.amplitudes(chunk_gpu)[:, : self.num_foci]
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Perform bilinear interpolation on the input frame and apply weights.
-
-        Args:
-            frame: The 2D raw image frame.
-
-        Returns:
-            1D array of reconstructed intensity values.
-        """
-        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
-
-        interp_vals = (
-            frame[y0, x0] * (1 - dx) * (1 - dy)
-            + frame[y1, x0] * (1 - dx) * dy
-            + frame[y0, x1] * dx * (1 - dy)
-            + frame[y1, x1] * dx * dy
-        ).reshape((self.num_foci, self.pts_per_focus))
-
-        return np.dot(interp_vals, self.lsq_weights)
-
-    def process_chunk(self, chunk: np.ndarray) -> np.ndarray:
-        """
-        Process an entire 3D chunk (num_frames, Y, X) at once.
-
-        Args:
-            chunk: A sub-stack (chunk) of raw frames.
-
-        Returns:
-            Processed pixels for each raw frame in the chunk.
-        """
-        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
-
-        interp_vals = (
-            chunk[:, y0, x0] * (1 - dx) * (1 - dy)
-            + chunk[:, y1, x0] * (1 - dx) * dy
-            + chunk[:, y0, x1] * dx * (1 - dy)
-            + chunk[:, y1, x1] * dx * dy
-        ).reshape((-1, self.num_foci, self.pts_per_focus))
-
-        return np.matmul(interp_vals, self.lsq_weights)
+        """Amplitudes of the foci of one frame: ``(num_foci,)``."""
+        return self.process_chunk(np.asarray(frame)[np.newaxis])[0]
 
     def update_frame_inds(
-        self,
-        nx_c: int,
-        ny_c: int,
-        nx_s: int,
-        ny_s: int,
-        scan_ori: str,
-    ):
-        """
-        Update the frame indices for the processor.
-
-        Args:
-            nx_c: Number of foci along x.
-            ny_c: Number of foci along y.
-            nx_s: Scanner steps along x.
-            ny_s: Scanner steps along y.
-            scan_ori: Scan orientation string.
-        """
-        self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
-
-
-class GaussProcessorGPU:
-    """
-    GPU-accelerated image reconstruction using Gaussian least-squares weighting and bilinear interpolation.
-
-    Requires CuPy. Falls back to CPU if unavailable.
-
-    Args:
-        xp: X-axis period.
-        xo: X-axis offset.
-        yp: Y-axis period.
-        yo: Y-axis offset.
-        nx_c: Number of foci along x.
-        ny_c: Number of foci along y.
-        nx_s: Scanner steps along x.
-        ny_s: Scanner steps along y.
-        num_cols: Total number of columns in the frame.
-        num_rows: Total number of rows in the frame.
-        num_rects: Number of rectangles used to model the foci.
-        gaussian_sigma_px: Gaussian sigma in footprint pixels.
-        scan_ori: Scan orientation string (e.g. "+x+y").
-    """
-
-    def __init__(
-        self,
-        xp: float,
-        xo: float,
-        yp: float,
-        yo: float,
-        nx_c: int,
-        ny_c: int,
-        nx_s: int,
-        ny_s: int,
-        num_rows: int,
-        num_cols: int,
-        num_rects: int = DEFAULT_FOOTPRINT_NUM_RECTS,
-        gaussian_sigma_px: float = DEFAULT_GAUSSIAN_SIGMA_PX,
-        pinhole_radius_px: float | None = None,
-        fit_background: bool = True,
-        scan_ori: str = "+x+y",
-    ):
-        num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
-            num_rects, gaussian_sigma_px, pinhole_radius_px
-        )
-        self.num_rows = num_rows
-        self.num_cols = num_cols
-        self.num_foci = nx_c * ny_c
-        self.num_rects = num_rects
-        self.gaussian_sigma_px = gaussian_sigma_px
-        self.pinhole_radius_px = pinhole_radius_px
-        self.fit_background = fit_background
+        self, nx_c: int, ny_c: int, nx_s: int, ny_s: int, scan_ori: str
+    ) -> None:
+        """Rebuild the index map for a detected orientation."""
         self.scan_ori = scan_ori
-        footprint = _build_footprint(num_rects, pinhole_radius_px)
-        x_interp, y_interp = get_interp_coords(
-            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects, footprint=footprint
-        )
-        self.x_interp = cp.array(x_interp)
-        self.y_interp = cp.array(y_interp)
-        self.lsq_weights, self.pts_per_focus = self._calculate_weights(
-            footprint, gaussian_sigma_px, fit_background
-        )
-        self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
-        self.num_frames_in_stack = nx_s * ny_s
-
-        # Bilinear interpolation corners and fractional offsets depend only on
-        # x_interp/y_interp and the frame size, all fixed for the lifetime of
-        # this processor, so precompute them once (on GPU) instead of every call.
-        self.x0 = cp.clip(cp.floor(self.x_interp).astype(cp.int32), 0, self.num_cols - 1)
-        self.x1 = cp.clip(self.x0 + 1, 0, self.num_cols - 1)
-        self.y0 = cp.clip(cp.floor(self.y_interp).astype(cp.int32), 0, self.num_rows - 1)
-        self.y1 = cp.clip(self.y0 + 1, 0, self.num_rows - 1)
-        self.dx = self.x_interp - self.x0
-        self.dy = self.y_interp - self.y0
-
-    def _calculate_weights(
-        self,
-        footprint: tuple[np.ndarray, np.ndarray],
-        gaussian_sigma_px: float,
-        fit_background: bool,
-    ) -> tuple:
-        """
-        Calculate the least-squares weights based on a Gaussian profile.
-
-        Args:
-            footprint: ``(x_offsets, y_offsets)`` sampled around each focus.
-            gaussian_sigma_px: Gaussian sigma in footprint pixels.
-            fit_background: Whether to also fit a constant background term.
-
-        Returns:
-            Tuple containing the 1D weight array (CuPy) and the number of points per focus.
-        """
-        Xr, Yr = footprint
-        lsq_weights = calculate_gaussian_lsq_weights(
-            Xr, Yr, gaussian_sigma_px, fit_background
-        )
-        return cp.array(lsq_weights), len(Xr)
-
-    def process_frame(self, frame_gpu: Any) -> np.ndarray:
-        """
-        Perform bilinear interpolation on the input frame and apply weights.
-
-        Args:
-            frame_gpu: The 2D raw image frame (already on GPU).
-
-        Returns:
-            1D array of reconstructed intensity values on CPU.
-        """
-        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
-
-        interp_vals = (
-            frame_gpu[y0, x0] * (1 - dx) * (1 - dy)
-            + frame_gpu[y1, x0] * (1 - dx) * dy
-            + frame_gpu[y0, x1] * dx * (1 - dy)
-            + frame_gpu[y1, x1] * dx * dy
-        ).reshape((self.num_foci, self.pts_per_focus))
-
-        return cp.asnumpy(cp.dot(interp_vals, self.lsq_weights))
-
-    def process_chunk_gpu(self, chunk_gpu: Any) -> Any:
-        """
-        Process an entire 3D chunk (num_frames, Y, X) at once, result on GPU.
-
-        Same computation as :meth:`process_chunk` but the result is left on the
-        device (a cupy array), so a caller can keep accumulating on the GPU and
-        defer the GPU->host (D2H) copy to a lower, viewer-driven cadence.
-
-        Args:
-            chunk_gpu: A sub-stack (chunk) of raw frames on GPU.
-
-        Returns:
-            Processed pixels for each raw frame in the chunk, on GPU.
-        """
-        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
-
-        interp_vals = (
-            chunk_gpu[:, y0, x0] * (1 - dx) * (1 - dy)
-            + chunk_gpu[:, y1, x0] * (1 - dx) * dy
-            + chunk_gpu[:, y0, x1] * dx * (1 - dy)
-            + chunk_gpu[:, y1, x1] * dx * dy
-        ).reshape((-1, self.num_foci, self.pts_per_focus))
-
-        return cp.matmul(interp_vals, self.lsq_weights)
-
-    def process_chunk(self, chunk_gpu: Any) -> np.ndarray:
-        """
-        Process an entire 3D chunk (num_frames, Y, X) at once on the GPU.
-
-        Args:
-            chunk_gpu: A sub-stack (chunk) of raw frames on GPU.
-
-        Returns:
-            Processed pixels for each raw frame in the chunk (on CPU).
-        """
-        return cp.asnumpy(self.process_chunk_gpu(chunk_gpu))
-
-    def update_frame_inds(
-        self,
-        nx_c: int,
-        ny_c: int,
-        nx_s: int,
-        ny_s: int,
-        scan_ori: str,
-    ):
-        """
-        Update the frame indices for the processor.
-
-        Args:
-            nx_c: Number of foci along x.
-            ny_c: Number of foci along y.
-            nx_s: Scanner steps along x.
-            ny_s: Scanner steps along y.
-            scan_ori: Scan orientation string.
-        """
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
 
 
-def make_gauss_processor(
+def make_fast_gauss_extractor(
     xp: float,
     xo: float,
     yp: float,
@@ -442,56 +206,41 @@ def make_gauss_processor(
     ny_s: int,
     num_rows: int,
     num_cols: int,
-    num_rects: int = DEFAULT_FOOTPRINT_NUM_RECTS,
     gaussian_sigma_px: float = DEFAULT_GAUSSIAN_SIGMA_PX,
-    pinhole_radius_px: float | None = None,
     fit_background: bool = True,
     scan_ori: str = "+x+y",
     use_gpu: bool = False,
-) -> GaussProcessorCPU | GaussProcessorGPU:
+) -> FastGaussExtractor:
+    """Build the extractor and log what it was built with.
+
+    ``use_gpu`` asks for the device solve; without CuPy, or when the device
+    factorization fails, the extractor runs on the CPU and says so.
     """
-    Factory function to create a Gauss processor (CPU or GPU).
-
-    Args:
-        xp: X-axis period.
-        xo: X-axis offset.
-        yp: Y-axis period.
-        yo: Y-axis offset.
-        nx_c: Number of foci along x.
-        ny_c: Number of foci along y.
-        nx_s: Scanner steps along x.
-        ny_s: Scanner steps along y.
-        num_rows: Total number of rows in the frame.
-        num_cols: Total number of columns in the frame.
-        num_rects: Number of rectangular shells (legacy footprint; used when
-            ``pinhole_radius_px`` is None).
-        gaussian_sigma_px: Gaussian sigma in footprint pixels.
-        pinhole_radius_px: Optional circular pinhole radius (px). When > 0 it
-            governs the footprint instead of ``num_rects``.
-        fit_background: Whether to also fit a constant background term.
-        scan_ori: Scan orientation string.
-        use_gpu: If True, attempt to use GPU; falls back to CPU if unavailable.
-
-    Returns:
-        A GaussProcessor instance (GPU if requested and available, otherwise CPU).
-    """
-    logger = initLogger("make_gauss_processor")
-    num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
-        num_rects, gaussian_sigma_px, pinhole_radius_px
-    )
-    args = (
-        xp, xo, yp, yo, nx_c, ny_c, nx_s, ny_s, num_rows, num_cols,
-        num_rects, gaussian_sigma_px, pinhole_radius_px, fit_background, scan_ori,
-    )
-
-    if use_gpu and CUPY_AVAILABLE:
-        logger.info("Creating GPU Gauss processor")
-        return GaussProcessorGPU(*args)
-    elif use_gpu and not CUPY_AVAILABLE:
+    logger = initLogger("make_fast_gauss_extractor")
+    if use_gpu and not CUPY_AVAILABLE:
         logger.info("GPU requested but CuPy not available; falling back to CPU")
-        return GaussProcessorCPU(*args)
-    else:
-        return GaussProcessorCPU(*args)
+    try:
+        extractor = FastGaussExtractor(
+            xp, xo, yp, yo, nx_c, ny_c, nx_s, ny_s, num_rows, num_cols,
+            gaussian_sigma_px=gaussian_sigma_px, fit_background=fit_background,
+            scan_ori=scan_ori, use_gpu=use_gpu,
+        )
+    except Exception as error:
+        if not (use_gpu and CUPY_AVAILABLE):
+            raise
+        logger.warning(f"GPU extraction could not be set up ({error}); using the CPU")
+        extractor = FastGaussExtractor(
+            xp, xo, yp, yo, nx_c, ny_c, nx_s, ny_s, num_rows, num_cols,
+            gaussian_sigma_px=gaussian_sigma_px, fit_background=fit_background,
+            scan_ori=scan_ori, use_gpu=False,
+        )
+    logger.info(
+        f"Joint Gaussian extraction of {extractor.num_foci} foci "
+        f"(sigma {extractor.gaussian_sigma_px:.2f} px, "
+        f"{'constant background' if extractor.fit_background else 'no background'}, "
+        f"{'GPU' if extractor.use_gpu else 'CPU'})"
+    )
+    return extractor
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

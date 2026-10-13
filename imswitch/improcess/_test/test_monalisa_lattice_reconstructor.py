@@ -333,6 +333,28 @@ class TestReconstruction:
         )
         assert placed.diagnostics["image"] == "amplitudes placed"
 
+    def test_the_resolution_to_expect_follows_from_the_shift_factor(self):
+        """sigma_e = sqrt(alpha) * sigma_spot: the width of the placed PSF."""
+        wide = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
+        result = MonalisaLatticeReconstructor().process(
+            _recording(wide.frames), _params()
+        )
+        assert result.diagnostics["image"] == "reassigned"
+        excitation = result.diagnostics["excitation FWHM (px)"]
+        assert excitation == pytest.approx(2.355 * 1.2, rel=0.2)
+        expected = result.diagnostics["expected resolution (px)"]
+        assert expected == pytest.approx(excitation * np.sqrt(1 - wide.alpha), rel=0.2)
+        assert expected < excitation
+        # In nanometres when the camera pixel is known, and the row is an
+        # upper bound when the foci are confined.
+        confined = MonalisaLatticeReconstructor().process(
+            _recording(make_scan().frames, _attrs((0.735, 0.735), 0.035)), _params()
+        )
+        assert confined.diagnostics["image"] == "amplitudes placed"
+        if "excitation FWHM (nm)" in confined.diagnostics:
+            row = confined.diagnostics["excitation FWHM (nm)"]
+            assert isinstance(row, str) and row.startswith("below")
+
     def test_a_fixed_shift_factor(self):
         wide = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
         result = MonalisaLatticeReconstructor().process(
@@ -384,7 +406,7 @@ class TestOutputs:
         scan = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
         return MonalisaLatticeReconstructor().process(
             _recording(scan.frames),
-            _params(sharpen=True, pinhole_stack=True, reach_sigma=2.0),
+            _params(sharpen=True, pinhole_stack=True),
         )
 
     def test_the_layers(self, result):
@@ -400,7 +422,7 @@ class TestOutputs:
             assert np.isfinite(low) and high > low
 
     def test_one_image_per_pixel_of_the_footprint(self, result):
-        radius = 2.0 * result.diagnostics["spot sigma (px)"]
+        radius = 2.5 * result.diagnostics["spot sigma (px)"]
         span = np.arange(-9, 10)
         expected = int(np.sum(np.add.outer(span**2, span**2) <= radius**2))
         assert result.pinholes.shape == (expected, *result.data.shape)
@@ -655,7 +677,7 @@ class TestRecordedScans:
         steps = int(np.sqrt(wide.frames.shape[0]))
         loops = [_loop("scan_z", 2, 0.1), _loop("scan_y", steps, 0.03), _loop("scan_x", steps, 0.03)]
         result = MonalisaLatticeReconstructor().process(
-            _recorded(frames, loops), _params(pinhole_stack=True, reach_sigma=2.0)
+            _recorded(frames, loops), _params(pinhole_stack=True)
         )
         assert result.axis_labels == ["Z", "Y", "X"]
         assert result.pinholes.shape == (2, result.pinholes.shape[1], *result.data.shape[1:])
