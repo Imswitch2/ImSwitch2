@@ -1,15 +1,22 @@
 """MoNaLISA lattice reconstructor: the lattice pipeline as an ImProcess plugin.
 
 Experimental, and beside the MoNaLISA reconstructor, not in its place. It
-reads the illumination lattice, the spot, the scan step, the orientation of
-the scan and the confinement of the foci from the frames, for any lattice,
-and reconstructs with the pipeline of
+reads the illumination lattice, the spot and the confinement of the foci
+from the frames, for any lattice, and reconstructs with the pipeline of
 ``docs/monalisa_optimal_reconstruction.md`` (sections 8 to 10).
+
+The scan comes from the recording's acquisition layout when it has one:
+every frame is placed by its recorded position, Z planes and timepoints
+become axes of the result, and a camera axis the recording does not step
+(a scan of Y and Z alone) comes out one pixel per lattice cell. A recording
+without a layout is one raster of ``num_fast x num_slow`` steps per stack
+whose orientation is read from the data, as before.
 """
 
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -18,10 +25,15 @@ from qtpy import QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstructor
 
-from ..monalisa.pipeline import PipelineParams, find_foci, reconstruct_scan
+from ..monalisa.pipeline import (
+    PipelineParams,
+    find_foci,
+    prepare_geometry,
+    reconstruct_scan,
+)
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
 from .result import MonalisaLatticeResult
-from .scan import recorded_scan
+from .scan import LayoutScan, layout_scan, recorded_scan
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -57,9 +69,10 @@ def pipeline_params(params: dict) -> PipelineParams:
 class MonalisaLatticeReconstructor(Reconstructor):
     """MoNaLISA reconstruction for any illumination lattice, read from the data.
 
-    Takes a recording of one or several raster scans of the unit cell,
-    ``(frames, rows, cols)``. Nothing of the pattern is typed in; the scan is
-    taken from the recording's metadata unless it is set.
+    Takes a recording of one or several scans of the unit cell, ``(frames,
+    rows, cols)``: X and Y, Y and Z, X, Y and Z, each over time. Nothing of
+    the pattern is typed in; the scan is taken from the recording's
+    acquisition layout, or from its attributes, unless it is set.
     """
 
     name = "MoNaLISA lattice (experimental)"
@@ -67,7 +80,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
     file_extensions = ["hdf5", "h5", "zarr", "tiff"]
     description = (
         "Square, rectangular, hexagonal or rotated patterns; lattice, spot, "
-        "scan step and orientation read from the frames"
+        "scan step and orientation read from the frames; XY, YZ and XYZ scans "
+        "placed by the acquisition layout"
     )
     execution_policy = "worker"
     requires_frame_stacks = True
@@ -146,6 +160,18 @@ class MonalisaLatticeReconstructor(Reconstructor):
         if frames.ndim != 3:
             raise ValueError(
                 f"Expected frames of shape (frames, rows, cols), got {frames.shape}"
+            )
+
+        # Steps typed into the panel describe the recording as a raster of
+        # their own; otherwise the recording's layout places every frame.
+        recorded = None
+        if int(params["scan_steps_fast"]) <= 0 and int(params["scan_steps_slow"]) <= 0:
+            recorded = layout_scan(
+                getattr(data_obj, "acquisition_layout", None), frames.shape[0]
+            )
+        if recorded is not None:
+            return self._process_recorded(
+                data_obj, frames, recorded, params, started, report, check_cancelled
             )
 
         scan = recorded_scan(
@@ -235,6 +261,172 @@ class MonalisaLatticeReconstructor(Reconstructor):
             pinhole_offsets=offsets,
         )
 
+    def _process_recorded(
+        self, data_obj, frames, scan: LayoutScan, params, started, report, check_cancelled
+    ) -> MonalisaLatticeResult:
+        """Reconstruct a recording whose acquisition layout places its frames.
+
+        One stack per Z plane and timepoint, all on the raster of one
+        geometry read from every frame of the recording: the lattice and
+        the spot do not change between planes, and a plane with little in
+        focus would read them badly on its own. The stack with the most
+        modulation goes first and measures the shift factor for the rest.
+        """
+        self._logger.info(f"{data_obj.name}: scan of {scan.describe()}")
+        pixel_nm = float(params["pixel_size_nm"])
+        step = None
+        if pixel_nm > 0:
+            if not any(scan.step_nm):
+                raise ValueError(
+                    "A camera pixel size is set but the recording does not "
+                    "say the size of its scan steps: leave the pixel size at 0"
+                )
+            # An axis the recording does not step, or whose step it does not
+            # say, is left to the lattice (a NaN column).
+            step = np.full((2, 2), np.nan)
+            for axis, step_nm in enumerate(scan.step_nm):
+                if step_nm:
+                    step[:, axis] = 0.0
+                    step[axis, axis] = step_nm / pixel_nm
+        settings = pipeline_params(params)
+        notes = {}
+        if len(scan.scanned_axes) == 1:
+            # The shift factor is a displacement in the plane; a scan that
+            # samples one axis cannot measure it, and a stack shifted by an
+            # unmeasured factor would say nothing.
+            if settings.reassignment == "auto":
+                settings = replace(settings, reassignment="off")
+                notes["reassignment"] = (
+                    f"not measured: only {scan.scanned_axes[0]} is scanned"
+                )
+            if settings.pinhole_stack == "shifted":
+                settings = replace(settings, pinhole_stack="raw")
+        # The layout says where every frame is along the stage axes; how the
+        # stage lies against the camera (signs, a swap) is read from the data
+        # unless it is set, as for a raster.
+        orientation = None if params["orientation"] == AUTO else str(params["orientation"])
+
+        check_cancelled()
+        report("align", 0, 1, "Finding the lattice and the spot")
+        mean_frame = frames.mean(axis=0, dtype=np.float64)
+        modulation_frame = frames.var(axis=0, dtype=np.float64)
+        order = self._stack_order(frames, scan)
+        geometry = prepare_geometry(
+            mean_frame, step, scan.index[scan.frames_of(order[0])], settings,
+            modulation_frame=modulation_frame,
+        )
+        shape = scan.in_plane_shape
+
+        results = {}
+        for number, stack in enumerate(order):
+            check_cancelled()
+            report("assemble", number, scan.num_stacks,
+                   f"Reconstructing plane {number + 1} of {scan.num_stacks}")
+            chosen = scan.frames_of(stack)
+            result = reconstruct_scan(
+                frames[chosen], step, shape, settings,
+                orientation=orientation, geometry=geometry,
+                scan_index=scan.index[chosen],
+                gain_positions=scan.gain_positions(stack),
+            )
+            if number == 0:
+                # The first stack's raster, mapping and shift factor serve
+                # the rest: one recording, one geometry.
+                geometry = result.geometry
+                orientation = result.diagnostics["orientation"]
+                self._check_pinhole_stack(result, scan.num_stacks)
+            results[int(stack)] = result
+        report("finalize", 0, 1, "Assembling the result")
+
+        first = results[int(order[0])]
+        # The output raster is in camera axes; the mapping says which stage
+        # axis, and so which recorded step, lies along each.
+        swapped = str(orientation)[1] == "y"
+        step_px = np.asarray(geometry.step, dtype=float)
+        pitch_px = tuple(float(np.linalg.norm(step_px[:, axis])) for axis in (0, 1))
+        recorded_nm = tuple(
+            scan.step_nm[1 - axis if swapped else axis] for axis in (0, 1)
+        )
+        camera_pixel_nm = pixel_nm if pixel_nm > 0 else next(
+            (step_nm / pitch_px[axis] for axis, step_nm in enumerate(recorded_nm)
+             if step_nm and pitch_px[axis] > 0),
+            None,
+        )
+        output_nm = tuple(
+            step_nm if step_nm else (
+                pitch_px[axis] * camera_pixel_nm if camera_pixel_nm else None
+            )
+            for axis, step_nm in enumerate(recorded_nm)
+        )
+        output_pixel_nm = (
+            (output_nm[1], output_nm[0]) if all(output_nm) else None
+        )
+        diagnostics = self._diagnostics(
+            scan, first, camera_pixel_nm, output_pixel_nm,
+            time.perf_counter() - started,
+        )
+        diagnostics.update(notes)
+        for key, value in diagnostics.items():
+            self._logger.info(f"{data_obj.name}: {key}: {value}")
+
+        labels = (
+            (["T"] if scan.num_time > 1 else [])
+            + (["Z"] if scan.num_planes > 1 else [])
+            + ["Y", "X"]
+        )
+
+        def planes(pick):
+            images = [pick(results[stack]) for stack in range(scan.num_stacks)]
+            if any(image is None for image in images):
+                return None
+            stacked = np.nan_to_num(np.stack(images)).astype(np.float32)
+            shape = (
+                (scan.num_time,) * (scan.num_time > 1)
+                + (scan.num_planes,) * (scan.num_planes > 1)
+                + stacked.shape[1:]
+            )
+            return stacked.reshape(shape)
+
+        pinholes = None
+        offsets = None
+        if first.pinholes is not None:
+            pinholes = planes(lambda result: result.pinholes.images)
+            offsets = (first.pinholes.dx, first.pinholes.dy)
+        report("finalize", 1, 1, "Done")
+        return MonalisaLatticeResult(
+            name=f"{data_obj.name}_lattice",
+            image=planes(lambda result: result.amplitude.image),
+            output_pixel_nm=output_pixel_nm,
+            params=params,
+            diagnostics=diagnostics,
+            sharpened=planes(lambda result: result.sharpened),
+            background=planes(
+                lambda result: None if result.background is None
+                else result.background.image
+            ),
+            pinholes=pinholes,
+            pinhole_offsets=offsets,
+            axis_labels=labels,
+            plane_step_nm=scan.plane_step_nm,
+        )
+
+    @staticmethod
+    def _stack_order(frames: np.ndarray, scan: LayoutScan) -> list[int]:
+        """The stacks, the one with the most modulation first.
+
+        The temporal variance of a stack's frames is the foci moving over the
+        specimen; a plane with nothing in focus has little of it, and is not
+        the one to measure the shift factor on.
+        """
+        if scan.num_stacks == 1:
+            return [0]
+        modulation = []
+        for stack in range(scan.num_stacks):
+            chosen = frames[scan.frames_of(stack)]
+            modulation.append(float(chosen.var(axis=0, dtype=np.float64).mean()))
+        first = int(np.argmax(modulation))
+        return [first] + [stack for stack in range(scan.num_stacks) if stack != first]
+
     @staticmethod
     def _check_pinhole_stack(result, num_stacks: int) -> None:
         if result.pinholes is None:
@@ -278,8 +470,20 @@ class MonalisaLatticeReconstructor(Reconstructor):
         if camera_pixel_nm:
             rows["spot FWHM (nm)"] = round(2.355 * sigma * camera_pixel_nm, 0)
             rows["camera pixel (nm)"] = round(float(camera_pixel_nm), 2)
-        if output_pixel_nm:
-            rows["output pixel (µm)"] = round(float(output_pixel_nm) / 1000.0, 5)
+        if output_pixel_nm is not None and np.all(np.asarray(output_pixel_nm) > 0):
+            pixel = np.atleast_1d(np.asarray(output_pixel_nm, dtype=float))
+            if pixel.size > 1 and abs(pixel[0] - pixel[-1]) >= 0.01:
+                rows["output pixel (µm)"] = (
+                    f"Y {pixel[0] / 1000:.5g} / X {pixel[-1] / 1000:.5g}"
+                )
+            else:
+                rows["output pixel (µm)"] = round(float(pixel[0]) / 1000.0, 5)
+        if geometry.get("step_completed_axes"):
+            rows["raster from the lattice"] = ", ".join(
+                f"{axis}: one period" if axis not in geometry["scanned_axes"]
+                else f"{axis}: the period over the steps"
+                for axis in geometry["step_completed_axes"]
+            )
         rows["scan step"] = (
             "from the cell of the lattice" if not geometry["step_given"]
             else "locked to the lattice, changed by "
@@ -294,17 +498,22 @@ class MonalisaLatticeReconstructor(Reconstructor):
         if geometry["coverage_holes"] > 0 and geometry["step_given"]:
             # A scan that leaves holes in the cell was stepped too finely
             # for its number of steps: the recorded step is suspect.
-            positions = max(1, int(scan.num_fast) * int(scan.num_slow))
+            positions = max(1, int(scan.frames_per_stack))
             covering = float(np.sqrt(lattice.cell_area / positions))
             used = float(np.sqrt(abs(np.linalg.det(np.asarray(geometry["step_px"])))))
             ratio = covering / used if used > 0 else float("nan")
+            step_nm = scan.step_nm
+            if isinstance(step_nm, tuple):
+                step_nm = next((value for value in step_nm if value), None)
             coverage += (
                 f"; a step {ratio:.2f} x the one used"
-                + (f" ({ratio * scan.step_nm:.1f} nm)" if scan.step_nm else "")
+                + (f" ({ratio * step_nm:.1f} nm)" if step_nm else "")
                 + " would cover the cell once: check the recorded step"
             )
         rows["coverage of the cell"] = coverage
         rows["orientation"] = found["orientation"]
+        if found.get("frames_placed_by"):
+            rows["frames placed by"] = found["frames_placed_by"]
         if "orientation_margin" in found:
             rows["orientation, lead over the next"] = round(
                 float(found["orientation_margin"]), 2

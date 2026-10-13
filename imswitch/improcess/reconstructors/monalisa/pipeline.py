@@ -17,9 +17,12 @@ one scan; it consists of
 
 This is the two-stage estimator of
 ``docs/monalisa_optimal_reconstruction.md``, as amended by the first
-recordings (section 9). It is not wired into the reconstructor plugin or the
-live session; the scan is described by its step vectors and integer positions
-in camera pixels, which the acquisition layout will supply.
+recordings (section 9). The scan is described by its step vectors and
+integer positions in camera pixels: a raster of ``(num_fast, num_slow)``
+steps whose orientation is read from the data, or the positions of every
+frame as the acquisition layout records them (``scan_index``), which may
+leave one camera axis unscanned -- that axis of the output raster is then
+one lattice period, one pixel per cell.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ from .placement import (
     place_nearest,
     sample_positions,
 )
+from .quality import seam_contrast
 from .reassignment import (
     PinholeStack,
     ShiftFactor,
@@ -57,7 +61,13 @@ from .reassignment import (
     pinhole_stack,
     reassign,
 )
-from .scan_frame import choose_orientation, raster_scan_index
+from .scan_frame import (
+    ORIENTATIONS,
+    choose_orientation,
+    orient_recorded_index,
+    orient_step_columns,
+    raster_scan_index,
+)
 from .sharpen import wiener_sharpen
 from .spot_model import SpotModel, _default_radius, calibrate_spot_model, shared_sigma_fit
 
@@ -181,6 +191,65 @@ class StackReconstruction:
     diagnostics: dict = field(default_factory=dict)
 
 
+def axis_period(lattice: Lattice, axis: int) -> np.ndarray:
+    """The lattice vector along camera axis ``axis`` (0 = x, 1 = y).
+
+    Of the basis vectors, their sums and differences, the one closest in
+    direction to the axis, pointing along it: ``a1`` for a lattice aligned
+    with the axes, ``a1 - a2`` for a square lattice turned by 45 degrees. It
+    is the pitch of the lattice cells along that axis, the pixel of the
+    output raster along an axis the scan does not step.
+    """
+    a1 = np.asarray(lattice.a1, dtype=float)
+    a2 = np.asarray(lattice.a2, dtype=float)
+    unit = np.array([1.0, 0.0]) if int(axis) == 0 else np.array([0.0, 1.0])
+    candidates = [a1, a2, a1 + a2, a1 - a2]
+    candidates += [-v for v in candidates]
+    return max(
+        candidates,
+        key=lambda v: float(v @ unit) / max(float(np.linalg.norm(v)), 1e-12),
+    )
+
+
+def complete_step(
+    step: np.ndarray | None, lattice: Lattice, scan_index: np.ndarray
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    """The step matrix with what the lattice has to supply filled in.
+
+    ``step`` is 2x2 with the camera-space vectors of one scan step along the
+    camera's x and y as columns. A column of NaN is an axis whose step the
+    recording does not say -- the whole matrix ``None`` is both -- and is
+    taken from the lattice: the period of the lattice along that axis
+    (:func:`axis_period`) divided by the number of positions the scan has
+    along it. For an axis the scan does not step that is the period itself,
+    one output pixel per cell; for a scan whose pixel size is unknown it is
+    the step with which the scan covers the cell once.
+
+    When the scan steps both axes and says neither step, the step is the one
+    that covers the cell once with equal steps along both axes, as before:
+    the scan of a cell that is not aligned with the camera is not along its
+    lattice vectors.
+
+    Returns the step and the axes (0 = x, 1 = y) that were completed.
+    """
+    scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
+    counts = tuple(int(np.unique(scan_index[:, axis]).size) for axis in (0, 1))
+    if step is None:
+        filled = np.full((2, 2), np.nan)
+    else:
+        filled = np.array(step, dtype=float).reshape(2, 2)
+    missing = tuple(axis for axis in (0, 1) if not np.all(np.isfinite(filled[:, axis])))
+    if not missing:
+        return filled, ()
+    if len(missing) == 2 and min(counts) > 1:
+        positions = np.unique(scan_index, axis=0).shape[0]
+        pitch = float(np.sqrt(lattice.cell_area / positions))
+        return np.diag([pitch, pitch]), (0, 1)
+    for axis in missing:
+        filled[:, axis] = axis_period(lattice, axis) / counts[axis]
+    return filled, missing
+
+
 def prepare_geometry(
     mean_frame: np.ndarray,
     step: np.ndarray | None,
@@ -195,9 +264,10 @@ def prepare_geometry(
     Args:
         mean_frame: Mean of the frames of one scan.
         step: 2x2, the camera-space vectors of one scan step along the
-            camera's x and y, as columns. ``None`` when the pixel size is
-            not known: the step is then the one with which the scan covers
-            the cell of the lattice once, equal along both axes.
+            camera's x and y, as columns. A column of NaN, or ``None`` for
+            both, is taken from the lattice (:func:`complete_step`): the
+            period along that axis over the number of positions the scan
+            has along it -- for an axis that is not scanned, the period.
         scan_index: ``(frames, 2)`` integer scan positions in steps.
         params: Pipeline parameters.
         lattice: The illumination lattice, when already known; detected
@@ -249,12 +319,13 @@ def prepare_geometry(
     )
 
     scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
-    step_given = step is not None
-    if not step_given:
-        positions = np.unique(scan_index, axis=0).shape[0]
-        pitch = float(np.sqrt(lattice.cell_area / positions))
-        step = np.diag([pitch, pitch])
-    step = np.asarray(step, dtype=float).reshape(2, 2)
+    step, completed = complete_step(step, lattice, scan_index)
+    # "Given" means the scan's own step is known: an unscanned axis takes
+    # its pixel from the lattice without making the step a guess.
+    scanned = tuple(
+        axis for axis in (0, 1) if np.unique(scan_index[:, axis]).size > 1
+    )
+    step_given = not any(axis in completed for axis in scanned)
     nominal_step = step
     lock_change = 0.0
     if params.lock_tolerance > 0:
@@ -278,6 +349,8 @@ def prepare_geometry(
         "num_foci": int(operator.valid.sum()),
         "nominal_step_px": nominal_step.tolist(),
         "step_given": step_given,
+        "step_completed_axes": tuple("xy"[axis] for axis in completed),
+        "scanned_axes": tuple("xy"[axis] for axis in scanned),
         "step_px": step.tolist(),
         "step_lock_change": lock_change,
         "step_locked": bool(not np.array_equal(step, nominal_step)),
@@ -296,6 +369,59 @@ def prepare_geometry(
         commensurate_residual=residual,
         coverage=cell_coverage,
         params=params,
+        diagnostics=diagnostics,
+    )
+
+
+def geometry_with_step(
+    geometry: StackGeometry, step: np.ndarray | None, scan_index: np.ndarray
+) -> StackGeometry:
+    """The geometry of the same recording for another step and scan.
+
+    The lattice, the spot model and the extraction operator depend on the
+    frames alone and are kept; the step (completed from the lattice where it
+    is NaN, locked to it), the raster and the coverage are read anew. This
+    is how the orientation of a recorded scan is tried: every orientation
+    puts the scan on a raster of its own.
+    """
+    params = geometry.params
+    lattice = geometry.lattice
+    rows, cols = geometry.operator.frame_shape
+    scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
+    step, completed = complete_step(step, lattice, scan_index)
+    scanned = tuple(
+        axis for axis in (0, 1) if np.unique(scan_index[:, axis]).size > 1
+    )
+    nominal_step = step
+    lock_change = 0.0
+    if params.lock_tolerance > 0:
+        step, lock_change = lock_step_to_lattice(
+            lattice.matrix, step, params.lock_tolerance
+        )
+    index_matrix, residual = commensurability(lattice.matrix, step)
+    cell_coverage = coverage(index_matrix, scan_index)
+    raster = OutputRaster.covering((rows, cols), step, lattice.offset)
+    diagnostics = dict(geometry.diagnostics)
+    diagnostics.update(
+        nominal_step_px=nominal_step.tolist(),
+        step_given=not any(axis in completed for axis in scanned),
+        step_completed_axes=tuple("xy"[axis] for axis in completed),
+        scanned_axes=tuple("xy"[axis] for axis in scanned),
+        step_px=step.tolist(),
+        step_lock_change=lock_change,
+        step_locked=bool(not np.array_equal(step, nominal_step)),
+        commensurate_residual=residual,
+        coverage_cell_pixels=cell_coverage.cell_pixels,
+        coverage_holes=cell_coverage.holes,
+        coverage_overlaps=cell_coverage.overlaps,
+    )
+    return replace(
+        geometry,
+        raster=raster,
+        step=step,
+        index_matrix=index_matrix,
+        commensurate_residual=residual,
+        coverage=cell_coverage,
         diagnostics=diagnostics,
     )
 
@@ -615,6 +741,8 @@ def reconstruct_scan(
     pixel_mask: np.ndarray | None = None,
     shift_factor: ShiftFactor | None = None,
     geometry: StackGeometry | None = None,
+    scan_index: np.ndarray | None = None,
+    gain_positions: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> StackReconstruction:
     """Reconstruct the frames of one raster scan, reading all it can from them.
 
@@ -640,6 +768,21 @@ def reconstruct_scan(
             shift factor; only the gain of the frames and the offsets of the
             cells are read from every scan anew. ``params`` are taken from
             it.
+        scan_index: ``(frames, 2)`` integer positions of the sample for
+            every frame along the stage's two scan axes, in steps, as the
+            acquisition layout records them. The layout says which frame is
+            where along each stage axis and in which direction the axis
+            runs; it does not say how the stage lies against the camera.
+            That is still read from the data: ``orientation`` then names
+            the stage-to-camera mapping (:func:`.scan_frame.orient_recorded_index`),
+            chosen by smoothness when ``None``. ``step`` has the stage axes'
+            steps as columns. Either axis may have one position: it is then
+            not scanned, and the output raster is one lattice period along
+            it.
+        gain_positions: With ``scan_index``, the ``(fast, slow)`` position
+            of every frame in the order visited, for the gain of the frames
+            (:func:`.frame_gain.fit_frame_gain`); ``scan_index`` itself
+            otherwise.
     """
     params = params or PipelineParams()
     frames = np.asarray(frames)
@@ -649,6 +792,16 @@ def reconstruct_scan(
             f"{frames.shape[0]} frames do not make a scan of "
             f"{num_fast} x {num_slow} steps"
         )
+    recorded = scan_index is not None
+    if recorded:
+        scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
+        if scan_index.shape[0] != frames.shape[0]:
+            raise ValueError(
+                f"{frames.shape[0]} frames but {scan_index.shape[0]} recorded "
+                "scan positions"
+            )
+        if gain_positions is None:
+            gain_positions = (scan_index[:, 0], scan_index[:, 1])
     if geometry is not None:
         params = geometry.params
         if shift_factor is None:
@@ -656,9 +809,13 @@ def reconstruct_scan(
     else:
         mean_frame = frames.mean(axis=0, dtype=np.float64)
         modulation_frame = frames.var(axis=0, dtype=np.float64)
-        first_index = raster_scan_index(num_fast, num_slow, orientation or "+x+y")
+        first_index = (
+            orient_recorded_index(scan_index, orientation or "+x+y") if recorded
+            else raster_scan_index(num_fast, num_slow, orientation or "+x+y")
+        )
+        first_step = orient_step_columns(step, orientation or "+x+y") if recorded else step
         geometry = prepare_geometry(
-            mean_frame, step, first_index, params,
+            mean_frame, first_step, first_index, params,
             lattice=lattice, modulation_frame=modulation_frame,
             pixel_mask=pixel_mask,
         )
@@ -669,7 +826,9 @@ def reconstruct_scan(
     amplitude = operator.apply(frames).amplitude[:, valid]
     gain = None
     if params.frame_gain == "smooth":
-        fitted = fit_frame_gain(amplitude, (num_fast, num_slow))
+        fitted = fit_frame_gain(
+            amplitude, (num_fast, num_slow), positions=gain_positions
+        )
         gain = fitted.gain
         amplitude = amplitude / gain[:, None]
         diagnostics["frame_gain_rms"] = fitted.rms
@@ -678,15 +837,69 @@ def reconstruct_scan(
     elif params.frame_gain != "off":
         raise ValueError(f"Unknown frame gain {params.frame_gain!r}")
 
-    if orientation is None:
+    def assemble(index: np.ndarray) -> np.ndarray:
+        gx, gy = _raster_coordinates(geometry, index)
+        return place(
+            gx[:, valid], gy[:, valid], amplitude, geometry.raster.shape,
+            tolerance=np.inf,
+        ).image
 
-        def assemble(scan_index: np.ndarray) -> np.ndarray:
-            gx, gy = _raster_coordinates(geometry, scan_index)
-            return place(
-                gx[:, valid], gy[:, valid], amplitude, geometry.raster.shape,
-                tolerance=np.inf,
-            ).image
+    if recorded:
+        # The layout places the frames along the stage axes; how the stage
+        # lies against the camera is read from the data, as for a raster:
+        # every candidate mapping is a raster of its own, and the right
+        # one is smooth across the borders of the cells.
+        def oriented(name: str):
+            camera_index = orient_recorded_index(scan_index, name)
+            return camera_index, geometry_with_step(
+                geometry, orient_step_columns(step, name), camera_index
+            )
 
+        if orientation is None:
+            # Scored by the contrast of the cell borders along the scanned
+            # axes (:func:`.quality.seam_contrast`), not by the roughness of
+            # the whole image: a scan of one axis has one pixel per cell
+            # along the other, and those differences, the same under every
+            # mapping, would bury the seams.
+            scores = {}
+            candidates = {}
+            focus = np.flatnonzero(valid)
+            for name in ORIENTATIONS:
+                camera_index, candidate = oriented(name)
+                candidates[name] = (camera_index, candidate)
+                gx, gy = _raster_coordinates(candidate, camera_index)
+                gx, gy = gx[:, valid], gy[:, valid]
+                image = place(
+                    gx, gy, amplitude, candidate.raster.shape, tolerance=np.inf
+                ).image
+                owner = place_nearest(
+                    gx, gy, np.broadcast_to(focus[None, :], gx.shape),
+                    candidate.raster.shape,
+                ).image
+                owner = np.where(np.isfinite(owner), owner, -1).astype(np.int64)
+                # Image axis 0 is the camera's y, 1 its x.
+                axes = tuple(
+                    1 - axis for axis in (0, 1)
+                    if np.unique(camera_index[:, axis]).size > 1
+                )
+                scores[name] = seam_contrast(image, owner, axes)
+            finite = {name: score for name, score in scores.items() if np.isfinite(score)}
+            if not finite:
+                raise ValueError("No orientation produced an image")
+            orientation = min(finite, key=finite.get)
+            # Mappings that differ only along an axis of one position give
+            # the same image; the lead is over the next distinct image.
+            ranked = sorted(set(np.round(list(finite.values()), 12)))
+            diagnostics["orientation_scores"] = scores
+            diagnostics["orientation_margin"] = (
+                float((ranked[1] - ranked[0]) / max(ranked[-1] - ranked[0], 1e-30))
+                if len(ranked) > 1 else 0.0
+            )
+            scan_index, geometry = candidates[orientation]
+        else:
+            scan_index, geometry = oriented(orientation)
+        diagnostics["frames_placed_by"] = "acquisition layout"
+    elif orientation is None:
         orientation, scores = choose_orientation(assemble, num_fast, num_slow)
         ranked = sorted(score for score in scores.values() if np.isfinite(score))
         diagnostics["orientation_scores"] = scores
@@ -694,7 +907,8 @@ def reconstruct_scan(
             float((ranked[1] - ranked[0]) / max(ranked[-1] - ranked[0], 1e-30))
             if len(ranked) > 1 else 0.0
         )
-    scan_index = raster_scan_index(num_fast, num_slow, orientation)
+    if not recorded:
+        scan_index = raster_scan_index(num_fast, num_slow, orientation)
     geometry = replace(
         geometry, coverage=coverage(geometry.index_matrix, scan_index)
     )

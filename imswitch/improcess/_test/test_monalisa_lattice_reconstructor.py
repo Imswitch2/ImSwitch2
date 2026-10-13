@@ -31,7 +31,18 @@ from imswitch.improcess.reconstructors.monalisa_lattice.result import (  # noqa:
     MonalisaLatticeResult,
 )
 from imswitch.improcess.reconstructors.monalisa_lattice.scan import (  # noqa: E402
+    layout_scan,
     recorded_scan,
+)
+from imswitch.imcommon.model.acquisition_layout import (  # noqa: E402
+    ACQUISITION_LAYOUT_SCHEMA,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    AcquisitionLoop,
+    TraversalRule,
+)
+from imswitch.improcess.model.acquisition_layout_resolver import (  # noqa: E402
+    ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.reconstructors.registry import PluginRegistry  # noqa: E402
 
@@ -56,6 +67,48 @@ def _attrs(length_um=(0.69, 0.69), step_um=0.03):
 
 def _params(**changes):
     return {**MonalisaLatticeReconstructor.default_params(), **changes}
+
+
+def _loop(kind, count, step_um=None, direction=1, labels=()):
+    scan = kind.startswith("scan_")
+    return AcquisitionLoop(
+        kind, kind, count, step=step_um, unit="um" if step_um else None,
+        direction=direction if scan else None, labels=labels,
+    )
+
+
+def _resolved(loops, provenance="recorded"):
+    """A resolved layout of ``loops`` (outermost first), every loop forward."""
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="Cam",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=tuple(loops),
+        traversal=tuple(TraversalRule(loop.id, "forward") for loop in loops),
+        provenance=provenance,
+    )
+    return ResolvedAcquisitionLayout(
+        layout=layout,
+        source="explicit-metadata" if provenance == "recorded" else "scan-stage-legacy",
+        confidence="certain" if provenance == "recorded" else "high",
+    )
+
+
+def _recorded(frames, loops, name="scan", provenance="recorded"):
+    return types.SimpleNamespace(
+        name=name, data=frames, attrs={}, numFrames=frames.shape[0],
+        acquisition_layout=_resolved(loops, provenance),
+    )
+
+
+def _planes(scan, factors):
+    """The frames of one scan repeated as planes of different brightness."""
+    return np.concatenate([scan.frames * factor for factor in factors])
+
+
+def _interior(image, margin=20):
+    return image[..., margin:-margin, margin:-margin]
 
 
 PLAIN = dict(frame_gain=False, cell_offsets=False, reassignment="off")
@@ -389,6 +442,266 @@ class TestOutputs:
         result.save(tmp_path / "lattice.tiff")
         saved = tifffile.imread(tmp_path / "lattice.tiff")
         np.testing.assert_allclose(np.squeeze(saved), result.data, rtol=1e-6)
+
+
+class TestLayoutScan:
+    """What the lattice reconstructor reads from an acquisition layout."""
+
+    def test_a_scan_of_y_and_z(self):
+        # The ML2 rig's recording: X one position (outermost), 25 Z planes,
+        # 19 Y steps running backwards.
+        loops = [
+            _loop("scan_x", 1, 1.0), _loop("scan_z", 25, 0.04),
+            _loop("scan_y", 19, 0.04, direction=-1),
+        ]
+        scan = layout_scan(_resolved(loops), 475)
+        assert scan.counts == (1, 19)
+        assert (scan.num_planes, scan.num_time, scan.num_stacks) == (25, 1, 25)
+        assert scan.frames_per_stack == 19
+        assert scan.fast_axis == "y"
+        assert scan.in_plane_shape == (19, 1)
+        assert scan.step_nm == (None, pytest.approx(40.0))
+        assert scan.plane_step_nm == pytest.approx(40.0)
+        assert scan.scanned_axes == ("y",)
+        # Frame k is step k % 19 of plane k // 19, with y running backwards.
+        k = np.arange(475)
+        np.testing.assert_array_equal(scan.stack, k // 19)
+        np.testing.assert_array_equal(scan.index[:, 0], 0)
+        np.testing.assert_array_equal(scan.index[:, 1], 18 - k % 19)
+        np.testing.assert_array_equal(scan.logical[:, 1], k % 19)
+        np.testing.assert_array_equal(scan.frames_of(3), np.arange(57, 76))
+        fast, slow = scan.gain_positions(3)
+        np.testing.assert_array_equal(fast, np.arange(19))
+        np.testing.assert_array_equal(slow, 0)
+        assert scan.describe() == (
+            "x: not scanned, y: 19 steps of 40 nm, 25 Z planes of 40 nm "
+            "(acquisition layout)"
+        )
+
+    def test_timepoints_and_planes_make_stacks(self):
+        loops = [
+            _loop("time", 2), _loop("scan_z", 3, 0.1),
+            _loop("scan_y", 4, 0.03), _loop("scan_x", 5, 0.03),
+        ]
+        scan = layout_scan(_resolved(loops), 2 * 3 * 4 * 5)
+        assert (scan.num_time, scan.num_planes, scan.num_stacks) == (2, 3, 6)
+        assert scan.fast_axis == "x" and scan.in_plane_shape == (5, 4)
+        assert scan.step_nm == (pytest.approx(30.0), pytest.approx(30.0))
+        # Stack t * planes + z, frames in storage order.
+        np.testing.assert_array_equal(scan.frames_of(4), 4 * 20 + np.arange(20))
+        assert "2 timepoints" in scan.describe() and "3 Z planes" in scan.describe()
+
+    def test_what_is_not_a_scan_of_the_cell(self):
+        assert layout_scan(None, 10) is None
+        with pytest.raises(ValueError, match="line-step"):
+            layout_scan(_resolved([
+                _loop("condition", 2, labels=("a", "b")), _loop("scan_y", 4, 0.03),
+                _loop("scan_x", 5, 0.03),
+            ]), 40)
+        with pytest.raises(ValueError, match="neither camera axis"):
+            layout_scan(_resolved([_loop("scan_z", 4, 0.1)]), 4)
+        with pytest.raises(ValueError, match="records 20 frames"):
+            layout_scan(_resolved([_loop("scan_y", 4, 0.03), _loop("scan_x", 5, 0.03)]), 21)
+        # A loop this reconstructor cannot place: declared, it is an error;
+        # inferred, the attributes get their chance.
+        strange = [_loop("repeat", 2), _loop("scan_y", 4, 0.03), _loop("scan_x", 5, 0.03)]
+        with pytest.raises(ValueError, match="repeat"):
+            layout_scan(_resolved(strange), 40)
+        assert layout_scan(_resolved(strange, provenance="legacy-adapter"), 40) is None
+
+
+class TestRecordedScans:
+    """Recordings whose acquisition layout places their frames."""
+
+    def test_an_xy_scan_is_the_raster_reconstruction(self):
+        scan = make_scan(steps=(22, 22))
+        loops = [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
+        placed = MonalisaLatticeReconstructor().process(
+            _recorded(scan.frames, loops), _params(**PLAIN)
+        )
+        raster = MonalisaLatticeReconstructor().process(
+            _recording(scan.frames, _attrs((0.735, 0.735), 0.035)), _params(**PLAIN)
+        )
+        assert placed.axis_labels == ["Y", "X"]
+        assert placed.diagnostics["orientation"] == "+x+y"
+        assert placed.diagnostics["frames placed by"] == "acquisition layout"
+        assert placed.diagnostics["orientation, lead over the next"] > 0.3
+        assert "acquisition layout" in placed.diagnostics["scan"]
+        np.testing.assert_allclose(placed.data, raster.data, rtol=1e-5, atol=1e-5)
+        assert placed.axis_scales == pytest.approx([0.035, 0.035])
+        assert placed.diagnostics["camera pixel (nm)"] == pytest.approx(70.0, abs=0.1)
+
+    def test_the_stage_may_lie_against_the_camera_either_way(self):
+        """The layout says the index runs forwards along y; whether that is
+        up or down the camera is read from the frames, as for a raster."""
+        for orientation in ("+x-y", "-x+y", "+y+x"):
+            scan = make_scan(steps=(22, 22), orientation=orientation)
+            loops = [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
+            placed = MonalisaLatticeReconstructor().process(
+                _recorded(scan.frames, loops), _params(**PLAIN)
+            )
+            raster = MonalisaLatticeReconstructor().process(
+                _recording(scan.frames), _params(orientation=orientation, **PLAIN)
+            )
+            assert placed.diagnostics["orientation"] == orientation
+            np.testing.assert_allclose(placed.data, raster.data, rtol=1e-5, atol=1e-5)
+
+    def test_a_reversed_axis_is_the_same_image(self):
+        """The lines recorded last to first, and declared so, are the same
+        positions: the image must not change."""
+        scan = make_scan(steps=(22, 22))
+        lines = scan.frames.reshape(22, 22, *scan.frames.shape[1:])
+        backwards = lines[::-1].reshape(scan.frames.shape)
+        forward = MonalisaLatticeReconstructor().process(
+            _recorded(scan.frames, [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]),
+            _params(**PLAIN),
+        )
+        reversed_y = MonalisaLatticeReconstructor().process(
+            _recorded(backwards, [
+                _loop("scan_y", 22, 0.035, direction=-1), _loop("scan_x", 22, 0.035),
+            ]),
+            _params(**PLAIN),
+        )
+        np.testing.assert_allclose(reversed_y.data, forward.data, rtol=1e-5, atol=1e-5)
+
+    def test_a_scan_of_y_and_z(self):
+        """One camera axis scanned, planes along Z: an image per plane whose
+        X axis is one pixel per lattice cell."""
+        from imswitch.improcess.reconstructors.monalisa.pipeline import (
+            PipelineParams,
+            reconstruct_scan,
+        )
+
+        line = make_scan(steps=(1, 22))
+        frames = _planes(line, (1.0, 2.0, 0.5))
+        loops = [_loop("scan_z", 3, 0.1), _loop("scan_y", 22, 0.035)]
+        # Reassignment left at "auto": a scan of one axis cannot measure it.
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), _params(frame_gain=False, cell_offsets=False)
+        )
+        assert result.axis_labels == ["Z", "Y", "X"]
+        rows, cols = result.data.shape[1:]
+        assert result.data.shape[0] == 3
+        assert 190 <= rows <= 194                   # 96 px over steps of 0.5 px
+        assert 9 <= cols <= 11                      # 96 px over cells of 11 px
+        # Z 100 nm, Y the 35 nm step, X one period: 11 px of 70 nm.
+        assert result.axis_scales == pytest.approx([0.1, 0.035, 0.77], rel=1e-3)
+        assert result.scale_unit == "um"
+        assert result.output_pixel_size_nm == pytest.approx((35.0, 770.0), rel=1e-3)
+        assert result.diagnostics["coverage of the cell"].startswith("0 holes, 0 overlaps of 22")
+        assert result.diagnostics["raster from the lattice"] == (
+            "x: one period, y: the period over the steps"
+        )
+        assert result.diagnostics["orientation"] in ("+x+y", "-x+y")
+        assert "only y is scanned" in result.diagnostics["reassignment"]
+        assert result.diagnostics["output pixel (µm)"] == "Y 0.035 / X 0.77"
+        # The planes are the same image at their brightness.
+        inner = (slice(20, -20), slice(1, -1))
+        for plane, factor in zip(result.data, (1.0, 2.0, 0.5)):
+            ratio = plane[inner] / result.data[0][inner]
+            assert np.median(ratio) == pytest.approx(factor, rel=0.02)
+        # And a plane is the pipeline's own reconstruction of it. The spot
+        # width is calibrated on the mean and variance of every frame, so
+        # the planes must be alike for the calibration to be the same.
+        alike = MonalisaLatticeReconstructor().process(
+            _recorded(_planes(line, (1.0, 1.0, 1.0)), loops), _params(**PLAIN)
+        )
+        direct = reconstruct_scan(
+            line.frames, None, (1, 22),
+            PipelineParams(reassignment="off", frame_gain="off", cell_offsets="off"),
+            orientation="+x+y",
+        )
+        for plane in alike.data:
+            np.testing.assert_allclose(
+                plane, np.nan_to_num(direct.amplitude.image), rtol=1e-5, atol=1e-5
+            )
+
+    def test_a_scan_of_x_y_and_z(self):
+        scan = make_scan(steps=(22, 22))
+        frames = _planes(scan, (1.0, 2.0))
+        loops = [_loop("scan_z", 2, 0.1), _loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), _params(**PLAIN)
+        )
+        assert result.axis_labels == ["Z", "Y", "X"]
+        assert result.data.shape[0] == 2
+        assert result.axis_scales == pytest.approx([0.1, 0.035, 0.035])
+        ratio = _interior(result.data[1]) / _interior(result.data[0])
+        assert np.median(ratio) == pytest.approx(2.0, rel=0.02)
+        layers = {layer.component: layer for layer in result.display_layers()}
+        assert layers["background"].axis_labels == ["Z", "Y", "X"]
+
+    def test_timepoints_and_planes(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        frames = _planes(scan, (1.0, 2.0, 3.0, 4.0))
+        loops = [
+            _loop("time", 2), _loop("scan_z", 2, 0.1),
+            _loop("scan_y", 11, 0.035), _loop("scan_x", 11, 0.035),
+        ]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), _params(**PLAIN)
+        )
+        assert result.axis_labels == ["T", "Z", "Y", "X"]
+        assert result.data.shape[:2] == (2, 2)
+        assert result.axis_scales[:2] == pytest.approx([1.0, 0.1])
+        expected = {(0, 0): 1.0, (0, 1): 2.0, (1, 0): 3.0, (1, 1): 4.0}
+        for (t, z), factor in expected.items():
+            ratio = _interior(result.data[t, z]) / _interior(result.data[0, 0])
+            assert np.median(ratio) == pytest.approx(factor, rel=0.02)
+
+    def test_the_pinhole_stack_follows_the_planes(self):
+        wide = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
+        frames = _planes(wide, (1.0, 1.0))
+        steps = int(np.sqrt(wide.frames.shape[0]))
+        loops = [_loop("scan_z", 2, 0.1), _loop("scan_y", steps, 0.03), _loop("scan_x", steps, 0.03)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), _params(pinhole_stack=True, reach_sigma=2.0)
+        )
+        assert result.axis_labels == ["Z", "Y", "X"]
+        assert result.pinholes.shape == (2, result.pinholes.shape[1], *result.data.shape[1:])
+        assert result.diagnostics["image"] == "reassigned"
+        layers = {layer.component: layer for layer in result.display_layers()}
+        assert layers["pinholes"].axis_labels == ["Z", "Pinhole", "Y", "X"]
+
+    def test_steps_typed_in_describe_a_raster_instead(self):
+        scan = make_scan(steps=(22, 22))
+        loops = [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(scan.frames, loops),
+            _params(scan_steps_fast=22, scan_steps_slow=22, **PLAIN),
+        )
+        assert "(parameters)" in result.diagnostics["scan"]
+        assert "frames placed by" not in result.diagnostics
+
+    def test_a_pixel_size_needs_a_recorded_step(self):
+        line = make_scan(steps=(1, 22))
+        loops = [_loop("scan_z", 1), _loop("scan_y", 22)]
+        with pytest.raises(ValueError, match="pixel size"):
+            MonalisaLatticeReconstructor().process(
+                _recorded(line.frames, loops), _params(pixel_size_nm=70.0, **PLAIN)
+            )
+
+    def test_conditions_are_refused(self):
+        scan = make_scan(steps=(11, 11))
+        loops = [
+            _loop("scan_y", 11, 0.035), _loop("condition", 2, labels=("a", "b")),
+            _loop("scan_x", 11, 0.035),
+        ]
+        with pytest.raises(ValueError, match="line-step"):
+            MonalisaLatticeReconstructor().process(
+                _recorded(np.concatenate([scan.frames, scan.frames]), loops), _params()
+            )
+
+    def test_the_panel_describes_the_layout(self, qapp):
+        widget = MonalisaLatticeReconstructor().make_param_widget(QtWidgets.QWidget())
+        recording = _recorded(
+            np.zeros((66, 4, 4)), [_loop("scan_z", 3, 0.1), _loop("scan_y", 22, 0.035)]
+        )
+        widget.load_from_attrs({}, recording)
+        text = widget.p.param("Recording").value()
+        assert "y: 22 steps of 35 nm" in text and "3 Z planes of 100 nm" in text
+        widget.setOutputPixelSize((35.0, 770.0))
+        assert widget.p.param("Output pixel").value() == "Y 0.035 / X 0.77 µm"
 
 
 class TestFailures:

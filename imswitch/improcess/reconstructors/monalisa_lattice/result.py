@@ -27,7 +27,10 @@ class MonalisaLatticeResult(ProcessingResult):
     """The reconstruction, and what was asked for with it.
 
     ``data`` is the reconstruction: ``(Y, X)`` for a recording of one scan,
-    ``(T, Y, X)`` for one of several. Pixels no focus measured are 0.
+    with a ``T`` axis in front for one of several timepoints and a ``Z``
+    axis for one of several planes, ``(T, Z, Y, X)`` for both. Pixels no
+    focus measured are 0. A camera axis the recording does not scan has
+    one pixel per lattice cell.
 
     The other images of the run are display layers of their own, each with
     its own contrast, and inputs a processor can pick:
@@ -50,35 +53,79 @@ class MonalisaLatticeResult(ProcessingResult):
         name: str,
         image: np.ndarray,
         *,
-        output_pixel_nm: float | None,
+        output_pixel_nm,
         params: dict,
         diagnostics: dict[str, Any],
         sharpened: np.ndarray | None = None,
         background: np.ndarray | None = None,
         pinholes: np.ndarray | None = None,
         pinhole_offsets: tuple[np.ndarray, np.ndarray] | None = None,
+        axis_labels: list[str] | None = None,
+        plane_step_nm: float | None = None,
     ):
+        """
+        Args:
+            image: ``(Y, X)``, ``(T, Y, X)``, ``(Z, Y, X)`` or ``(T, Z, Y, X)``;
+                a leading axis of length 1 is dropped when ``axis_labels``
+                is not given.
+            output_pixel_nm: The pixel of the image, one number or
+                ``(y_nm, x_nm)``; ``None`` or 0 when the recording gives no
+                scale, the image then has pixels and no unit.
+            axis_labels: The axes of ``image``, from ``T``, ``Z``, ``Y``,
+                ``X``. Without it a 3-D image is ``(T, Y, X)``.
+            plane_step_nm: The distance between Z planes, for the scale of
+                a ``Z`` axis.
+        """
         image = np.asarray(image, dtype=np.float32)
-        if image.ndim == 3 and image.shape[0] == 1:
-            image = image[0]
-        if image.ndim not in (2, 3):
-            raise ValueError(f"Expected a (Y, X) or (T, Y, X) image, got {image.shape}")
+        if axis_labels is None:
+            if image.ndim == 3 and image.shape[0] == 1:
+                image = image[0]
+            axis_labels = {2: ["Y", "X"], 3: ["T", "Y", "X"], 4: ["T", "Z", "Y", "X"]}.get(
+                image.ndim, []
+            )
+        axis_labels = [str(label) for label in axis_labels]
+        if image.ndim not in (2, 3, 4) or len(axis_labels) != image.ndim:
+            raise ValueError(
+                f"Expected an image of (Y, X) with T and Z axes in front, got "
+                f"{image.shape} labelled {axis_labels}"
+            )
+        if axis_labels[-2:] != ["Y", "X"]:
+            raise ValueError(f"The image must end in (Y, X), got {axis_labels}")
+        pixel = np.atleast_1d(np.asarray(
+            [0.0, 0.0] if output_pixel_nm is None else output_pixel_nm, dtype=float
+        ))
+        if pixel.size == 1:
+            pixel = np.repeat(pixel, 2)
+        y_nm, x_nm = float(pixel[0]), float(pixel[-1])
         # Without the size of a scan step the image has pixels and no scale.
-        calibrated = bool(output_pixel_nm)
-        pixel_um = float(output_pixel_nm) / 1000.0 if calibrated else 1.0
-        labels = ["Y", "X"] if image.ndim == 2 else ["T", "Y", "X"]
-        scales = [pixel_um, pixel_um] if image.ndim == 2 else [1.0, pixel_um, pixel_um]
+        calibrated = y_nm > 0 and x_nm > 0
+        scales = []
+        for label in axis_labels:
+            if label == "Y":
+                scales.append(y_nm / 1000.0 if calibrated else 1.0)
+            elif label == "X":
+                scales.append(x_nm / 1000.0 if calibrated else 1.0)
+            elif label == "Z" and calibrated and plane_step_nm:
+                scales.append(float(plane_step_nm) / 1000.0)
+            else:
+                scales.append(1.0)
         super().__init__(
             name=name,
             data=image,
-            axis_labels=labels,
+            axis_labels=axis_labels,
             display_levels=_levels(image),
             axis_scales=scales,
             scale_unit="um" if calibrated else "px",
         )
         self.params = dict(params)
         self.diagnostics = dict(diagnostics)
-        self.output_pixel_size_nm = float(output_pixel_nm) if calibrated else None
+        if not calibrated:
+            self.output_pixel_size_nm = None
+        elif abs(y_nm - x_nm) < 1e-9:
+            self.output_pixel_size_nm = y_nm
+        else:
+            self.output_pixel_size_nm = (y_nm, x_nm)
+        self.plane_step_nm = float(plane_step_nm) if plane_step_nm else None
         self.sharpened = self._like_image(sharpened)
         self.background = self._like_image(background)
         self.pinholes = None if pinholes is None else np.asarray(pinholes, np.float32)
@@ -95,7 +142,7 @@ class MonalisaLatticeResult(ProcessingResult):
         if plane is None:
             return None
         plane = np.asarray(plane, dtype=np.float32)
-        if plane.ndim == 3 and plane.shape[0] == 1 and self.data.ndim == 2:
+        while plane.ndim > self.data.ndim and plane.shape[0] == 1:
             plane = plane[0]
         if plane.shape != self.data.shape:
             raise ValueError(

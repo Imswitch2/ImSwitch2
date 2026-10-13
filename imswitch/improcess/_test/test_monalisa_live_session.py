@@ -652,15 +652,15 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
     assert not np.all(result.data == 0)
 
 
-def test_fast_gauss_refuses_conditions_laid_out_per_image():
-    """The fast path de-interleaves conditions per line, nothing else.
+def test_fast_gauss_places_conditions_laid_out_per_image():
+    """The live session de-interleaves conditions per line, nothing else.
 
     An 18x18x2 scan whose conditions are interleaved per line is one 648-frame
-    stack the fast path now handles (``test_monalisa_linestep_layout_seam``);
+    stack the session handles (``test_monalisa_linestep_layout_seam``);
     reading it as two 324-frame time blocks was the bug this contract exists
     to prevent. A recording that declares one complete image per condition is
-    a different order the path cannot reassemble, so it is refused rather than
-    quietly reshaped.
+    a different order the session cannot reassemble; it used to be refused,
+    and is now placed frame by frame, one output plane per condition.
     """
     from imswitch.imcommon.model.acquisition_layout import (
         ACQUISITION_LAYOUT_SCHEMA,
@@ -703,6 +703,9 @@ def test_fast_gauss_refuses_conditions_laid_out_per_image():
         "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
         "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
         "bleaching_correction": False,
+        # Frames of zeros have no pattern to find; the panel's pattern stands in.
+        "row_offset": 2.0, "col_offset": 2.0, "row_period": 5.0, "col_period": 5.0,
+        "pixel_size_nm": 50.0,
         "scan_params": {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
             "directions": ["pos", "pos", "pos"],
@@ -712,8 +715,11 @@ def test_fast_gauss_refuses_conditions_laid_out_per_image():
         },
     }
 
-    with pytest.raises(ValueError, match="not interleaved per line"):
-        MonalisaReconstructor().process(data_obj, params)
+    result = MonalisaReconstructor().process(data_obj, params)
+    # One output plane per condition, on the T axis as the classic path has it.
+    assert result.data.shape[:4] == (1, 1, 2, 1)
+    assert result.placement is not None and result.placement.n_conditions == 2
+    assert result.acquisition_projection["display_name"] == "Condition"
 
 
 def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthetic_stack):
@@ -1227,8 +1233,10 @@ def test_save_rejects_unsupported_formats(synthetic_stack, tmp_path):
     session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
                   params={"use_gpu": False})
 
+    # HDF5 and Zarr are image containers the shared writers take; a table
+    # format is not.
     with pytest.raises(ValueError, match="tiff"):
-        session.result().save(tmp_path / "s.zarr", "zarr")
+        session.result().save(tmp_path / "s.csv", "csv")
     session.close()
 
 

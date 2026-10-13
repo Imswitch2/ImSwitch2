@@ -21,10 +21,15 @@ from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
 from .result import MonalisaProcessingResult
+from .gauss_processor import DEFAULT_FOOTPRINT_NUM_RECTS
 from .signal_extractor import SignalExtractor
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
+
+# Frames are extracted in blocks of about this many bytes: a block of a
+# 464x464 uint16 camera is some 600 frames, one per cell of the recording.
+FAST_GAUSS_PLACEMENT_CHUNK_BYTES = 256 * 1024 * 1024
 
 
 class MonalisaReconstructor(StreamingReconstructor):
@@ -428,17 +433,25 @@ class MonalisaReconstructor(StreamingReconstructor):
         resolved=None,
     ) -> MonalisaProcessingResult:
         """
-        Run the live fast-Gauss MoNaLISA path on a complete offline stack.
+        Run the fast-Gauss MoNaLISA path on a complete offline stack.
 
-        The fast-Gauss implementation is a 2D X/Y reassignment path. It can
-        process multiple timepoints, but not Z stacks or scan orders where X/Y
-        are not the two scan axes.
+        A recording of contiguous X/Y stacks, one per timepoint, goes through
+        the live session, as it would have live. Whatever else the recorded
+        layout describes -- Z planes, an axis the scan does not step, a
+        serpentine or gated scan, conditions not interleaved per line -- is
+        reconstructed by :meth:`_fast_gauss_by_placement`: the same Gaussian
+        extraction, with every frame put where the layout records it.
         """
         # The recording outranks the dialog and the shape arithmetic: it either
-        # supplies the geometry or says the fast path cannot represent it.
+        # supplies the geometry or says the live path cannot represent it.
         recorded_geometry = self._fast_gauss_geometry_from_layout(
             resolved, data_attrs or {}, data.shape[0]
         )
+        if recorded_geometry is not None and 'placement' in recorded_geometry:
+            return self._fast_gauss_by_placement(
+                name, data, params, recorded_geometry['placement'], resolved,
+                recorded_geometry['reasons'],
+            )
         if recorded_geometry is not None:
             geometry = recorded_geometry
             frames_per_stack = geometry['frames_per_stack']
@@ -518,6 +531,130 @@ class MonalisaReconstructor(StreamingReconstructor):
             axis_label_map=self._axis_labels,
         )
         self._logger.info(f'Fast Gauss reconstruction complete: shape {result.data.shape}')
+        return result
+
+    def _fast_gauss_by_placement(
+        self, name, data, params, placement, resolved, reasons
+    ) -> MonalisaProcessingResult:
+        """Fast-Gauss extraction with every frame placed by the recorded layout.
+
+        The live session scatters contiguous X/Y stacks through a precomputed
+        index map and reads the scan's orientation off the data. This path
+        keeps its extraction -- the same pattern, footprint and Gaussian
+        least squares -- and assembles the image the way the classic path
+        does: ``coeffs_to_image_from_placement`` puts the foci of every frame
+        at the ``(t, z, y, x)`` the acquisition layout records, so Z planes
+        become the Z axis and an axis the scan does not step is one pixel
+        per lattice period. Directions come from the layout, applied by the
+        one helper in imcommon that interprets them, as for the classic path.
+        """
+        from .coeffs_to_image import coeffs_to_image_from_placement
+        from .gauss_processor import CUPY_AVAILABLE, cp, make_gauss_processor
+        from .scan_geometry import scan_params_from_layout
+
+        self._logger.info(
+            f'{name}: placing every frame by the acquisition layout '
+            f'({", ".join(reasons)}): {placement.rows}x{placement.cols} scan '
+            f'positions, {placement.slices} Z plane(s), {placement.n_time} '
+            f'timepoint(s), {placement.n_conditions} condition(s).'
+        )
+        session = self.make_session()
+        session_params = self._fast_gauss_session_params(params)
+        working = data
+        if params.get('bleaching_correction', False):
+            working = session._apply_bleaching_correction(data)
+        localization = MonalisaLiveSession._resolve_localization(working, session_params)
+        gaussian_sigma_px = session._resolve_gaussian_sigma_px(params)
+        use_gpu = str(params.get('device', '')).lower() == 'gpu'
+        processor = make_gauss_processor(
+            localization.xp, localization.xo, localization.yp, localization.yo,
+            localization.nx_c, localization.ny_c,
+            placement.cols, placement.rows,
+            localization.num_rows, localization.num_cols,
+            num_rects=params.get(
+                'fast_gauss_footprint_num_rects',
+                params.get('num_rects', DEFAULT_FOOTPRINT_NUM_RECTS),
+            ),
+            gaussian_sigma_px=gaussian_sigma_px,
+            pinhole_radius_px=session._resolve_pinhole_radius_px(params, gaussian_sigma_px),
+            fit_background=session._resolve_fit_background(params),
+            use_gpu=use_gpu,
+        )
+        self._logger.info(
+            f'{name}: localized xp={localization.xp:.2f}, xo={localization.xo:.2f}, '
+            f'yp={localization.yp:.2f}, yo={localization.yo:.2f}, '
+            f'nx_c={localization.nx_c}, ny_c={localization.ny_c}'
+        )
+        num_frames = working.shape[0]
+        coeffs = np.empty(
+            (num_frames, localization.ny_c, localization.nx_c), dtype=np.float32
+        )
+        on_gpu = use_gpu and CUPY_AVAILABLE
+        chunk = max(1, int(FAST_GAUSS_PLACEMENT_CHUNK_BYTES // max(working[0].nbytes, 1)))
+        for start in range(0, num_frames, chunk):
+            block = working[start:start + chunk]
+            if on_gpu:
+                block = cp.asarray(block)
+            amplitudes = processor.process_chunk(block)
+            coeffs[start:start + chunk] = np.asarray(amplitudes).reshape(
+                -1, localization.ny_c, localization.nx_c
+            )
+        image = coeffs_to_image_from_placement(coeffs, placement)
+        data6 = image[np.newaxis, np.newaxis]        # (Dataset, Base, T, Z, Y, X)
+
+        layout = resolved.layout
+        pixel_size_nm = float(params.get('pixel_size_nm') or 0.0)
+
+        def axis_step_nm(kind: str, count: int, period_px: float) -> float:
+            loop = next((loop for loop in layout.event_loops if loop.kind == kind), None)
+            if count > 1 and loop is not None and loop.step:
+                return float(loop.step) * 1000.0       # the layout holds micrometres
+            # An axis the scan does not step: one output pixel per period.
+            return float(period_px * pixel_size_nm) if pixel_size_nm > 0 else 1.0
+
+        step_x_nm = axis_step_nm('scan_x', placement.cols, localization.xp)
+        step_y_nm = axis_step_nm('scan_y', placement.rows, localization.yp)
+        scan_params = scan_params_from_layout(resolved, self._axis_labels)
+        if scan_params is None:
+            scan_params = {
+                'dimensions': [
+                    self._axis_labels['r_l_text'], self._axis_labels['u_d_text'],
+                    self._axis_labels['b_f_text'], self._axis_labels['timepoints_text'],
+                ],
+                'directions': ['pos', 'pos', 'pos'],
+                'steps': [placement.cols, placement.rows, placement.slices,
+                          placement.timepoints],
+                'step_sizes': [step_x_nm, step_y_nm, 1.0, 1.0],
+                'n_linesteps': placement.n_conditions,
+                'unidirectional': True,
+            }
+        else:
+            scan_params = dict(scan_params)
+            step_sizes = list(scan_params['step_sizes'])
+            for label, size in (
+                (self._axis_labels['r_l_text'], step_x_nm),
+                (self._axis_labels['u_d_text'], step_y_nm),
+            ):
+                step_sizes[scan_params['dimensions'].index(label)] = str(size)
+            scan_params['step_sizes'] = step_sizes
+        finite = data6[np.isfinite(data6)]
+        display_levels = None
+        if finite.size:
+            display_levels = (
+                float(np.percentile(finite, 1)), float(np.percentile(finite, 99.9))
+            )
+        result = MonalisaProcessingResult(
+            name=name,
+            data=data6,
+            scan_params=scan_params,
+            display_levels=display_levels,
+            output_pixel_size_nm=(step_y_nm, step_x_nm),
+            axis_label_map=self._axis_labels,
+            placement=placement,
+        )
+        self._logger.info(
+            f'Fast Gauss reconstruction by placement complete: shape {result.data.shape}'
+        )
         return result
 
     @staticmethod
@@ -675,24 +812,20 @@ class MonalisaReconstructor(StreamingReconstructor):
             unsupported.append('a reversed or serpentine fast axis')
         if layout.recorded_event_spans is not None:
             unsupported.append('a detector gated to part of the scan')
-        if unsupported:
-            if not resolved.is_authoritative:
-                # An inferred shape this path cannot represent is declined, so
-                # the older metadata ladder still gets its chance; only a
-                # declared one refuses the reconstruction outright.
-                return None
-            raise ValueError(
-                'Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and '
-                'cannot represent ' + ', '.join(unsupported) + '. Use the '
-                'MoNaLISA reconstruction method, which places every frame by '
-                'its recorded coordinate.'
-            )
-
+        if placement.cols == 1 or placement.rows == 1:
+            unsupported.append('a scan of one axis only')
         if len(placement.slots) != num_frames:
             raise ValueError(
                 f'The acquisition layout records {len(placement.slots)} frames '
                 f'but this source has {num_frames}.'
             )
+        if unsupported:
+            if not resolved.is_authoritative:
+                # An inferred shape the live path cannot represent is declined,
+                # so the older metadata ladder still gets its chance; a
+                # declared one is placed frame by frame instead.
+                return None
+            return {'placement': placement, 'reasons': unsupported}
         return self._fast_gauss_geometry_from_counts(
             attrs,
             placement.cols,

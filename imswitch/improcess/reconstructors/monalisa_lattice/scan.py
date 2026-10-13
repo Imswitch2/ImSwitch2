@@ -1,11 +1,19 @@
-"""The raster scan of a recording, from what the recording says about itself.
+"""The scan of a recording, from what the recording says about itself.
 
-The lattice pipeline needs three numbers: the steps of the fast and of the
-slow axis, and the size of a step. It reads the rest from the frames. The
-numbers come from the resolved acquisition layout when the recording has one
-and from the ``ScanStage`` attributes otherwise; a recording whose attributes
-do not add up to its number of frames is taken to be a square scan, which is
-what the older recordings are.
+Two readings, in order of preference:
+
+* :func:`layout_scan` reads the resolved acquisition layout, the one
+  description of a recording every reconstructor shares. It places every
+  stored frame: which Z plane and timepoint it belongs to, and where in the
+  camera plane the sample was, with the loop directions applied by the one
+  helper in ``imcommon`` that interprets them. Either camera axis may be
+  scanned or not: a recording of Y and Z steps alone is an image per Z
+  plane whose X axis is one pixel per lattice cell.
+* :func:`recorded_scan` reads the ``ScanStage``/``ScanTTL`` attributes for
+  recordings without a usable layout, as one raster of ``num_fast x
+  num_slow`` steps per stack; a recording whose attributes do not add up to
+  its number of frames is taken to be a square scan, which is what the
+  older recordings are.
 """
 
 from __future__ import annotations
@@ -13,6 +21,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+
+from imswitch.imcommon.model.acquisition_layout import (
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    UnconsumedLoopError,
+    iter_physical_coordinates,
+    iter_recorded_coordinates,
+    select_loops,
+)
 
 
 @dataclass(frozen=True)
@@ -147,6 +163,218 @@ def recorded_scan(
         step_nm=step,
         source=counts[2],
     )
+
+
+# ------------------------------------------------------------------ layout
+_UNITS_TO_NM = {None: 1000.0, "um": 1000.0, "µm": 1000.0, "nm": 1.0, "mm": 1e6, "m": 1e9}
+
+
+def _loop_step_nm(loop) -> float | None:
+    """The pitch of a loop in nanometres, or ``None`` when it has none."""
+    if loop is None or not loop.step:
+        return None
+    unit = str(loop.unit).lower() if loop.unit is not None else None
+    if unit not in _UNITS_TO_NM:
+        raise ValueError(
+            f"Loop {loop.id!r} records its step in {loop.unit!r}, a unit of "
+            "length this reconstructor does not know"
+        )
+    return float(loop.step) * _UNITS_TO_NM[unit]
+
+
+@dataclass(frozen=True)
+class LayoutScan:
+    """Every stored frame of a recording placed by its acquisition layout.
+
+    Attributes:
+        index: ``(frames, 2)`` integer position of the sample in the camera
+            plane for every frame, ``(x, y)`` in steps of the scan, increasing
+            with physical position. An axis the recording does not scan is 0
+            throughout.
+        logical: ``(frames, 2)`` the same positions before the loop
+            directions were applied: the order the positions were visited in
+            along each axis, for what depends on chronology (the gain of the
+            frames).
+        stack: ``(frames,)`` the stack every frame belongs to, one stack per
+            Z plane and timepoint, ``t * num_planes + z``.
+        num_time, num_planes: Timepoints and Z planes.
+        counts: ``(nx, ny)`` positions along the camera axes; 1 for an axis
+            that is not scanned.
+        step_nm: ``(x, y)`` size of a step along each camera axis; ``None``
+            for an axis that is not scanned, or whose step the recording does
+            not say.
+        plane_step_nm: Distance between Z planes, or ``None``.
+        fast_axis: ``"x"`` or ``"y"``, the scanned axis stepped innermost.
+        source: Where the numbers come from, for the log.
+    """
+
+    index: np.ndarray
+    logical: np.ndarray
+    stack: np.ndarray
+    num_time: int
+    num_planes: int
+    counts: tuple[int, int]
+    step_nm: tuple[float | None, float | None]
+    plane_step_nm: float | None
+    fast_axis: str
+    source: str = "acquisition layout"
+
+    @property
+    def num_stacks(self) -> int:
+        return int(self.num_time * self.num_planes)
+
+    @property
+    def frames_per_stack(self) -> int:
+        return int(self.counts[0] * self.counts[1])
+
+    @property
+    def scanned_axes(self) -> tuple[str, ...]:
+        return tuple(axis for axis, count in zip("xy", self.counts) if count > 1)
+
+    @property
+    def in_plane_shape(self) -> tuple[int, int]:
+        """``(num_fast, num_slow)`` of the in-plane raster of one stack."""
+        nx, ny = self.counts
+        return (nx, ny) if self.fast_axis == "x" else (ny, nx)
+
+    def frames_of(self, stack: int) -> np.ndarray:
+        """Indices of the frames of one stack, in storage order."""
+        return np.flatnonzero(self.stack == int(stack))
+
+    def gain_positions(self, stack: int) -> tuple[np.ndarray, np.ndarray]:
+        """``(fast, slow)`` chronological positions of the frames of a stack."""
+        logical = self.logical[self.frames_of(stack)]
+        fast, slow = (0, 1) if self.fast_axis == "x" else (1, 0)
+        return logical[:, fast], logical[:, slow]
+
+    def describe(self) -> str:
+        parts = []
+        for axis, count, step in zip("xy", self.counts, self.step_nm):
+            if count > 1:
+                size = "unknown step" if step is None else f"{step:g} nm"
+                parts.append(f"{axis}: {count} steps of {size}")
+            else:
+                parts.append(f"{axis}: not scanned")
+        if self.num_planes > 1:
+            size = "" if self.plane_step_nm is None else f" of {self.plane_step_nm:g} nm"
+            parts.append(f"{self.num_planes} Z planes{size}")
+        if self.num_time > 1:
+            parts.append(f"{self.num_time} timepoints")
+        return ", ".join(parts) + f" ({self.source})"
+
+
+def layout_scan(resolved, num_frames: int) -> LayoutScan | None:
+    """The scan of a recording as its resolved acquisition layout records it.
+
+    Returns ``None`` when the recording has no usable layout (the caller
+    falls back to :func:`recorded_scan`), or when an inferred layout holds
+    a loop this reconstructor cannot place: an inference must not fail a
+    file. A declared layout that cannot be placed raises instead, with the
+    loop named.
+
+    Raises:
+        ValueError: A declared layout with a loop that cannot be placed; a
+            recording of line-step conditions, which the lattice pipeline
+            does not take apart; a recording that scans neither camera axis;
+            a layout whose frame count is not the recording's.
+    """
+    layout = getattr(resolved, "layout", None)
+    if layout is None or not getattr(resolved, "is_usable", False):
+        return None
+    if layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
+        return None
+    try:
+        selected = select_loops(
+            layout,
+            consumer="MoNaLISA lattice reconstructor",
+            roles={
+                "x": "scan_x", "y": "scan_y", "z": "scan_z",
+                "time": "time", "condition": "condition",
+            },
+        )
+    except UnconsumedLoopError as error:
+        if getattr(resolved, "is_authoritative", False):
+            raise ValueError(str(error)) from error
+        return None
+    condition = selected["condition"]
+    if condition is not None and condition.count > 1:
+        raise ValueError(
+            f"This recording holds {condition.count} line-step conditions; "
+            "the lattice reconstructor takes one condition per scan"
+        )
+    x_loop, y_loop, z_loop, t_loop = (
+        selected["x"], selected["y"], selected["z"], selected["time"]
+    )
+    counts = (
+        int(x_loop.count) if x_loop is not None else 1,
+        int(y_loop.count) if y_loop is not None else 1,
+    )
+    if max(counts) < 2:
+        raise ValueError(
+            "The acquisition layout scans neither camera axis: there is no "
+            "scan of the lattice cell to reconstruct"
+        )
+    num_planes = int(z_loop.count) if z_loop is not None else 1
+    num_time = int(t_loop.count) if t_loop is not None else 1
+
+    # The innermost scanned in-plane loop is the fast axis.
+    fast_axis = "x"
+    for loop in layout.event_loops:
+        if loop is x_loop and counts[0] > 1:
+            fast_axis = "x"
+        elif loop is y_loop and counts[1] > 1:
+            fast_axis = "y"
+
+    def coordinate(coordinates, loop):
+        return int(coordinates[loop.id]) if loop is not None else 0
+
+    index, logical, stack = [], [], []
+    for physical, recorded in zip(
+        iter_physical_coordinates(layout), iter_recorded_coordinates(layout)
+    ):
+        index.append((coordinate(physical, x_loop), coordinate(physical, y_loop)))
+        logical.append((coordinate(recorded, x_loop), coordinate(recorded, y_loop)))
+        stack.append(
+            coordinate(physical, t_loop) * num_planes + coordinate(physical, z_loop)
+        )
+    if len(index) != int(num_frames):
+        raise ValueError(
+            f"The acquisition layout records {len(index)} frames but this "
+            f"source has {num_frames}. Frames are never dropped or padded to "
+            "fit a scan shape."
+        )
+    return LayoutScan(
+        index=np.asarray(index, dtype=int).reshape(-1, 2),
+        logical=np.asarray(logical, dtype=int).reshape(-1, 2),
+        stack=np.asarray(stack, dtype=int),
+        num_time=num_time,
+        num_planes=num_planes,
+        counts=counts,
+        step_nm=(
+            _loop_step_nm(x_loop) if counts[0] > 1 else None,
+            _loop_step_nm(y_loop) if counts[1] > 1 else None,
+        ),
+        plane_step_nm=_loop_step_nm(z_loop) if num_planes > 1 else None,
+        fast_axis=fast_axis,
+    )
+
+
+def describe_recording(attrs, data_obj) -> str:
+    """One line on the scan of a recording, for the panel: the layout's
+    reading when the recording has one, the attributes' otherwise."""
+    try:
+        num_frames = int(getattr(data_obj, "numFrames", 0) or 0)
+    except Exception:
+        num_frames = 0
+    if num_frames <= 0:
+        return "no recording"
+    try:
+        scan = layout_scan(getattr(data_obj, "acquisition_layout", None), num_frames)
+        if scan is not None:
+            return scan.describe()
+        return recorded_scan(attrs or {}, num_frames).describe()
+    except ValueError as exc:
+        return str(exc)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

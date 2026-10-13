@@ -60,6 +60,7 @@ def fit_frame_gain(
     scan_shape: tuple[int, int],
     order: int = 3,
     bright_fraction: float = 0.4,
+    positions: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> FrameGain:
     """Fit the gain of the frames of one raster scan.
 
@@ -70,6 +71,10 @@ def fit_frame_gain(
         order: Polynomial order along each axis of the scan.
         bright_fraction: The share of the foci, the brightest, the mean is
             taken over. Foci without specimen only add noise.
+        positions: ``(fast, slow)`` position of every frame along the two
+            axes, in steps counted in the order visited. Frame ``k`` is at
+            ``(k % num_fast, k // num_fast)`` when not given: a raster
+            recorded line by line.
     """
     num_fast, num_slow = int(scan_shape[0]), int(scan_shape[1])
     amplitude = np.asarray(amplitude, dtype=float)
@@ -78,6 +83,12 @@ def fit_frame_gain(
             f"{amplitude.shape[0]} frames do not make a scan of "
             f"{num_fast} x {num_slow} steps"
         )
+    if positions is not None:
+        fast = np.asarray(positions[0], dtype=int).reshape(-1)
+        slow = np.asarray(positions[1], dtype=int).reshape(-1)
+        if fast.size != amplitude.shape[0] or slow.size != amplitude.shape[0]:
+            raise ValueError("One position per frame is needed")
+        fast, slow = fast - fast.min(), slow - slow.min()
     usable = np.all(np.isfinite(amplitude), axis=0)
     if not usable.any():
         raise ValueError("No focus has an amplitude in every frame")
@@ -90,7 +101,8 @@ def fit_frame_gain(
     measured = per_frame / level
 
     frame = np.arange(num_fast * num_slow)
-    fast, slow = frame % num_fast, frame // num_fast
+    if positions is None:
+        fast, slow = frame % num_fast, frame // num_fast
     terms = [np.ones(frame.size)]
     terms += _axis_terms(fast, num_fast, order)
     terms += _axis_terms(slow, num_slow, order)

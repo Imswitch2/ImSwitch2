@@ -165,7 +165,9 @@ def tiling_contrast(
     return float(np.sqrt(np.mean(ratios)))
 
 
-def seam_contrast(image: np.ndarray, owner: np.ndarray) -> float:
+def seam_contrast(
+    image: np.ndarray, owner: np.ndarray, axes: tuple[int, ...] = (0, 1)
+) -> float:
     """How much more neighbouring pixels differ across a cell border.
 
     The mean squared difference of neighbouring pixels that come from
@@ -176,11 +178,14 @@ def seam_contrast(image: np.ndarray, owner: np.ndarray) -> float:
         image: Reconstruction on the output raster.
         owner: For every pixel the focus it was measured by, negative where
             there is none (``StackReconstruction.owner``).
+        axes: The image axes the neighbours are taken along. For a scan of
+            one axis only that axis: along the other every neighbour is
+            another cell, and those differences say nothing about the scan.
     """
     image = np.asarray(image, dtype=float)
     owner = np.asarray(owner)
     across, within = [], []
-    for axis in (0, 1):
+    for axis in axes:
         difference = np.diff(image, axis=axis) ** 2
         first = np.take(owner, np.arange(owner.shape[axis] - 1), axis=axis)
         second = np.take(owner, np.arange(1, owner.shape[axis]), axis=axis)

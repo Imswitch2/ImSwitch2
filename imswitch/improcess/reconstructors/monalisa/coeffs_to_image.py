@@ -91,11 +91,14 @@ def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement |
             'condition': 'condition',
             'time': 'time',
         },
-        required=('fast', 'slow'),
     )
     if selected is None:
         return None
     fast, slow = selected['fast'], selected['slow']
+    # A scan of one in-plane axis (Y and Z, say) records no loop for the
+    # other; it is one position wide. Neither scanned is not a scan at all.
+    if fast is None and slow is None:
+        return None
     depth = selected['depth']
     condition = selected['condition']
     time = selected['time']
@@ -133,8 +136,8 @@ def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement |
         slots=tuple(slots),
         timepoints=n_time * n_conditions,
         slices=depth.count if depth is not None else 1,
-        rows=slow.count,
-        cols=fast.count,
+        rows=slow.count if slow is not None else 1,
+        cols=fast.count if fast is not None else 1,
         condition_labels=labels,
         n_conditions=n_conditions,
         n_time=n_time,

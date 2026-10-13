@@ -47,6 +47,48 @@ def raster_scan_index(
     return np.column_stack([slow, fast])
 
 
+def orient_recorded_index(index: np.ndarray, orientation: str = "+x+y") -> np.ndarray:
+    """Recorded scan positions as camera-plane positions, under an orientation.
+
+    ``index`` is ``(K, 2)``: the position of every frame along the stage's
+    first and second scan axis, in steps, as the acquisition layout records
+    it. What the layout does not say is how the stage lies against the
+    camera: ``orientation`` says it, the first letter pair for the stage's
+    first axis, the second for its second. ``"+x+y"`` is the identity;
+    ``"-y+x"`` puts the stage's first axis along the camera's y, running
+    backwards, and its second along the camera's x. Same eight words as
+    :func:`raster_scan_index`, same meaning of the signs: with them the sample
+    displacement of frame ``k`` is ``step @ camera_index[k]`` for a step
+    matrix of positive columns.
+    """
+    if orientation not in ORIENTATIONS:
+        raise ValueError(
+            f"Unknown orientation {orientation!r}; expected one of {ORIENTATIONS}"
+        )
+    index = np.asarray(index).reshape(-1, 2)
+    sign = {"+": 1, "-": -1}
+    first = sign[orientation[0]] * index[:, 0]
+    second = sign[orientation[2]] * index[:, 1]
+    if orientation[1] == "x":
+        return np.column_stack([first, second])
+    return np.column_stack([second, first])
+
+
+def orient_step_columns(step: np.ndarray | None, orientation: str = "+x+y"):
+    """The step matrix of :func:`orient_recorded_index`'s camera positions.
+
+    ``step`` has the stage axes' step vectors as columns (NaN for an axis
+    the recording does not describe). Under an orientation that swaps the
+    axes the columns swap; the signs stay in the positions.
+    """
+    if step is None:
+        return None
+    step = np.asarray(step, dtype=float).reshape(2, 2)
+    if orientation[1] == "x":
+        return step
+    return step[::-1, ::-1].copy()
+
+
 def roughness(image: np.ndarray) -> float:
     """Mean squared difference of neighbouring pixels over twice the variance.
 

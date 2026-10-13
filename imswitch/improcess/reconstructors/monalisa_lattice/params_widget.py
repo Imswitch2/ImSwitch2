@@ -7,7 +7,7 @@ from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtCore, QtWidgets
 
 from ..monalisa.scan_frame import ORIENTATIONS
-from .scan import recorded_scan
+from .scan import describe_recording
 
 AUTO = "from the frames"
 
@@ -63,7 +63,9 @@ class MonalisaLatticeParamsWidget(QtWidgets.QWidget):
                  "tip": "0: the scan is taken to cover the cell of the lattice once"},
                 {"name": "Orientation", "type": "list",
                  "limits": [AUTO, *ORIENTATIONS], "value": DEFAULT_PARAMS["orientation"],
-                 "tip": "Fast axis first: -x+y scans x backwards within a line"},
+                 "tip": "Fast axis first: -x+y scans x backwards within a line. "
+                        "A recording with an acquisition layout places its "
+                        "frames by the layout; this is for recordings without one"},
             ]},
             {"name": "Estimator", "type": "group", "children": [
                 {"name": "Footprint", "type": "float", "suffix": "spot sigma",
@@ -162,18 +164,7 @@ class MonalisaLatticeParamsWidget(QtWidgets.QWidget):
         Called by the main view when a recording is selected. It changes no
         parameter: what the user has set stays set.
         """
-        try:
-            num_frames = int(getattr(data_obj, "numFrames", 0) or 0)
-        except Exception:
-            num_frames = 0
-        if num_frames <= 0:
-            self.p.param("Recording").setValue("no recording")
-            return
-        try:
-            text = recorded_scan(attrs or {}, num_frames).describe()
-        except ValueError as exc:
-            text = str(exc)
-        self.p.param("Recording").setValue(text)
+        self.p.param("Recording").setValue(describe_recording(attrs, data_obj))
 
     def setPreviewStatus(self, text: str) -> None:
         """Say what the preview found, or why it shows nothing."""

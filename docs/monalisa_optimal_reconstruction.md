@@ -1570,12 +1570,13 @@ reconstructor and not in its place
 `reconstructors` of a setup. It runs in a worker, with progress and
 cancellation, and through the headless workflows as any other.
 
-**What it takes.** A recording of one or several raster scans of the unit
-cell, `(frames, rows, cols)`. The steps of the two scan axes and the size of
-a step come from the recording (the acquisition attributes; a recording
-without them is taken for a square scan) unless they are set. Several scans
-in one recording make a `T` axis; they are reconstructed on one raster with
-the geometry of the first. Recordings with line-step conditions are refused.
+**What it takes.** A recording of one or several scans of the unit cell,
+`(frames, rows, cols)`. A recording with an acquisition layout is placed by
+it (section 11.1, added 2026-10-13): X and Y, Y and Z, X, Y and Z, each over
+time. A recording without one is one raster of `num_fast x num_slow` steps
+per stack, read from the acquisition attributes (a recording without them is
+taken for a square scan) unless the steps are set; several scans in one
+recording make a `T` axis. Recordings with line-step conditions are refused.
 
 **Parameters.** A 0 leaves a value to the recording.
 
@@ -1693,9 +1694,58 @@ widget has the checkbox and that answers `detection_preview` gets it.
   than it has steps: 0.69 µm in steps of 30 nm are 24 frames, not 23. The
   readings of the attributes are tried against the number of frames.
 
-**Not in it yet.** Live reconstruction; the scan from the resolved
-acquisition layout (the attributes are read directly); line-step
-conditions; a GPU.
+### 11.1 The scan from the acquisition layout
+
+Date: 2026-10-13. A recording of the ML2 rig scanned Y in 19 steps of
+40 nm and Z in 25 planes of 40 nm, X not at all. The reconstructor read
+its `ScanTTL:Nx/Ny` as a 19 × 25 raster in the camera plane and
+assembled one image with the planes interleaved: 66 holes and 57 overlaps
+per cell, an orientation chosen with a lead of 0.05. The classic
+reconstruction of the same file, which places every frame by its recorded
+coordinate, was right.
+
+The scan now comes from the resolved acquisition layout when the recording
+has one (`monalisa_lattice/scan.py`, `layout_scan`): `scan_x` and `scan_y`
+are the in-plane axes, either of which may have one position; `scan_z` and
+`time` make the stacks, one per plane and timepoint; line-step conditions
+are refused as before, and a loop the reconstructor cannot place refuses a
+declared layout and declines an inferred one. The loop directions are
+applied by the one helper in `imcommon` that interprets them, as for the
+classic path and BeadRec.
+
+What the layout cannot say is how the stage lies against the camera. The
+classic path assumes the identity and happens to be right on the rig; the
+pipeline reads it from the frames, as for a raster, but by another measure.
+The roughness of the whole image does not decide a one-axis scan: along the
+other axis every pixel is another cell, and those differences, the same
+under every mapping, bury the seams (on the recording: 0.553 to 0.567 for
+all eight). The contrast of the cell borders along the scanned axes
+(`quality.seam_contrast`, now with an `axes` argument) does: 1.20 for the
+right sign against 1.75 to 1.91 for the rest, and the placed stack agrees
+with the classic reconstruction plane by plane (correlation 0.77 to 0.95 at
+a constant offset of one cell).
+
+A camera axis the recording does not step is one lattice period in the
+output raster (`pipeline.complete_step`, `axis_period`): one pixel per
+cell, the period as its pixel size (0.76 µm on the rig). Without a pixel
+size the scanned axis's step is the period over the steps; with one, the
+recorded step. The geometry is read once from the mean and variance of
+every frame of the recording — a plane with little in focus would read the
+lattice badly on its own — and the plane with the most modulation measures
+the shift factor for the rest. A one-axis scan cannot measure a shift
+factor, and does not try. The result carries `Z` and `T` axes with the
+plane step as the Z scale.
+
+The fast-Gauss method of the MoNaLISA reconstructor had the mirror-image
+limit: its live session streams contiguous X/Y rasters and refused Z
+planes outright. It now places everything else by the layout with the
+same extraction (`_fast_gauss_by_placement`), through the classic path's
+`coeffs_to_image_from_placement`, and agrees with the classic
+reconstruction on the same raster (correlation 0.62 to 0.82, no offset).
+
+**Not in it yet.** Live reconstruction; line-step conditions; a GPU; a
+serpentine fast axis (the layout resolves it, but the gain of the frames
+is still fitted as if every line ran the same way).
 
 ---
 

@@ -420,7 +420,11 @@ def scan_params_from_layout(resolved, axis_labels: dict) -> dict | None:
     # ``unidirectional`` is the dialog's word for "not a snake scan". The only
     # bidirectional order the dialog can express is a serpentine fast axis
     # whose parity is the (row, condition) pair coeffs_to_image assumes.
-    fast_id = next(loop.id for loop in layout.event_loops if loop.kind == "scan_x")
+    # A scan of Y (and Z) alone has no scan_x loop: nothing can then be a
+    # serpentine fast axis, and every rule must be forward.
+    fast_id = next(
+        (loop.id for loop in layout.event_loops if loop.kind == "scan_x"), None
+    )
     allowed_parity = {
         loop.id for loop in layout.event_loops if loop.kind in ("scan_y", "condition")
     }
