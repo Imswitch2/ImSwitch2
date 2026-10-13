@@ -480,7 +480,7 @@ multicolor-registration Processor      Three-color X-strip bead calibration and 
 multicolor-apply        Processor      Apply saved three-color X-strip alignment to deskewed sample volumes
 denoise                 Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
 smlm-render             Processor      Render a localization table into a super-resolved image/volume
-smlm-filter             Processor      Filter localizations by photons, lateral sigma and frame range
+smlm-filter             Processor      Keep or drop the localizations inside a band of one property (histogram-guided)
 smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
 smlm-drift-comet        Processor      COMET all-pairs drift correction in x, y and z, GPU-optional (needs comet-smlm)
 smlm-group              Processor      Link blinking repeats into photon-weighted merged localizations
@@ -687,10 +687,14 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        nanometer axis scales and image display levels.
    * - ``smlm-filter``
      - Localization
-     - ``LocalizationResult`` only.  Bounds set to 0 are disabled; the
-       results-table histograms are the intended way to choose cutoffs.
-     - ``LocalizationResult`` with rows outside the photon/sigma/frame ranges
-       removed; kept/total counts recorded in name and metadata.  Chains with
+     - ``LocalizationResult`` only.  One property at a time (``property``),
+       a band on it (``lower``/``upper``, either side open when unset) and a
+       ``mode``: ``bandpass`` keeps the rows inside the band, ``bandstop``
+       drops them.  The panel shows the property's histogram with the band
+       drawn on it.
+     - ``LocalizationResult`` with the rows the band keeps; property and
+       kept/total counts recorded in name and metadata.  **Apply filter** again
+       on the result to filter a second property.  Chains with
        ``smlm-drift``/``smlm-group``/``smlm-render``.
    * - ``smlm-drift``
      - Localization
@@ -1796,6 +1800,12 @@ The SMLM parameter widget exposes:
   entered value applies when the recording has no calibration (with neither,
   1 nm pixels are assumed), and is required when it is calibrated
   differently along Y and X.
+* **Rendering → Preview pixel size (nm)**, the bin size of the histogram the
+  localizations are first shown as (10 nm by default).  The result's own
+  payload is the table; this only sets how finely that first rendering bins
+  it, and it holds one float per bin over the whole field, so a very fine bin
+  on a very large field costs memory.  The ``smlm-render`` processor makes the
+  publication render, with its own pixel size and blur.
 * **Preview detection** toggle — when enabled, candidate spots from the
   detection step (before fitting) appear as a live scatter overlay on the
   raw-data frame viewer. The overlay updates automatically whenever detection
@@ -1852,9 +1862,10 @@ left empty when the file has nothing to put there.
 
 Files that declare no pixel size fall back to an assumed 100 nm, which is
 recorded in ``metadata["pixel_size_assumed"]`` and logged.  The coordinates
-themselves are exact either way — the pixel size only sets the preview
-histogram's bin floor and the scale of a later Picasso export — but nothing
-downstream should report the assumed value as measured.
+themselves are exact either way — the pixel size only sets the scale of a
+later Picasso export, and the preview histogram's bin floor when no preview
+pixel size was chosen — but nothing downstream should report the assumed
+value as measured.
 
 .. _improcess-comet-drift:
 
@@ -1885,19 +1896,24 @@ that are.  The first CPU run compiles the kernel, which takes a moment.
 **Cancel** in the panel lands at COMET's next progress report, after any
 cost-function evaluation, and leaves the input untouched.
 
-Every parameter default is COMET's own (``comet_run_kd`` in ``comet-smlm``
-1.2.0) and the panel says so.  The one value COMET has no default for is the
-**window size** — frames per window, localizations per window or the number
-of windows, by *Window mode* — because the right value depends on how many
-localizations each frame holds and how fast the sample drifts: enough
-windows to resolve the drift, enough localizations per window to constrain
-it.  The run is refused until it is set.  A window too coarse for the movie
-is reported in COMET's words.  The advanced group holds the initial kernel
-width (unset = COMET's rule, a third of the maximum drift), the boxcar
-smoothing between optimizer steps, the interpolating spline, a random cap on
-localizations per window to bound memory and time (COMET lowers it by itself
-if the pair search runs out of memory) and a seed that makes a capped run
-repeat exactly.
+The panel asks for four things.  The **window** — localizations per window
+(the default, 500), frames per window or the number of windows, by *Window
+mode* — cuts the acquisition into the pieces COMET estimates one drift
+vector for; the right size depends on how many localizations each frame
+holds and how fast the sample drifts: enough windows to resolve the drift,
+enough localizations per window to constrain it.  A window too coarse for
+the movie is reported in COMET's words.  **Max drift** (COMET's default,
+300 nm) is the largest drift expected over the acquisition and the
+neighbour-search radius; the refinement starts from a kernel a third as
+wide, COMET's own rule.  **Backend** is described above.  The kernel width
+the refinement stops at is fixed at 10 nm for every run from this panel
+(COMET's own default is 1 nm), and the remaining ``comet_run_kd`` settings
+stay at COMET's defaults — no boxcar smoothing between optimizer steps,
+cubic interpolation — and are not offered.  A workflow or a script may
+additionally pass ``max_locs_per_window``, a random cap on localizations per
+window to bound memory and time (COMET lowers it by itself if the pair
+search runs out of memory), and ``seed``, which makes a capped run repeat
+exactly.
 
 The result is the same ``DriftCorrectedLocalizationResult`` the built-in
 correction produces, so everything downstream (render, filter, group, export)
@@ -1908,9 +1924,15 @@ kernel width the estimate was accepted at, whether the cap was lowered,
 COMET's per-stage timings and the package version, and the panel shows the
 summary line after each run.
 
-Without the package the panel opens, says how to install it, and a run fails
-with the same message; nothing else notices.  If you use COMET in published
-work, cite its preprint.
+The package is looked for the moment the panel is built, by importing it:
+without it (or with an installation that does not import) the panel says so
+in bold, shows the install line ready to copy, keeps its controls and the
+Run button off, and offers **Check again**, which finds a package installed
+in the meantime without a restart.  The processor's own ``check_inputs``
+gate gives the same reason, so a workflow step is refused before the run
+starts, and a headless ``apply`` without the package fails with the same
+message; nothing else notices.  If you use COMET in published work, cite
+its preprint.
 
 Localization precision versus PSF width
 ---------------------------------------
