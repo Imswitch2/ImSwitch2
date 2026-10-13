@@ -160,6 +160,7 @@ class SmlmFilterProcessor(Processor):
             dims=result.dims,
             source_name=result.source_name,
             source_shape=result.source_shape,
+            preview_pixel_size_nm=result.preview_pixel_size_requested_nm,
             metadata={
                 **result.metadata,
                 "filter_params": dict(params),

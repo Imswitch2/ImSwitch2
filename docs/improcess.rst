@@ -1803,9 +1803,16 @@ The SMLM parameter widget exposes:
 * **Rendering → Preview pixel size (nm)**, the bin size of the histogram the
   localizations are first shown as (10 nm by default).  The result's own
   payload is the table; this only sets how finely that first rendering bins
-  it, and it holds one float per bin over the whole field, so a very fine bin
-  on a very large field costs memory.  The ``smlm-render`` processor makes the
-  publication render, with its own pixel size and blur.
+  it, and it holds one float per bin over the whole field.  The size you
+  chose is kept through the filter, drift-correction and group processors, so
+  a result does not change scale from one step to the next.  A size whose
+  image would exceed the processing working set
+  (``memory.processingWorkingSetMB``, 1 GiB by default) is raised to the
+  smallest that fits, with a warning in the log and the adjustment recorded in
+  the result's metadata (``preview_pixel_size_adjusted``); a 10 nm bin that is
+  fine over a 20 µm field would be 1.5 GiB over a 200 µm one.  The
+  ``smlm-render`` processor makes the publication render, with its own pixel
+  size and blur.
 * **Preview detection** toggle — when enabled, candidate spots from the
   detection step (before fitting) appear as a live scatter overlay on the
   raw-data frame viewer. The overlay updates automatically whenever detection
