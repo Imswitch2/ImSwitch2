@@ -2,7 +2,7 @@
 
 import os
 
-from imswitch.improcess.live.dataset_resolver import Dataset, DatasetResolver
+from imswitch.improcess.live.dataset_resolver import DatasetResolver, EntryInfo
 from imswitch.improcess.live.directory_observer import DirectoryObserver
 from .basecontrollers import ImProcessWidgetController
 
@@ -59,7 +59,7 @@ class DirectoryWatcherController(ImProcessWidgetController):
         self._logger.info(f"Entry found: {os.path.basename(path)}")
         self._resolver.add(path)
 
-    def _on_dataset_resolved(self, dataset: Dataset) -> None:
+    def _on_dataset_resolved(self, dataset: EntryInfo) -> None:
         S = "".join(f", {name}={size}" for name, size in dataset.S)
         T = "?" if dataset.T is None else dataset.T
         self._logger.info(

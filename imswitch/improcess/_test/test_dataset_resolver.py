@@ -52,7 +52,6 @@ def _ext(fmt):
 def _dataset(entry):
     dataset = resolve(str(entry))
     assert dataset is not None, "still pending"
-    assert not isinstance(dataset, str), dataset
     return dataset
 
 
@@ -195,26 +194,66 @@ def test_an_array_without_a_writing_marker_counts_as_finished(tmp_path):
     assert _dataset(path).S == (("s0", 7),)
 
 
-# --- not raw data -----------------------------------------------------------
+# --- not raw data: dropped by the DR, never retried -------------------------
+#
+# resolve() answers None for "not yet". The DR checks the name first, so a
+# stray file or a deleted entry is dropped instead of retried forever.
 
-def test_a_plain_file_is_not_raw_data(tmp_path):
+def test_a_plain_file_is_dropped_not_kept(tmp_path):
     (tmp_path / "notes.txt").write_text("hello")
+    dr, found = _resolver()
 
-    assert isinstance(resolve(str(tmp_path / "notes.txt")), str)
+    dr.add(str(tmp_path / "notes.txt"))
+
+    assert found == [] and dr.pending == []
 
 
-def test_several_unindexed_arrays_are_not_supported_yet(tmp_path):
+def test_an_entry_that_vanished_is_dropped_not_kept(tmp_path):
+    folder = tmp_path / "lapse"
+    folder.mkdir()
+    dr, _ = _resolver()
+    dr.add(str(folder))
+    assert dr.pending == [str(folder)]
+
+    folder.rmdir()
+    dr.retry()
+
+    assert dr.pending == []
+
+
+def test_several_unindexed_arrays_resolve_to_the_first_for_now(tmp_path):
+    """Several detectors in one container: the first by path, until
+    multi-detector support decides properly."""
     path = _container(tmp_path / "rec.h5", {
-        "CamA/data": ((3, 8, 8), {}), "CamB/data": ((3, 8, 8), {}),
+        "CamB/data": ((3, 8, 8), {}), "CamA/data": ((3, 8, 8), {}),
     })
 
-    reason = resolve(path)
+    d = _dataset(path)
 
-    assert isinstance(reason, str) and "detectors" in reason
+    assert d.packaging == "P1"
+    assert d.pieces == ((path, "CamA/data"),)
 
 
-def test_an_entry_that_vanished_is_dropped_not_kept_pending(tmp_path):
-    assert isinstance(resolve(str(tmp_path / "gone.h5")), str)
+# --- timelapse ---------------------------------------------------------------
+
+@pytest.mark.parametrize("fmt", FORMATS)
+def test_a_lapse_is_a_timelapse_and_a_plain_recording_is_not(tmp_path, fmt):
+    L.record_lapse(tmp_path / "lapse", 3, fmt=fmt, camera=True, frames=1)
+    plain = _container(tmp_path / f"rec.{_ext(fmt)}",
+                       {"Camera/data": ((5, 8, 8), {"writing": False})}, fmt)
+
+    assert _dataset(tmp_path / "lapse").timelapse is True
+    assert _dataset(plain).timelapse is False
+
+
+def test_a_lapse_of_unknown_length_is_still_a_timelapse(tmp_path):
+    path = _container(tmp_path / "rec.h5", {"scan0/Cam/data": ((2, 8, 8), {
+        "recording:frames_per_stack": 2,                 # no num_timepoints
+    })})
+
+    d = _dataset(path)
+
+    assert d.T is None and d.timelapse is True
 
 
 # --- pending ----------------------------------------------------------------
@@ -289,15 +328,6 @@ def test_a_resolved_entry_is_not_retried(tmp_path):
     dr.retry()
 
     assert len(found) == 1
-
-
-def test_not_raw_data_is_dropped_not_kept(tmp_path):
-    (tmp_path / "notes.txt").write_text("x")
-    dr, found = _resolver()
-
-    dr.add(str(tmp_path / "notes.txt"))
-
-    assert found == [] and dr.pending == []
 
 
 def test_adding_a_pending_entry_twice_keeps_it_once(tmp_path):

@@ -1,7 +1,7 @@
 """DatasetResolver (DR): turn an entry into a dataset of shape (T, *S, Y, X).
 
 A *container* is one HDF5 file or Zarr store; a *data array* is one with at
-least three dimensions (lower ones are bookkeeping). An entry is packaged as:
+least two dimensions (lower ones are bookkeeping). An entry is packaged as:
 
 * **P1** -- one container, one data array;
 * **P2** -- one container, one data array per timepoint;
@@ -25,8 +25,8 @@ from imswitch.imcommon.model.logging import initLogger
 
 
 @dataclass(frozen=True)
-class Dataset:
-    """Raw data as (T, *S, Y, X).
+class EntryInfo:
+    """What an entry holds, as (T, *S, Y, X).
 
     ``pieces`` are the ``(container, array)`` pairs found so far, in timepoint
     order. ``T`` is ``None`` when unknown. ``S`` is ``((name, size), ...)``,
@@ -37,6 +37,7 @@ class Dataset:
     packaging: str          # "P1" | "P2" | "P3"
     format: str             # "zarr" | "hdf5"
     pieces: tuple[tuple[str, str], ...]
+    timelapse: bool
     T: int | None
     S: tuple[tuple[str, int], ...]
     frame_shape: tuple[int, int]
@@ -48,21 +49,24 @@ class Dataset:
 
 
 class DatasetResolver(QtCore.QObject):
-    """Resolves entries into datasets, retrying the undecided ones.
+    """Resolves entries into :class:`EntryInfo`, retrying the undecided ones.
 
-    Each entry from :meth:`add` is resolved at once. A dataset is emitted on
-    ``sigResolved``; not raw data is logged and dropped; a pending entry is
-    kept and retried every interval while running. The DR remembers only
-    what is pending -- feeding each entry once is the DO's job.
+    Each entry from :meth:`add` is resolved at once and emitted on
+    ``sigResolved``; one that cannot be resolved yet is kept and retried every
+    interval while running. An entry that is gone, or is neither a folder nor
+    a container, is dropped. The DR remembers only what is pending --
+    feeding each entry once is the DO's job.
     """
 
-    sigResolved = QtCore.Signal(object)  # Dataset
-
-    FORMATS = {".zarr": "zarr", ".h5": "hdf5", ".hdf5": "hdf5"}
+    sigResolved = QtCore.Signal(object)  # EntryInfo
+    FORMATS = (
+        ".h5",
+        ".hdf5",
+        ".zarr",
+    )
     #: A timepoint marker and its index. The digits are required, so
     #: ``timelapse`` and ``timestamp`` carry no index.
     INDEX = re.compile(r"(?i)(?:scan|time)_*(\d+)")
-    DETECTORS = "several detectors are not supported yet"
 
     def __init__(self, interval_ms: int = 1000, parent=None) -> None:
         super().__init__(parent)
@@ -99,74 +103,74 @@ class DatasetResolver(QtCore.QObject):
                 self._pending.remove(entry)
 
     def _settle(self, entry: str) -> bool:
-        """Resolve once; ``True`` if the entry is settled either way."""
-        result = self.resolve(entry)
-        if result is None:
+        """Resolve once; ``True`` if the entry is settled either way.
+
+        The name is checked first, because ``resolve`` answers ``None`` for
+        "not yet" -- a stray ``notes.txt`` or a deleted entry would otherwise
+        be retried forever.
+        """
+        if not os.path.exists(entry) or not (
+            os.path.isdir(entry) or entry.lower().endswith(self.FORMATS)
+        ):
+            self._logger.info(f"Ignored: {os.path.basename(entry)}")
+            return True
+        info = self.resolve(entry)
+        if info is None:
             return False
-        if isinstance(result, str):
-            self._logger.info(f"Not raw data: {os.path.basename(entry)} ({result})")
-        else:
-            self.sigResolved.emit(result)
+        self.sigResolved.emit(info)
         return True
 
     # --- resolving -----------------------------------------------------------
 
-    def resolve(self, entry: str) -> "Dataset | str | None":
-        """What ``entry`` is: a :class:`Dataset`; ``None`` while it cannot be
-        decided yet; or, when it is settled and not raw data, the reason why.
-        """
+    def resolve(self, entry: str) -> EntryInfo | None:
+        """What ``entry`` holds, or ``None`` while that cannot be decided yet."""
+        # 1. Gone.
         if not os.path.exists(entry):
-            return "no longer exists"
+            return None
 
-        fmt = self._format(entry)
-        if fmt is not None:                              # P1 or P2
-            arrays = self._arrays(entry, fmt)
-            if not arrays:
+        # 2. / 3. The container to open: a folder's first, or the entry itself.
+        if os.path.isdir(entry) and not entry.lower().endswith(self.FORMATS):
+            packaging = "P3"
+            try:
+                names = [n for n in os.listdir(entry) if n.lower().endswith(self.FORMATS)]
+            except OSError:
                 return None
-            indexed = sorted(
-                (a for a in arrays if self._index(a[0]) is not None),
-                key=lambda a: self._index(a[0]),
-            )
-            if indexed:
-                if len({self._index(a[0]) for a in indexed}) < len(indexed):
-                    return self.DETECTORS
-                return self._dataset(entry, "P2", fmt, [(entry, a) for a in indexed])
-            if len(arrays) > 1:
-                return self.DETECTORS
-            return self._dataset(entry, "P1", fmt, [(entry, arrays[0])])
+            if not names:
+                return None
+            # By timepoint index (time2 before time10), then by name.
+            first = min(names, key=lambda n: (self._index(n) is None, self._index(n) or 0, n))
+            container = os.path.join(entry, first)
+        else:
+            packaging = None                 # P1 or P2: decided by what is inside
+            container = entry
 
-        if not os.path.isdir(entry):
-            return "not a container or a folder"
-
-        try:                                             # P3
-            names = [n for n in os.listdir(entry) if self._format(n) is not None]
-        except OSError:
-            return None
-        if not names:
-            return None
-        # Indexed containers first, by index (time2 before time10); then by name.
-        first = min(names, key=lambda n: (self._index(n) is None, self._index(n) or 0, n))
-        container = os.path.join(entry, first)
-        arrays = self._arrays(container, self._format(first))
+        # 2.1 Open it with the handle for its format.
+        fmt = "zarr" if container.lower().endswith(".zarr") else "hdf5"
+        arrays = (
+            self._get_zarr_data_shapes(container) if fmt == "zarr"
+            else self._get_hdf5_data_shapes(container)
+        )
         if not arrays:
-            return None
-        if len(arrays) > 1:
-            return self.DETECTORS
-        return self._dataset(entry, "P3", self._format(first), [(container, arrays[0])])
+            return None                      # unreadable, or no data array yet
 
-    def _dataset(self, entry, packaging, fmt, pieces) -> Dataset | None:
-        """Build the dataset from its first piece, or ``None`` if S is not known yet.
+        # Arrays carrying a timepoint index (scan0, scan1, ...) make it P2.
+        indexed = sorted(
+            (a for a in arrays if self._index(a[0]) is not None),
+            key=lambda a: self._index(a[0]),
+        )
+        if packaging is None:
+            packaging = "P2" if indexed else "P1"
+        # Several unindexed arrays mean several detectors -- the first for now.
+        pieces = indexed if packaging == "P2" else [min(arrays, key=lambda a: a[0])]
+        _, shape, dtype, attrs = pieces[0]
 
-        ``recording:frames_per_stack`` gives S before a single frame is written.
-        Without it S is the piece's leading axes, which are only final once the
-        piece is finished -- a recording grows its leading axis frame by frame.
-        """
-        _, shape, dtype, attrs = pieces[0][1]
+        # 2.2 Metadata: S, and the number of timepoints T.
         per_stack = self._int(attrs.get("recording:frames_per_stack"))
-
         if per_stack is not None and len(shape) == 3:
             S = (per_stack,)
-        elif bool(attrs.get("writing", False)) or 0 in shape[:-2]:
+        # 2.3 No metadata: S from the array's own shape -- final only once the
+        #     array is finished, since a recording grows it frame by frame.
+        elif attrs.get("writing", False) or 0 in shape[:-2]:
             return None
         else:
             S = tuple(int(n) for n in shape[:-2])
@@ -174,16 +178,18 @@ class DatasetResolver(QtCore.QObject):
         if packaging != "P1":
             T = self._int(attrs.get("recording:num_timepoints"))
         elif per_stack is None:
-            T = 1                   # a finished array without metadata: one stack
+            T = 1                            # one array, no metadata: one stack
         else:
             frames = self._int(attrs.get("recording:expected_frames"))
             T = frames // per_stack if frames is not None else None
 
-        return Dataset(
+        # 2.4
+        return EntryInfo(
             entry=entry,
             packaging=packaging,
             format=fmt,
-            pieces=tuple((container, array[0]) for container, array in pieces),
+            pieces=tuple((container, path) for path, *_ in pieces),
+            timelapse=T != 1,
             T=T,
             S=tuple((f"s{i}", size) for i, size in enumerate(S)),
             frame_shape=(int(shape[-2]), int(shape[-1])),
@@ -191,40 +197,43 @@ class DatasetResolver(QtCore.QObject):
         )
 
     @staticmethod
-    def _arrays(container: str, fmt: str) -> list[tuple] | None:
+    def _get_hdf5_data_shapes(container: str) -> list[tuple] | None:
         """Data arrays as ``(path, shape, dtype, attrs)``; ``None`` if unreadable."""
         found = []
-
-        def keep(path, node):
-            if node.ndim >= 3:
-                found.append((path, tuple(node.shape), node.dtype, dict(node.attrs)))
-
         try:
-            if fmt == "hdf5":
-                try:
-                    f = h5py.File(container, "r", libver="latest", swmr=True)
-                except OSError:
-                    f = h5py.File(container, "r")
-                with f:
-                    f.visititems(
-                        lambda path, node: keep(path, node)
-                        if isinstance(node, h5py.Dataset) else None
-                    )
-            else:
-                stack = [("", zarr.open(container, mode="r"))]
-                while stack:
-                    path, node = stack.pop()
-                    if isinstance(node, zarr.Array):
-                        keep(path, node)
-                    else:
-                        stack += [(f"{path}/{n}".lstrip("/"), c) for n, c in node.members()]
+            f = h5py.File(container, "r", libver="latest", swmr=True)
         except Exception:
-            return None   # still being created, held by the writer, half-written
+            # still being created, held by writer, half-written
+            return None
+        with f:
+            # attrs is copied: a node's attrs are only readable while open.
+            f.visititems(
+                lambda path, node: (
+                    found.append((path, node.shape, node.dtype, dict(node.attrs)))
+                    if node.ndim >= 2 else None
+                ) if isinstance(node, h5py.Dataset) else None
+            )
         return found
 
-    @classmethod
-    def _format(cls, path: str) -> str | None:
-        return cls.FORMATS.get(os.path.splitext(path.rstrip("/\\"))[1].lower())
+    @staticmethod
+    def _get_zarr_data_shapes(container: str) -> list[tuple] | None:
+        """Data arrays as ``(path, shape, dtype, attrs)``; ``None`` if unreadable."""
+        found = []
+        try:
+            stack = [("", zarr.open(container, mode="r"))]
+            while stack:
+                path, node = stack.pop()
+                if isinstance(node, zarr.Array):
+                    if node.ndim >= 2:
+                        found.append((path, node.shape, node.dtype, dict(node.attrs)))
+                else:
+                    stack += [
+                        (f"{path}/{n}".lstrip("/"), c) for n, c in node.members()
+                    ]
+            return found
+        except Exception:
+            # still being created, held by writer, half-written
+            return None
 
     @classmethod
     def _index(cls, name: str) -> int | None:
