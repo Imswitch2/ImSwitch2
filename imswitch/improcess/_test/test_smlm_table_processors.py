@@ -7,7 +7,9 @@ from imswitch.improcess.analysis.smlm_tables import (
     apply_drift,
     cross_correlation_shift,
     estimate_drift,
+    filter_by_property,
     filter_localizations,
+    informative_columns,
     link_localizations,
 )
 from imswitch.improcess.model import LocalizationResult, localizations_from_columns
@@ -47,14 +49,52 @@ def test_filter_localizations_by_photons_sigma_and_frame():
         locs, min_photons=800.0, max_sigma_nm=150.0, max_frame=2
     )
 
-    assert list(mask) == [False, True, True, False]
+    assert mask.tolist() == [False, True, True, False]
     assert list(filtered.frame) == [1, 2]
+
+
+def test_filter_by_property_bandpass_keeps_the_band_inclusive():
+    filtered, mask = filter_by_property(_locs(), "photons", lower=1000.0, upper=1500.0)
+    assert mask.tolist() == [False, True, True, False]
+    assert list(filtered.frame) == [1, 2]
+
+
+def test_filter_by_property_bandstop_drops_the_band():
+    _filtered, mask = filter_by_property(
+        _locs(), "photons", lower=1000.0, upper=1500.0, mode="bandstop"
+    )
+    assert mask.tolist() == [True, False, False, True]
+
+
+def test_filter_by_property_leaves_an_unset_side_open():
+    _filtered, lower_only = filter_by_property(_locs(), "frame", lower=2)
+    _filtered, upper_only = filter_by_property(_locs(), "frame", upper=1)
+    _filtered, open_band = filter_by_property(_locs(), "sigma_x_nm")
+    assert lower_only.tolist() == [False, False, True, True]
+    assert upper_only.tolist() == [True, True, False, False]
+    assert open_band.all()
+
+
+def test_filter_by_property_refuses_nonsense():
+    with pytest.raises(ValueError, match="Unknown localization property"):
+        filter_by_property(_locs(), "brightness")
+    with pytest.raises(ValueError, match="Unknown filter mode"):
+        filter_by_property(_locs(), "photons", mode="notch")
+    with pytest.raises(ValueError, match="above the upper"):
+        filter_by_property(_locs(), "photons", lower=10.0, upper=5.0)
+
+
+def test_informative_columns_skip_the_all_zero_ones():
+    columns = informative_columns(_locs())
+    assert columns == ("frame", "x_nm", "y_nm", "sigma_x_nm", "sigma_y_nm", "photons")
+    with_z = informative_columns(_locs(z_nm=np.array([0.0, 10.0, 0.0, 0.0])))
+    assert "z_nm" in with_z
 
 
 def test_filter_processor_produces_localization_result():
     result = _result(_locs())
 
-    filtered = SmlmFilterProcessor().apply(result, {"min_photons": 800.0})
+    filtered = SmlmFilterProcessor().apply(result, {"property": "photons", "lower": 800.0})
 
     assert isinstance(filtered, LocalizationResult)
     assert filtered.kind == "localization"
@@ -62,25 +102,48 @@ def test_filter_processor_produces_localization_result():
     assert filtered.pixel_size_nm == result.pixel_size_nm
     assert filtered.metadata["filter_kept"] == 3
     assert filtered.metadata["filter_total"] == 4
-    assert "(filtered 3/4)" in filtered.name
+    assert filtered.metadata["filter_property"] == "photons"
+    assert "(Photons filtered 3/4)" in filtered.name
 
 
-def test_filter_processor_zero_params_keep_everything():
+def test_filter_processor_defaults_keep_everything():
     result = _result(_locs())
-
-    filtered = SmlmFilterProcessor().apply(
-        result,
-        {
-            "min_photons": 0.0,
-            "max_photons": 0.0,
-            "min_sigma_nm": 0.0,
-            "max_sigma_nm": 0.0,
-            "min_frame": 0,
-            "max_frame": 0,
-        },
-    )
-
+    filtered = SmlmFilterProcessor().apply(result, SmlmFilterProcessor.default_params())
     assert filtered.count == result.count
+
+
+def test_filter_processor_bandstop_drops_the_band():
+    filtered = SmlmFilterProcessor().apply(
+        _result(_locs()),
+        {"property": "sigma_x_nm", "mode": "bandstop", "lower": 110.0, "upper": 150.0},
+    )
+    assert list(filtered.locs.sigma_x_nm) == [100.0, 160.0]
+
+
+def test_filter_processor_migrates_a_one_property_version_1_run():
+    processor = SmlmFilterProcessor()
+    assert processor.params_version == 2
+    migrated = processor.migrate_params(
+        {"min_photons": 800.0, "max_photons": 0.0, "min_sigma_nm": 0.0,
+         "max_sigma_nm": 0.0, "min_frame": 0, "max_frame": 0},
+        1,
+    )
+    assert migrated == {"property": "photons", "mode": "bandpass", "lower": 800.0, "upper": None}
+    assert processor.migrate_params({"min_frame": 0, "max_frame": 2}, 1) == {
+        "property": "frame", "mode": "bandpass", "lower": None, "upper": 2.0,
+    }
+    # Nothing bounded: the open default.
+    assert processor.migrate_params({}, 1) == SmlmFilterProcessor.default_params()
+    # Already current: untouched.
+    assert processor.migrate_params({"property": "frame"}, 2) == {"property": "frame"}
+
+
+def test_filter_processor_refuses_to_migrate_what_one_band_cannot_say():
+    processor = SmlmFilterProcessor()
+    with pytest.raises(ValueError, match="one filter per property"):
+        processor.migrate_params({"min_photons": 800.0, "max_frame": 2}, 1)
+    with pytest.raises(ValueError, match="both lateral sigmas"):
+        processor.migrate_params({"max_sigma_nm": 150.0}, 1)
 
 
 # --- drift correction --------------------------------------------------------

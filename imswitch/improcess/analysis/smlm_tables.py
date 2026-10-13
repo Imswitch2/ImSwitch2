@@ -13,10 +13,80 @@ from dataclasses import dataclass
 import numpy as np
 
 from imswitch.improcess.analysis.smlm_render import render_xy
-from imswitch.improcess.model.localization_schema import as_localizations
+from imswitch.improcess.model.localization_schema import (
+    LOCALIZATION_COLUMNS,
+    as_localizations,
+)
 
 
 # --- filtering -------------------------------------------------------------
+
+#: How a property filter keeps rows: those inside the band, or those outside.
+FILTER_MODES: tuple[str, ...] = ("bandpass", "bandstop")
+
+#: Columns every table has values in, whatever it holds.
+_ALWAYS_INFORMATIVE: tuple[str, ...] = ("frame", "x_nm", "y_nm")
+
+
+def informative_columns(locs) -> tuple[str, ...]:
+    """The columns of ``locs`` that carry information, in schema order.
+
+    Frame and the lateral position always; any other column when at least
+    one of its values is finite and not zero. A 2D table's z column, or the
+    photons of an import that had no intensities, are all zeros: a histogram
+    of either is one bar, and a filter on it says nothing.
+    """
+    table = as_localizations(locs)
+    columns = []
+    for name in LOCALIZATION_COLUMNS:
+        if name in _ALWAYS_INFORMATIVE:
+            columns.append(name)
+            continue
+        values = np.asarray(table[name])
+        if values.size and bool(np.any(np.isfinite(values) & (values != 0))):
+            columns.append(name)
+    return tuple(columns)
+
+
+def filter_by_property(
+    locs,
+    column: str,
+    *,
+    lower: float | None = None,
+    upper: float | None = None,
+    mode: str = "bandpass",
+) -> tuple[np.recarray, np.ndarray]:
+    """Keep the rows whose ``column`` is inside ``[lower, upper]``, or outside it.
+
+    ``mode`` is ``bandpass`` (keep inside) or ``bandstop`` (keep outside).
+    ``None`` leaves that side of the band open, and both bounds are
+    inclusive, so a band at a column's own extremes keeps every row. A NaN
+    is never inside the band: bandpass drops it, bandstop keeps it.
+
+    Returns ``(filtered, mask)`` where ``mask`` is the boolean keep-mask over
+    the input rows.
+    """
+    if column not in LOCALIZATION_COLUMNS:
+        raise ValueError(
+            f"Unknown localization property {column!r}; expected one of "
+            f"{list(LOCALIZATION_COLUMNS)}"
+        )
+    if mode not in FILTER_MODES:
+        raise ValueError(f"Unknown filter mode {mode!r}; expected one of {FILTER_MODES}")
+    if lower is not None and upper is not None and float(lower) > float(upper):
+        raise ValueError(
+            f"The lower bound {float(lower):g} is above the upper bound {float(upper):g}"
+        )
+    table = as_localizations(locs)
+    values = np.asarray(table[column])
+    inside = np.ones(len(table), dtype=bool)
+    if lower is not None:
+        inside &= values >= float(lower)
+    if upper is not None:
+        inside &= values <= float(upper)
+    mask = inside if mode == "bandpass" else ~inside
+    return table[mask].copy().view(np.recarray), mask
+
 
 
 def filter_localizations(
@@ -320,10 +390,13 @@ def _start_chain(chains, last_frame, last_xy, open_chains, table, row, frame):
 
 
 __all__ = [
+    "FILTER_MODES",
     "DriftEstimate",
     "apply_drift",
     "cross_correlation_shift",
     "estimate_drift",
+    "filter_by_property",
     "filter_localizations",
+    "informative_columns",
     "link_localizations",
 ]
