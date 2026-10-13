@@ -20,6 +20,9 @@ from ...core.cgh.feedback import (
 from ...core.cgh.localization import (
     LocalizationResult,SpotOrdering,localization_site_masks,spot_ordering_permutation,
 )
+from ...core.measurement.observation_registration import (
+    ObservationFrame,ObservationRegistrationCalibration,
+)
 from ...core.measurement.position_alignment import (
     PositionAlignmentResult,align_resolved_position_reference,
 )
@@ -41,6 +44,7 @@ from .component import FeedbackComponent
 
 if TYPE_CHECKING:
     from ...core.engine.runtime import SLMRuntime
+    from ..observation_registration import ObservationRegistrationService
     from .contracts import SLMFeedbackCallbacks
 
 
@@ -309,6 +313,7 @@ class PositionReferenceResolutionMetadata(TypedDict,total=False):
     lifetime: str
     correspondence: dict[str,Any]
     correspondence_options: tuple[str,...]
+    registration: dict[str,Any]
 
 class PositionReferencePreview(TypedDict):
     """Detector-space reference preview with legacy kxy displacement diagnostics."""
@@ -346,6 +351,7 @@ class PositionReferenceService(FeedbackComponent):
         feedback_orientation: Callable[[str],Any],
         current_config_path: Callable[[],str | None],
         store: PositionReferenceStore | None=None,
+        observation_registration: "ObservationRegistrationService | None"=None,
     ) -> None:
         super().__init__(
             runtime_provider=runtime_provider,
@@ -356,6 +362,7 @@ class PositionReferenceService(FeedbackComponent):
         self._feedback_orientation = feedback_orientation
         self._current_config_path = current_config_path
         self._position_reference_store = store
+        self._observation_registration = observation_registration
         self._position_reference_selections: dict[
             tuple[str,str | None],PositionReferenceSelection
         ] = {}
@@ -365,6 +372,10 @@ class PositionReferenceService(FeedbackComponent):
         if self._position_reference_store is not None:
             self._position_reference_store.add_listener(
                 self._on_position_reference_store_changed
+            )
+        if self._observation_registration is not None:
+            self._observation_registration.add_listener(
+                self._on_observation_registration_changed
             )
 
     def _active_feedback_plane(self,section_key: str) -> str | None:
@@ -403,6 +414,21 @@ class PositionReferenceService(FeedbackComponent):
             )
             self._position_reference_selections[key] = selection
         return selection
+
+    def position_reference_records(
+        self,observation_plane_name: str,
+    ) -> tuple[PositionReferenceRecord,...]:
+        """Return raw shared named references for one observation plane.
+
+        This is intentionally independent of one section's current reference
+        selection so other application workflows (for example observation
+        registration calibration) can consume session or persistent references
+        without resolving them through position feedback first.
+        """
+        plane=str(observation_plane_name or "").strip()
+        if not plane or self._position_reference_store is None:
+            return ()
+        return self._position_reference_store.list(plane)
 
     def position_reference_context(
         self,section_key: str,
@@ -647,6 +673,14 @@ class PositionReferenceService(FeedbackComponent):
         source_target=position_reference_target_from_localization(
             localization,full_image=True,
         )
+        source_frame=ObservationFrame(
+            slm_serial=self._runtime.identity.serial_number,
+            section_key=section,
+            observation_plane_name=plane,
+            detector_name=measurement.acquisition.detector,
+            image_shape=measurement.acquisition.image.shape,
+            pixel_size_um=measurement.acquisition.pixel_size_um,
+        )
         return PositionReference(
             name=name,
             observation_plane_name=plane,
@@ -658,6 +692,8 @@ class PositionReferenceService(FeedbackComponent):
                 "source_slm_key":self._runtime.identity.key,
                 "source_slm_serial":self._runtime.identity.serial_number,
                 "source_section":section,
+                "source_observation_frame":source_frame.to_dict(),
+                "source_pixel_size_um":measurement.acquisition.pixel_size_um,
                 "source_target_type":localization.target_type,
                 "source_config_name":(
                     None if not config_path else Path(config_path).name
@@ -668,6 +704,10 @@ class PositionReferenceService(FeedbackComponent):
                     else source_target.lattice.to_dict()
                 ),
                 "matched_count":int(np.count_nonzero(matched)),
+                # Persist genuine detector correspondences so downstream
+                # calibration workflows can exclude inferred sites even after
+                # the reference has crossed an SLM/session boundary.
+                "matched_lattice_indices":localization.lattice_indices[:,matched].tolist(),
                 "inferred_count":int(np.count_nonzero(inferred)),
             },
         )
@@ -885,26 +925,19 @@ class PositionReferenceService(FeedbackComponent):
                 plane,selection.reference_name
             )
             reference=record.reference
-            if tuple(reference.image_shape)!=tuple(measurement.acquisition.image.shape):
-                raise RuntimeError(
-                    "Reference image shape %s does not match current measurement %s"
-                    % (reference.image_shape,measurement.acquisition.image.shape)
-                )
-            current_detector=str(measurement.acquisition.detector or "").strip() or None
-            if (
-                reference.detector_name is not None and current_detector is not None
-                and reference.detector_name!=current_detector
-            ):
-                raise RuntimeError(
-                    'Reference detector "%s" does not match current detector "%s"'
-                    % (reference.detector_name,current_detector)
-                )
             if not np.array_equal(
                 reference.lattice_indices,localization.lattice_indices
             ):
                 raise ValueError("Reference lattice does not match the current target")
 
             source=reference_geometry_from_position_reference(reference)
+            source,registration_metadata=self._project_named_reference_geometry(
+                reference=reference,
+                source=source,
+                section=section,
+                plane=plane,
+                measurement=measurement.acquisition,
+            )
             source_orientation=dict(reference.metadata or {}).get(
                 "feedback_orientation"
             )
@@ -933,6 +966,7 @@ class PositionReferenceService(FeedbackComponent):
                 "created_at":reference.created_at,
                 "lifetime":record.lifetime.value,
                 "correspondence":correspondence,
+                "registration":registration_metadata,
                 "correspondence_options":tuple(
                     item.value for item in reference_correspondence_options(localization)
                 ),
@@ -958,6 +992,143 @@ class PositionReferenceService(FeedbackComponent):
         effective=np.asarray(alignment.predicted_positions_px)-crop_offset
         raw=np.asarray(resolved.desired_positions_px)-crop_offset
         return effective,raw,metadata,transform
+
+    def _project_named_reference_geometry(
+        self,
+        *,
+        reference: PositionReference,
+        source: ReferenceGeometry,
+        section: str,
+        plane: str,
+        measurement: Any,
+    ) -> tuple[ReferenceGeometry,dict[str,Any]]:
+        """Project one saved full-detector reference into the current native frame.
+
+        Registration is intentionally optional.  If neither side has a saved
+        registration, the legacy same-detector/image-shape interpretation is
+        preserved exactly.  Once an explicit registration exists on either side,
+        it becomes authoritative and must form a valid source -> canonical ->
+        current bridge.
+        """
+        current_frame=ObservationFrame(
+            slm_serial=self._runtime.identity.serial_number,
+            section_key=section,
+            observation_plane_name=plane,
+            detector_name=measurement.detector,
+            image_shape=measurement.image.shape,
+            pixel_size_um=measurement.pixel_size_um,
+        )
+        source_frame=self._reference_observation_frame(reference)
+        metadata: dict[str,Any]={
+            "applied":False,
+            "source_frame":None if source_frame is None else source_frame.to_dict(),
+            "canonical_frame":None,
+            "target_frame":current_frame.to_dict(),
+            "source_registration":None,
+            "target_registration":None,
+        }
+
+        # Legacy records without source SLM/section provenance cannot be looked up
+        # in the registration store.  Preserve the exact old compatibility path.
+        if source_frame is None:
+            self._require_legacy_reference_compatibility(reference,measurement)
+            metadata["reason"]="source frame unavailable"
+            return source,metadata
+
+        # A reference created by this exact native section must never be sent
+        # through its registration and inverse again: polynomial transforms are
+        # not exact inverses away from the calibration samples.
+        if source_frame.scope==current_frame.scope:
+            self._require_legacy_reference_compatibility(reference,measurement)
+            metadata["reason"]="same native observation frame"
+            return source,metadata
+
+        registrations=self._observation_registration
+        if registrations is None:
+            self._require_legacy_reference_compatibility(reference,measurement)
+            metadata["reason"]="registration service unavailable"
+            return source,metadata
+
+        source_registration=registrations.registration_for_frame(source_frame)
+        target_registration=registrations.registration_for_frame(current_frame)
+        metadata["source_registration"]=_registration_summary(source_registration)
+        metadata["target_registration"]=_registration_summary(target_registration)
+
+        # Backward compatibility is explicit: without a saved registration on
+        # either side, position references retain the pre-registration behavior.
+        if source_registration is None and target_registration is None:
+            self._require_legacy_reference_compatibility(reference,measurement)
+            metadata["reason"]="no registration configured"
+            return source,metadata
+
+        canonical=(
+            source_registration.canonical_frame
+            if source_registration is not None
+            else target_registration.canonical_frame
+        )
+        projected=registrations.project_points(
+            source_frame,current_frame,source.positions_px,
+        )
+        metadata.update({
+            "applied":True,
+            "reason":"registered source -> canonical -> target projection",
+            "canonical_frame":canonical.to_dict(),
+        })
+        projected_metadata=dict(source.metadata)
+        projected_metadata["observation_registration"]=dict(metadata)
+        return ReferenceGeometry(
+            positions_px=projected,
+            site_ids=source.site_ids,
+            lattice=source.lattice,
+            valid_mask=source.valid_mask,
+            weights=source.weights,
+            metadata=projected_metadata,
+        ),metadata
+
+    @staticmethod
+    def _reference_observation_frame(
+        reference: PositionReference,
+    ) -> ObservationFrame | None:
+        metadata=dict(reference.metadata or {})
+        payload=metadata.get("source_observation_frame")
+        if isinstance(payload,Mapping):
+            frame=ObservationFrame.from_dict(payload)
+            if frame.observation_plane_name!=reference.observation_plane_name:
+                raise RuntimeError(
+                    "Reference observation-frame provenance disagrees with its observation plane"
+                )
+            return frame
+        serial=str(metadata.get("source_slm_serial") or "").strip()
+        section=str(metadata.get("source_section") or "").strip()
+        if not serial or not section:
+            return None
+        return ObservationFrame(
+            slm_serial=serial,
+            section_key=section,
+            observation_plane_name=reference.observation_plane_name,
+            detector_name=reference.detector_name,
+            image_shape=reference.image_shape,
+            pixel_size_um=metadata.get("source_pixel_size_um"),
+        )
+
+    @staticmethod
+    def _require_legacy_reference_compatibility(
+        reference: PositionReference,measurement: Any,
+    ) -> None:
+        if tuple(reference.image_shape)!=tuple(measurement.image.shape):
+            raise RuntimeError(
+                "Reference image shape %s does not match current measurement %s"
+                % (reference.image_shape,measurement.image.shape)
+            )
+        current_detector=str(measurement.detector or "").strip() or None
+        if (
+            reference.detector_name is not None and current_detector is not None
+            and reference.detector_name!=current_detector
+        ):
+            raise RuntimeError(
+                'Reference detector "%s" does not match current detector "%s"'
+                % (reference.detector_name,current_detector)
+            )
 
     def position_alignment_result(
         self,section_key: str,
@@ -1010,6 +1181,12 @@ class PositionReferenceService(FeedbackComponent):
         if not _localization_is_resolved(measurement.localization):
             return "Resolve every target spot before creating a reference; use Infer missing for unmatched sites."
         return ""
+
+    def _on_observation_registration_changed(self) -> None:
+        # Registration is automatically active measurement context.  A store
+        # change therefore invalidates every section preview/reference resolution.
+        for section in tuple(self._runtime.section_keys):
+            self._section_changed(section)
 
     def _on_position_reference_store_changed(self) -> None:
         runtime = self._runtime
@@ -1066,8 +1243,29 @@ class PositionReferenceService(FeedbackComponent):
             self._position_reference_store.remove_listener(
                 self._on_position_reference_store_changed
             )
+        if self._observation_registration is not None:
+            self._observation_registration.remove_listener(
+                self._on_observation_registration_changed
+            )
         self._position_reference_selections.clear()
         self._position_alignment_results.clear()
+
+
+def _registration_summary(
+    registration: ObservationRegistrationCalibration | None,
+) -> dict[str,Any] | None:
+    if registration is None:
+        return None
+    return {
+        "native_frame":registration.native_frame.to_dict(),
+        "canonical_frame":registration.canonical_frame.to_dict(),
+        "transform_model":registration.transform_model,
+        "polynomial_degree":registration.polynomial_degree,
+        "created_at":registration.created_at,
+        "point_count":registration.point_count,
+        "forward_rms_residual":registration.forward_rms_residual,
+        "reverse_rms_residual":registration.reverse_rms_residual,
+    }
 
 
 def _localization_is_resolved(localization: LocalizationResult) -> bool:

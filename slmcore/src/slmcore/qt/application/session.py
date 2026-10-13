@@ -129,6 +129,9 @@ class SLMQtSession(QtCore.QObject):
         self._application_session.set_measurement_dispatcher(self._measurements)
         self._geometry_calibration = GeometryCalibrationCoordinator(self,parent=self)
         self._feedback = FeedbackCoordinator(self)
+        self._application_session.observation_registration_calibration.set_localization_requester(
+            self._feedback.open_window
+        )
         self.sigAutomaticOperationChanged.connect(
             self._refresh_control_mode_availability,
         )
@@ -191,6 +194,14 @@ class SLMQtSession(QtCore.QObject):
     @property
     def geometry_calibration_service(self):
         return self._application_session.geometry_calibration
+
+    @property
+    def observation_registration_service(self):
+        return self._application_session.observation_registration
+
+    @property
+    def observation_registration_calibration_service(self):
+        return self._application_session.observation_registration_calibration
 
     @property
     def geometry_calibration(self):

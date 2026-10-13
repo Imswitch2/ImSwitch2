@@ -95,7 +95,11 @@ def test_calibration_management_has_distinct_persistent_domains():
     manager = (root / "qt" / "application" / "calibration" / "manager.py").read_text(encoding="utf-8")
     assert '"Mapping"' in ui
     assert '"Observation & Geometry"' in ui
+    assert '"Orientation by section"' in ui
+    assert '"Registration by section"' in ui
     assert "sigObservationSelectionChanged" in ui
+    assert "sigObservationRegistrationRequested" in ui
+    assert "observation_registration_calibration_service" in manager
     assert "sigCalibrationRequested.connect(self.open_management)" in manager
     assert "sigCalibrationRequested.connect(self.open_dialog)" not in manager
 

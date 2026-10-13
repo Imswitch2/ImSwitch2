@@ -128,7 +128,8 @@ Mapping
 
 Observation & Geometry
     observation-plane definitions
-    section × observation-plane geometry calibration
+    orientation by section
+    observation registration by section
 ```
 
 ### Base mapping calibration
@@ -173,6 +174,34 @@ The same workflow is launchable from the Calibration workspace and contextual
 feedback/calibration entry points. Feedback does not maintain a second geometry
 calibration implementation.
 
+### Observation registration
+
+Observation registration is a separate continuous measurement-space calibration:
+
+```text
+SLM serial + section + observation plane -> native detector frame -> canonical observation frame
+```
+
+The Calibration workspace presents it separately from discrete observation
+orientation. `ObservationRegistrationCalibrationService` consumes the current
+section's accepted feedback localization as the native geometry and a raw named
+position reference as the canonical geometry. The reference may be session or
+persistent and may originate from another SLM when the application shares the
+normal position-reference store across those sessions. The reference is never
+resolved/projected through position feedback while calibrating registration, so
+the calibration cannot depend on the registration being fitted. Logical sites
+are matched directly and affine or polynomial 2/3/4 forward and reverse
+transforms are fitted. If the native localization is missing, the workflow
+deep-links to the normal feedback localization UI rather than owning another
+localizer.
+
+Each observation plane has one explicit canonical frame across the workspace.
+The source frame of the selected named reference becomes that canonical frame.
+That frame is an implicit identity and does not store a self-registration; every
+other saved registration for that plane must agree on the same canonical frame.
+Saved compatible registrations are automatically used by named position-reference
+resolution; they never alter FOV mapping or CGH generation.
+
 ## Measurements and feedback
 
 `CGHSessionWindow` is the contextual Measurements & Corrections workspace. It
@@ -187,7 +216,8 @@ resolved them explicitly. FOV and Geometry fitting continue to use genuinely
 measured sites only.
 
 Position references are workspace-wide and observation-plane scoped. They may be
-shared across SLM sections in the same observation plane. `slmcore` performs no
+shared across SLM sections and, when sessions use the same reference store,
+across SLMs in the same observation plane. `slmcore` performs no
 cross-observation-plane coordinate transform.
 
 The compact section-level Position checkbox and the session Position checkbox are

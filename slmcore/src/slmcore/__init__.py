@@ -37,6 +37,11 @@ from .application import (
     MeasurementDispatcher,
     MappingService,
     ObservationGeometryService,
+    ObservationRegistrationService,
+    ObservationRegistrationCalibrationContext,
+    ObservationRegistrationCalibrationService,
+    ObservationRegistrationFitDiagnostics,
+    ObservationRegistrationLocalizationSnapshot,ObservationRegistrationReferenceSnapshot,
     ObservationPlaneService,
     PositionReferenceContext,
     PositionCorrectionSelection,PositionReferenceSelection,PositionReferenceSourceSelection,
@@ -98,7 +103,10 @@ from .core.engine.section import (
 )
 from .core.engine.state import GroupTopology
 from .core.engine.transition import GroupStateDelta,SectionStateTransition
-from .core.measurement import ImageMeasurement
+from .core.measurement import (
+    ImageMeasurement,ObservationFrame,ObservationRegistrationCalibration,
+    fit_observation_registration,
+)
 from .core.transform2d import FittedTransform2D,fit_transform2d
 from .setup import (
     SLM_SETUP_FILE_SCHEMA_VERSION,
@@ -124,6 +132,7 @@ from .workspace import (
     MappingStore,
     ObservationPlaneDefinition,
     ObservationPlaneStore,
+    ObservationRegistrationStore,
     PositionReferenceLifetime,
     PositionReferenceRecord,
     PositionReferenceStore,
@@ -150,7 +159,14 @@ __all__ = [
     "MappingService",
     "MappingStore",
     "ObservationGeometryService",
+    "ObservationRegistrationService",
+    "ObservationRegistrationCalibrationContext",
+    "ObservationRegistrationCalibrationService",
+    "ObservationRegistrationFitDiagnostics",
+    "ObservationRegistrationLocalizationSnapshot","ObservationRegistrationReferenceSnapshot",
     "ObservationPlaneService",
+    "ObservationFrame",
+    "ObservationRegistrationCalibration",
     "EditablePositionReferenceGeometry",
     "FOVMappingCorrection",
     "FittedTransform2D",
@@ -203,6 +219,7 @@ __all__ = [
     "SLMGeometryOrientationCalibrationStore",
     "ObservationPlaneDefinition",
     "ObservationPlaneStore",
+    "ObservationRegistrationStore",
     "SLMFeedbackService",
     "SLMGeometry",
     "SLMHardwareConfig",
@@ -232,6 +249,7 @@ __all__ = [
     "TargetPresentationFieldKind",
     "create_split_section_geometries",
     "fit_transform2d",
+    "fit_observation_registration",
     "load_slm_setup_file",
     "register_aberration",
     "register_cgh_algorithm",

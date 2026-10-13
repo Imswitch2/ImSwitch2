@@ -22,6 +22,12 @@ from .feedback import (
 from .mapping import MappingService
 from .observation import ObservationPlaneService
 from .observation_geometry import ObservationGeometryService
+from .observation_registration import ObservationRegistrationService
+from .observation_registration_calibration import (
+    ObservationRegistrationCalibrationContext,ObservationRegistrationCalibrationService,
+    ObservationRegistrationFitDiagnostics,
+    ObservationRegistrationLocalizationSnapshot,ObservationRegistrationReferenceSnapshot,
+)
 from .runtime_factory import SLMRuntimeFactory
 from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
 from .session import SLMSession,SLMSessionCallbacks
@@ -48,6 +54,11 @@ __all__ = [
     "MeasurementRequest",
     "MappingService",
     "ObservationGeometryService",
+    "ObservationRegistrationService",
+    "ObservationRegistrationCalibrationContext",
+    "ObservationRegistrationCalibrationService",
+    "ObservationRegistrationFitDiagnostics",
+    "ObservationRegistrationLocalizationSnapshot","ObservationRegistrationReferenceSnapshot",
     "ObservationPlaneService",
     "PreparedConfigLoad",
     "PreparedMappingSelection",

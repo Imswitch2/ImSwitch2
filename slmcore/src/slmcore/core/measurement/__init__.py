@@ -1,6 +1,9 @@
 """Host-neutral measurement records and reference geometry."""
 
 from .model import ImageMeasurement,create_image_measurement
+from .observation_registration import (
+    ObservationFrame,ObservationRegistrationCalibration,fit_observation_registration,
+)
 from .position_alignment import (
     ALIGNMENT_PER_SPOT,POSITION_ALIGNMENT_MODELS,PositionAlignmentProblem,PositionAlignmentResult,
     align_resolved_position_reference,fit_position_alignment,
@@ -25,6 +28,7 @@ from .reference_geometry import (
 
 __all__ = [
     "ImageMeasurement","create_image_measurement",
+    "ObservationFrame","ObservationRegistrationCalibration","fit_observation_registration",
     "EditablePositionReferenceGeometry",
     "editable_position_reference_geometry","editable_reference_center_px",
     "editable_reference_positions","fit_center_reference_geometry",

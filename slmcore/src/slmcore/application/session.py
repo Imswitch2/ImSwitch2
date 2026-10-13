@@ -23,6 +23,8 @@ from .runtime_factory import SLMRuntimeFactory
 from ..workspace.position_reference_store import PositionReferenceStore
 from .observation import ObservationPlaneService
 from .observation_geometry import ObservationGeometryService
+from .observation_registration import ObservationRegistrationService
+from .observation_registration_calibration import ObservationRegistrationCalibrationService
 from .mapping import MappingService
 from .feedback import (
     AutomaticFeedbackState,MeasurementDispatcher,SLMFeedbackCallbacks,
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
     from ..workspace.fov_mapping_correction_store import FOVMappingCorrectionStore
     from ..workspace.geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
     from ..workspace.observation_plane_store import ObservationPlaneStore
+    from ..workspace.observation_registration_store import ObservationRegistrationStore
     from ..workspace.mapping_store import MappingStore
     from .startup_preferences import StartupPreferencesState
 
@@ -114,6 +117,7 @@ class SLMSession:
         position_reference_store: PositionReferenceStore | None=None,
         fov_mapping_correction_store: FOVMappingCorrectionStore | None=None,
         geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None=None,
+        observation_registration_store: ObservationRegistrationStore | None=None,
         observation_plane_store: ObservationPlaneStore | None=None,
         startup_preferences: StartupPreferencesState | None=None,
         display_name: str="",
@@ -156,6 +160,14 @@ class SLMSession:
         self.observation_geometry = ObservationGeometryService(
             lambda: self.runtime.identity, geometry_orientation_calibration_store,
         )
+        self.observation_registration = ObservationRegistrationService(
+            lambda: self.runtime.identity, observation_registration_store,
+        )
+        self.observation_registration_calibration = ObservationRegistrationCalibrationService(
+            self,
+            observation_planes=self.observation_planes,
+            observation_registration=self.observation_registration,
+        )
         self.geometry_calibration = GeometryCalibrationService(
             self,
             observation_planes=self.observation_planes,
@@ -171,6 +183,7 @@ class SLMSession:
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
             observation_geometry=self.observation_geometry,
+            observation_registration=self.observation_registration,
         )
         self.calibration = SLMCalibrationService(
             self,
@@ -267,6 +280,7 @@ class SLMSession:
         self.feedback.prepare_runtime_change()
         self.calibration.prepare_runtime_change()
         self.geometry_calibration.prepare_runtime_change()
+        self.observation_registration_calibration.prepare_runtime_change()
         self.runtime = runtime
         self._upload_pending = False
         self._last_upload_error = None
@@ -301,6 +315,7 @@ class SLMSession:
         self.feedback.prepare_runtime_change()
         self.calibration.prepare_runtime_change()
         self.geometry_calibration.prepare_runtime_change()
+        self.observation_registration_calibration.prepare_runtime_change()
         self.cancel_all_cgh()
         self._config_fov_restore_active = True
         try:
@@ -1234,6 +1249,7 @@ class SLMSession:
         self.fov_mapping_runtime.dispose()
         self.calibration.dispose()
         self.geometry_calibration.dispose()
+        self.observation_registration_calibration.dispose()
         for section_key in tuple(self.runtime.section_keys):
             self.fov_calibration.discard(section_key)
         self.cancel_all_cgh()

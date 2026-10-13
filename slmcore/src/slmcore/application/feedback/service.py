@@ -35,6 +35,7 @@ from .references import (
 if TYPE_CHECKING:
     from ..session import SLMSession
     from ..observation_geometry import ObservationGeometryService
+    from ..observation_registration import ObservationRegistrationService
 
 
 _UNSET = object()
@@ -51,6 +52,7 @@ class SLMFeedbackService:
         callbacks: SLMFeedbackCallbacks | None=None,
         position_reference_store: PositionReferenceStore | None=None,
         observation_geometry: "ObservationGeometryService | None"=None,
+        observation_registration: "ObservationRegistrationService | None"=None,
     ) -> None:
         self._application_session = application_session
         self._callbacks = callbacks or SLMFeedbackCallbacks()
@@ -87,6 +89,7 @@ class SLMFeedbackService:
             feedback_orientation=self._geometry.feedback_orientation,
             current_config_path=lambda:self._application_session.current_config_path,
             store=position_reference_store,
+            observation_registration=observation_registration,
         )
         self._localization = LocalizationService(
             runtime_provider=runtime_provider,
@@ -316,6 +319,11 @@ class SLMFeedbackService:
         self,section_key: str,
     ) -> PositionReferenceContext:
         return self._references.position_reference_context(section_key)
+
+    def position_reference_records(
+        self,observation_plane_name: str,
+    ) -> tuple[PositionReferenceRecord,...]:
+        return self._references.position_reference_records(observation_plane_name)
 
     def set_position_reference(
         self,

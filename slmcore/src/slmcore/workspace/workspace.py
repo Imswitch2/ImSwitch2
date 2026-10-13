@@ -11,6 +11,7 @@ from .fov_mapping_correction_store import FOVMappingCorrectionStore
 from .geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
 from .mapping_store import MappingStore
 from .observation_plane_store import ObservationPlaneStore
+from .observation_registration_store import ObservationRegistrationStore
 
 
 class SLMWorkspace:
@@ -27,6 +28,7 @@ class SLMWorkspace:
         fov_mapping_corrections_dir: str | Path | None=None,
         geometry_orientation_calibrations_dir: str | Path | None=None,
         observation_planes_dir: str | Path | None=None,
+        observation_registration_calibrations_dir: str | Path | None=None,
         mappings_dir: str | Path | None=None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
@@ -44,6 +46,9 @@ class SLMWorkspace:
             geometry_orientation_calibrations_dir,"geometry_orientation_calibrations"
         )
         self.observation_planes_root = self._resolve_override(observation_planes_dir,".")
+        self.observation_registration_calibrations_root = self._resolve_override(
+            observation_registration_calibrations_dir,"observation_registration_calibrations"
+        )
         self.mappings_root = self._resolve_override(mappings_dir,".")
         self._config_stores: dict[tuple[str,int],SLMConfigStore] = {}
         self._correction_stores: dict[tuple[str,str],SLMCorrectionStore] = {}
@@ -51,6 +56,7 @@ class SLMWorkspace:
         self._fov_mapping_correction_store: FOVMappingCorrectionStore | None = None
         self._geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None = None
         self._observation_plane_store: ObservationPlaneStore | None = None
+        self._observation_registration_store: ObservationRegistrationStore | None = None
         self._mapping_store: MappingStore | None = None
 
     @property
@@ -79,6 +85,14 @@ class SLMWorkspace:
         if self._observation_plane_store is None:
             self._observation_plane_store = ObservationPlaneStore(self.observation_planes_root)
         return self._observation_plane_store
+
+    @property
+    def observation_registration_store(self) -> ObservationRegistrationStore:
+        if self._observation_registration_store is None:
+            self._observation_registration_store = ObservationRegistrationStore(
+                self.observation_registration_calibrations_root
+            )
+        return self._observation_registration_store
 
     @property
     def geometry_orientation_calibration_store(self) -> SLMGeometryOrientationCalibrationStore:

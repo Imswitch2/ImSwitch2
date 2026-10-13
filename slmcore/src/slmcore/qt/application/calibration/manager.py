@@ -25,6 +25,9 @@ from ...calibration.management_dialogs import (
     CalibrationManagementDialog,ObservationPlaneEditorDialog,
     ObservationPlanesManagerDialog,
 )
+from ...calibration.observation_registration_dialog import (
+    ObservationRegistrationCalibrationWidget,
+)
 
 
 def _default_localization_parameters() -> dict[str,Any]:
@@ -55,6 +58,8 @@ class CalibrationManager(QtCore.QObject):
         self._observation_planes_dialog: ObservationPlanesManagerDialog | None = None
         self._embedded_workflow: tuple[str,str] | None = None
         self._embedded_return: tuple[str,str,QtWidgets.QWidget,str,bool] | None = None
+        self._registration_widget: ObservationRegistrationCalibrationWidget | None = None
+        self._registration_plane: str | None = None
         self._disposed = False
         load_error = self.service.last_mapping_store_load_error
         if load_error is not None:
@@ -303,6 +308,8 @@ class CalibrationManager(QtCore.QObject):
             dialog.sigFovUpdateRequested.connect(self._management_update_fov)
             dialog.sigFovRenameRequested.connect(self._management_rename_fov)
             dialog.sigGeometryCalibrationRequested.connect(self._management_start_geometry_calibration)
+            dialog.sigObservationRegistrationRequested.connect(self._management_start_observation_registration)
+            dialog.sigObservationRegistrationDeleteRequested.connect(self._management_delete_observation_registration)
             dialog.sigObservationSelectionChanged.connect(self._refresh_observation_context)
             dialog.sigObservationCreateRequested.connect(self._management_create_observation)
             dialog.sigObservationUpdateRequested.connect(self._management_update_observation)
@@ -338,6 +345,14 @@ class CalibrationManager(QtCore.QObject):
                 self._discard_embedded_fov(section)
             elif kind=="geometry":
                 self.controller.geometry_calibration.close(section,embedded=True)
+            elif kind=="registration":
+                plane=self._registration_plane
+                if plane:
+                    self.controller.observation_registration_calibration_service.clear(section,plane)
+                widget=self._registration_widget
+                self._registration_widget=None; self._registration_plane=None
+                if widget is not None:
+                    widget.hide(); widget.setParent(None); widget.deleteLater()
         if returned is not None:
             kind,section,_widget,_title,_observation=returned
             if kind=="fov":self._discard_embedded_fov(section)
@@ -486,6 +501,55 @@ class CalibrationManager(QtCore.QObject):
                     "details":"—" if calibration is None else "%s · %s" % (calibration.orientation.value,calibration.created_at or "saved"),
                 })
             dialog.set_geometry_rows(rows)
+
+            registration_service=self.controller.observation_registration_service
+            registrations={}
+            canonical_sections=set()
+            canonical_frame=registration_service.canonical_frame(plane)
+            if (
+                canonical_frame is not None
+                and canonical_frame.slm_serial==self.controller.runtime.identity.serial_number
+            ):
+                canonical_sections.add(canonical_frame.section_key)
+            for section in self.controller.runtime.section_keys:
+                registration=registration_service.registration(section,plane)
+                registrations[section]=registration
+            registration_rows=[]
+            for section in self.controller.runtime.section_keys:
+                registration=registrations.get(section)
+                title=self.controller.section_host.section_title(section)
+                if registration is not None:
+                    canonical=registration.canonical_frame
+                    canonical_title=(
+                        self.controller.section_host.section_title(canonical.section_key)
+                        if canonical.slm_serial==self.controller.runtime.identity.serial_number
+                        and canonical.section_key in tuple(self.controller.runtime.section_keys)
+                        else "%s / %s" % (canonical.slm_serial,canonical.section_key)
+                    )
+                    model=registration.transform_model
+                    if registration.polynomial_degree is not None:model="%s %d" % (model,registration.polynomial_degree)
+                    provenance=dict(registration.provenance or {})
+                    details="%s → %s · %s · %d points" % (title,canonical_title,model,registration.point_count)
+                    registration_rows.append({
+                        "section":section,"section_title":title,"status":"Registered",
+                        "canonical_section":canonical.section_key,"canonical_title":canonical_title,
+                        "detector":registration.native_frame.detector_name or "—",
+                        "image_shape":None if registration.native_frame.image_shape is None else "%d × %d" % registration.native_frame.image_shape,
+                        "pixel_size_um":registration.native_frame.pixel_size_um,
+                        "model":model,"point_count":registration.point_count,
+                        "forward_rms":"%.6g" % registration.forward_transform.rms_residual,
+                        "reverse_rms":"%.6g" % registration.reverse_transform.rms_residual,
+                        "created_at":registration.created_at or "—",
+                        "provenance":self._registration_provenance_text(provenance),
+                        "details":details,
+                    })
+                else:
+                    status="Canonical" if section in canonical_sections else "Not registered"
+                    registration_rows.append({
+                        "section":section,"section_title":title,"status":status,
+                        "details":"Canonical frame for this observation plane." if status=="Canonical" else "No saved observation registration.",
+                    })
+            dialog.set_registration_rows(registration_rows)
         except Exception as error:
             self._error("Observation geometry refresh failed",error)
 
@@ -529,7 +593,7 @@ class CalibrationManager(QtCore.QObject):
         if not plane:return
         answer=QtWidgets.QMessageBox.question(
             self._management_dialog,"Delete observation plane",
-            'Delete observation plane "%s"?\n\nGeometry calibrations are separate resources and are not deleted.' % plane,
+            'Delete observation plane "%s"?\n\nOrientation and observation-registration calibrations are separate resources and are not deleted.' % plane,
             QtWidgets.QMessageBox.Yes|QtWidgets.QMessageBox.No,QtWidgets.QMessageBox.No,
         )
         if answer!=QtWidgets.QMessageBox.Yes:return
@@ -911,6 +975,153 @@ class CalibrationManager(QtCore.QObject):
             self._refresh_management_context(section_key,mapping_name)
         except Exception as error:
             self._error("Delete FOV correction failed",error)
+
+    @staticmethod
+    def _registration_provenance_text(provenance: Mapping[str,Any]) -> str:
+        if not provenance:return "—"
+        preferred=("workflow","correspondence","sample_policy","native_measurement_id","canonical_reference_name")
+        parts=["%s=%s" % (key,provenance[key]) for key in preferred if key in provenance]
+        return "; ".join(parts) if parts else str(dict(provenance))
+
+    @QtCore.Slot(str,str)
+    def _management_start_observation_registration(self,section_key: str,plane_name: str) -> None:
+        manager=self._management_dialog
+        if manager is None:return
+        registration_service=self.controller.observation_registration_service
+        canonical_frame=registration_service.canonical_frame(plane_name)
+        if (
+            canonical_frame is not None
+            and canonical_frame.slm_serial==self.controller.runtime.identity.serial_number
+            and canonical_frame.section_key==section_key
+        ):
+            self._error(
+                "Observation registration",
+                RuntimeError("The canonical section defines the observation-plane coordinate frame and does not require a registration."),
+            )
+            return
+        calibration=self.controller.observation_registration_calibration_service
+        references=calibration.reference_records(section_key,plane_name)
+        if not references:
+            self._error(
+                "Observation registration",
+                RuntimeError(
+                    "No saved/session position reference is available for this observation plane. "
+                    "Localize the canonical pattern and create a position reference first."
+                ),
+            )
+            return
+        self._management_leave_embedded_workflow()
+        try:
+            initial=calibration.context(section_key,plane_name)
+            selected=initial.canonical_reference_name
+        except Exception:
+            selected=references[0].name
+        widget=ObservationRegistrationCalibrationWidget(
+            native_section_key=section_key,
+            native_section_title=self.controller.section_host.section_title(section_key),
+            observation_plane_name=plane_name,references=references,
+            canonical_reference_name=selected,parent=manager,
+        )
+        self._registration_widget=widget; self._registration_plane=plane_name
+        widget.sigReferenceChanged.connect(
+            lambda _reference,key=section_key,plane=plane_name:self._render_observation_registration(key,plane)
+        )
+        widget.sigUseLatestRequested.connect(
+            lambda key=section_key,plane=plane_name:self._registration_use_latest(key,plane)
+        )
+        widget.sigLocalizeRequested.connect(
+            lambda key=section_key,plane=plane_name:self._registration_localize(key,plane)
+        )
+        widget.sigFitRequested.connect(
+            lambda model,degree,key=section_key,plane=plane_name:self._registration_fit(key,plane,model,degree)
+        )
+        widget.sigSaveRequested.connect(lambda key=section_key,plane=plane_name:self._registration_save(key,plane))
+        widget.sigCancelRequested.connect(lambda key=section_key,plane=plane_name:self._registration_cancel(key,plane))
+        widget.sigRefreshRequested.connect(lambda key=section_key,plane=plane_name:self._render_observation_registration(key,plane,quiet=True))
+        self._embedded_workflow=("registration",section_key)
+        manager.mount_workspace(
+            widget,"Observation registration — %s / %s" % (plane_name,self.controller.section_host.section_title(section_key)),
+            observation=True,
+        )
+        self._render_observation_registration(section_key,plane_name)
+
+    def _render_observation_registration(self,section_key: str,plane_name: str,*,quiet: bool=False) -> None:
+        widget=self._registration_widget
+        if widget is None or self._embedded_workflow!=("registration",section_key):return
+        reference=widget.canonical_reference_name
+        if not reference:return
+        try:
+            service=self.controller.observation_registration_calibration_service
+            try:
+                context=service.context(section_key,plane_name,reference)
+            except FileNotFoundError:
+                # A session reference may be deleted while this workspace is
+                # open. Fall back to the remaining reference catalog instead
+                # of leaving the combo pinned to stale state.
+                context=service.context(section_key,plane_name)
+            widget.set_context(context)
+        except Exception as error:
+            if not quiet:widget.set_error(error)
+
+    def _registration_use_latest(self,section_key: str,plane_name: str) -> None:
+        widget=self._registration_widget
+        if widget is None:return
+        try:
+            self.controller.observation_registration_calibration_service.use_latest_localization(
+                section_key,plane_name,widget.canonical_reference_name,
+            )
+            widget.clear_error(); self._render_observation_registration(section_key,plane_name)
+        except Exception as error:widget.set_error(error)
+
+    def _registration_localize(self,section_key: str,plane_name: str) -> None:
+        widget=self._registration_widget
+        if widget is None:return
+        try:
+            self.controller.observation_registration_calibration_service.request_localization(
+                section_key,plane_name,widget.canonical_reference_name,
+            )
+            widget.clear_error(); self._render_observation_registration(section_key,plane_name,quiet=True)
+        except Exception as error:widget.set_error(error)
+
+    def _registration_fit(self,section_key: str,plane_name: str,model: str,degree: int) -> None:
+        widget=self._registration_widget
+        if widget is None:return
+        try:
+            self.controller.observation_registration_calibration_service.fit(
+                section_key,plane_name,widget.canonical_reference_name,model=model,polynomial_degree=degree,
+            )
+            widget.clear_error(); self._render_observation_registration(section_key,plane_name)
+        except Exception as error:widget.set_error(error)
+
+    def _registration_save(self,section_key: str,plane_name: str) -> None:
+        widget=self._registration_widget
+        if widget is None:return
+        try:
+            self.controller.observation_registration_calibration_service.save(
+                section_key,plane_name,widget.canonical_reference_name,
+            )
+            widget.clear_error(); self._refresh_observation_context(plane_name)
+            self._management_finish_embedded_workflow(section_key)
+        except Exception as error:widget.set_error(error)
+
+    def _registration_cancel(self,section_key: str,plane_name: str) -> None:
+        self.controller.observation_registration_calibration_service.cancel(section_key,plane_name)
+        self._management_finish_embedded_workflow(section_key)
+
+    @QtCore.Slot(str,str)
+    def _management_delete_observation_registration(self,section_key: str,plane_name: str) -> None:
+        registration=self.controller.observation_registration_service.registration(section_key,plane_name)
+        if registration is None:return
+        answer=QtWidgets.QMessageBox.question(
+            self._management_dialog,"Delete observation registration",
+            'Delete observation registration for "%s" in "%s"?' % (self.controller.section_host.section_title(section_key),plane_name),
+            QtWidgets.QMessageBox.Yes|QtWidgets.QMessageBox.No,QtWidgets.QMessageBox.No,
+        )
+        if answer!=QtWidgets.QMessageBox.Yes:return
+        try:
+            self.controller.observation_registration_calibration_service.delete(section_key,plane_name)
+            self._refresh_observation_context(plane_name)
+        except Exception as error:self._error("Delete observation registration failed",error)
 
     @QtCore.Slot(str,str)
     def _management_start_geometry_calibration(self,section_key: str,plane_name: str) -> None:

@@ -218,7 +218,10 @@ def test_feedback_exposes_geometry_as_read_only_context():
     assert not hasattr(session.feedback,"feedback_orientation_context")
 
 
-def _attach_reference_localization(runtime,section_key="sec_0"):
+def _attach_reference_localization(
+    runtime,section_key="sec_0",*,image_shape=(96,112),detector="cam",
+    pixel_size_um=None,crop_coord=(8,72,16,80),measured_shift=(1.0,2.0),
+):
     from slmcore.core.cgh.localization import LocalizationResult
 
     section = runtime._get_section(section_key)
@@ -226,8 +229,10 @@ def _attach_reference_localization(runtime,section_key="sec_0"):
         section.state.cgh,section._build_context(section.state),
     )
     count = int(resolution.lattice_indices.shape[1])
-    image = np.zeros((96,112),dtype=np.float64)
-    measurement = ImageMeasurement(image=image,source="cam",detector="cam")
+    image = np.zeros(tuple(image_shape),dtype=np.float64)
+    measurement = ImageMeasurement(
+        image=image,source="cam",detector=detector,pixel_size_um=pixel_size_um,
+    )
     runtime.set_section_feedback_measurement(section_key,measurement)
     parameters = dict(
         runtime.get_section_feedback_status(section_key).localization_params
@@ -236,14 +241,15 @@ def _attach_reference_localization(runtime,section_key="sec_0"):
         [12.0,44.0,12.0,44.0],
         [12.0,12.0,44.0,44.0],
     ],dtype=np.float64)[:,:count]
-    measured = expected + np.array([[1.0],[2.0]])
+    measured = expected + np.asarray(measured_shift,dtype=np.float64).reshape(2,1)
+    y1,y2,x1,x2=tuple(int(value) for value in crop_coord)
     localization = LocalizationResult(
         target_type="multi_foci_vector",
         target_params=dict(resolution.canonical_params),
         parameters=parameters,
         lattice_indices=resolution.lattice_indices,
-        crop_coord=(8,72,16,80),
-        cropped_image=np.zeros((64,64),dtype=np.float64),
+        crop_coord=(y1,y2,x1,x2),
+        cropped_image=np.zeros((y2-y1,x2-x1),dtype=np.float64),
         expected_positions_px=expected,
         measured_positions_px=measured,
         period_x_px=32.0,
@@ -1391,3 +1397,371 @@ def test_manual_position_transform_lifecycle_is_source_and_localization_bound():
         "sec_0"
     ).manual_transform is None
     session.dispose()
+
+
+def _observation_frame_for_reference(reference):
+    from slmcore import ObservationFrame
+
+    payload=reference.metadata["source_observation_frame"]
+    return ObservationFrame.from_dict(payload)
+
+
+def _current_observation_frame(session,*,section="sec_0"):
+    from slmcore import ObservationFrame
+
+    inspection=session.runtime.get_section_feedback_inspection(section)
+    acquisition=inspection.measurement.acquisition
+    plane=session.feedback.active_observation_plane(section)
+    return ObservationFrame(
+        slm_serial=session.runtime.identity.serial_number,
+        section_key=section,
+        observation_plane_name=plane,
+        detector_name=acquisition.detector,
+        image_shape=acquisition.image.shape,
+        pixel_size_um=acquisition.pixel_size_um,
+    )
+
+
+def test_named_reference_uses_target_registration_before_correspondence_and_crop(tmp_path):
+    from slmcore import (
+        ObservationRegistrationStore,PositionReferenceStore,
+        fit_observation_registration,
+    )
+
+    references=PositionReferenceStore(tmp_path/"references")
+    registrations=ObservationRegistrationStore(tmp_path/"registrations")
+
+    source_runtime=_runtime(serial="SER-488")
+    source_session=SLMSession(
+        runtime=source_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(source_session,"Intermediate")
+    _attach_reference_localization(
+        source_runtime,image_shape=(120,140),detector="cam488",pixel_size_um=0.10,
+        crop_coord=(10,74,20,84),measured_shift=(2.0,-1.0),
+    )
+    reference=source_session.feedback.add_position_reference("sec_0","488 intermediate")
+    source_frame=_observation_frame_for_reference(reference)
+
+    current_runtime=_runtime(serial="SER-405")
+    current_session=SLMSession(
+        runtime=current_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(current_session,"Intermediate")
+    current_localization=_attach_reference_localization(
+        current_runtime,image_shape=(150,170),detector="cam405",pixel_size_um=0.20,
+        crop_coord=(30,94,40,104),measured_shift=(0.0,0.0),
+    )
+    # Preview requires the normal accepted affine-localization diagnostics.
+    from dataclasses import replace
+    diagnostics=dict(current_localization.diagnostics)
+    diagnostics.update({
+        "affine_linear":((32.0,0.0),(0.0,32.0)),
+        "affine_translation":(12.0,12.0),
+    })
+    current_localization=replace(current_localization,diagnostics=diagnostics)
+    current_runtime.commit_section_feedback_localization(
+        "sec_0",current_localization,
+        dict(current_runtime.get_section_feedback_status("sec_0").localization_params),
+    )
+    current_frame=_current_observation_frame(current_session)
+
+    # canonical = current-native + [10, -6], therefore canonical -> current-native
+    # subtracts that offset.  Only the current/405 side is registered; 488 is the
+    # explicit unregistered canonical frame.
+    native_points=np.array([
+        [20.0,60.0,20.0,60.0],
+        [30.0,30.0,70.0,70.0],
+    ])
+    canonical_points=native_points+np.array([[10.0],[-6.0]])
+    calibration=fit_observation_registration(
+        current_frame,source_frame,native_points,canonical_points,model="affine",
+    )
+    current_session.observation_registration.save(calibration)
+
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 intermediate",
+        correction_mode="per_spot",
+    )
+    cgh_before=current_runtime.get_section_cgh_result_copy("sec_0")
+    mapping_before=current_runtime.get_section_fov_mapping_context("sec_0")
+    _effective,raw,metadata,_transform=(
+        current_session.feedback._references._resolve_position_reference_details("sec_0")
+    )
+
+    source_full=np.asarray(reference.positions_px,dtype=np.float64)
+    expected_full=source_full-np.array([[10.0],[-6.0]])
+    current_crop=np.array([[current_localization.crop_coord[2]],
+                           [current_localization.crop_coord[0]]],dtype=np.float64)
+    np.testing.assert_allclose(raw,expected_full-current_crop,atol=1e-10)
+    registration=metadata["registration"]
+    assert registration["applied"] is True
+    assert registration["source_registration"] is None
+    assert registration["target_registration"]["transform_model"] == "affine"
+    assert registration["canonical_frame"] == source_frame.to_dict()
+    assert registration["source_frame"] == source_frame.to_dict()
+    assert registration["target_frame"] == current_frame.to_dict()
+
+    preview=current_session.feedback.position_reference_preview("sec_0")
+    assert preview is not None
+    assert preview["reference"]["registration"]["applied"] is True
+
+    # Registration is measurement/reference interpretation only: resolving the
+    # reference does not mutate the FOV context or committed CGH.
+    mapping_after=current_runtime.get_section_fov_mapping_context("sec_0")
+    np.testing.assert_array_equal(
+        mapping_after["ideal_positions_kxy"],mapping_before["ideal_positions_kxy"],
+    )
+    assert mapping_after["correction"] is mapping_before["correction"]
+    cgh_after=current_runtime.get_section_cgh_result_copy("sec_0")
+    assert cgh_before is not None and cgh_after is not None
+    assert cgh_after.target_name == cgh_before.target_name
+    np.testing.assert_array_equal(cgh_after.pattern,cgh_before.pattern)
+
+    source_session.dispose(); current_session.dispose()
+
+
+def test_named_reference_uses_source_registration_when_current_is_canonical(tmp_path):
+    from slmcore import (
+        ObservationRegistrationStore,PositionReferenceStore,
+        fit_observation_registration,
+    )
+
+    references=PositionReferenceStore(tmp_path/"references")
+    registrations=ObservationRegistrationStore(tmp_path/"registrations")
+
+    source_runtime=_runtime(serial="SER-405")
+    source_session=SLMSession(
+        runtime=source_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(source_session,"Intermediate")
+    _attach_reference_localization(
+        source_runtime,detector="cam405",pixel_size_um=0.12,
+    )
+    reference=source_session.feedback.add_position_reference("sec_0","405 intermediate")
+    source_frame=_observation_frame_for_reference(reference)
+
+    current_runtime=_runtime(serial="SER-488")
+    current_session=SLMSession(
+        runtime=current_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(current_session,"Intermediate")
+    current_localization=_attach_reference_localization(
+        current_runtime,detector="cam488",pixel_size_um=0.12,
+    )
+    current_frame=_current_observation_frame(current_session)
+
+    native_points=np.array([[15.,55.,15.,55.],[20.,20.,60.,60.]])
+    canonical_points=native_points+np.array([[4.0],[7.0]])
+    source_session.observation_registration.save(fit_observation_registration(
+        source_frame,current_frame,native_points,canonical_points,model="affine",
+    ))
+
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="405 intermediate",
+    )
+    _effective,raw,metadata,_=(
+        current_session.feedback._references._resolve_position_reference_details("sec_0")
+    )
+    source_full=np.asarray(reference.positions_px,dtype=np.float64)
+    expected_full=source_full+np.array([[4.0],[7.0]])
+    crop=np.array([[current_localization.crop_coord[2]],[current_localization.crop_coord[0]]])
+    np.testing.assert_allclose(raw,expected_full-crop,atol=1e-10)
+    assert metadata["registration"]["applied"] is True
+    assert metadata["registration"]["source_registration"] is not None
+    assert metadata["registration"]["target_registration"] is None
+
+    source_session.dispose(); current_session.dispose()
+
+
+def test_named_reference_projects_between_two_registered_frames_with_polynomial(tmp_path):
+    from slmcore import (
+        ObservationFrame,ObservationRegistrationStore,PositionReferenceStore,
+        fit_observation_registration,
+    )
+
+    references=PositionReferenceStore(tmp_path/"references")
+    registrations=ObservationRegistrationStore(tmp_path/"registrations")
+
+    source_runtime=_runtime(serial="SER-A")
+    source_session=SLMSession(
+        runtime=source_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(source_session,"Intermediate")
+    _attach_reference_localization(source_runtime,detector="camA",pixel_size_um=0.1)
+    reference=source_session.feedback.add_position_reference("sec_0","source")
+    source_frame=_observation_frame_for_reference(reference)
+
+    target_runtime=_runtime(serial="SER-B")
+    target_session=SLMSession(
+        runtime=target_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(target_session,"Intermediate")
+    target_localization=_attach_reference_localization(
+        target_runtime,detector="camB",pixel_size_um=0.1,
+    )
+    target_frame=_current_observation_frame(target_session)
+    canonical=ObservationFrame(
+        slm_serial="SER-CANON",section_key="sec_canonical",
+        observation_plane_name="Intermediate",detector_name="camCanonical",
+        image_shape=(96,112),pixel_size_um=0.1,
+    )
+
+    x,y=np.meshgrid(np.linspace(5.0,85.0,5),np.linspace(5.0,75.0,5))
+    source_points=np.vstack([x.ravel(),y.ravel()])
+    source_canonical=np.array(source_points,copy=True)
+    source_canonical[0]+=0.001*source_points[1]**2+3.0
+    source_canonical[1]+=0.0015*source_points[0]**2-2.0
+    source_session.observation_registration.save(fit_observation_registration(
+        source_frame,canonical,source_points,source_canonical,
+        model="polynomial",polynomial_degree=2,
+    ))
+
+    target_points=np.vstack([x.ravel()+2.0,y.ravel()-4.0])
+    target_canonical=np.array(target_points,copy=True)
+    target_canonical[0]+=0.0008*target_points[1]**2-1.0
+    target_canonical[1]+=0.0012*target_points[0]**2+5.0
+    target_session.observation_registration.save(fit_observation_registration(
+        target_frame,canonical,target_points,target_canonical,
+        model="polynomial",polynomial_degree=2,
+    ))
+
+    target_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="source",
+    )
+    _effective,raw,metadata,_=(
+        target_session.feedback._references._resolve_position_reference_details("sec_0")
+    )
+    source_registration=registrations.load("SER-A","sec_0","Intermediate")
+    target_registration=registrations.load("SER-B","sec_0","Intermediate")
+    expected_full=target_registration.canonical_to_native(
+        source_registration.native_to_canonical(reference.positions_px)
+    )
+    crop=np.array([[target_localization.crop_coord[2]],[target_localization.crop_coord[0]]])
+    np.testing.assert_allclose(raw,expected_full-crop,atol=1e-8)
+    assert metadata["registration"]["applied"] is True
+    assert metadata["registration"]["source_registration"]["transform_model"] == "polynomial"
+    assert metadata["registration"]["target_registration"]["transform_model"] == "polynomial"
+
+    source_session.dispose(); target_session.dispose()
+
+
+def test_same_native_section_reference_bypasses_registration_round_trip(tmp_path):
+    from slmcore import (
+        ObservationFrame,ObservationRegistrationStore,PositionReferenceStore,
+        fit_observation_registration,
+    )
+
+    references=PositionReferenceStore(tmp_path/"references")
+    registrations=ObservationRegistrationStore(tmp_path/"registrations")
+    runtime=_runtime(serial="SER-SAME")
+    session=SLMSession(
+        runtime=runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(session,"Intermediate")
+    localization=_attach_reference_localization(runtime,detector="cam",pixel_size_um=0.1)
+    reference=session.feedback.add_position_reference("sec_0","same")
+    frame=_current_observation_frame(session)
+
+    points=np.array([[10.,30.,10.,30.],[15.,15.,35.,35.]])
+    canonical=points+np.array([[25.0],[-13.0]])
+    canonical_frame=ObservationFrame(
+        slm_serial="SER-CANONICAL",section_key="sec_ref",
+        observation_plane_name="Intermediate",detector_name="cam-canonical",
+        image_shape=frame.image_shape,pixel_size_um=frame.pixel_size_um,
+    )
+    session.observation_registration.save(fit_observation_registration(
+        frame,canonical_frame,points,canonical,model="affine",
+    ))
+
+    session.feedback.set_position_reference("sec_0",mode="reference",reference_name="same")
+    _effective,raw,metadata,_=(
+        session.feedback._references._resolve_position_reference_details("sec_0")
+    )
+    crop=np.array([[localization.crop_coord[2]],[localization.crop_coord[0]]])
+    np.testing.assert_allclose(raw,reference.positions_px-crop,atol=1e-12)
+    assert metadata["registration"]["applied"] is False
+    assert metadata["registration"]["reason"] == "same native observation frame"
+
+    session.dispose()
+
+
+def test_named_reference_without_registration_keeps_legacy_detector_checks(tmp_path):
+    import pytest
+    from slmcore import ObservationRegistrationStore,PositionReferenceStore
+
+    references=PositionReferenceStore(tmp_path/"references")
+    registrations=ObservationRegistrationStore(tmp_path/"registrations")
+    source_runtime=_runtime(serial="SER-A")
+    source_session=SLMSession(
+        runtime=source_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(source_session,"Intermediate")
+    _attach_reference_localization(source_runtime,detector="camA")
+    source_session.feedback.add_position_reference("sec_0","source")
+
+    target_runtime=_runtime(serial="SER-B")
+    target_session=SLMSession(
+        runtime=target_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(target_session,"Intermediate")
+    _attach_reference_localization(target_runtime,detector="camB")
+    target_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="source",
+    )
+
+    with pytest.raises(RuntimeError,match='Reference detector "camA" does not match'):
+        target_session.feedback._resolve_position_reference("sec_0")
+
+    source_session.dispose(); target_session.dispose()
+
+
+def test_identity_registration_preserves_named_reference_coordinates(tmp_path):
+    from slmcore import ObservationRegistrationStore,PositionReferenceStore,fit_observation_registration
+
+    references=PositionReferenceStore(tmp_path/"references")
+    registrations=ObservationRegistrationStore(tmp_path/"registrations")
+
+    source_runtime=_runtime(serial="SER-SOURCE")
+    source_session=SLMSession(
+        runtime=source_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(source_session,"Intermediate")
+    source_localization=_attach_reference_localization(source_runtime,detector="cam")
+    reference=source_session.feedback.add_position_reference("sec_0","identity")
+    source_frame=_observation_frame_for_reference(reference)
+
+    target_runtime=_runtime(serial="SER-TARGET")
+    target_session=SLMSession(
+        runtime=target_runtime,position_reference_store=references,
+        observation_registration_store=registrations,
+    )
+    _set_feedback_observation_planes(target_session,"Intermediate")
+    target_localization=_attach_reference_localization(target_runtime,detector="cam")
+    target_frame=_current_observation_frame(target_session)
+
+    points=np.array([[5.,35.,5.,35.],[10.,10.,40.,40.]])
+    source_session.observation_registration.save(fit_observation_registration(
+        source_frame,target_frame,points,points,model="affine",
+    ))
+    target_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="identity",
+    )
+    _effective,raw,metadata,_=(
+        target_session.feedback._references._resolve_position_reference_details("sec_0")
+    )
+    crop=np.array([[target_localization.crop_coord[2]],[target_localization.crop_coord[0]]])
+    np.testing.assert_allclose(raw,reference.positions_px-crop,atol=1e-12)
+    assert metadata["registration"]["applied"] is True
+
+    source_session.dispose(); target_session.dispose()

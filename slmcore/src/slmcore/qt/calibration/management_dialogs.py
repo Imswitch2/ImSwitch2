@@ -196,7 +196,7 @@ class ObservationPlanesManagerDialog(QtWidgets.QDialog):
             return
         answer = QtWidgets.QMessageBox.question(
             self,"Delete observation plane",
-            'Delete observation plane "%s"?\n\nGeometry calibrations are separate resources and are not deleted.' % name,
+            'Delete observation plane "%s"?\n\nOrientation and observation-registration calibrations are separate resources and are not deleted.' % name,
             QtWidgets.QMessageBox.Yes|QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )
@@ -228,6 +228,8 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
     sigFovRenameRequested = QtCore.Signal(str,str,str,str)
     sigSlmChanged = QtCore.Signal(str)
     sigGeometryCalibrationRequested = QtCore.Signal(str,str)
+    sigObservationRegistrationRequested = QtCore.Signal(str,str)
+    sigObservationRegistrationDeleteRequested = QtCore.Signal(str,str)
     sigObservationSelectionChanged = QtCore.Signal(str)
     sigObservationCreateRequested = QtCore.Signal(object)
     sigObservationUpdateRequested = QtCore.Signal(str,object)
@@ -260,6 +262,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self._mapping_summary: dict[str,Any]={}
         self._observation_rows: dict[str,dict[str,Any]]={}
         self._geometry_rows: list[dict[str,Any]]=[]
+        self._registration_rows: list[dict[str,Any]]=[]
         self._detectors: tuple[str,...]=()
         self._observation_edit_mode: str | None=None
         self._editing_observation_name: str | None=None
@@ -670,12 +673,22 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         row.addWidget(self.observation_new); row.addWidget(self.observation_delete); row.addStretch(1)
         pv.addLayout(row); lv.addWidget(planes)
 
-        geometry=QtWidgets.QGroupBox("Geometry by section"); gv=QtWidgets.QVBoxLayout(geometry)
-        self.geometry_list=QtWidgets.QListWidget(); self.geometry_list.setMinimumHeight(100)
+        geometry=QtWidgets.QGroupBox("Orientation by section"); gv=QtWidgets.QVBoxLayout(geometry)
+        self.geometry_list=QtWidgets.QListWidget(); self.geometry_list.setMinimumHeight(90)
         gv.addWidget(self.geometry_list,1)
         self.geometry_calibrate=QtWidgets.QPushButton("Calibrate / Recalibrate")
         gv.addWidget(self.geometry_calibrate)
         lv.addWidget(geometry,1)
+
+        registration=QtWidgets.QGroupBox("Registration by section"); rv=QtWidgets.QVBoxLayout(registration)
+        self.registration_list=QtWidgets.QListWidget(); self.registration_list.setMinimumHeight(90)
+        rv.addWidget(self.registration_list,1)
+        registration_buttons=QtWidgets.QHBoxLayout()
+        self.registration_calibrate=QtWidgets.QPushButton("Register / Recalibrate")
+        self.registration_delete=QtWidgets.QPushButton("Delete")
+        registration_buttons.addWidget(self.registration_calibrate); registration_buttons.addWidget(self.registration_delete)
+        rv.addLayout(registration_buttons)
+        lv.addWidget(registration,1)
 
         details=QtWidgets.QGroupBox("Observation plane details"); df=QtWidgets.QFormLayout(details)
         self.obs_name=QtWidgets.QLineEdit()
@@ -706,6 +719,9 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.obs_detector_combo.currentIndexChanged.connect(self._obs_detector_changed)
         self.geometry_list.currentItemChanged.connect(lambda *_args:self._geometry_selected())
         self.geometry_calibrate.clicked.connect(self._emit_geometry)
+        self.registration_list.currentItemChanged.connect(lambda *_args:self._registration_selected())
+        self.registration_calibrate.clicked.connect(self._emit_registration)
+        self.registration_delete.clicked.connect(self._emit_registration_delete)
         self._set_observation_editing(False)
         return page
 
@@ -738,7 +754,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.sigWorkspaceResetRequested.emit()
         plane=self.observation_plane_name
         self._load_observation_details(plane)
-        self.geometry_list.clear()
+        self.geometry_list.clear(); self.registration_list.clear()
         if plane:self.sigObservationSelectionChanged.emit(plane)
         self._show_observation_inspection()
 
@@ -794,6 +810,70 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         if item is None or not plane:return
         section=str(item.data(QtCore.Qt.UserRole) or "")
         if section:self.sigGeometryCalibrationRequested.emit(section,plane)
+
+    def set_registration_rows(self,rows: Sequence[Mapping[str,Any]]) -> None:
+        self._registration_rows=[dict(row) for row in rows]
+        selected=None
+        current=self.registration_list.currentItem()
+        if current is not None:selected=str(current.data(QtCore.Qt.UserRole) or "")
+        blocker=QtCore.QSignalBlocker(self.registration_list); self.registration_list.clear()
+        for row in self._registration_rows:
+            section=str(row.get("section") or "")
+            title=str(row.get("section_title") or section)
+            status=str(row.get("status") or "Not registered")
+            canonical=str(row.get("canonical_title") or row.get("canonical_section") or "")
+            if status=="Registered" and canonical:text="%s   ·   Registered → %s" % (title,canonical)
+            elif status=="Canonical":text="%s   ·   Canonical" % title
+            else:text="%s   ·   %s" % (title,status)
+            item=QtWidgets.QListWidgetItem(text); item.setData(QtCore.Qt.UserRole,section); item.setData(QtCore.Qt.UserRole+1,row)
+            if row.get("details"):item.setToolTip(str(row.get("details")))
+            self.registration_list.addItem(item)
+            if section==selected:self.registration_list.setCurrentItem(item)
+        del blocker
+        self._update_registration_actions()
+
+    def _registration_selected(self) -> None:
+        self._update_registration_actions()
+        item=self.registration_list.currentItem()
+        if item is None:return
+        self.sigWorkspaceResetRequested.emit()
+        row=dict(item.data(QtCore.Qt.UserRole+1) or {})
+        section=str(row.get("section") or "")
+        if section:self.select_section(section)
+        fields=(
+            ("Status",row.get("status")),("Canonical frame",row.get("canonical_title") or row.get("canonical_section")),
+            ("Detector",row.get("detector")),("Image shape",row.get("image_shape")),
+            ("Pixel size (µm)",row.get("pixel_size_um")),("Model",row.get("model")),
+            ("Points",row.get("point_count")),("Forward RMS (px)",row.get("forward_rms")),
+            ("Reverse RMS (px)",row.get("reverse_rms")),("Created",row.get("created_at")),
+            ("Provenance",row.get("provenance")),
+        )
+        body="\n".join("%s: %s" % (label,value) for label,value in fields if value not in (None,""))
+        title="%s / %s — Registration" % (self.observation_plane_name,row.get("section_title") or section)
+        self.show_observation_inspection(title,body or "No registration saved for this section.")
+
+    def _update_registration_actions(self) -> None:
+        item=self.registration_list.currentItem()
+        row={} if item is None else dict(item.data(QtCore.Qt.UserRole+1) or {})
+        status=str(row.get("status") or "")
+        self.registration_calibrate.setEnabled(
+            item is not None and self.registration_list.count()>1 and status!="Canonical"
+        )
+        self.registration_delete.setEnabled(status=="Registered")
+
+    def _emit_registration(self) -> None:
+        item=self.registration_list.currentItem(); plane=self.observation_plane_name
+        if item is None or not plane:return
+        row=dict(item.data(QtCore.Qt.UserRole+1) or {})
+        if str(row.get("status") or "")=="Canonical":return
+        section=str(item.data(QtCore.Qt.UserRole) or "")
+        if section:self.sigObservationRegistrationRequested.emit(section,plane)
+
+    def _emit_registration_delete(self) -> None:
+        item=self.registration_list.currentItem(); plane=self.observation_plane_name
+        if item is None or not plane:return
+        section=str(item.data(QtCore.Qt.UserRole) or "")
+        if section:self.sigObservationRegistrationDeleteRequested.emit(section,plane)
 
     def _load_observation_details(self,plane: str) -> None:
         row=self._observation_rows.get(str(plane),{})
@@ -893,7 +973,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         lines.extend([
             "Preferred detector: %s" % (row.get("preferred_detector") or "—"),
             "Default pixel size: %s" % ("—" if row.get("default_pixel_size_um") is None else "%g µm/px" % row["default_pixel_size_um"]),
-            "\nSelect a section under Geometry by section to inspect or calibrate its orientation.",
+            "\nUse Orientation by section for discrete lattice orientation and Registration by section for continuous detector-coordinate registration.",
         ])
         self.show_observation_inspection(plane,"\n".join(lines))
 

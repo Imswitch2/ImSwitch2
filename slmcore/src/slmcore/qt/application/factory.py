@@ -129,6 +129,9 @@ class SLMQtSessionFactory:
         geometry_orientation_calibration_store = (
             None if workspace is None else workspace.geometry_orientation_calibration_store
         )
+        observation_registration_store = (
+            None if workspace is None else workspace.observation_registration_store
+        )
         runtime_factory = SLMRuntimeFactory(
             definition=definition,
             registries=self.registries,
@@ -191,6 +194,7 @@ class SLMQtSessionFactory:
                 position_reference_store=position_reference_store,
                 fov_mapping_correction_store=fov_mapping_correction_store,
                 geometry_orientation_calibration_store=geometry_orientation_calibration_store,
+                observation_registration_store=observation_registration_store,
                 startup_preferences=preference_state,
                 display_name=display_name,
                 apply_startup_calibration_defaults=False,
