@@ -47,147 +47,6 @@ class Dataset:
         return int(np.prod([size for _, size in self.S], dtype=np.int64))
 
 
-class NotRawData(Exception):
-    """The entry is settled, and it is not raw data."""
-
-
-_FORMATS = {".zarr": "zarr", ".h5": "hdf5", ".hdf5": "hdf5"}
-_INDEX = re.compile(r"(?i)(?:scan|time)_*(\d+)")  # digits required: not "timelapse"
-_DETECTORS = "several detectors are not supported yet"
-
-
-def resolve(entry: str) -> Dataset | None:
-    """The dataset in ``entry``, or ``None`` while it cannot be decided yet.
-
-    Raises:
-        NotRawData: ``entry`` is settled and holds no raw data.
-    """
-    if not os.path.exists(entry):
-        raise NotRawData("no longer exists")
-
-    fmt = _format(entry)
-    if fmt is not None:                                  # P1 or P2
-        arrays = _arrays(entry, fmt)
-        if not arrays:
-            return None
-        indexed = sorted(
-            (a for a in arrays if _index(a[0]) is not None),
-            key=lambda a: _index(a[0]),
-        )
-        if indexed:
-            if len({_index(a[0]) for a in indexed}) < len(indexed):
-                raise NotRawData(_DETECTORS)
-            return _dataset(entry, "P2", fmt, [(entry, a) for a in indexed])
-        if len(arrays) > 1:
-            raise NotRawData(_DETECTORS)
-        return _dataset(entry, "P1", fmt, [(entry, arrays[0])])
-
-    if not os.path.isdir(entry):
-        raise NotRawData("not a container or a folder")
-
-    try:                                                 # P3
-        names = [n for n in os.listdir(entry) if _format(n) is not None]
-    except OSError:
-        return None
-    if not names:
-        return None
-    # Indexed containers first, by index (time2 before time10); then by name.
-    first = min(names, key=lambda n: (_index(n) is None, _index(n) or 0, n))
-    container = os.path.join(entry, first)
-    arrays = _arrays(container, _format(first))
-    if not arrays:
-        return None
-    if len(arrays) > 1:
-        raise NotRawData(_DETECTORS)
-    return _dataset(entry, "P3", _format(first), [(container, arrays[0])])
-
-
-def _dataset(entry, packaging, fmt, pieces) -> Dataset | None:
-    """Build the dataset from its first piece, or ``None`` if S is not known yet.
-
-    ``recording:frames_per_stack`` gives S before a single frame is written.
-    Without it S is the piece's leading axes, which are only final once the
-    piece is finished -- a recording grows its leading axis frame by frame.
-    """
-    _, shape, dtype, attrs = pieces[0][1]
-    per_stack = _int(attrs.get("recording:frames_per_stack"))
-
-    if per_stack is not None and len(shape) == 3:
-        S = (per_stack,)
-    elif bool(attrs.get("writing", False)) or 0 in shape[:-2]:
-        return None
-    else:
-        S = tuple(int(n) for n in shape[:-2])
-
-    if packaging != "P1":
-        T = _int(attrs.get("recording:num_timepoints"))
-    elif per_stack is None:
-        T = 1                       # a finished array without metadata: one stack
-    else:
-        frames = _int(attrs.get("recording:expected_frames"))
-        T = frames // per_stack if frames is not None else None
-
-    return Dataset(
-        entry=entry,
-        packaging=packaging,
-        format=fmt,
-        pieces=tuple((container, array[0]) for container, array in pieces),
-        T=T,
-        S=tuple((f"s{i}", size) for i, size in enumerate(S)),
-        frame_shape=(int(shape[-2]), int(shape[-1])),
-        dtype=np.dtype(dtype),
-    )
-
-
-def _arrays(container: str, fmt: str) -> list[tuple] | None:
-    """Data arrays as ``(path, shape, dtype, attrs)``; ``None`` if unreadable."""
-    found = []
-
-    def keep(path, node):
-        if node.ndim >= 3:
-            found.append((path, tuple(node.shape), node.dtype, dict(node.attrs)))
-
-    try:
-        if fmt == "hdf5":
-            try:
-                f = h5py.File(container, "r", libver="latest", swmr=True)
-            except OSError:
-                f = h5py.File(container, "r")
-            with f:
-                f.visititems(
-                    lambda path, node: keep(path, node)
-                    if isinstance(node, h5py.Dataset) else None
-                )
-        else:
-            stack = [("", zarr.open(container, mode="r"))]
-            while stack:
-                path, node = stack.pop()
-                if isinstance(node, zarr.Array):
-                    keep(path, node)
-                else:
-                    stack += [(f"{path}/{n}".lstrip("/"), c) for n, c in node.members()]
-    except Exception:
-        return None   # still being created, held by the writer, half-written
-    return found
-
-
-def _format(path: str) -> str | None:
-    return _FORMATS.get(os.path.splitext(path.rstrip("/\\"))[1].lower())
-
-
-def _index(name: str) -> int | None:
-    match = _INDEX.search(name)
-    return int(match.group(1)) if match else None
-
-
-def _int(value) -> int | None:
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return None
-    return number if number > 0 else None
-
-
 class DatasetResolver(QtCore.QObject):
     """Resolves entries into datasets, retrying the undecided ones.
 
@@ -199,6 +58,12 @@ class DatasetResolver(QtCore.QObject):
 
     sigResolved = QtCore.Signal(object)  # Dataset
 
+    FORMATS = {".zarr": "zarr", ".h5": "hdf5", ".hdf5": "hdf5"}
+    #: A timepoint marker and its index. The digits are required, so
+    #: ``timelapse`` and ``timestamp`` carry no index.
+    INDEX = re.compile(r"(?i)(?:scan|time)_*(\d+)")
+    DETECTORS = "several detectors are not supported yet"
+
     def __init__(self, interval_ms: int = 1000, parent=None) -> None:
         super().__init__(parent)
         self._pending: list[str] = []
@@ -206,6 +71,8 @@ class DatasetResolver(QtCore.QObject):
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(interval_ms)
         self._timer.timeout.connect(self.retry)
+
+    # --- running -------------------------------------------------------------
 
     @property
     def pending(self) -> list[str]:
@@ -233,15 +100,144 @@ class DatasetResolver(QtCore.QObject):
 
     def _settle(self, entry: str) -> bool:
         """Resolve once; ``True`` if the entry is settled either way."""
-        try:
-            dataset = resolve(entry)
-        except NotRawData as e:
-            self._logger.info(f"Not raw data: {os.path.basename(entry)} ({e})")
-            return True
-        if dataset is None:
+        result = self.resolve(entry)
+        if result is None:
             return False
-        self.sigResolved.emit(dataset)
+        if isinstance(result, str):
+            self._logger.info(f"Not raw data: {os.path.basename(entry)} ({result})")
+        else:
+            self.sigResolved.emit(result)
         return True
+
+    # --- resolving -----------------------------------------------------------
+
+    def resolve(self, entry: str) -> "Dataset | str | None":
+        """What ``entry`` is: a :class:`Dataset`; ``None`` while it cannot be
+        decided yet; or, when it is settled and not raw data, the reason why.
+        """
+        if not os.path.exists(entry):
+            return "no longer exists"
+
+        fmt = self._format(entry)
+        if fmt is not None:                              # P1 or P2
+            arrays = self._arrays(entry, fmt)
+            if not arrays:
+                return None
+            indexed = sorted(
+                (a for a in arrays if self._index(a[0]) is not None),
+                key=lambda a: self._index(a[0]),
+            )
+            if indexed:
+                if len({self._index(a[0]) for a in indexed}) < len(indexed):
+                    return self.DETECTORS
+                return self._dataset(entry, "P2", fmt, [(entry, a) for a in indexed])
+            if len(arrays) > 1:
+                return self.DETECTORS
+            return self._dataset(entry, "P1", fmt, [(entry, arrays[0])])
+
+        if not os.path.isdir(entry):
+            return "not a container or a folder"
+
+        try:                                             # P3
+            names = [n for n in os.listdir(entry) if self._format(n) is not None]
+        except OSError:
+            return None
+        if not names:
+            return None
+        # Indexed containers first, by index (time2 before time10); then by name.
+        first = min(names, key=lambda n: (self._index(n) is None, self._index(n) or 0, n))
+        container = os.path.join(entry, first)
+        arrays = self._arrays(container, self._format(first))
+        if not arrays:
+            return None
+        if len(arrays) > 1:
+            return self.DETECTORS
+        return self._dataset(entry, "P3", self._format(first), [(container, arrays[0])])
+
+    def _dataset(self, entry, packaging, fmt, pieces) -> Dataset | None:
+        """Build the dataset from its first piece, or ``None`` if S is not known yet.
+
+        ``recording:frames_per_stack`` gives S before a single frame is written.
+        Without it S is the piece's leading axes, which are only final once the
+        piece is finished -- a recording grows its leading axis frame by frame.
+        """
+        _, shape, dtype, attrs = pieces[0][1]
+        per_stack = self._int(attrs.get("recording:frames_per_stack"))
+
+        if per_stack is not None and len(shape) == 3:
+            S = (per_stack,)
+        elif bool(attrs.get("writing", False)) or 0 in shape[:-2]:
+            return None
+        else:
+            S = tuple(int(n) for n in shape[:-2])
+
+        if packaging != "P1":
+            T = self._int(attrs.get("recording:num_timepoints"))
+        elif per_stack is None:
+            T = 1                   # a finished array without metadata: one stack
+        else:
+            frames = self._int(attrs.get("recording:expected_frames"))
+            T = frames // per_stack if frames is not None else None
+
+        return Dataset(
+            entry=entry,
+            packaging=packaging,
+            format=fmt,
+            pieces=tuple((container, array[0]) for container, array in pieces),
+            T=T,
+            S=tuple((f"s{i}", size) for i, size in enumerate(S)),
+            frame_shape=(int(shape[-2]), int(shape[-1])),
+            dtype=np.dtype(dtype),
+        )
+
+    @staticmethod
+    def _arrays(container: str, fmt: str) -> list[tuple] | None:
+        """Data arrays as ``(path, shape, dtype, attrs)``; ``None`` if unreadable."""
+        found = []
+
+        def keep(path, node):
+            if node.ndim >= 3:
+                found.append((path, tuple(node.shape), node.dtype, dict(node.attrs)))
+
+        try:
+            if fmt == "hdf5":
+                try:
+                    f = h5py.File(container, "r", libver="latest", swmr=True)
+                except OSError:
+                    f = h5py.File(container, "r")
+                with f:
+                    f.visititems(
+                        lambda path, node: keep(path, node)
+                        if isinstance(node, h5py.Dataset) else None
+                    )
+            else:
+                stack = [("", zarr.open(container, mode="r"))]
+                while stack:
+                    path, node = stack.pop()
+                    if isinstance(node, zarr.Array):
+                        keep(path, node)
+                    else:
+                        stack += [(f"{path}/{n}".lstrip("/"), c) for n, c in node.members()]
+        except Exception:
+            return None   # still being created, held by the writer, half-written
+        return found
+
+    @classmethod
+    def _format(cls, path: str) -> str | None:
+        return cls.FORMATS.get(os.path.splitext(path.rstrip("/\\"))[1].lower())
+
+    @classmethod
+    def _index(cls, name: str) -> int | None:
+        match = cls.INDEX.search(name)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _int(value) -> int | None:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

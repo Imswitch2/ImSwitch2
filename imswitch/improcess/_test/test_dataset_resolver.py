@@ -18,7 +18,11 @@ from imswitch.improcess._test import _lapse_recordings as L
 from imswitch.improcess.controller.DirectoryWatcherController import (
     DirectoryWatcherController,
 )
-from imswitch.improcess.live.dataset_resolver import DatasetResolver, NotRawData, resolve
+from imswitch.improcess.live.dataset_resolver import DatasetResolver
+
+
+def resolve(entry):
+    return DatasetResolver().resolve(entry)
 
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
@@ -48,6 +52,7 @@ def _ext(fmt):
 def _dataset(entry):
     dataset = resolve(str(entry))
     assert dataset is not None, "still pending"
+    assert not isinstance(dataset, str), dataset
     return dataset
 
 
@@ -195,8 +200,7 @@ def test_an_array_without_a_writing_marker_counts_as_finished(tmp_path):
 def test_a_plain_file_is_not_raw_data(tmp_path):
     (tmp_path / "notes.txt").write_text("hello")
 
-    with pytest.raises(NotRawData):
-        resolve(str(tmp_path / "notes.txt"))
+    assert isinstance(resolve(str(tmp_path / "notes.txt")), str)
 
 
 def test_several_unindexed_arrays_are_not_supported_yet(tmp_path):
@@ -204,13 +208,13 @@ def test_several_unindexed_arrays_are_not_supported_yet(tmp_path):
         "CamA/data": ((3, 8, 8), {}), "CamB/data": ((3, 8, 8), {}),
     })
 
-    with pytest.raises(NotRawData, match="detectors"):
-        resolve(path)
+    reason = resolve(path)
+
+    assert isinstance(reason, str) and "detectors" in reason
 
 
 def test_an_entry_that_vanished_is_dropped_not_kept_pending(tmp_path):
-    with pytest.raises(NotRawData):
-        resolve(str(tmp_path / "gone.h5"))
+    assert isinstance(resolve(str(tmp_path / "gone.h5")), str)
 
 
 # --- pending ----------------------------------------------------------------
