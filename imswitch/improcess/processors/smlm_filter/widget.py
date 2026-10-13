@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.analysis.smlm_tables import (
     FILTER_MODES,
     filter_by_property,
+    histogram_edges,
     informative_columns,
 )
 from imswitch.improcess.model.localization_result import LocalizationResult
@@ -48,16 +49,10 @@ _BAND_BRUSHES = {"bandpass": (80, 200, 120, 70), "bandstop": (230, 90, 90, 70)}
 #: Spin-box range. Wide enough for any quantity the table holds; a bound
 #: sitting at either end is read as "open on that side".
 _BOUND_LIMIT = 1e12
-_MAX_BINS = 100
 
-
-def _bin_count(values: np.ndarray) -> int:
-    """Up to :data:`_MAX_BINS` bins, fewer when the values are that few.
-
-    A frame column of forty frames gets forty bins, one per frame, rather
-    than a hundred bins most of which are empty.
-    """
-    return int(min(_MAX_BINS, max(1, np.unique(values).size)))
+#: How long a resize must rest before the histogram is redrawn for the new
+#: width; dragging the dock edge would otherwise recompute it per pixel.
+_REDRAW_DELAY_MS = 150
 
 
 class SmlmFilterWidget(QtWidgets.QWidget):
@@ -125,6 +120,25 @@ class SmlmFilterWidget(QtWidgets.QWidget):
         self._modeChanged(0)
         self._setBoundsActive(False)
 
+        # The bins follow the width the plot really has, which is not known
+        # until it is shown and changes when the dock is resized.
+        self._redrawTimer = QtCore.QTimer(self)
+        self._redrawTimer.setSingleShot(True)
+        self._redrawTimer.setInterval(_REDRAW_DELAY_MS)
+        self._redrawTimer.timeout.connect(self._redrawForWidth)
+
+    def _redrawForWidth(self) -> None:
+        if self._locs is not None:
+            self._refreshHistogram(reset_bounds=False)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 -- Qt override
+        super().resizeEvent(event)
+        self._redrawTimer.start()
+
+    def showEvent(self, event) -> None:  # noqa: N802 -- Qt override
+        super().showEvent(event)
+        self._redrawTimer.start()
+
     def _boundSpin(self, tip: str) -> QtWidgets.QDoubleSpinBox:
         spin = QtWidgets.QDoubleSpinBox()
         spin.setRange(-_BOUND_LIMIT, _BOUND_LIMIT)
@@ -184,12 +198,13 @@ class SmlmFilterWidget(QtWidgets.QWidget):
 
         low, high = float(finite.min()), float(finite.max())
         span = (low, high) if high > low else (low - 0.5, high + 0.5)
-        counts, edges = np.histogram(finite, bins=_bin_count(finite), range=span)
+        edges = histogram_edges(finite, max(1, self.plot.width()))
+        counts, edges = np.histogram(finite, bins=edges)
         self._bars = self.plot.plot(
             edges, counts, stepMode="center", fillLevel=0,
             brush=(100, 150, 255, 120), pen=pg.mkPen((100, 150, 255)),
         )
-        self.plot.setXRange(*span, padding=0.02)
+        self.plot.setXRange(float(edges[0]), float(edges[-1]), padding=0.02)
 
         decimals = 0 if name == "frame" else 2
         step = max((high - low) / 100.0, 10.0 ** -decimals)

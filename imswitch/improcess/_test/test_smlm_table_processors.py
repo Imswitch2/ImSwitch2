@@ -8,6 +8,8 @@ from imswitch.improcess.analysis.smlm_tables import (
     cross_correlation_shift,
     estimate_drift,
     filter_by_property,
+    histogram_bin_count,
+    histogram_edges,
     filter_localizations,
     informative_columns,
     link_localizations,
@@ -310,3 +312,47 @@ def test_smlm_table_processors_accept_only_localization_results():
     for processor in (SmlmFilterProcessor(), SmlmDriftProcessor(), SmlmGroupProcessor()):
         assert processor.accepts(locs_result)
         assert not processor.accepts(image)
+
+
+def test_a_bandstop_with_no_threshold_is_refused_not_emptied():
+    # With neither side set the whole range is the band: it would silently
+    # return an empty table.
+    with pytest.raises(ValueError, match="band-stop needs at least one threshold"):
+        filter_by_property(_locs(), "photons", mode="bandstop")
+    # One side is enough, and a bandpass with none keeps everything.
+    assert filter_by_property(_locs(), "photons", mode="bandstop", upper=1000.0)[1].sum() == 2
+    assert filter_by_property(_locs(), "photons")[1].all()
+
+
+def test_histogram_bins_follow_the_data_and_never_exceed_the_plot():
+    rng = np.random.default_rng(0)
+    values = rng.normal(0.0, 1.0, 100_000)
+    # Freedman-Diaconis: 2 * IQR * n**(-1/3) = 2 * 1.349 / 46.4 = 0.058 wide.
+    assert 100 < histogram_bin_count(values, max_bins=10_000) < 200
+    assert histogram_bin_count(values, max_bins=50) == 50
+    # One far outlier must not decide the count through the range alone.
+    assert histogram_bin_count(np.append(values, 1e9), max_bins=400) == 400
+    # Mostly one value: IQR is zero, Sturges' rule answers.
+    ties = np.append(np.zeros(1000), [5.0])
+    assert histogram_bin_count(ties, max_bins=400) == int(np.ceil(np.log2(1001))) + 1
+    assert histogram_bin_count(np.array([3.0]), max_bins=400) == 1
+    assert histogram_bin_count(np.full(10, 2.0), max_bins=400) == 1
+
+
+def test_whole_numbers_get_one_bin_each_and_other_data_equal_bins():
+    frames = np.repeat(np.arange(40), 25)
+    edges = histogram_edges(frames, max_bins=600)
+    counts, _ = np.histogram(frames, bins=edges)
+    assert len(counts) == 40 and (counts == 25).all()  # no bin holds two frames
+
+    # Whole numbers too many for the plot: equal bins instead.
+    wide = np.arange(0, 20000)
+    assert len(histogram_edges(wide, max_bins=400)) - 1 <= 400
+
+    continuous = np.random.default_rng(0).gamma(4.0, 600.0, 50_000)
+    edges = histogram_edges(continuous, max_bins=600)
+    assert edges[0] == continuous.min() and edges[-1] == continuous.max()
+    assert np.allclose(np.diff(edges), np.diff(edges)[0])
+
+    assert list(histogram_edges(np.full(5, 3.0), max_bins=100)) == [2.5, 3.5]
+    assert list(histogram_edges(np.array([]), max_bins=100)) == [0.0, 1.0]

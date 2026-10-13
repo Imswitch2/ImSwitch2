@@ -48,6 +48,56 @@ def informative_columns(locs) -> tuple[str, ...]:
     return tuple(columns)
 
 
+def histogram_bin_count(values, max_bins: int) -> int:
+    """How many bins to draw ``values`` in, derived from the data.
+
+    The Freedman-Diaconis rule (bin width ``2 * IQR * n**(-1/3)``) and
+    Sturges' rule (``ceil(log2(n)) + 1`` bins) are each what a distribution
+    of that shape needs; numpy's ``auto`` takes the one with the narrower
+    bins and so does this. Freedman-Diaconis alone breaks on a column that is
+    mostly one value (an IQR of zero asks for infinitely narrow bins), and
+    both break on one far outlier (the range, not the bulk, then sets the
+    count). The result is therefore also limited to ``max_bins``: no point in
+    more bars than the plot has pixels for.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    count = values.size
+    if count < 2 or max_bins < 1:
+        return 1
+    span = float(values.max() - values.min())
+    if span <= 0:
+        return 1
+    bins = int(np.ceil(np.log2(count))) + 1
+    q75, q25 = np.percentile(values, [75, 25])
+    iqr = float(q75 - q25)
+    if iqr > 0:
+        bins = max(bins, int(np.ceil(span / (2.0 * iqr * count ** (-1.0 / 3.0)))))
+    return int(min(bins, max_bins))
+
+
+def histogram_edges(values, max_bins: int) -> np.ndarray:
+    """Bin edges to draw ``values`` with.
+
+    A column of whole numbers (a frame index) gets one bin per whole number,
+    centred on it, whenever those fit in ``max_bins``: bins of any other
+    width would put two values in some bins and none in others and draw a
+    distribution that is not there. Everything else gets
+    :func:`histogram_bin_count` equal bins between the smallest and largest
+    value. All values equal gives one bin around that value.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.array([0.0, 1.0])
+    low, high = float(values.min()), float(values.max())
+    if high == low:
+        return np.array([low - 0.5, low + 0.5])
+    if np.all(values == np.round(values)) and (high - low + 1) <= max_bins:
+        return np.arange(low - 0.5, high + 1.0)
+    return np.linspace(low, high, histogram_bin_count(values, max_bins) + 1)
+
+
 def filter_by_property(
     locs,
     column: str,
@@ -76,6 +126,11 @@ def filter_by_property(
     if lower is not None and upper is not None and float(lower) > float(upper):
         raise ValueError(
             f"The lower bound {float(lower):g} is above the upper bound {float(upper):g}"
+        )
+    if mode == "bandstop" and lower is None and upper is None:
+        raise ValueError(
+            "A band-stop needs at least one threshold: with none, the whole "
+            "range is the band and everything would be removed"
         )
     table = as_localizations(locs)
     values = np.asarray(table[column])
@@ -396,6 +451,8 @@ __all__ = [
     "cross_correlation_shift",
     "estimate_drift",
     "filter_by_property",
+    "histogram_bin_count",
+    "histogram_edges",
     "filter_localizations",
     "informative_columns",
     "link_localizations",

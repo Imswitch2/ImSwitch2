@@ -146,3 +146,45 @@ def test_the_panel_button_says_apply_filter_and_follows_the_current_result(qapp)
     assert panel.runButton.isEnabled()
     assert panel.paramWidget.property() == "photons"
     assert panel.parameterValues()["upper"] == 600.0
+
+
+def _big_result(n=50_000, seed=0):
+    rng = np.random.default_rng(seed)
+    photons = rng.gamma(4.0, 600.0, n)
+    locs = localizations_from_columns({
+        "frame": rng.integers(0, 40, n),
+        "x_nm": rng.uniform(0, 5000, n), "y_nm": rng.uniform(0, 5000, n),
+        "photons": photons,
+    })
+    return LocalizationResult("big", locs, pixel_size_nm=100.0)
+
+
+def test_the_histogram_has_as_many_bins_as_the_data_and_the_plot_allow(qapp):
+    widget = SmlmFilterProcessor().make_param_widget(None)
+    widget.resize(900, 400)
+    widget.plot.setFixedWidth(600)
+    widget.setResult(_big_result())
+    xs, counts = widget._bars.getData()
+    # Photons are continuous: bins follow the Freedman-Diaconis width, not a
+    # fixed count, and there are never more than the plot has pixels.
+    bins = len(counts)
+    assert 20 < bins <= 600
+    assert bins != 100
+
+    # A whole-number column of 40 distinct values gets one bin per value.
+    widget.propertyCombo.setCurrentIndex(_columns(widget).index("frame"))
+    assert len(widget._bars.getData()[1]) == 40
+
+    # A narrower plot has room for fewer bars.
+    widget.propertyCombo.setCurrentIndex(_columns(widget).index("photons"))
+    widget.plot.setFixedWidth(60)
+    widget._redrawForWidth()
+    assert len(widget._bars.getData()[1]) <= 60
+
+
+def test_an_open_band_stop_says_why_nothing_runs(qapp):
+    widget = SmlmFilterProcessor().make_param_widget(None)
+    widget.setResult(_result())
+    widget.set_values({"mode": "bandstop", "lower": None, "upper": None})
+    with pytest.raises(ValueError, match="band-stop needs at least one threshold"):
+        SmlmFilterProcessor().apply(_result(), widget.get_values())

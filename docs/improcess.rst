@@ -690,8 +690,12 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``LocalizationResult`` only.  One property at a time (``property``),
        a band on it (``lower``/``upper``, either side open when unset) and a
        ``mode``: ``bandpass`` keeps the rows inside the band, ``bandstop``
-       drops them.  The panel shows the property's histogram with the band
-       drawn on it.
+       drops them; a band-stop with neither side set is refused, since the
+       whole range would be the band.  The panel shows the property's
+       histogram with the band drawn on it.  Its bins are derived from the
+       data (the narrower of the Freedman-Diaconis and Sturges rules, never
+       more than the plot has pixels), and a column of whole numbers such as
+       the frame gets one bin per number.
      - ``LocalizationResult`` with the rows the band keeps; property and
        kept/total counts recorded in name and metadata.  **Apply filter** again
        on the result to filter a second property.  Chains with
