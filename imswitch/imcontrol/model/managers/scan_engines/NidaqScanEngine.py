@@ -222,6 +222,18 @@ class NidaqScanEngine(ScanEngine):
         report = self.assess(program, channels)
         if not report.runnable:
             raise ScanEngineRefused(report)
+        for name, value in (captured_um or {}).items():
+            # a captured origin is a number the positioner reported; one
+            # that is not finite would put NaN into every sample from it
+            try:
+                finite = np.isfinite(float(value))
+            except (TypeError, ValueError):
+                finite = False
+            if not finite:
+                report.add(f'captured {name}', IMPOSSIBLE,
+                           f'The captured position of {name} is {value!r}, not a finite number.')
+        if not report.runnable:
+            raise ScanEngineRefused(report)
         if getattr(program, 'trajectory', None) is not None:
             return self._compileTrajectory(program, report, captured_um)
         try:
@@ -316,6 +328,10 @@ class NidaqScanEngine(ScanEngine):
         for device, positions in positions_um.items():
             factor = self._factor(device, report, f'conversion {device}')
             if factor is None:
+                continue
+            if not np.all(np.isfinite(positions)):
+                report.add(f'path {device}', IMPOSSIBLE,
+                           f'{device}\'s path is not all finite numbers.')
                 continue
             volts = positions / factor
             refusal = scan_voltage_range_refusal(

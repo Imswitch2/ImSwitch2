@@ -485,9 +485,17 @@ def _check_separations(conv, program, events, rate_hz):
         if event.event_id is not None:
             by_step.setdefault((event.step_index, event.event_id), event)
     requested = {e.id: e for e in program.timeline if e.id is not None}
+
+    def edge_s(event_id, edge):
+        # requested in the step's frame: an event anchored on the step's end
+        # is requested at step_s plus its times
+        event = requested[event_id]
+        shift = float(program.step_s) if event.anchor.startswith('pass-end:') else 0.0
+        return float(getattr(event, f'{edge}_s')) + shift
+
     for separation in program.separations:
         (a_id, a_edge), (b_id, b_edge) = separation.after, separation.before
-        want = getattr(requested[b_id], f'{b_edge}_s') - getattr(requested[a_id], f'{a_edge}_s')
+        want = edge_s(b_id, b_edge) - edge_s(a_id, a_edge)
         tolerance = separation.tolerance_s or 0.0
         for (step, event_id), realized in by_step.items():
             if event_id != a_id or (step, b_id) not in by_step:

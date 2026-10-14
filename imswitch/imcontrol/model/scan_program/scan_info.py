@@ -98,6 +98,9 @@ def _raster_refusal(program, schedule) -> str:
     steps = schedule.step_spans()
     if len({realized.ticks for realized in steps}) > 1:
         return 'Its steps are not all the same length on the sample clock.'
+    returns = [r.ticks for r in schedule.spans if r.span.kind == 'return'][:-1]
+    if len(set(returns)) > 1:
+        return 'Its lines are not all the same length: the returns between them differ.'
     phase = program.phase_loop
     if phase is not None and (len(program.loops) < 2 or program.loops[-2] is not phase):
         return (f'The phase loop {phase.id} is not right outside the innermost loop, where '
@@ -119,7 +122,12 @@ def scan_info_for(program, schedule, rate_hz) -> Dict[str, object]:
     dims = [int(loop.count) for loop in image_loops] or [1]
     steps = schedule.step_spans()
     step_ticks = steps[0].ticks if steps else 0
-    returns = [r.ticks for r in schedule.spans if r.span.kind == 'return' and r.ticks]
+    # The return after every pass but the last is part of the line period;
+    # the last one takes the drives to their restore positions and is a
+    # terminal interval, in the total but in no line (it may be longer, when
+    # the program gave the return no duration).
+    all_returns = [r for r in schedule.spans if r.span.kind == 'return']
+    returns = [r.ticks for r in all_returns[:-1] if r.ticks]
     pass_ticks = dims[0] * step_ticks + (returns[0] if returns else 0)
     total = sum(segment.ticks for segment in schedule.segments)
 

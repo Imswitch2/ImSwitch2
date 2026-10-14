@@ -264,7 +264,7 @@ def test_a_time_wait_needs_no_preparation_on_a_step_engine():
     program = ScanProgram(
         loops=(Loop('t', 'time', 2), Loop('z', 'plane', 2)),
         drives=(DeviceDrive('Z', weights_um={'z': 1.0}, motion=Motion(
-            transition='jump', origin='absolute', restore='first')),),
+            transition='jump', origin='absolute', restore='hold')),),
         step_s=1e-3, timeline=(TimelineEvent('L', 'ttl', 0.0, 0.2e-3, during='any'),),
         waits=(Wait('t', 'time', interval_s=1e-3),))
     devices = {'L': DeviceFacts('unknown', 'L: no preparation key')}
@@ -341,7 +341,10 @@ def test_a_zero_weight_on_the_inner_loop_is_no_return_on_the_board():
     from .test_scan_engine_conformance import CHANNELS as CONF, _wire
     program = ScanProgram(
         loops=(Loop('y', 'scan_y', 2), Loop('x', 'scan_x', 2)),
-        drives=(DeviceDrive('X', weights_um={'x': 0.0, 'y': 1.0}, motion=STAGE),),
+        # restore 'hold': a board plays one return time, and this program
+        # gives its returns none (the subject here is the inner loop's)
+        drives=(DeviceDrive('X', weights_um={'x': 0.0, 'y': 1.0},
+                            motion=dataclasses.replace(STAGE, restore='hold')),),
         step_s=10e-3, timeline=(TimelineEvent('L405', 'ttl', 0.0, 4e-3, during='any'),))
     engine = _wire()
     compiled = engine.compile(program, CONF, captured_um={'X': 0.0})

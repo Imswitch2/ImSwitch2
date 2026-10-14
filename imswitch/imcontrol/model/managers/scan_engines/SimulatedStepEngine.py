@@ -217,6 +217,19 @@ class StepEngineBase(SignalInterface, ScanEngine):
                 timeout=None if w.timeout_s is None else ticks(w.timeout_s, 'wait timeout'),
                 on_timeout=w.on_timeout,
             ))
+        # The board waits one return time after every pass, the last one
+        # included; a final return the schedule gives more time (a return of
+        # no duration to the restore positions, played in the drives' move
+        # and settle) cannot be told to it: refused with the way out, so
+        # the board never reports a run done before its drives have settled.
+        pass_return = ticks(return_seconds(program), 'return')
+        final = [s for s in schedule.spans if s.span.kind == 'return']
+        if final and final[-1].ticks != pass_return:
+            refusals.append(
+                f'The return to the restore positions at the end takes '
+                f'{final[-1].ticks} ticks (the drives\' move and settle) while the return '
+                f'after each pass is {pass_return} ticks; a step board plays one return '
+                'time. Give the return that duration (return_s), or restore \'hold\'.')
         plan = StepPlan(
             loops=[(lp.id, int(lp.count), lp.traversal, tuple(lp.parity_loops))
                    for lp in program.loops],

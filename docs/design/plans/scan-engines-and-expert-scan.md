@@ -2378,6 +2378,16 @@ fix is a refusal, with four probes added.
 | 7 | A fractional loop count (3.9) loaded and played as 3 | Refused by `_whole`; phases and `per_step` too |
 | 8 | Engine choice took every channel of a device, so a laser with analog power on the NI-DAQ and a TTL line on a Teensy was refused for a TTL-only program | `program_channels` says which channel each device's operations use; `for_program` considers only those |
 
+**Recheck (same day, of 1a7e7bc7e):** four follow-ups, all fixed, the probe
+file kept as `test_scan_review_round2_followups.py`.
+
+| # | Finding | Fix |
+|---|---|---|
+| R1 | The derived final return was taken as every line's return: `scan_samples_d2_period` 301 for lines 300 ticks apart | The final return is a terminal interval (in the total, in no line); the line period uses the returns between passes; passes whose returns differ refuse the raster |
+| R2 | Both step-board backends compile one `return_ticks` from the program and report the run done before the derived final return has elapsed | Refused on step engines with the way out ("a step board plays one return time: give the return that duration, or restore 'hold'") -- encoding a distinct final return in the plan and the wire protocol is a protocol change, left for a later protocol version |
+| R3 | A trajectory compiled with a NaN captured origin | `compile` refuses a captured position that is not finite (both paths); `_volts` refuses a non-finite path |
+| R4 | `_check_separations` compared requested edges of start- and end-anchored events in different frames | Edges are requested in the step's frame (`+ step_s` for `pass-end` anchors), as `_check_relations` does |
+
 GUI recommendations (six): done now -- 2 (the header wraps; the panel's
 minimum width fell from 622 to 249 px on the test rig; the columns' threshold
 derives from the stretch ratio, so drawing the preview no longer flips them)
