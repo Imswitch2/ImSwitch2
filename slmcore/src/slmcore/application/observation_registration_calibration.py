@@ -154,10 +154,13 @@ class ObservationRegistrationCalibrationContext:
     correspondence_resolved: str
     correspondence_options: tuple[str,...]
     correspondence_diagnostics: Mapping[str,Any]
+    saved_edit_mode: bool
 
     @property
     def fit_enabled(self) -> bool:
-        return self.native_snapshot is not None and self.canonical_snapshot is not None
+        return self.saved_edit_mode or (
+            self.native_snapshot is not None and self.canonical_snapshot is not None
+        )
 
     @property
     def save_enabled(self) -> bool:
@@ -172,6 +175,8 @@ class _ObservationRegistrationWorkflow:
     canonical_snapshot: ObservationRegistrationReferenceSnapshot | None=None
     candidate: ObservationRegistrationCalibration | None=None
     diagnostics: ObservationRegistrationFitDiagnostics | None=None
+    saved_edit_mode: bool=False
+    saved_source: ObservationRegistrationCalibration | None=None
 
 
 class ObservationRegistrationCalibrationService:
@@ -225,6 +230,59 @@ class ObservationRegistrationCalibrationService:
     ) -> ObservationRegistrationCalibrationContext:
         native,plane=self._normalize_scope(native_section_key,observation_plane_name)
         records=self.reference_records(native,plane)
+        saved=self.observation_registration.registration(native,plane)
+        key=(native,plane)
+        workflow=self._workflows.get(key)
+
+        # A persisted registration is itself sufficient for inspection/refitting:
+        # it already stores the resolved native/canonical calibration pairs.
+        # Reopening it must therefore not depend on the original named reference
+        # still existing (session references may have disappeared).
+        if workflow is None and saved is not None:
+            workflow=self._workflow_from_saved(saved)
+            self._workflows[key]=workflow
+
+        if workflow is not None and workflow.saved_edit_mode:
+            source=workflow.saved_source or saved or workflow.candidate
+            if source is None:
+                raise RuntimeError("Saved registration edit workflow lost its source calibration")
+            if workflow.candidate is None:
+                workflow.candidate=source
+            if workflow.diagnostics is None:
+                workflow.diagnostics=self._diagnostics_from_calibration(workflow.candidate)
+            provenance=dict(source.provenance or {})
+            requested=self._saved_correspondence_requested_from_calibration(source)
+            resolved=str(
+                provenance.get("correspondence_resolved")
+                or provenance.get("resolved_correspondence")
+                or dict(provenance.get("correspondence_details") or {}).get("resolved")
+                or requested
+            )
+            details=dict(provenance.get("correspondence_details") or {})
+            details.setdefault("requested",requested)
+            details.setdefault("resolved",resolved)
+            details.setdefault("fit_count",source.point_count)
+            workflow.correspondence_requested=requested
+            workflow.canonical_reference_name=self._saved_reference_name(source)
+            return ObservationRegistrationCalibrationContext(
+                native_section_key=native,
+                canonical_reference_name=workflow.canonical_reference_name,
+                observation_plane_name=plane,
+                native_snapshot=None,
+                canonical_snapshot=None,
+                available_references=records,
+                candidate=workflow.candidate,
+                diagnostics=workflow.diagnostics,
+                saved_registration=saved,
+                latest_native_available=False,
+                common_site_count=source.point_count,
+                correspondence_requested=requested,
+                correspondence_resolved=resolved,
+                correspondence_options=(requested,),
+                correspondence_diagnostics=details,
+                saved_edit_mode=True,
+            )
+
         reference_name=self._choose_reference_name(
             native,plane,canonical_reference_name,records,
         )
@@ -233,7 +291,6 @@ class ObservationRegistrationCalibrationService:
             workflow.canonical_snapshot=self._reference_snapshot(plane,reference_name)
         else:
             workflow.canonical_snapshot=None
-        saved=self.observation_registration.registration(native,plane)
         correspondence_options=self._correspondence_options(workflow.native_snapshot)
         if (
             workflow.native_snapshot is not None
@@ -275,6 +332,7 @@ class ObservationRegistrationCalibrationService:
             correspondence_resolved=correspondence_resolved,
             correspondence_options=correspondence_options,
             correspondence_diagnostics=correspondence_diagnostics,
+            saved_edit_mode=False,
         )
 
     def latest_localization(
@@ -345,9 +403,18 @@ class ObservationRegistrationCalibrationService:
         if str(role or "native").strip().lower()!="native":
             raise ValueError("Canonical registration geometry must come from a saved/session reference")
         native,plane=self._normalize_scope(native_section_key,observation_plane_name)
+        saved_workflow=self._saved_edit_workflow(native,plane)
+        if saved_workflow is not None:
+            raise RuntimeError(
+                "Saved registration samples are fixed. Start a new calibration to use a new localization."
+            )
         records=self.reference_records(native,plane)
         reference_name=self._choose_reference_name(native,plane,canonical_reference_name,records)
         workflow=self._workflow(native,plane,reference_name)
+        if workflow.saved_edit_mode:
+            raise RuntimeError(
+                "Saved registration samples are fixed. Start a new calibration to use a new localization."
+            )
         snapshot=self.latest_localization(native,plane)
         if snapshot is None:
             raise RuntimeError(
@@ -373,6 +440,11 @@ class ObservationRegistrationCalibrationService:
         if str(role or "native").strip().lower()!="native":
             raise ValueError("Canonical registration geometry is selected from named references")
         native,plane=self._normalize_scope(native_section_key,observation_plane_name)
+        workflow=self._saved_edit_workflow(native,plane)
+        if workflow is not None:
+            raise RuntimeError(
+                "Saved registration samples are fixed. Start a new calibration to acquire new samples."
+            )
         if self.session.feedback.active_observation_plane(native)!=plane:
             self.session.feedback.select_observation_plane(native,plane)
         requester=self._localization_requester
@@ -397,6 +469,11 @@ class ObservationRegistrationCalibrationService:
         """
         self._require_editor_mode()
         native,plane=self._normalize_scope(native_section_key,observation_plane_name)
+        existing=self._saved_edit_workflow(native,plane)
+        if existing is not None:
+            raise RuntimeError(
+                "Correspondence is fixed for a saved registration. Start a new calibration to change it."
+            )
         records=self.reference_records(native,plane)
         reference_name=self._choose_reference_name(
             native,plane,canonical_reference_name,records,
@@ -406,6 +483,10 @@ class ObservationRegistrationCalibrationService:
                 "Select a canonical saved/session reference before choosing correspondence."
             )
         workflow=self._workflow(native,plane,reference_name)
+        if workflow.saved_edit_mode:
+            raise RuntimeError(
+                "Correspondence is fixed for a saved registration. Start a new calibration to change it."
+            )
         workflow.canonical_snapshot=self._reference_snapshot(plane,reference_name)
         if workflow.native_snapshot is None:
             raise RuntimeError(
@@ -438,20 +519,47 @@ class ObservationRegistrationCalibrationService:
     ) -> ObservationRegistrationCalibration:
         self._require_editor_mode()
         native,plane=self._normalize_scope(native_section_key,observation_plane_name)
-        records=self.reference_records(native,plane)
-        reference_name=self._choose_reference_name(native,plane,canonical_reference_name,records)
-        if not reference_name:
-            raise RuntimeError("Select a canonical saved/session reference before fitting registration.")
-        workflow=self._workflow(native,plane,reference_name)
-        workflow.canonical_snapshot=self._reference_snapshot(plane,reference_name)
-        if workflow.native_snapshot is None:
-            raise RuntimeError("Use the accepted native localization before fitting registration.")
         normalized_model=str(model or "").strip().lower()
         if normalized_model not in {TRANSFORM_AFFINE,TRANSFORM_POLYNOMIAL}:
             raise ValueError("Observation-registration calibration supports affine or polynomial fits")
         degree=int(polynomial_degree)
         if normalized_model==TRANSFORM_POLYNOMIAL and degree not in {2,3,4}:
             raise ValueError("Observation-registration polynomial degree must be 2, 3, or 4")
+
+        existing=self._saved_edit_workflow(native,plane)
+        if existing is not None:
+            source=existing.saved_source or existing.candidate
+            if source is None:
+                raise RuntimeError("Saved registration edit workflow has no calibration samples")
+            refit_provenance=dict(source.provenance or {})
+            refit_provenance.update({
+                "refit_from_saved_registration":True,
+                "refit_source_created_at":source.created_at,
+            })
+            refit_provenance.update(dict(provenance or {}))
+            existing.candidate=fit_observation_registration(
+                source.native_frame,source.canonical_frame,
+                source.native_points_px,source.canonical_points_px,
+                model=normalized_model,polynomial_degree=degree,
+                provenance=refit_provenance,
+            )
+            existing.diagnostics=self._diagnostics_from_calibration(existing.candidate)
+            return existing.candidate
+
+        records=self.reference_records(native,plane)
+        reference_name=self._choose_reference_name(native,plane,canonical_reference_name,records)
+        if not reference_name:
+            raise RuntimeError("Select a canonical saved/session reference before fitting registration.")
+        workflow=self._workflow(native,plane,reference_name)
+        if workflow.saved_edit_mode:
+            # This can happen if a saved workflow was hydrated between the checks above.
+            return self.fit(
+                native,plane,workflow.canonical_reference_name,model=normalized_model,
+                polynomial_degree=degree,provenance=provenance,
+            )
+        workflow.canonical_snapshot=self._reference_snapshot(plane,reference_name)
+        if workflow.native_snapshot is None:
+            raise RuntimeError("Use the accepted native localization before fitting registration.")
         native_points,canonical_points,site_ids,correspondence=self._matched_points(
             workflow.native_snapshot,workflow.canonical_snapshot,
             workflow.correspondence_requested,
@@ -493,20 +601,7 @@ class ObservationRegistrationCalibrationService:
             polynomial_degree=degree,
             provenance=fit_provenance,
         )
-        transformed_native=workflow.candidate.native_to_canonical(native_points)
-        transformed_canonical=workflow.candidate.canonical_to_native(canonical_points)
-        workflow.diagnostics=ObservationRegistrationFitDiagnostics(
-            native_points_px=native_points,
-            canonical_points_px=canonical_points,
-            transformed_native_points_px=transformed_native,
-            forward_residual_vectors_px=canonical_points-transformed_native,
-            transformed_canonical_points_px=transformed_canonical,
-            reverse_residual_vectors_px=native_points-transformed_canonical,
-            forward_rms_residual_px=workflow.candidate.forward_transform.rms_residual,
-            forward_max_residual_px=workflow.candidate.forward_transform.max_residual,
-            reverse_rms_residual_px=workflow.candidate.reverse_transform.rms_residual,
-            reverse_max_residual_px=workflow.candidate.reverse_transform.max_residual,
-        )
+        workflow.diagnostics=self._diagnostics_from_calibration(workflow.candidate)
         return workflow.candidate
 
     def save(
@@ -517,10 +612,49 @@ class ObservationRegistrationCalibrationService:
     ) -> ObservationRegistrationCalibration:
         self._require_editor_mode()
         native,plane=self._normalize_scope(native_section_key,observation_plane_name)
-        workflow=self._workflow(native,plane,str(canonical_reference_name or "").strip())
+        workflow=self._workflows.get((native,plane))
+        if workflow is None:
+            workflow=self._workflow(native,plane,str(canonical_reference_name or "").strip())
         if workflow.candidate is None:
             raise RuntimeError("Fit an observation registration before saving.")
-        return self.observation_registration.save(workflow.candidate)
+        saved=self.observation_registration.save(workflow.candidate)
+        # After persistence the calibration pairs become the immutable source for
+        # inspection/refitting.  Reference/correspondence editing is intentionally
+        # disabled from this point; start_new_calibration() explicitly leaves this mode.
+        workflow.saved_edit_mode=True
+        workflow.saved_source=saved
+        workflow.candidate=saved
+        workflow.diagnostics=self._diagnostics_from_calibration(saved)
+        workflow.native_snapshot=None
+        workflow.canonical_snapshot=None
+        workflow.canonical_reference_name=self._saved_reference_name(saved)
+        workflow.correspondence_requested=self._saved_correspondence_requested_from_calibration(saved)
+        return saved
+
+    def start_new_calibration(
+        self,
+        native_section_key: str,
+        observation_plane_name: str,
+        canonical_reference_name: str | None=None,
+    ) -> ObservationRegistrationCalibrationContext:
+        """Leave saved-edit mode and start a fresh reference/localization workflow."""
+        self._require_editor_mode()
+        native,plane=self._normalize_scope(native_section_key,observation_plane_name)
+        records=self.reference_records(native,plane)
+        if not records:
+            raise RuntimeError(
+                "No saved/session position reference is available for this observation plane. "
+                "Create a canonical position reference before starting a new calibration."
+            )
+        requested=str(canonical_reference_name or "").strip()
+        names={record.name for record in records}
+        if requested not in names:
+            requested=""
+        reference_name=self._choose_reference_name(native,plane,requested or None,records)
+        self._workflows[(native,plane)]=_ObservationRegistrationWorkflow(
+            canonical_reference_name=reference_name,correspondence_requested="auto",
+        )
+        return self.context(native,plane,reference_name)
 
     def delete(self,native_section_key: str,observation_plane_name: str) -> None:
         self._require_editor_mode()
@@ -528,6 +662,7 @@ class ObservationRegistrationCalibrationService:
         plane=self._require_plane(observation_plane_name)
         self._require_section(native)
         self.observation_registration.delete(native,plane)
+        self._workflows.pop((native,plane),None)
 
     def cancel(self,native_section_key: str,observation_plane_name: str) -> None:
         self.clear(native_section_key,observation_plane_name)
@@ -544,36 +679,85 @@ class ObservationRegistrationCalibrationService:
         self.prepare_runtime_change()
         self._localization_requester=None
 
+    def _saved_edit_workflow(
+        self,native_section_key: str,plane: str,
+    ) -> _ObservationRegistrationWorkflow | None:
+        workflow=self._workflows.get((native_section_key,plane))
+        if workflow is None and self.observation_registration.registration(native_section_key,plane) is not None:
+            workflow=self._workflow(native_section_key,plane,"")
+        return workflow if workflow is not None and workflow.saved_edit_mode else None
+
     def _workflow(
         self,native_section_key: str,plane: str,canonical_reference_name: str,
     ) -> _ObservationRegistrationWorkflow:
         key=(native_section_key,plane)
         workflow=self._workflows.get(key)
-        if workflow is None or workflow.canonical_reference_name!=canonical_reference_name:
+        if workflow is None:
+            saved=self.observation_registration.registration(native_section_key,plane)
+            if saved is not None:
+                workflow=self._workflow_from_saved(saved)
+            else:
+                workflow=_ObservationRegistrationWorkflow(
+                    canonical_reference_name=canonical_reference_name,
+                    correspondence_requested="auto",
+                )
+            self._workflows[key]=workflow
+        elif not workflow.saved_edit_mode and workflow.canonical_reference_name!=canonical_reference_name:
             workflow=_ObservationRegistrationWorkflow(
                 canonical_reference_name=canonical_reference_name,
-                correspondence_requested=self._saved_correspondence_requested(
-                    native_section_key,plane,canonical_reference_name,
-                ),
+                correspondence_requested="auto",
             )
             self._workflows[key]=workflow
         return workflow
 
-    def _saved_correspondence_requested(
-        self,native_section_key: str,plane: str,canonical_reference_name: str,
+    def _workflow_from_saved(
+        self,calibration: ObservationRegistrationCalibration,
+    ) -> _ObservationRegistrationWorkflow:
+        return _ObservationRegistrationWorkflow(
+            canonical_reference_name=self._saved_reference_name(calibration),
+            correspondence_requested=self._saved_correspondence_requested_from_calibration(calibration),
+            candidate=calibration,
+            diagnostics=self._diagnostics_from_calibration(calibration),
+            saved_edit_mode=True,
+            saved_source=calibration,
+        )
+
+    @staticmethod
+    def _saved_reference_name(calibration: ObservationRegistrationCalibration) -> str:
+        provenance=dict(calibration.provenance or {})
+        return str(provenance.get("canonical_reference_name") or "").strip()
+
+    @classmethod
+    def _saved_correspondence_requested_from_calibration(
+        cls,calibration: ObservationRegistrationCalibration,
     ) -> str:
-        saved=self.observation_registration.registration(native_section_key,plane)
-        if saved is None:
-            return "auto"
-        provenance=dict(saved.provenance or {})
-        saved_name=str(provenance.get("canonical_reference_name") or "").strip()
-        if saved_name and saved_name!=str(canonical_reference_name or "").strip():
-            return "auto"
+        provenance=dict(calibration.provenance or {})
         requested=provenance.get("correspondence_requested")
         if requested is None:
-            # Registrations produced by the minimal validation patch were AUTO-only.
+            # Registrations produced by the initial AUTO-only patch were always AUTO.
             return "auto"
-        return self._normalize_correspondence_request(requested)
+        return cls._normalize_correspondence_request(requested)
+
+    @staticmethod
+    def _diagnostics_from_calibration(
+        calibration: ObservationRegistrationCalibration,
+    ) -> ObservationRegistrationFitDiagnostics:
+        native=np.asarray(calibration.native_points_px,dtype=np.float64)
+        canonical=np.asarray(calibration.canonical_points_px,dtype=np.float64)
+        transformed_native=calibration.native_to_canonical(native)
+        transformed_canonical=calibration.canonical_to_native(canonical)
+        return ObservationRegistrationFitDiagnostics(
+            native_points_px=native,
+            canonical_points_px=canonical,
+            transformed_native_points_px=transformed_native,
+            forward_residual_vectors_px=canonical-transformed_native,
+            transformed_canonical_points_px=transformed_canonical,
+            reverse_residual_vectors_px=native-transformed_canonical,
+            forward_rms_residual_px=calibration.forward_transform.rms_residual,
+            forward_max_residual_px=calibration.forward_transform.max_residual,
+            reverse_rms_residual_px=calibration.reverse_transform.rms_residual,
+            reverse_max_residual_px=calibration.reverse_transform.max_residual,
+        )
 
     def _choose_reference_name(
         self,native: str,plane: str,requested: str | None,

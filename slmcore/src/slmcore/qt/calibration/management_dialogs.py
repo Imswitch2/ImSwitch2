@@ -856,6 +856,9 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         item=self.registration_list.currentItem()
         row={} if item is None else dict(item.data(QtCore.Qt.UserRole+1) or {})
         status=str(row.get("status") or "")
+        self.registration_calibrate.setText(
+            "Inspect / Refit" if status=="Registered" else "Register"
+        )
         self.registration_calibrate.setEnabled(
             item is not None and self.registration_list.count()>1 and status!="Canonical"
         )

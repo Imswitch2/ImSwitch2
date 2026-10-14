@@ -1001,7 +1001,8 @@ class CalibrationManager(QtCore.QObject):
             return
         calibration=self.controller.observation_registration_calibration_service
         references=calibration.reference_records(section_key,plane_name)
-        if not references:
+        saved_registration=registration_service.registration(section_key,plane_name)
+        if not references and saved_registration is None:
             self._error(
                 "Observation registration",
                 RuntimeError(
@@ -1015,7 +1016,7 @@ class CalibrationManager(QtCore.QObject):
             initial=calibration.context(section_key,plane_name)
             selected=initial.canonical_reference_name
         except Exception:
-            selected=references[0].name
+            selected=references[0].name if references else ""
         widget=ObservationRegistrationCalibrationWidget(
             native_section_key=section_key,
             native_section_title=self.controller.section_host.section_title(section_key),
@@ -1041,6 +1042,9 @@ class CalibrationManager(QtCore.QObject):
             lambda model,degree,key=section_key,plane=plane_name:self._registration_fit(key,plane,model,degree)
         )
         widget.sigSaveRequested.connect(lambda key=section_key,plane=plane_name:self._registration_save(key,plane))
+        widget.sigNewCalibrationRequested.connect(
+            lambda key=section_key,plane=plane_name:self._registration_start_new(key,plane)
+        )
         widget.sigCancelRequested.connect(lambda key=section_key,plane=plane_name:self._registration_cancel(key,plane))
         widget.sigRefreshRequested.connect(lambda key=section_key,plane=plane_name:self._render_observation_registration(key,plane,quiet=True))
         self._embedded_workflow=("registration",section_key)
@@ -1054,11 +1058,10 @@ class CalibrationManager(QtCore.QObject):
         widget=self._registration_widget
         if widget is None or self._embedded_workflow!=("registration",section_key):return
         reference=widget.canonical_reference_name
-        if not reference:return
         try:
             service=self.controller.observation_registration_calibration_service
             try:
-                context=service.context(section_key,plane_name,reference)
+                context=service.context(section_key,plane_name,reference or None)
             except FileNotFoundError:
                 # A session reference may be deleted while this workspace is
                 # open. Fall back to the remaining reference catalog instead
@@ -1119,7 +1122,19 @@ class CalibrationManager(QtCore.QObject):
                 section_key,plane_name,widget.canonical_reference_name,
             )
             widget.clear_error(); self._refresh_observation_context(plane_name)
-            self._management_finish_embedded_workflow(section_key)
+            # Stay in the workspace: after save the service switches to saved-edit
+            # mode so the persisted result remains inspectable/refittable immediately.
+            self._render_observation_registration(section_key,plane_name)
+        except Exception as error:widget.set_error(error)
+
+    def _registration_start_new(self,section_key: str,plane_name: str) -> None:
+        widget=self._registration_widget
+        if widget is None:return
+        try:
+            self.controller.observation_registration_calibration_service.start_new_calibration(
+                section_key,plane_name,
+            )
+            widget.clear_error(); self._render_observation_registration(section_key,plane_name)
         except Exception as error:widget.set_error(error)
 
     def _registration_cancel(self,section_key: str,plane_name: str) -> None:

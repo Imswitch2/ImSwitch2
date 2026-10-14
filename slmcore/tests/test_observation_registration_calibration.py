@@ -300,7 +300,7 @@ def test_manual_registration_correspondence_rejects_shape_incompatible_choice(tm
         )
 
 
-def test_saved_manual_correspondence_is_restored_for_recalibration(tmp_path):
+def test_saved_manual_correspondence_is_read_only_until_new_calibration(tmp_path):
     session,_store=_session(tmp_path,nx=5,ny=4)
     native=_grid(5,4)
     native_localization,_measurement=_attach_localization(
@@ -321,10 +321,19 @@ def test_saved_manual_correspondence_is_restored_for_recalibration(tmp_path):
     service.save("sec_0","Intermediate","488-flipped")
 
     service.prepare_runtime_change()
-    service.use_latest_localization("sec_0","Intermediate","488-flipped")
     context=service.context("sec_0","Intermediate","488-flipped")
+    assert context.saved_edit_mode
     assert context.correspondence_requested=="flip_x"
     assert context.correspondence_resolved=="flip_x"
+    assert context.correspondence_options==("flip_x",)
+    with pytest.raises(RuntimeError,match="Correspondence is fixed"):
+        service.set_correspondence(
+            "sec_0","Intermediate","488-flipped","canonical",
+        )
+
+    fresh=service.start_new_calibration("sec_0","Intermediate","488-flipped")
+    assert not fresh.saved_edit_mode
+    assert fresh.correspondence_requested=="auto"
 
 
 def test_cross_slm_session_reference_can_define_canonical_frame(tmp_path):
@@ -498,7 +507,68 @@ def test_saved_registration_is_available_after_session_reload(tmp_path):
     assert context.saved_registration is not None
     assert context.saved_registration.native_frame == saved.native_frame
     assert context.saved_registration.canonical_frame == saved.canonical_frame
-    assert context.canonical_snapshot is not None
+    assert context.saved_edit_mode
+    assert context.canonical_snapshot is None
+    assert context.fit_enabled
+    assert context.diagnostics is not None
+
+
+def test_saved_registration_refits_without_original_session_reference(tmp_path):
+    session,store=_session(tmp_path)
+    native=_grid(); canonical=native+np.array([[2.0],[-3.0]])
+    _attach_localization(session,"sec_0",native)
+    _add_reference(session,"sec_1",canonical,name="session-ref",lifetime="session")
+    service=session.observation_registration_calibration
+    service.use_latest_localization("sec_0","Intermediate","session-ref")
+    service.fit("sec_0","Intermediate","session-ref",model="affine")
+    saved=service.save("sec_0","Intermediate","session-ref")
+    session.dispose()
+
+    reloaded=SLMSession(
+        runtime=_runtime(),
+        observation_plane_store=ObservationPlaneStore(tmp_path/"planes"),
+        observation_registration_store=store,
+        position_reference_store=PositionReferenceStore(tmp_path/"references"),
+    )
+    service=reloaded.observation_registration_calibration
+    assert service.reference_records("sec_0","Intermediate")==()
+    context=service.context("sec_0","Intermediate")
+    assert context.saved_edit_mode
+    assert context.canonical_reference_name=="session-ref"
+    np.testing.assert_allclose(context.candidate.native_points_px,saved.native_points_px)
+    np.testing.assert_allclose(context.candidate.canonical_points_px,saved.canonical_points_px)
+
+    candidate=service.fit(
+        "sec_0","Intermediate","session-ref",model="polynomial",polynomial_degree=2,
+    )
+    assert candidate.transform_model=="polynomial"
+    assert candidate.polynomial_degree==2
+    np.testing.assert_allclose(candidate.native_points_px,saved.native_points_px)
+    np.testing.assert_allclose(candidate.canonical_points_px,saved.canonical_points_px)
+    assert candidate.provenance["correspondence_requested"]==saved.provenance["correspondence_requested"]
+    assert candidate.provenance["refit_from_saved_registration"] is True
+
+    updated=service.save("sec_0","Intermediate","session-ref")
+    assert updated.transform_model=="polynomial"
+    assert service.context("sec_0","Intermediate").saved_edit_mode
+
+
+def test_save_switches_live_registration_workflow_to_saved_edit_mode(tmp_path):
+    session,_store=_session(tmp_path)
+    native=_grid(); canonical=native+1.0
+    _attach_localization(session,"sec_0",native)
+    _add_reference(session,"sec_1",canonical,name="488-ref")
+    service=session.observation_registration_calibration
+    service.use_latest_localization("sec_0","Intermediate","488-ref")
+    service.fit("sec_0","Intermediate","488-ref",model="affine")
+    before=service.context("sec_0","Intermediate","488-ref")
+    assert not before.saved_edit_mode
+    service.save("sec_0","Intermediate","488-ref")
+    after=service.context("sec_0","Intermediate","488-ref")
+    assert after.saved_edit_mode
+    assert after.native_snapshot is None
+    assert after.canonical_snapshot is None
+    assert after.diagnostics is not None
 
 
 def test_calibration_rejects_reference_from_native_observation_frame(tmp_path):
