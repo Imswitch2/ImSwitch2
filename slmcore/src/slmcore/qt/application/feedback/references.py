@@ -40,11 +40,12 @@ class PositionReferenceCoordinator:
         )
 
     def synchronize(
-        self,section_key: str,window: "CGHSessionWindow",
+        self,section_key: str,window: "CGHSessionWindow",*,lightweight: bool=False,
     ) -> None:
         context,preview=self._feedback.position_reference_presentation(section_key)
         window.set_position_reference_state(
             self._ui_context_from_context(context),preview,
+            lightweight=bool(lightweight),
         )
 
     def _ui_context_from_context(self,context: Any) -> dict[str,Any]:

@@ -38,6 +38,9 @@ class FeedbackComponent:
     def _section_changed(self,section_key: str) -> None:
         self._callbacks.on_section_changed(section_key)
 
+    def _feedback_state_changed(self,section_key: str) -> None:
+        self._callbacks.on_feedback_state_changed(section_key)
+
     def _position_reference_changed(self,section_key: str) -> None:
         self._callbacks.on_position_reference_changed(section_key)
 

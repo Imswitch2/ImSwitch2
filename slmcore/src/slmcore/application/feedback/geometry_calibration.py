@@ -72,7 +72,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
             section=str(section_key)
             if self._runtime.get_section_feedback_status(section).localization_available:
                 self._update_committed_analysis_callback(section,None)
-            self._section_changed(section)
+            self._feedback_state_changed(section)
 
     def dispose(self) -> None:
         if self._observation_geometry is not None:

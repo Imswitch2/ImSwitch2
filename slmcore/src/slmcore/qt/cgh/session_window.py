@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from enum import Enum
 from typing import Any,Mapping,Sequence
 
@@ -146,6 +147,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._cgh_computing = False
         self._candidate_current = False
         self._candidate_metrics: IntensityAnalysis | None = None
+        self._displayed_integration_preview = None
         self._selected_position_context = _POSITION_CORRECTED
         self._selected_round_key: str | None = None
         self._propagation_round_index: int | None = None
@@ -2072,6 +2074,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._cgh_summary = dict(cgh_summary)
         self._normal_localization_context=dict(localization_context or {})
         self.measurement_view.set_context(self._normal_localization_context)
+        self.measurement_view.set_parameters(
+            status.localization_params,invalidate_candidate=False,
+        )
         self.intensity_form.set_values(status.intensity_params,emit=False)
         self._populate_position_selector()
         self._populate_round_selector(follow_latest=follow_latest)
@@ -2079,6 +2084,27 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._sync_selected_round()
         self._refresh_status_controls()
         self._refresh_feedback_visualizations()
+        if self._automatic_operation_active:
+            self._apply_automatic_interaction_lock()
+
+    def set_feedback_state(
+        self,
+        status: FeedbackStatus,
+        inspection: FeedbackInspection,
+        localization_context: Mapping[str,Any] | None=None,
+    ) -> None:
+        """Refresh measurement/localization controls without rebuilding CGH round views."""
+        self._status=status
+        self._inspection=inspection
+        self._session_inspection=replace(
+            self._session_inspection,measurement=inspection.measurement,
+        )
+        self._normal_localization_context=dict(localization_context or {})
+        self.measurement_view.set_context(self._normal_localization_context)
+        self.intensity_form.set_values(status.intensity_params,emit=False)
+        self._refresh_header()
+        self._sync_selected_round()
+        self._refresh_status_controls()
         if self._automatic_operation_active:
             self._apply_automatic_interaction_lock()
 
@@ -2450,11 +2476,13 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if acquisition is None:
             if current is not None:
                 self.measurement_view.clear_measurement()
+            self._displayed_integration_preview = None
             self._candidate_metrics = None
             self._refresh_metrics_display(None)
         else:
             if changed:
                 self.measurement_view.set_measurement(acquisition)
+                self._displayed_integration_preview = None
                 self.measurement_view.set_parameters(
                     self._status.localization_params,
                     invalidate_candidate=False,
@@ -2463,7 +2491,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
             committed = measurement.localization
             if committed is not None:
                 candidate = self.measurement_view.candidate
-                if candidate is None or candidate is committed:
+                if (
+                    (candidate is None or candidate is committed)
+                    and self.measurement_view.committed_result is not committed
+                ):
                     self.measurement_view.set_committed_result(
                         committed,committed.parameters,
                     )
@@ -2627,9 +2658,12 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         preview = None if metrics is None else getattr(metrics,"integration_preview",None)
         if preview is None:
-            self.measurement_view.clear_auxiliary_image("Integration")
-        else:
+            if self._displayed_integration_preview is not None:
+                self.measurement_view.clear_auxiliary_image("Integration")
+                self._displayed_integration_preview = None
+        elif preview is not self._displayed_integration_preview:
             self.measurement_view.set_auxiliary_image("Integration",preview)
+            self._displayed_integration_preview = preview
 
     def _refresh_feedback_visualizations(self) -> None:
         selected = self._selected_round()
@@ -2682,7 +2716,11 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 preview,
                 center_editable=(mode == "editable" and change_allowed),
             )
-            self._apply_position_background_image()
+            # set_preview() already installs the localization image when the
+            # localization changes. Only re-apply an explicit visual snap here;
+            # otherwise this would upload/autolevel the same detector image twice.
+            if self._position_background_mode == "visual_snap":
+                self._apply_position_background_image()
             self.position_correction_view.set_data(
                 ideal_positions_kxy=preview.get(
                     "baseline_positions_kxy",preview.get("ideal_positions_kxy")

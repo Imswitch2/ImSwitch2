@@ -591,6 +591,7 @@ class PositionReferenceView(QtWidgets.QWidget):
     def __init__(self,parent: QtWidgets.QWidget | None=None) -> None:
         super().__init__(parent)
         self._preview = None
+        self._measurement_id = None
         self._reference_positions = None
         self._raw_reference_positions = None
         self._measured_positions = None
@@ -879,8 +880,14 @@ class PositionReferenceView(QtWidgets.QWidget):
         ):
             raise ValueError("Position-reference preview point arrays must share shape")
 
+        measurement_id = preview.get("measurement_id")
+        measurement_changed = bool(
+            measurement_id is not None
+            and measurement_id != self._measurement_id
+        )
         reset_view = (
             self._preview is None
+            or measurement_changed
             or self._measured_positions is None
             or self._measured_positions.shape != measured.shape
             or not np.array_equal(self._measured_positions,measured)
@@ -896,6 +903,7 @@ class PositionReferenceView(QtWidgets.QWidget):
         )
 
         self._preview = dict(preview)
+        self._measurement_id = measurement_id
         self._crop_offset_px=np.asarray(
             preview.get("crop_offset_px",(0.0,0.0)),dtype=np.float64,
         ).reshape(2)
@@ -982,6 +990,7 @@ class PositionReferenceView(QtWidgets.QWidget):
     def clear(self) -> None:
         self._live_preview_timer.stop()
         self._preview = None
+        self._measurement_id = None
         self._reference_positions = None
         self._display_predicted_positions = None
         self._raw_reference_positions = None

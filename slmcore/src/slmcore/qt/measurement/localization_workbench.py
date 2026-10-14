@@ -952,6 +952,10 @@ class LocalizationWorkbench(QtWidgets.QWidget):
         return self._candidate
 
     @property
+    def committed_result(self):
+        return self._committed_result
+
+    @property
     def candidate_parameters(self) -> Mapping[str, Any] | None:
         return (
             None if self._candidate_parameters is None

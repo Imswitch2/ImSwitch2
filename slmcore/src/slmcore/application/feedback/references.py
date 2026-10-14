@@ -879,6 +879,7 @@ class PositionReferenceService(FeedbackComponent):
                 else np.mean(reference,axis=1)
             )
             return {
+                "measurement_id":measurement.acquisition.measurement_id,
                 "cropped_image":np.asarray(localization.cropped_image,dtype=np.float64),
                 "crop_offset_px":np.asarray(
                     [float(localization.crop_coord[2]),float(localization.crop_coord[0])],

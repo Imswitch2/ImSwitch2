@@ -170,7 +170,7 @@ class FeedbackCoordinator(QtCore.QObject):
                     lambda _obj=None,key=section_key:
                         self._windows.pop(key,None)
                 )
-                self._references.synchronize(section_key,window)
+                self._references.synchronize(section_key,window,lightweight=True)
                 self._synchronize_geometry_warning(section_key,window)
             else:
                 window.configure_observation_planes(
@@ -198,7 +198,7 @@ class FeedbackCoordinator(QtCore.QObject):
 
     def refresh_observation_planes(self) -> None:
         for section_key in tuple(self._windows):
-            self.synchronize_section(section_key)
+            self.synchronize_feedback_state(section_key)
 
     def _define_observation_plane(self,section_key: str) -> None:
         window=self._windows.get(section_key)
@@ -206,12 +206,9 @@ class FeedbackCoordinator(QtCore.QObject):
             section_key=section_key,parent=window,
         )
         if name is None:
-            self.synchronize_section(section_key)
+            self.synchronize_feedback_state(section_key)
             return
-        try:
-            self._feedback_service.select_observation_plane(section_key,name)
-        finally:
-            self.synchronize_section(section_key)
+        self._feedback_service.select_observation_plane(section_key,name)
 
     def synchronize_section(self,section_key: str) -> None:
         window = self._windows.get(section_key)
@@ -240,7 +237,36 @@ class FeedbackCoordinator(QtCore.QObject):
                 section_key,inspection=session_inspection,
             ),
         )
-        self._references.synchronize(section_key,window)
+        self._references.synchronize(section_key,window,lightweight=True)
+        self._synchronize_geometry_warning(section_key,window)
+        self._automatic.configure_availability(window)
+        self._automatic.apply_state_to_window(section_key,window)
+
+    def synchronize_feedback_state(self,section_key: str) -> None:
+        """Refresh feedback/measurement state without rebuilding CGH round inspection."""
+        window=self._windows.get(section_key)
+        if window is None:
+            return
+        runtime=self._qt_session.runtime
+        observation_planes=tuple(
+            plane.name for plane in self._feedback_service.observation_planes()
+        )
+        current_observation=self._feedback_service.active_observation_plane(
+            section_key
+        )
+        sources=self.available_sources(section_key)
+        window.configure_observation_planes(
+            observation_planes,current_observation,
+        )
+        window.configure_detectors(
+            sources,self.preferred_source(section_key,sources),
+        )
+        window.set_feedback_state(
+            runtime.get_section_feedback_status(section_key),
+            runtime.get_section_feedback_inspection(section_key),
+            self.localization_context(section_key),
+        )
+        self._references.synchronize(section_key,window,lightweight=True)
         self._synchronize_geometry_warning(section_key,window)
         self._automatic.configure_availability(window)
         self._automatic.apply_state_to_window(section_key,window)
@@ -249,7 +275,7 @@ class FeedbackCoordinator(QtCore.QObject):
         """Refresh only position-reference presentation for one open window."""
         window=self._windows.get(section_key)
         if window is not None:
-            self._references.synchronize(section_key,window)
+            self._references.synchronize(section_key,window,lightweight=True)
 
     def _synchronize_geometry_warning(
         self,section_key: str,window: CGHSessionWindow,

@@ -96,11 +96,13 @@ class _Dispatcher:
 
 def test_feedback_service_commits_measurement_without_qt():
     runtime = _runtime()
-    changed = []
+    section_refreshes = []
+    feedback_refreshes = []
     session = SLMSession(
         runtime=runtime,
         callbacks=SLMSessionCallbacks(
-            on_section_refresh_requested=changed.append,
+            on_section_refresh_requested=section_refreshes.append,
+            on_feedback_state_changed=feedback_refreshes.append,
         ),
     )
     measurement = ImageMeasurement(
@@ -113,7 +115,41 @@ def test_feedback_service_commits_measurement_without_qt():
     inspection = runtime.get_section_feedback_inspection("sec_0")
     assert inspection.measurement is not None
     assert inspection.measurement.acquisition.measurement_id == measurement.measurement_id
-    assert changed[-1] == "sec_0"
+    assert section_refreshes == []
+    assert feedback_refreshes == ["sec_0"]
+
+
+def test_measurement_context_changes_use_feedback_state_refresh_and_noop_params_do_not_refresh(tmp_path):
+    runtime=_runtime()
+    store=ObservationPlaneStore(tmp_path / "observations")
+    store.add(ObservationPlaneDefinition(name="Main",preferred_detector="cam"))
+    store.add(ObservationPlaneDefinition(name="Intermediate"))
+    section_refreshes=[]
+    feedback_refreshes=[]
+    session=SLMSession(
+        runtime=runtime,
+        observation_plane_store=store,
+        callbacks=SLMSessionCallbacks(
+            on_section_refresh_requested=section_refreshes.append,
+            on_feedback_state_changed=feedback_refreshes.append,
+        ),
+    )
+
+    assert session.feedback.select_observation_plane("sec_0","Main")
+    assert section_refreshes == []
+    assert feedback_refreshes == ["sec_0"]
+
+    feedback_refreshes.clear()
+    assert session.feedback.set_source_override("sec_0","other_cam")
+    assert section_refreshes == []
+    assert feedback_refreshes == ["sec_0"]
+
+    feedback_refreshes.clear()
+    result=session.feedback.update_parameters("sec_0","localization",{})
+    assert result.changed is False
+    assert section_refreshes == []
+    assert feedback_refreshes == []
+    session.dispose()
 
 
 def test_feedback_measurement_dispatch_is_host_neutral_and_cancellable():
@@ -1698,6 +1734,9 @@ def test_position_reference_presentation_resolves_reference_once(tmp_path):
 
     assert context.compatible
     assert preview is not None
+    measurement=runtime.get_section_feedback_inspection("sec_0").measurement
+    assert measurement is not None
+    assert preview["measurement_id"] == measurement.acquisition.measurement_id
     assert calls == ["sec_0"]
     session.dispose()
 

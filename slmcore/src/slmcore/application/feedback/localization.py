@@ -74,13 +74,15 @@ class LocalizationService(FeedbackComponent):
         )
         if reuse_previous_localization and previous_available:
             try:
-                self.reuse_localization(section_key,raise_errors=True)
+                self.reuse_localization(
+                    section_key,raise_errors=True,notify=False,
+                )
             except Exception as error:
                 self._warning(
                     "Feedback localization",
                     "Previous localization could not be reused: %s" % error,
                 )
-        self._section_changed(section_key)
+        self._feedback_state_changed(section_key)
         return previous_available
 
     def localization_candidate(
@@ -139,7 +141,7 @@ class LocalizationService(FeedbackComponent):
             )
             self._refresh_editable_reference(section_key,localization)
             self._update_committed_analysis_callback(section_key,localization)
-            self._section_changed(section_key)
+            self._feedback_state_changed(section_key)
             return True
         except Exception as error:
             if raise_errors:
@@ -148,7 +150,7 @@ class LocalizationService(FeedbackComponent):
             return False
 
     def reuse_localization(
-        self,section_key: str,*,raise_errors: bool=False,
+        self,section_key: str,*,raise_errors: bool=False,notify: bool=True,
     ) -> LocalizationResult | None:
         try:
             self._require_editor_mode()
@@ -157,7 +159,8 @@ class LocalizationService(FeedbackComponent):
                 section_key
             )
             self._update_committed_analysis_callback(section_key,localization)
-            self._section_changed(section_key)
+            if notify:
+                self._feedback_state_changed(section_key)
             return localization
         except Exception as error:
             if raise_errors:
@@ -256,7 +259,8 @@ class LocalizationService(FeedbackComponent):
                 section_key
             ).localization_available:
                 self._update_committed_analysis_callback(section_key,None)
-        self._section_changed(section_key)
+        if changed:
+            self._feedback_state_changed(section_key)
         return FeedbackParameterUpdateResult(
             changed=bool(changed),candidate_analysis=candidate_analysis,
         )

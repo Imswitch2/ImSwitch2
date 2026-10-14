@@ -280,6 +280,16 @@ def test_feedback_window_reuses_one_cgh_session_inspection_per_refresh():
         session._feedback.synchronize_section("sec_0")
         app.processEvents()
         assert calls == ["sec_0"]
+
+        calls.clear()
+        session.synchronize_feedback_state("sec_0")
+        app.processEvents()
+        assert calls == []
+
+        calls.clear()
+        session.feedback_service.set_source_override("sec_0","other_cam")
+        app.processEvents()
+        assert calls == []
     finally:
         runtime.get_section_cgh_session_inspection=original
         session.dispose()

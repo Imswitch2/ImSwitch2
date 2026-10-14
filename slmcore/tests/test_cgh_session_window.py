@@ -1128,3 +1128,80 @@ def test_current_free_edit_summary_reports_displacement_not_residual():
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_feedback_state_does_not_redraw_unchanged_committed_localization():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _attach_localized_measurement(runtime,section_key)
+    _QtWidgets,window = _window(runtime,section_key)
+    try:
+        committed=window.measurement_view.committed_result
+        assert committed is not None
+        calls=[]
+        original=window.measurement_view.set_committed_result
+        def counted(*args,**kwargs):
+            calls.append(args[0])
+            return original(*args,**kwargs)
+        window.measurement_view.set_committed_result=counted
+        window.set_feedback_state(
+            runtime.get_section_feedback_status(section_key),
+            runtime.get_section_feedback_inspection(section_key),
+            None,
+        )
+        assert calls == []
+        assert window.measurement_view.committed_result is committed
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_metrics_refresh_reuses_unchanged_integration_preview():
+    from types import SimpleNamespace
+
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _QtWidgets,window = _window(runtime,section_key)
+    try:
+        preview=np.arange(20,dtype=np.float64).reshape(4,5)
+        metrics=SimpleNamespace(values={},integration_preview=preview)
+        calls=[]
+        original=window.measurement_view.set_auxiliary_image
+        def counted(name,image):
+            calls.append((name,image))
+            return original(name,image)
+        window.measurement_view.set_auxiliary_image=counted
+        window._refresh_metrics_display(metrics)
+        window._refresh_metrics_display(metrics)
+        assert len(calls) == 1
+        assert calls[0][0] == "Integration"
+        assert calls[0][1] is preview
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_reference_refresh_does_not_reapply_localization_background():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _attach_localized_measurement(runtime,section_key)
+    _QtWidgets,window = _window(runtime,section_key)
+    try:
+        preview=_test_position_preview(np.arange(20,dtype=np.float64).reshape(4,5))
+        calls=[]
+        original=window._apply_position_background_image
+        def counted():
+            calls.append(True)
+            return original()
+        window._apply_position_background_image=counted
+        window.set_position_reference_state({
+            "mode":"current",
+            "reference_name":None,
+            "references":(),
+            "change_allowed":True,
+            "correction_mode":"per_spot",
+        },preview,lightweight=True)
+        assert calls == []
+    finally:
+        window.close()
+        window.deleteLater()

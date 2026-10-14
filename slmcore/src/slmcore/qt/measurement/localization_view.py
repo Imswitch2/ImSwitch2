@@ -112,6 +112,10 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
         return self._workbench.candidate
 
     @property
+    def committed_result(self):
+        return self._workbench.committed_result
+
+    @property
     def candidate_parameters(self):
         return self._workbench.candidate_parameters
 

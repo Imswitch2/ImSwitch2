@@ -214,7 +214,7 @@ class SLMFeedbackService:
         # A plane change suggests the new plane's detector again; explicit source
         # overrides are workflow-local and do not change observation identity.
         self._source_override_by_section.pop(section,None)
-        self._callbacks.on_section_changed(section)
+        self._callbacks.on_feedback_state_changed(section)
         return True
 
     def set_source_override(self,section_key: str,source: str | None) -> bool:
@@ -227,7 +227,7 @@ class SLMFeedbackService:
             self._source_override_by_section[section] = value
         else:
             self._source_override_by_section.pop(section,None)
-        self._callbacks.on_section_changed(section)
+        self._callbacks.on_feedback_state_changed(section)
         return True
 
     def _active_feedback_plane(self,section_key: str) -> str | None:
