@@ -2388,6 +2388,15 @@ file kept as `test_scan_review_round2_followups.py`.
 | R3 | A trajectory compiled with a NaN captured origin | `compile` refuses a captured position that is not finite (both paths); `_volts` refuses a non-finite path |
 | R4 | `_check_separations` compared requested edges of start- and end-anchored events in different frames | Edges are requested in the step's frame (`+ step_s` for `pass-end` anchors), as `_check_relations` does |
 
+**Second recheck (same day, of 92f844726): no actionable findings.** The
+reviewer's 44 independent boundary checks (line and slice starts against the
+metadata over lines x slices x returns x restores; both board backends on
+explicit, hold and unrepresentable returns; NaN, ±inf and malformed captured
+origins; four anchor combinations of a separation) are kept as
+`test_scan_review_round3_boundaries.py`. The board limitation stands as
+documented: one return time per pass; a distinct final return needs a later
+protocol version.
+
 GUI recommendations (six): done now -- 2 (the header wraps; the panel's
 minimum width fell from 622 to 249 px on the test rig; the columns' threshold
 derives from the stretch ratio, so drawing the preview no longer flips them)
