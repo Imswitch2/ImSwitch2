@@ -173,6 +173,26 @@ def test_trigger_sweep_finds_the_plateau_and_restores_the_level():
     positive = tt.trigger_sweep("photons", [0.1, 0.3], duration_s=0.001)
     assert positive.plateau_v is None, "the wrong polarity counts nothing"
     assert "no plateau" in positive.summary()
+    assert not sweep.only_near_zero
+
+
+def test_trigger_sweep_flags_counts_only_next_to_zero():
+    """Pulses smaller than the sweep's first step count at the levels
+    nearest 0 V and nowhere else: not a plateau, and said so."""
+    tt = _facade()
+    card = tt.manager.tagger
+    sync = abs(tt.channels()["laser_sync"].channel)
+    card._model.pulse_amplitude_v[sync] = 0.08
+    both = np.r_[np.linspace(-1.2, -0.05, 12), np.linspace(0.05, 1.2, 12)]
+    sweep = tt.trigger_sweep("laser_sync", both, duration_s=0.001)
+    assert sweep.plateau_v is not None
+    assert sweep.only_near_zero
+    assert "counts only next to 0 V" in sweep.summary()
+    # A proper +0.8 V sync has a plateau well away from zero.
+    card._model.pulse_amplitude_v[sync] = 0.8
+    sweep = tt.trigger_sweep("laser_sync", both, duration_s=0.001)
+    assert not sweep.only_near_zero
+    assert 0.2 < sweep.plateau_v < 0.8
 
 
 # --------------------------------------------------------------------------- #

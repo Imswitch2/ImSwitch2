@@ -19,7 +19,9 @@ Setup
                 +1.2 V, each behind a comparator with a plateau.
   Your own microscope: the same block; put the levels to sweep in the
                 polarity of each input's pulses (negative for a SPAD, PMT
-                or any NIM output; positive for a TTL clock).
+                or any NIM output; positive for a TTL clock). A laser sync
+                can be either (a photodiode one way, a driver's sync output
+                the other), so it is swept in both.
 
 Next: 03_dark_counts_and_afterpulsing.py
 """
@@ -40,8 +42,11 @@ APPLY = False
 # no scan can start on its temporary levels, and the original level is put
 # back when it is done -- also if you press Stop.
 suggestions = {}
+# The sync's polarity depends on its source, so both signs are swept; the
+# levels skip 0 V itself, where any input counts its own noise.
+SYNC_LEVELS = np.r_[np.linspace(-1.2, -0.05, 12), np.linspace(0.05, 1.2, 12)]
 for role, levels in (('photons', np.linspace(-0.9, -0.05, 18)),
-                     ('laser_sync', np.linspace(0.05, 1.2, 24))):
+                     ('laser_sync', SYNC_LEVELS)):
     sweep = tt.trigger_sweep(role, levels, duration_s=0.1)
     print(f'{role}:')
     helpers.printTable(
@@ -50,6 +55,17 @@ for role, levels in (('photons', np.linspace(-0.9, -0.05, 18)),
     if sweep.plateau_v is None:
         print(f'  nothing counted at any level: check the cable, and the sign of '
               f'the levels against the pulse polarity of this input')
+    elif sweep.only_near_zero:
+        # Counts at the smallest levels and nowhere else are not a plateau:
+        # the comparator is in the noise, or the pulses are smaller than
+        # the first step. The period tells them apart (tutorial 04).
+        print(f'  counts only next to 0 V: no pulses reach the swept levels. Either '
+              f'nothing arrives (the cable, the channel number, a laser that is '
+              f'not pulsing or not mode-locked) or the pulses are smaller than '
+              f'{min(abs(v) for v in levels):.2f} V (a sync photodiode into the '
+              f'card\'s 50 ohm). Sweep finer, e.g. np.linspace(-0.2, 0.2, 41), '
+              f'and run tt.rep_rate() at the best level: a real sync has a '
+              f'stable period, noise has none.')
     else:
         print(f'  plateau around {sweep.plateau_v:+.2f} V '
               f'(current setting {sweep.restored_v:+.2f} V)')

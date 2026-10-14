@@ -22,6 +22,14 @@ checklist: a red line names the tutorial below.
        the wrong sign
      - tutorial 01 (test signal: does the input count at all?), 02 (photon
        polarity and plateau), 07 (line edges during a scan)
+   * - A trigger sweep counts only next to 0 V, in either polarity, and
+       nothing further out
+     - no pulses reach the swept levels: the sync is not cabled to that
+       input, the laser is not pulsing (not mode-locked), or its pulses are
+       smaller than the sweep's first step (a photodiode into 50 Ω)
+     - tutorial 02 (``only_near_zero``); a finer sweep near 0 V, then
+       tutorial 04's ``rep_rate()`` at the best level: a real sync has a
+       stable period, noise has none
    * - ``line 0 Hz`` on the health strip during a scan
      - the line clock threshold is too high: a DAQ line is about 1 V into
        50 Ω

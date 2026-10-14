@@ -200,10 +200,33 @@ class SweepResult:
     ``None`` when nothing counted. """
     restored_v: float
 
+    @property
+    def only_near_zero(self) -> bool:
+        """True when the input counts only at the levels nearest 0 V.
+
+        That is not a plateau: either the comparator sits in the noise and
+        the pulses never reach any swept level (no signal: the cable, the
+        channel number, a laser that is not pulsing), or the pulses are
+        smaller than the sweep's first step (a sync photodiode into 50 Ω).
+        ``rep_rate()`` at such a level tells the two apart: a real sync has
+        a stable period, noise has none.
+        """
+        if self.plateau_v is None:
+            return False
+        rates = np.asarray(self.rates_hz, dtype=float)
+        magnitudes = np.abs(np.asarray(self.levels_v, dtype=float))
+        counting = magnitudes[rates >= 0.1 * rates.max()]
+        return bool(counting.size and counting.max() <= 1.5 * magnitudes.min() + 1e-9)
+
     def summary(self) -> str:
         rows = ", ".join(f"{v:+.2f} V: {r:,.0f}" for v, r in zip(self.levels_v, self.rates_hz))
-        plateau = (f"plateau around {self.plateau_v:+.2f} V" if self.plateau_v is not None
-                   else "no plateau: nothing counted (wrong polarity, or no signal)")
+        if self.plateau_v is None:
+            plateau = "no plateau: nothing counted (wrong polarity, or no signal)"
+        elif self.only_near_zero:
+            plateau = (f"counts only next to 0 V ({self.plateau_v:+.2f} V): noise, or pulses "
+                       f"smaller than the first level; rep_rate() there tells which")
+        else:
+            plateau = f"plateau around {self.plateau_v:+.2f} V"
         return f"{self.role} trigger sweep -- {rows}; {plateau}"
 
     def to_dict(self) -> Dict[str, Any]:
