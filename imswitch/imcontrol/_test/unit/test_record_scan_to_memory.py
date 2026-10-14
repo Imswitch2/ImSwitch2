@@ -1,6 +1,6 @@
-"""``recordScanToMemory()``: a scan-once recording to RAM whose frames come
-back as an array, with the Recording widget put back as it was and nothing
-left listed in ImProcess unless asked for.
+"""``recordScanToMemory()`` and ``recordFramesToMemory()``: a recording to
+RAM whose frames come back as an array, with the Recording widget put back
+as it was and nothing left listed in ImProcess unless asked for.
 
 The widget stand-in plays the whole recording inside "REC on": the files are
 announced, then the end (or the failure), as the writer and the controller do
@@ -63,6 +63,7 @@ class _Widget:
         self.specific = []
         self.singleFile = False
         self.filename = 'mine'
+        self.numFrames = 7
         self.recChecked = False
         self.modes = []
         self.onRec = lambda: None
@@ -94,6 +95,12 @@ class _Widget:
     def getCustomFilename(self):
         return self.filename
 
+    def getNumExpositions(self):
+        return self.numFrames
+
+    def setNumExpositions(self, value):
+        self.numFrames = value
+
     def setCustomFilename(self, name):
         self.filename = name
 
@@ -116,7 +123,7 @@ class _Widget:
 
     def state(self):
         return (self.saveMode, self.detectorMode, self.specific, self.singleFile,
-                self.filename)
+                self.filename, self.numFrames)
 
 
 def _controller():
@@ -136,11 +143,11 @@ def _controller():
     return ctrl
 
 
-def _plays(ctrl, frames, *, fail=None, end=True):
+def _plays(ctrl, frames, *, fail=None, end=True, recMode=RecMode.ScanOnce):
     """REC on: the recording runs and announces its files, then its end."""
     def onRec():
         assert ctrl._widget.saveMode == SaveMode.RAM.value
-        assert ctrl.recMode == RecMode.ScanOnce
+        assert ctrl.recMode == recMode
         assert ctrl._widget.filename is None, 'named by the time, like any RAM recording'
         ctrl.recording = True
         for name, data in frames.items():
@@ -251,6 +258,37 @@ def test_it_is_refused_where_only_a_scan_widget_could_start_the_scan():
         ctrl.recordScanToMemory('Camera', timeout=5)
 
 
-def test_it_runs_on_the_callers_thread():
-    assert RecordingController.recordScanToMemory._APIExport is True
-    assert RecordingController.recordScanToMemory._APIRunOnUIThread is False
+def test_frames_to_memory_records_a_number_of_frames_and_restores_the_count():
+    ctrl = _controller()
+    frames = np.ones((3, 2, 2), dtype=np.uint16)
+    _plays(ctrl, {'Camera': frames}, recMode=RecMode.SpecFrames)
+    seen = {}
+    ctrl._widget.onRec, play = (lambda: (seen.update(n=ctrl._widget.numFrames), play())), ctrl._widget.onRec
+    before = ctrl._widget.state()
+
+    result = ctrl.recordFramesToMemory('Camera', 3, timeout=5)
+
+    np.testing.assert_array_equal(result, frames)
+    assert seen['n'] == 3                        # the widget's frame count while recording
+    assert ctrl._widget.state() == before        # 7 again afterwards
+    assert ctrl._widget.modes == [RecMode.SpecFrames, RecMode.SpecFrames]
+
+
+def test_frames_to_memory_refuses_less_than_one_frame():
+    ctrl = _controller()
+    with pytest.raises(ValueError):
+        ctrl.recordFramesToMemory('Camera', 0, timeout=5)
+
+
+def test_frames_to_memory_needs_no_scan_widget():
+    ctrl = _controller()
+    ctrl._commChannel.hasScanWidget = lambda: False
+    _plays(ctrl, {'Camera': np.zeros((1, 2, 2))}, recMode=RecMode.SpecFrames)
+    assert ctrl.recordFramesToMemory('Camera', 1, timeout=5).shape == (1, 2, 2)
+
+
+def test_they_run_on_the_callers_thread():
+    for name in ('recordScanToMemory', 'recordFramesToMemory'):
+        export = getattr(RecordingController, name)
+        assert export._APIExport is True
+        assert export._APIRunOnUIThread is False

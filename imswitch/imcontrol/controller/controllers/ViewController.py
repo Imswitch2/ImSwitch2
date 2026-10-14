@@ -1,3 +1,7 @@
+from typing import Optional
+
+import numpy as np
+
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model.managers import LeasePurpose
 from ..basecontrollers import ImConWidgetController
@@ -212,6 +216,18 @@ class ViewController(ImConWidgetController):
     def setLiveViewActive(self, active: bool) -> None:
         """ Sets whether the LiveView is active and updating. """
         self._widget.setLiveViewActive(active)
+
+    @APIExport(runOnUIThread=True)
+    def getLatestFrame(self, detectorName: Optional[str] = None) -> np.ndarray:
+        """ Returns the newest frame of a detector as a NumPy array
+        ``(rows, columns)`` -- what the live view shows -- without a snap or
+        a file. ``None`` means the current detector. The detector has to be
+        acquiring, with the live view on (setLiveViewActive) or a recording
+        running, for the frame to be new. """
+        manager = self._master.detectorsManager
+        if detectorName is None:
+            detectorName = manager.getCurrentDetectorName()
+        return np.array(manager[detectorName].getLatestFrame(), copy=True)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

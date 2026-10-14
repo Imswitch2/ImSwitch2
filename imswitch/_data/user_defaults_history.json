@@ -40,7 +40,8 @@
    "3561fb5d79daac9e05e16e7ae7b563033a9f786ea2d4b06c18ca3cc3acc4deb6",
    "44cd7632d0da4ec08b5806777075030e550744cc1ba8584c98b7d5f657ae8fab",
    "51d4bb12982152d280bde13a9920d27d9fcfbcca1882cfde0d93fdba9bf32042",
-   "a92d4b0426a6990ecc961c72a682b1acfc48d9a52ae89853542dd013dcca28f2"
+   "a92d4b0426a6990ecc961c72a682b1acfc48d9a52ae89853542dd013dcca28f2",
+   "d822b270ed49a9ff4d36d86bc485a0fd89dc5e3b760bdb6cdee5cb790651ba59"
   ],
   "imcontrol_setups/example_pulseStreamer.json": [
    "05db0a4d2f187298329b7a1b235d6da0553a3dfc9629ac17a879475c316fc3e4",
@@ -184,6 +185,7 @@
    "ba8e94139039ffbe2ba1a6922448c23ad0db8d3e13e6d7df80442313b6e11bc8"
   ],
   "scripts/tutorial/README.md": [
+   "13ecb6c44361cdb793c66b6d4d0e7c4e66bd04e3ca2c6b44319c87874d24e0ba",
    "40711c2c3bc22851052349080561e25285f864207bdb6b0212946a0256e3759c",
    "5a4c3c5705c1cbebd78bc6ab738e7cef8b5c220d4e385b6dcb8df610b53afae3",
    "9e1f5152c82cc64572abfd2497c8d0b8baa8598bf1928822c26f81c813e8caf8",
@@ -232,10 +234,17 @@
    "1f3b51e3be7869fad615964373fc16ad89a1ec6768c5eeae916761a7965411ee"
   ],
   "scripts/tutorial/basic/08_move_the_stage.py": [
+   "8ae8ac0c81cd94135a2d797d9f084e2d2e17946efc3b327a7b3ec796965d4455",
    "fe59a5ce4ae7358983f5aed8890eb364d409d24dde0c5ec3430237e502b2d3e0"
   ],
   "scripts/tutorial/basic/08_share_code_between_scripts.py": [
    "0b10fce6e6422fa14af8258ac33ef48d7b2fc9712ee7bcc4019444eb4ac056fd"
+  ],
+  "scripts/tutorial/basic/09_rotators.py": [
+   "31681bf7bf7f931716a5cb4fc8dd360c4fffe98aab0328c30c07f3fa15a6fc4e"
+  ],
+  "scripts/tutorial/basic/10_frames_into_memory.py": [
+   "d6aff586e0059f9139419b44871498a093421b7a5b87f97de384a973d198530a"
   ],
   "scripts/tutorial/basic/tutorial_helpers.py": [
    "397753663c4a54be2423a2b62d6cd9f9aadf4d3cf5b235d5cee4026666226c23",
@@ -267,13 +276,19 @@
    "18bd6431c8a19818b6564323f03e9c3eb08f3b94482e4dcaba8fb66d6f95a74c"
   ],
   "scripts/tutorial/scanning/05_laser_power_series.py": [
+   "069fa4db1a5646028c0d616f25d320f78dbae6115f8a7b38a35c7218f151384c",
    "b413f4a9938b186e0a5bda86f7332d8daa357d53cf942026e19bf3cf47387775",
    "f941dd8bede21141e7090b0a706648ee1f3ed4120d4925740a8f13a58a0bc9b0"
   ],
   "scripts/tutorial/scanning/06_scan_into_memory.py": [
+   "c4dfde9f37587e4e8167c1cffb94efab6e3547f12a919b919d4bc31681b4a2ff",
    "e84945869366ac51b25dca6f3ba46b2a2614d6b5cf8a86c930c2f7c3c5ddb2be"
   ],
+  "scripts/tutorial/scanning/07_scan_parameters_in_code.py": [
+   "9b1f37ff35b6eac0de04e890e7e231667a62db75c8fc13329806c44f4a037536"
+  ],
   "scripts/tutorial/scanning/scan_helpers.py": [
+   "c4e5c336ea2204877cf6ade7772a8003fc19744875e0204559db3613f4f2104a",
    "f48634c922897f13fc97a3b827651566ce7f6d75757b758201d43b0cec3b5739"
   ],
   "scripts/tutorial/scanning/scan_params/camera_scan_1um.json": [

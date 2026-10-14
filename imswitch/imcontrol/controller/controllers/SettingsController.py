@@ -663,6 +663,14 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
             )
         return parameters[parameterName]
 
+    @APIExport()
+    def getDetectorPixelSize(self, detectorName: str) -> List[float]:
+        """ Returns the size of the detector's pixels in the sample, in µm,
+        as ``[Z, Y, X]``: for a camera its pixel size setting, for a
+        scan-driven detector (APD, PMT, ...) the scan's step. ``Z`` is 1
+        when nothing steps it. """
+        return [float(v) for v in self._master.detectorsManager[detectorName].pixelSizeUm]
+
     @APIExport(runOnUIThread=True)
     def setDetectorBinning(self, detectorName: str, binning: int) -> None:
         """ Sets binning value for the specified detector. """

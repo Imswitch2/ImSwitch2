@@ -59,20 +59,26 @@ voltage range. A refused start never runs, so there is no end to wait for.
 On rigs with several scanners, ``getScanSourceNames()`` lists the choices
 for ``runScan(source=...)``.
 
-**A scan's frames as an array.** ``api.imcontrol.recordScanToMemory()``
+**Frames as arrays, nothing written.** ``api.imcontrol.recordScanToMemory()``
 runs the scan the Scan widget holds once and returns the frames it
 triggers as a NumPy array ``(frames, rows, columns)``, without writing a
 file: the recording goes to memory, is read back and dropped. Pass a
 detector's name, a list of names (the result is then a dict by name),
 ``-1`` for the current detector or ``-2`` for all. It blocks until the
 scan is over (``timeout`` seconds at most), raises ``RuntimeError`` when
-the recording fails and puts the Recording widget back as it was;
-``keep=True`` leaves the recording listed in ImProcess as well::
+the recording is refused or fails and puts the Recording widget back as
+it was; ``keep=True`` leaves the recording listed in ImProcess as well.
+``recordFramesToMemory(detector, numFrames)`` does the same for a number
+of frames of a camera, with no scan; ``getLatestFrame(detector)`` returns
+the newest frame of the live view with no recording at all::
 
     frames = api.imcontrol.recordScanToMemory('Camera', timeout=120)
-    mean = frames.mean(axis=0)
+    lattice = frames.mean(axis=0)
+    dark = api.imcontrol.recordFramesToMemory('Camera', 50).mean(axis=0)
+    live = api.imcontrol.getLatestFrame('Camera')      # the live view is on
 
-``tutorial/scanning/06_scan_into_memory.py`` is this in full.
+``tutorial/scanning/06_scan_into_memory.py`` and
+``tutorial/basic/10_frames_into_memory.py`` are these in full.
 
 **Stopping a script.** Pressing *Stop* (or *Run* while a script runs)
 delivers ``OperationCancelled`` **once**, at the script's
@@ -112,6 +118,59 @@ can decide whether to wait for the end of the recording
 ``tutorial/scanning/05_laser_power_series.py`` is this pattern in full,
 runnable on a mock setup.
 
+Reading and setting the microscope
+==================================
+
+Every device the setup file declares can be read as well as set, so a
+script can act on what it finds. The names come first --
+``getDetectorNames()``, ``getLaserNames()``, ``getPositionerNames()``,
+``getRotatorNames()`` -- then, per device:
+
+* detectors: ``getDetectorParameters(name)`` lists every setting with its
+  value and units, ``getDetectorParameter`` / ``setDetectorParameter``
+  read and set one, ``getDetectorPixelSize(name)`` gives the pixel size in
+  the sample in µm;
+* lasers: ``getLaserInfo(name)`` says what the laser takes (units, range,
+  or on/off only), ``getLaserValue`` / ``setLaserValue`` and
+  ``isLaserActive`` / ``setLaserActive`` read and set it;
+* positioners: ``getPositionerAxes(name)``,
+  ``getPositionerPosition(name, axis)`` (every axis of every stage at once:
+  ``getPositionerPositions()``), ``setPositioner`` (absolute) and
+  ``movePositioner`` (relative), in µm;
+* rotators: ``getRotatorPosition(name)``, ``setRotatorPosition``
+  (absolute) and ``moveRotator`` (relative), in degrees.
+
+**The scan as a dict.** ``getScanParameters()`` returns the Scan widget's
+settings as a dict -- the scanned axes with their lengths, step sizes and
+centres in µm under ``analogParameterDict``, the trigger pulses under
+``digitalParameterDict`` -- and ``setScanParameters(params)`` puts an
+edited dict back, raising ``ValueError`` that names what could not be
+applied. It is ``saveScanParamsToFile`` / ``loadScanParamsFromFile``
+without the file::
+
+    params = api.imcontrol.getScanParameters()
+    params['analogParameterDict']['axis_step_size'][0] = 0.05     # µm
+    api.imcontrol.setScanParameters(params)
+    runScanAndWait(timeout=600)
+
+**The focus lock.** ``getFocusLockState()`` is ``'unlocked'``,
+``'locked'``, ``'suspended'`` (a scan owns the focus axis and holds the
+lock for it), ``'reacquiring'`` (the scan is over, the lock waits for its
+signal) or ``'reacquire-failed'``. ``setFocusLocked(True)`` locks where
+the sample is, as the widget's **Lock** button does -- the focus camera
+must be running, ``setFocusCameraActive(True)`` starts it -- and
+``waitForFocusLock(timeout)`` blocks until a lock that a scan suspended is
+back, for a time lapse that must not image before it is::
+
+    api.imcontrol.setFocusLocked(True)
+    for _ in range(100):
+        runScanAndWait(timeout=600)
+        if not api.imcontrol.waitForFocusLock(timeout=10):
+            raise RuntimeError('the focus did not come back')
+
+:doc:`scripting-api` lists every function a script can call, with its
+signature, by the widget that provides it.
+
 .. _scripting-tutorials:
 
 Tutorials
@@ -135,14 +194,17 @@ what it will do, and only then press **Run all**.
     and to files, camera settings and the live view, recording a number of
     frames and reading the file back, clean-up that survives the Stop
     button, and sharing code between scripts with ``importScript()``. Then
-    two cameras and stages (``example_no_hardware.json``, steps 07-08).
+    two cameras, stages, rotation mounts, and frames into memory
+    (``example_no_hardware.json``, steps 07-10).
 
 ``tutorial/scanning``
     Scans that trigger a camera, one frame per scan position, and scan
     timelapses (``hamamatsu_mock_scan_setup.json``, steps 01-03); a camera
     and an APD in one scan (``mixed_hamamatsu_apd_mock_scan_setup.json``);
-    and a laser power series in one recording
-    (``galvo_apd_mock_scan_setup.json``).
+    a laser power series in one recording
+    (``galvo_apd_mock_scan_setup.json``); and a scan's frames as an array
+    and the scan's settings as a dict (``hamamatsu_mock_scan_setup.json``,
+    steps 06-07).
     Scan settings are loaded from files in ``scanning/scan_params``; make
     your own in the Scan widget and save them with
     ``api.imcontrol.saveScanParamsToFile()``.
@@ -185,5 +247,6 @@ To reconstruct or process data from a script, import
 .. toctree::
     :hidden:
 
+    scripting-api
     scripting-wfs-workflows
     scripting-time-resolved-workflows
