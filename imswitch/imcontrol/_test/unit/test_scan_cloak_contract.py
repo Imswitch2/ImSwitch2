@@ -554,7 +554,9 @@ def test_blocking_the_scan_panel_blocks_both_pages(rig):
 
 def _monalisaSetupWithPowerMode(mode):
     data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
-    data['laserPowerMode'] = mode
+    data.setdefault('deviceCategorySettings', {}).setdefault('lasers', {})[
+        'powerMode'
+    ] = mode
     return json.dumps(data)
 
 
@@ -564,7 +566,9 @@ def _monalisaSetupWithoutProfiles():
     simple['profiles'] = {}
     simple.pop('defaultProfile', None)
     data['scan']['simpleMoNaLISA'] = simple
-    data['laserPowerMode'] = 'separated'
+    data.setdefault('deviceCategorySettings', {}).setdefault('lasers', {})[
+        'powerMode'
+    ] = 'separated'
     return json.dumps(data)
 
 

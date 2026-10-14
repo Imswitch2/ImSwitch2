@@ -7,7 +7,7 @@ import dataclasses
 from imswitch.imcontrol.model import (
     LaserPowerMode,
     configfiletools,
-    normalizeLaserPowerMode,
+    laserPowerModeFromSetup,
 )
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.scan_cloak import PlanNotRepresentable
@@ -740,9 +740,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
     # ------------------------------------------------------------------
 
     def _livePowerIsSeparated(self) -> bool:
-        return normalizeLaserPowerMode(
-            getattr(self._setupInfo, 'laserPowerMode', LaserPowerMode.COUPLED.value)
-        ) is LaserPowerMode.SEPARATED
+        return laserPowerModeFromSetup(self._setupInfo) is LaserPowerMode.SEPARATED
 
     def _liveSelectionKey(self):
         plan = self.acquisitionPlan()
