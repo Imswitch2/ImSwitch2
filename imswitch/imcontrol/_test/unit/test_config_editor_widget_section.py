@@ -201,3 +201,98 @@ def test_validation_warning_includes_clickable_link():
         "Warning should include 'fixsection:tiling' link"
     assert "<a href=" in warning_msg, \
         "Warning should include HTML anchor tag"
+
+
+def test_scan_section_uses_nested_cloak_forms_instead_of_raw_json():
+    schema = editor.SECTION_SCHEMAS["scan"]
+
+    assert "simplePointScan" in schema.get("nested", {})
+    assert "simpleMoNaLISA" in schema.get("nested", {})
+    assert all(
+        field["key"] not in {"simplePointScan", "simpleMoNaLISA"}
+        for field in schema.get("fields", [])
+    )
+
+    point_keys = {field["key"] for field in schema["nested"]["simplePointScan"]}
+    assert {"objectiveNA", "overviewFieldUm", "overviewFrameTimeS"} <= point_keys
+
+    monalisa_keys = {field["key"] for field in schema["nested"]["simpleMoNaLISA"]}
+    assert {
+        "fovSource",
+        "fovUm",
+        "ulensPeriodPolicy",
+        "ulensPeriodUm",
+        "defaultCameraReadoutTimeMs",
+        "interPulseDelayMs",
+        "readoutPulseTimeMs",
+    } <= monalisa_keys
+    assert "profiles" not in monalisa_keys
+
+
+def _minimal_nested_section_schema():
+    return {
+        "display": "Nested section",
+        "fields": [
+            {"key": "backend", "label": "Backend", "type": "text", "default": "Advanced", "req": False, "grp": "Basic"},
+        ],
+        "nested": {
+            "simple": [
+                {"key": "period", "label": "Period", "type": "float", "default": 0.72, "req": False, "grp": "Simple"},
+            ],
+        },
+    }
+
+
+def test_section_nested_apply_preserves_unknown_children_and_section_keys(qapp):
+    from PyQt5.QtTest import QTest
+
+    current = {
+        "backend": "Advanced",
+        "futureTopLevel": {"keep": True},
+        "simple": {
+            "period": 0.72,
+            "profiles": {"green": {"label": "Green"}},
+            "futureNested": 123,
+        },
+    }
+    dlg = editor.SectionEditorDialog(
+        "scan", _minimal_nested_section_schema(), current, {}, None
+    )
+    fw = dlg._field_widgets[("nested:simple", "period")]
+    fw._w.selectAll()
+    QTest.keyClicks(fw._w, "0.85")
+    assert fw.is_touched()
+
+    dlg._try_apply()
+
+    assert dlg.result_data["simple"]["period"] == pytest.approx(0.85)
+    assert dlg.result_data["simple"]["profiles"] == current["simple"]["profiles"]
+    assert dlg.result_data["simple"]["futureNested"] == 123
+    assert dlg.result_data["futureTopLevel"] == {"keep": True}
+
+
+def test_section_nested_container_is_not_created_when_untouched(qapp):
+    current = {"backend": "Advanced"}
+    dlg = editor.SectionEditorDialog(
+        "scan", _minimal_nested_section_schema(), current, {}, None
+    )
+
+    dlg._try_apply()
+
+    assert "simple" not in dlg.result_data
+
+
+def test_touching_nested_field_materializes_only_that_field(qapp):
+    from PyQt5.QtTest import QTest
+
+    current = {"backend": "Advanced", "simple": None}
+    dlg = editor.SectionEditorDialog(
+        "scan", _minimal_nested_section_schema(), current, {}, None
+    )
+    fw = dlg._field_widgets[("nested:simple", "period")]
+    fw._w.selectAll()
+    QTest.keyClicks(fw._w, "0.9")
+
+    dlg._try_apply()
+
+    assert dlg.result_data["simple"] == {"period": pytest.approx(0.9)}

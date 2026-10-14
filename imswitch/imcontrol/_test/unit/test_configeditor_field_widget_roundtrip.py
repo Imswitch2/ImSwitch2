@@ -355,3 +355,20 @@ def test_bool_auto_set_back_to_automatic_returns_none(qapp):
     fw._w.activated.emit(0)                      # what a user's choice emits
     assert fw.is_touched()
     assert fw.get_value() is None                # the apply loop omits the key
+
+
+def test_float_pair_widget_round_trips_untouched(qapp):
+    value = [40.0, 35.5]
+    fw = editor.FieldWidget(_field("fov", "float_pair"), value)
+
+    assert fw.get_value() is value
+    assert fw.is_touched() is False
+
+
+def test_float_pair_widget_returns_two_edited_numbers(qapp):
+    fw = editor.FieldWidget(_field("fov", "float_pair"), [40.0, 40.0])
+    left, right = fw._pair_edits
+    _type(left, "35.25")
+    _type(right, "36.5")
+
+    assert fw.get_value() == [35.25, 36.5]
