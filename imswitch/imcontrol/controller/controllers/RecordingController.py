@@ -12,6 +12,9 @@ from qtpy import QtCore
 from imswitch.imcommon.framework import FrameworkUtils, Signal, Timer
 from imswitch.imcommon.model import ostools, APIExport
 from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
+from imswitch.imcontrol.model.acquisition_result import (
+    AcquisitionResult, acquisitionResultFromFiles,
+)
 from imswitch.imcontrol.model.managers.RecordingManager import (
     DETECTOR_ARM_TIMEOUT_S, RECORDING_ARM_TIMEOUT, WRITER_OPEN_TIMEOUT_S,
     FailureKind,
@@ -3100,8 +3103,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport()
     def recordScanToMemory(self, detectorName: Union[List[str], str, int, None] = None,
-                           timeout: float = 600.0, keep: bool = False
-                           ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
+                           timeout: float = 600.0, keep: bool = False,
+                           structured: bool = False
+                           ) -> Union[np.ndarray, Dict[str, np.ndarray], AcquisitionResult]:
         """ Runs the scan the Scan widget holds once and returns the frames
         it triggers as a NumPy array ``(frames, rows, columns)``, without
         writing a file: the recording goes to memory, is read back, and is
@@ -3117,36 +3121,47 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         The Recording widget's settings are put back afterwards. With
         ``keep=True`` the recording also stays listed in ImProcess, as a
         recording to RAM does. It runs on the caller's thread, which must
-        not be the GUI thread (a script's is not). """
+        not be the GUI thread (a script's is not).
+
+        ``structured=True`` returns an AcquisitionResult instead: the frames
+        of every detector with their axes and pixel size, which scan
+        position each frame was taken at (recorded by the scan, or
+        reconstructed from its plan -- the result says which), the settings
+        the recording wrote down, its start time and whether it is
+        complete, with show() and save(). """
         if not self._commChannel.hasScanWidget():
             raise RuntimeError(
                 'This setup has no Scan widget: a scan-once recording is only '
                 'armed here and started from the scan widget of the setup'
             )
         return self._recordToMemory(detectorName, timeout, keep,
-                                    self.recScanOnce, 'The scan recording')
+                                    self.recScanOnce, 'The scan recording', structured)
 
     @APIExport()
     def recordFramesToMemory(self, detectorName: Union[List[str], str, int, None],
-                             numFrames: int, timeout: float = 600.0, keep: bool = False
-                             ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
+                             numFrames: int, timeout: float = 600.0, keep: bool = False,
+                             structured: bool = False
+                             ) -> Union[np.ndarray, Dict[str, np.ndarray], AcquisitionResult]:
         """ Records ``numFrames`` frames of a detector, as the Recording
         widget's *Number of frames* does, and returns them as a NumPy array
         ``(frames, rows, columns)`` without writing a file. Everything else
         is as for recordScanToMemory: ``detectorName`` (a name, a list, -1,
         -2 or None), the result for several detectors, ``timeout``,
-        ``keep`` and the errors. """
+        ``keep``, ``structured`` and the errors. """
         if int(numFrames) < 1:
             raise ValueError('numFrames must be at least 1')
         return self._recordToMemory(
             detectorName, timeout, keep,
             lambda: self.setRecModeSpecFrames(int(numFrames)), 'The recording',
+            structured,
         )
 
-    def _recordToMemory(self, detectorName, timeout, keep, setRecMode, what):
+    def _recordToMemory(self, detectorName, timeout, keep, setRecMode, what,
+                        structured=False):
         """The body of the record*ToMemory API calls: a recording to RAM in
         the mode ``setRecMode`` selects, waited for, read back and dropped,
-        on the caller's thread. ``what`` names it in errors."""
+        on the caller's thread. ``what`` names it in errors; ``structured``
+        returns an AcquisitionResult, read before the recording is dropped."""
         if self.__dict__.get('_shutdownRequested', False):
             raise RuntimeError('ImSwitch is shutting down')
         if self._isControllerThread():
@@ -3205,7 +3220,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 time.sleep(0.05)
             if failure:
                 raise RuntimeError(f'{what} failed: {failure[0]}')
-            arrays = self._readMemoryRecordings(files.values(), names)
+            if structured:
+                result = acquisitionResultFromFiles(
+                    {name: file.getvalue() for name, file in files.items()}, names,
+                    show=self._showInImageView,
+                )
+            else:
+                arrays = self._readMemoryRecordings(files.values(), names)
         finally:
             for signal, slot in connections:
                 try:
@@ -3225,7 +3246,23 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self._onControllerThread(
                     lambda: self._dropMemoryRecordings(files), timeout
                 )
+        if structured:
+            return result
         return arrays[names[0]] if len(names) == 1 else arrays
+
+    def _showInImageView(self, name, image, scale):
+        """AcquisitionResult.show(): an array to ImControl's image view, as a
+        script's show() sends it."""
+        channel = self._moduleCommChannel
+        signal = getattr(channel, 'sigShowImage', None)
+        try:
+            listening = signal is not None and channel.receivers(signal) > 0
+        except (AttributeError, TypeError):
+            listening = signal is not None
+        if not listening:
+            raise RuntimeError("Nothing can show the image: load ImControl's Image widget")
+        signal.emit(str(name), np.array(image, copy=True),
+                    None if scale is None else tuple(float(v) for v in scale))
 
     def _startRecordingToMemory(self, detectorName, setRecMode, what):
         """GUI thread: points the Recording widget at a recording to RAM in

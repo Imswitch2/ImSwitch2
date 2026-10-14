@@ -137,16 +137,63 @@ scan is over (``timeout`` seconds at most), raises ``RuntimeError`` when
 the recording is refused or fails and puts the Recording widget back as
 it was; ``keep=True`` leaves the recording listed in ImProcess as well.
 ``recordFramesToMemory(detector, numFrames)`` does the same for a number
-of frames of a camera, with no scan; ``getLatestFrame(detector)`` returns
+of frames of a camera, with no scan; ``getLiveFrame(detector)`` returns
 the newest frame of the live view with no recording at all::
 
     frames = api.imcontrol.recordScanToMemory('Camera', timeout=120)
     lattice = frames.mean(axis=0)
     dark = api.imcontrol.recordFramesToMemory('Camera', 50).mean(axis=0)
-    live = api.imcontrol.getLatestFrame('Camera')      # the live view is on
+    live = api.imcontrol.getLiveFrame('Camera')      # the live view is on
 
 ``tutorial/scanning/06_scan_into_memory.py`` and
 ``tutorial/basic/10_frames_into_memory.py`` are these in full.
+
+**What each frame was.** With ``structured=True`` both calls return an
+``AcquisitionResult`` instead of bare arrays, read from the recording's own
+file before it is dropped: ``result['Camera']`` is the data, and
+``result.detector('Camera')`` says what it means -- ``axes`` (``'TYX'``),
+``pixelSizeUm``, ``outcome`` and the frame counts (``result.complete`` is
+False for a recording that stopped early), ``settings`` (what the recording
+wrote down: the detector's parameters, the scan plan, the stage positions,
+the recording mode), and ``positions``, which scan position each frame was
+taken at::
+
+    result = api.imcontrol.recordScanToMemory('Camera', structured=True)
+    positions = result.detector('Camera').positions
+    positions.source        # 'recorded' or 'plan'
+    positions.devices       # ('Z', 'Y', 'X'): the loops, outermost first
+    positions.indices[10]   # [0, 1, 0]: frame 10 is the second Y row
+    positions.offsets()     # the same in µm from the first position
+    result.save(folder)     # the recording's HDF5 file, every attribute kept
+    result.show()
+
+A scan that records its acquisition layout (the Advanced, point, MoNaLISA
+and TriggerScope scans) says which position each frame belongs to:
+``source`` is ``'recorded'``. The Base scan does not; its positions are
+reconstructed from the scan plan the file records, as ImProcess does when it
+opens such a file, assuming the scan ran the plan in order: ``'plan'``. Both
+are commanded positions; the stages are not read back frame by frame. A
+point scan's frame is one assembled image, whose pixels are the positions,
+so it has no ``positions`` and its ``pixelSizeUm`` is the scan step.
+
+**Settings for one block.** These context managers set something, and put
+it back when the ``with`` block ends -- normally, on an error, or when *Stop*
+is pressed (the cleanup runs in the cleanup window)::
+
+    with temporaryDetectorSettings('Camera', {'Set exposure time': 0.01}), \
+            temporaryScanParameters(params), \
+            temporaryLaserSettings({'488': {'value': 5.0, 'on': True}}):
+        frames = api.imcontrol.recordScanToMemory('Camera')
+
+``temporaryDetectorSettings(detector)`` and ``temporaryScanParameters()``
+without values only put back what the block changes. A laser that was off
+is switched off before its value is restored. None of them moves anything:
+``returningToPositions(stages=[...], rotators=[...])`` is the one that moves
+stages and rotators back, and a script asks for it separately. When a
+restore fails after a clean block, it raises ``RuntimeError`` naming what
+was not put back; after a block that raised, it is logged and the block's
+own error goes on. ``tutorial/scanning/08_structured_results.py`` uses
+both.
 
 **Stopping a script.** Pressing *Stop* (or *Run* while a script runs)
 delivers ``OperationCancelled`` **once**, at the script's
@@ -271,9 +318,9 @@ what it will do, and only then press **Run all**.
     timelapses (``hamamatsu_mock_scan_setup.json``, steps 01-03); a camera
     and an APD in one scan (``mixed_hamamatsu_apd_mock_scan_setup.json``);
     a laser power series in one recording
-    (``galvo_apd_mock_scan_setup.json``); and a scan's frames as an array
-    and the scan's settings as a dict (``hamamatsu_mock_scan_setup.json``,
-    steps 06-07).
+    (``galvo_apd_mock_scan_setup.json``); and a scan's frames as an array,
+    the scan's settings as a dict, and structured results with settings for
+    one block (``hamamatsu_mock_scan_setup.json``, steps 06-08).
     Scan settings are loaded from files in ``scanning/scan_params``; make
     your own in the Scan widget and save them with
     ``api.imcontrol.saveScanParamsToFile()``.

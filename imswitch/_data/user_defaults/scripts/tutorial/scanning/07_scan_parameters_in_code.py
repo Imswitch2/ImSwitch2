@@ -15,8 +15,7 @@ Setup
                 scan.
   Your own microscope: as 01_run_a_scan.py, plus the Recording widget.
 
-Next: that was the last tutorial. The workflows folder has complete
-      acquisitions for real microscopes.
+Next: 08_structured_results.py
 """
 import numpy as np
 

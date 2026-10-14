@@ -3,7 +3,7 @@
 You will learn
   * ``recordFramesToMemory()``: record a number of frames and get them
     back as one NumPy array -- nothing written
-  * ``getLatestFrame()``: the newest frame of the live view, without a snap
+  * ``getLiveFrame()``: the newest frame of the live view, without a snap
   * to work on the frames in the script: a mean image and the noise per pixel
 
 Setup
@@ -43,18 +43,18 @@ noise = frames.std(axis=0)
 print(f'mean image: {mean.min():.1f} to {mean.max():.1f} counts; '
       f'noise per pixel: {noise.mean():.2f} counts on average')
 
-# getLatestFrame() is lighter still: the newest frame the camera delivered,
+# getLiveFrame() is lighter still: the newest frame the camera delivered,
 # as the live view shows it, with no recording and no snap. The camera must
 # be acquiring for the frame to be new -- here the live view is turned on.
 api.imcontrol.setLiveViewActive(True)
 try:
     sleep(0.5)                                       # let a frame or two arrive
-    live = api.imcontrol.getLatestFrame(CAMERA)
+    live = api.imcontrol.getLiveFrame(CAMERA)
     print(f'live frame: {live.shape[1]} x {live.shape[0]} px, mean {live.mean():.1f}')
     assert live.shape == frames.shape[1:]
 finally:
     api.imcontrol.setLiveViewActive(False)
 
-# A loop that reads getLatestFrame() and moves a stage until the image is
+# A loop that reads getLiveFrame() and moves a stage until the image is
 # sharpest is an autofocus; one that reads it between laser settings is a
 # power calibration. Both are a few lines from here.

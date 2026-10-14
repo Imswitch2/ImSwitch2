@@ -693,7 +693,7 @@ class CommunicationChannel(SignalInterface):
         """ Legacy, kept for old scripts: appends the live view's current
         image to a list that a script the Watcher widget runs gets, and that
         nothing reads. Outside such a script it raises AttributeError. To get
-        images, use snapImage(True), getLatestFrame or recordFramesToMemory,
+        images, use snapImage(True), getLiveFrame or recordFramesToMemory,
         which return them. """
         image = self.get_image()
         self.output.append(image)

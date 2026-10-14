@@ -2,7 +2,7 @@ import importlib.util
 import logging
 import os
 import time
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from imswitch.imcommon.framework import Signal, FrameworkUtils
 from imswitch.imcommon.model import (
@@ -225,6 +225,191 @@ class _Actions:
             )
         signal.emit(str(name or 'script'), array,
                     None if scale is None else tuple(float(v) for v in scale))
+
+
+    @APIExport()
+    def temporaryDetectorSettings(self, detector: str,
+                                  settings: Optional[Mapping[str, Any]] = None):
+        """ A context manager: sets ``settings`` ({parameter name: value},
+        names as in the Settings widget) on the detector, and on leaving the
+        ``with`` block -- also when it raises or the script is stopped --
+        puts back the values those parameters had::
+
+            with temporaryDetectorSettings('Camera', {'Set exposure time': 0.01}):
+                frames = api.imcontrol.recordFramesToMemory('Camera', 10)
+
+        Without ``settings`` it only puts back what the block changes of the
+        detector's editable parameters. """
+        imcontrol = self._imcontrol()
+        if settings is None:
+            names = [name for name, p in imcontrol.getDetectorParameters(detector).items()
+                     if p.get('editable') and not p.get('configOwned')]
+        else:
+            names = list(settings)
+        previous = {name: imcontrol.getDetectorParameter(detector, name) for name in names}
+
+        def restore():
+            return [(f'{detector}: {name}',
+                     lambda name=name, value=value:
+                     imcontrol.setDetectorParameter(detector, name, value))
+                    for name, value in previous.items()
+                    if imcontrol.getDetectorParameter(detector, name) != value]
+
+        def apply():
+            for name, value in (settings or {}).items():
+                imcontrol.setDetectorParameter(detector, name, value)
+
+        return _Restoring(apply, restore, f'the settings of {detector}', self._scriptLogger)
+
+    @APIExport()
+    def temporaryScanParameters(self, parameters: Optional[Mapping[str, Any]] = None):
+        """ A context manager: puts ``parameters`` (a dict from
+        getScanParameters, edited) into the Scan widget, and the scan it held
+        back on leaving the ``with`` block, also when the block raises or the
+        script is stopped. Without ``parameters`` it only puts back what the
+        block changes::
+
+            params = api.imcontrol.getScanParameters()
+            params['analogParameterDict']['axis_step_size'][0] = 0.05
+            with temporaryScanParameters(params):
+                frames = api.imcontrol.recordScanToMemory('Camera')
+        """
+        imcontrol = self._imcontrol()
+        previous = imcontrol.getScanParameters()
+
+        def apply():
+            if parameters is not None:
+                imcontrol.setScanParameters(parameters)
+
+        def restore():
+            return [('the scan parameters', lambda: imcontrol.setScanParameters(previous))]
+
+        return _Restoring(apply, restore, 'the scan parameters', self._scriptLogger)
+
+    @APIExport()
+    def temporaryLaserSettings(self, settings: Mapping[str, Any]):
+        """ A context manager: sets the lasers in ``settings`` -- {laser: its
+        value} or {laser: {'value': ..., 'on': True}} -- and on leaving the
+        ``with`` block, also when it raises or the script is stopped, puts
+        back each one's value and whether it was on. A laser that was off is
+        switched off before its value is restored, one that was on gets its
+        value first::
+
+            with temporaryLaserSettings({'488': {'value': 5.0, 'on': True}}):
+                frames = api.imcontrol.recordScanToMemory('APD')
+        """
+        imcontrol = self._imcontrol()
+        previous = {}
+        for laser in settings:
+            binary = imcontrol.getLaserInfo(laser).get('binary')
+            previous[laser] = (bool(imcontrol.isLaserActive(laser)),
+                               None if binary else imcontrol.getLaserValue(laser))
+
+        def apply():
+            for laser, wanted in settings.items():
+                wanted = wanted if isinstance(wanted, Mapping) else {'value': wanted}
+                if 'value' in wanted:
+                    imcontrol.setLaserValue(laser, wanted['value'])
+                if 'on' in wanted:
+                    imcontrol.setLaserActive(laser, bool(wanted['on']))
+
+        def restore():
+            steps = []
+            for laser, (wasOn, value) in previous.items():
+                if not wasOn:
+                    steps.append((f'{laser}: off',
+                                  lambda laser=laser: imcontrol.setLaserActive(laser, False)))
+                if value is not None:
+                    steps.append((f'{laser}: value', lambda laser=laser, value=value:
+                                  imcontrol.setLaserValue(laser, value)))
+                if wasOn:
+                    steps.append((f'{laser}: on',
+                                  lambda laser=laser: imcontrol.setLaserActive(laser, True)))
+            return steps
+
+        return _Restoring(apply, restore, 'the laser settings', self._scriptLogger)
+
+    @APIExport()
+    def returningToPositions(self, stages: Optional[Sequence[str]] = None,
+                             rotators: Optional[Sequence[str]] = None):
+        """ A context manager: remembers where ``stages`` (positioner names;
+        every axis of each) and ``rotators`` are, and moves them back there on
+        leaving the ``with`` block, also when it raises or the script is
+        stopped. Separate from the settings managers on purpose: putting a
+        stage back is a move, and a script decides on it by itself::
+
+            with returningToPositions(stages=['X', 'Y']):
+                for x in range(5):
+                    api.imcontrol.movePositioner('X', 'X', 10)
+                    ...
+        """
+        imcontrol = self._imcontrol()
+        positions = imcontrol.getPositionerPositions() if stages else {}
+        stagePositions = {stage: dict(positions[stage]) for stage in (stages or [])}
+        angles = {rotator: imcontrol.getRotatorPosition(rotator) for rotator in (rotators or [])}
+
+        def restore():
+            steps = []
+            for stage, axes in stagePositions.items():
+                for axis, position in axes.items():
+                    steps.append((f'{stage} {axis}', lambda stage=stage, axis=axis, position=position:
+                                  imcontrol.setPositioner(stage, axis, position)))
+            for rotator, angle in angles.items():
+                steps.append((rotator, lambda rotator=rotator, angle=angle:
+                              imcontrol.setRotatorPosition(rotator, angle)))
+            return steps
+
+        return _Restoring(lambda: None, restore, 'the positions', self._scriptLogger)
+
+    def _imcontrol(self):
+        imcontrol = getattr(self._scriptScope.get('api'), 'imcontrol', None)
+        if imcontrol is None:
+            raise RuntimeError('This needs the imcontrol module')
+        return imcontrol
+
+
+class _Restoring:
+    """A ``with`` block that applies something on entry and restores on
+    exit. ``restore()`` returns the steps to take, ``(what, callable)``; each
+    runs even when an earlier one failed. When the block itself raised (or
+    was stopped), a failed restore is logged and the block's exception goes
+    on; otherwise a failed restore raises RuntimeError naming what was not
+    put back."""
+
+    def __init__(self, apply, restore, what, logger):
+        self._apply, self._restore, self._what, self._logger = apply, restore, what, logger
+
+    def __enter__(self):
+        try:
+            self._apply()
+        except BaseException:
+            self._restoreAll(raised=True)
+            raise
+        return self
+
+    def __exit__(self, excType, exc, tb):
+        self._restoreAll(raised=excType is not None)
+        return False
+
+    def _restoreAll(self, *, raised):
+        failed = []
+        try:
+            steps = self._restore()
+        except Exception as error:
+            steps, failed = [], [(self._what, error)]
+        for what, step in steps:
+            try:
+                step()
+            except Exception as error:
+                failed.append((what, error))
+        if not failed:
+            return
+        message = (f'Could not put back {self._what}: '
+                   + '; '.join(f'{what} ({error})' for what, error in failed))
+        if raised:
+            self._logger.error(message)
+        else:
+            raise RuntimeError(message) from failed[0][1]
 
 
 def getActionsScope(otherScope, scriptPath=None):

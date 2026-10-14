@@ -174,10 +174,9 @@ def undocumentedExports():
 
 def renderDocs(cls, isClass=True, displayName=None):
     def fixIndent(docstring, indent):
-        lines = docstring.splitlines()
-        for i in range(len(lines)):
-            lines[i] = f'{" " * indent}{lines[i].lstrip()}'
-        return '\n'.join(lines)
+        # inspect.cleandoc keeps the docstring's own relative indentation,
+        # which its literal blocks (``::``) need; napoleon renders Args:.
+        return _indent(_rst(inspect.cleandoc(docstring)).rstrip(), indent)
 
     rst = ''
     indent = 0

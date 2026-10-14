@@ -37,7 +37,7 @@ The tutorials are ordered so you only switch when a new block begins:
 | scanning 01-03 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 | scanning 04 | `mixed_hamamatsu_apd_mock_scan_setup.json` | the same, plus a point detector (APD) |
 | scanning 05 | `galvo_apd_mock_scan_setup.json` | a point-scanning microscope with two lasers |
-| scanning 06-07 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
+| scanning 06-08 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 
 ## Running a tutorial
 
@@ -86,6 +86,7 @@ back, delete your copy and restart ImSwitch.
 | 05 | `05_laser_power_series.py` | `galvo_apd_mock_scan_setup.json` | lasers; several scans in one recording |
 | 06 | `06_scan_into_memory.py` | `hamamatsu_mock_scan_setup.json` | a scan's frames as an array, nothing written |
 | 07 | `07_scan_parameters_in_code.py` | `hamamatsu_mock_scan_setup.json` | scan settings as a dict, changed in the script |
+| 08 | `08_structured_results.py` | `hamamatsu_mock_scan_setup.json` | what each frame was; settings for one block, put back |
 
 The scanning tutorials load their scan settings from `scanning/scan_params/`
 (double-click one in the Files panel to read it). The camera and stage names
@@ -94,7 +95,7 @@ loaded, so to try a tutorial on another setup you change those names, not
 the file. To make your own settings, set up a scan in the Scan widget and
 save it with `api.imcontrol.saveScanParamsToFile(path)`.
 `scanning/scan_helpers.py` holds the steps of scanning 01 as functions for
-02-04, 06 and 07.
+02-04 and 06-08.
 
 ## On your own microscope
 

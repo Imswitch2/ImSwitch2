@@ -104,20 +104,20 @@ def test_detector_pixel_size_is_z_y_x_in_um():
     assert ctrl.getDetectorPixelSize('Camera') == [1.0, 0.15, 0.15]
 
 
-def test_latest_frame_is_a_copy_of_the_detectors_frame():
+def test_latest_frame_is_a_copy_read_through_the_shared_broker():
     frame = np.arange(6, dtype=np.uint16).reshape(2, 3)
 
     class _Detectors(dict):
         def getCurrentDetectorName(self):
             return 'Camera'
 
-    detectors = _Detectors(Camera=SimpleNamespace(getLatestFrame=lambda: frame))
+    detectors = _Detectors(Camera=SimpleNamespace(getLatestFrameShared=lambda: frame))
     ctrl = _bare(ViewController, _master=SimpleNamespace(detectorsManager=detectors))
-    got = ctrl.getLatestFrame()
+    got = ctrl.getLiveFrame()
     np.testing.assert_array_equal(got, frame)
     got[0, 0] = 99
     assert frame[0, 0] == 0                        # the camera's buffer is untouched
-    assert ctrl.getLatestFrame('Camera').shape == (2, 3)
+    assert ctrl.getLiveFrame('Camera').shape == (2, 3)
 
 
 # --- focus lock -------------------------------------------------------------

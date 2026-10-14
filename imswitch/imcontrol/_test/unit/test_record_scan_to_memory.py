@@ -292,3 +292,53 @@ def test_they_run_on_the_callers_thread():
         export = getattr(RecordingController, name)
         assert export._APIExport is True
         assert export._APIRunOnUIThread is False
+
+
+def test_structured_returns_a_result_read_before_the_recording_is_dropped():
+    ctrl = _controller()
+    frames = np.arange(12, dtype=np.uint16).reshape(3, 2, 2)
+    _plays(ctrl, {'Camera': frames})
+
+    result = ctrl.recordScanToMemory('Camera', timeout=5, structured=True)
+
+    np.testing.assert_array_equal(result['Camera'], frames)
+    assert result.detectors == ['Camera']
+    assert result.detector('Camera').fileName == '10h00m00s_rec_Camera.h5'
+    assert ctrl._moduleCommChannel.memoryRecordings == {}     # dropped all the same
+
+
+@pytest.mark.parametrize('method, args, recMode, ends', [
+    ('recordScanToMemory', ('Camera',), RecMode.ScanOnce, True),
+    ('recordFramesToMemory', ('Camera', 1), RecMode.SpecFrames, True),
+    ('recordScanToMemory', ('Camera',), RecMode.ScanOnce, False),     # the timeout path
+], ids=['scan', 'frames', 'timeout'])
+def test_every_widget_access_happens_on_the_controller_thread(method, args, recMode, ends):
+    """The API exports run on the script thread (they block until the end);
+    the static audit allows them only because every widget access goes
+    through _onControllerThread. A widget touched outside it fails here."""
+    ctrl = _controller()
+    _plays(ctrl, {'Camera': np.zeros((1, 2, 2))}, end=ends, recMode=recMode)
+    inside = []
+    hop = RecordingController._onControllerThread
+
+    def onControllerThread(func, timeout):
+        inside.append(True)
+        try:
+            return hop(ctrl, func, timeout)
+        finally:
+            inside.pop()
+
+    ctrl._onControllerThread = onControllerThread
+    widget = ctrl._widget
+
+    class _Guarded:
+        def __getattr__(self, name):
+            assert inside, f'widget.{name} touched outside _onControllerThread'
+            return getattr(widget, name)
+
+    ctrl._widget = _Guarded()
+    if ends:
+        getattr(ctrl, method)(*args, timeout=5)
+    else:
+        with pytest.raises(TimeoutError):
+            getattr(ctrl, method)(*args, timeout=0.2)

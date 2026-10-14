@@ -17,7 +17,7 @@ api.imcontrol
       Legacy, kept for old scripts: appends the live view's current
       image to a list that a script the Watcher widget runs gets, and that
       nothing reads. Outside such a script it raises AttributeError. To get
-      images, use snapImage(True), getLatestFrame or recordFramesToMemory,
+      images, use snapImage(True), getLiveFrame or recordFramesToMemory,
       which return them.
 
       Always available.
@@ -217,7 +217,7 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
-   .. method:: getLatestFrame(detectorName: Optional[str] = None) -> numpy.ndarray
+   .. method:: getLiveFrame(detectorName: Optional[str] = None) -> numpy.ndarray
 
       Returns the newest frame of a detector as a NumPy array
       ``(rows, columns)`` -- what the live view shows -- without a snap or
@@ -467,18 +467,18 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
-   .. method:: recordFramesToMemory(detectorName: Union[List[str], str, int, NoneType], numFrames: int, timeout: float = 600.0, keep: bool = False) -> Union[numpy.ndarray, Dict[str, numpy.ndarray]]
+   .. method:: recordFramesToMemory(detectorName: Union[List[str], str, int, NoneType], numFrames: int, timeout: float = 600.0, keep: bool = False, structured: bool = False) -> Union[numpy.ndarray, Dict[str, numpy.ndarray], imswitch.imcontrol.model.acquisition_result.AcquisitionResult]
 
       Records ``numFrames`` frames of a detector, as the Recording
       widget's *Number of frames* does, and returns them as a NumPy array
       ``(frames, rows, columns)`` without writing a file. Everything else
       is as for recordScanToMemory: ``detectorName`` (a name, a list, -1,
       -2 or None), the result for several detectors, ``timeout``,
-      ``keep`` and the errors.
+      ``keep``, ``structured`` and the errors.
 
       Needs *Recording* in ``availableWidgets``.
 
-   .. method:: recordScanToMemory(detectorName: Union[List[str], str, int, NoneType] = None, timeout: float = 600.0, keep: bool = False) -> Union[numpy.ndarray, Dict[str, numpy.ndarray]]
+   .. method:: recordScanToMemory(detectorName: Union[List[str], str, int, NoneType] = None, timeout: float = 600.0, keep: bool = False, structured: bool = False) -> Union[numpy.ndarray, Dict[str, numpy.ndarray], imswitch.imcontrol.model.acquisition_result.AcquisitionResult]
 
       Runs the scan the Scan widget holds once and returns the frames
       it triggers as a NumPy array ``(frames, rows, columns)``, without
@@ -496,6 +496,13 @@ api.imcontrol
       ``keep=True`` the recording also stays listed in ImProcess, as a
       recording to RAM does. It runs on the caller's thread, which must
       not be the GUI thread (a script's is not).
+
+      ``structured=True`` returns an AcquisitionResult instead: the frames
+      of every detector with their axes and pixel size, which scan
+      position each frame was taken at (recorded by the scan, or
+      reconstructed from its plan -- the result says which), the settings
+      the recording wrote down, its start time and whether it is
+      complete, with show() and save().
 
       Needs *Recording* in ``availableWidgets``.
 

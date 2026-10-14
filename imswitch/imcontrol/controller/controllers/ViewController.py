@@ -218,7 +218,7 @@ class ViewController(ImConWidgetController):
         self._widget.setLiveViewActive(active)
 
     @APIExport(runOnUIThread=True)
-    def getLatestFrame(self, detectorName: Optional[str] = None) -> np.ndarray:
+    def getLiveFrame(self, detectorName: Optional[str] = None) -> np.ndarray:
         """ Returns the newest frame of a detector as a NumPy array
         ``(rows, columns)`` -- what the live view shows -- without a snap or
         a file. ``None`` means the current detector. The detector has to be
@@ -227,7 +227,9 @@ class ViewController(ImConWidgetController):
         manager = self._master.detectorsManager
         if detectorName is None:
             detectorName = manager.getCurrentDetectorName()
-        return np.array(manager[detectorName].getLatestFrame(), copy=True)
+        # Through the shared broker: a direct SDK read could take a frame
+        # away from a recording running at the same time.
+        return np.array(manager[detectorName].getLatestFrameShared(), copy=True)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
