@@ -713,6 +713,7 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                        self.updateParamsFromDetector(detector=c))
         )
         self.updateSharedAttrs()
+        self._commChannel.sigDetectorParametersChanged.emit(str(detectorName))
 
     def setDetectorParameterExact(
         self, detectorName: str, parameterName: str, value: Any
@@ -734,6 +735,7 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         # the value it actually accepted without writing it straight back.
         self.updateParamsFromDetector(detector=detector, blockSignals=True)
         self.updateSharedAttrs()
+        self._commChannel.sigDetectorParametersChanged.emit(str(detectorName))
 
     def getDetectorTriggerSetting(self, detectorName: str) -> Tuple[str, Any]:
         """Return the detector's trigger parameter name and exact current value."""

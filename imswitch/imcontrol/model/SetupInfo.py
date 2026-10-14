@@ -507,19 +507,23 @@ class ScanInfo:
     ``maxDwellMs``. Other scan panels ignore it. """
 
     simpleMoNaLISA: Optional[Dict[str, Any]] = None
-    """ Options for the ``SimpleMoNaLISA`` cloak. Fixed setup facts include
-    ``fovUm``, ``ulensPeriodUm``, ``interPulseDelayMs`` and
-    ``cameraReadoutTimeMs``. ``profiles`` may define ordered MoNaLISA sequence
-    steps (each with an ON/OFF/READOUT role, one or more synchronized TTL
-    devices, timing defaults, and modes selecting step subsets), with
-    ``defaultProfile`` selecting the startup profile. Profiles are editable
-    live from the SimpleMoNaLISA panel and are persisted back into this block;
-    profile ids remain stable when only the display name changes. An empty or
-    omitted ``profiles`` mapping is valid and starts SimpleMoNaLISA in a
-    restricted state until the user creates a profile. Geometry defaults include
-    ``defaultScanType``,
-    ``defaultLateralStepUm``, ``defaultZScanLengthUm`` and
-    ``defaultZStepUm``. """
+    """ Options for the ``SimpleMoNaLISA`` cloak. FOV can use
+    ``fovSource`` = ``"detector"`` (with ``fovUm`` as a persisted fallback) or
+    ``"manual"``. Camera readout timing uses ``defaultCameraReadoutTimeMs`` as
+    the setup default; profiles may override it with ``cameraReadoutTimeMs``.
+    The detector-reported readout is diagnostic only and can be copied into a
+    profile explicitly with Auto. ``ulensPeriodPolicy`` is ``"fixed"`` or
+    ``"per_profile"``;
+    fixed setups use the setup-level ``ulensPeriodUm``, while per-profile setups
+    require ``ulensPeriodUm`` in every usable profile. Profiles may also choose
+    ``scanExtentSource`` = ``"ulens"`` or ``"manual"`` (with ``scanExtentUm``),
+    so lateral scan length is not intrinsically the uLens period. ``profiles``
+    define ordered MoNaLISA sequence steps and modes selecting step/device
+    subsets; modes never own uLens geometry. Profiles and these setup options are
+    editable from SimpleMoNaLISA and persist back into the active setup file.
+    An empty or omitted ``profiles`` mapping is valid and starts in a restricted
+    state until the user creates one. Run defaults include ``defaultScanType``,
+    ``defaultLateralStepUm``, ``defaultZScanLengthUm`` and ``defaultZStepUm``. """
 
 
 

@@ -115,7 +115,7 @@ def test_default_profile_plan_round_trips_and_uses_fixed_setup_lengths():
     analog, digital = plan_to_dicts(plan, limits)
 
     assert plan.scan_type == 'XY'
-    assert plan.profile_id == 'default'
+    assert plan.profile_id == 'green'
     assert plan.mode_id == 'resolft'
     assert analog['scan_dim_target_device'][:2] == ['Stage X', 'Stage Y']
     assert analog['axis_length'][:2] == pytest.approx([0.72, 0.72])
@@ -124,6 +124,24 @@ def test_default_profile_plan_round_trips_and_uses_fixed_setup_lengths():
     assert digital['pulse_starts_s']['488 OFF'][0] == pytest.approx([0.0012])
     assert digital['pulse_starts_s']['488 EXC'][0] == pytest.approx([0.0033])
     assert dicts_to_plan(analog, digital, limits, plan) == plan
+
+
+def test_readout_pulse_duration_is_setup_owned_and_clamped_to_one_ms():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['readoutPulseTimeMs'] = 2.5
+    setup.scan.simpleMoNaLISA['profiles']['green']['steps'][2]['defaultDurationMs'] = 7.0
+    setup.scan.simpleMoNaLISA['profiles']['green']['steps'][2]['durationEditable'] = True
+    limits = MoNaLISALimits.from_setup(setup)
+
+    plan = default_plan(limits)
+    assert limits.readout_pulse_time_s == pytest.approx(0.0025)
+    assert plan.step_durations_s['readout'] == pytest.approx(0.0025)
+
+    too_short = _Setup()
+    too_short.scan.simpleMoNaLISA['readoutPulseTimeMs'] = 0.2
+    short_limits = MoNaLISALimits.from_setup(too_short)
+    assert short_limits.readout_pulse_time_s == pytest.approx(0.001)
+    assert default_plan(short_limits).step_durations_s['readout'] == pytest.approx(0.001)
 
 
 def test_mode_switch_preserves_hidden_step_timing():
@@ -238,7 +256,8 @@ def test_active_profile_edit_preserves_live_geometry_and_unchanged_editable_dura
     config = old.to_config()
     # Keep OFF's stable id but change its profile default; the current live
     # editable value must win. Add a new editable OFF step and change fixed
-    # readout default; those should use profile defaults.
+    # readout default; READOUT timing is setup-owned and must ignore that
+    # profile-local value.
     for step in config['steps']:
         if step['id'] == 'off':
             step['defaultDurationMs'] = 8.0
@@ -259,4 +278,103 @@ def test_active_profile_edit_preserves_live_geometry_and_unchanged_editable_dura
     assert adapted.z_length_um == pytest.approx(1.6)
     assert adapted.step_durations_s['off'] == pytest.approx(0.0031)
     assert adapted.step_durations_s['off_2'] == pytest.approx(0.0027)
-    assert adapted.step_durations_s['readout'] == pytest.approx(0.0015)
+    assert adapted.step_durations_s['readout'] == pytest.approx(
+        new_limits.readout_pulse_time_s
+    )
+
+
+def test_fixed_ulens_period_is_setup_owned_and_mode_independent():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['ulensPeriodPolicy'] = 'fixed'
+    setup.scan.simpleMoNaLISA['ulensPeriodUm'] = 0.81
+    # A stray profile value must not override a fixed setup period.
+    setup.scan.simpleMoNaLISA['profiles']['green']['ulensPeriodUm'] = 0.63
+    limits = MoNaLISALimits.from_setup(setup)
+
+    resolft = default_plan(limits)
+    confocal = select_mode(resolft, 'confocal', limits)
+
+    assert limits.ulens_period_um('green') == pytest.approx(0.81)
+    assert resolft.lateral_length_um == pytest.approx(0.81)
+    assert confocal.lateral_length_um == pytest.approx(0.81)
+
+
+def test_per_profile_ulens_period_changes_with_profile_not_mode():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['ulensPeriodPolicy'] = 'per_profile'
+    setup.scan.simpleMoNaLISA['profiles']['green']['ulensPeriodUm'] = 0.81
+    setup.scan.simpleMoNaLISA['profiles']['dual_color']['ulensPeriodUm'] = 0.63
+    setup.scan.simpleMoNaLISA['profiles']['dual_off']['ulensPeriodUm'] = 0.72
+    limits = MoNaLISALimits.from_setup(setup)
+
+    green = default_plan(limits)
+    green_confocal = select_mode(green, 'confocal', limits)
+    dual = select_profile(green, 'dual_color', limits)
+
+    assert green.lateral_length_um == pytest.approx(0.81)
+    assert green_confocal.lateral_length_um == pytest.approx(0.81)
+    assert dual.lateral_length_um == pytest.approx(0.63)
+
+
+def test_manual_scan_extent_is_independent_of_ulens_and_round_trips_backend():
+    setup = _Setup()
+    profile = setup.scan.simpleMoNaLISA['profiles']['green']
+    profile['scanExtentSource'] = 'manual'
+    profile['scanExtentUm'] = 2.5
+    limits = MoNaLISALimits.from_setup(setup)
+    plan = default_plan(limits)
+
+    assert plan.lateral_length_um == pytest.approx(2.5)
+    assert limits.ulens_period_um('green') == pytest.approx(0.72)
+
+    analog, digital = plan_to_dicts(plan, limits)
+    analog['axis_length'][0] = 3.2
+    analog['axis_length'][1] = 3.2
+    parsed = dicts_to_plan(analog, digital, limits, plan)
+    assert parsed.lateral_length_um == pytest.approx(3.2)
+
+
+def test_simple_monalisa_slider_ranges_are_setup_configurable():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['sliderRanges'] = {
+        'pixelSizeNm': [12, 420],
+        'lateralScanLengthUm': [0.2, 7.5],
+        'stepDurationMs': [0.05, 12],
+    }
+    limits = MoNaLISALimits.from_setup(setup)
+
+    assert limits.slider_ranges['pixelSizeNm'] == pytest.approx((12, 420))
+    assert limits.slider_ranges['lateralScanLengthUm'] == pytest.approx((0.2, 7.5))
+    assert limits.slider_ranges['stepDurationMs'] == pytest.approx((0.05, 12))
+    # Unspecified controls keep their setup defaults.
+    assert limits.slider_ranges['zStepNm'][0] > 0
+    assert limits.detector_devices == ('Camera',)
+
+
+def test_camera_readout_inherits_setup_default_and_profile_can_override():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA.pop('cameraReadoutTimeMs', None)
+    setup.scan.simpleMoNaLISA['defaultCameraReadoutTimeMs'] = 3.0
+    limits = MoNaLISALimits.from_setup(setup)
+    inherited = default_plan(limits)
+
+    assert limits.camera_readout_time_s('green') == pytest.approx(0.003)
+    assert limits.camera_readout_source('green') == 'setup default'
+    assert inherited.dwell_s(limits) == pytest.approx(0.0073)
+
+    profile_cfg = setup.scan.simpleMoNaLISA['profiles']['green']
+    profile_cfg['cameraReadoutTimeMs'] = 2.4
+    overridden_limits = MoNaLISALimits.from_setup(setup)
+    overridden = default_plan(overridden_limits)
+
+    assert overridden_limits.camera_readout_time_s('green') == pytest.approx(0.0024)
+    assert overridden_limits.camera_readout_source('green') == 'profile'
+    assert overridden.dwell_s(overridden_limits) == pytest.approx(0.0067)
+
+
+def test_legacy_setup_camera_readout_is_default_compatibility_fallback():
+    setup = _Setup()
+    # _Setup intentionally uses the old setup-level key.
+    limits = MoNaLISALimits.from_setup(setup)
+    assert limits.default_camera_readout_time_s == pytest.approx(0.006)
+    assert limits.camera_readout_time_s('green') == pytest.approx(0.006)

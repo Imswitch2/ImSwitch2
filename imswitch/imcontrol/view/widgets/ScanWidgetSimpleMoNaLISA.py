@@ -4,17 +4,261 @@ from __future__ import annotations
 
 from typing import Optional
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
+
+from imswitch.imcommon.view.guitools import colorutils
 
 from imswitch.imcontrol.model.monalisa_profiles import (
     MONALISA_BINDING_BOUND,
     profile_fingerprint,
 )
 from imswitch.imcontrol.model.simple_monalisa_scan import MoNaLISAScanPlan, SCAN_TYPES
+from imswitch.imcontrol.model.simple_scan import log_position, log_value
 from .ScanCloakPanel import ScanCloakPanel, ScanCloakView
 from .ScanWidgetAdvanced import ScanWidgetAdvanced
 from .MoNaLISAProfileEditor import MoNaLISAProfileEditor
+from .MoNaLISASetupEditor import MoNaLISASetupEditor
 
+
+_SLIDER_TICKS = 1000
+
+
+class _AcquisitionIndicator(QtWidgets.QWidget):
+    """Small deterministic red record marker (ring + filled centre)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(22, 22)
+        self.setToolTip('An acquisition detector records during this step.')
+
+    def paintEvent(self, event):
+        del event
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        red = QtGui.QColor('#e31a1c')
+        centre = self.rect().center()
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(QtGui.QPen(red, 2.0))
+        painter.drawEllipse(centre, 7, 7)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(red)
+        painter.drawEllipse(centre, 3, 3)
+
+
+class _RangeControl(QtWidgets.QWidget):
+    """Compact configurable slider + precise spin box."""
+
+    valueChanged = QtCore.Signal(float)
+    editingFinished = QtCore.Signal(float)
+
+    def __init__(self, *, suffix='', decimals=3, low=0.001, high=10000.0, parent=None):
+        super().__init__(parent)
+        self._updating = False
+        self._low = float(low)
+        self._high = float(high)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider.setRange(0, _SLIDER_TICKS)
+        self.spin = QtWidgets.QDoubleSpinBox()
+        self.spin.setDecimals(int(decimals))
+        self.spin.setRange(0.0, 1000000000.0)
+        self.spin.setSuffix(str(suffix))
+        self.spin.setKeyboardTracking(False)
+        self.spin.setMinimumWidth(88)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.spin)
+        self.slider.valueChanged.connect(self._sliderChanged)
+        self.slider.sliderReleased.connect(self._sliderReleased)
+        self.spin.valueChanged.connect(self._spinChanged)
+        self.spin.editingFinished.connect(self._spinEditingFinished)
+        self.setRange(self._low, self._high)
+
+    def setRange(self, low, high):
+        low = float(low)
+        high = float(high)
+        if high <= low:
+            high = low + max(abs(low) * 0.01, 1e-9)
+        self._low, self._high = low, high
+        self.setValue(self.value())
+
+    def _fractionForValue(self, value):
+        value = min(max(float(value), self._low), self._high)
+        if self._low > 0 and self._high > 0:
+            return log_position(value, self._low, self._high)
+        return (value - self._low) / (self._high - self._low)
+
+    def _valueForFraction(self, fraction):
+        fraction = min(max(float(fraction), 0.0), 1.0)
+        if self._low > 0 and self._high > 0:
+            return log_value(fraction, self._low, self._high)
+        return self._low + fraction * (self._high - self._low)
+
+    def _sliderChanged(self, position):
+        if self._updating:
+            return
+        value = self._valueForFraction(position / _SLIDER_TICKS)
+        self._updating = True
+        self.spin.setValue(value)
+        self._updating = False
+        self.valueChanged.emit(self.spin.value())
+
+    def _sliderReleased(self):
+        if not self._updating:
+            self.editingFinished.emit(self.value())
+
+    def _spinChanged(self, value):
+        if self._updating:
+            return
+        self._updating = True
+        self.slider.setValue(round(self._fractionForValue(value) * _SLIDER_TICKS))
+        self._updating = False
+        self.valueChanged.emit(float(value))
+
+    def _spinEditingFinished(self):
+        if not self._updating:
+            self.editingFinished.emit(self.value())
+
+    def setValue(self, value):
+        value = max(0.0, float(value))
+        self._updating = True
+        self.spin.setValue(value)
+        self.slider.setValue(round(self._fractionForValue(value) * _SLIDER_TICKS))
+        self._updating = False
+
+    def value(self):
+        return self.spin.value()
+
+
+class _SequenceStepDisplay(QtWidgets.QWidget):
+    """Role-first sequence display with explicit custom-device badges."""
+
+    _SEMANTIC_ROLES = {'on', 'off', 'readout'}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        self.badgesWidget = QtWidgets.QWidget()
+        self.badgesLayout = QtWidgets.QHBoxLayout(self.badgesWidget)
+        self.badgesLayout.setContentsMargins(0, 0, 0, 0)
+        self.badgesLayout.setSpacing(4)
+        layout.addWidget(self.badgesWidget)
+        self.acquireIndicator = _AcquisitionIndicator()
+        self.acquireIndicator.hide()
+        layout.addWidget(self.acquireIndicator)
+        layout.addStretch(1)
+
+    @staticmethod
+    def _textColour(hex_colour):
+        try:
+            value = str(hex_colour).lstrip('#')
+            r, g, b = int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+            luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            return '#111111' if luminance > 155 else '#ffffff'
+        except Exception:
+            return '#ffffff'
+
+    @staticmethod
+    def _deviceColour(device, wavelengths):
+        wavelength = wavelengths.get(device)
+        if wavelength is None:
+            return '#666666'
+        try:
+            return colorutils.wavelengthToHex(float(wavelength), gamma=6.0)
+        except Exception:
+            return '#666666'
+
+    def _clearBadges(self):
+        while self.badgesLayout.count():
+            item = self.badgesLayout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _addBadge(self, text, background, tooltip=''):
+        badge = QtWidgets.QLabel(str(text))
+        font = badge.font()
+        font.setBold(True)
+        badge.setFont(font)
+        badge.setContentsMargins(10, 3, 10, 3)
+        badge.setMinimumWidth(82)
+        badge.setAlignment(QtCore.Qt.AlignCenter)
+        text_colour = self._textColour(background) if str(background).startswith('#') else '#111111'
+        badge.setStyleSheet(
+            'QLabel {'
+            f' background: {background}; color: {text_colour};'
+            ' border-radius: 5px; border: 1px solid rgba(0,0,0,55);'
+            ' }'
+        )
+        if tooltip:
+            badge.setToolTip(str(tooltip))
+        self.badgesLayout.addWidget(badge)
+        return badge
+
+    def _semanticBackground(self, devices, wavelengths):
+        colours = []
+        for device in devices:
+            wavelength = wavelengths.get(device)
+            if wavelength is None:
+                continue
+            colour = self._deviceColour(device, wavelengths)
+            if colour not in colours:
+                colours.append(colour)
+        if not colours:
+            return '#666666'
+        if len(colours) == 1:
+            return colours[0]
+        stops = []
+        count = len(colours)
+        for index, colour in enumerate(colours):
+            start = index / count
+            end = (index + 1) / count
+            stops.append(f'stop:{start:.3f} {colour}, stop:{end:.3f} {colour}')
+        return 'qlineargradient(x1:0,y1:0,x2:1,y2:0,' + ','.join(stops) + ')'
+
+    def setStep(self, active_devices, wavelengths, detector_devices, *, step_label='', role=''):
+        active_devices = tuple(active_devices or ())
+        detector_devices = set(detector_devices or ())
+        acquisition_devices = [d for d in active_devices if d in detector_devices]
+        visible_devices = [d for d in active_devices if d not in detector_devices]
+        role = str(role or '').strip().lower()
+        self._clearBadges()
+
+        details = [str(step_label or role or 'Step')]
+        if role:
+            details.append(f'Role: {role}')
+        if visible_devices:
+            details.append('Devices: ' + ' + '.join(visible_devices))
+        if acquisition_devices:
+            details.append('Acquire: ' + ' + '.join(acquisition_devices))
+        tooltip = '\n'.join(details)
+
+        if role in self._SEMANTIC_ROLES:
+            background = self._semanticBackground(visible_devices, wavelengths)
+            self._addBadge(role.upper(), background, tooltip)
+        else:
+            # Custom/alignment steps expose their actual hardware directly.
+            # Detectors are represented separately by the red acquisition icon.
+            if visible_devices:
+                for device in visible_devices:
+                    self._addBadge(
+                        device,
+                        self._deviceColour(device, wavelengths),
+                        tooltip,
+                    )
+            else:
+                self._addBadge(str(step_label or 'ACQUISITION').upper(), '#666666', tooltip)
+
+        self.acquireIndicator.setVisible(bool(acquisition_devices))
+        self.acquireIndicator.setToolTip(
+            'Records during this step' + (
+                ': ' + ' + '.join(acquisition_devices) if acquisition_devices else '.'
+            )
+        )
+        self.setToolTip(tooltip)
 
 def _format_length(um: float) -> str:
     if um < 1.0:
@@ -45,6 +289,8 @@ class MoNaLISAView(ScanCloakView):
     sigProfileEditRequested = QtCore.Signal(str)
     sigProfileRenameRequested = QtCore.Signal(str)
     sigProfileDeleteRequested = QtCore.Signal(str)
+    sigSetupEditRequested = QtCore.Signal()
+    sigCameraReadoutAutoRequested = QtCore.Signal()
     sigScreeningRequested = QtCore.Signal()
     sigLiveRoleToggled = QtCore.Signal(str, bool)
 
@@ -70,13 +316,29 @@ class MoNaLISAView(ScanCloakView):
             'Use the selected profile roles for screening at their current Live laser powers.'
         )
         self.screeningButton.clicked.connect(self.sigScreeningRequested.emit)
-        # Base layout: stretch, hidden generic Live, Acquire, Stop.
-        self.runRow.insertWidget(2, self.screeningButton)
+        # Base layout: stretch, hidden generic Live, Acquire, Stop. Reorder the
+        # visible Simple controls as Live / Stop / Acquire.
+        self.runRow.removeWidget(self.startButton)
+        self.runRow.removeWidget(self.stopButton)
+        self.runRow.addWidget(self.screeningButton)
+        self.runRow.addWidget(self.stopButton)
+        self.runRow.addSpacing(12)
+        self.runRow.addWidget(self.startButton)
         self.stopButton.setToolTip(
             'Switch off the lasers enabled by MoNaLISA Live screening. '
             'The camera live view and trigger mode are left running.'
         )
-        self.estimateTitle.setText('Total scan time')
+        # MoNaLISA keeps the operational controls at the very top. The scan
+        # estimate is shown once, inside the compact Scan summary instead of
+        # consuming a second top row.
+        self.runTitle = QtWidgets.QLabel('LIVE')
+        run_font = self.runTitle.font()
+        run_font.setBold(True)
+        self.runTitle.setFont(run_font)
+        self.runRow.insertWidget(0, self.runTitle)
+        self.estimateTitle.hide()
+        self.frameTimeLabel.hide()
+        self.estimateNote.hide()
 
         self._buildUi()
 
@@ -96,63 +358,27 @@ class MoNaLISAView(ScanCloakView):
         return label
 
     def _buildUi(self):
-        box, layout = self._group('Microscope')
-        self.fovValue = self._info_value()
-        self.periodValue = self._info_value()
-        self.delayValue = self._info_value()
-        self.cameraValue = self._info_value()
-        layout.addWidget(QtWidgets.QLabel('Imaging FOV'), 0, 0)
-        layout.addWidget(self.fovValue, 0, 1)
-        layout.addWidget(QtWidgets.QLabel('Scan length'), 1, 0)
-        layout.addWidget(self.periodValue, 1, 1)
-        layout.addWidget(QtWidgets.QLabel('Inter-pulse delay'), 2, 0)
-        layout.addWidget(self.delayValue, 2, 1)
-        layout.addWidget(QtWidgets.QLabel('Camera readout'), 3, 0)
-        layout.addWidget(self.cameraValue, 3, 1)
-        box.setToolTip('Fixed microscope/setup facts; they are not acquisition choices.')
-        self.content.addWidget(box)
+        # The screening role selection belongs directly under the top action
+        # row; it is intentionally not another boxed settings section.
+        separator = QtWidgets.QFrame()
+        separator.setFrameShape(QtWidgets.QFrame.HLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.content.addWidget(separator)
 
-        box, layout = self._group('Scan')
-        self.scanTypeCombo = QtWidgets.QComboBox()
-        self.scanTypeCombo.addItems(SCAN_TYPES)
-        self.scanTypeCombo.currentTextChanged.connect(self._emitEdited)
+        self.liveRolesWidget = QtWidgets.QWidget()
+        self.liveRolesLayout = QtWidgets.QHBoxLayout(self.liveRolesWidget)
+        self.liveRolesLayout.setContentsMargins(4, 0, 4, 2)
+        self.liveRolesLayout.setSpacing(10)
+        self.liveRolesLayout.addStretch(1)
+        self.liveRolesWidget.setToolTip(
+            'Choose which profile roles participate in screening. Live power remains '
+            'owned by the Laser widget.'
+        )
+        self.content.addWidget(self.liveRolesWidget)
 
-        self.lateralStepSpin = QtWidgets.QDoubleSpinBox()
-        self.lateralStepSpin.setDecimals(0)
-        self.lateralStepSpin.setRange(1, 5000)
-        self.lateralStepSpin.setSuffix(' nm')
-        self.lateralStepSpin.setKeyboardTracking(False)
-        self.lateralStepSpin.valueChanged.connect(self._emitEdited)
-
-        self.zStepSpin = QtWidgets.QDoubleSpinBox()
-        self.zStepSpin.setDecimals(0)
-        self.zStepSpin.setRange(1, 5000)
-        self.zStepSpin.setSuffix(' nm')
-        self.zStepSpin.setKeyboardTracking(False)
-        self.zStepSpin.valueChanged.connect(self._emitEdited)
-
-        self.zLengthSpin = QtWidgets.QDoubleSpinBox()
-        self.zLengthSpin.setDecimals(3)
-        self.zLengthSpin.setRange(0.001, 1000.0)
-        self.zLengthSpin.setSuffix(' µm')
-        self.zLengthSpin.setKeyboardTracking(False)
-        self.zLengthSpin.valueChanged.connect(self._emitEdited)
-
-        self.pointsLabel = QtWidgets.QLabel('–')
-        self.pointsLabel.setWordWrap(True)
-        layout.addWidget(QtWidgets.QLabel('Scan type'), 0, 0)
-        layout.addWidget(self.scanTypeCombo, 0, 1)
-        layout.addWidget(QtWidgets.QLabel('Lateral step'), 1, 0)
-        layout.addWidget(self.lateralStepSpin, 1, 1)
-        layout.addWidget(QtWidgets.QLabel('Z scan length'), 2, 0)
-        layout.addWidget(self.zLengthSpin, 2, 1)
-        layout.addWidget(QtWidgets.QLabel('Z step'), 3, 0)
-        layout.addWidget(self.zStepSpin, 3, 1)
-        layout.addWidget(QtWidgets.QLabel('Sampling'), 4, 0)
-        layout.addWidget(self.pointsLabel, 4, 1)
-        self.content.addWidget(box)
-
-        box, layout = self._group('Illumination sequence')
+        # Profile + mode is the main acquisition recipe selector. Setup stays
+        # one click away but no longer consumes a summary row in the main UI.
+        box, layout = self._group('Profile')
         self.profileCombo = QtWidgets.QComboBox()
         self.profileCombo.setToolTip(
             'Profiles are selected only in Simple. Advanced edits may preserve or break the selection, '
@@ -181,52 +407,127 @@ class MoNaLISAView(ScanCloakView):
         self.renameProfileAction.triggered.connect(self._requestRenameProfile)
         self.deleteProfileAction.triggered.connect(self._requestDeleteProfile)
 
+        self.setupButton = QtWidgets.QPushButton('Setup…')
+        self.setupButton.setToolTip('Edit and persist all SimpleMoNaLISA setup parameters.')
+        self.setupButton.clicked.connect(self.sigSetupEditRequested.emit)
+
         profileRow = QtWidgets.QWidget()
         profileRowLayout = QtWidgets.QHBoxLayout(profileRow)
         profileRowLayout.setContentsMargins(0, 0, 0, 0)
-        profileRowLayout.setSpacing(4)
-        profileRowLayout.addWidget(self.profileCombo, 1)
+        profileRowLayout.setSpacing(6)
+        profileRowLayout.addWidget(QtWidgets.QLabel('Profile'))
+        profileRowLayout.addWidget(self.profileCombo, 2)
         profileRowLayout.addWidget(self.profileMenuButton)
+        profileRowLayout.addSpacing(8)
+        profileRowLayout.addWidget(QtWidgets.QLabel('Mode'))
+        profileRowLayout.addWidget(self.modeCombo, 1)
+        profileRowLayout.addWidget(self.setupButton)
+        layout.addWidget(profileRow, 0, 0, 1, 2)
+        layout.addWidget(self.bindingLabel, 1, 0, 1, 2)
+        self.profileGeometryLabel = QtWidgets.QLabel('')
+        self.profileGeometryLabel.hide()
+        self.content.addWidget(box)
 
-        layout.addWidget(QtWidgets.QLabel('Profile'), 0, 0)
-        layout.addWidget(profileRow, 0, 1)
-        layout.addWidget(QtWidgets.QLabel('Mode'), 1, 0)
-        layout.addWidget(self.modeCombo, 1, 1)
-        layout.addWidget(self.bindingLabel, 2, 0, 1, 2)
+        # Scan geometry uses one visual language everywhere: slider + exact
+        # spin box. Z controls disappear entirely when the selected scan does
+        # not use Z.
+        box, layout = self._group('Scan')
+        self.scanTypeCombo = QtWidgets.QComboBox()
+        self.scanTypeCombo.addItems(SCAN_TYPES)
+        self.scanTypeCombo.currentTextChanged.connect(self._emitEdited)
+        scanTypeRow = QtWidgets.QWidget()
+        scanTypeLayout = QtWidgets.QHBoxLayout(scanTypeRow)
+        scanTypeLayout.setContentsMargins(0, 0, 0, 0)
+        scanTypeLayout.addWidget(QtWidgets.QLabel('Scan'))
+        scanTypeLayout.addWidget(self.scanTypeCombo)
+        scanTypeLayout.addStretch(1)
+        self.scanSummaryLabel = QtWidgets.QLabel('–')
+        self.scanSummaryLabel.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        scanTypeLayout.addWidget(self.scanSummaryLabel, 1)
+        layout.addWidget(scanTypeRow, 0, 0, 1, 2)
 
+        self.lateralStepControl = _RangeControl(suffix=' nm', decimals=1, low=5.0, high=1000.0)
+        self.lateralStepControl.valueChanged.connect(self._emitEdited)
+        self.lateralLengthControl = _RangeControl(suffix=' µm', decimals=4, low=0.05, high=10.0)
+        self.lateralLengthControl.valueChanged.connect(self._emitEdited)
+        self.zStepControl = _RangeControl(suffix=' nm', decimals=1, low=5.0, high=1000.0)
+        self.zStepControl.valueChanged.connect(self._emitEdited)
+        self.zLengthControl = _RangeControl(suffix=' µm', decimals=4, low=0.1, high=10.0)
+        self.zLengthControl.valueChanged.connect(self._emitEdited)
+
+        # Compatibility aliases used by controller/view code below while the
+        # implementation remains based on the common control.
+        self.lateralStepSpin = self.lateralStepControl.spin
+        self.lateralStepSlider = self.lateralStepControl.slider
+        self.lateralLengthSpin = self.lateralLengthControl.spin
+        self.zStepSpin = self.zStepControl.spin
+        self.zLengthSpin = self.zLengthControl.spin
+
+        def field(label, control):
+            widget = QtWidgets.QWidget()
+            field_layout = QtWidgets.QVBoxLayout(widget)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(2)
+            caption = QtWidgets.QLabel(label)
+            caption_font = caption.font()
+            caption_font.setPointSizeF(max(7.0, caption_font.pointSizeF() * 0.9))
+            caption.setFont(caption_font)
+            field_layout.addWidget(caption)
+            field_layout.addWidget(control)
+            return widget, caption
+
+        self.pixelField, self.pixelCaption = field('Pixel size', self.lateralStepControl)
+        self.lateralLengthField, self.lateralLengthCaption = field('Scan length', self.lateralLengthControl)
+        self.zStepField, self.zStepCaption = field('Z step', self.zStepControl)
+        self.zLengthField, self.zLengthCaption = field('Z scan length', self.zLengthControl)
+        layout.addWidget(self.pixelField, 1, 0)
+        layout.addWidget(self.lateralLengthField, 1, 1)
+        layout.addWidget(self.zStepField, 2, 0)
+        layout.addWidget(self.zLengthField, 2, 1)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 1)
+        self.content.addWidget(box)
+
+        # Role-first acquisition recipe. Hardware is expert information in the
+        # badge tooltip; detector use is surfaced automatically with ◉.
+        box, layout = self._group('Illumination sequence')
         self.stepsWidget = QtWidgets.QWidget()
         self.stepsLayout = QtWidgets.QGridLayout(self.stepsWidget)
-        self.stepsLayout.setContentsMargins(0, 6, 0, 0)
-        self.stepsLayout.setHorizontalSpacing(8)
+        self.stepsLayout.setContentsMargins(0, 2, 0, 0)
+        self.stepsLayout.setHorizontalSpacing(10)
         self.stepsLayout.setVerticalSpacing(5)
-        self.stepsLayout.addWidget(QtWidgets.QLabel('Role'), 0, 0)
-        self.stepsLayout.addWidget(QtWidgets.QLabel('Step'), 0, 1)
-        self.stepsLayout.addWidget(QtWidgets.QLabel('Devices'), 0, 2)
-        self.stepsLayout.addWidget(QtWidgets.QLabel('Duration'), 0, 3)
-        layout.addWidget(self.stepsWidget, 3, 0, 1, 2)
+        self.stepsLayout.setColumnStretch(1, 1)
+        layout.addWidget(self.stepsWidget, 0, 0, 1, 2)
 
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.HLine)
-        layout.addWidget(line, 4, 0, 1, 2)
-        self.dwellValue = self._info_value()
-        layout.addWidget(QtWidgets.QLabel('Pixel dwell'), 5, 0)
-        layout.addWidget(self.dwellValue, 5, 1)
-        self.content.addWidget(box)
-
-        box, layout = self._group('Live screening')
-        self.liveScreeningBox = box
-        self.liveRolesWidget = QtWidgets.QWidget()
-        self.liveRolesLayout = QtWidgets.QHBoxLayout(self.liveRolesWidget)
-        self.liveRolesLayout.setContentsMargins(0, 0, 0, 0)
-        self.liveRolesLayout.setSpacing(10)
-        self.liveRolesLayout.addStretch(1)
-        layout.addWidget(QtWidgets.QLabel('Illumination'), 0, 0)
-        layout.addWidget(self.liveRolesWidget, 0, 1)
-        box.setToolTip(
-            'Choose which illumination roles participate in screening. '
-            'Only laser ON/OFF state is controlled here; Live power stays in the Laser widget.'
+        self.cameraReadoutRow = QtWidgets.QWidget()
+        readout_layout = QtWidgets.QHBoxLayout(self.cameraReadoutRow)
+        readout_layout.setContentsMargins(0, 0, 0, 0)
+        readout_layout.setSpacing(6)
+        self.cameraReadoutInfo = QtWidgets.QLabel('Camera readout: –')
+        info_font = self.cameraReadoutInfo.font()
+        info_font.setPointSizeF(max(7.0, info_font.pointSizeF() * 0.9))
+        self.cameraReadoutInfo.setFont(info_font)
+        self.cameraReadoutStatus = QtWidgets.QLabel('')
+        self.cameraReadoutStatus.setFont(info_font)
+        self.cameraReadoutAutoButton = QtWidgets.QPushButton('Auto')
+        self.cameraReadoutAutoButton.setMaximumWidth(58)
+        self.cameraReadoutAutoButton.setToolTip(
+            'Set this profile camera readout automatically from the current detector '
+            'readout plus the configured safety margin.'
         )
+        self.cameraReadoutAutoButton.clicked.connect(
+            self.sigCameraReadoutAutoRequested.emit
+        )
+        readout_layout.addWidget(self.cameraReadoutInfo)
+        readout_layout.addWidget(self.cameraReadoutStatus)
+        readout_layout.addStretch(1)
+        readout_layout.addWidget(self.cameraReadoutAutoButton)
+        layout.addWidget(self.cameraReadoutRow, 1, 0, 1, 2)
         self.content.addWidget(box)
+
+        self._samplingText = '–'
+        self._estimateText = ''
+        self._estimateRefusal = ''
 
     def setLiveRoles(self, roles, selected_roles, *, available=True, reason=''):
         """Render profile-role screening choices.
@@ -246,10 +547,7 @@ class MoNaLISAView(ScanCloakView):
             selected = set(selected_roles or ())
             for role, label, devices in roles:
                 devices = tuple(devices or ())
-                text = str(label)
-                if devices:
-                    text += f' ({" + ".join(devices)})'
-                check = QtWidgets.QCheckBox(text)
+                check = QtWidgets.QCheckBox(str(label))
                 check.setChecked(str(role) in selected)
                 check.setToolTip(
                     f'{label} screening illumination. Uses the current Live power.\n'
@@ -267,7 +565,7 @@ class MoNaLISAView(ScanCloakView):
                 'Choose which illumination roles participate in screening. '
                 'Only laser ON/OFF state is controlled here; Live power stays in the Laser widget.'
             )
-            self.liveScreeningBox.setToolTip(
+            self.liveRolesWidget.setToolTip(
                 self._liveUnavailableReason if self._liveUnavailableReason else baseTip
             )
         finally:
@@ -289,15 +587,63 @@ class MoNaLISAView(ScanCloakView):
         self._screeningActive = bool(active)
         self._updateControlState()
 
+    def setSetupSummary(self, text: str, tooltip: str = ''):
+        # Setup details stay out of the compact main UI; retain them as useful
+        # hover information on the Setup button.
+        details = str(tooltip or text or '')
+        self.setupButton.setToolTip(
+            'Edit and persist all SimpleMoNaLISA setup parameters.'
+            + (f'\n\n{details}' if details else '')
+        )
+
+    def setCameraReadoutInfo(
+        self, readout_ms: float, source_text: str, *, status_text: str = '',
+        severity: str = '', auto_available: bool = False, tooltip: str = '',
+    ):
+        self.cameraReadoutInfo.setText(
+            f'Camera readout: {float(readout_ms):.3g} ms · {str(source_text)}'
+        )
+        self.cameraReadoutInfo.setToolTip(str(tooltip or ''))
+        self.cameraReadoutStatus.setText(str(status_text or ''))
+        if severity == 'error':
+            self.cameraReadoutStatus.setStyleSheet('color: #d9534f;')
+        elif severity == 'warning':
+            self.cameraReadoutStatus.setStyleSheet('color: #d98c10;')
+        else:
+            self.cameraReadoutStatus.setStyleSheet('')
+        self.cameraReadoutStatus.setToolTip(str(tooltip or ''))
+        self.cameraReadoutAutoButton.setVisible(bool(auto_available))
+        self.cameraReadoutAutoButton.setEnabled(bool(auto_available))
+
+    def _updateProfileGeometryLabel(self):
+        if self._plan is None or self._limits is None:
+            return
+        profile = self._profile(self._plan.profile_id)
+        try:
+            period = self._limits.ulens_period_um(profile.id)
+            period_text = _format_length(period)
+        except Exception:
+            period_text = 'uLens period missing'
+        source = (
+            'Scan length follows the uLens period.'
+            if profile.scan_extent_source == 'ulens'
+            else f'Manual scan length default: {_format_length(self._plan.lateral_length_um)}.'
+        )
+        owner = 'setup' if self._limits.ulens_period_policy == 'fixed' else 'profile'
+        self.profileCombo.setToolTip(
+            f'uLens: {period_text} ({owner}). {source}\n'
+            'Use Edit profile… for profile-owned optical details.'
+        )
+
     def configure(self, limits):
         self._limits = limits
-        fx, fy = limits.fov_um
-        self.fovValue.setText(f'{fx:.3g} × {fy:.3g} µm')
-        self.periodValue.setText(f'{_format_length(limits.ulens_period_um)} (uLens period)')
-        self.delayValue.setText(_format_time(limits.inter_pulse_delay_s))
-        self.cameraValue.setText(_format_time(limits.camera_readout_time_s))
         self._updating = True
         try:
+            ranges = limits.slider_ranges
+            self.lateralStepControl.setRange(*ranges['pixelSizeNm'])
+            self.lateralLengthControl.setRange(*ranges['lateralScanLengthUm'])
+            self.zStepControl.setRange(*ranges['zStepNm'])
+            self.zLengthControl.setRange(*ranges['zScanLengthUm'])
             self.profileCombo.clear()
             for profile_id, profile in limits.profile_store.profiles.items():
                 self.profileCombo.addItem(profile.label, profile_id)
@@ -309,6 +655,7 @@ class MoNaLISAView(ScanCloakView):
                 self._renderedProfileFingerprint = None
         finally:
             self._updating = False
+        self._updateProfileGeometryLabel()
         self._updateControlState()
 
     def _profile(self, profile_id=None):
@@ -326,41 +673,38 @@ class MoNaLISAView(ScanCloakView):
         self.modeCombo.setCurrentIndex(max(0, index))
 
     def _clearStepRows(self):
-        for row in range(self.stepsLayout.rowCount() - 1, 0, -1):
-            for column in range(4):
-                item = self.stepsLayout.itemAtPosition(row, column)
-                if item is None:
-                    continue
-                widget = item.widget()
-                if widget is not None:
-                    self.stepsLayout.removeWidget(widget)
-                    widget.deleteLater()
+        while self.stepsLayout.count():
+            item = self.stepsLayout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
         self._stepWidgets = {}
 
     def _rebuildSteps(self, profile):
         self._clearStepRows()
         self._renderedProfileId = profile.id
         self._renderedProfileFingerprint = profile_fingerprint(profile)
-        for row, step in enumerate(profile.steps, start=1):
-            role = QtWidgets.QLabel(step.role.upper())
-            role.setToolTip('MoNaLISA semantic role; sequence order is defined by the row order.')
-            label = QtWidgets.QLabel(step.label)
-            devices = QtWidgets.QLabel(' + '.join(step.ttl_devices))
-            devices.setWordWrap(True)
-            if step.duration_editable:
-                duration = QtWidgets.QDoubleSpinBox()
-                duration.setDecimals(3)
-                duration.setRange(0.001, 100000.0)
-                duration.setSuffix(' ms')
-                duration.setKeyboardTracking(False)
+        duration_range = self._limits.slider_ranges['stepDurationMs']
+        for row, step in enumerate(profile.steps):
+            badge = _SequenceStepDisplay()
+            if step.role == 'readout':
+                duration = QtWidgets.QLabel(
+                    _format_time(self._limits.readout_pulse_time_s)
+                )
+                duration.setToolTip(
+                    'READOUT pulse duration is setup-owned. Change it from Setup….'
+                )
+            elif step.duration_editable:
+                duration = _RangeControl(
+                    suffix=' ms', decimals=3,
+                    low=duration_range[0], high=duration_range[1],
+                )
                 duration.valueChanged.connect(self._emitEdited)
             else:
                 duration = QtWidgets.QLabel(_format_time(step.default_duration_s))
-            self.stepsLayout.addWidget(role, row, 0)
-            self.stepsLayout.addWidget(label, row, 1)
-            self.stepsLayout.addWidget(devices, row, 2)
-            self.stepsLayout.addWidget(duration, row, 3)
-            self._stepWidgets[step.id] = (role, label, devices, duration)
+            self.stepsLayout.addWidget(badge, row, 0)
+            self.stepsLayout.addWidget(duration, row, 1)
+            self._stepWidgets[step.id] = (badge, duration)
 
     def setPlan(self, plan: Optional[MoNaLISAScanPlan]):
         self._plan = plan
@@ -371,26 +715,29 @@ class MoNaLISAView(ScanCloakView):
             try:
                 index = self.scanTypeCombo.findText(self._limits.default_scan_type)
                 self.scanTypeCombo.setCurrentIndex(max(0, index))
-                self.lateralStepSpin.setValue(self._limits.default_lateral_step_um * 1000.0)
-                self.zLengthSpin.setValue(self._limits.default_z_scan_length_um)
-                self.zStepSpin.setValue(self._limits.default_z_step_um * 1000.0)
+                self.lateralLengthControl.setValue(self._limits.fixed_ulens_period_um)
+                self.lateralStepControl.setValue(self._limits.default_lateral_step_um * 1000.0)
+                self.zLengthControl.setValue(self._limits.default_z_scan_length_um)
+                self.zStepControl.setValue(self._limits.default_z_step_um * 1000.0)
                 self.modeCombo.clear()
                 self._clearStepRows()
                 self._renderedProfileId = None
                 self._renderedProfileFingerprint = None
-                self.pointsLabel.setText('–')
-                self.dwellValue.setText('–')
+                self._samplingText = '–'
+                self._refreshScanSummary()
             finally:
                 self._updating = False
             self._updateControlState()
             return
+
         self._updating = True
         try:
             index = self.scanTypeCombo.findText(plan.scan_type)
             self.scanTypeCombo.setCurrentIndex(max(0, index))
-            self.lateralStepSpin.setValue(plan.lateral_step_um * 1000.0)
-            self.zLengthSpin.setValue(plan.z_length_um)
-            self.zStepSpin.setValue(plan.z_step_um * 1000.0)
+            self.lateralLengthControl.setValue(plan.lateral_length_um)
+            self.lateralStepControl.setValue(plan.lateral_step_um * 1000.0)
+            self.zLengthControl.setValue(plan.z_length_um)
+            self.zStepControl.setValue(plan.z_step_um * 1000.0)
 
             profile_index = self.profileCombo.findData(plan.profile_id)
             if profile_index < 0:
@@ -403,38 +750,40 @@ class MoNaLISAView(ScanCloakView):
                 self._renderedProfileId != profile.id
                 or self._renderedProfileFingerprint != current_fingerprint
             ):
-                # The profile id is stable across live edits. Rebuild both the
-                # mode combo and step rows whenever the profile definition
-                # itself changes so additions/deletions/renames are visible
-                # immediately without requiring a profile switch.
                 self._rebuildModes(profile, plan.mode_id)
                 self._rebuildSteps(profile)
             else:
                 mode_index = self.modeCombo.findData(plan.mode_id)
                 self.modeCombo.setCurrentIndex(max(0, mode_index))
+
             mode = profile.mode(plan.mode_id)
             for step in profile.steps:
-                widgets = self._stepWidgets[step.id]
-                devices_label = widgets[2]
-                duration = widgets[3]
-                if step.duration_editable:
+                badge, duration = self._stepWidgets[step.id]
+                if step.role == 'readout':
+                    duration.setText(_format_time(self._limits.readout_pulse_time_s))
+                elif step.duration_editable:
                     duration.setValue(
                         plan.step_durations_s.get(step.id, step.default_duration_s) * 1e3
                     )
                 active_devices = mode.devices_for_step(step)
-                devices_label.setText(' + '.join(active_devices) if active_devices else '—')
-                devices_label.setToolTip(
-                    'Profile devices: ' + ' + '.join(step.ttl_devices)
-                    + ('\nMode enables: ' + ' + '.join(active_devices) if active_devices else '\nDisabled in this mode')
+                badge.setStep(
+                    active_devices,
+                    self._limits.device_wavelengths_nm,
+                    self._limits.detector_devices,
+                    step_label=step.label,
+                    role=step.role,
                 )
                 enabled = bool(active_devices)
-                for widget in widgets:
-                    widget.setEnabled(enabled and self._bindingIsBound() and not self.isRunning())
-                if not step.duration_editable:
+                badge.setVisible(enabled)
+                duration.setVisible(enabled)
+                badge.setEnabled(enabled and self._bindingIsBound() and not self.isRunning())
+                duration.setEnabled(enabled and self._bindingIsBound() and not self.isRunning())
+                if step.role != 'readout' and not step.duration_editable:
                     duration.setText(_format_time(
                         plan.step_durations_s.get(step.id, step.default_duration_s)
                     ))
             self._updateDerived()
+            self._updateProfileGeometryLabel()
         finally:
             self._updating = False
 
@@ -451,6 +800,17 @@ class MoNaLISAView(ScanCloakView):
                 self._clearStepRows()
                 self.bindingLabel.setText(
                     'Create a profile from the ⋯ menu to enable Simple MoNaLISA.'
+                )
+            elif binding is None or not getattr(binding, 'profile_id', None):
+                custom = self.profileCombo.findData(None)
+                if custom >= 0:
+                    self.profileCombo.removeItem(custom)
+                default_id = self._limits.profile_store.default_profile
+                index = self.profileCombo.findData(default_id)
+                if index >= 0:
+                    self.profileCombo.setCurrentIndex(index)
+                self.bindingLabel.setText(
+                    'Profile geometry is incomplete. Edit/select a profile to enable acquisition.'
                 )
             elif binding is not None and binding.status != MONALISA_BINDING_BOUND:
                 if self.profileCombo.findData(None) < 0:
@@ -476,14 +836,19 @@ class MoNaLISAView(ScanCloakView):
         self._updateControlState()
 
     def setEstimate(self, seconds: float, note: str = '', refusal: str = ''):
-        if refusal:
-            self.frameTimeLabel.setText('–')
-            self.estimateNote.setText(refusal)
-            self.estimateNote.setStyleSheet('color: #d9534f;')
+        self._estimateRefusal = str(refusal or '')
+        self._estimateText = '' if refusal else f'≈ {_format_time(seconds)}'
+        self.scanSummaryLabel.setToolTip(str(note or refusal or ''))
+        self._refreshScanSummary()
+
+    def _refreshScanSummary(self):
+        if self._estimateRefusal:
+            self.scanSummaryLabel.setText(self._estimateRefusal)
+            self.scanSummaryLabel.setStyleSheet('color: #d9534f;')
             return
-        self.frameTimeLabel.setText(f'≈ {_format_time(seconds)}')
-        self.estimateNote.setText(note)
-        self.estimateNote.setStyleSheet('')
+        parts = [part for part in (self._samplingText, self._estimateText) if part and part != '–']
+        self.scanSummaryLabel.setText(' · '.join(parts) if parts else '–')
+        self.scanSummaryLabel.setStyleSheet('')
 
     def _bindingIsBound(self):
         return self._binding is not None and self._binding.status == MONALISA_BINDING_BOUND
@@ -497,11 +862,25 @@ class MoNaLISAView(ScanCloakView):
         text = str(text).strip()
         return text if ok and text else None
 
-    def editProfileDefinition(self, profile, available_devices):
-        dialog = MoNaLISAProfileEditor(profile, available_devices, self)
+    def editProfileDefinition(self, profile, available_devices, limits):
+        dialog = MoNaLISAProfileEditor(
+            profile,
+            available_devices,
+            self,
+            ulens_period_policy=limits.ulens_period_policy,
+            fixed_ulens_period_um=limits.fixed_ulens_period_um,
+            readout_pulse_time_ms=limits.readout_pulse_time_s * 1e3,
+            default_camera_readout_time_ms=limits.default_camera_readout_time_s * 1e3,
+        )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return None
         return dialog.profile()
+
+    def editSetupDefinition(self, configured, resolved):
+        dialog = MoNaLISASetupEditor(configured, resolved, self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+        return dialog.configurationPatch()
 
     def confirmProfileDelete(self, label):
         result = QtWidgets.QMessageBox.question(
@@ -563,31 +942,34 @@ class MoNaLISAView(ScanCloakView):
         profile = self._profile(self._plan.profile_id)
         for step in profile.steps:
             widgets = self._stepWidgets.get(step.id)
-            if widgets is None or not step.duration_editable:
+            if widgets is None or step.role == 'readout' or not step.duration_editable:
                 continue
-            durations[step.id] = widgets[3].value() * 1e-3
+            durations[step.id] = widgets[1].value() * 1e-3
         plan = MoNaLISAScanPlan(
             scan_type=self.scanTypeCombo.currentText(),
-            lateral_step_um=self.lateralStepSpin.value() / 1000.0,
-            z_length_um=self.zLengthSpin.value(),
-            z_step_um=self.zStepSpin.value() / 1000.0,
+            lateral_length_um=self.lateralLengthControl.value(),
+            lateral_step_um=self.lateralStepControl.value() / 1000.0,
+            z_length_um=self.zLengthControl.value(),
+            z_step_um=self.zStepControl.value() / 1000.0,
             profile_id=self._plan.profile_id,
             mode_id=self._plan.mode_id,
             step_durations_s=durations,
         )
         self._plan = plan
         self._updateDerived()
+        self._updateProfileGeometryLabel()
         self.sigPlanEdited.emit(plan)
 
     def _updateDerived(self):
         if self._plan is None or self._limits is None:
             return
         pixels = self._plan.pixels(self._limits)
-        self.pointsLabel.setText(' × '.join(str(value) for value in pixels) + ' positions')
-        try:
-            self.dwellValue.setText(_format_time(self._plan.dwell_s(self._limits)))
-        except Exception:
-            self.dwellValue.setText('–')
+        total = 1
+        for value in pixels:
+            total *= int(value)
+        axes = ' × '.join(str(value) for value in pixels)
+        self._samplingText = f'{axes} · {total} positions'
+        self._refreshScanSummary()
         self._updateControlState()
 
     def _updateControlState(self):
@@ -609,16 +991,30 @@ class MoNaLISAView(ScanCloakView):
         )
         self.profileCombo.setEnabled(hasProfiles and not running and not screening)
         self.profileMenuButton.setEnabled(not running and not screening)
+        self.setupButton.setEnabled(not running and not screening)
         self._updateProfileActions()
         self.modeCombo.setEnabled(editable)
         self.scanTypeCombo.setEnabled(editable)
-        self.lateralStepSpin.setEnabled(editable)
+        self.lateralStepControl.setEnabled(editable)
+
         z_used = self._plan is not None and 'Z' in self._plan.scan_type
-        self.zLengthSpin.setEnabled(editable and z_used)
-        self.zStepSpin.setEnabled(editable and z_used)
+        self.zStepField.setVisible(z_used)
+        self.zLengthField.setVisible(z_used)
+        self.zStepControl.setEnabled(editable and z_used)
+        self.zLengthControl.setEnabled(editable and z_used)
+
         if self._plan is None or self._limits is None:
+            self.lateralLengthControl.setEnabled(False)
+            for check in self._liveRoleChecks.values():
+                check.setEnabled(False)
             return
         profile = self._profile(self._plan.profile_id)
+        manual_extent = profile.scan_extent_source == 'manual'
+        self.lateralLengthControl.setEnabled(editable and manual_extent)
+        self.lateralLengthControl.setToolTip(
+            'Editable scan length for this profile.' if manual_extent
+            else 'This profile locks lateral scan length to one uLens period.'
+        )
         mode = profile.mode(self._plan.mode_id)
         for step in profile.steps:
             widgets = self._stepWidgets.get(step.id)

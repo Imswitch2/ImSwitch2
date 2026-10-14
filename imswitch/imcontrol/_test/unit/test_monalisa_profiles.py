@@ -384,3 +384,40 @@ def test_new_profile_ids_are_unique_but_rename_does_not_change_identity():
 
     assert profile_id_from_label('Green RESOLFT', ()) == 'green_resolft'
     assert profile_id_from_label('Green RESOLFT', ('green_resolft',)) == 'green_resolft_2'
+
+
+def test_profile_geometry_fields_round_trip_without_mode_ownership():
+    profile = MoNaLISAProfileDefinition.from_config('geometry', {
+        'label': 'Geometry',
+        'defaultMode': '2d',
+        'ulensPeriodUm': 0.625,
+        'scanExtentSource': 'manual',
+        'scanExtentUm': 2.5,
+        'steps': [
+            {
+                'id': 'readout', 'role': 'readout',
+                'ttlDevices': ['488', 'Camera'], 'defaultDurationMs': 1,
+            },
+        ],
+        'modes': {
+            '2d': {'enabledSteps': ['readout']},
+            '3d': {'enabledSteps': ['readout']},
+        },
+    })
+
+    assert profile.ulens_period_um == pytest.approx(0.625)
+    assert profile.scan_extent_source == 'manual'
+    assert profile.manual_scan_extent_um == pytest.approx(2.5)
+    assert 'ulensPeriodUm' not in profile.mode('2d').to_config()
+    assert 'ulensPeriodUm' not in profile.mode('3d').to_config()
+
+    restored = MoNaLISAProfileDefinition.from_config('geometry', profile.to_config())
+    assert restored == profile
+
+
+def test_profile_camera_readout_override_round_trips_config():
+    config = _dual_color_profile().to_config()
+    config['cameraReadoutTimeMs'] = 2.9
+    profile = MoNaLISAProfileDefinition.from_config('dual_color', config)
+    assert profile.camera_readout_time_s == pytest.approx(0.0029)
+    assert profile.to_config()['cameraReadoutTimeMs'] == pytest.approx(2.9)

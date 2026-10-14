@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 
 MONALISA_STEP_ROLES = ('on', 'off', 'readout', 'custom')
+MONALISA_SCAN_EXTENT_SOURCES = ('ulens', 'manual')
 
 
 MONALISA_BINDING_BOUND = 'bound'
@@ -224,6 +225,10 @@ class MoNaLISAProfileDefinition:
     steps: Tuple[MoNaLISASequenceStepDefinition, ...]
     modes: Mapping[str, MoNaLISAModeDefinition]
     default_mode: str
+    ulens_period_um: Optional[float] = None
+    scan_extent_source: str = 'ulens'
+    manual_scan_extent_um: Optional[float] = None
+    camera_readout_time_s: Optional[float] = None
 
     @classmethod
     def from_config(cls, profile_id: str, data: Mapping[str, Any]):
@@ -249,12 +254,26 @@ class MoNaLISAProfileDefinition:
             for mode_id, mode_data in raw_modes.items()
         }
         default_mode = str(data.get('defaultMode') or (next(iter(modes), ''))).strip()
+        raw_ulens = data.get('ulensPeriodUm')
+        ulens_period_um = None if raw_ulens in (None, '') else float(raw_ulens)
+        scan_extent_source = str(data.get('scanExtentSource') or 'ulens').strip().lower()
+        raw_extent = data.get('scanExtentUm')
+        manual_scan_extent_um = None if raw_extent in (None, '') else float(raw_extent)
+        raw_camera_readout = data.get('cameraReadoutTimeMs')
+        camera_readout_time_s = (
+            None if raw_camera_readout in (None, '')
+            else float(raw_camera_readout) * 1e-3
+        )
         profile = cls(
             id=str(profile_id).strip(),
             label=str(data.get('label') or profile_id).strip(),
             steps=tuple(steps),
             modes=modes,
             default_mode=default_mode,
+            ulens_period_um=ulens_period_um,
+            scan_extent_source=scan_extent_source,
+            manual_scan_extent_um=manual_scan_extent_um,
+            camera_readout_time_s=camera_readout_time_s,
         )
         errors = validate_profile_definition(profile)
         if errors:
@@ -295,7 +314,7 @@ class MoNaLISAProfileDefinition:
         return tuple(step for step in self.steps if step.role == role)
 
     def to_config(self) -> dict:
-        return {
+        result = {
             'label': self.label,
             'defaultMode': self.default_mode,
             'steps': [
@@ -307,6 +326,14 @@ class MoNaLISAProfileDefinition:
                 for mode_id, mode in self.modes.items()
             },
         }
+        if self.ulens_period_um is not None:
+            result['ulensPeriodUm'] = self.ulens_period_um
+        result['scanExtentSource'] = self.scan_extent_source
+        if self.scan_extent_source == 'manual' and self.manual_scan_extent_um is not None:
+            result['scanExtentUm'] = self.manual_scan_extent_um
+        if self.camera_readout_time_s is not None:
+            result['cameraReadoutTimeMs'] = self.camera_readout_time_s * 1e3
+        return result
 
 
 @dataclass(frozen=True)
@@ -444,6 +471,20 @@ def validate_profile_definition(profile: MoNaLISAProfileDefinition) -> Tuple[str
         errors.append('Profile id cannot be empty')
     if not profile.steps:
         errors.append(f'Profile {profile.id!r} needs at least one sequence step')
+    if profile.ulens_period_um is not None and profile.ulens_period_um <= 0:
+        errors.append(f'Profile {profile.id!r} uLens period must be positive')
+    if profile.camera_readout_time_s is not None and profile.camera_readout_time_s < 0:
+        errors.append(f'Profile {profile.id!r} camera readout time cannot be negative')
+    if profile.scan_extent_source not in MONALISA_SCAN_EXTENT_SOURCES:
+        errors.append(
+            f'Profile {profile.id!r} scan extent source must be one of '
+            + ', '.join(MONALISA_SCAN_EXTENT_SOURCES)
+        )
+    if profile.scan_extent_source == 'manual':
+        if profile.manual_scan_extent_um is None or profile.manual_scan_extent_um <= 0:
+            errors.append(
+                f'Profile {profile.id!r} manual scan extent must be positive'
+            )
 
     step_ids = [step.id for step in profile.steps]
     duplicates = sorted({step_id for step_id in step_ids if step_ids.count(step_id) > 1})
@@ -540,6 +581,10 @@ def starter_monalisa_profile(
             id='default', label='Default', enabled_steps=('on',), enabled_devices={}
         )},
         default_mode='default',
+        ulens_period_um=None,
+        scan_extent_source='ulens',
+        manual_scan_extent_um=None,
+        camera_readout_time_s=None,
     )
 
 

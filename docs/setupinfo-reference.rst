@@ -372,42 +372,68 @@ Key fields:
   Other scan panels ignore the ``simplePointScan`` block.
 
 * ``simpleMoNaLISA``: Setup facts and profile definitions for the
-  ``SimpleMoNaLISA`` cloak. ``fovUm`` and ``ulensPeriodUm``
-  are displayed but not editable; ``interPulseDelayMs`` is used once before
-  the first active step and between subsequent active steps, and
-  ``cameraReadoutTimeMs`` is the end-of-pixel overhead. ``profiles`` is a map
-  of named MoNaLISA profiles and ``defaultProfile`` selects the startup one.
-  Each profile contains an ordered ``steps`` list. Every step has a required
-  ``role`` (``on``, ``off``, ``readout`` or ``custom``), one or more synchronized
-  ``ttlDevices``, ``defaultDurationMs`` and ``durationEditable``. Roles may
-  repeat, so sequences such as ON -> green OFF -> green READOUT -> red OFF ->
-  red READOUT are valid. ``modes`` select subsets of those steps while keeping
-  profile order. Existing modes can continue to use only ``enabledSteps``;
-  optionally, ``enabledDevices`` maps an enabled step id to the subset of that
-  step's TTL devices that should fire in that mode. This supports alignment
-  profiles with one shared timing step and modes such as OFF-only, ON+OFF or
-  readout-only. Geometry defaults remain ``defaultScanType``,
-  ``defaultLateralStepUm``, ``defaultZScanLengthUm`` (1 µm by default) and
-  ``defaultZStepUm``. There is no implicit/legacy profile mapping: if
-  ``profiles`` is omitted or empty, the SimpleMoNaLISA panel starts in a
-  restricted state where Live/Acquire and scan parameters are disabled until
-  the user creates a profile from the profile menu. The SimpleMoNaLISA panel
-  exposes configured profiles and modes directly. Profile selection is owned by
-  Simple: Advanced edits are parsed only against the currently selected
-  profile/mode. Compatible edits come back into Simple; incompatible edits
-  return to Simple as ``Advanced / custom`` until the user explicitly selects
-  or reapplies a profile. Profiles can be created, duplicated, edited, renamed
-  and deleted live from the SimpleMoNaLISA profile menu. The editor keeps
-  profile ids stable across renames, restricts devices to TTL devices in the
-  current setup, and persists the complete profile store back into the active
-  setup file. Structural edits are disabled while a scan is running. When the
-  setup uses ``laserPowerMode: "separated"``, the Simple page also offers Live
-  screening: profile roles select which laser paths are enabled at their existing
-  Live powers, while the profile Readout camera is switched to internal trigger.
-  **Stop** switches off only those screening lasers and leaves camera acquisition
-  running; **Acquire** temporarily uses external frame trigger and the normal Scan
-  powers, then restores the preceding trigger state. Coupled power mode leaves
-  this Live action disabled rather than duplicating or rewriting Live power.
+  ``SimpleMoNaLISA`` cloak. FOV has an explicit source: ``fovSource`` is
+  ``"detector"`` (default) or ``"manual"``; detector mode derives FOV from the
+  active profile camera ROI while ``fovUm`` remains the persisted fallback.
+
+  Camera readout timing is inherited rather than continuously automatic.
+  ``defaultCameraReadoutTimeMs`` is the setup default and a profile may define
+  ``cameraReadoutTimeMs`` to override it. The active camera's reported Readout
+  time is diagnostic only: the Simple panel compares the effective profile
+  timing against ``detector readout + cameraReadoutSafetyMarginMs`` (default
+  0.1 ms). Differences smaller than ``cameraReadoutToleranceMs`` (default
+  0.1 ms) are ignored; a safe value is only flagged as slower than needed when
+  it exceeds the recommendation by more than
+  ``cameraReadoutUnoptimizedThresholdMs`` (default 0.3 ms). **Auto** explicitly
+  writes the current safe recommendation into the active profile; it is not a
+  persistent automatic mode. Older ``cameraReadoutTimeMs`` setup values are
+  accepted as compatibility fallbacks for ``defaultCameraReadoutTimeMs``.
+  **Setup…** edits these defaults/margins and saves them into the active setup
+  file. Inter-pulse delay is likewise setup-only and is not exposed as a run
+  control.
+  ``readoutPulseTimeMs`` is also setup-owned: it sets the duration of every
+  semantic ``READOUT`` illumination step, is clamped to a minimum of 1 ms, and
+  is edited from **Setup…** rather than from the profile or run controls.
+
+  ``ulensPeriodPolicy`` is ``"fixed"`` or ``"per_profile"``. Fixed setups use
+  the setup-level ``ulensPeriodUm``. Per-profile setups require each usable
+  profile to define ``ulensPeriodUm``. Modes never redefine the period. Lateral
+  scan extent is a separate profile property: ``scanExtentSource: "ulens"``
+  keeps the normal one-period acquisition, while ``"manual"`` uses
+  ``scanExtentUm`` as the profile default and permits the live scan length to be
+  edited (for example for alignment acquisitions).
+
+  ``sliderRanges`` optionally configures the visual slider endpoints without
+  restricting exact spin-box entry. Supported keys are ``pixelSizeNm``,
+  ``lateralScanLengthUm``, ``zStepNm``, ``zScanLengthUm`` and
+  ``stepDurationMs``. They are editable from **Setup…**.
+
+  ``profiles`` is a map of named MoNaLISA profiles and ``defaultProfile`` selects
+  the startup one. Each profile contains an ordered ``steps`` list. Every step
+  has a required ``role`` (``on``, ``off``, ``readout`` or ``custom``), one or
+  more synchronized ``ttlDevices``, ``defaultDurationMs`` and
+  ``durationEditable``. For ``readout`` steps the setup-level
+  ``readoutPulseTimeMs`` overrides the profile duration fields. Roles may repeat.
+  ``modes`` select subsets of those steps
+  while keeping profile order; optional ``enabledDevices`` can select only some
+  devices inside an enabled step. There is no implicit/legacy profile mapping:
+  if ``profiles`` is omitted or empty, SimpleMoNaLISA remains restricted until
+  the user creates a profile.
+
+  Profiles can be created, duplicated, edited, renamed and deleted live and are
+  persisted into the active setup. Normal run edits (pixel size, manual scan
+  length, Z range/step and editable sequence durations) remain transient
+  acquisition state. Advanced edits are parsed only against the selected
+  profile/mode; incompatible edits return Simple to ``Advanced / custom`` rather
+  than silently choosing another profile.
+
+  With ``laserPowerMode: "separated"``, Live screening uses role checkboxes to
+  enable profile laser paths at their existing Live powers. **Live** keeps the
+  existing camera acquisition running but switches the Readout camera to
+  internal trigger, **Stop** darkens only Simple-owned screening lasers, and
+  **Acquire** uses external frame trigger plus normal Scan powers before
+  restoring the preceding trigger state. Coupled power mode disables this Live
+  action.
 
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:

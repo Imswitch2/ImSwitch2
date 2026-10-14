@@ -82,7 +82,7 @@ def _moNaLISARepresentableEdit(rig):
 
 def _moNaLISAUnrepresentableEdit(rig):
     device = rig.limits().axis_device('X')
-    rig.panel.backend.setScanSize(device, rig.limits().ulens_period_um + 0.1)
+    rig.panel.backend.setScanSize(device, rig.limits().ulens_period_um(rig.scan.acquisitionPlan().profile_id) + 0.1)
     return 'scan length must stay'
 
 

@@ -89,6 +89,7 @@ class CommunicationChannel(SignalInterface):
     sigAcquisitionStopped = Signal()
     sigAdjustFrame = Signal(object)  # (shape)
     sigDetectorSwitched = Signal(str, str)  # (newDetectorName, oldDetectorName)
+    sigDetectorParametersChanged = Signal(str)  # (detectorName)
     sigNewFrame = Signal()
 
     # View-layer overlay and viewer item events.
@@ -215,6 +216,7 @@ class CommunicationChannel(SignalInterface):
             'acquisitionStopped': self.sigAcquisitionStopped,
             'adjustFrame': self.sigAdjustFrame,
             'detectorSwitched': self.sigDetectorSwitched,
+            'detectorParametersChanged': self.sigDetectorParametersChanged,
             'newFrame': self.sigNewFrame,
         })
         self.viewEvents = pythontools.dictToROClass({

@@ -16,12 +16,18 @@ from imswitch.imcontrol.model.monalisa_profiles import (
 class MoNaLISAProfileEditor(QtWidgets.QDialog):
     """Edit one profile as data; no profile-specific Python is generated."""
 
-    def __init__(self, profile, available_devices, parent=None):
+    def __init__(self, profile, available_devices, parent=None, *,
+                 ulens_period_policy='fixed', fixed_ulens_period_um=None,
+                 readout_pulse_time_ms=1.0, default_camera_readout_time_ms=3.0):
         super().__init__(parent)
         self.setWindowTitle(f'Edit MoNaLISA profile — {profile.label}')
         self.resize(780, 590)
         self._profile_id = profile.id
         self._available_devices = tuple(str(name) for name in available_devices)
+        self._ulens_period_policy = str(ulens_period_policy)
+        self._fixed_ulens_period_um = fixed_ulens_period_um
+        self._readout_pulse_time_ms = max(1.0, float(readout_pulse_time_ms))
+        self._default_camera_readout_time_ms = max(0.0, float(default_camera_readout_time_ms))
         self._updating = False
         self._steps = [
             {
@@ -59,6 +65,69 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         top.addRow('Profile name', self.profileLabelEdit)
         top.addRow('Internal id', self.profileIdLabel)
         top.addRow('Default mode', self.defaultModeCombo)
+
+        self.ulensPeriodSpin = QtWidgets.QDoubleSpinBox()
+        self.ulensPeriodSpin.setRange(0.001, 100000.0)
+        self.ulensPeriodSpin.setDecimals(4)
+        self.ulensPeriodSpin.setSuffix(' µm')
+        self.ulensPeriodSpin.setKeyboardTracking(False)
+        profile_period = profile.ulens_period_um
+        if profile_period is None:
+            profile_period = fixed_ulens_period_um or 0.72
+        self.ulensPeriodSpin.setValue(float(profile_period))
+        if self._ulens_period_policy == 'fixed':
+            self.ulensPeriodSpin.setEnabled(False)
+            self.ulensPeriodSpin.setToolTip(
+                'This setup uses one fixed uLens period for every profile. '
+                'Change it from MoNaLISA Setup.'
+            )
+        else:
+            self.ulensPeriodSpin.setToolTip(
+                'This setup uses a profile-specific uLens period.'
+            )
+        top.addRow('uLens period', self.ulensPeriodSpin)
+
+        self.scanExtentSourceCombo = QtWidgets.QComboBox()
+        self.scanExtentSourceCombo.addItem('One uLens period', 'ulens')
+        self.scanExtentSourceCombo.addItem('Manual scan length', 'manual')
+        self.scanExtentSourceCombo.setCurrentIndex(max(
+            0, self.scanExtentSourceCombo.findData(profile.scan_extent_source)
+        ))
+        self.manualScanExtentSpin = QtWidgets.QDoubleSpinBox()
+        self.manualScanExtentSpin.setRange(0.001, 100000.0)
+        self.manualScanExtentSpin.setDecimals(4)
+        self.manualScanExtentSpin.setSuffix(' µm')
+        self.manualScanExtentSpin.setKeyboardTracking(False)
+        self.manualScanExtentSpin.setValue(float(
+            profile.manual_scan_extent_um
+            if profile.manual_scan_extent_um is not None
+            else profile_period
+        ))
+        self.scanExtentSourceCombo.currentIndexChanged.connect(self._updateGeometryState)
+        top.addRow('Lateral scan length', self.scanExtentSourceCombo)
+        top.addRow('Manual scan length', self.manualScanExtentSpin)
+
+        self.cameraReadoutSourceCombo = QtWidgets.QComboBox()
+        self.cameraReadoutSourceCombo.addItem(
+            f'Use setup default ({self._default_camera_readout_time_ms:.3g} ms)', 'setup'
+        )
+        self.cameraReadoutSourceCombo.addItem('Profile override', 'profile')
+        self.cameraReadoutSpin = QtWidgets.QDoubleSpinBox()
+        self.cameraReadoutSpin.setRange(0.0, 100000.0)
+        self.cameraReadoutSpin.setDecimals(4)
+        self.cameraReadoutSpin.setSuffix(' ms')
+        self.cameraReadoutSpin.setKeyboardTracking(False)
+        if profile.camera_readout_time_s is None:
+            self.cameraReadoutSourceCombo.setCurrentIndex(0)
+            self.cameraReadoutSpin.setValue(self._default_camera_readout_time_ms)
+        else:
+            self.cameraReadoutSourceCombo.setCurrentIndex(1)
+            self.cameraReadoutSpin.setValue(profile.camera_readout_time_s * 1e3)
+        self.cameraReadoutSourceCombo.currentIndexChanged.connect(
+            self._updateCameraReadoutState
+        )
+        top.addRow('Camera readout', self.cameraReadoutSourceCombo)
+        top.addRow('Profile readout', self.cameraReadoutSpin)
         root.addLayout(top)
 
         tabs = QtWidgets.QTabWidget()
@@ -76,6 +145,21 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         self._refreshStepsList(0)
         self._refreshModesList(0)
         self._refreshDefaultModes()
+        self._updateGeometryState()
+        self._updateCameraReadoutState()
+
+    def _updateCameraReadoutState(self, *args):
+        use_profile = self.cameraReadoutSourceCombo.currentData() == 'profile'
+        self.cameraReadoutSpin.setEnabled(use_profile)
+        self.cameraReadoutSpin.setToolTip(
+            'Optional profile-specific camera readout gap. If disabled, this profile '
+            'inherits the setup default.'
+        )
+
+    def _updateGeometryState(self, *args):
+        self.manualScanExtentSpin.setEnabled(
+            self.scanExtentSourceCombo.currentData() == 'manual'
+        )
 
     def _buildStepsTab(self):
         tab = QtWidgets.QWidget()
@@ -214,6 +298,28 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
                 self.devicesList.addItem(item)
         finally:
             self._updating = False
+        self._updateStepTimingState()
+
+    def _updateStepTimingState(self):
+        row = self.stepsList.currentRow()
+        if row < 0 or row >= len(self._steps):
+            return
+        setup_owned = self._steps[row]['role'] == 'readout'
+        if setup_owned:
+            self.stepDurationSpin.blockSignals(True)
+            self.stepDurationSpin.setValue(self._readout_pulse_time_ms)
+            self.stepDurationSpin.blockSignals(False)
+            self.stepDurationSpin.setToolTip(
+                'READOUT pulse duration is setup-owned. Change it from MoNaLISA Setup.'
+            )
+            self.stepEditableCheck.setToolTip(
+                'READOUT pulse duration is setup-owned and is not a per-profile edit.'
+            )
+        else:
+            self.stepDurationSpin.setToolTip('')
+            self.stepEditableCheck.setToolTip('')
+        self.stepDurationSpin.setEnabled(not setup_owned)
+        self.stepEditableCheck.setEnabled(not setup_owned)
 
     def _stepDetailsChanged(self, *args):
         if self._updating:
@@ -228,6 +334,7 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         step['durationEditable'] = self.stepEditableCheck.isChecked()
         self.stepsList.item(row).setText(self._stepDisplay(step))
         self._refreshModeDeviceChoices()
+        self._updateStepTimingState()
 
     def _stepDevicesChanged(self, *args):
         if self._updating:
@@ -475,6 +582,7 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         config = {
             'label': self.profileLabelEdit.text().strip(),
             'defaultMode': self._default_mode,
+            'scanExtentSource': str(self.scanExtentSourceCombo.currentData()),
             'steps': [dict(step) for step in self._steps],
             'modes': {
                 mode_id: {
@@ -491,6 +599,16 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
                 for mode_id, mode in self._modes.items()
             },
         }
+        if self._ulens_period_policy == 'per_profile':
+            config['ulensPeriodUm'] = self.ulensPeriodSpin.value()
+        elif self._fixed_ulens_period_um is not None:
+            # A previously stored per-profile value is deliberately omitted in
+            # fixed mode; the setup owns this number while that policy is active.
+            pass
+        if self.scanExtentSourceCombo.currentData() == 'manual':
+            config['scanExtentUm'] = self.manualScanExtentSpin.value()
+        if self.cameraReadoutSourceCombo.currentData() == 'profile':
+            config['cameraReadoutTimeMs'] = self.cameraReadoutSpin.value()
         return MoNaLISAProfileDefinition.from_config(self._profile_id, config)
 
     def _acceptIfValid(self):

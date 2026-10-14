@@ -43,8 +43,6 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        state = self._monalisa()
-        self._view.configure(state['limits'])
         self._view.sigPlanEdited.connect(self._onPlanEdited)
         self._view.sigProfileRequested.connect(self._onProfileRequested)
         self._view.sigModeRequested.connect(self._onModeRequested)
@@ -53,11 +51,23 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._view.sigProfileEditRequested.connect(self._onProfileEditRequested)
         self._view.sigProfileRenameRequested.connect(self._onProfileRenameRequested)
         self._view.sigProfileDeleteRequested.connect(self._onProfileDeleteRequested)
+        self._view.sigSetupEditRequested.connect(self._onSetupEditRequested)
+        self._view.sigCameraReadoutAutoRequested.connect(
+            self._onCameraReadoutAutoRequested
+        )
         self._view.sigScreeningRequested.connect(self._onScreeningRequested)
         self._view.sigLiveRoleToggled.connect(self._onLiveRoleToggled)
         self._commChannel.sigScanEnded.connect(self._onAcquisitionRunEnded)
+        self._commChannel.sigAdjustFrame.connect(self._onDetectorGeometryChanged)
+        self._commChannel.sigDetectorParametersChanged.connect(
+            self._onDetectorParametersChanged
+        )
+        self._refreshResolvedSetup(refreshView=False)
+        state = self._monalisa()
+        self._view.configure(state['limits'])
         self._view.setPlan(state['plan'])
         self._view.setBinding(state['binding'])
+        self._refreshSetupSummary()
         self._refreshLiveControls()
         self._refreshEstimate()
         self._mirrorToBackend(force=True)
@@ -70,9 +80,16 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         if state is None:
             limits = self._cloak.limits_from_setup(self._setupInfo)
             if limits.profile_store.profiles:
-                plan = default_plan(limits)
-                profile = limits.profile_store.profile(plan.profile_id)
-                binding = MoNaLISAProfileBinding.bound(profile, plan.mode_id)
+                try:
+                    plan = default_plan(limits)
+                    profile = limits.profile_store.profile(plan.profile_id)
+                    binding = MoNaLISAProfileBinding.bound(profile, plan.mode_id)
+                except PlanNotRepresentable:
+                    # Keep profile editing available even when setup/profile
+                    # geometry is incomplete (for example per-profile uLens
+                    # mode with an older profile that has no period yet).
+                    plan = None
+                    binding = MoNaLISAProfileBinding.unbound()
             else:
                 plan = None
                 binding = MoNaLISAProfileBinding.unbound()
@@ -81,8 +98,181 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 'plan': plan,
                 'binding': binding,
                 'liveRolesByMode': {},
+                'resolvedSetup': {},
             }
         return state
+
+    def _activeProfileDetectors(self, limits=None, plan=None):
+        limits = limits or self.cloakLimits()
+        plan = plan if plan is not None else self.acquisitionPlan()
+        if plan is None:
+            return ()
+        profile = limits.profile_store.profile(plan.profile_id)
+        mode = profile.mode(plan.mode_id)
+        detectorNames = set(self._master.detectorsManager.getAllDeviceNames())
+        result = []
+        # Prefer semantic Readout steps for the normal MoNaLISA case, then
+        # accept cameras from CUSTOM/other enabled steps as well. Alignment
+        # profiles can legitimately put camera TTL in a shared custom step.
+        ordered_steps = tuple(
+            step for step in profile.steps if step.role == 'readout'
+        ) + tuple(
+            step for step in profile.steps if step.role != 'readout'
+        )
+        for step in ordered_steps:
+            for device in mode.devices_for_step(step):
+                if device not in detectorNames or device in result:
+                    continue
+                detector = self._master.detectorsManager[device]
+                if detector.forAcquisition and not detector.isScanDriven:
+                    result.append(device)
+        return tuple(result)
+
+    def _resolveDetectorSetup(self, limits):
+        detectors = self._activeProfileDetectors(limits=limits)
+        detector_name = detectors[0] if detectors else None
+        detector = self._master.detectorsManager[detector_name] if detector_name else None
+
+        fov = limits.manual_fov_um
+        fov_auto = False
+        if limits.fov_source == 'detector' and detector is not None:
+            try:
+                shape = tuple(detector.shape)
+                pixel = tuple(detector.pixelSizeUm)
+                if len(shape) >= 2 and len(pixel) >= 2:
+                    fov = (float(shape[0]) * float(pixel[-1]),
+                           float(shape[1]) * float(pixel[-2]))
+                    fov_auto = True
+            except Exception:
+                self._logger.warning('Could not derive MoNaLISA FOV from detector.', exc_info=True)
+
+        detector_readout = None
+        if detector is not None:
+            try:
+                parameter = detector.parameters.get('Readout time')
+                if parameter is not None:
+                    value = float(parameter.value)
+                    if value > 0:
+                        detector_readout = value
+            except Exception:
+                self._logger.warning(
+                    'Could not read MoNaLISA camera readout time from detector.',
+                    exc_info=True,
+                )
+
+        resolved = dataclasses.replace(limits, fov_um=tuple(fov))
+        info = {
+            'detector': detector_name,
+            'fov_auto': fov_auto,
+            'fov_um': tuple(fov),
+            'detector_readout_s': detector_readout,
+        }
+        return resolved, info
+
+    def _refreshResolvedSetup(self, *, refreshView=True, mirror=False):
+        state = self._monalisa()
+        resolved, info = self._resolveDetectorSetup(state['limits'])
+        state['limits'] = resolved
+        changed_timing = False
+        state['resolvedSetup'] = info
+        if refreshView and hasattr(self, '_view'):
+            self._view.configure(resolved)
+            self._view.setPlan(state['plan'])
+            self._view.setBinding(state['binding'])
+            self._refreshSetupSummary()
+            self._refreshLiveControls()
+            self._refreshEstimate()
+        if mirror and changed_timing and self.cloakOwnsBackend():
+            self._mirrorToBackend(force=True)
+        return changed_timing
+
+    def _refreshSetupSummary(self):
+        if not hasattr(self, '_view'):
+            return
+        state = self._monalisa()
+        limits = state['limits']
+        plan = state['plan']
+        info = state.get('resolvedSetup', {})
+        detector = info.get('detector') or 'no profile camera'
+        fx, fy = limits.fov_um
+        fov_tag = 'auto' if info.get('fov_auto') else 'manual/fallback'
+        try:
+            if limits.ulens_period_policy == 'fixed':
+                period = limits.fixed_ulens_period_um
+            else:
+                period = limits.ulens_period_um(plan.profile_id) if plan else None
+        except Exception:
+            period = None
+        period_text = (
+            f'{period * 1000:.0f} nm' if period is not None and period < 1
+            else (f'{period:.3g} µm' if period is not None else 'profile required')
+        )
+        period_owner = 'setup' if limits.ulens_period_policy == 'fixed' else 'profile'
+
+        if plan is not None:
+            readout_s = limits.camera_readout_time_s(plan.profile_id)
+            readout_source = limits.camera_readout_source(plan.profile_id)
+        else:
+            readout_s = limits.default_camera_readout_time_s
+            readout_source = 'setup default'
+        detector_readout_s = info.get('detector_readout_s')
+        status_text = ''
+        severity = ''
+        recommended_s = None
+        if detector_readout_s is not None:
+            recommended_s = float(detector_readout_s) + limits.camera_readout_safety_margin_s
+            if readout_s < recommended_s - limits.camera_readout_tolerance_s:
+                status_text = '● too fast'
+                severity = 'error'
+            elif readout_s > (
+                recommended_s + limits.camera_readout_unoptimized_threshold_s
+            ):
+                status_text = '● slower than needed'
+                severity = 'warning'
+
+        text = (
+            f'{detector} · FOV {fx:.3g} × {fy:.3g} µm ({fov_tag}) · '
+            f'readout {readout_s * 1e3:.3g} ms ({readout_source}) · '
+            f'uLens {period_text} ({period_owner})'
+        )
+        tooltip = (
+            f'Inter-pulse delay: {limits.inter_pulse_delay_s * 1e3:.3g} ms\n'
+            f'FOV source: {limits.fov_source}\n'
+            f'Default camera readout: {limits.default_camera_readout_time_s * 1e3:.3g} ms\n'
+            f'uLens period policy: {limits.ulens_period_policy}'
+        )
+        self._view.setSetupSummary(text, tooltip)
+
+        diagnostic = (
+            f'Effective camera readout comes from {readout_source}.'
+        )
+        if detector_readout_s is not None and recommended_s is not None:
+            diagnostic += (
+                f' Current detector: {detector_readout_s * 1e3:.3g} ms; '
+                f'recommended with safety margin: {recommended_s * 1e3:.3g} ms.'
+            )
+        else:
+            diagnostic += ' The current detector does not report a usable readout time.'
+        self._view.setCameraReadoutInfo(
+            readout_s * 1e3,
+            readout_source,
+            status_text=status_text,
+            severity=severity,
+            auto_available=(plan is not None and detector_readout_s is not None),
+            tooltip=diagnostic,
+        )
+
+    def _onDetectorGeometryChanged(self, *args):
+        if not hasattr(self, '_view'):
+            return
+        self._refreshResolvedSetup(refreshView=True, mirror=True)
+
+    def _onDetectorParametersChanged(self, detectorName):
+        if not hasattr(self, '_view'):
+            return
+        if str(detectorName) not in self._activeProfileDetectors():
+            return
+        self._refreshResolvedSetup(refreshView=True, mirror=True)
 
     def cloakLimits(self):
         return self._monalisa()['limits']
@@ -172,6 +362,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         state['binding'] = MoNaLISAProfileBinding.unbound()
         self._view.setPlan(None)
         self._view.setBinding(state['binding'])
+        self._refreshSetupSummary()
         self._refreshLiveControls()
         self._refreshEstimate()
 
@@ -179,12 +370,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         limits = self.cloakLimits()
         current = self.acquisitionPlan()
         if current is None:
-            base = default_plan(limits)
-            if base.profile_id == str(profile_id):
-                return base
-            return select_profile(
-                base, profile_id, limits, preserve_if_same=False
-            )
+            return default_plan(limits, profile_id)
         return select_profile(
             current, profile_id, limits, preserve_if_same=preserve_if_same
         )
@@ -195,9 +381,11 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         state['plan'] = plan
         profile = state['limits'].profile_store.profile(plan.profile_id)
         state['binding'] = MoNaLISAProfileBinding.bound(profile, plan.mode_id)
+        self._refreshResolvedSetup(refreshView=False)
         self._view.setPlan(plan)
         self._view.setBinding(state['binding'])
         self._view.showMessage('')
+        self._refreshSetupSummary()
         self._refreshLiveControls()
         self._mirrorToBackend(force=True)
         self._refreshEstimate()
@@ -208,6 +396,12 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         raw = config_with_profile_store(
             getattr(self._setupInfo.scan, 'simpleMoNaLISA', None), store
         )
+        self._persistSimpleConfig(raw)
+        state['limits'] = dataclasses.replace(state['limits'], profile_store=store)
+        self._refreshResolvedSetup(refreshView=True)
+
+    def _persistSimpleConfig(self, raw):
+        """Persist one complete ``simpleMoNaLISA`` block atomically."""
         previous_scan = self._setupInfo.scan
         new_scan = dataclasses.replace(previous_scan, simpleMoNaLISA=raw)
         self._setupInfo.scan = new_scan
@@ -216,13 +410,121 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         except Exception:
             self._setupInfo.scan = previous_scan
             raise
-        state['limits'] = dataclasses.replace(state['limits'], profile_store=store)
-        self._view.configure(state['limits'])
+
+    def _onSetupEditRequested(self):
+        if self._isBusy() or self.__dict__.get('_screeningActive', False):
+            return
+        state = self._monalisa()
+        configured = dict(getattr(self._setupInfo.scan, 'simpleMoNaLISA', None) or {})
+        info = dict(state.get('resolvedSetup', {}))
+        fx, fy = state['limits'].fov_um
+        info['fov_text'] = f'{fx:.3g} × {fy:.3g} µm'
+        detector_readout = info.get('detector_readout_s')
+        info['readout_text'] = (
+            f'{detector_readout * 1e3:.3g} ms' if detector_readout is not None else 'Unavailable'
+        )
+        patch = self._view.editSetupDefinition(configured, info)
+        if patch is None:
+            return
+
+        raw = dict(configured)
+        raw.update(patch)
+        # Removed camera-readout Auto/manual setup model. Preserve legacy files
+        # on load, but clean the obsolete keys the next time Setup is saved.
+        raw.pop('cameraReadoutSource', None)
+        raw.pop('cameraReadoutTimeMs', None)
+
+        # Switching from one fixed period to per-profile ownership should not
+        # invalidate every existing profile at once. Seed missing profile
+        # periods from the current fixed setup value; each profile can then be
+        # edited independently. Existing explicit profile periods are preserved.
+        old_policy = state['limits'].ulens_period_policy
+        new_policy = str(raw.get('ulensPeriodPolicy') or 'fixed')
+        store = state['limits'].profile_store
+        if old_policy != 'per_profile' and new_policy == 'per_profile' and store.profiles:
+            seed_period = state['limits'].fixed_ulens_period_um
+            profiles = {
+                profile_id: (
+                    profile if profile.ulens_period_um is not None
+                    else dataclasses.replace(profile, ulens_period_um=seed_period)
+                )
+                for profile_id, profile in store.profiles.items()
+            }
+            store = dataclasses.replace(store, profiles=profiles)
+            raw = config_with_profile_store(raw, store)
+
+        try:
+            self._persistSimpleConfig(raw)
+        except Exception as error:
+            self._view.showMessage(f'Could not save MoNaLISA setup: {error}', error=True)
+            return
+
+        state['limits'] = self._cloak.limits_from_setup(self._setupInfo)
+        if state['plan'] is not None:
+            try:
+                state['plan'] = normalize_plan(state['plan'], state['limits'])
+                profile = state['limits'].profile_store.profile(state['plan'].profile_id)
+                state['binding'] = MoNaLISAProfileBinding.bound(profile, state['plan'].mode_id)
+            except Exception as error:
+                state['plan'] = None
+                state['binding'] = MoNaLISAProfileBinding.unbound()
+                self._view.showMessage(
+                    f'Setup saved. Edit/select a profile before acquiring: {error}',
+                    error=False,
+                )
+        elif state['limits'].profile_store.profiles:
+            try:
+                state['plan'] = default_plan(state['limits'])
+                profile = state['limits'].profile_store.profile(state['plan'].profile_id)
+                state['binding'] = MoNaLISAProfileBinding.bound(profile, state['plan'].mode_id)
+            except Exception:
+                pass
+        self._refreshResolvedSetup(refreshView=True)
+        if self.cloakOwnsBackend():
+            self._mirrorToBackend(force=True)
+        self._refreshSetupSummary()
+
+
+    def _onCameraReadoutAutoRequested(self):
+        if self._isBusy() or self.acquisitionPlan() is None:
+            return
+        state = self._monalisa()
+        detector_readout = state.get('resolvedSetup', {}).get('detector_readout_s')
+        if detector_readout is None:
+            self._view.showMessage(
+                'The current profile camera does not report a usable readout time.',
+                error=False,
+            )
+            return
+        plan = state['plan']
+        store = state['limits'].profile_store
+        try:
+            profile = store.profile(plan.profile_id)
+            safe_readout = (
+                float(detector_readout) + state['limits'].camera_readout_safety_margin_s
+            )
+            updated = dataclasses.replace(
+                profile, camera_readout_time_s=max(0.0, safe_readout)
+            )
+            new_store = store.with_profile(updated)
+        except Exception as error:
+            self._view.showMessage(f'Could not calculate camera readout: {error}', error=True)
+            return
+        if not self._saveProfileStoreOrReport(new_store):
+            return
+        state = self._monalisa()
+        state['binding'] = MoNaLISAProfileBinding.bound(updated, plan.mode_id)
+        self._view.setPlan(state['plan'])
+        self._view.setBinding(state['binding'])
+        self._refreshSetupSummary()
+        self._mirrorToBackend(force=True)
+        self._refreshEstimate()
 
     def _refreshViewAfterProfileStoreChange(self):
         state = self._monalisa()
         self._view.setPlan(state['plan'])
         self._view.setBinding(state['binding'])
+        self._refreshSetupSummary()
         self._refreshLiveControls()
         self._refreshEstimate()
 
@@ -252,7 +554,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         except Exception as error:
             self._view.showMessage(str(error), error=True)
             return
-        profile = self._view.editProfileDefinition(seed, state['limits'].ttl_devices)
+        profile = self._view.editProfileDefinition(
+            seed, state['limits'].ttl_devices, state['limits']
+        )
         if profile is None:
             return
         try:
@@ -283,7 +587,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         new_id = profile_id_from_label(name, store.profiles)
         duplicate = dataclasses.replace(source, id=new_id, label=name)
         profile = self._view.editProfileDefinition(
-            duplicate, state['limits'].ttl_devices
+            duplicate, state['limits'].ttl_devices, state['limits']
         )
         if profile is None:
             return
@@ -308,7 +612,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._view.showMessage(str(error), error=True)
             return
         edited = self._view.editProfileDefinition(
-            current, state['limits'].ttl_devices
+            current, state['limits'].ttl_devices, state['limits']
         )
         if edited is None:
             return
@@ -326,6 +630,12 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             plan = adapt_plan_to_profile_definition(
                 state['plan'], edited, state['limits']
             )
+            if (current.scan_extent_source != edited.scan_extent_source
+                    and edited.scan_extent_source == 'manual'
+                    and edited.manual_scan_extent_um is not None):
+                plan = dataclasses.replace(
+                    plan, lateral_length_um=edited.manual_scan_extent_um
+                )
             self._setBoundPlan(plan)
         else:
             self._refreshViewAfterProfileStoreChange()
@@ -484,23 +794,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def _profileScreeningDetectors(self):
         """Free-running acquisition detectors in active READOUT steps."""
-        if not self.cloakOwnsBackend():
-            return ()
-        plan = self.acquisitionPlan()
-        profile = self.cloakLimits().profile_store.profile(plan.profile_id)
-        mode = profile.mode(plan.mode_id)
-        detectorNames = set(self._master.detectorsManager.getAllDeviceNames())
-        result = []
-        for step in profile.steps:
-            if step.role != 'readout':
-                continue
-            for device in mode.devices_for_step(step):
-                if device not in detectorNames or device in result:
-                    continue
-                detector = self._master.detectorsManager[device]
-                if detector.forAcquisition and not detector.isScanDriven:
-                    result.append(device)
-        return tuple(result)
+        return self._activeProfileDetectors()
 
     def _refreshLiveControls(self):
         if not hasattr(self, '_view'):
@@ -803,6 +1097,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
     def _runSimpleAcquisition(
         self, start, *, requireLiveView, keepPreparedIfIdle=False
     ):
+        # Capture ROI/readout-speed changes that may have happened without a
+        # dedicated UI signal immediately before the acquisition is compiled.
+        self._refreshResolvedSetup(refreshView=True, mirror=True)
         if self.__dict__.get('_screeningActive', False) and not self._stopScreening():
             return None
         try:

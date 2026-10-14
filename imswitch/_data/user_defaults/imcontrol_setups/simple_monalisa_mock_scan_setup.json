@@ -117,25 +117,78 @@
     "frameStartClockLine": null,
     "frameEndClockLine": null,
     "simpleMoNaLISA": {
+      "fovSource": "manual",
       "fovUm": [
         40.0,
         40.0
       ],
+      "ulensPeriodPolicy": "fixed",
       "ulensPeriodUm": 0.72,
+      "defaultCameraReadoutTimeMs": 6.0,
+      "cameraReadoutSafetyMarginMs": 0.1,
+      "cameraReadoutToleranceMs": 0.1,
+      "cameraReadoutUnoptimizedThresholdMs": 0.3,
+      "interPulseDelayMs": 0.1,
       "defaultScanType": "XY",
       "defaultLateralStepUm": 0.04,
-      "defaultZStepUm": 0.15,
-      "defaultMode": "resolft",
-      "defaultOffTimeMs": 2.0,
-      "defaultOnTimeMs": 1.0,
-      "readoutTimeMs": 1.0,
-      "cameraReadoutTimeMs": 6.0,
-      "offLaser": "488 (OFF)",
-      "onLaser": "405 (ON)",
-      "readoutLaser": "488 (EXC)",
-      "readoutDetector": "Camera",
       "defaultZScanLengthUm": 1.0,
-      "interPulseDelayMs": 0.1
+      "defaultZStepUm": 0.15,
+      "defaultProfile": "default",
+      "profiles": {
+        "default": {
+          "label": "Default",
+          "defaultMode": "resolft",
+          "scanExtentSource": "ulens",
+          "steps": [
+            {
+              "id": "on",
+              "label": "ON",
+              "role": "on",
+              "ttlDevices": [
+                "405 (ON)"
+              ],
+              "defaultDurationMs": 1.0
+            },
+            {
+              "id": "off",
+              "label": "OFF",
+              "role": "off",
+              "ttlDevices": [
+                "488 (OFF)"
+              ],
+              "defaultDurationMs": 2.0
+            },
+            {
+              "id": "readout",
+              "label": "Readout",
+              "role": "readout",
+              "ttlDevices": [
+                "488 (EXC)",
+                "Camera"
+              ],
+              "defaultDurationMs": 1.0,
+              "durationEditable": false
+            }
+          ],
+          "modes": {
+            "resolft": {
+              "label": "RESOLFT",
+              "enabledSteps": [
+                "on",
+                "off",
+                "readout"
+              ]
+            },
+            "confocal": {
+              "label": "Confocal",
+              "enabledSteps": [
+                "on",
+                "readout"
+              ]
+            }
+          }
+        }
+      }
     }
   },
   "nidaq": {

@@ -786,12 +786,23 @@ editing changes setup configuration, whereas normal duration/geometry edits
 change only the current acquisition. Advanced edits that no longer match the
 explicitly selected profile/mode return Simple to **Advanced / custom** rather
 than silently selecting another profile. With separated Live/Scan laser powers,
-the **Live screening** row lets ON/OFF/Readout roles participate independently.
+the top Live role row lets ON/OFF/Readout roles participate independently.
 Those checkboxes change only laser enable state; power stays editable in the
-Laser widget. **Live** keeps the existing camera acquisition running but switches
-the Readout camera to internal trigger, **Stop** switches off only the screening
-lasers, and **Acquire** uses external frame trigger plus the normal scan powers.
-The Live action is disabled for coupled laser-power setups.
+Laser widget. **Live**, **Stop** and **Acquire** stay together in the top action
+row. Live keeps the existing camera acquisition running but switches the Readout
+camera to internal trigger, Stop switches off only the screening lasers, and
+Acquire uses external frame trigger plus the normal scan powers. The Live action
+is disabled for coupled laser-power setups. **Setup…** opens persistent setup
+editing, including detector-derived FOV/readout policies and slider ranges.
+Camera-derived FOV/readout track the current detector ROI/timings; camera
+readout is shown read-only in Simple and Auto/Manual editing stays in Setup.
+uLens period is either fixed by
+setup or owned by the selected profile (never by a mode), while a profile may
+independently choose one-uLens or manual lateral scan extent. The sequence view
+is role-first and wavelength-coloured for ON/OFF/READOUT steps. CUSTOM steps
+show their active non-detector device names directly, one badge per device,
+while a separate red acquisition marker appears automatically on any step that
+drives a detector.
 
 Controls shared by the variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
