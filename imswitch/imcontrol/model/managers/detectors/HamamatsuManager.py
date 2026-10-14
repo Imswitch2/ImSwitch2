@@ -186,6 +186,12 @@ class HamamatsuManager(DetectorManager):
         self._frameStart = applied[:2]
         self._shape = applied[2:]
 
+        # ROI changes affect camera timing (most importantly
+        # ``timing_readout_time``).  Keep the detector parameter cache in sync
+        # immediately instead of waiting for an unrelated exposure edit to
+        # trigger a full camera-property refresh.
+        self._updateTimingPropertiesFromCamera()
+
         expectedModeIsOn = not isFullFrame
 
         if expectedModeIsOn and applied == fullFrame:
@@ -477,13 +483,30 @@ class HamamatsuManager(DetectorManager):
             function()
             self.startAcquisition()
 
+    def _updateTimingPropertiesFromCamera(self):
+        """Refresh camera-reported timing values without touching trigger state.
+
+        Exposure edits use :meth:`_updatePropertiesFromCamera`, but ROI changes
+        also alter derived timings such as ``timing_readout_time``.  Keeping
+        this readback separate lets ``crop()`` refresh those values without
+        needlessly re-reading or remapping the trigger configuration.
+        """
+        super().setParameter(
+            'Real exposure time', self._camera.getPropertyValue('exposure_time')[0]
+        )
+        super().setParameter(
+            'Internal frame interval',
+            self._camera.getPropertyValue('internal_frame_interval')[0],
+        )
+        super().setParameter(
+            'Readout time', self._camera.getPropertyValue('timing_readout_time')[0]
+        )
+        super().setParameter(
+            'Internal frame rate', self._camera.getPropertyValue('internal_frame_rate')[0]
+        )
+
     def _updatePropertiesFromCamera(self):
-        self.setParameter('Real exposure time', self._camera.getPropertyValue('exposure_time')[0])
-        self.setParameter('Internal frame interval',
-                          self._camera.getPropertyValue('internal_frame_interval')[0])
-        self.setParameter('Readout time', self._camera.getPropertyValue('timing_readout_time')[0])
-        self.setParameter('Internal frame rate',
-                          self._camera.getPropertyValue('internal_frame_rate')[0])
+        self._updateTimingPropertiesFromCamera()
 
         try:
             self._updateTriggerSourceFromCamera()

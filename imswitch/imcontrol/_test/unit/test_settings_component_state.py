@@ -432,6 +432,15 @@ def test_apply_component_state_never_acquires(cameras):
 
 # --- a detector that refuses the ROI --------------------------------------
 
+def test_adjust_frame_emits_detector_parameters_changed(cameras):
+    controller, camera1, _ = cameras
+    controller._commChannel.sigDetectorParametersChanged.emit.reset_mock()
+
+    controller.adjustFrame(detector=camera1)
+
+    controller._commChannel.sigDetectorParametersChanged.emit.assert_called_once_with('Camera1')
+
+
 def test_adjust_frame_reports_a_refused_roi_instead_of_raising(cameras):
     """crop() raises when the camera rejects the ROI outright. adjustFrame runs
     from __init__'s execOnAll, so letting that propagate would abort controller

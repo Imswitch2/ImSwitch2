@@ -250,6 +250,11 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
         self.updateParamsFromDetector(detector=detector)
         self.updateSharedAttrs()
+        # Cropping can change derived detector parameters (for example a
+        # Hamamatsu camera's readout time).  Publish the refreshed detector
+        # state just like an explicit parameter edit so all consumers can
+        # update immediately, including non-current detectors.
+        self._commChannel.sigDetectorParametersChanged.emit(str(detector.name))
         return failures
 
     def applyROIClicked(self, *_):
