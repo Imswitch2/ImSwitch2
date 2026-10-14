@@ -576,7 +576,7 @@ speed, never its angle.
 
 Scripts turn a mount with ``api.imcontrol.setRotatorPosition(name,
 degrees)`` (absolute) and ``moveRotator(name, degrees)`` (relative), and
-read it with ``getRotatorPosition(name)``; see :doc:`scripting-api`.
+read it with ``getRotatorPosition(name)``; see :doc:`api/api.imcontrol`.
 
 .. image:: ./images/auto/RotatorWidget.png
    :align: center

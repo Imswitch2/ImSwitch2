@@ -33,7 +33,7 @@ The tutorials are ordered so you only switch when a new block begins:
 | Tutorials | Setup file | It simulates |
 |---|---|---|
 | basic 01-06 | `example_mock.json` | one camera |
-| basic 07-10 | `example_no_hardware.json` | two cameras, three stages and three rotation mounts |
+| basic 07-11 | `example_no_hardware.json` | two cameras, three stages and three rotation mounts |
 | scanning 01-03 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 | scanning 04 | `mixed_hamamatsu_apd_mock_scan_setup.json` | the same, plus a point detector (APD) |
 | scanning 05 | `galvo_apd_mock_scan_setup.json` | a point-scanning microscope with two lasers |
@@ -73,6 +73,7 @@ back, delete your copy and restart ImSwitch.
 | 08 | `08_move_the_stage.py` | `example_no_hardware.json` | move stages, wait for them, snap a grid |
 | 09 | `09_rotators.py` | `example_no_hardware.json` | turn rotation mounts; an image per angle |
 | 10 | `10_frames_into_memory.py` | `example_no_hardware.json` | frames as an array, nothing written; the live frame |
+| 11 | `11_work_interactively.py` | `example_no_hardware.json` | cells, the console and `show()`: acquire once, analyse again and again |
 
 ## scanning
 

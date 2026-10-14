@@ -14,6 +14,11 @@ Run from the repository root::
 
     HOME=$(mktemp -d) python tools/generateapidocs.py
 
+after adding, removing or re-documenting an exported method, and commit the
+result. ``--check`` writes nothing and fails when a page is stale or when an
+exported method has no docstring; imscripting/_test/test_scripting_api_docs.py
+runs it.
+
 (Importing ImSwitch2 syncs the user folder in ``HOME``; a throwaway one keeps
 the run from touching your own ``ImSwitchConfig``.)
 """
@@ -21,6 +26,7 @@ the run from touching your own ``ImSwitchConfig``.)
 import importlib
 import inspect
 import os
+import sys
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -132,7 +138,8 @@ def _availability(providers):
     return 'Needs ' + ' or '.join(parts) + ' in ``availableWidgets``.'
 
 
-def writeImcontrol():
+def renderImcontrol():
+    """The text of api.imcontrol.rst, and the number of methods on it."""
     exports = _imcontrolExports()
     title = 'api.imcontrol'
     lines = ['*' * len(title), title, '*' * len(title), '',
@@ -153,12 +160,19 @@ def writeImcontrol():
             lines.append('')
         lines.append(_indent(_availability(providers), 6))
         lines.append('')
-    with open(os.path.join(apiDocsDir, f'{title}.rst'), 'w') as file:
-        file.write('\n'.join(lines).rstrip() + '\n')
-    return len(exports)
+    return '\n'.join(lines).rstrip() + '\n', len(exports)
 
 
-def writeDocs(cls, isClass=True, displayName=None):
+def undocumentedExports():
+    """The exported names a script can call that have no docstring."""
+    names = [name for name, (func, _p) in _imcontrolExports().items()
+             if not (inspect.getdoc(func) or '').strip()]
+    names += [f'{name} (helper)' for name, func in _exported(_Actions)
+              if not (inspect.getdoc(func) or '').strip()]
+    return sorted(names)
+
+
+def renderDocs(cls, isClass=True, displayName=None):
     def fixIndent(docstring, indent):
         lines = docstring.splitlines()
         for i in range(len(lines)):
@@ -207,15 +221,13 @@ def writeDocs(cls, isClass=True, displayName=None):
     if isClass:
         indent -= 3
 
-    # Write rst file
-    with open(os.path.join(apiDocsDir, f'{cls.__name__}.rst'), 'w') as file:
-        file.write(rst)
+    return rst
 
 
-def main():
-    os.makedirs(apiDocsDir, exist_ok=True)
-    count = writeImcontrol()
-    print(f'api.imcontrol.rst: {count} methods')
+def renderPages():
+    """{file name in docs/api: its text}."""
+    pages = {}
+    pages['api.imcontrol.rst'], _count = renderImcontrol()
 
     # Global-level functions
     class _actions:
@@ -227,7 +239,8 @@ def main():
         if hasattr(subObj, '_APIExport') and subObj._APIExport:
             setattr(_actions, subObjName, subObj)
 
-    writeDocs(_actions, isClass=False, displayName='Global-level functions')
+    pages['_actions.rst'] = renderDocs(_actions, isClass=False,
+                                       displayName='Global-level functions')
 
     # mainWindow
     class mainWindow:
@@ -239,11 +252,39 @@ def main():
         if hasattr(subObj, '_APIExport') and subObj._APIExport:
             setattr(mainWindow, subObjName, subObj)
 
-    writeDocs(mainWindow)
+    pages['mainWindow.rst'] = renderDocs(mainWindow)
+    return pages
+
+
+def main(argv):
+    pages = renderPages()
+    if '--check' in argv:
+        problems = [f'docs/api/{name} is stale' for name, text in pages.items()
+                    if _read(os.path.join(apiDocsDir, name)) != text]
+        problems += [f'{name} is exported without a docstring'
+                     for name in undocumentedExports()]
+        if problems:
+            sys.exit('\n'.join(problems)
+                     + '\nWrite the docstrings, then run python tools/generateapidocs.py')
+        print('docs/api is current')
+        return
+    os.makedirs(apiDocsDir, exist_ok=True)
+    for name, text in pages.items():
+        with open(os.path.join(apiDocsDir, name), 'w') as file:
+            file.write(text)
+    print(f'api.imcontrol.rst: {pages["api.imcontrol.rst"].count(".. method::")} methods')
+
+
+def _read(path):
+    try:
+        with open(path) as file:
+            return file.read()
+    except FileNotFoundError:
+        return None
 
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

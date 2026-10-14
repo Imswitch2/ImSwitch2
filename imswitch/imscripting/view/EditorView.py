@@ -15,7 +15,9 @@ class EditorView(QtWidgets.QTabWidget):
     tabs, where the user can edit scripts. """
 
     sigRunAllClicked = QtCore.Signal(str, str)  # (instanceID, text)
-    sigRunSelectedClicked = QtCore.Signal(str, str)  # (instanceID, selectedText)
+    sigRunSelectedClicked = QtCore.Signal(str, str, int)  # (instanceID, selectedText, firstLine)
+    sigRunCellClicked = QtCore.Signal(str, bool)  # (instanceID, advance)
+    sigResetSessionClicked = QtCore.Signal(str)  # (instanceID)
     sigStopClicked = QtCore.Signal(str)  # (instanceID)
     sigTextChanged = QtCore.Signal(str)  # (instanceID)
     sigInstanceCloseClicked = QtCore.Signal(str)  # (instanceID)
@@ -23,6 +25,7 @@ class EditorView(QtWidgets.QTabWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setTabsClosable(True)
+        self._running = False
 
         self.tabCloseRequested.connect(
             lambda index: self.sigInstanceCloseClicked.emit(self.widget(index).getID())
@@ -35,7 +38,13 @@ class EditorView(QtWidgets.QTabWidget):
             lambda text: self.sigRunAllClicked.emit(editorInstance.getID(), text)
         )
         editorInstance.sigRunSelectedClicked.connect(
-            lambda text: self.sigRunSelectedClicked.emit(editorInstance.getID(), text)
+            lambda text, line: self.sigRunSelectedClicked.emit(editorInstance.getID(), text, line)
+        )
+        editorInstance.sigRunCellClicked.connect(
+            lambda advance: self.sigRunCellClicked.emit(editorInstance.getID(), advance)
+        )
+        editorInstance.sigResetSessionClicked.connect(
+            lambda: self.sigResetSessionClicked.emit(editorInstance.getID())
         )
         editorInstance.sigTextChanged.connect(
             lambda: self.sigTextChanged.emit(editorInstance.getID())
@@ -43,6 +52,7 @@ class EditorView(QtWidgets.QTabWidget):
         editorInstance.sigStopClicked.connect(
             lambda: self.sigStopClicked.emit(editorInstance.getID())
         )
+        editorInstance.setRunning(self._running)
         self.addTab(editorInstance, name)
         self.setCurrentWidget(editorInstance)
         return editorInstance
@@ -83,6 +93,15 @@ class EditorView(QtWidgets.QTabWidget):
             if hasattr(instance, 'setStopping'):
                 instance.setStopping(stopping)
 
+    def setRunning(self, running):
+        """ Shows in every editor instance whether a script runs: the session
+        cannot be reset meanwhile. """
+        self._running = bool(running)
+        for i in range(self.count()):
+            instance = self.widget(i)
+            if hasattr(instance, 'setRunning'):
+                instance.setRunning(running)
+
     def closeInstance(self, instanceID):
         """ Closes the editor instance with the specified ID. """
         for i in range(self.count()):
@@ -94,10 +113,18 @@ class EditorView(QtWidgets.QTabWidget):
 
 
 class EditorInstanceView(QtWidgets.QWidget):
-    """ A single editor instance where the user can edit scripts. """
+    """ A single editor instance where the user can edit scripts.
+
+    *Run all* runs the whole script in a fresh namespace. *Run cell*
+    (Ctrl+Enter; Shift+Enter also moves to the next cell) and *Run selection*
+    (F9; the current line when nothing is selected) run in the session, whose
+    variables live on between runs and are shared with the console. *Reset
+    session* forgets them. """
 
     sigRunAllClicked = QtCore.Signal(str)  # (text)
-    sigRunSelectedClicked = QtCore.Signal(str)  # (selectedText)
+    sigRunSelectedClicked = QtCore.Signal(str, int)  # (selectedText, firstLine)
+    sigRunCellClicked = QtCore.Signal(bool)  # (advance to the next cell)
+    sigResetSessionClicked = QtCore.Signal()
     sigStopClicked = QtCore.Signal()
     sigTextChanged = QtCore.Signal()
 
@@ -119,16 +146,40 @@ class EditorInstanceView(QtWidgets.QWidget):
         )
 
         self.runAllButton = BetterPushButton('Run all')
+        self.runAllButton.setToolTip(
+            'Runs the whole script in a fresh namespace: the same result every '
+            'time, nothing left over from earlier runs.'
+        )
         self.runAllButton.clicked.connect(
             lambda: self.sigRunAllClicked.emit(self.getText())
         )
         topContainer.addWidget(self.runAllButton, 0)
 
-        self.runSelectionButton = BetterPushButton('Run selection')
-        self.runSelectionButton.clicked.connect(
-            lambda: self.sigRunSelectedClicked.emit(self.getSelectedText())
+        self.runCellButton = BetterPushButton('Run cell')
+        self.runCellButton.setToolTip(
+            'Runs the cell the cursor is in -- from a "# %%" line to the next -- '
+            'in the session, where variables of earlier cells and selections '
+            'are, and the console sees them (Ctrl+Enter; Shift+Enter also moves '
+            'to the next cell).'
         )
+        self.runCellButton.clicked.connect(lambda: self.sigRunCellClicked.emit(False))
+        topContainer.addWidget(self.runCellButton, 0)
+
+        self.runSelectionButton = BetterPushButton('Run selection')
+        self.runSelectionButton.setToolTip(
+            'Runs the selected lines, or the line the cursor is on, in the '
+            'session (F9).'
+        )
+        self.runSelectionButton.clicked.connect(self._emitRunSelection)
         topContainer.addWidget(self.runSelectionButton, 0)
+
+        self.resetSessionButton = BetterPushButton('Reset session')
+        self.resetSessionButton.setToolTip(
+            'Forgets every variable of Run cell, Run selection and the console. '
+            'Not while a script runs.'
+        )
+        self.resetSessionButton.clicked.connect(self.sigResetSessionClicked)
+        topContainer.addWidget(self.resetSessionButton, 0)
 
         self.stopButton = BetterPushButton('Stop')
         self.stopButton.clicked.connect(
@@ -138,7 +189,35 @@ class EditorInstanceView(QtWidgets.QWidget):
 
         self.scintilla = Scintilla()
         self.scintilla.textChanged.connect(self.sigTextChanged)
+        self.scintilla.installEventFilter(self)
         layout.addWidget(self.scintilla, 3)
+
+    def eventFilter(self, source, event):
+        # Before the editor sees the key: QScintilla would insert a line
+        # break for Ctrl/Shift+Enter.
+        if source is self.scintilla and event.type() == QtCore.QEvent.KeyPress:
+            key, modifiers = event.key(), event.modifiers()
+            if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                if modifiers & QtCore.Qt.ControlModifier:
+                    self.sigRunCellClicked.emit(False)
+                    return True
+                if modifiers & QtCore.Qt.ShiftModifier:
+                    self.sigRunCellClicked.emit(True)
+                    return True
+            elif key == QtCore.Qt.Key_F9 and not modifiers:
+                self._emitRunSelection()
+                return True
+        return super().eventFilter(source, event)
+
+    def _emitRunSelection(self):
+        text = self.getSelectedText()
+        if text.strip():
+            self.sigRunSelectedClicked.emit(text, self.scintilla.selectionFirstLine())
+        else:
+            line = self.cursorLine()
+            lines = self.getText().split('\n')
+            if 0 <= line < len(lines):
+                self.sigRunSelectedClicked.emit(lines[line], line)
 
     def getID(self):
         """ Returns the ID of the editor instance. Can be passed to certain
@@ -148,6 +227,14 @@ class EditorInstanceView(QtWidgets.QWidget):
     def getSelectedText(self):
         """ Returns the selected text in the editor instance. """
         return self.scintilla.selectedText()
+
+    def cursorLine(self):
+        """ The 0-based line the cursor is on. """
+        return self.scintilla.cursorLine()
+
+    def setCursorLine(self, line):
+        """ Puts the cursor at the start of the 0-based ``line``. """
+        self.scintilla.setCursorLine(line)
 
     def getText(self):
         """ Returns all text in the editor instance. """
@@ -162,6 +249,10 @@ class EditorInstanceView(QtWidgets.QWidget):
         stopped. """
         self.stopButton.setEnabled(not stopping)
         self.stopButton.setText('Stopping…' if stopping else 'Stop')
+
+    def setRunning(self, running):
+        """ The session cannot be reset while a script runs. """
+        self.resetSessionButton.setEnabled(not running)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

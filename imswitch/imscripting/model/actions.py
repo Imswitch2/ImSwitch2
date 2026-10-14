@@ -2,7 +2,7 @@ import importlib.util
 import logging
 import os
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from imswitch.imcommon.framework import Signal, FrameworkUtils
 from imswitch.imcommon.model import (
@@ -185,6 +185,46 @@ class _Actions:
                 time.sleep(min(pollIntervalSeconds, remaining))
             else:
                 time.sleep(pollIntervalSeconds)
+
+    @APIExport()
+    def show(self, image: Any, name: Optional[str] = None,
+             scale: Optional[Sequence[float]] = None) -> None:
+        """ Shows an array in ImControl's image view, as a layer called
+        ``name`` ('script' when not given). Showing under the same name again
+        replaces that layer's data, so a loop can update one picture. The
+        array is copied, so changing it afterwards does not change the
+        picture. A stack ``(frames, rows, columns)`` gets a slider. ``scale``
+        is the pixel size per axis, last axes last (``(0.1, 0.1)`` for 0.1 µm
+        pixels). A dict of arrays, as recordScanToMemory returns for several
+        detectors, shows one layer per entry. Raises RuntimeError when no
+        image view is loaded (the Image widget of ImControl). """
+        import numpy as np
+
+        if isinstance(image, dict):
+            for key, value in image.items():
+                self.show(value, f'{name}: {key}' if name else str(key), scale)
+            return
+        array = np.array(image, copy=True)
+        if array.ndim < 2:
+            raise ValueError(
+                f'show() displays images, arrays of two or more dimensions; '
+                f'this one has shape {array.shape}'
+            )
+        if array.dtype == bool:
+            array = array.astype(np.uint8)
+        channel = self._scriptScope.get('moduleCommChannel')
+        signal = getattr(channel, 'sigShowImage', None)
+        try:
+            listening = signal is not None and channel.receivers(signal) > 0
+        except (AttributeError, TypeError):
+            listening = signal is not None
+        if not listening:
+            raise RuntimeError(
+                "Nothing can show the image: load ImControl's Image widget "
+                '(availableWidgets in the setup file)'
+            )
+        signal.emit(str(name or 'script'), array,
+                    None if scale is None else tuple(float(v) for v in scale))
 
 
 def getActionsScope(otherScope, scriptPath=None):

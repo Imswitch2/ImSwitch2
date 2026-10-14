@@ -13,7 +13,7 @@ Setup
   Your own microscope: needs a camera and the Recording and View widgets.
                 Change CAMERA to your camera's name.
 
-Next: the scanning tutorials, starting with ../scanning/01_run_a_scan.py
+Next: 11_work_interactively.py
 """
 
 import os

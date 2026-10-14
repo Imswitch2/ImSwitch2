@@ -10,7 +10,9 @@ The scripting API reference lists the available modules and methods:
 :doc:`api/api.imcontrol` for microscope control and
 :doc:`api/mainWindow` for the main window.  In addition to the module
 APIs, a set of global helper functions is documented
-:doc:`here <api/_actions>`.
+:doc:`here <api/_actions>`.  The pages are generated from the code by
+``tools/generateapidocs.py``; a test fails when they are older than the
+code.
 
 The API modules may provide signals – events that can be bound to via
 e.g. the global ``getWaitForSignal`` scripting function.
@@ -21,6 +23,50 @@ Step-by-step tutorials ship with the scripting module; see
 This module drives the microscope.  To script what you do to *results* in
 ImProcess (a one-off transformation, a recipe for a folder of recordings, a
 console over the results list) see :ref:`improcess-python-step`.
+
+Working interactively
+=====================
+
+The editor runs code in two ways:
+
+*Run all*
+    runs the whole script in a **fresh namespace**: nothing is left over
+    from earlier runs, so a script that works with *Run all* works the same
+    way every time -- for a colleague, in a workflow, tomorrow.
+
+*Run cell* (Ctrl+Enter) and *Run selection* (F9)
+    run part of the script in the **session**, a namespace that lives on
+    between runs. A cell runs from a ``# %%`` line to the next (Shift+Enter
+    runs it and moves to the next cell); Run selection runs the selected
+    lines, or the line the cursor is on. What one run defines is there for
+    the next: acquire in one cell, then analyse, change a number and
+    analyse again without acquiring again. Tracebacks name the editor's own
+    line numbers.
+
+The **console** works in the same session, for looking at results --
+``frames.shape``, ``frames[3].mean()``. It is disabled while a script runs,
+since the script may be changing those variables, and it runs on the GUI
+thread, where the blocking calls (``recordScanToMemory``,
+``recordFramesToMemory``) refuse to run: acquire from the editor. The
+**Variables** panel lists the session's data with its type, shape, dtype and
+size in memory; it is updated when a run ends and after each console
+command. **Reset session** forgets every variable (after asking, when there
+are some); it is not available while a script runs.
+
+``show(array, name)`` puts an array into ImControl's image view as a layer of
+that name; showing under the same name again replaces the picture, so a loop
+can update one image. A stack gets a slider, ``scale`` gives the pixel size,
+and a dict of arrays shows one layer per entry. Double-clicking an array in
+the Variables panel does the same::
+
+    # %% acquire
+    frames = api.imcontrol.recordFramesToMemory('Camera', 20)
+
+    # %% analyse -- change the threshold, Ctrl+Enter, look again
+    mean = frames.mean(axis=0)
+    show(mean > mean.mean() + 2 * mean.std(), 'bright pixels')
+
+``tutorial/basic/11_work_interactively.py`` is this in full.
 
 Threading model and waiting for events
 ======================================
@@ -168,8 +214,8 @@ back, for a time lapse that must not image before it is::
         if not api.imcontrol.waitForFocusLock(timeout=10):
             raise RuntimeError('the focus did not come back')
 
-:doc:`scripting-api` lists every function a script can call, with its
-signature, by the widget that provides it.
+:doc:`api/api.imcontrol` lists every function a script can call, with
+its signature and the widget that provides it.
 
 .. _scripting-tutorials:
 
@@ -194,8 +240,9 @@ what it will do, and only then press **Run all**.
     and to files, camera settings and the live view, recording a number of
     frames and reading the file back, clean-up that survives the Stop
     button, and sharing code between scripts with ``importScript()``. Then
-    two cameras, stages, rotation mounts, and frames into memory
-    (``example_no_hardware.json``, steps 07-10).
+    two cameras, stages, rotation mounts, frames into memory, and working
+    interactively with cells, the console and ``show()``
+    (``example_no_hardware.json``, steps 07-11).
 
 ``tutorial/scanning``
     Scans that trigger a camera, one frame per scan position, and scan
@@ -247,6 +294,5 @@ To reconstruct or process data from a script, import
 .. toctree::
     :hidden:
 
-    scripting-api
     scripting-wfs-workflows
     scripting-time-resolved-workflows

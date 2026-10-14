@@ -1,7 +1,7 @@
 import os
 
 from imswitch.imcommon.model import dirtools
-from imswitch.imscripting.model import ScriptExecutor, ScriptStore, ScriptEntry
+from imswitch.imscripting.model import ScriptExecutor, ScriptStore, ScriptEntry, cellAt
 from imswitch.imcommon.model import initLogger
 from imswitch.imscripting.view import guitools
 from .basecontrollers import ImScrWidgetController
@@ -21,6 +21,7 @@ class EditorController(ImScrWidgetController):
 
         # Connect ScriptExecutor signals
         self.scriptExecutor.sigOutputAppended.connect(self._commChannel.sigOutputAppended)
+        self.scriptExecutor.sigExecutionStarted.connect(self._onExecutionStarted)
         self.scriptExecutor.sigExecutionFinished.connect(self._onExecutionFinished)
 
         # Connect CommunicationChannel signals
@@ -33,7 +34,9 @@ class EditorController(ImScrWidgetController):
 
         # Connect EditorView signals
         self._widget.sigRunAllClicked.connect(self.runCurrentCode)
-        self._widget.sigRunSelectedClicked.connect(self.runCurrentCode)
+        self._widget.sigRunSelectedClicked.connect(self.runSelection)
+        self._widget.sigRunCellClicked.connect(self.runCell)
+        self._widget.sigResetSessionClicked.connect(self.resetSession)
         self._widget.sigStopClicked.connect(self.stopExecution)
         self._widget.sigTextChanged.connect(self.textChanged)
         self._widget.sigInstanceCloseClicked.connect(self.instanceCloseClicked)
@@ -101,18 +104,58 @@ class EditorController(ImScrWidgetController):
         self.saveFile()
 
     def runCurrentCode(self, instanceID, code):
-        """ Executes the specified code. instanceID is the ID of the instance
-        that contains the code. """
+        """ Run all: executes the specified code in a fresh namespace.
+        instanceID is the ID of the instance that contains the code. """
+        self._run(instanceID, code, session=False)
 
+    def runSelection(self, instanceID, code, firstLine=0):
+        """ Run selection: executes the code in the session. ``firstLine`` is
+        the 0-based editor line it starts at. """
+        self._run(instanceID, code, session=True, firstLine=firstLine)
+
+    def runCell(self, instanceID, advance=False):
+        """ Run cell: executes the cell around the cursor -- from a ``# %%``
+        line to the next -- in the session; ``advance`` then puts the cursor
+        on the next cell. """
+        instance = self._widget.getInstanceByID(instanceID)
+        if instance is None:
+            return
+        text = instance.getText()
+        first, end, code = cellAt(text, instance.cursorLine())
+        if not self._run(instanceID, code, session=True, firstLine=first):
+            return
+        if advance and end < len(text.split('\n')):
+            instance.setCursorLine(end)
+
+    def _run(self, instanceID, code, *, session, firstLine=0):
         if self.scriptExecutor.isExecuting():
             if not guitools.askYesNoQuestion(self._widget,
                                              'Warning: Already Executing',
                                              'A script is already running; it will be terminated if'
                                              ' you proceed. Do you want to proceed?'):
-                return
+                return False
 
         self._commChannel.sigExecutionStarted.emit()
-        self.scriptExecutor.execute(self.scriptStore[instanceID].filePath, code)
+        self.scriptExecutor.execute(self.scriptStore[instanceID].filePath, code,
+                                    session=session, firstLine=firstLine)
+        return True
+
+    def resetSession(self, instanceID=None):
+        """ Forgets the variables of Run cell, Run selection and the console,
+        after asking when there are any. Refused while a script runs. """
+        if self.scriptExecutor.isBusy():
+            guitools.showWarning(
+                self._widget, 'Reset session',
+                'A script is running; reset the session once it has ended.'
+            )
+            return False
+        names = list(self.scriptExecutor.session.userVariables())
+        if names and not guitools.askYesNoQuestion(
+                self._widget, 'Reset session?',
+                f'Forget {len(names)} variable{"s" if len(names) != 1 else ""} '
+                f'({", ".join(names[:5])}{", ..." if len(names) > 5 else ""})?'):
+            return False
+        return self.scriptExecutor.resetSession()
 
     def stopExecution(self):
         """ Requests the currently running script to stop. Does nothing if no
@@ -134,8 +177,12 @@ class EditorController(ImScrWidgetController):
         self.scriptExecutor.cancel()
         self._widget.setStopping(True)
 
+    def _onExecutionStarted(self, result):
+        self._widget.setRunning(True)
+
     def _onExecutionFinished(self, result):
         self._widget.setStopping(False)
+        self._widget.setRunning(self.scriptExecutor.isBusy())
         # The module-level signal carries no payload (the old signal-to-signal
         # connection dropped the result silently).
         self._moduleCommChannel.sigExecutionFinished.emit()

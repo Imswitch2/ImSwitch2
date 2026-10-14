@@ -54,6 +54,18 @@ Global-level functions
    stopped (the running scan then finishes on its own). ``source`` picks
    the scan controller on rigs with several. 
 
+.. method:: show(image: Any, name: Optional[str] = None, scale: Optional[Sequence[float]] = None) -> None
+
+   Shows an array in ImControl's image view, as a layer called
+   ``name`` ('script' when not given). Showing under the same name again
+   replaces that layer's data, so a loop can update one picture. The
+   array is copied, so changing it afterwards does not change the
+   picture. A stack ``(frames, rows, columns)`` gets a slider. ``scale``
+   is the pixel size per axis, last axes last (``(0.1, 0.1)`` for 0.1 µm
+   pixels). A dict of arrays, as recordScanToMemory returns for several
+   detectors, shows one layer per entry. Raises RuntimeError when no
+   image view is loaded (the Image widget of ImControl). 
+
 .. method:: sleep(seconds: float) -> None
 
    Sleeps for the specified number of seconds. Unlike ``time.sleep``,

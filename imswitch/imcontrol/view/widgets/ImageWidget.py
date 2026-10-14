@@ -183,13 +183,47 @@ class ImageWidget(QtWidgets.QWidget):
     def addStaticLayer(self, name, im, scale=None):
         kwargs = dict(rgb=False, name=name, blending='additive')
         if scale is not None:
-            sc = tuple(scale)
-            if len(sc) < im.ndim:
-                sc = (1.0,) * (im.ndim - len(sc)) + sc
-            elif len(sc) > im.ndim:
-                sc = sc[-im.ndim:]
-            kwargs['scale'] = sc
+            kwargs['scale'] = self._fitScale(scale, im.ndim)
         self.napariViewer.add_image(im, **kwargs)
+
+    def setStaticLayer(self, name, im, scale=None):
+        """Shows ``im`` in the layer called ``name``: replaces the data of
+        that layer when there is one (keeping its colormap, blending and
+        visibility, and fitting the contrast to the new data), and adds the
+        layer when there is not. Returns whether the layer is new."""
+        layers = self.napariViewer.layers
+        existing = layers[name] if name in layers else None
+        if existing is not None and (
+            getattr(existing, 'protected', False)
+            or getattr(existing, 'ndim', None) != im.ndim
+            or not hasattr(existing, 'contrast_limits')
+        ):
+            # A live layer is never replaced; another kind of layer, or one of
+            # another dimensionality (napari cannot change a layer's ndim in
+            # place, see _recreateLiveLayer), is replaced by a new one.
+            if getattr(existing, 'protected', False):
+                raise ValueError(f'{name!r} is a live-view layer; use another name')
+            self._removeProtectedLayer(existing)
+            existing = None
+        if existing is None:
+            self.addStaticLayer(name, im, scale)
+            return True
+        existing.data = im
+        if scale is not None:
+            existing.scale = self._fitScale(scale, im.ndim)
+        existing.reset_contrast_limits()
+        return False
+
+    @staticmethod
+    def _fitScale(scale, ndim):
+        """``scale`` with one value per axis: the last values given are the
+        last axes', missing leading axes get 1."""
+        sc = tuple(float(v) for v in scale)
+        if len(sc) < ndim:
+            sc = (1.0,) * (ndim - len(sc)) + sc
+        elif len(sc) > ndim:
+            sc = sc[-ndim:]
+        return sc
 
     def getCurrentImageName(self):
         return self.napariViewer.active_layer.name

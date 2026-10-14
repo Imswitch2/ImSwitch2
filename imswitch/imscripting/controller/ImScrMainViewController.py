@@ -2,6 +2,7 @@ from .ConsoleController import ConsoleController
 from .EditorController import EditorController
 from .FilesController import FilesController
 from .OutputController import OutputController
+from .VariablesController import VariablesController
 from .basecontrollers import ImScrWidgetController
 
 
@@ -18,6 +19,14 @@ class ImScrMainViewController(ImScrWidgetController):
                                                                 self._widget.console)
         self.outputController = self._factory.createController(OutputController,
                                                                self._widget.output)
+        self.variablesController = self._factory.createController(VariablesController,
+                                                                  self._widget.variables)
+
+        # Run cell, Run selection, the console and the variables share one
+        # session: the editor's executor owns it.
+        executor = self.editorController.scriptExecutor
+        self.consoleController.attachExecutor(executor)
+        self.variablesController.attachExecutor(executor, self._widget.console)
 
         # Connect signals
         self._widget.sigNewFile.connect(self._commChannel.sigNewFile)
