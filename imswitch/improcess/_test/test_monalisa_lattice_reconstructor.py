@@ -685,6 +685,41 @@ class TestRecordedScans:
         layers = {layer.component: layer for layer in result.display_layers()}
         assert layers["pinholes"].axis_labels == ["Z", "Pinhole", "Y", "X"]
 
+    def test_recorded_steps_of_different_sizes_cover_the_cell(self):
+        """22 x 11 steps of 35 and 70 nm, pixel size unknown: the ratio of
+        the recorded steps is known even when their size in pixels is not."""
+        scan = make_scan(steps=(22, 11), step=np.diag([0.5, 1.0]))
+        loops = [_loop("scan_y", 11, 0.07), _loop("scan_x", 22, 0.035)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(scan.frames, loops), _params(**PLAIN)
+        )
+        assert result.diagnostics["coverage of the cell"].startswith("0 holes, 0 overlaps of 242")
+        assert result.axis_scales == pytest.approx([0.07, 0.035])
+        assert result.diagnostics["camera pixel (nm)"] == pytest.approx(70.0, abs=0.5)
+
+    def test_the_panels_step_outranks_the_layouts(self):
+        scan = make_scan(steps=(22, 22))
+        loops = [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(scan.frames, loops), _params(scan_step_nm=70.0, **PLAIN)
+        )
+        assert result.axis_scales == pytest.approx([0.07, 0.07])
+        assert result.output_pixel_size_nm == pytest.approx(70.0)
+        assert "step from the panel" in result.diagnostics["scan"]
+        assert result.diagnostics["camera pixel (nm)"] == pytest.approx(140.0, abs=1.0)
+
+    def test_an_empty_plane_does_not_fail_the_volume(self):
+        line = make_scan(steps=(1, 22), background=0.0)
+        frames = _planes(line, (1.0, 0.0, 2.0))
+        loops = [_loop("scan_z", 3, 0.1), _loop("scan_y", 22, 0.035)]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), _params()          # frame gain on
+        )
+        assert result.data.shape[0] == 3
+        assert np.all(np.isfinite(result.data))
+        assert np.abs(result.data[1]).max() < 1e-6
+        assert "frame gain (% rms)" in result.diagnostics
+
     def test_steps_typed_in_describe_a_raster_instead(self):
         scan = make_scan(steps=(22, 22))
         loops = [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]

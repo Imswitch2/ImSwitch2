@@ -545,6 +545,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         """
         from .coeffs_to_image import coeffs_to_image_from_placement
         from .gauss_processor import make_fast_gauss_extractor
+        from .live_session import expected_orientation_signs
         from .scan_geometry import scan_params_from_layout
 
         self._logger.info(
@@ -583,6 +584,21 @@ class MonalisaReconstructor(StreamingReconstructor):
             coeffs[start:start + chunk] = np.asarray(amplitudes).reshape(
                 -1, localization.ny_c, localization.nx_c
             )
+        # The layout places every frame along the stage axes; whether each
+        # axis runs up or down the camera is read from the frames, as the
+        # live session reads it, so that the same recording comes out the
+        # same way whether it has one plane or many.
+        placement, flips = self._placement_orientation(coeffs, placement, name)
+        expected = expected_orientation_signs(resolved.layout) or {}
+        if any(flips.values()):
+            disagreeing = [axis for axis, flipped in flips.items() if flipped]
+            self._logger.warning(
+                f'{name}: the frames assemble smoother with the {" and ".join(disagreeing)} '
+                f'axis mirrored against the recorded layout (layout says {expected}); '
+                'using the mirrored placement. If the layout is right, check the '
+                'frames; if the detection is right, check isPositiveDirection in '
+                'the setup file.'
+            )
         image = coeffs_to_image_from_placement(coeffs, placement)
         data6 = image[np.newaxis, np.newaxis]        # (Dataset, Base, T, Z, Y, X)
 
@@ -615,12 +631,22 @@ class MonalisaReconstructor(StreamingReconstructor):
         else:
             scan_params = dict(scan_params)
             step_sizes = list(scan_params['step_sizes'])
-            for label, size in (
-                (self._axis_labels['r_l_text'], step_x_nm),
-                (self._axis_labels['u_d_text'], step_y_nm),
+            directions = list(scan_params['directions'])
+            for label, size, axis in (
+                (self._axis_labels['r_l_text'], step_x_nm, 'x'),
+                (self._axis_labels['u_d_text'], step_y_nm, 'y'),
             ):
-                step_sizes[scan_params['dimensions'].index(label)] = str(size)
+                index = scan_params['dimensions'].index(label)
+                step_sizes[index] = str(size)
+                if flips.get(axis) and index < len(directions):
+                    # What was used to assemble the image, not what was recorded.
+                    directions[index] = (
+                        self._axis_labels['n_text']
+                        if directions[index] == self._axis_labels['p_text']
+                        else self._axis_labels['p_text']
+                    )
             scan_params['step_sizes'] = step_sizes
+            scan_params['directions'] = directions
         finite = data6[np.isfinite(data6)]
         display_levels = None
         if finite.size:
@@ -640,6 +666,55 @@ class MonalisaReconstructor(StreamingReconstructor):
             f'Fast Gauss reconstruction by placement complete: shape {result.data.shape}'
         )
         return result
+
+    @staticmethod
+    def _placement_orientation(coeffs: np.ndarray, placement, name: str = ''):
+        """The placement, mirrored along the axes the frames say run the other way.
+
+        Scored on the plane with the most signal, by the contrast of the
+        cell borders along the scanned axes (the whole-image roughness the
+        live session uses cannot tell the mirrors of a one-axis scan apart).
+        Returns ``(placement, {'x': flipped, 'y': flipped})``.
+        """
+        from .coeffs_to_image import (
+            coeffs_to_image_from_placement,
+            flip_placement,
+            placement_seam_contrast,
+        )
+
+        slots = np.asarray(placement.slots, dtype=int)
+        if slots.size == 0:
+            return placement, {'x': False, 'y': False}
+        # The (t, z) plane whose frames vary the most: the one with signal.
+        plane_of = slots[:, 0] * placement.slices + slots[:, 1]
+        spread = np.zeros(placement.timepoints * placement.slices)
+        for plane in np.unique(plane_of):
+            members = coeffs[plane_of == plane]
+            spread[plane] = float(members.var(axis=0, dtype=np.float64).mean())
+        plane = int(np.argmax(spread))
+        members = plane_of == plane
+        one_plane = type(placement)(
+            slots=tuple((0, 0, int(y), int(x)) for _t, _z, y, x in slots[members]),
+            timepoints=1, slices=1, rows=placement.rows, cols=placement.cols,
+            condition_labels=(), n_conditions=1, n_time=1,
+        )
+        axes = {'x': placement.cols > 1, 'y': placement.rows > 1}
+        scores = {}
+        for flip_x in ((False, True) if axes['x'] else (False,)):
+            for flip_y in ((False, True) if axes['y'] else (False,)):
+                candidate = flip_placement(one_plane, flip_x, flip_y)
+                image = coeffs_to_image_from_placement(coeffs[members], candidate)[0, 0]
+                scores[(flip_x, flip_y)] = placement_seam_contrast(
+                    image, placement.rows, placement.cols
+                )
+        finite = {key: value for key, value in scores.items() if np.isfinite(value)}
+        if not finite:
+            return placement, {'x': False, 'y': False}
+        flip_x, flip_y = min(finite, key=finite.get)
+        return (
+            flip_placement(placement, flip_x, flip_y),
+            {'x': bool(flip_x), 'y': bool(flip_y)},
+        )
 
     @staticmethod
     def _fast_gauss_session_params(params: dict) -> dict:

@@ -164,23 +164,32 @@ class TestPlacedReconstruction:
             ratio = plane[inner] / result.data[0, 0, 0, 0][inner]
             assert np.median(ratio) == pytest.approx(factor, rel=0.02)
 
-    def test_the_planes_are_the_streamed_image_of_each(self):
+    @pytest.mark.parametrize("orientation, flipped", [("-x-y", False), ("+x+y", True)])
+    def test_the_planes_are_the_streamed_image_of_each(self, orientation, flipped):
         """One plane placed by the layout is the live session's image of it:
-        the same extraction, the same raster.
+        the same extraction, the same raster, the same orientation.
 
-        The placement follows the layout's directions, as the classic method
-        does: index 0 at the lowest pixel. The synthetic scan is made to
-        match (``"-x-y"``: the sample moves against the index), and the live
-        session, which reads the orientation off the data, finds the same.
+        The layout says how the index runs along the stage axes; whether
+        that is up or down the camera both paths read off the frames. With
+        ``"-x-y"`` the sample moves against the index and the layout's
+        placement is already right; with ``"+x+y"`` both paths find the
+        mirrored placement, and say so.
         """
-        scan = make_scan(steps=(22, 22), offset=OFFSET, orientation="-x-y")
+        scan = make_scan(steps=(22, 22), offset=OFFSET, orientation=orientation)
         frames = _planes(scan, (1.0, 3.0))
         placed = _process(
             frames, [_loop("scan_z", 2, 0.1), _loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]
         )
         streamed = _process(scan.frames, [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)])
         assert streamed.placement is None
-        assert streamed.scan_params["directions"][:2] == ["+", "+"]
+        expected = ["-", "-"] if flipped else ["+", "+"]
+        assert streamed.scan_params["directions"][:2] == expected
+        dims = placed.scan_params["dimensions"]
+        placed_directions = [
+            placed.scan_params["directions"][dims.index(label)]
+            for label in ("Right-Left", "Up-Down")
+        ]
+        assert placed_directions == (["neg", "neg"] if flipped else ["pos", "pos"])
         np.testing.assert_allclose(
             placed.data[0, 0, 0, 0], streamed.data[0, 0, 0, 0], rtol=1e-4, atol=1e-3
         )

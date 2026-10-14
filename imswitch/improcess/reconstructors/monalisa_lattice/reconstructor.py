@@ -273,14 +273,27 @@ class MonalisaLatticeReconstructor(Reconstructor):
         focus would read them badly on its own. The stack with the most
         modulation goes first and measures the shift factor for the rest.
         """
+        typed_step = float(params["scan_step_nm"])
+        if typed_step > 0:
+            # What the panel says outranks what the recording says, as on
+            # the attribute path: one step for every scanned axis.
+            scan = replace(
+                scan,
+                step_nm=tuple(
+                    typed_step if count > 1 else None for count in scan.counts
+                ),
+                source="acquisition layout, step from the panel",
+            )
         self._logger.info(f"{data_obj.name}: scan of {scan.describe()}")
         pixel_nm = float(params["pixel_size_nm"])
         step = None
+        step_aspect = None
         if pixel_nm > 0:
             if not any(scan.step_nm):
                 raise ValueError(
                     "A camera pixel size is set but the recording does not "
-                    "say the size of its scan steps: leave the pixel size at 0"
+                    "say the size of its scan steps: set the step, or leave "
+                    "the pixel size at 0"
                 )
             # An axis the recording does not step, or whose step it does not
             # say, is left to the lattice (a NaN column).
@@ -289,6 +302,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 if step_nm:
                     step[:, axis] = 0.0
                     step[axis, axis] = step_nm / pixel_nm
+        elif all(scan.step_nm):
+            # No pixel size, but the recording says both steps: their ratio
+            # is known even if their size in pixels is not.
+            step_aspect = float(scan.step_nm[0]) / float(scan.step_nm[1])
         settings = pipeline_params(params)
         notes = {}
         if len(scan.scanned_axes) == 1:
@@ -314,7 +331,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         order = self._stack_order(frames, scan)
         geometry = prepare_geometry(
             mean_frame, step, scan.index[scan.frames_of(order[0])], settings,
-            modulation_frame=modulation_frame,
+            modulation_frame=modulation_frame, step_aspect=step_aspect,
         )
         shape = scan.in_plane_shape
 
@@ -329,6 +346,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 orientation=orientation, geometry=geometry,
                 scan_index=scan.index[chosen],
                 gain_positions=scan.gain_positions(stack),
+                step_aspect=step_aspect,
             )
             if number == 0:
                 # The first stack's raster, mapping and shift factor serve
@@ -504,6 +522,12 @@ class MonalisaLatticeReconstructor(Reconstructor):
                     f"{name} {value:.2f}"
                     for name, value in geometry["calibration_contrast"].items()
                     if np.isfinite(value)
+                ) + (
+                    f"; variance spots {geometry['calibration_width_ratio']:.2f} x "
+                    "the mean's width"
+                    + (" (shot noise, not modulation)"
+                       if geometry["calibration_image"] == "mean" else "")
+                    if geometry.get("calibration_width_ratio") else ""
                 )
             ),
         }
@@ -560,6 +584,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
             )
         if "frame_gain_rms" in found:
             rows["frame gain (% rms)"] = round(100 * found["frame_gain_rms"], 1)
+        elif "frame_gain_skipped" in found:
+            rows["frame gain"] = f"not fitted: {found['frame_gain_skipped']}"
         if found.get("cell_offset_rms") is not None:
             rows["cell offsets applied (rms)"] = round(found["cell_offset_rms"], 2)
             rows["cell offsets, share that is offset"] = round(

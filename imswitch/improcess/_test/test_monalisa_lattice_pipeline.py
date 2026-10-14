@@ -451,6 +451,33 @@ class TestReconstructScan:
         assert _relative_error(scan, result.geometry, result) < 2e-3
 
 
+
+class TestShotNoiseIsNotModulation:
+    """The variance frame is calibrated on for its spots squared, which are
+    narrower by sqrt(2); the shot noise of a dim recording is as wide as
+    the mean, and widening it would read the spots 1.4 times too wide."""
+
+    def test_modulation_is_narrower_and_noise_is_not(self):
+        from imswitch.improcess.reconstructors.monalisa.pipeline import (
+            choose_calibration_image,
+            find_foci,
+        )
+
+        scan = make_scan(sigma=2.0, noise="none")
+        mean = scan.frames.mean(axis=0)
+        variance = scan.frames.var(axis=0)
+        modulated = choose_calibration_image(mean, variance)
+        assert modulated.name == "variance"
+        assert modulated.width_ratio == pytest.approx(1 / np.sqrt(2), abs=0.08)
+        assert find_foci(mean, variance).spot.shared_sigma == pytest.approx(2.0, abs=0.15)
+
+        # Poisson noise without modulation: the variance is the mean.
+        shot_noise = 0.1 * mean
+        noisy = choose_calibration_image(mean, shot_noise)
+        assert noisy.name == "mean"
+        assert noisy.width_ratio == pytest.approx(1.0, abs=0.08)
+        assert find_foci(mean, shot_noise).spot.shared_sigma == pytest.approx(2.0, abs=0.15)
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #

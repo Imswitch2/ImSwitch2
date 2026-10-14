@@ -1777,6 +1777,25 @@ the upper bound the noise allows. On the earlier XY recordings with
 shift factors of 0.11 to 0.29 and 220 nm detection this reads 80 to
 130 nm.
 
+**After review** (2026-10-14). Five corrections. (1) The variance frame
+was taken for modulation whenever the foci had contrast on it; on a dim
+recording the temporal variance is the shot noise of the mean, as wide as
+the mean, and widening it by √2 read a 2 px spot as 2.8 px. The widths on
+the two frames are now compared: modulation is narrower (ratio near
+0.71), noise is not (near 1), and past the midpoint 0.85 the mean frame
+is used (`SHOT_NOISE_WIDTH_RATIO`). The ML2 recording reads 0.71. (2) With
+the pixel size left automatic, `complete_step` divided the cell equally
+along both axes; a 22 × 11 scan of 35 and 70 nm steps is not that, and
+left 80 holes and 66 overlaps. The ratio of the recorded steps is known
+without the pixel size and is used (`step_aspect`). (3) The fast-Gauss
+placement path followed the layout's directions where the live session
+reads the orientation off the data, so one recording came out mirrored
+within its cells with two planes and not with one; it now chooses the
+signs by the seam contrast of the cell borders on the plane with the most
+signal, and warns when that mirrors the layout. (4) The panel's *Step* was
+ignored on the layout path. (5) A plane with no signal made the gain fit
+raise and the volume fail; it keeps a gain of one and the table says so.
+
 **Not in it yet.** Live reconstruction with the lattice pipeline;
 line-step conditions; a GPU for it; a serpentine fast axis (the layout
 resolves it, but the gain of the frames is still fitted as if every line

@@ -212,7 +212,10 @@ def axis_period(lattice: Lattice, axis: int) -> np.ndarray:
 
 
 def complete_step(
-    step: np.ndarray | None, lattice: Lattice, scan_index: np.ndarray
+    step: np.ndarray | None,
+    lattice: Lattice,
+    scan_index: np.ndarray,
+    aspect: float | None = None,
 ) -> tuple[np.ndarray, tuple[int, ...]]:
     """The step matrix with what the lattice has to supply filled in.
 
@@ -225,10 +228,12 @@ def complete_step(
     one output pixel per cell; for a scan whose pixel size is unknown it is
     the step with which the scan covers the cell once.
 
-    When the scan steps both axes and says neither step, the step is the one
-    that covers the cell once with equal steps along both axes, as before:
-    the scan of a cell that is not aligned with the camera is not along its
-    lattice vectors.
+    When the scan steps both axes and says neither step in camera pixels,
+    the step is the one that covers the cell once -- the scan of a cell that
+    is not aligned with the camera is not along its lattice vectors -- with
+    the two steps in the ratio ``aspect`` (x over y) when the recording
+    says it, equal otherwise. A 22 x 11 scan of 35 and 70 nm steps is not
+    a scan of equal steps.
 
     Returns the step and the axes (0 = x, 1 = y) that were completed.
     """
@@ -243,8 +248,10 @@ def complete_step(
         return filled, ()
     if len(missing) == 2 and min(counts) > 1:
         positions = np.unique(scan_index, axis=0).shape[0]
-        pitch = float(np.sqrt(lattice.cell_area / positions))
-        return np.diag([pitch, pitch]), (0, 1)
+        area = lattice.cell_area / positions           # pitch_x * pitch_y
+        ratio = float(aspect) if aspect and np.isfinite(aspect) and aspect > 0 else 1.0
+        pitch_y = float(np.sqrt(area / ratio))
+        return np.diag([ratio * pitch_y, pitch_y]), (0, 1)
     for axis in missing:
         filled[:, axis] = axis_period(lattice, axis) / counts[axis]
     return filled, missing
@@ -258,6 +265,7 @@ def prepare_geometry(
     lattice: Lattice | None = None,
     modulation_frame: np.ndarray | None = None,
     pixel_mask: np.ndarray | None = None,
+    step_aspect: float | None = None,
 ) -> StackGeometry:
     """Read the geometry of a recording from its frames and its scan.
 
@@ -277,6 +285,8 @@ def prepare_geometry(
             frame: it shows the foci without the static background.
         pixel_mask: ``(rows, cols)`` bool, ``False`` for camera pixels the
             extraction is to leave out.
+        step_aspect: The x step over the y step when the recording says
+            both but not the pixel size (:func:`complete_step`).
     """
     params = params or PipelineParams()
     mean_frame = np.asarray(mean_frame, dtype=float)
@@ -319,7 +329,7 @@ def prepare_geometry(
     )
 
     scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
-    step, completed = complete_step(step, lattice, scan_index)
+    step, completed = complete_step(step, lattice, scan_index, step_aspect)
     # "Given" means the scan's own step is known: an unscanned axis takes
     # its pixel from the lattice without making the step a guess.
     scanned = tuple(
@@ -341,6 +351,8 @@ def prepare_geometry(
         "lattice_fit_residual_px": lattice_residual,
         "calibration_image": calibration.name,
         "calibration_contrast": dict(calibration.contrast),
+        "calibration_width_ratio": calibration.width_ratio,
+        "step_aspect": step_aspect,
         "spot_sigma_px": spot_model.shared_sigma,
         "spot_model": dict(spot_model.diagnostics),
         "background": background,
@@ -374,7 +386,10 @@ def prepare_geometry(
 
 
 def geometry_with_step(
-    geometry: StackGeometry, step: np.ndarray | None, scan_index: np.ndarray
+    geometry: StackGeometry,
+    step: np.ndarray | None,
+    scan_index: np.ndarray,
+    aspect: float | None = None,
 ) -> StackGeometry:
     """The geometry of the same recording for another step and scan.
 
@@ -388,7 +403,7 @@ def geometry_with_step(
     lattice = geometry.lattice
     rows, cols = geometry.operator.frame_shape
     scan_index = np.rint(np.asarray(scan_index)).astype(int).reshape(-1, 2)
-    step, completed = complete_step(step, lattice, scan_index)
+    step, completed = complete_step(step, lattice, scan_index, aspect)
     scanned = tuple(
         axis for axis in (0, 1) if np.unique(scan_index[:, axis]).size > 1
     )
@@ -403,6 +418,7 @@ def geometry_with_step(
     raster = OutputRaster.covering((rows, cols), step, lattice.offset)
     diagnostics = dict(geometry.diagnostics)
     diagnostics.update(
+        step_aspect=aspect,
         nominal_step_px=nominal_step.tolist(),
         step_given=not any(axis in completed for axis in scanned),
         step_completed_axes=tuple("xy"[axis] for axis in completed),
@@ -433,6 +449,15 @@ def geometry_with_step(
 #: variance kept 0.76 to 2.8 times the mean frame's contrast.
 VARIANCE_CONTRAST_RATIO = 0.5
 
+#: Spots the scan modulates have, in the temporal variance, the square of
+#: their shape: a Gaussian narrower by sqrt(2). Shot noise is proportional
+#: to the mean and as wide as it. A variance frame whose spots are not
+#: narrower than the mean frame's by more than the midpoint between the
+#: two is noise, and widening it by sqrt(2) would read the spots 1.4 times
+#: too wide -- with the extraction, the shift factor and the resolution
+#: estimate after them.
+SHOT_NOISE_WIDTH_RATIO = 0.5 * (1.0 + 1.0 / np.sqrt(2.0))
+
 
 @dataclass(frozen=True)
 class CalibrationImage:
@@ -449,6 +474,9 @@ class CalibrationImage:
     lattice: Lattice
     sigma: float
     contrast: dict[str, float]
+    width_ratio: float | None = None
+    """Spot width on the variance frame over that on the mean frame, before
+    the widening; near ``1/sqrt(2)`` for modulation, near 1 for shot noise."""
 
 
 def choose_calibration_image(
@@ -495,13 +523,20 @@ def choose_calibration_image(
     if all(value is None for value in scored.values()):
         raise failure
     chosen = "mean"
+    width_ratio = None
     if scored.get("variance") is not None and (
         scored["mean"] is None
         or contrast["variance"] >= VARIANCE_CONTRAST_RATIO * contrast["mean"]
     ):
         chosen = "variance"
+        if scored["mean"] is not None and scored["mean"][2].sigma > 0:
+            width_ratio = float(scored["variance"][2].sigma / scored["mean"][2].sigma)
+            if width_ratio > SHOT_NOISE_WIDTH_RATIO:
+                # As wide as the mean: the variance is the shot noise of the
+                # mean, not the modulation, and says nothing the mean does not.
+                chosen = "mean"
     image, found, fit = scored[chosen]
-    return CalibrationImage(chosen, image, found, fit.sigma, contrast)
+    return CalibrationImage(chosen, image, found, fit.sigma, contrast, width_ratio)
 
 
 @dataclass(frozen=True)
@@ -586,6 +621,13 @@ def find_foci(
             "(period_band_px), or a larger frame"
         )
     return FociFinding(calibration, lattice, first, lattice_residual)
+
+
+def _oriented_aspect(aspect: float | None, orientation: str) -> float | None:
+    """The x-over-y step ratio in camera axes for a stage-to-camera mapping."""
+    if aspect is None or not np.isfinite(aspect) or aspect <= 0:
+        return None
+    return float(aspect) if orientation[1] == "x" else 1.0 / float(aspect)
 
 
 def _raster_coordinates(geometry: StackGeometry, scan_index: np.ndarray):
@@ -743,6 +785,7 @@ def reconstruct_scan(
     geometry: StackGeometry | None = None,
     scan_index: np.ndarray | None = None,
     gain_positions: tuple[np.ndarray, np.ndarray] | None = None,
+    step_aspect: float | None = None,
 ) -> StackReconstruction:
     """Reconstruct the frames of one raster scan, reading all it can from them.
 
@@ -783,6 +826,9 @@ def reconstruct_scan(
             of every frame in the order visited, for the gain of the frames
             (:func:`.frame_gain.fit_frame_gain`); ``scan_index`` itself
             otherwise.
+        step_aspect: With ``scan_index`` and no ``step``, the recorded x
+            step over the y step, along the stage axes
+            (:func:`complete_step`).
     """
     params = params or PipelineParams()
     frames = np.asarray(frames)
@@ -818,6 +864,7 @@ def reconstruct_scan(
             mean_frame, first_step, first_index, params,
             lattice=lattice, modulation_frame=modulation_frame,
             pixel_mask=pixel_mask,
+            step_aspect=_oriented_aspect(step_aspect, orientation or "+x+y") if recorded else None,
         )
     operator = geometry.operator
     valid = operator.valid
@@ -826,14 +873,21 @@ def reconstruct_scan(
     amplitude = operator.apply(frames).amplitude[:, valid]
     gain = None
     if params.frame_gain == "smooth":
-        fitted = fit_frame_gain(
-            amplitude, (num_fast, num_slow), positions=gain_positions
-        )
-        gain = fitted.gain
-        amplitude = amplitude / gain[:, None]
-        diagnostics["frame_gain_rms"] = fitted.rms
-        diagnostics["frame_gain_residual_rms"] = fitted.residual_rms
-        diagnostics["frame_gain_range"] = (float(gain.min()), float(gain.max()))
+        try:
+            fitted = fit_frame_gain(
+                amplitude, (num_fast, num_slow), positions=gain_positions
+            )
+        except ValueError as error:
+            # A plane with no signal (out of focus, bleached) has no gain to
+            # measure; it is reconstructed as it is, gain 1, rather than
+            # failing the volume it is part of.
+            diagnostics["frame_gain_skipped"] = str(error)
+        else:
+            gain = fitted.gain
+            amplitude = amplitude / gain[:, None]
+            diagnostics["frame_gain_rms"] = fitted.rms
+            diagnostics["frame_gain_residual_rms"] = fitted.residual_rms
+            diagnostics["frame_gain_range"] = (float(gain.min()), float(gain.max()))
     elif params.frame_gain != "off":
         raise ValueError(f"Unknown frame gain {params.frame_gain!r}")
 
@@ -852,7 +906,8 @@ def reconstruct_scan(
         def oriented(name: str):
             camera_index = orient_recorded_index(scan_index, name)
             return camera_index, geometry_with_step(
-                geometry, orient_step_columns(step, name), camera_index
+                geometry, orient_step_columns(step, name), camera_index,
+                aspect=_oriented_aspect(step_aspect, name),
             )
 
         if orientation is None:
