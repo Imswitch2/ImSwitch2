@@ -503,6 +503,81 @@ def test_scope_lists_the_edges_after_the_trigger():
     assert len([t for t, s in short["laser_sync"] if s == "rising"]) == 10
 
 
+def test_line_clock_bounce_doubles_the_edges_and_a_dead_time_swallows_them():
+    """The mock's ``line_clock_bounce`` fault: the pulse's falling edge,
+    100 us after each line edge, bounces back through the threshold, so
+    the card counts extra line starts; a dead time longer than the pulse
+    brings the count back to the lines (what tutorial 07 tries)."""
+    tt, nidaq = _scan_facade()
+    card = tt.manager.tagger
+
+    def count_edges():
+        return tt.count_edges("line_clock", duration_s=0.02,
+                              start=lambda: nidaq.sigScanStarted.emit())
+
+    assert count_edges() == NY
+    tt.set_mock_fault("line_clock_bounce", 2)
+    assert count_edges() == 3 * NY
+    line_ps = (NX * DWELL + FLYBACK) / SAMPLE_RATE * 1e12
+    trace = tt.scope(["line_clock"], trigger_role="line_clock", window_ps=int(line_ps * 0.5),
+                     duration_s=0.01)
+    rising = [t for t, state in trace["line_clock"] if state == "rising"]
+    assert rising[0] == 0
+    assert rising[1] == card.LINE_PULSE_WIDTH_PS, "the first bounce, at the pulse's end"
+    assert rising[2] == card.LINE_PULSE_WIDTH_PS + card.BOUNCE_SPACING_PS
+    with tt.calibration("line_deadtime"):
+        tt.set_deadtime("line_clock", 200_000_000, owner="line_deadtime")
+        assert count_edges() == NY
+        tt.set_deadtime("line_clock", 0, owner="line_deadtime")
+    assert count_edges() == 3 * NY
+    tt.set_mock_fault("line_clock_bounce", None)
+    assert count_edges() == NY
+
+
+def test_scope_reads_the_vendor_state_enum():
+    """The vendor's event state is an enum whose LOW is not 0: compared
+    with HIGH, never tested as a boolean."""
+    from enum import IntEnum
+
+    tt, _ = _scan_facade()
+
+    class State(IntEnum):
+        UNKNOWN = 0
+        HIGH = 1
+        LOW = 2
+
+    class Event:
+        def __init__(self, time, state):
+            self.time, self.state = time, state
+
+    class FakeScope:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def startFor(self, duration_ps):
+            pass
+
+        def waitUntilFinished(self, timeout_ms):
+            return True
+
+        def stop(self):
+            pass
+
+        def getData(self):
+            return [[Event(0, State.HIGH), Event(1_000_000, State.LOW)]]
+
+    api = tt.manager.api
+    original = api.Scope
+    api.Scope, api.State = FakeScope, State
+    try:
+        trace = tt.scope(["line_clock"], trigger_role="line_clock", window_ps=10_000_000,
+                         duration_s=0.001)
+    finally:
+        api.Scope = original
+        del api.State
+    assert trace["line_clock"] == [(0, "rising"), (1_000_000, "falling")]
+
+
 def test_mock_truth_and_faults_exist_on_the_mock_only():
     tt, _ = _scan_facade()
     rates, lifetimes = tt.mock_truth(4, 8)

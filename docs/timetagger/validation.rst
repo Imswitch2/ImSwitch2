@@ -62,10 +62,13 @@ Steps and acceptance criteria
      - ``t0_ps``, ``timetagger_irf.npz``
    * - 7
      - ``07_line_clock_during_a_scan``
-     - edges in one scan equal the designed Ny; the period equals Nx x dwell
+     - edges in one scan equal the designed Ny (more than Ny is the pulse's
+       falling edge bouncing: the tutorial's scope shows the cluster and its
+       dead-time trial brings the count to Ny); the period equals Nx x dwell
        plus the designer's flyback within 1 %; the line level sits on its
-       plateau
-     - ``lineClockTriggerV``
+       plateau. The tutorial says so if the Scan widget refused its scan
+       file and ran the widget's own scan instead.
+     - ``lineClockTriggerV``, ``lineClockDeadtimePs`` if suggested
    * - 8
      - ``08_frame_clock_and_pixel_markers``
      - the frame level sees its one edge; the signed frame-to-line skew is

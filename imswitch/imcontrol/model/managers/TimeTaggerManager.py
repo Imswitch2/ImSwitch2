@@ -43,8 +43,8 @@ except ImportError:  # the vendor installer provides it; pip does not
 ROLE_FIELDS: Dict[str, Tuple[str, str, Optional[str], Optional[str]]] = {
     "photons": ("photonsChannel", "photonsTriggerV", "photonsDeadtimePs", None),
     "laser_sync": ("laserSyncChannel", "laserSyncTriggerV", None, None),
-    "line_clock": ("lineClockChannel", "lineClockTriggerV", None, "lineClockDelayPs"),
-    "frame_clock": ("frameClockChannel", "frameClockTriggerV", None, "lineClockDelayPs"),
+    "line_clock": ("lineClockChannel", "lineClockTriggerV", "lineClockDeadtimePs", "lineClockDelayPs"),
+    "frame_clock": ("frameClockChannel", "frameClockTriggerV", "lineClockDeadtimePs", "lineClockDelayPs"),
     "sted_pulse": ("stedPulseChannel", "stedPulseTriggerV", None, None),
 }
 
@@ -562,14 +562,19 @@ class TimeTaggerManager(SignalInterface):
 
     def setDeadtime(self, role: str, deadtime_ps: int, *,
                     owner: Optional[str] = None) -> None:
+        """Set a role's dead time. For ``line_clock`` the frame clock follows
+        (one dead time for both DAQ-derived clocks, as with the delay: the
+        same driver, the same bounce)."""
         with self._lock:
             self._checkWritable("dead time", owner)
-            info = self.channelInfo(role)
-            self.tagger.setDeadtime(info.channel, int(deadtime_ps))
-            self._channels[role] = ChannelInfo(
-                info.role, info.channel, info.trigger_v,
-                int(deadtime_ps), info.delay_ps,
-            )
+            roles = [role] + (["frame_clock"] if role == "line_clock" and self.hasRole("frame_clock") else [])
+            for each in roles:
+                info = self.channelInfo(each)
+                self.tagger.setDeadtime(info.channel, int(deadtime_ps))
+                self._channels[each] = ChannelInfo(
+                    info.role, info.channel, info.trigger_v,
+                    int(deadtime_ps), info.delay_ps,
+                )
 
     # ------------------------------------------------------------------ #
     # Scan hold                                                            #

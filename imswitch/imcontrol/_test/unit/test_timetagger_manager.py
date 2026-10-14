@@ -169,6 +169,23 @@ def test_trigger_level_writes_through_and_updates_the_role():
     assert tt.tagger.getDeadtime(1) == 40_000
 
 
+def test_line_clock_dead_time_is_configured_and_shared_with_the_frame_clock():
+    """A DAQ pulse's falling edge bounces on both clocks the same way, so
+    the block's one dead time conditions both inputs, and a live change to
+    the line clock follows onto the frame clock (as the delay does)."""
+    info = TimeTaggerInfo(simulation=True, frameClockChannel=4, lineClockDeadtimePs=200_000_000)
+    tt = TimeTaggerManager(info)
+    assert tt.tagger.getDeadtime(3) == 200_000_000
+    assert tt.tagger.getDeadtime(4) == 200_000_000
+    assert tt.channelInfo("frame_clock").deadtime_ps == 200_000_000
+    tt.setDeadtime("line_clock", 150_000_000)
+    assert tt.tagger.getDeadtime(3) == 150_000_000
+    assert tt.tagger.getDeadtime(4) == 150_000_000
+    assert tt.channelInfo("line_clock").deadtime_ps == 150_000_000
+    # The photon input keeps its own.
+    assert tt.tagger.getDeadtime(1) == 0
+
+
 def test_scan_hold_refuses_conditioning_until_released():
     tt = TimeTaggerManager(TimeTaggerInfo(simulation=True))
     tt.beginScanHold("FLIM")

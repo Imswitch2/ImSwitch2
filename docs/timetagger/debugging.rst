@@ -61,6 +61,15 @@ checklist: a red line names the tutorial below.
        its command: the known ``phase_delay`` offset) or late (a long cable)
      - tutorial 09; ``lineClockDelayPs`` (positive for an early clock,
        negative for a late one)
+   * - Tutorial 07 counts more line edges than lines (two or three per
+       line); the FLIM frame never closes, or closes early with the image
+       torn
+     - the clock pulse's falling edge bounces back through the threshold
+       (a DAQ line into the card's input): every bounce is another line
+       start, re-triggering the pixel pattern 100 µs into each line
+     - tutorial 07 (the scope of one line shows the cluster after the
+       pulse's end); ``lineClockDeadtimePs`` longer than the pulse, far
+       below the line period, which tutorial 07 tries and suggests
    * - The FLIM image misses lines, or the log says the card closed no frame
      - line edges lost at the card: a marginal line trigger level, ringing,
        or more linesteps than the clock carries edges for

@@ -35,7 +35,7 @@ roles, so re-cabling the card is one edit here:
      - the laser's sync output, the TCSPC reference
    * - ``line_clock``
      - ``lineClockChannel``, ``lineClockTriggerV``, ``lineClockDelayPs``,
-       ``pixelPatternOffsetPs``
+       ``lineClockDeadtimePs``, ``pixelPatternOffsetPs``
      - the scan's ``scan.lineClockLine``; the pixel markers are generated
        from its edges, starting ``pixelPatternOffsetPs`` (default 10 ns)
        after each so the frame edge leads pixel 0. ``lineClockDelayPs``
@@ -43,6 +43,9 @@ roles, so re-cabling the card is one edit here:
        *early* (a galvo lagging its command; the detector delays its
        pattern), negative when it arrives *late* (a long cable; the card
        moves the timestamps earlier). Tutorial 09 measures it.
+       ``lineClockDeadtimePs`` (the frame clock takes it too) swallows the
+       bounces of the pulse's falling edge, each of which would count as
+       another line start; tutorial 07 shows them and suggests the value.
    * - ``frame_clock``
      - ``frameClockChannel``, ``frameClockTriggerV`` (optional)
      - the scan's ``scan.frameStartClockLine``, if cabled

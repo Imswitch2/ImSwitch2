@@ -185,10 +185,14 @@ class SignalModel:
     """ ``missing_line_clock``, ``line_delay_ps`` (how *late* the line clock
     reaches the card against the beam's position, in ps; negative = early,
     as with a galvo lagging its command -- ``lineClockDelayPs`` cancels it
-    with the opposite sign), ``wrong_sync_polarity``, ``dead_photons``,
-    ``laser_rep_rate_mhz`` (an override), ``model`` (a card model from
-    ``TAG_BUDGET_PER_MODEL``, for its tag budget). The first four are read
-    live (``set_fault``); the last two at construction. """
+    with the opposite sign), ``line_clock_bounce`` (the clock pulse's
+    falling edge, ``LINE_PULSE_WIDTH_PS`` after each line edge, bounces
+    back through the threshold this many times, a few us apart: each bounce
+    is another rising edge, unless the input's dead time covers it),
+    ``wrong_sync_polarity``, ``dead_photons``, ``laser_rep_rate_mhz`` (an
+    override), ``model`` (a card model from ``TAG_BUDGET_PER_MODEL``, for
+    its tag budget). The first five are read live (``set_fault``); the last
+    two at construction. """
 
     def __post_init__(self):
         amps = {
@@ -407,9 +411,9 @@ class MockTimeTagger:
         ``duration_s`` that began at wall-clock ``started_at`` (now minus
         the duration when unknown), in scan time; ``None`` when the input
         is not a scan clock or the scan's start is unknown."""
-        edges = self._edges.get(abs(int(channel)))
-        if edges is None or self._scan_started_at is None:
+        if abs(int(channel)) not in self._edges or self._scan_started_at is None:
             return None
+        edges = self.edges(channel)
         if started_at is None:
             started_at = time.monotonic() - float(duration_s)
         lo = (started_at - self._scan_started_at) * 1e12
@@ -450,7 +454,8 @@ class MockTimeTagger:
     def set_fault(self, name: str, value) -> None:
         """Test / tutorial hook: inject or clear a fault at run time (the
         live ones: ``line_delay_ps``, ``missing_line_clock``,
-        ``dead_photons``, ``wrong_sync_polarity``). ``None`` clears it."""
+        ``line_clock_bounce``, ``dead_photons``, ``wrong_sync_polarity``).
+        ``None`` clears it."""
         if value is None:
             self._model.faults.pop(str(name), None)
         else:
@@ -525,8 +530,33 @@ class MockTimeTagger:
     def scan_active(self) -> bool:
         return self._scan_active
 
+    #: A DAQ clock pulse is 10 samples; at 100 kS/s that is 100 us.
+    LINE_PULSE_WIDTH_PS = 100_000_000
+    #: The bounces of a falling edge come this far apart.
+    BOUNCE_SPACING_PS = 3_000_000
+
     def edges(self, channel: int) -> np.ndarray:
-        return self._edges.get(abs(int(channel)), np.zeros(0, dtype=np.int64))
+        """The rising edges the comparator reports on a scan input: the
+        loaded edges, plus the ``line_clock_bounce`` fault's extra edges
+        after each line pulse, minus whatever falls inside the input's dead
+        time (the card ignores edges that soon after a counted one)."""
+        ch = abs(int(channel))
+        edges = self._edges.get(ch)
+        if edges is None:
+            return np.zeros(0, dtype=np.int64)
+        bounces = int(self._model.faults.get("line_clock_bounce", 0) or 0)
+        if bounces > 0 and ch == abs(self._model.line_channel) and edges.size:
+            extra = (edges[:, None] + self.LINE_PULSE_WIDTH_PS
+                     + np.arange(bounces, dtype=np.int64)[None, :] * self.BOUNCE_SPACING_PS)
+            edges = np.sort(np.concatenate([edges, extra.reshape(-1)]))
+        deadtime = max(self._deadtimes.get(ch, 0), self._deadtimes.get(-ch, 0))
+        if deadtime > 0 and edges.size > 1:
+            kept = [int(edges[0])]
+            for t in edges[1:]:
+                if int(t) - kept[-1] >= deadtime:
+                    kept.append(int(t))
+            edges = np.asarray(kept, dtype=np.int64)
+        return edges
 
     def _delay_ps(self, channel: int) -> int:
         """The input delay stamped onto a channel, whichever sign it was

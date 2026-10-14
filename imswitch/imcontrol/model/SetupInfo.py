@@ -649,6 +649,15 @@ class TimeTaggerInfo:
     to line the Time Tagger image up with the APD/PMT image. Positive when
     the galvo lags the commanded position. """
 
+    lineClockDeadtimePs: int = 0
+    """ Dead time on the line clock (and the frame clock) inputs, in
+    picoseconds; ``0`` = the card's minimum. A DAQ line into the card's 50
+    ohm input has a slow falling edge that bounces back through the
+    threshold, and each bounce counts as another line start, which
+    re-triggers the FLIM pixel pattern mid-line. A dead time longer than the
+    clock pulse (10 DAQ samples, 100 us at 100 kS/s) and far below the line
+    period swallows the bounces; tutorial 07 measures and suggests it. """
+
     frameClockChannel: Optional[int] = None
     """ Input carrying the scan's frame-start clock, if cabled; ``None`` =
     not cabled. """

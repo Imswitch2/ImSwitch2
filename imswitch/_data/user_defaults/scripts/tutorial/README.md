@@ -92,7 +92,7 @@ back, delete your copy and restart ImSwitch.
 | 04 | `04_laser_sync.py` | `galvo_flim_mock_scan_setup.json` | `rep_rate()`: the sync rate measured safely, period jitter and the card's floor |
 | 05 | `05_bandwidth_and_the_filter.py` | `galvo_flim_mock_scan_setup.json` | the tag budget, `overflows()`, the conditional filter and the TCSPC direction |
 | 06 | `06_irf_and_t0.py` | `galvo_flim_mock_scan_setup.json` | `histogram()`: the IRF, its peak and width; the detector's `t0_ps` |
-| 07 | `07_line_clock_during_a_scan.py` | `galvo_flim_mock_scan_setup.json` | the line clock while a scan runs: `count_edges()` against Ny, `period()`, a trigger sweep between runs |
+| 07 | `07_line_clock_during_a_scan.py` | `galvo_flim_mock_scan_setup.json` | the line clock while a scan runs: `count_edges()` against Ny, `period()`, a trigger sweep between runs; a bouncing falling edge and the dead time against it |
 | 08 | `08_frame_clock_and_pixel_markers.py` | `galvo_flim_mock_scan_setup.json` | the frame clock, the signed frame-to-line `skew()`, `scope()` of one line, the last-frame check |
 | 09 | `09_line_delay_alignment.py` | `galvo_flim_mock_scan_setup.json` | the FLIM image against the APD (or the mock truth): pixels to `lineClockDelayPs`, re-run to 0 |
 | 10 | `10_flim_preflight.py` | `galvo_flim_mock_scan_setup.json` | `preflight()`: the green/red checklist before a FLIM session |

@@ -73,22 +73,44 @@ import os as _os
 import tempfile as _tempfile
 
 
-def loadScanParams(path):
-    """Back up the Scan widget's settings, load ``path`` into it, and return
-    ``(backupPath, design)``: ``design`` has ``Nx``, ``Ny``, ``dwell_s`` and
-    ``n_linesteps`` from the file. Put the backup back in a ``finally``
-    with ``api.imcontrol.loadScanParamsFromFile(backupPath)``."""
-    backup = _os.path.join(_tempfile.gettempdir(), 'imswitch_timetagger_scan_backup.json')
-    api.imcontrol.saveScanParamsToFile(backup)
-    api.imcontrol.loadScanParamsFromFile(path)
-    with open(path, encoding='utf-8') as file:
-        settings = _json.load(file)
+def _scanDesign(settings):
     digital = settings['digitalParameterDict']
-    design = {
+    return {
         'Nx': int(digital['Nx']), 'Ny': int(digital['Ny']),
         'dwell_s': float(digital['sequence_time']),
         'n_linesteps': int(digital.get('n_linesteps', 1)),
     }
+
+
+def loadScanParams(path):
+    """Back up the Scan widget's settings, load ``path`` into it, and return
+    ``(backupPath, design)``: ``design`` has ``Nx``, ``Ny``, ``dwell_s`` and
+    ``n_linesteps`` of the scan the widget will actually run. Put the backup
+    back in a ``finally`` with ``api.imcontrol.loadScanParamsFromFile(backupPath)``.
+
+    The Scan widget refuses a file naming positioners or TTL devices the
+    setup does not have (it logs a warning and keeps its settings), so the
+    design is read back from the widget after the load, not from the file:
+    the expectations below then match the scan that runs, and a refused
+    load is said out loud instead of counting a 64-line file against an
+    83-line scan."""
+    folder = _tempfile.gettempdir()
+    backup = _os.path.join(folder, 'imswitch_timetagger_scan_backup.json')
+    api.imcontrol.saveScanParamsToFile(backup)
+    api.imcontrol.loadScanParamsFromFile(path)
+    with open(path, encoding='utf-8') as file:
+        wanted = _scanDesign(_json.load(file))
+    loaded = _os.path.join(folder, 'imswitch_timetagger_scan_loaded.json')
+    api.imcontrol.saveScanParamsToFile(loaded)
+    with open(loaded, encoding='utf-8') as file:
+        design = _scanDesign(_json.load(file))
+    if design != wanted:
+        print(f'NOTE: the Scan widget did not take {_os.path.basename(path)} '
+              f"({wanted['Nx']} x {wanted['Ny']} px at {wanted['dwell_s'] * 1e6:.0f} us): "
+              f'its positioner or TTL device names are not this setup\'s (see the log). '
+              f"Using the widget's own scan instead: {design['Nx']} x {design['Ny']} px "
+              f"at {design['dwell_s'] * 1e6:.0f} us.")
+        print()
     return backup, design
 
 
