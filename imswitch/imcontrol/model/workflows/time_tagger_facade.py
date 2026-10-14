@@ -662,9 +662,17 @@ class TimeTaggerFacade:
         trace = manager.api.Scope(manager.tagger, channels, manager.channel(trigger_role),
                                   int(window_ps))
         data = self._run(trace, duration_s, after_start=start)
+        # The vendor's event state is an enum whose LOW is not zero, so it
+        # is compared with HIGH, not tested as a boolean (every edge would
+        # read "rising"); the mock's state is a plain bool.
+        high = getattr(getattr(manager.api, "State", None), "HIGH", None)
+
+        def is_high(state) -> bool:
+            return bool(state == high) if high is not None else bool(state)
+
         out: Dict[str, List[tuple]] = {}
         for name, events in zip(names, data):
-            out[name] = [(int(e.time), "rising" if e.state else "falling") for e in events]
+            out[name] = [(int(e.time), "rising" if is_high(e.state) else "falling") for e in events]
         return out
 
     def pattern_offset_ps(self, role: str = "line_clock") -> int:
