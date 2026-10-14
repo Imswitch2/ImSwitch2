@@ -1,0 +1,256 @@
+"""``recordScanToMemory()``: a scan-once recording to RAM whose frames come
+back as an array, with the Recording widget put back as it was and nothing
+left listed in ImProcess unless asked for.
+
+The widget stand-in plays the whole recording inside "REC on": the files are
+announced, then the end (or the failure), as the writer and the controller do
+on their threads. The controller is built without Qt, so its GUI-thread
+hand-offs run synchronously (the non-Qt adapter path of the base class)."""
+import time
+from io import BytesIO
+from types import SimpleNamespace
+
+import h5py
+import numpy as np
+import pytest
+
+from imswitch.imcontrol.controller.controllers.RecordingController import (
+    RecordingController,
+)
+from imswitch.imcontrol.model import RecMode, SaveMode
+
+
+class _Signal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def disconnect(self, slot):
+        self.slots.remove(slot)
+
+    def emit(self, *args):
+        for slot in list(self.slots):
+            slot(*args)
+
+
+class _MemoryRecordings(dict):
+    """The module channel's VFileCollection: deleting closes the bytes."""
+
+    def __init__(self):
+        super().__init__()
+        self.removed = []
+
+    def __delitem__(self, name):
+        self.removed.append(name)
+        self[name].close()
+        super().__delitem__(name)
+
+
+def _hdf5(frames):
+    buffer = BytesIO()
+    with h5py.File(buffer, 'w') as file:
+        for name, data in frames.items():
+            file.create_dataset(f'{name}/data', data=data)
+    return buffer
+
+
+class _Widget:
+    def __init__(self):
+        self.saveMode = SaveMode.Disk.value
+        self.detectorMode = -1
+        self.specific = []
+        self.singleFile = False
+        self.filename = 'mine'
+        self.recChecked = False
+        self.modes = []
+        self.onRec = lambda: None
+
+    def getRecSaveMode(self):
+        return self.saveMode
+
+    def setRecSaveMode(self, value):
+        self.saveMode = value
+
+    def getDetectorMode(self):
+        return self.detectorMode
+
+    def setDetectorMode(self, value):
+        self.detectorMode = value
+
+    def getSelectedSpecificDetectors(self):
+        return list(self.specific)
+
+    def setSelectedSpecificDetectors(self, names):
+        self.specific = list(names)
+
+    def getMultiDetectorSingleFile(self):
+        return self.singleFile
+
+    def setMultiDetectorSingleFile(self, value):
+        self.singleFile = value
+
+    def getCustomFilename(self):
+        return self.filename
+
+    def setCustomFilename(self, name):
+        self.filename = name
+
+    def clearCustomFilename(self):
+        self.filename = None
+
+    def setRecButtonChecked(self, checked):
+        self.recChecked = checked
+        if checked:
+            self.onRec()
+
+    def setEnabledParams(self, **_kwargs):
+        pass
+
+    def checkSpecFrames(self):
+        self.modes.append(RecMode.SpecFrames)
+
+    def checkScanOnce(self):
+        self.modes.append(RecMode.ScanOnce)
+
+    def state(self):
+        return (self.saveMode, self.detectorMode, self.specific, self.singleFile,
+                self.filename)
+
+
+def _controller():
+    ctrl = RecordingController.__new__(RecordingController)
+    ctrl._widget = _Widget()
+    ctrl.recording = False
+    ctrl.recMode = RecMode.SpecFrames
+    ctrl._master = SimpleNamespace(
+        recordingManager=SimpleNamespace(sigMemoryRecordingAvailable=_Signal()),
+        detectorsManager=SimpleNamespace(getCurrentDetectorName=lambda: 'Camera'),
+    )
+    ctrl._commChannel = SimpleNamespace(
+        sigRecordingEnded=_Signal(), sigRecordingFailed=_Signal(),
+        hasScanWidget=lambda: True,
+    )
+    ctrl._moduleCommChannel = SimpleNamespace(memoryRecordings=_MemoryRecordings())
+    return ctrl
+
+
+def _plays(ctrl, frames, *, fail=None, end=True):
+    """REC on: the recording runs and announces its files, then its end."""
+    def onRec():
+        assert ctrl._widget.saveMode == SaveMode.RAM.value
+        assert ctrl.recMode == RecMode.ScanOnce
+        assert ctrl._widget.filename is None, 'named by the time, like any RAM recording'
+        ctrl.recording = True
+        for name, data in frames.items():
+            buffer = _hdf5({name: data})
+            fileName = f'10h00m00s_rec_{name}.h5'
+            ctrl._moduleCommChannel.memoryRecordings[fileName] = buffer
+            ctrl._master.recordingManager.sigMemoryRecordingAvailable.emit(
+                fileName, buffer, f'/recordings/{fileName}', False)
+        if fail is not None:
+            ctrl._commChannel.sigRecordingFailed.emit(fail)
+        elif end:
+            # The controller's own flag flips later, on the GUI thread.
+            ctrl._commChannel.sigRecordingEnded.emit()
+    ctrl._widget.onRec = onRec
+
+
+def test_one_detector_gives_its_frames_and_leaves_no_trace():
+    ctrl = _controller()
+    frames = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
+    _plays(ctrl, {'Camera': frames})
+    before = ctrl._widget.state()
+
+    result = ctrl.recordScanToMemory('Camera', timeout=5)
+
+    np.testing.assert_array_equal(result, frames)
+    assert ctrl._widget.state() == before
+    assert ctrl._widget.modes == [RecMode.ScanOnce, RecMode.SpecFrames]
+    assert ctrl.recMode == RecMode.SpecFrames
+    assert ctrl._moduleCommChannel.memoryRecordings == {}
+    assert ctrl._moduleCommChannel.memoryRecordings.removed == ['10h00m00s_rec_Camera.h5']
+    assert not any(s.slots for s in (ctrl._commChannel.sigRecordingEnded,
+                                     ctrl._commChannel.sigRecordingFailed,
+                                     ctrl._master.recordingManager.sigMemoryRecordingAvailable))
+
+
+def test_several_detectors_give_a_dict_and_keep_leaves_them_listed():
+    ctrl = _controller()
+    camera = np.ones((2, 3, 3), dtype=np.uint16)
+    apd = np.zeros((2, 5, 5), dtype=np.float32)
+    _plays(ctrl, {'Camera': camera, 'APD': apd})
+
+    result = ctrl.recordScanToMemory(['Camera', 'APD'], timeout=5, keep=True)
+
+    assert set(result) == {'Camera', 'APD'}
+    np.testing.assert_array_equal(result['APD'], apd)
+    assert sorted(ctrl._moduleCommChannel.memoryRecordings) == [
+        '10h00m00s_rec_APD.h5', '10h00m00s_rec_Camera.h5']
+    assert ctrl._widget.detectorMode == -1          # the widget's own choice again
+
+
+def test_the_widgets_own_detector_choice_is_used_when_none_is_given():
+    ctrl = _controller()
+    ctrl._widget.detectorMode = -3
+    ctrl._widget.specific = ['APD']
+    _plays(ctrl, {'APD': np.zeros((1, 2, 2))})
+
+    assert ctrl.recordScanToMemory(timeout=5).shape == (1, 2, 2)
+    assert ctrl._widget.state()[1:3] == (-3, ['APD'])
+
+
+def test_a_failed_recording_raises_and_restores_the_widget():
+    ctrl = _controller()
+    _plays(ctrl, {'Camera': np.zeros((1, 2, 2))}, fail='the DAQ went away')
+    before = ctrl._widget.state()
+
+    with pytest.raises(RuntimeError, match='the DAQ went away'):
+        ctrl.recordScanToMemory('Camera', timeout=5)
+    assert ctrl._widget.state() == before
+    assert ctrl._moduleCommChannel.memoryRecordings == {}
+
+
+def test_a_refused_start_raises_at_once_instead_of_waiting():
+    ctrl = _controller()
+    ctrl._widget.onRec = lambda: None               # toggleREC refused: recording stays False
+    before = ctrl._widget.state()
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match='did not start'):
+        ctrl.recordScanToMemory('Camera', timeout=60)
+    assert time.monotonic() - started < 1
+    assert ctrl._widget.state() == before
+
+
+def test_a_detector_the_scan_never_triggered_is_named():
+    ctrl = _controller()
+    _plays(ctrl, {'Camera': np.zeros((1, 2, 2))})
+
+    with pytest.raises(RuntimeError, match='no frames for APD'):
+        ctrl.recordScanToMemory(['Camera', 'APD'], timeout=5)
+    assert ctrl._moduleCommChannel.memoryRecordings == {}
+
+
+def test_a_recording_that_never_ends_is_stopped_on_timeout():
+    ctrl = _controller()
+    _plays(ctrl, {'Camera': np.zeros((1, 2, 2))}, end=False)
+    before = ctrl._widget.state()
+
+    with pytest.raises(TimeoutError):
+        ctrl.recordScanToMemory('Camera', timeout=0.2)
+    assert ctrl._widget.recChecked is False
+    assert ctrl._widget.state() == before
+
+
+def test_it_is_refused_where_only_a_scan_widget_could_start_the_scan():
+    ctrl = _controller()
+    ctrl._commChannel.hasScanWidget = lambda: False
+    with pytest.raises(RuntimeError, match='no Scan widget'):
+        ctrl.recordScanToMemory('Camera', timeout=5)
+
+
+def test_it_runs_on_the_callers_thread():
+    assert RecordingController.recordScanToMemory._APIExport is True
+    assert RecordingController.recordScanToMemory._APIRunOnUIThread is False

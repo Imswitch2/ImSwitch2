@@ -1,12 +1,15 @@
 import os
 import inspect
+import threading
 import time
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union, List, Dict, Any
+import h5py
 import numpy as np
 from qtpy import QtCore
 
-from imswitch.imcommon.framework import Signal, Timer
+from imswitch.imcommon.framework import FrameworkUtils, Signal, Timer
 from imswitch.imcommon.model import ostools, APIExport
 from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
 from imswitch.imcontrol.model.managers.RecordingManager import (
@@ -3094,6 +3097,217 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         wasRecording = bool(self.recording)
         self._widget.setRecButtonChecked(False)
         return wasRecording
+
+    @APIExport()
+    def recordScanToMemory(self, detectorName: Union[List[str], str, int, None] = None,
+                           timeout: float = 600.0, keep: bool = False
+                           ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
+        """ Runs the scan the Scan widget holds once and returns the frames
+        it triggers as a NumPy array ``(frames, rows, columns)``, without
+        writing a file: the recording goes to memory, is read back, and is
+        dropped. With several detectors the result is a dict that maps each
+        detector's name to its array.
+
+        ``detectorName`` is a detector's name, a list of names, ``-1`` for
+        the current detector, ``-2`` for all of them, or None for what the
+        Recording widget has selected. The call blocks until the scan and
+        the recording are over, at most ``timeout`` seconds; it raises
+        ``RuntimeError`` when the recording is refused or fails and
+        ``TimeoutError`` when it does not finish (the recording is stopped).
+        The Recording widget's settings are put back afterwards. With
+        ``keep=True`` the recording also stays listed in ImProcess, as a
+        recording to RAM does. It runs on the caller's thread, which must
+        not be the GUI thread (a script's is not). """
+        if self.__dict__.get('_shutdownRequested', False):
+            raise RuntimeError('ImSwitch is shutting down')
+        if self._isControllerThread():
+            raise RuntimeError(
+                'recordScanToMemory blocks until the scan is over and cannot '
+                'run on the GUI thread; call it from a script'
+            )
+        if not self._commChannel.hasScanWidget():
+            raise RuntimeError(
+                'This setup has no Scan widget: a scan-once recording is only '
+                'armed here and started from the scan widget of the setup'
+            )
+        if self.recording:
+            raise RuntimeError('A recording is already running; stop it first')
+
+        manager = self._master.recordingManager
+        files: Dict[str, BytesIO] = {}    # memory recording name -> its bytes
+        ended = threading.Event()
+        failure: List[str] = []
+
+        # PyQt queues a plain function to the thread that connected it, and a
+        # script thread's event loop is blocked by the script: these run when
+        # the wait below pumps that loop, as the script waiters do. The files
+        # are announced by the writer before the end is published (once the
+        # writer has drained and the scan has ended), so every file is in
+        # ``files`` by the time ``ended`` is set.
+        def onFile(name, file, _filePath, _savedToDisk):
+            files[str(name)] = file
+
+        def onEnded():
+            ended.set()
+
+        def onFailed(message):
+            failure.append(str(message))
+            ended.set()
+
+        connections = (
+            (manager.sigMemoryRecordingAvailable, onFile),
+            (self._commChannel.sigRecordingEnded, onEnded),
+            (self._commChannel.sigRecordingFailed, onFailed),
+        )
+        for signal, slot in connections:
+            signal.connect(slot)
+        previous = None
+        try:
+            previous, names = self._onControllerThread(
+                lambda: self._startScanToMemory(detectorName), timeout
+            )
+            deadline = time.monotonic() + float(timeout)
+            while True:
+                FrameworkUtils.processPendingEventsCurrThread()
+                if ended.is_set():
+                    break
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f'The scan recording did not finish within {timeout} s'
+                    )
+                # The script waiters' poll: short, so that a Stop pressed in
+                # ImScripting (an asynchronous exception) lands during the scan.
+                time.sleep(0.05)
+            if failure:
+                raise RuntimeError(f'The scan recording failed: {failure[0]}')
+            arrays = self._readMemoryRecordings(files.values(), names)
+        finally:
+            for signal, slot in connections:
+                try:
+                    signal.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            if previous is not None:
+                if self.recording and not ended.is_set():
+                    # Timed out or cancelled: stop what is still running.
+                    self._onControllerThread(
+                        lambda: self._widget.setRecButtonChecked(False), timeout
+                    )
+                self._onControllerThread(
+                    lambda: self._restoreRecordingSettings(previous), timeout
+                )
+            if not keep and files:
+                self._onControllerThread(
+                    lambda: self._dropMemoryRecordings(files), timeout
+                )
+        return arrays[names[0]] if len(names) == 1 else arrays
+
+    def _startScanToMemory(self, detectorName):
+        """GUI thread: points the Recording widget at a scan-once recording to
+        RAM and starts it. Returns the settings it replaced and the detectors
+        recorded; when it cannot, the settings are put back and it raises."""
+        widget = self._widget
+        previous = {
+            'saveMode': widget.getRecSaveMode(),
+            'recMode': self.recMode,
+            'detectorMode': widget.getDetectorMode(),
+            'detectors': list(widget.getSelectedSpecificDetectors() or []),
+            'singleFile': widget.getMultiDetectorSingleFile(),
+            'filename': widget.getCustomFilename(),
+        }
+        try:
+            if detectorName is not None:
+                self.setDetectorToRecord(detectorName)
+            names = list(self.getDetectorNamesToCapture() or [])
+            if not names:
+                raise RuntimeError('No detector is selected to record')
+            widget.setRecSaveMode(SaveMode.RAM.value)
+            self.recScanOnce()
+            widget.clearCustomFilename()      # named by the time, as any RAM recording
+            widget.setRecButtonChecked(True)  # toggleREC: self.recording on success
+            if not self.recording:
+                # Refused on this thread (a scan is running, the scan manager
+                # said no, ...): nothing will be published for it.
+                raise RuntimeError(
+                    'The scan recording did not start; the log says why'
+                )
+        except Exception:
+            self._restoreRecordingSettings(previous)
+            raise
+        return previous, names
+
+    def _restoreRecordingSettings(self, previous):
+        """GUI thread: the Recording widget as ``_startScanToMemory`` found it."""
+        widget = self._widget
+        {RecMode.SpecFrames: self.specFrames, RecMode.SpecTime: self.specTime,
+         RecMode.CameraLapse: self.specLapse, RecMode.ScanOnce: self.recScanOnce,
+         RecMode.ScanLapse: self.recScanLapse, RecMode.UntilStop: self.untilStop,
+         }[previous['recMode']]()
+        widget.setRecSaveMode(previous['saveMode'])
+        widget.setDetectorMode(previous['detectorMode'])
+        widget.setSelectedSpecificDetectors(previous['detectors'])
+        widget.setMultiDetectorSingleFile(previous['singleFile'])
+        if previous['filename']:
+            widget.setCustomFilename(previous['filename'])
+        else:
+            widget.clearCustomFilename()
+
+    @staticmethod
+    def _readMemoryRecordings(files, names) -> Dict[str, np.ndarray]:
+        """The frames of ``names`` from the HDF5 files of a recording to RAM.
+        Each is read from a copy of its bytes: ImProcess may be reading the
+        same BytesIO, and a file position shared between threads would
+        corrupt both reads."""
+        arrays: Dict[str, np.ndarray] = {}
+        for file in files:
+            with h5py.File(BytesIO(file.getvalue()), 'r') as handle:
+                for name in names:
+                    node = handle.get(f'{name}/data')
+                    if isinstance(node, h5py.Dataset) and name not in arrays:
+                        arrays[name] = node[()]
+        missing = [name for name in names if name not in arrays]
+        if missing:
+            raise RuntimeError(
+                f'The recording holds no frames for {", ".join(missing)}: '
+                'did the scan trigger the detector?'
+            )
+        return arrays
+
+    def _dropMemoryRecordings(self, files):
+        """GUI thread: unlists the recordings from ImProcess, which closes
+        their bytes."""
+        recordings = self._moduleCommChannel.memoryRecordings
+        for name in files:
+            if name in recordings:
+                del recordings[name]
+
+    def _isControllerThread(self) -> bool:
+        try:
+            return QtCore.QThread.currentThread() is self.thread()
+        except Exception:
+            return False  # a lightweight non-Qt test adapter
+
+    def _onControllerThread(self, func, timeout: float):
+        """Runs ``func`` on this controller's (GUI) thread and returns its
+        value, or raises its exception, in the caller's thread; waits at most
+        ``timeout`` seconds for the GUI thread to get to it."""
+        done = threading.Event()
+        box: Dict[str, Any] = {}
+
+        def run():
+            try:
+                box['value'] = func()
+            except BaseException as error:  # noqa: BLE001 - re-raised below
+                box['error'] = error
+            finally:
+                done.set()
+
+        self._invokeOnControllerThreadIfNeeded(run)
+        if not done.wait(timeout):
+            raise TimeoutError('The GUI thread did not respond')
+        if 'error' in box:
+            raise box['error']
+        return box.get('value')
 
     @APIExport(runOnUIThread=True)
     def setRecModeSpecFrames(self, numFrames: int) -> None:
