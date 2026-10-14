@@ -49,6 +49,11 @@ def _visit_orders(program, image_loops) -> Tuple[List[object], str]:
     tables = {d.table_loop: d for d in program.drives if d.table_loop is not None}
     for axis, loop in enumerate(image_loops):
         if loop.id in tables:
+            if loop.traversal != 'forward':
+                # The table's placement is one mapping for every visit; a
+                # reversed or alternating order would need one per pass.
+                return [], (f'{loop.id} follows a table in {loop.traversal} order, which a '
+                            'point detector cannot place yet; scan it forward.')
             values = list(tables[loop.id].table_um)
             ranks = sorted(range(len(values)), key=lambda k: values[k])
             image_index = [0] * len(values)
@@ -80,6 +85,8 @@ def _visit_orders(program, image_loops) -> Tuple[List[object], str]:
 
 
 def _raster_refusal(program, schedule) -> str:
+    if not [loop for loop in program.loops if loop.kind != 'condition']:
+        return 'The scan has no dimension but its phases; a point detector needs one to image.'
     # The approach comes before the raster; its samples are thrown away.
     lead = approach_span(schedule)
     kinds = {realized.span.kind for realized in schedule.spans
@@ -107,7 +114,9 @@ def scan_info_for(program, schedule, rate_hz) -> Dict[str, object]:
     phase = program.phase_loop
     linesteps = phase.count if phase is not None else 1
     image_loops = [loop for loop in reversed(program.loops) if loop.kind != 'condition']
-    dims = [int(loop.count) for loop in image_loops]
+    # A scan of phases alone (a camera pulse sequence) has no image axis:
+    # one pixel of index units stands in, and the raster is refused below.
+    dims = [int(loop.count) for loop in image_loops] or [1]
     steps = schedule.step_spans()
     step_ticks = steps[0].ticks if steps else 0
     returns = [r.ticks for r in schedule.spans if r.span.kind == 'return' and r.ticks]
@@ -128,6 +137,8 @@ def scan_info_for(program, schedule, rate_hz) -> Dict[str, object]:
         # Index units for an axis no single drive steps (time, a composite).
         sizes.append(abs(step[1]) if step else 1.0)
         labels.append(_AXIS_LABELS.get(loop.kind, loop.kind))
+    if not image_loops:
+        sizes, labels = [1.0], ['index']
 
     refusal = _raster_refusal(program, schedule)
     orders, order_refusal = _visit_orders(program, image_loops)

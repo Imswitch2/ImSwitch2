@@ -1709,11 +1709,13 @@ class CheckCard(Card):
             for verdict, _feature, _reason in others:
                 counts[verdict] = counts.get(verdict, 0) + 1
             for verdict, count in counts.items():
-                # played differently is a fact to know, not a warning: the
-                # NI-DAQ plays every stepped scan that way
+                # implemented another way is a fact to know, not a warning:
+                # the NI-DAQ plays every stepped scan as waveforms. What
+                # runs differently from the request is the header's chip.
                 role = 'muted' if verdict == 'emulated' else VERDICT_STYLE.get(
                     verdict, ('', 'muted'))[1]
-                word = {'emulated': 'played differently', 'impossible': 'impossible here',
+                word = {'emulated': 'implemented another way',
+                        'impossible': 'impossible here',
                         'unknown': 'not known'}.get(verdict, verdict)
                 self.summary.addWidget(Chip(f'{count} {word}', role))
         details = []
@@ -1882,9 +1884,16 @@ class AdaptiveColumns(QtWidgets.QWidget):
     def twoColumns(self) -> bool:
         return self.box.direction() == QtWidgets.QBoxLayout.LeftToRight
 
+    #: Side by side, the editor and the check take the width in this ratio.
+    SHARES = (3, 2)
+
     def threshold(self) -> int:
-        return (self.leftColumn.sizeHint().width() + self.rightColumn.sizeHint().width()
-                + self.box.spacing())
+        """The width from which the columns stand side by side: the editor at
+        its preferred width plus the check's share of it -- from the ratio
+        the columns share the width in, not from what the check holds, so a
+        preview drawn into it never flips the arrangement."""
+        editor = self.leftColumn.sizeHint().width()
+        return editor + editor * self.SHARES[1] // self.SHARES[0] + self.box.spacing()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1895,8 +1904,8 @@ class AdaptiveColumns(QtWidgets.QWidget):
             # side by side the editor takes the larger share; stacked, each
             # its own height
             two = wanted == QtWidgets.QBoxLayout.LeftToRight
-            self.box.setStretch(0, 3 if two else 0)
-            self.box.setStretch(1, 2 if two else 0)
+            self.box.setStretch(0, self.SHARES[0] if two else 0)
+            self.box.setStretch(1, self.SHARES[1] if two else 0)
 
 
 __all__ = ['AdaptiveColumns', 'Card', 'CheckCard', 'Chip', 'FlowLayout', 'LanePreview',

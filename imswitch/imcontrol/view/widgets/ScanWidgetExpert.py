@@ -667,18 +667,16 @@ class ScanWidgetExpert(SuperScanWidget):
         header = QtWidgets.QFrame()
         header.setObjectName('expertHeader')
         headerLayout = QtWidgets.QVBoxLayout(header)
-        top = QtWidgets.QHBoxLayout()
-        titles = QtWidgets.QVBoxLayout()
-        titleRow = QtWidgets.QHBoxLayout()
-        titleRow.addWidget(self.titleLabel)
-        titleRow.addWidget(self.templateValuesButton)
-        titleRow.addStretch(1)
-        titles.addLayout(titleRow)
-        titles.addWidget(self.subtitleLabel)
-        top.addLayout(titles, 1)
-        top.addWidget(self.statusChip, 0, QtCore.Qt.AlignVCenter)
-        top.addWidget(self.scanButton, 0, QtCore.Qt.AlignVCenter)
-        headerLayout.addLayout(top)
+        # Everything in the header wraps, so a narrow dock keeps Run and the
+        # verdict in view instead of forcing its own width (§7.12).
+        topHost = QtWidgets.QWidget()
+        top = FlowLayout(topHost)
+        self.subtitleLabel.setWordWrap(True)
+        for widget in (self.titleLabel, self.templateValuesButton, self.statusChip,
+                       self.scanButton):
+            top.addWidget(widget)
+        headerLayout.addWidget(topHost)
+        headerLayout.addWidget(self.subtitleLabel)
         headerLayout.addWidget(self.noticeLabel)
         headerLayout.addWidget(self.factsHost)
         toolsHost = QtWidgets.QWidget()
@@ -1360,6 +1358,14 @@ class ScanWidgetExpert(SuperScanWidget):
             self.facts.addWidget(Chip(duration_text(facts['duration_s'])))
         for detector, frames in (facts.get('frames') or {}).items():
             self.facts.addWidget(Chip(f'{frames} frames, {detector}'))
+        if facts.get('changes'):
+            # what the engine plays differently from the request: the one
+            # thing to know before Run, beside the exact-timing chip
+            changes = facts['changes']
+            chip = Chip(f'{changes} time{"s" if changes != 1 else ""} played differently', 'warn')
+            chip.setToolTip('Times the engine rounds, skips or moves: the check lists each.')
+            chip.clicked.connect(self._showCheck)
+            self.facts.addWidget(chip)
         if facts.get('grid_s'):
             # the policy: the program's, else the panel's own choice (a
             # program that does not parse has none yet)

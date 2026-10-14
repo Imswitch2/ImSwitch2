@@ -146,7 +146,9 @@ The program
 
 **Detectors**
     What each detector records. A camera takes a frame on every rising edge
-    of its line, so its binding -- the **Events** it takes (an event id, or
+    of its line -- the line is one wire, so a window to the end of a step
+    and one from the start of the next are one edge, and a line held
+    through a ``hold`` wait stays up -- so its binding -- the **Events** it takes (an event id, or
     the camera itself), the frames **Per step** and the **Phases** it takes
     part in (blank: all) -- is checked against its line before anything
     runs: a step where the line fires other than the binding says refuses
@@ -172,6 +174,13 @@ known is given its move and settle too) -- before anything else is timed.
 The report says how long (*Starts with 1 ms for the drives to reach their
 first positions and settle*). An Advanced scan opened here starts as its
 designer plays it, without one, until it is edited.
+
+**Where the scan ends.** The last position the schedule plays is where
+the run leaves a positioner, and what it is told afterwards. The last
+return takes every positioner to where it goes after the scan; requested
+with no duration (``return_s`` 0), it is given the time the positioner
+declares for a move and a settle (one tick of the clock when it declares
+none) and listed among the times played differently.
 
 **A move that outlasts the return.** A drive of an outer loop moves at the
 end of a pass, during the return. When its move and settle are longer than

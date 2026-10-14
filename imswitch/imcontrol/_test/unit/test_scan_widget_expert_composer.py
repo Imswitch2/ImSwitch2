@@ -489,6 +489,27 @@ def test_the_panel_puts_the_check_beside_the_editor_only_when_both_fit(rig, qtbo
     qtbot.waitUntil(lambda: not w.columns.twoColumns(), timeout=2000)
 
 
+def test_the_panel_fits_a_narrow_dock_and_the_preview_does_not_flip_the_columns(rig):
+    w = rig.widget
+    # the header wraps: a program's title, Run and the verdict do not set a
+    # width of their own (§7.13, GUI 2)
+    assert w.minimumSizeHint().width() < 400
+    threshold = w.columns.threshold()
+    rig.scan.plotProgram()
+    assert w.columns.threshold() == threshold         # the plot's size is not in it
+
+
+def test_what_runs_differently_is_a_header_chip_apart_from_emulation(rig):
+    w = rig.widget
+    facts = [w.facts.itemAt(i).widget().text() for i in range(w.facts.count())]
+    assert not any('played differently' in f for f in facts)      # strict: nothing rounded
+    chips = [w.check.summary.itemAt(i).widget().text() for i in range(w.check.summary.count())]
+    assert chips == ['1 implemented another way']                 # the NI-DAQ's waveforms
+    w.setCheck({**w._check, 'facts': {**w._check['facts'], 'changes': 2}})
+    facts = [w.facts.itemAt(i).widget().text() for i in range(w.facts.count())]
+    assert '2 times played differently' in facts
+
+
 def test_the_preview_draws_every_device_on_its_lane_and_zooms_to_a_step(rig):
     w = rig.widget
     rig.scan.plotProgram()

@@ -242,6 +242,12 @@ class NidaqScanEngine(ScanEngine):
             factor = self._factor(device, report, f'conversion {device}')
             if factor is None:
                 continue
+            if not np.all(np.isfinite(positions_um)):
+                # Nothing non-finite reaches a task: a NaN passes every range
+                # comparison and would be written to the output as is.
+                report.add(f'drive {device}', IMPOSSIBLE,
+                           f'{device}\'s positions are not all finite numbers.')
+                continue
             volts = positions_um / factor
             refusal = scan_voltage_range_refusal(
                 self._setupInfo, device, (float(volts.min()), float(volts.max())))
@@ -295,7 +301,15 @@ class NidaqScanEngine(ScanEngine):
             report.add(feature, UNKNOWN, f'{device} declares no conversionFactor (µm per '
                        'volt), so the volts that put it anywhere are unknown.')
             return None
-        return float(factor)
+        try:
+            value = float(factor)
+        except (TypeError, ValueError):
+            value = float('nan')
+        if not np.isfinite(value) or value == 0:
+            report.add(feature, IMPOSSIBLE, f'{device} declares conversionFactor {factor!r}, '
+                       'which is not a finite, non-zero number of µm per volt.')
+            return None
+        return value
 
     def _volts(self, positions_um, report):
         analog = {}

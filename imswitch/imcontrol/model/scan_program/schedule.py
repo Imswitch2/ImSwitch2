@@ -135,6 +135,12 @@ class RealizedSchedule:
     def step_spans(self):
         return [s for s in self.spans if s.span.kind == 'step']
 
+    def final_um(self) -> Dict[str, float]:
+        """Where the run leaves each drive: the last position it plays (the
+        end of the last span with any ticks), which ``realize`` checks is the
+        restore position."""
+        return _final_um(self.expansion, self.spans)
+
     def summary(self) -> Dict[str, object]:
         """What the acquisition records about its timing (§2.6, §7.9): the
         policy with its contents, the grid and where it came from, every
@@ -233,6 +239,7 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
     # drive at the end of a pass -- is still moving into the next step: the
     # ticks it still needs, which that step's stationary events must avoid.
     carry: Dict[str, int] = {}
+    final_return = next((s for s in reversed(expansion.spans) if s.kind == 'return'), None)
 
     for span in expansion.spans:
         if span.kind == 'wait' and span.duration_s is None:
@@ -245,6 +252,22 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
                     'wait': 'wait', 'preparation': 'preparation'}[span.kind]
         where = _where(span)
         ticks = conv.ticks(span.duration_s, quantity, where)
+        if span is final_return and ticks == 0:
+            # The last return takes every drive to its restore position. With
+            # no duration it would play nothing and leave the drives at
+            # their last positions: it is given the time the drives declare
+            # for a move and a settle (one tick when they declare none),
+            # and the change is recorded, so the run ends where it says.
+            moving = sorted(name for name, piece in span.pieces.items()
+                            if piece.where == 'whole' and piece.start_um != piece.end_um)
+            if moving:
+                need = max(float(motion[name].move_s) + float(motion[name].settle_s)
+                           for name in moving)
+                ticks = max(1, conv.ticks(need, 'return', where))
+                conv.changes.append(Change(
+                    'return', f'{where} at the end, to the restore positions of '
+                              f'{", ".join(moving)} (requested with no duration)',
+                    0.0, ticks / rate_hz))
         if policy.scheduling == 'deadlines':
             # Start at the requested time, rounded once from the segment
             # start; the previous span must have ended by then (overrun rule).
@@ -289,6 +312,15 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
     segments[-1].ticks = tick
 
     _check_separations(conv, program, events, rate_hz)
+    # The last position played is where the run leaves a drive, and the
+    # program says it is the restore position: the two must agree (the final
+    # return above sees to it; this is the check).
+    final = _final_um(expansion, spans)
+    for name, target in expansion.restore_um.items():
+        if name in final and final[name] != target:
+            conv.refusals.append(
+                f'{name} is to end at {target:g} µm but the last position played is '
+                f'{final[name]:g} µm.')
     if conv.refusals:
         raise ScheduleRefused(conv.refusals)
 
@@ -307,6 +339,18 @@ def _where(span):
     if span.kind == 'step':
         return f'step {span.step_index}'
     return span.kind
+
+
+def _final_um(expansion, spans) -> Dict[str, float]:
+    """The last position each drive plays over ``spans``: the end of the last
+    span with any ticks that carries it (a held piece ends where it starts)."""
+    final = dict(expansion.first_um)
+    for realized in spans:
+        if realized.ticks <= 0:
+            continue
+        for name, piece in realized.span.pieces.items():
+            final[name] = float(piece.start_um if piece.where == 'hold' else piece.end_um)
+    return final
 
 
 def _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz,
@@ -358,7 +402,7 @@ def _realize_events(conv, program, policy, realized, events, offsets, motion, ra
         events.append(RealizedEvent(event.device, event.kind,
                                     realized.start_tick + start, realized.start_tick + end,
                                     event.value, event.id, span.step_index, realized.segment))
-    _check_relations(conv, policy, placed, where)
+    _check_relations(conv, policy, placed, where, float(program.step_s))
     _check_stationary(conv, program, realized, placed, offsets, where, rate_hz, carry or {})
 
 
@@ -370,12 +414,16 @@ def _relation(a_start, a_end, b_start, b_end):
     return 'overlap'
 
 
-def _check_relations(conv, policy, placed, where):
+def _check_relations(conv, policy, placed, where, step_s):
     """Order and overlap between consecutive events of one device must not
-    change in realization (§2.6), unless the policy only reports it."""
+    change in realization (§2.6), unless the policy only reports it. The
+    requested times are compared in one frame: an event anchored on the end
+    of the step (``from_end``) is requested at ``step_s`` plus its times."""
     by_device = {}
     for event, start, end, instance in placed:
-        by_device.setdefault(event.device, []).append((instance.start_s, instance.end_s,
+        shift = step_s if instance.from_end else 0.0
+        by_device.setdefault(event.device, []).append((instance.start_s + shift,
+                                                       instance.end_s + shift,
                                                        start, end, event))
     for device, items in by_device.items():
         items.sort(key=lambda item: (item[0], item[1]))

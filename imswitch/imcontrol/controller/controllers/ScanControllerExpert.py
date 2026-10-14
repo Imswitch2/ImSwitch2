@@ -103,11 +103,13 @@ def _run_outcomes(engine, compiled):
 
 
 def _end_positions(schedule):
-    """Where a finished run leaves each device it moves, in µm."""
+    """Where a finished run leaves each device it moves, in µm: the last
+    position the schedule plays (``realize`` refuses a restore it would not
+    reach, so this is the restore position too)."""
     positions = getattr(schedule, 'positions_um', None)
     if positions is not None:           # a trajectory: its last sample
         return {device: float(values[-1]) for device, values in positions.items()}
-    return dict(schedule.expansion.restore_um)
+    return schedule.final_um()
 
 
 def _preview_windows(schedule, program):
@@ -611,6 +613,7 @@ class ScanControllerExpert(SuperScanController):
         check.update(runnable=True, problems=[], verdicts=[
             (v.verdict, v.feature, v.reason or v.cost) for v in compiled.report.verdicts])
         facts = {'grid_s': schedule.grid_s, 'policy': schedule.policy.id,
+                 'changes': len(getattr(schedule, 'changes', ()) or ()),
                  'duration_s': self._duration_s(schedule)}
         notes = []
         if len(choice.devices) > 1:

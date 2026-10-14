@@ -176,7 +176,12 @@ def program_from_advanced(stage: Mapping, digital: Optional[Mapping], setup
         placement='in-step',
         return_s=float(stage['return_time']),
         origin='captured' if snapshot is not None else 'absolute',
-        restore='captured' if snapshot is not None else 'first',
+        # Without a return time the designer's waveforms end at the last
+        # position (the Advanced controller parks the stage by a command
+        # afterwards, outside the stream); the program says what the stream
+        # does. With one, the last return takes the stage back.
+        restore='hold' if float(stage['return_time']) == 0 else
+        ('captured' if snapshot is not None else 'first'),
     )
     loop_ids = ['x', 'y', 'z']
     kinds = ['scan_x', 'scan_y', 'scan_z']

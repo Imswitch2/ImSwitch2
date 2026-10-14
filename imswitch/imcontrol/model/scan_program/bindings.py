@@ -36,25 +36,50 @@ def binding_of(program, detector: str) -> Optional[DetectorBinding]:
 
 def wire_frames(schedules, detector: str) -> List[int]:
     """The frames ``detector`` takes in each step, in the order the steps run:
-    the rising edges of its line within the step (touching windows are one
-    pulse on the wire). ``schedules``: the run's schedule, or the leader's
-    and each follower's -- the detector's line is on one of them."""
+    the rising edges of its line, each counted in the step it rises in. The
+    line is one wire: windows that touch or overlap are one pulse, across
+    steps too (a window to the end of a step and one from the start of the
+    next make one edge), and a line held through a wait (``hold``) stays up
+    across it. ``schedules``: the run's schedule, or the leader's and each
+    follower's -- the detector's line is on one of them."""
     candidates = _schedules(schedules)
     schedule = next((s for s in candidates
                      if any(e.device == detector for e in s.events)), candidates[0])
-    windows: Dict[int, list] = {}
-    for event in schedule.events:
-        if event.device == detector and event.step_index is not None:
-            windows.setdefault(event.step_index, []).append((event.start_tick, event.end_tick))
-    counts = []
-    for realized in schedule.step_spans():
-        edges, end = 0, None
-        for start, stop in sorted(windows.get(realized.span.step_index, ())):
-            if end is None or start > end:
-                edges += 1
-            end = stop if end is None else max(end, stop)
-        counts.append(edges)
+    steps = schedule.step_spans()
+    counts = [0] * len(steps)
+    step_at = {s.span.step_index: i for i, s in enumerate(steps)}
+    windows = sorted(((e.segment, e.start_tick, e.end_tick, e.step_index)
+                      for e in schedule.events
+                      if e.device == detector and e.step_index is not None))
+    last = None                        # (segment, end tick) of the merged pulse so far
+    for segment, start, stop, step_index in windows:
+        if last is not None and _line_held(schedule, last, (segment, start)):
+            last = (segment, max(last[1], stop) if last[0] == segment else stop)
+            continue
+        counts[step_at[step_index]] += 1
+        last = (segment, stop)
     return counts
+
+
+def _line_held(schedule, last, start) -> bool:
+    """Whether a line up until ``last`` (segment, tick) is still up at
+    ``start`` (segment, tick): nothing between them but the pulse itself,
+    or waits that hold the outputs."""
+    (seg_a, tick_a), (seg_b, tick_b) = last, start
+    if seg_a == seg_b:
+        if tick_b <= tick_a:
+            return True
+        between = [s for s in schedule.spans if s.segment == seg_a and s.ticks
+                   and s.start_tick < tick_b and s.start_tick + s.ticks > tick_a]
+        return bool(between) and all(
+            s.span.kind == 'wait' and getattr(s.span.wait, 'hold', None) == 'hold'
+            for s in between)
+    if seg_b != seg_a + 1 or tick_b != 0:
+        return False
+    if tick_a != schedule.segments[seg_a].ticks:
+        return False
+    barrier = schedule.segments[seg_b].barrier
+    return getattr(barrier, 'hold', None) == 'hold'
 
 
 def bound_frames(schedules, binding: DetectorBinding) -> List[int]:

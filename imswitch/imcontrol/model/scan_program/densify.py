@@ -94,6 +94,17 @@ def densify(schedule: RealizedSchedule, segment: int = 0) -> Dict[str, Dict[str,
             continue
         values = level.setdefault(event.device, np.zeros(total))
         values[event.start_tick:event.end_tick] = float(event.value)
+    # A wait that holds the outputs (Wait.hold 'hold') keeps every line and
+    # level where the span before it left them; one that idles leaves them
+    # at zero, as the events alone give.
+    for realized in spans:
+        wait = getattr(realized.span, 'wait', None)
+        a, n = realized.start_tick, realized.ticks
+        if realized.span.kind != 'wait' or wait is None or wait.hold != 'hold' or n == 0 \
+                or a == 0:
+            continue
+        for out in list(digital.values()) + list(level.values()):
+            out[a:a + n] = out[a - 1]
     return {'analog': analog, 'digital': digital, 'level': level}
 
 

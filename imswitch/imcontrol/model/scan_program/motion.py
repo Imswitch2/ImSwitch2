@@ -36,7 +36,12 @@ def transition(shape, start, end, samples):
     if shape == 'smooth':
         return smooth_ramp(start, end, samples)
     if shape == 'linear':
-        return np.linspace(float(start), float(end), num=samples, endpoint=True)
+        # A transition's last sample is its endpoint: one sample is the
+        # endpoint itself (linspace would give the start).
+        values = np.linspace(float(start), float(end), num=samples, endpoint=True)
+        if samples:
+            values[-1] = float(end)
+        return values
     if shape == 'jump':
         return np.full(samples, float(end))
     raise ValueError(f'Unknown transition shape {shape!r}; expected one of {TRANSITIONS}')

@@ -2360,6 +2360,35 @@ the controller; `docs/expert-scanning.rst`, `docs/gui.rst`, the changelog;
 about 30 label assertions in `test_scan_widget_expert_composer.py` and
 `test_scan_controller_expert.py`.
 
+### 7.13 Review round 2 (2026-10-14)
+
+An independent review of 22f866a7c (eight findings, four P1, with a probe
+file of 62 tests, ten failing). All verified against the code and fixed;
+the probe file is kept as `test_scan_review_round2.py`, adapted where the
+fix is a refusal, with four probes added.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | The tracked position after a run was the requested restore, not the last sample played: a return of 0 s and a one-sample `linear` return both left the drive elsewhere | `transition('linear', …, 1)` ends at its endpoint; `RealizedSchedule.final_um()` is the last position played and `_end_positions` reports it; a final return of no duration to the restore positions is played in the drives' declared move + settle (one tick when none is declared) and recorded as a `Change`; `realize` checks final == restore. An Advanced program says `restore='hold'`: its waveforms end at the last position and the Advanced controller parks by a command |
+| 2 | `wire_frames` merged pulses per step; a camera window over whole consecutive steps is one edge on the wire but counted once per step | Edges are counted over the run: windows that touch across steps are one pulse; a line held through a `hold` wait stays up (and densify now holds lines and levels through such a wait on the NI-DAQ; the step-protocol engine refuses `hold` waits as before) |
+| 3 | A table on a loop in reverse or serpentine order was placed as if forward | Refused for point detectors with the reason (one mapping per visit cannot express a per-pass order); cameras unaffected |
+| 4 | NaN positions validated, compiled and passed the voltage range check | `validate` checks every number finite and every count whole (`_finite`, `_whole`); the NI-DAQ refuses a non-finite waveform and a `conversionFactor` that is not a finite non-zero number |
+| 5 | Events anchored on the step's end were compared with start-anchored ones in different frames and refused as overlapping | `_check_relations` shifts `from_end` requests by `step_s` |
+| 6 | A phases-only program (camera pulse sequence) crashed `scan_info_for` (`dims[0]`) | One index-unit pixel stands in for the image axes; the raster is refused with the reason |
+| 7 | A fractional loop count (3.9) loaded and played as 3 | Refused by `_whole`; phases and `per_step` too |
+| 8 | Engine choice took every channel of a device, so a laser with analog power on the NI-DAQ and a TTL line on a Teensy was refused for a TTL-only program | `program_channels` says which channel each device's operations use; `for_program` considers only those |
+
+GUI recommendations (six): done now -- 2 (the header wraps; the panel's
+minimum width fell from 622 to 249 px on the test rig; the columns' threshold
+derives from the stretch ratio, so drawing the preview no longer flips them)
+and 5 ("implemented another way" in grey for emulation; an amber header chip
+"N times played differently" for the schedule's changes, clicking it opens
+the check). Open for Lenny: 1 (independent scroll of editor and check), 3
+(phase and traversal context in the timeline: first/middle/last step views),
+4 (refusals beside the field: off-grid neighbours at the input, stationarity
+collisions highlighted), 6 (why a choice is unavailable on this rig, which
+outputs the chosen engine plays).
+
 ## Appendix: today's hardware, in short (from draft 1)
 
 - **NI-DAQ:**

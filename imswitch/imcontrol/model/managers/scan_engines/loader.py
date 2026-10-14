@@ -53,12 +53,14 @@ class ScanEngines:
         on, on the leader with its followers when they spread over those, on
         ``scan.engine`` when none is on an engine; else refused."""
         by_engine: Dict[str, list] = {}
-        for device in sorted(program_devices(program)):
+        for device, used in sorted(program_channels(program).items()):
             entry = channels.get(device)
             if entry is None:
                 continue
-            for owner in sorted({self.owners.get(c) for c in (entry.analog, entry.digital)
-                                 if c is not None} - {None}):
+            lines = [entry.analog if 'analog' in used else None,
+                     entry.digital if 'digital' in used else None]
+            for owner in sorted({self.owners.get(c) for c in lines if c is not None}
+                                - {None}):
                 by_engine.setdefault(owner, []).append(device)
         devices = {name: tuple(found) for name, found in by_engine.items()}
         if not devices:
@@ -96,11 +98,25 @@ class EngineChoice:
 
 def program_devices(program) -> set:
     """Every device a program moves or switches."""
+    return set(program_channels(program))
+
+
+def program_channels(program) -> Dict[str, set]:
+    """Each device a program uses and which of its channels it uses: a
+    drive, a trajectory, a move or a power level take the analog one; a
+    pulse, an exposure or a marker the digital one. A laser with both is on
+    the engine of the channel the program actually switches."""
     if program is None:
-        return set()
-    moved = (set(program.trajectory.devices) if program.trajectory is not None
-             else {drive.device for drive in program.drives})
-    return moved | {event.device for event in program.timeline}
+        return {}
+    used: Dict[str, set] = {}
+    moved = (program.trajectory.devices if program.trajectory is not None
+             else [drive.device for drive in program.drives])
+    for device in moved:
+        used.setdefault(device, set()).add('analog')
+    for event in program.timeline:
+        kind = 'analog' if event.kind in ('level', 'offset') else 'digital'
+        used.setdefault(event.device, set()).add(kind)
+    return used
 
 
 def _engine_class(managerName, registry):
@@ -161,7 +177,8 @@ def _followers(declared, engines, selected):
     return out
 
 
-__all__ = ['NIDAQ', 'EngineChoice', 'ScanEngines', 'build_scan_engines', 'program_devices']
+__all__ = ['NIDAQ', 'EngineChoice', 'ScanEngines', 'build_scan_engines', 'program_channels',
+           'program_devices']
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

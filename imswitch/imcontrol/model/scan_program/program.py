@@ -16,6 +16,7 @@ Qt-free.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Mapping, Optional, Tuple
 
@@ -227,9 +228,42 @@ def _anchor_loop(anchor):
     return ''
 
 
+def _finite(problems, where, name, value, optional=False):
+    """``value`` as a finite float, or a problem naming the field; ``None``
+    passes when ``optional``."""
+    if value is None and optional:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        problems.append(f'{where}: {name} is not a number ({value!r})')
+        return None
+    if not math.isfinite(number):
+        problems.append(f'{where}: {name} must be a finite number, not {value!r}')
+        return None
+    return number
+
+
+def _whole(problems, where, name, value, minimum=1):
+    """``value`` as a whole number of at least ``minimum``, or a problem; a
+    fraction is refused, never truncated."""
+    number = _finite(problems, where, name, value)
+    if number is None:
+        return None
+    if number != int(number):
+        problems.append(f'{where}: {name} must be a whole number, not {value!r}')
+        return None
+    if int(number) < minimum:
+        problems.append(f'{where}: {name} must be at least {minimum}, not {value!r}')
+        return None
+    return int(number)
+
+
 def validate(program: ScanProgram) -> ScanProgram:
     """``program`` if it is well formed, else :class:`ProgramError` listing
-    every problem. Feasibility on an engine is a separate question."""
+    every problem. Feasibility on an engine is a separate question. Every
+    number is checked finite, every count whole: nothing is truncated or
+    passed on as NaN."""
     problems = []
     if program.trajectory is not None:
         return _validate_trajectory(program)
@@ -245,8 +279,7 @@ def validate(program: ScanProgram) -> ScanProgram:
         _check_choice(problems, where + ' kind', loop.kind, LOOP_KINDS)
         _check_choice(problems, where + ' mode', loop.mode, LOOP_MODES)
         _check_choice(problems, where + ' traversal', loop.traversal, TRAVERSALS)
-        if int(loop.count) < 1:
-            problems.append(f'{where}: count must be at least 1, not {loop.count}')
+        _whole(problems, where, 'count', loop.count)
         if loop.traversal == 'serpentine' and not loop.parity_loops:
             problems.append(f'{where}: a serpentine traversal names its parity loops')
         for parity in loop.parity_loops:
@@ -262,17 +295,24 @@ def validate(program: ScanProgram) -> ScanProgram:
                                 f'it, outermost first ({", ".join(expected)})')
     if len([loop for loop in program.loops if loop.kind == 'condition']) > 1:
         problems.append('A program has at most one phase (condition) loop.')
-    if not float(program.step_s) > 0:
+    step_s = _finite(problems, 'program', 'step_s', program.step_s)
+    if step_s is not None and not step_s > 0:
         problems.append(f'step_s must be positive, not {program.step_s}')
+    for name, value in program.park.items():
+        _finite(problems, f'park {name!r}', 'position', value)
 
     devices = [drive.device for drive in program.drives]
     if len(set(devices)) != len(devices):
         problems.append(f'A device is driven once: {devices}')
     for drive in program.drives:
         where = f'drive {drive.device!r}'
-        for loop_id in drive.weights_um:
+        _finite(problems, where, 'offset_um', drive.offset_um)
+        for loop_id, weight in drive.weights_um.items():
             if loop_id not in ids:
                 problems.append(f'{where}: weight on unknown loop {loop_id!r}')
+            _finite(problems, where, f'weight on {loop_id!r}', weight)
+        for index, value in enumerate(drive.table_um or ()):
+            _finite(problems, where, f'table entry {index}', value)
         if (drive.table_um is None) != (drive.table_loop is None):
             problems.append(f'{where}: a table needs both table_loop and table_um')
         if drive.table_loop is not None:
@@ -287,7 +327,8 @@ def validate(program: ScanProgram) -> ScanProgram:
         _check_choice(problems, where + ' origin', motion.origin, ORIGINS)
         _check_choice(problems, where + ' restore', motion.restore, RESTORES)
         for name in ('move_s', 'settle_s', 'return_s'):
-            if float(getattr(motion, name)) < 0:
+            value = _finite(problems, where, name, getattr(motion, name))
+            if value is not None and value < 0:
                 problems.append(f'{where}: {name} must not be negative')
 
     event_ids = [event.id for event in program.timeline if event.id is not None]
@@ -301,14 +342,20 @@ def validate(program: ScanProgram) -> ScanProgram:
         anchor_loop = _anchor_loop(event.anchor)
         if anchor_loop == '' or (anchor_loop and anchor_loop not in ids):
             problems.append(f'{where}: unknown anchor {event.anchor!r}')
-        if not float(event.end_s) > float(event.start_s):
+        start = _finite(problems, where, 'start_s', event.start_s)
+        end = _finite(problems, where, 'end_s', event.end_s)
+        _finite(problems, where, 'value', event.value, optional=True)
+        if start is None or end is None:
+            continue
+        if not end > start:
             problems.append(f'{where}: end must be after start')
         if event.anchor == 'step' and (event.start_s < 0 or event.end_s > program.step_s):
             problems.append(f'{where}: outside its step (0 to {format_seconds(program.step_s)})')
         if event.kind in ('level', 'offset') and event.value is None:
             problems.append(f'{where}: a {event.kind} event needs a value')
         if event.phases is not None:
-            outside = sorted(p for p in event.phases if not 0 <= int(p) < program.phase_count)
+            phases = [_whole(problems, where, 'phase', p, minimum=0) for p in event.phases]
+            outside = sorted(p for p in phases if p is not None and p >= program.phase_count)
             if outside:
                 problems.append(f'{where}: phases {outside} outside 0..{program.phase_count - 1}')
         if event.kind == 'offset' and event.device not in devices:
@@ -319,6 +366,7 @@ def validate(program: ScanProgram) -> ScanProgram:
             if event_id not in event_ids:
                 problems.append(f'separation: unknown event {event_id!r}')
             _check_choice(problems, 'separation edge', edge, EDGES)
+        _finite(problems, 'separation', 'tolerance_s', separation.tolerance_s, optional=True)
 
     for wait in program.waits:
         where = f'wait at {wait.at!r}'
@@ -326,7 +374,9 @@ def validate(program: ScanProgram) -> ScanProgram:
             problems.append(f'{where}: unknown loop')
         _check_choice(problems, where + ' on_timeout', wait.on_timeout, TIMEOUT_ACTIONS)
         _check_choice(problems, where + ' hold', wait.hold, WAIT_HOLDS)
-        if wait.trigger == 'time' and not (wait.interval_s and wait.interval_s > 0):
+        interval = _finite(problems, where, 'interval_s', wait.interval_s, optional=True)
+        _finite(problems, where, 'timeout_s', wait.timeout_s, optional=True)
+        if wait.trigger == 'time' and not (interval and interval > 0):
             problems.append(f'{where}: a time wait needs a positive interval_s')
 
     for binding in program.detectors:
@@ -336,8 +386,10 @@ def validate(program: ScanProgram) -> ScanProgram:
         if binding.events not in event_ids and binding.events not in {
                 event.device for event in program.timeline}:
             problems.append(f'{where}: unknown events {binding.events!r}')
-        if int(binding.per_step) < 1:
-            problems.append(f'{where}: per_step must be at least 1')
+        _whole(problems, where, 'per_step', binding.per_step)
+        if binding.phases is not None:
+            for phase in binding.phases:
+                _whole(problems, where, 'phase', phase, minimum=0)
 
     if problems:
         raise ProgramError('The scan cannot run yet:\n- ' + '\n- '.join(problems))
@@ -353,6 +405,12 @@ def _validate_trajectory(program: ScanProgram) -> ScanProgram:
     from .trajectory import PATTERNS     # the patterns live with their functions
     trajectory = program.trajectory
     problems = []
+    for name in ('duration_s', 'approach_s', 'pixel_um'):
+        _finite(problems, 'trajectory', name, getattr(trajectory, name))
+    _finite(problems, 'program', 'step_s', program.step_s)
+    for name, value in trajectory.params.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            _finite(problems, 'trajectory', name, value)
     if program.loops or program.drives:
         problems.append('A trajectory program has no loops or drives: the path moves the '
                         'devices.')
