@@ -2,6 +2,7 @@ import os
 
 from imswitch.imcommon.model import dirtools
 from imswitch.imscripting.model import ScriptExecutor, ScriptStore, ScriptEntry, cellAt
+from imswitch.imscripting.model.acquisition_script import acquisitionScript
 from imswitch.imcommon.model import initLogger
 from imswitch.imscripting.view import guitools
 from .basecontrollers import ImScrWidgetController
@@ -26,6 +27,7 @@ class EditorController(ImScrWidgetController):
 
         # Connect CommunicationChannel signals
         self._commChannel.sigNewFile.connect(self.newFile)
+        self._commChannel.sigNewFromCurrentSettings.connect(self.newFromCurrentSettings)
         self._commChannel.sigOpenFile.connect(self.openFile)
         self._commChannel.sigOpenFileFromPath.connect(self.openFile)
         self._commChannel.sigSaveFile.connect(self.saveFile)
@@ -48,6 +50,33 @@ class EditorController(ImScrWidgetController):
         """ Creates a new file. """
         instance = self._widget.addEditor(_untitledFileName)
         self.scriptStore[instance.getID()] = ScriptEntry(filePath=None)
+
+    def newFromCurrentSettings(self):
+        """ Opens a new, unsaved script that sets the detectors, lasers and
+        scan as ImControl has them now and acquires as the Recording widget
+        is set (see model.acquisition_script). """
+        imcontrol = getattr(self._scriptScope.get('api'), 'imcontrol', None)
+        if imcontrol is None:
+            guitools.showWarning(self._widget, 'New script from current settings',
+                                 'ImControl is not loaded, so there are no settings to copy.')
+            return None
+        try:
+            text = acquisitionScript(imcontrol)
+        except Exception as error:
+            self.__logger.error('Could not copy the acquisition', exc_info=True)
+            guitools.showWarning(self._widget, 'New script from current settings',
+                                 f'Could not read the current settings: {error}')
+            return None
+        instance = self._widget.addEditor(f'{_untitledFileName}*')
+        self.loadingFile = True
+        try:
+            instance.setText(text)
+        finally:
+            self.loadingFile = False
+        entry = ScriptEntry(filePath=None)
+        entry.unsaved = True
+        self.scriptStore[instance.getID()] = entry
+        return instance
 
     def openFile(self, scriptPath=None):
         """ Opens an existing file. If scriptPath is None, the user will

@@ -15,6 +15,7 @@ class ImScrMainView(QtWidgets.QMainWindow):
     sigOpenFile = QtCore.Signal()
     sigSaveFile = QtCore.Signal()
     sigSaveAsFile = QtCore.Signal()
+    sigNewFromCurrentSettings = QtCore.Signal()
     sigClosing = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
@@ -29,6 +30,14 @@ class ImScrMainView(QtWidgets.QMainWindow):
         self.newFileAction.setShortcut('Ctrl+N')
         self.newFileAction.triggered.connect(self.sigNewFile)
         file.addAction(self.newFileAction)
+        self.newFromSettingsAction = QtWidgets.QAction('New script from current settings', self)
+        self.newFromSettingsAction.setShortcut('Ctrl+Shift+N')
+        self.newFromSettingsAction.setToolTip(
+            'A script that sets the detectors, lasers and scan as ImControl has '
+            'them now, and acquires as the Recording widget is set'
+        )
+        self.newFromSettingsAction.triggered.connect(self.sigNewFromCurrentSettings)
+        file.addAction(self.newFromSettingsAction)
         self.openFileAction = QtWidgets.QAction('Open…', self)
         self.openFileAction.setShortcut('Ctrl+O')
         self.openFileAction.triggered.connect(self.sigOpenFile)

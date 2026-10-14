@@ -161,10 +161,12 @@ api.imcontrol
    .. method:: getDetectorParameters(detectorName: str) -> Dict[str, Dict[str, Any]]
 
       Returns all detector-specific parameters of the specified detector
-      as {parameter name: {'value', 'units', 'editable', 'options'}}. 'units'
-      is None for a parameter that picks from a list of 'options', and
-      'options' is None for a numerical one. Only an editable parameter can
-      be changed with setDetectorParameter.
+      as {parameter name: {'value', 'units', 'editable', 'options',
+      'configOwned'}}. 'units' is None for a parameter that picks from a list
+      of 'options', and 'options' is None for a numerical one. Only an
+      editable parameter can be changed with setDetectorParameter.
+      'configOwned' is True for a calibration the setup file declares (the
+      camera pixel size): the setup file owns it, not an acquisition.
 
       Needs *Settings* in ``availableWidgets``.
 
@@ -262,6 +264,17 @@ api.imcontrol
    .. method:: getRecFolder() -> str
 
       Returns the folder recordings and snaps are saved into.
+
+      Needs *Recording* in ``availableWidgets``.
+
+   .. method:: getRecordingSettings() -> Dict[str, Any]
+
+      What the Recording widget is set to: ``mode`` (``'SpecFrames'``,
+      ``'SpecTime'``, ``'ScanOnce'``, ``'ScanLapse'``, ``'UntilStop'`` or
+      ``'CameraLapse'``), ``frames`` (its *Number of frames*), ``seconds``
+      (its *Time to record*), ``lapses`` and ``lapseIntervalSeconds`` (a
+      scan time-lapse), ``detectors`` (the names it records),
+      ``fileFormat`` and ``folder``. The setRecMode functions set them.
 
       Needs *Recording* in ``availableWidgets``.
 

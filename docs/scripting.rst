@@ -68,6 +68,28 @@ the Variables panel does the same::
 
 ``tutorial/basic/11_work_interactively.py`` is this in full.
 
+**From the GUI to a script.** Set up an acquisition in ImControl's widgets,
+then choose **File > New script from current settings** (Ctrl+Shift+N) in
+the Scripting tab. A new, unsaved script opens that sets everything again
+and acquires:
+
+* the detectors the Recording widget records, with every editable setting
+  each has in the Settings widget -- but not the calibrations the setup
+  file owns, such as the camera pixel size;
+* every laser's value and whether it is on;
+* the scan the Scan widget holds, as the dict of ``getScanParameters()``;
+* where the stages and rotators are, moved there only when you set
+  ``MOVE_TO_POSITIONS = True`` -- putting a stage back is a decision of its
+  own;
+* the acquisition the Recording widget is set to: the scan once into
+  memory in a scan mode, otherwise its number of frames into memory, then
+  ``show()``.
+
+The script is in cells -- what was set, apply it, acquire -- so it can be
+run a step at a time, and it reads only the scripting API, so every line in
+it is one you could have written. ``api.imcontrol.getRecordingSettings()``
+is what it reads of the Recording widget.
+
 Threading model and waiting for events
 ======================================
 

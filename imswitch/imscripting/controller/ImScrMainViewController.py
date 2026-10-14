@@ -30,6 +30,9 @@ class ImScrMainViewController(ImScrWidgetController):
 
         # Connect signals
         self._widget.sigNewFile.connect(self._commChannel.sigNewFile)
+        self._widget.sigNewFromCurrentSettings.connect(
+            self._commChannel.sigNewFromCurrentSettings
+        )
         self._widget.sigOpenFile.connect(self._commChannel.sigOpenFile)
         self._widget.sigSaveFile.connect(self._commChannel.sigSaveFile)
         self._widget.sigSaveAsFile.connect(self._commChannel.sigSaveAsFile)

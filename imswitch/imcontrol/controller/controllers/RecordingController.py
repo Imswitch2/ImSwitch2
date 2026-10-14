@@ -3377,6 +3377,26 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setTimelapseSingleFile(timelapseSingleFile)
 
     @APIExport(runOnUIThread=True)
+    def getRecordingSettings(self) -> Dict[str, Any]:
+        """ What the Recording widget is set to: ``mode`` (``'SpecFrames'``,
+        ``'SpecTime'``, ``'ScanOnce'``, ``'ScanLapse'``, ``'UntilStop'`` or
+        ``'CameraLapse'``), ``frames`` (its *Number of frames*), ``seconds``
+        (its *Time to record*), ``lapses`` and ``lapseIntervalSeconds`` (a
+        scan time-lapse), ``detectors`` (the names it records),
+        ``fileFormat`` and ``folder``. The setRecMode functions set them. """
+        widget = self._widget
+        return {
+            'mode': self.recMode.name,
+            'frames': int(widget.getNumExpositions()),
+            'seconds': float(widget.getTimeToRec()),
+            'lapses': int(widget.getTimelapseTime()),
+            'lapseIntervalSeconds': float(widget.getTimelapseFreq()),
+            'detectors': list(self.getDetectorNamesToCapture() or []),
+            'fileFormat': SaveFormat(widget.getSaveFormat()).name,
+            'folder': widget.getRecFolder(),
+        }
+
+    @APIExport(runOnUIThread=True)
     def setRecModeUntilStop(self) -> None:
         """ Sets the recording mode to record until recording is manually
         stopped. """
