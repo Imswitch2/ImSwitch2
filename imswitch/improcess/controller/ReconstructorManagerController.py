@@ -858,6 +858,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 )
                 self._setPreviewStatus("")
                 return
+            self._commChannel.sigDetectionPreviewStyleChanged.emit(
+                str(getattr(preview, 'marker', 'circle'))
+            )
             self._commChannel.sigDetectionPreviewUpdated.emit(
                 np.asarray(preview.x), np.asarray(preview.y)
             )

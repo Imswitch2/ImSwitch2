@@ -823,19 +823,31 @@ def test_fast_gauss_offline_accepts_legacy_scan_dimension_labels(synthetic_stack
 
 
 
-def test_fast_gauss_sigma_derived_from_psf(synthetic_stack):
-    """With no explicit sigma, sigma is derived from PSF FWHM and pixel size."""
-    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
-    init_obj = StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs)
-
+def test_fast_gauss_measures_the_spot_width_on_the_frames():
+    """The width is read from the mean frame, not from the PSF parameter: a
+    nominal 220 nm PSF on a rig whose foci are 1.6 px read every amplitude
+    through a filter a third too narrow."""
+    scan = make_scan(steps=(10, 10), sigma=2.0, background=20.0, offset=(4.0, 5.0))
+    attrs = {
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+        "ScanStage:axis_length": [0.45, 0.45, 1.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanStage:axis_step_size_unit": "um",
+    }
+    init_obj = StreamInit(name="s", dataset_name="d", data=scan.frames, attrs=attrs)
     session = MonalisaReconstructor().make_session()
     session.begin(init_obj, params={
         "use_gpu": False,
-        "psf_fwhm_nm": 300.0,
-        "pixel_size_nm": 100.0,
+        "psf_fwhm_nm": 220.0, "pixel_size_nm": 77.0,       # would be 1.21 px
+        "_monalisa_pattern_params": {
+            "row_offset": 5.0, "col_offset": 4.0, "row_period": 11.0, "col_period": 11.0,
+        },
     })
-
-    assert session.processor.gaussian_sigma_px == pytest.approx(300.0 / (2.355 * 100.0))
+    assert session.processor.gaussian_sigma_px == pytest.approx(2.0, abs=0.1)
+    # Without frames the PSF parameter stands in.
+    assert session._resolve_gaussian_sigma_px(
+        {"psf_fwhm_nm": 300.0, "pixel_size_nm": 100.0}
+    ) == pytest.approx(300.0 / (2.355 * 100.0))
 
 
 def test_fast_gauss_no_background_uses_matched_filter(synthetic_stack):

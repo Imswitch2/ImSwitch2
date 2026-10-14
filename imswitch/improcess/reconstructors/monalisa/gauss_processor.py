@@ -40,8 +40,45 @@ except ImportError:
     cusparse = None
     cusparse_linalg = None
 
-#: The spot width used when neither the PSF FWHM nor the pixel size is known.
+#: The spot width used when it can be neither measured nor derived.
 DEFAULT_GAUSSIAN_SIGMA_PX = 2.0
+#: Below this a measured width is taken for a failed fit: a footprint of
+#: 2.5 sigma around it holds fewer than the 10 pixels the extraction needs.
+MIN_MEASURED_SIGMA_PX = 0.75
+
+
+def measure_spot_sigma(
+    frames: np.ndarray, xp: float, xo: float, yp: float, yo: float, nx_c: int, ny_c: int
+) -> float | None:
+    """The one Gaussian width that fits the foci of the mean frame, px.
+
+    The mean over a scan averages the specimen under every focus, so its
+    spots are the foci themselves: the emitting region imaged through the
+    detection PSF. That is the width the extraction wants, and it is the
+    width the lattice reconstructor calibrates on. A width typed in from
+    the nominal PSF was 1.2 px on a recording whose foci were 1.6 px, and
+    read every amplitude through a filter a third too narrow: a third more
+    noise. ``None`` when the fit finds no spots.
+    """
+    from .spot_model import SHARED_SIGMA_BOUNDS, _default_radius, shared_sigma_fit
+
+    frames = np.asarray(frames)
+    mean_frame = frames.mean(axis=0, dtype=np.float64) if frames.ndim == 3 else frames
+    x, y = get_center_coords(xp, xo, yp, yo, nx_c, ny_c)
+    try:
+        fit = shared_sigma_fit(mean_frame, x, y, radius=_default_radius(x, y, 2.0))
+    except ValueError:
+        return None
+    if not np.isfinite(fit.sigma) or not fit.explained > 0:
+        return None
+    # A width pinned to the fit's bounds is not a measurement, and a spot
+    # narrower than MIN_MEASURED_SIGMA_PX is not a camera spot: its footprint
+    # of 2.5 sigma holds fewer than the DEFAULT_MIN_PIXELS the fit needs. The
+    # caller then falls back to the nominal PSF.
+    low, high = SHARED_SIGMA_BOUNDS
+    if fit.sigma <= max(1.05 * low, MIN_MEASURED_SIGMA_PX) or fit.sigma >= 0.95 * high:
+        return None
+    return float(fit.sigma)
 
 
 class _DeviceSolve:

@@ -86,6 +86,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
     )
     execution_policy = "worker"
     requires_frame_stacks = True
+    supports_consolidation = True
 
     def __init__(self):
         self._logger = initLogger("MonalisaLatticeReconstructor")
@@ -124,7 +125,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         image = np.asarray(displayed_image)
         rows, cols = image.shape[-2:] if image.ndim >= 2 else finding.calibration.image.shape
         x, y = finding.points(rows, cols)
-        return DetectionPreview(x, y, finding.describe())
+        return DetectionPreview(x, y, finding.describe(), marker="point")
 
     @staticmethod
     def _frames(data_obj) -> tuple[np.ndarray, dict]:
@@ -390,6 +391,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
 
         labels = (
             (["T"] if scan.num_time > 1 else [])
+            + (["C"] if scan.num_conditions > 1 else [])
             + (["Z"] if scan.num_planes > 1 else [])
             + ["Y", "X"]
         )
@@ -399,11 +401,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
             if any(image is None for image in images):
                 return None
             stacked = np.nan_to_num(np.stack(images)).astype(np.float32)
-            shape = (
-                (scan.num_time,) * (scan.num_time > 1)
-                + (scan.num_planes,) * (scan.num_planes > 1)
-                + stacked.shape[1:]
-            )
+            # Stacks are numbered (t, c, z); an axis of one is left out.
+            shape = tuple(n for n in scan.stack_shape if n > 1) + stacked.shape[1:]
             return stacked.reshape(shape)
 
         pinholes = None
@@ -427,6 +426,57 @@ class MonalisaLatticeReconstructor(Reconstructor):
             pinhole_offsets=offsets,
             axis_labels=labels,
             plane_step_nm=scan.plane_step_nm,
+            condition_labels=scan.condition_labels if scan.num_conditions > 1 else (),
+        )
+
+    def consolidate(self, results: list) -> MonalisaLatticeResult:
+        """The results of several recordings as one, along a ``T`` axis.
+
+        A time lapse recorded one file per timepoint is reconstructed one
+        file at a time, each on its own geometry; the images are stacked in
+        the order given, behind the ``T`` axis they have when a file holds
+        several timepoints. Results of different sizes cannot be stacked and
+        are refused by name.
+        """
+        results = list(results)
+        if not results:
+            raise ValueError("No results to consolidate")
+        if len(results) == 1:
+            return results[0]
+        first = results[0]
+        for other in results[1:]:
+            if other.axis_labels != first.axis_labels or other.data.shape != first.data.shape:
+                raise ValueError(
+                    f"Cannot consolidate '{other.name}' into '{first.name}': "
+                    f"{tuple(other.data.shape)} {other.axis_labels} does not match "
+                    f"{tuple(first.data.shape)} {first.axis_labels}; were these "
+                    "recorded with the same scan?"
+                )
+        has_time = first.axis_labels[0] == "T"
+        stack = (np.concatenate if has_time else np.stack)
+
+        def along(pick):
+            parts = [pick(result) for result in results]
+            return None if any(part is None for part in parts) else stack(parts)
+
+        labels = list(first.axis_labels) if has_time else ["T", *first.axis_labels]
+        diagnostics = dict(first.diagnostics)
+        diagnostics["consolidated"] = f"{len(results)} results: " + ", ".join(
+            result.name for result in results
+        )
+        return MonalisaLatticeResult(
+            name=first.name,
+            image=along(lambda result: result.data),
+            output_pixel_nm=first.output_pixel_size_nm,
+            params=first.params,
+            diagnostics=diagnostics,
+            sharpened=along(lambda result: result.sharpened),
+            background=along(lambda result: result.background),
+            pinholes=along(lambda result: result.pinholes),
+            pinhole_offsets=first.pinhole_offsets,
+            axis_labels=labels,
+            plane_step_nm=first.plane_step_nm,
+            condition_labels=first.condition_labels,
         )
 
     @staticmethod

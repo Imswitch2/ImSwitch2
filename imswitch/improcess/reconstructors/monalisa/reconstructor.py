@@ -565,7 +565,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             localization.nx_c, localization.ny_c,
             placement.cols, placement.rows,
             localization.num_rows, localization.num_cols,
-            gaussian_sigma_px=session._resolve_gaussian_sigma_px(params),
+            gaussian_sigma_px=session._resolve_gaussian_sigma_px(params, working, localization),
             fit_background=session._resolve_fit_background(params),
             use_gpu=str(params.get('device', '')).lower() == 'gpu',
         )

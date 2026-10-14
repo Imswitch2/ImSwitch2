@@ -57,6 +57,7 @@ class DataFrameController(ImProcessWidgetController):
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
         self._commChannel.sigPatternUpdated.connect(self.patternUpdated)
         self._commChannel.sigPatternVisibilityChanged.connect(self.patternVisibilityChanged)
+        self._commChannel.sigDetectionPreviewStyleChanged.connect(self.detectionPreviewStyleChanged)
         self._commChannel.sigDetectionPreviewUpdated.connect(self.detectionPreviewUpdated)
         self._commChannel.sigDetectionPreviewVisibilityChanged.connect(self.detectionPreviewVisibilityChanged)
 
@@ -78,6 +79,9 @@ class DataFrameController(ImProcessWidgetController):
             self.makePatternGrid()
 
         self._widget.setShowPattern(showPattern)
+
+    def detectionPreviewStyleChanged(self, marker):
+        self._widget.setDetectionPreviewStyle(marker)
 
     def detectionPreviewUpdated(self, x, y):
         self._widget.setDetectionPreviewData(x, y)

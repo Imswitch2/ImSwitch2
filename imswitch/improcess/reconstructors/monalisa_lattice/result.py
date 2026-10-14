@@ -27,10 +27,15 @@ class MonalisaLatticeResult(ProcessingResult):
     """The reconstruction, and what was asked for with it.
 
     ``data`` is the reconstruction: ``(Y, X)`` for a recording of one scan,
-    with a ``T`` axis in front for one of several timepoints and a ``Z``
-    axis for one of several planes, ``(T, Z, Y, X)`` for both. Pixels no
-    focus measured are 0. A camera axis the recording does not scan has
-    one pixel per lattice cell.
+    with a ``T`` axis in front for one of several timepoints, a ``C`` axis
+    for one of several conditions (colours) and a ``Z`` axis for one of
+    several planes, ``(T, C, Z, Y, X)`` for all. Pixels no focus measured
+    are 0. A camera axis the recording does not scan has one pixel per
+    lattice cell.
+
+    Scales are in nanometres, as every MoNaLISA result's are: the viewer
+    keeps one world extent across the MoNaLISA results of a session, so
+    switching between them does not move the scale bar.
 
     The other images of the run are display layers of their own, each with
     its own contrast, and inputs a processor can pick:
@@ -62,6 +67,7 @@ class MonalisaLatticeResult(ProcessingResult):
         pinhole_offsets: tuple[np.ndarray, np.ndarray] | None = None,
         axis_labels: list[str] | None = None,
         plane_step_nm: float | None = None,
+        condition_labels: tuple[str, ...] = (),
     ):
         """
         Args:
@@ -71,10 +77,11 @@ class MonalisaLatticeResult(ProcessingResult):
             output_pixel_nm: The pixel of the image, one number or
                 ``(y_nm, x_nm)``; ``None`` or 0 when the recording gives no
                 scale, the image then has pixels and no unit.
-            axis_labels: The axes of ``image``, from ``T``, ``Z``, ``Y``,
-                ``X``. Without it a 3-D image is ``(T, Y, X)``.
+            axis_labels: The axes of ``image``, from ``T``, ``C``, ``Z``,
+                ``Y``, ``X``. Without it a 3-D image is ``(T, Y, X)``.
             plane_step_nm: The distance between Z planes, for the scale of
                 a ``Z`` axis.
+            condition_labels: The names of the conditions along a ``C`` axis.
         """
         image = np.asarray(image, dtype=np.float32)
         if axis_labels is None:
@@ -84,9 +91,9 @@ class MonalisaLatticeResult(ProcessingResult):
                 image.ndim, []
             )
         axis_labels = [str(label) for label in axis_labels]
-        if image.ndim not in (2, 3, 4) or len(axis_labels) != image.ndim:
+        if image.ndim not in (2, 3, 4, 5) or len(axis_labels) != image.ndim:
             raise ValueError(
-                f"Expected an image of (Y, X) with T and Z axes in front, got "
+                f"Expected an image of (Y, X) with T, C and Z axes in front, got "
                 f"{image.shape} labelled {axis_labels}"
             )
         if axis_labels[-2:] != ["Y", "X"]:
@@ -102,11 +109,11 @@ class MonalisaLatticeResult(ProcessingResult):
         scales = []
         for label in axis_labels:
             if label == "Y":
-                scales.append(y_nm / 1000.0 if calibrated else 1.0)
+                scales.append(y_nm if calibrated else 1.0)
             elif label == "X":
-                scales.append(x_nm / 1000.0 if calibrated else 1.0)
+                scales.append(x_nm if calibrated else 1.0)
             elif label == "Z" and calibrated and plane_step_nm:
-                scales.append(float(plane_step_nm) / 1000.0)
+                scales.append(float(plane_step_nm))
             else:
                 scales.append(1.0)
         super().__init__(
@@ -115,8 +122,9 @@ class MonalisaLatticeResult(ProcessingResult):
             axis_labels=axis_labels,
             display_levels=_levels(image),
             axis_scales=scales,
-            scale_unit="um" if calibrated else "px",
+            scale_unit="nm" if calibrated else "px",
         )
+        self.condition_labels = tuple(str(label) for label in condition_labels)
         self.params = dict(params)
         self.diagnostics = dict(diagnostics)
         if not calibrated:

@@ -1796,8 +1796,21 @@ signal, and warns when that mirrors the layout. (4) The panel's *Step* was
 ignored on the layout path. (5) A plane with no signal made the gain fit
 raise and the volume fail; it keeps a gain of one and the table says so.
 
-**Not in it yet.** Live reconstruction with the lattice pipeline;
-line-step conditions; a GPU for it; a serpentine fast axis (the layout
+**From the rig** (2026-10-14). The fast-Gauss method was noisier than the
+lattice one by a third; its width came from the PSF FWHM parameter
+(220 nm, 1.2 px) where the foci measure 1.9 px on the mean frame. It now
+measures the width on the mean frame of the first stack
+(`gauss_processor.measure_spot_sigma`), as the lattice method calibrates,
+and falls back to the parameter when the fit sits on its bounds. Scales of
+the lattice result are nanometres like every MoNaLISA result's: napari
+keeps one world extent for the session, and a result in micrometres next
+to one in nanometres moved the scale bar a thousandfold. The found foci
+are drawn as dots. Line-step conditions make a `C` axis, each condition a
+stack placed by its coordinates (`LayoutScan.num_conditions`); several
+results consolidate along `T`.
+
+**Not in it yet.** Live reconstruction with the lattice pipeline; a GPU
+for it; a serpentine fast axis (the layout
 resolves it, but the gain of the frames is still fitted as if every line
 ran the same way).
 

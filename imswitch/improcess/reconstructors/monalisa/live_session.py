@@ -5,7 +5,11 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamingSession, StreamPlan
 
-from .gauss_processor import DEFAULT_GAUSSIAN_SIGMA_PX, make_fast_gauss_extractor
+from .gauss_processor import (
+    DEFAULT_GAUSSIAN_SIGMA_PX,
+    make_fast_gauss_extractor,
+    measure_spot_sigma,
+)
 from .localizer import localization_from_pattern, localizer
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
@@ -311,7 +315,7 @@ class MonalisaLiveSession(StreamingSession):
             self.ny_s,
             loc_result.num_rows,
             loc_result.num_cols,
-            gaussian_sigma_px=self._resolve_gaussian_sigma_px(params),
+            gaussian_sigma_px=self._resolve_gaussian_sigma_px(params, working_data, loc_result),
             fit_background=self._resolve_fit_background(params),
             use_gpu=self.use_gpu,
         )
@@ -579,10 +583,26 @@ class MonalisaLiveSession(StreamingSession):
         dst.reshape(-1)[:] = cp.asnumpy(self._hot_plane)
         self._hot_plane_dirty = False
 
-    def _resolve_gaussian_sigma_px(self, params: dict) -> float:
-        """Spot width in pixels, from the optical PSF: ``sigma_px =
-        PSF_FWHM_nm / (2.355 * pixel_size_nm)``, the same convention as the
-        classic path, so the two share one physical parameterization."""
+    def _resolve_gaussian_sigma_px(self, params: dict, frames=None, localization=None) -> float:
+        """Spot width in pixels: measured on the frames when they are given
+        (:func:`.gauss_processor.measure_spot_sigma`), else from the optical
+        PSF as the classic path has it, ``PSF_FWHM_nm / (2.355 * pixel_size_nm)``."""
+        if frames is not None and localization is not None:
+            measured = measure_spot_sigma(
+                frames, localization.xp, localization.xo, localization.yp,
+                localization.yo, localization.nx_c, localization.ny_c,
+            )
+            if measured is not None:
+                nominal = self._resolve_gaussian_sigma_px(params)
+                self._logger.info(
+                    f"Spot width measured on the frames: {measured:.2f} px "
+                    f"(the PSF FWHM parameter would give {nominal:.2f} px)"
+                )
+                return measured
+            self._logger.warning(
+                "The spot width could not be measured on the frames; using the "
+                "PSF FWHM parameter"
+            )
         fwhm_nm = params.get("psf_fwhm_nm")
         pixel_size_nm = params.get("pixel_size_nm")
         try:

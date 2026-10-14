@@ -219,6 +219,7 @@ class TestFociPreview:
         )
         assert np.max(distance) < 0.5
         assert "foci" in preview.status and "frame" in preview.status
+        assert preview.marker == "point"
         # Found once per recording, kept for the next frame on screen.
         finding = plugin._preview_cache[1]
         again = plugin.detection_preview(recording, scan.frames[1], _params())
@@ -257,12 +258,15 @@ class TestFociPreview:
         ctrl._commChannel = SimpleNamespace(
             sigDetectionPreviewUpdated=_Sig(),
             sigDetectionPreviewVisibilityChanged=_Sig(),
+            sigDetectionPreviewStyleChanged=_Sig(),
         )
         ctrl._logger = SimpleNamespace(debug=lambda *a, **k: None)
 
         ctrl._updatePreview()
         (x, y), = ctrl._commChannel.sigDetectionPreviewUpdated.emitted
         assert x.size > 50 and x.size == y.size
+        # Drawn as dots on the foci, as the classic pattern grid is.
+        assert ctrl._commChannel.sigDetectionPreviewStyleChanged.emitted == [("point",)]
         assert statuses and "foci" in statuses[-1]
 
         # Frames without a pattern: the reason goes to the status line.
@@ -314,8 +318,8 @@ class TestReconstruction:
         result = MonalisaLatticeReconstructor().process(
             _recording(scan.frames, _attrs((0.735, 0.735), 0.035)), _params(**PLAIN)
         )
-        assert result.scale_unit == "um"
-        assert result.axis_scales == pytest.approx([0.035, 0.035])
+        assert result.scale_unit == "nm"
+        assert result.axis_scales == pytest.approx([35.0, 35.0])
         assert result.output_pixel_size_nm == pytest.approx(35.0)
         assert result.diagnostics["output pixel (µm)"] == pytest.approx(0.035)
         # 22 steps of 35 nm across a period of 11 px.
@@ -515,11 +519,14 @@ class TestLayoutScan:
 
     def test_what_is_not_a_scan_of_the_cell(self):
         assert layout_scan(None, 10) is None
-        with pytest.raises(ValueError, match="line-step"):
-            layout_scan(_resolved([
-                _loop("condition", 2, labels=("a", "b")), _loop("scan_y", 4, 0.03),
-                _loop("scan_x", 5, 0.03),
-            ]), 40)
+        # Conditions are stacks of their own, numbered (t, c, z).
+        coloured = layout_scan(_resolved([
+            _loop("condition", 2, labels=("a", "b")), _loop("scan_y", 4, 0.03),
+            _loop("scan_x", 5, 0.03),
+        ]), 40)
+        assert (coloured.num_conditions, coloured.condition_labels) == (2, ("a", "b"))
+        assert coloured.stack_shape == (1, 2, 1) and coloured.num_stacks == 2
+        np.testing.assert_array_equal(coloured.frames_of(1), np.arange(20, 40))
         with pytest.raises(ValueError, match="neither camera axis"):
             layout_scan(_resolved([_loop("scan_z", 4, 0.1)]), 4)
         with pytest.raises(ValueError, match="records 20 frames"):
@@ -550,7 +557,7 @@ class TestRecordedScans:
         assert placed.diagnostics["orientation, lead over the next"] > 0.3
         assert "acquisition layout" in placed.diagnostics["scan"]
         np.testing.assert_allclose(placed.data, raster.data, rtol=1e-5, atol=1e-5)
-        assert placed.axis_scales == pytest.approx([0.035, 0.035])
+        assert placed.axis_scales == pytest.approx([35.0, 35.0])
         assert placed.diagnostics["camera pixel (nm)"] == pytest.approx(70.0, abs=0.1)
 
     def test_the_stage_may_lie_against_the_camera_either_way(self):
@@ -606,9 +613,11 @@ class TestRecordedScans:
         assert result.data.shape[0] == 3
         assert 190 <= rows <= 194                   # 96 px over steps of 0.5 px
         assert 9 <= cols <= 11                      # 96 px over cells of 11 px
-        # Z 100 nm, Y the 35 nm step, X one period: 11 px of 70 nm.
-        assert result.axis_scales == pytest.approx([0.1, 0.035, 0.77], rel=1e-3)
-        assert result.scale_unit == "um"
+        # Z 100 nm, Y the 35 nm step, X one period: 11 px of 70 nm. In
+        # nanometres, as every MoNaLISA result: switching between them in
+        # the viewer must not move the scale bar.
+        assert result.axis_scales == pytest.approx([100.0, 35.0, 770.0], rel=1e-3)
+        assert result.scale_unit == "nm"
         assert result.output_pixel_size_nm == pytest.approx((35.0, 770.0), rel=1e-3)
         assert result.diagnostics["coverage of the cell"].startswith("0 holes, 0 overlaps of 22")
         assert result.diagnostics["raster from the lattice"] == (
@@ -647,7 +656,7 @@ class TestRecordedScans:
         )
         assert result.axis_labels == ["Z", "Y", "X"]
         assert result.data.shape[0] == 2
-        assert result.axis_scales == pytest.approx([0.1, 0.035, 0.035])
+        assert result.axis_scales == pytest.approx([100.0, 35.0, 35.0])
         ratio = _interior(result.data[1]) / _interior(result.data[0])
         assert np.median(ratio) == pytest.approx(2.0, rel=0.02)
         layers = {layer.component: layer for layer in result.display_layers()}
@@ -665,7 +674,7 @@ class TestRecordedScans:
         )
         assert result.axis_labels == ["T", "Z", "Y", "X"]
         assert result.data.shape[:2] == (2, 2)
-        assert result.axis_scales[:2] == pytest.approx([1.0, 0.1])
+        assert result.axis_scales[:2] == pytest.approx([1.0, 100.0])
         expected = {(0, 0): 1.0, (0, 1): 2.0, (1, 0): 3.0, (1, 1): 4.0}
         for (t, z), factor in expected.items():
             ratio = _interior(result.data[t, z]) / _interior(result.data[0, 0])
@@ -694,7 +703,7 @@ class TestRecordedScans:
             _recorded(scan.frames, loops), _params(**PLAIN)
         )
         assert result.diagnostics["coverage of the cell"].startswith("0 holes, 0 overlaps of 242")
-        assert result.axis_scales == pytest.approx([0.07, 0.035])
+        assert result.axis_scales == pytest.approx([70.0, 35.0])
         assert result.diagnostics["camera pixel (nm)"] == pytest.approx(70.0, abs=0.5)
 
     def test_the_panels_step_outranks_the_layouts(self):
@@ -703,7 +712,7 @@ class TestRecordedScans:
         result = MonalisaLatticeReconstructor().process(
             _recorded(scan.frames, loops), _params(scan_step_nm=70.0, **PLAIN)
         )
-        assert result.axis_scales == pytest.approx([0.07, 0.07])
+        assert result.axis_scales == pytest.approx([70.0, 70.0])
         assert result.output_pixel_size_nm == pytest.approx(70.0)
         assert "step from the panel" in result.diagnostics["scan"]
         assert result.diagnostics["camera pixel (nm)"] == pytest.approx(140.0, abs=1.0)
@@ -738,16 +747,70 @@ class TestRecordedScans:
                 _recorded(line.frames, loops), _params(pixel_size_nm=70.0, **PLAIN)
             )
 
-    def test_conditions_are_refused(self):
-        scan = make_scan(steps=(11, 11))
+    def test_two_colours_interleaved_per_line_make_a_c_axis(self):
+        """Two conditions (colours) recorded line by line: the frames of a
+        line are [line/A][line/B]; each condition is a scan of its own."""
+        scan = make_scan(steps=(11, 11), background=0.0)
+        lines = scan.frames.reshape(11, 11, *scan.frames.shape[1:])
+        interleaved = np.concatenate(
+            [np.stack([line, 2.0 * line]) for line in lines]
+        ).reshape(-1, *scan.frames.shape[1:])
         loops = [
-            _loop("scan_y", 11, 0.035), _loop("condition", 2, labels=("a", "b")),
+            _loop("scan_y", 11, 0.035), _loop("condition", 2, labels=("green", "red")),
             _loop("scan_x", 11, 0.035),
         ]
-        with pytest.raises(ValueError, match="line-step"):
-            MonalisaLatticeReconstructor().process(
-                _recorded(np.concatenate([scan.frames, scan.frames]), loops), _params()
-            )
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(interleaved, loops), _params(**PLAIN)
+        )
+        assert result.axis_labels == ["C", "Y", "X"]
+        assert result.condition_labels == ("green", "red")
+        assert "2 conditions (green, red)" in result.diagnostics["scan"]
+        ratio = _interior(result.data[1]) / _interior(result.data[0])
+        assert np.median(ratio) == pytest.approx(2.0, rel=0.02)
+        alone = MonalisaLatticeReconstructor().process(
+            _recorded(scan.frames, [_loop("scan_y", 11, 0.035), _loop("scan_x", 11, 0.035)]),
+            _params(**PLAIN),
+        )
+        # The spot is calibrated on the mean of both colours, so the match
+        # with a solo run is close, not exact.
+        np.testing.assert_allclose(result.data[0], alone.data, rtol=1e-3, atol=1e-3)
+
+    def test_two_colours_one_image_each_make_a_c_axis(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        loops = [
+            _loop("condition", 2, labels=("green", "red")),
+            _loop("scan_y", 11, 0.035), _loop("scan_x", 11, 0.035),
+        ]
+        result = MonalisaLatticeReconstructor().process(
+            _recorded(_planes(scan, (1.0, 2.0)), loops), _params(**PLAIN)
+        )
+        assert result.axis_labels == ["C", "Y", "X"]
+        ratio = _interior(result.data[1]) / _interior(result.data[0])
+        assert np.median(ratio) == pytest.approx(2.0, rel=0.02)
+
+    def test_results_of_several_recordings_consolidate_along_time(self):
+        """A lapse recorded one file per timepoint, reconstructed file by file."""
+        scan = make_scan(steps=(11, 11), background=0.0)
+        loops = [_loop("scan_y", 11, 0.035), _loop("scan_x", 11, 0.035)]
+        plugin = MonalisaLatticeReconstructor()
+        assert plugin.supports_consolidation
+        first = plugin.process(_recorded(scan.frames, loops, name="t0"), _params(**PLAIN))
+        second = plugin.process(
+            _recorded(2.0 * scan.frames, loops, name="t1"), _params(**PLAIN)
+        )
+        lapse = plugin.consolidate([first, second])
+        assert lapse.axis_labels == ["T", "Y", "X"]
+        assert lapse.data.shape == (2, *first.data.shape)
+        assert lapse.axis_scales == pytest.approx([1.0, 35.0, 35.0])
+        np.testing.assert_array_equal(lapse.data[0], first.data)
+        assert "2 results" in lapse.diagnostics["consolidated"]
+        assert plugin.consolidate([first]) is first
+        with pytest.raises(ValueError, match="does not match"):
+            plugin.consolidate([first, plugin.process(
+                _recorded(make_scan(steps=(22, 22)).frames,
+                          [_loop("scan_y", 22, 0.035), _loop("scan_x", 22, 0.035)]),
+                _params(**PLAIN),
+            )])
 
     def test_the_panel_describes_the_layout(self, qapp):
         widget = MonalisaLatticeReconstructor().make_param_widget(QtWidgets.QWidget())

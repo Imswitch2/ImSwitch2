@@ -196,8 +196,11 @@ class LayoutScan:
             along each axis, for what depends on chronology (the gain of the
             frames).
         stack: ``(frames,)`` the stack every frame belongs to, one stack per
-            Z plane and timepoint, ``t * num_planes + z``.
+            timepoint, condition and Z plane, in that order:
+            ``(t * num_conditions + c) * num_planes + z``.
         num_time, num_planes: Timepoints and Z planes.
+        num_conditions, condition_labels: Line-step conditions (a colour
+            each, say) and their names.
         counts: ``(nx, ny)`` positions along the camera axes; 1 for an axis
             that is not scanned.
         step_nm: ``(x, y)`` size of a step along each camera axis; ``None``
@@ -213,6 +216,8 @@ class LayoutScan:
     stack: np.ndarray
     num_time: int
     num_planes: int
+    num_conditions: int
+    condition_labels: tuple[str, ...]
     counts: tuple[int, int]
     step_nm: tuple[float | None, float | None]
     plane_step_nm: float | None
@@ -221,7 +226,12 @@ class LayoutScan:
 
     @property
     def num_stacks(self) -> int:
-        return int(self.num_time * self.num_planes)
+        return int(self.num_time * self.num_conditions * self.num_planes)
+
+    @property
+    def stack_shape(self) -> tuple[int, int, int]:
+        """``(timepoints, conditions, planes)``: how the stacks are numbered."""
+        return (int(self.num_time), int(self.num_conditions), int(self.num_planes))
 
     @property
     def frames_per_stack(self) -> int:
@@ -258,6 +268,9 @@ class LayoutScan:
         if self.num_planes > 1:
             size = "" if self.plane_step_nm is None else f" of {self.plane_step_nm:g} nm"
             parts.append(f"{self.num_planes} Z planes{size}")
+        if self.num_conditions > 1:
+            names = ", ".join(self.condition_labels)
+            parts.append(f"{self.num_conditions} conditions ({names})")
         if self.num_time > 1:
             parts.append(f"{self.num_time} timepoints")
         return ", ".join(parts) + f" ({self.source})"
@@ -272,11 +285,14 @@ def layout_scan(resolved, num_frames: int) -> LayoutScan | None:
     file. A declared layout that cannot be placed raises instead, with the
     loop named.
 
+    Line-step conditions (one colour each, interleaved per line or recorded
+    one image per condition) make a ``C`` axis: every condition is a scan of
+    its own, placed by its coordinates.
+
     Raises:
         ValueError: A declared layout with a loop that cannot be placed; a
-            recording of line-step conditions, which the lattice pipeline
-            does not take apart; a recording that scans neither camera axis;
-            a layout whose frame count is not the recording's.
+            recording that scans neither camera axis; a layout whose frame
+            count is not the recording's.
     """
     layout = getattr(resolved, "layout", None)
     if layout is None or not getattr(resolved, "is_usable", False):
@@ -297,10 +313,11 @@ def layout_scan(resolved, num_frames: int) -> LayoutScan | None:
             raise ValueError(str(error)) from error
         return None
     condition = selected["condition"]
-    if condition is not None and condition.count > 1:
-        raise ValueError(
-            f"This recording holds {condition.count} line-step conditions; "
-            "the lattice reconstructor takes one condition per scan"
+    num_conditions = int(condition.count) if condition is not None else 1
+    condition_labels: tuple[str, ...] = ()
+    if condition is not None:
+        condition_labels = tuple(condition.labels) or tuple(
+            f"condition_{index}" for index in range(num_conditions)
         )
     x_loop, y_loop, z_loop, t_loop = (
         selected["x"], selected["y"], selected["z"], selected["time"]
@@ -335,7 +352,8 @@ def layout_scan(resolved, num_frames: int) -> LayoutScan | None:
         index.append((coordinate(physical, x_loop), coordinate(physical, y_loop)))
         logical.append((coordinate(recorded, x_loop), coordinate(recorded, y_loop)))
         stack.append(
-            coordinate(physical, t_loop) * num_planes + coordinate(physical, z_loop)
+            (coordinate(physical, t_loop) * num_conditions + coordinate(physical, condition))
+            * num_planes + coordinate(physical, z_loop)
         )
     if len(index) != int(num_frames):
         raise ValueError(
@@ -349,6 +367,8 @@ def layout_scan(resolved, num_frames: int) -> LayoutScan | None:
         stack=np.asarray(stack, dtype=int),
         num_time=num_time,
         num_planes=num_planes,
+        num_conditions=num_conditions,
+        condition_labels=condition_labels,
         counts=counts,
         step_nm=(
             _loop_step_nm(x_loop) if counts[0] > 1 else None,

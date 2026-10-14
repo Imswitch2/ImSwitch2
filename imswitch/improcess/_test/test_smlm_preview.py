@@ -128,6 +128,7 @@ def _preview_controller(image, checked=True, threshold=50.0):
     )
     ctrl._commChannel = SimpleNamespace(
         sigDetectionPreviewUpdated=_Sig(),
+        sigDetectionPreviewStyleChanged=_Sig(),
         sigDetectionPreviewVisibilityChanged=_Sig(),
     )
     ctrl._logger = SimpleNamespace(debug=lambda *a, **k: None)

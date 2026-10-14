@@ -156,6 +156,10 @@ class DetectionPreview:
     x: np.ndarray
     y: np.ndarray
     status: str = ""
+    marker: str = "circle"
+    """How the points are drawn: ``"circle"`` (an open ring around each,
+    for candidates to inspect) or ``"point"`` (a dot on each, as the classic
+    pattern overlay draws its grid)."""
 
 
 class Reconstructor(ABC):
