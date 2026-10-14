@@ -17,6 +17,7 @@ from unittest.mock import Mock, MagicMock, patch, call
 
 from imswitch.imcontrol.controller.controllers.LaserController import LaserController
 from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
+from imswitch.imcontrol.model import LaserPowerContext, LaserPowerMode
 
 
 class _SingleLaserManager:
@@ -106,6 +107,7 @@ def mock_setupinfo():
     """Mock setupInfo."""
     setupinfo = Mock()
     setupinfo.laserPresets = {'Default': {}}
+    setupinfo.deviceCategorySettings = {'lasers': {'powerMode': 'separated'}}
     setupinfo.lasers = {
         '488nm': Mock(getAnalogChannel=Mock(return_value='ao0')),
         'UV': Mock(getAnalogChannel=Mock(return_value=None), getDigitalLine=Mock(return_value='port0/line0'))
@@ -148,7 +150,17 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._master = mock_master
     controller._widget = mock_widget
     controller._logger = Mock()
-    
+    controller._livePowerValues = {}
+    controller._scanPowerValues = {}
+    controller._powerMode = LaserPowerMode.SEPARATED
+    controller._currentPowerContext = LaserPowerContext.LIVE
+    controller._scanLaserState = {}
+    controller._selectedPresetByContext = {
+        LaserPowerContext.LIVE: None,
+        LaserPowerContext.SCAN: None,
+    }
+    controller._selectedCoupledPreset = None
+
     # Bind the actual methods from LaserController to the mock
     controller.getComponentState = lambda: LaserController.getComponentState(controller)
     controller.applyComponentState = lambda state, applyMode: LaserController.applyComponentState(
@@ -168,7 +180,17 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._onOff = lambda value: LaserController._onOff(controller, value)
     controller._asFloat = lambda value: LaserController._asFloat(controller, value)
     controller._isMilliwattUnit = lambda units: LaserController._isMilliwattUnit(controller, units)
-    
+    controller._isSeparatedPowerMode = lambda: True
+    controller._presetContext = lambda name: LaserController._presetContext(controller, name)
+    controller._presetDefinition = lambda name: LaserController._presetDefinition(controller, name)
+    controller._normalizePresetPowers = lambda raw: LaserController._normalizePresetPowers(controller, raw)
+    controller._selectedPresetName = lambda context: LaserController._selectedPresetName(controller, context)
+    controller._setSelectedPresetName = lambda context, name: LaserController._setSelectedPresetName(controller, context, name)
+    controller._livePowerValue = lambda name: LaserController._livePowerValue(controller, name)
+    controller.getLaserPowerSetting = lambda name, context=LaserPowerContext.LIVE.value: LaserController.getLaserPowerSetting(
+        controller, name, context
+    )
+
     # Mock action methods
     controller.setLaserValue = Mock()
     controller.setLaserActive = Mock()
@@ -182,7 +204,7 @@ def test_get_component_state(laser_controller, mock_widget):
     """Test getComponentState returns correct structure."""
     mock_widget.isLaserActive.side_effect = lambda name: name == '488nm'
     mock_widget.getValue.side_effect = lambda name: 100.0 if name == '488nm' else 0
-    mock_widget.getCurrentPreset.return_value = 'Default'
+    laser_controller._selectedPresetByContext[LaserPowerContext.LIVE] = 'Default'
     
     state = laser_controller.getComponentState()
     
@@ -192,7 +214,8 @@ def test_get_component_state(laser_controller, mock_widget):
     assert 'currentPreset' in state
     assert 'modulation' in state
     
-    assert state['currentPreset'] == 'Default'
+    assert state['currentPreset'] is None
+    assert state['livePreset'] == 'Default'
     assert state['laserOrder'] == ['488nm', 'UV']
     
     # Check 488nm laser state
@@ -382,7 +405,7 @@ def test_apply_preset_skips_unavailable_and_binary_lasers(mock_laser_manager, mo
     controller._master = Mock(lasersManager=mock_laser_manager)
     controller._widget = mock_widget
     controller._logger = Mock()
-    controller.setLaserValue = Mock()
+    controller.setLaserPowerSetting = Mock()
 
     preset = {
         '488nm': SimpleNamespace(value=12.5),
@@ -392,7 +415,9 @@ def test_apply_preset_skips_unavailable_and_binary_lasers(mock_laser_manager, mo
 
     LaserController.applyPreset(controller, preset)
 
-    controller.setLaserValue.assert_called_once_with('488nm', 12.5)
+    controller.setLaserPowerSetting.assert_called_once_with(
+        '488nm', 12.5, LaserPowerContext.LIVE
+    )
     assert controller._logger.warning.call_count == 2
 
 
@@ -556,7 +581,7 @@ def test_round_trip_state_persistence(laser_controller, mock_widget):
     # Setup initial state
     mock_widget.isLaserActive.side_effect = lambda name: name == '488nm'
     mock_widget.getValue.side_effect = lambda name: 80.0 if name == '488nm' else 0
-    mock_widget.getCurrentPreset.return_value = 'TestPreset'
+    laser_controller._selectedPresetByContext[LaserPowerContext.LIVE] = 'TestPreset'
     
     # Capture state
     state = laser_controller.getComponentState()

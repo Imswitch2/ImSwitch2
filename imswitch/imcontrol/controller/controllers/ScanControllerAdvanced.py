@@ -8,7 +8,11 @@ from typing import Dict, Any
 import numpy as np
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
-from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model import (
+    LaserScanPowerControl,
+    LaserScanState,
+    getWidgetStatePersistence,
+)
 from imswitch.imcontrol.model.scan_parameters import (
     seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
@@ -751,6 +755,7 @@ class ScanControllerAdvanced(SuperScanController):
         self._digitalParameterDict = self._buildDigitalParameterDict(
             self._analogParameterDict
         )
+        self._publishLaserScanState()
 
     def _buildAnalogParameterDict(self):
         """Serialize PointScan-compatible analog scan parameters from the widget."""
@@ -765,6 +770,78 @@ class ScanControllerAdvanced(SuperScanController):
         return self._scanParams.build_digital(
             self._widget, analogParameterDict, self.positioners, self.TTLDevices
         )
+
+    def _laserScanStateFromParameters(self, parameters=None):
+        """Build semantic laser participation/AO ownership from scan state.
+
+        ``target_device`` is the canonical Advanced Scan participation model:
+        the serializer includes a TTL device when at least one line step (or
+        an explicit pulse program) uses it.  A declared ``powerDevice`` is
+        reported as part of the same active optical path even though it does
+        not itself appear in the TTL target list.
+        """
+        parameters = parameters if parameters is not None else getattr(
+            self, '_digitalParameterDict', {}
+        )
+        laserInfos = getattr(self._setupInfo, 'lasers', {}) or {}
+        states = {}
+
+        activeTargets = {
+            str(name) for name in (parameters.get('target_device', ()) or ())
+            if name in laserInfos
+        }
+        advancedMode = bool(parameters.get('advanced_mode', False))
+        powerEnabled = parameters.get('linestep_power_enabled', {}) or {}
+        powerPercent = parameters.get('linestep_power_percent', {}) or {}
+
+        def powerControlFor(name):
+            info = laserInfos.get(name)
+            analogChannel = getattr(info, 'analogChannel', None) if info else None
+            ownsAO = (
+                advancedMode
+                and name in powerPercent
+                and analogChannel not in (None, 'None')
+                # Missing flag is enabled for backward compatibility with
+                # scans saved before the checkbox existed.
+                and bool(powerEnabled.get(name, True))
+            )
+            return (
+                LaserScanPowerControl.AO
+                if ownsAO else LaserScanPowerControl.DIRECT
+            )
+
+        for name in laserInfos:
+            states[name] = LaserScanState(
+                active_for_scan=False,
+                power_control=powerControlFor(name),
+            )
+
+        for name in activeTargets:
+            states[name] = LaserScanState(
+                active_for_scan=True,
+                power_control=powerControlFor(name),
+            )
+
+            info = laserInfos.get(name)
+            powerDevice = getattr(info, 'powerDevice', None) if info else None
+            if powerDevice and powerDevice in states:
+                # The gate is the TTL participant; the declared partner owns
+                # the actual optical power and therefore belongs to the active
+                # path too. If that partner independently participates as a
+                # TTL target, its own AO state is resolved in the loop.
+                states[powerDevice] = LaserScanState(
+                    active_for_scan=True,
+                    power_control=powerControlFor(powerDevice),
+                )
+
+        return states
+
+    def _publishLaserScanState(self):
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        publish = getattr(workflow, 'publish_laser_scan_state', None)
+        if not callable(publish):
+            return
+        publish(self._laserScanStateFromParameters())
 
     # ---------------------------------------------------------------------
     # Parameters: dicts -> UI (used by loadScan)

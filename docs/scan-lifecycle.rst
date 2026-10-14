@@ -515,6 +515,30 @@ event-triggered workflow that *requests* scans via
 (steps rotators between scans run by others).
 
 
+Laser Live/Scan handoff
+=======================
+
+Laser ownership is resolved before the acquisition backend arms.  The TTL
+device list published on ``sigScanDevicesResolved`` is the authority for scan
+participation; declared ``powerDevice`` links are included in the owned path.
+If that membership cannot be resolved, acquisition is refused because the
+controller cannot safely determine which Live paths to hand over.
+
+For each scan-owned path, ``LaserController`` snapshots the pre-scan LIVE
+ON/OFF state, suppresses LIVE emission, applies the direct SCAN setpoint when
+Advanced Scan AO does not own power, then delegates the actual scan-mode
+transition to the existing manager-specific ``setScanModeActive`` logic.
+Non-participating LIVE lasers receive no lifecycle power/enable writes and keep
+their existing state.  The LaserWidget is read-only for the whole run.
+
+On normal completion or abort, manager-specific teardown runs first, then each
+scan-owned path is explicitly kept OFF and its current LIVE setpoint is
+restored while dark.  There is no automatic post-scan re-emission.  If a
+scan-owned path was LIVE-ON before handoff, and teardown both confirms it dark
+and restores its LIVE setpoint successfully, the LaserWidget exposes a
+one-shot **Resume Live** action.  Resume explicitly re-enables only those
+remembered scan-owned paths; non-participating LIVE lasers were never changed.
+
 How BeadRec consumes this
 =========================
 

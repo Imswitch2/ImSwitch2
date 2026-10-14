@@ -363,8 +363,9 @@ def test_set_enabled_false_critical_l0_failure_keeps_enabled_true():
     m = _build_manager(laser)
     m._scpi = False
     m._enabled = True
-    m.setEnabled(False)
+    result = m.setEnabled(False)
 
+    assert result is False
     assert m._enabled is True   # state preserved because l0 rejected
 
 
@@ -373,9 +374,10 @@ def test_set_enabled_false_normal_path_returns_to_safe_state():
     m = _build_manager(laser)
     m._scpi = False
     m._enabled = True
-    m.setEnabled(False)
+    result = m.setEnabled(False)
 
     # Master off first, then modulation-mode safe state.
+    assert result is True
     assert laser.cmds[0] == 'l0'
     assert 'em' in laser.cmds
     assert m._enabled is False
@@ -1104,8 +1106,9 @@ def test_empty_reply_on_master_off_keeps_enabled_true():
     m = _build_manager(laser)
     m._scpi = False
     m._enabled = True
-    m.setEnabled(False)
+    result = m.setEnabled(False)
 
+    assert result is False
     assert m._enabled is True      # off-transition did not take effect
 
 

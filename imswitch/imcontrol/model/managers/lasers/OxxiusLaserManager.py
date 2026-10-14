@@ -40,13 +40,17 @@ class OxxiusLaserManager(LaserManager):
                 self._laser.enable()
             else:
                 self._laser.disable()
+            return True
         except Exception as e:
             self.__logger.error(f'Error setting laser enabled={enabled}: {e}')
+            return False
 
     def setValue(self, power):
         if self._laser is None:
             return
         try:
             self._laser.power = float(power)
+            return True
         except Exception as e:
             self.__logger.error(f'Error setting laser power to {power}: {e}')
+            return False

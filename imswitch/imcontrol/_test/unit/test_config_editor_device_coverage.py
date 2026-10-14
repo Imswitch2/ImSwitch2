@@ -36,6 +36,30 @@ def test_category_labels_and_colors():
         assert cat in editor.CAT_COLOR, f"Missing color for {cat}"
 
 
+def test_category_settings_schema_exists_for_every_device_category():
+    """Every visible category exposes category settings, even with no fields."""
+    assert set(editor.DEVICE_CATS) <= set(editor.CATEGORY_SCHEMAS)
+
+    laser_schema = editor.CATEGORY_SCHEMAS["lasers"]
+    assert any(field.get("key") == "powerMode" for field in laser_schema["fields"])
+
+    for cat in editor.DEVICE_CATS:
+        schema = editor.CATEGORY_SCHEMAS[cat]
+        assert schema["category"] == cat
+        assert isinstance(schema.get("fields"), list)
+
+
+def test_empty_category_settings_schema_is_truthy():
+    """Empty categories still satisfy DeviceCanvas' Settings-button check."""
+    empty_categories = [
+        cat for cat in editor.DEVICE_CATS
+        if not editor.CATEGORY_SCHEMAS[cat].get("fields")
+    ]
+    assert empty_categories
+    for cat in empty_categories:
+        assert editor.CATEGORY_SCHEMAS[cat]
+
+
 def test_blank_schemas_exist():
     """Every category in the registry must have a non-None blank schema.
 

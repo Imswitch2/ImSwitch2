@@ -157,7 +157,7 @@ def _load_schemas() -> dict:
     base = Path(__file__).resolve().parent / "builtin_templates"
     if base.is_dir():
         for cat_dir in sorted(base.iterdir()):
-            if not cat_dir.is_dir() or cat_dir.name == "sections":
+            if not cat_dir.is_dir() or cat_dir.name in {"sections", "categories"}:
                 continue
             for f in sorted(cat_dir.glob("*.json")):
                 try:
@@ -181,7 +181,7 @@ def _load_blank_schemas() -> dict:
     base = Path(__file__).resolve().parent / "builtin_templates"
     if base.is_dir():
         for cat_dir in sorted(base.iterdir()):
-            if not cat_dir.is_dir() or cat_dir.name == "sections":
+            if not cat_dir.is_dir() or cat_dir.name in {"sections", "categories"}:
                 continue
             blank_file = cat_dir / "_blank.json"
             if blank_file.exists():
@@ -239,6 +239,28 @@ def _discover_managers() -> dict:
         lst.sort()
 
     return discovered
+
+
+def _load_category_schemas() -> dict:
+    """Load explicit per-device-category settings schemas.
+
+    Category settings are stored separately from device dictionaries under
+    ``deviceCategorySettings``. Explicit schemas define actual fields; after
+    loading, the registry is completed with empty schemas so every device
+    category exposes the same Settings affordance.
+    """
+    schemas: dict = {}
+    base = Path(__file__).resolve().parent / "builtin_templates" / "categories"
+    if base.is_dir():
+        for f in sorted(base.glob("*.json")):
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                continue
+            key = data.get("category") or f.stem
+            schemas[key] = data
+    return schemas
 
 
 def _load_section_schemas() -> dict:
@@ -397,6 +419,7 @@ def _f(key, label, tp="text", default="", req=False,
 SCHEMAS = _load_schemas()
 BLANK_SCHEMAS = _load_blank_schemas()
 SECTION_SCHEMAS = _load_section_schemas()
+CATEGORY_SCHEMAS = _load_category_schemas()
 DISCOVERED_MANAGERS = _discover_managers()
 
 # Build palette and labels from authoritative registry
@@ -409,6 +432,19 @@ if "others" not in DEVICE_CATS:
     DEVICE_CATS = DEVICE_CATS + ["others"]
 CAT_COLOR.setdefault("others", "#888888")
 CAT_LABEL.setdefault("others", "Others")
+
+# Category settings are a first-class affordance for every device category,
+# even before that category has any settings of its own. Explicit JSON schemas
+# (currently lasers) override these empty placeholders. This keeps future
+# category settings schema-driven without requiring one empty JSON file per
+# category.
+for _cat in DEVICE_CATS:
+    CATEGORY_SCHEMAS.setdefault(_cat, {
+        "category": _cat,
+        "display": f"{CAT_LABEL[_cat]} settings",
+        "summary": "No category-wide settings are defined yet.",
+        "fields": [],
+    })
 
 
 # Build category → [manager names] index from templates
@@ -1076,6 +1112,7 @@ class DeviceCanvas(QScrollArea):
     sig_device_renamed  = pyqtSignal(str, str)
     sig_save_tmpl       = pyqtSignal(str, str)
     sig_device_copied   = pyqtSignal(str, str)
+    sig_category_settings = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1125,7 +1162,39 @@ class DeviceCanvas(QScrollArea):
                      f"({len(devices)} device{'s' if len(devices)!=1 else ''})</span>")
         lbl.setTextFormat(Qt.RichText)
         hlay.addWidget(lbl)
+
+        category_schema = CATEGORY_SCHEMAS.get(cat)
+        if category_schema:
+            category_values = (data.get("deviceCategorySettings") or {}).get(cat, {})
+            summary_parts = []
+            for field_def in category_schema.get("fields", []):
+                if not field_def.get("show_in_header"):
+                    continue
+                value = category_values.get(field_def["key"], _field_default(field_def))
+                display_value = _field_option_label(field_def, value)
+                summary_parts.append(f"{field_def.get('label', field_def['key'])}: {display_value}")
+            if summary_parts:
+                summary_lbl = QLabel(
+                    "<span style='color:#888;font-size:8pt;'>"
+                    + " · ".join(summary_parts)
+                    + "</span>"
+                )
+                summary_lbl.setTextFormat(Qt.RichText)
+                hlay.addWidget(summary_lbl)
+
         hlay.addStretch()
+
+        if category_schema:
+            settings_btn = QPushButton("⚙ Settings")
+            settings_btn.setFixedHeight(22)
+            settings_btn.setStyleSheet("font-size:8pt; padding:0 7px;")
+            settings_btn.setToolTip(
+                f"Edit {category_schema.get('display', label_text + ' settings')}"
+            )
+            settings_btn.clicked.connect(
+                lambda _, c=cat: self.sig_category_settings.emit(c)
+            )
+            hlay.addWidget(settings_btn)
 
         add_btn = QPushButton("＋ Add")
         add_btn.setFixedHeight(22)
@@ -1291,6 +1360,12 @@ def _option_label(option) -> str:
     )
 
 
+def _field_option_label(field_def: dict, option) -> str:
+    """Return an optional schema-supplied display label for a select value."""
+    labels = field_def.get("option_labels") or {}
+    return str(labels.get(str(option), _option_label(option)))
+
+
 # =============================================================================
 # FieldWidget – single editable field row
 # =============================================================================
@@ -1347,7 +1422,7 @@ class FieldWidget(QWidget):
             if _coercion_module is not None:
                 options = _coercion_module.options_like(options, value)
             for option in options:
-                self._w.addItem(_option_label(option), option)
+                self._w.addItem(_field_option_label(self._def, option), option)
             # Configs can outlive their template/plugin version.  Keeping the
             # saved value selectable prevents an open-and-save cycle from
             # silently changing it to the first currently known option.
@@ -2244,7 +2319,11 @@ class PropertyEditor(QWidget):
                     item.widget().deleteLater()
 
         colors = get_themed_colors(is_dark_mode())
-        excluded_extras = set(DEVICE_CATS) | {"availableWidgets"} | set(SECTION_SCHEMAS.keys())
+        excluded_extras = (
+            set(DEVICE_CATS)
+            | {"availableWidgets", "deviceCategorySettings"}
+            | set(SECTION_SCHEMAS.keys())
+        )
 
         # ── System: only configured sections, sorted; + Add at the end ──
         configured = [
@@ -2843,7 +2922,7 @@ class SectionEditorDialog(QDialog):
     e.g. ``focusLock.camera`` is a dropdown of existing detector names.
     """
 
-    def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None):
+    def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *, title_prefix="Edit section"):
         super().__init__(parent)
         self._key = key
         self._schema = schema
@@ -2851,7 +2930,7 @@ class SectionEditorDialog(QDialog):
         self._result: dict = {}
 
         legacy = schema.get("legacy")
-        title = f"Edit section: {schema.get('display', key)}"
+        title = f"{title_prefix}: {schema.get('display', key)}"
         if legacy:
             title += " (legacy)"
         self.setWindowTitle(title)
@@ -3867,6 +3946,7 @@ class MainWindow(QMainWindow):
         self._canvas.sig_device_renamed.connect(self._on_device_rename_from_canvas)
         self._canvas.sig_save_tmpl.connect(self._on_save_template)
         self._canvas.sig_device_copied.connect(self._copy_device)
+        self._canvas.sig_category_settings.connect(self._on_category_settings)
         cl.addWidget(self._canvas, 1)
         self._val_panel = ValidationPanel()
         self._val_panel.sig_fix_section.connect(self._on_fix_section_from_validation)
@@ -3994,6 +4074,30 @@ class MainWindow(QMainWindow):
         self._canvas.deselect_all()
         self._editor.load_config_extras(self._data)
         self._status.setText("Showing config settings")
+
+    def _on_category_settings(self, cat: str):
+        schema = CATEGORY_SCHEMAS.get(cat)
+        if not schema:
+            return
+        settings_root = self._data.get("deviceCategorySettings")
+        if not isinstance(settings_root, dict):
+            settings_root = {}
+            self._data["deviceCategorySettings"] = settings_root
+        current = settings_root.get(cat)
+        if not isinstance(current, dict):
+            current = {}
+        dlg = SectionEditorDialog(
+            cat, schema, current, self._data, self,
+            title_prefix="Edit category settings",
+        )
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        settings_root[cat] = dlg.result_data
+        self._modified = True
+        self._refresh_canvas()
+        self._editor.load_config_extras(self._data)
+        self._val_panel.validate(self._data)
+        self._status.setText(f"Updated {CAT_LABEL.get(cat, cat)} settings")
 
     def _on_device_selected(self, cat: str, name: str):
         device = (self._data.get(cat) or {}).get(name)

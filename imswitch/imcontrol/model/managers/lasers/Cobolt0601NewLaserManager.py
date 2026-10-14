@@ -658,7 +658,7 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'({"SCPI" if self._scpi else "legacy"} commands, master off).'
             )
 
-    def setEnabled(self, enabled: bool) -> None:
+    def setEnabled(self, enabled: bool) -> bool:
         """ImSwitch on/off toggle. Fail-closed: ``_enabled`` is only
         updated to True if every command in the on-sequence succeeded.
 
@@ -670,8 +670,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         sending ``l0`` (see ``__init__``).
         """
         if self._pause_mode:
-            self._set_enabled_pause(enabled)
-            return
+            return self._set_enabled_pause(enabled)
         if enabled:
             # Always flush the setpoint, including 0 — skipping the write
             # would turn the laser on at whatever power the hardware last
@@ -683,15 +682,16 @@ class Cobolt0601NewLaserManager(LaserManager):
             # laser at whatever power the hardware still held.
             if not self._set_cw_power_mw(self._setpoint_mw):
                 self._abort_enable('power setpoint')
-                return
+                return False
             if not self._enter_constant_power():
                 self._abort_enable('constant-power mode')
-                return
+                return False
             if not self._run('master_on'):
                 self._abort_enable('master on')
-                return
+                return False
 
             self._enabled = True
+            return True
         else:
             # Master off is the critical step — must succeed. If it does
             # not, _enabled stays True so callers know the off-transition
@@ -702,13 +702,14 @@ class Cobolt0601NewLaserManager(LaserManager):
                     f'CRITICAL: Cobolt {self._port} master-off l0 failed. '
                     f'_enabled remains True; verify shutter state manually.'
                 )
-                return
+                return False
             # Optional: return to modulation-mode safe state. Failure here
             # is non-critical because l0 already darked the beam.
             self._enter_modulation_mode(self._modulation_power_mw)
             self._enabled = False
+            return True
 
-    def _set_enabled_pause(self, enabled: bool) -> None:
+    def _set_enabled_pause(self, enabled: bool) -> bool:
         """On/off for ``emissionControl='pause'``.
 
         This path only resumes (``las:paus 0``) or pauses (``las:paus 1``)
@@ -724,14 +725,15 @@ class Cobolt0601NewLaserManager(LaserManager):
             # prerequisite rule as the master path.
             if not self._set_cw_power_mw(self._setpoint_mw):
                 self._abort_enable('power setpoint')
-                return
+                return False
             if not self._enter_constant_power():
                 self._abort_enable('constant-power mode')
-                return
+                return False
             if not self._run('resume'):
                 self._abort_enable('resume emission')
-                return
+                return False
             self._enabled = True
+            return True
         else:
             ok_pause = self._run('pause')
             if not ok_pause:
@@ -740,8 +742,9 @@ class Cobolt0601NewLaserManager(LaserManager):
                     f'(las:paus 1) failed; _enabled remains True. Verify '
                     f'shutter state manually.'
                 )
-                return
+                return False
             self._enabled = False
+            return True
 
     def _abort_enable(self, failed_step: str) -> None:
         """Drive back to the safe state after a failed enable prerequisite.
