@@ -17,6 +17,7 @@ from .laser_power import (
     LaserScanState,
     normalizeLaserPowerContext,
     normalizeLaserPowerMode,
+    laserPowerModeFromSetup,
     normalizeLaserScanState,
 )
 from .errors import *

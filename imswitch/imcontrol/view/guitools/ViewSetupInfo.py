@@ -67,9 +67,12 @@ class ViewSetupInfo(SetupInfo):
     rois: Dict[str, 'ROIInfo'] = field(default_factory=dict)
     """ Additional ROIs available to select in detector settings. """
 
-    laserPowerMode: str = "coupled"
-    """Laser acquisition-power policy: ``coupled`` (legacy/default) or
-    ``separated`` (independent Live and Scan power contexts)."""
+    deviceCategorySettings: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    """Optional settings that apply to a whole device category rather than to
+    one device. For lasers, ``deviceCategorySettings["lasers"]["powerMode"]``
+    controls whether acquisition power is coupled to Live power or kept in an
+    independent Scan context.
+    """
 
     laserPresets: Dict[str, Any] = field(default_factory=dict)
     """Laser presets in one global namespace. Historical entries remain

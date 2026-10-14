@@ -57,7 +57,7 @@ from imswitch.imcontrol.model.EtSTEDAutoCalibration import (
 from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
 from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformService
 from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredScanRunner
-from imswitch.imcontrol.model import LaserPowerMode, normalizeLaserPowerMode
+from imswitch.imcontrol.model import LaserPowerMode, laserPowerModeFromSetup
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT, FINISH_GRACEFUL, getSharedScanExecutionCoordinator,
@@ -1184,9 +1184,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     def runSlowScan(self) -> bool:
         self._state.detLog['scan_start'] = _now_us_tag()
-        laserPowerMode = normalizeLaserPowerMode(
-            getattr(self._setupInfo, 'laserPowerMode', LaserPowerMode.COUPLED.value)
-        )
+        laserPowerMode = laserPowerModeFromSetup(self._setupInfo)
         separatedLaserPower = laserPowerMode is LaserPowerMode.SEPARATED
         if separatedLaserPower:
             preparationError = getattr(

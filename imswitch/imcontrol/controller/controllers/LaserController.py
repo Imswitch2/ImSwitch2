@@ -12,6 +12,7 @@ from imswitch.imcontrol.model import (
     getWidgetStatePersistence,
     normalizeLaserPowerContext,
     normalizeLaserPowerMode,
+    laserPowerModeFromSetup,
     normalizeLaserScanState,
 )
 from imswitch.imcontrol.view import guitools
@@ -53,9 +54,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # loaded from a Scan preset.
         self._livePowerValues = {}
         self._scanPowerValues = {}
-        self._powerMode = normalizeLaserPowerMode(
-            getattr(self._setupInfo, 'laserPowerMode', LaserPowerMode.COUPLED.value)
-        )
+        self._powerMode = laserPowerModeFromSetup(self._setupInfo)
         self._currentPowerContext = LaserPowerContext.LIVE
         self._scanLaserState = {}
         self._laserDisplayMeta = {}
@@ -638,7 +637,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         This compatibility API intentionally reports the raw scan-published
         participation/AO state only. New code that needs the power actually
-        used under the current ``laserPowerMode`` should call
+        used under the current laser power mode should call
         :meth:`getLaserAcquisitionState` instead.
         """
         return {
@@ -722,7 +721,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
     def getLaserAcquisitionState(self, laserName: str) -> Dict[str, Any]:
         """Return the power behavior the current acquisition would use.
 
-        This resolves setup ``laserPowerMode``, scan participation, AO
+        This resolves setup laser-category ``powerMode``, scan participation, AO
         ownership, gate -> ``powerDevice`` routing and separated-mode Scan
         fallback into one RPC-friendly state object. ``value`` is ``None``
         when the path is inactive or AO-owned because no controller-side
@@ -1662,7 +1661,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         This API deliberately describes configuration rather than acquisition
         behavior. An unset Scan setting follows the current Live setting
-        dynamically, even while ``laserPowerMode='coupled'`` keeps that Scan
+        dynamically, even while coupled laser power mode keeps that Scan
         setting dormant. Use :meth:`getLaserAcquisitionState` to ask what the
         current acquisition would actually use.
         """
@@ -1777,7 +1776,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             'laserOrder': [],
             # Historical currentPreset is retained as the coupled/single-view
             # selection. Live and Scan keep independent selections so changing
-            # laserPowerMode in the setup does not overwrite either side.
+            # the configured laser power mode does not overwrite either side.
             'currentPreset': coupledPreset,
             'livePreset': livePreset,
             'scanPreset': scanPreset,
@@ -1901,7 +1900,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             warnings.append('Laser enable states not restored in startup mode.')
         
         # Restore preset selections without applying their powers. Selection
-        # identities are independent so toggling laserPowerMode in the setup
+        # identities are independent so changing the configured laser power mode
         # does not lose the dormant separated selections.
         allPresets = getattr(self._setupInfo, 'laserPresets', {})
         currentPreset = state.get('currentPreset')

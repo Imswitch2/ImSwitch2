@@ -107,7 +107,7 @@ def mock_setupinfo():
     """Mock setupInfo."""
     setupinfo = Mock()
     setupinfo.laserPresets = {'Default': {}}
-    setupinfo.laserPowerMode = 'separated'
+    setupinfo.deviceCategorySettings = {'lasers': {'powerMode': 'separated'}}
     setupinfo.lasers = {
         '488nm': Mock(getAnalogChannel=Mock(return_value='ao0')),
         'UV': Mock(getAnalogChannel=Mock(return_value=None), getDigitalLine=Mock(return_value='port0/line0'))

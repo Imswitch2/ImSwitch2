@@ -56,7 +56,7 @@ class LaserAcquisitionState:
 
     Unlike :class:`LaserScanState`, which reports scan configuration only,
     this object answers what acquisition would actually use under the current
-    ``laserPowerMode``. ``value`` is intentionally ``None`` when the laser is
+    laser-category power mode. ``value`` is intentionally ``None`` when the laser is
     inactive for the current scan, when AO owns acquisition power, or when the
     effective power-bearing device is binary and therefore has no scalar
     setpoint.
@@ -122,3 +122,19 @@ def normalizeLaserPowerMode(mode) -> LaserPowerMode:
     raise ValueError(
         f"Unknown laser power mode {mode!r}; expected 'coupled' or 'separated'."
     )
+
+
+def laserPowerModeFromSetup(setupInfo) -> LaserPowerMode:
+    """Resolve the configured laser power policy from setup category settings.
+
+    The setting lives at ``deviceCategorySettings.lasers.powerMode`` so device
+    dictionaries stay pure name→device mappings. Missing/malformed settings
+    intentionally fall back to :attr:`LaserPowerMode.COUPLED`.
+    """
+    settings = getattr(setupInfo, "deviceCategorySettings", None)
+    if not isinstance(settings, dict):
+        return LaserPowerMode.COUPLED
+    laser_settings = settings.get("lasers")
+    if not isinstance(laser_settings, dict):
+        return LaserPowerMode.COUPLED
+    return normalizeLaserPowerMode(laser_settings.get("powerMode"))

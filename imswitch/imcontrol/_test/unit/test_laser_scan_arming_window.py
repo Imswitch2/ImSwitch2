@@ -127,7 +127,9 @@ class _LaserInfo:
 class _SetupInfo:
     def __init__(self, lasers, laserPowerMode='separated'):
         self.lasers = lasers
-        self.laserPowerMode = laserPowerMode
+        self.deviceCategorySettings = {
+            'lasers': {'powerMode': laserPowerMode}
+        }
 
 
 class _SharedAttrs(dict):

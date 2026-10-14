@@ -12,6 +12,7 @@ from imswitch.imcontrol.model import (
     LaserScanPowerControl,
     LaserScanState,
     normalizeLaserPowerMode,
+    laserPowerModeFromSetup,
 )
 from imswitch.imcontrol.view.guitools import LaserPresetInfo, ViewSetupInfo
 
@@ -113,8 +114,10 @@ def _controller(*, live=5.0, setup=None, mode='separated'):
     ctrl = LaserController.__new__(LaserController)
     ctrl._master = SimpleNamespace(lasersManager=_LasersManager())
     ctrl._widget = _Widget(live=live)
-    ctrl._setupInfo = setup or ViewSetupInfo(laserPowerMode=mode)
-    ctrl._setupInfo.laserPowerMode = mode
+    ctrl._setupInfo = setup or ViewSetupInfo()
+    ctrl._setupInfo.deviceCategorySettings = {
+        'lasers': {'powerMode': mode}
+    }
     ctrl._commChannel = SimpleNamespace(sharedAttrs={})
     ctrl._logger = _Logger()
     ctrl.settingAttr = False
@@ -144,8 +147,16 @@ def test_laser_power_mode_defaults_to_coupled_and_rejects_unknown_values():
         normalizeLaserPowerMode("other")
 
 
-def test_view_setup_info_defaults_to_coupled_power_mode():
-    assert ViewSetupInfo().laserPowerMode == "coupled"
+def test_view_setup_info_defaults_to_empty_category_settings():
+    assert ViewSetupInfo().deviceCategorySettings == {}
+    assert laserPowerModeFromSetup(ViewSetupInfo()) is LaserPowerMode.COUPLED
+
+
+def test_laser_power_mode_resolves_from_category_settings():
+    setup = ViewSetupInfo(deviceCategorySettings={
+        "lasers": {"powerMode": "separated"}
+    })
+    assert laserPowerModeFromSetup(setup) is LaserPowerMode.SEPARATED
 
 
 def test_context_api_uses_explicit_setting_names():
@@ -319,7 +330,7 @@ def test_separated_preset_visibility_uses_context_and_unspecified_scan_fallback(
 
 
 def test_coupled_preset_visibility_shows_every_context():
-    setup = ViewSetupInfo(laserPowerMode="coupled", laserPresets={
+    setup = ViewSetupInfo(deviceCategorySettings={"lasers": {"powerMode": "coupled"}}, laserPresets={
         "Legacy": {"488": {"value": 10.0}},
         "Screening": _contextual("live", 2.0),
         "pRESOLFT": _contextual("scan", 30.0),
@@ -362,7 +373,7 @@ def test_loading_scan_preset_never_writes_hardware_in_separated():
 
 
 def test_loading_any_preset_in_coupled_applies_single_hardware_power():
-    setup = ViewSetupInfo(laserPowerMode="coupled", laserPresets={
+    setup = ViewSetupInfo(deviceCategorySettings={"lasers": {"powerMode": "coupled"}}, laserPresets={
         "pRESOLFT": _contextual("scan", 35.0),
     })
     ctrl = _controller(live=0.5, setup=setup, mode='coupled')
@@ -395,7 +406,7 @@ def test_new_scan_preset_is_contextual_and_does_not_modify_live_hardware():
 
 
 def test_coupled_new_preset_is_unspecified_but_update_preserves_existing_context():
-    setup = ViewSetupInfo(laserPowerMode="coupled", laserPresets={
+    setup = ViewSetupInfo(deviceCategorySettings={"lasers": {"powerMode": "coupled"}}, laserPresets={
         "Scan preset": _contextual("scan", 20.0),
     })
     ctrl = _controller(live=7.0, setup=setup, mode='coupled')
@@ -520,7 +531,7 @@ def test_legacy_setup_json_without_scan_presets_still_loads():
     setup = ViewSetupInfo.from_json(legacy, infer_missing=True)
 
     assert setup.laserPresets["Default"]["488"]["value"] == 1.25
-    assert setup.laserPowerMode == "coupled"
+    assert laserPowerModeFromSetup(setup) is LaserPowerMode.COUPLED
 
 
 def test_component_state_persists_only_explicit_scan_overrides():
@@ -670,7 +681,9 @@ def test_same_preset_store_switches_modes_without_rewriting_contexts():
 
 def test_contextual_setup_json_roundtrip_shape_is_self_contained():
     raw = json.dumps({
-        "laserPowerMode": "separated",
+        "deviceCategorySettings": {
+            "lasers": {"powerMode": "separated"}
+        },
         "laserPresets": {
             "Legacy": {"488": {"value": 1.0}},
             "Screening": {
@@ -686,7 +699,7 @@ def test_contextual_setup_json_roundtrip_shape_is_self_contained():
     setup = ViewSetupInfo.from_json(raw, infer_missing=True)
     data = setup.to_dict()
 
-    assert data["laserPowerMode"] == "separated"
+    assert data["deviceCategorySettings"]["lasers"]["powerMode"] == "separated"
     assert data["laserPresets"]["Legacy"]["488"]["value"] == 1.0
     assert data["laserPresets"]["Screening"]["context"] == "live"
     assert data["laserPresets"]["pRESOLFT"]["context"] == "scan"

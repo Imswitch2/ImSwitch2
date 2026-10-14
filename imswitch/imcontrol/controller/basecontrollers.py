@@ -17,7 +17,7 @@ from imswitch.imcommon.controller.basecontrollers import (
 )
 from imswitch.imcontrol.model import (
     InvalidChildClassError, LaserPowerMode, ScanDesignRefusedError,
-    normalizeLaserPowerMode,
+    laserPowerModeFromSetup,
 )
 from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
 from imswitch.imcontrol.model.managers._scan_execution import (
@@ -1688,9 +1688,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # Consumers have already yielded on sigScanStarting and this only ever
         # releases them, so arriving later is safe -- arriving wrong is not.
         self._publishScanActuators()
-        laserPowerMode = normalizeLaserPowerMode(
-            getattr(self._setupInfo, 'laserPowerMode', LaserPowerMode.COUPLED.value)
-        )
+        laserPowerMode = laserPowerModeFromSetup(self._setupInfo)
         separatedLaserPower = laserPowerMode is LaserPowerMode.SEPARATED
         if separatedLaserPower:
             self._raiseIfLaserScanPreparationFailed()
