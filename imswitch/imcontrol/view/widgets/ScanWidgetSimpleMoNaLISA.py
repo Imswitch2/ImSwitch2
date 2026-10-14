@@ -313,7 +313,7 @@ class MoNaLISAView(ScanCloakView):
         self.startButton.setToolTip('Run one MoNaLISA acquisition with these settings.')
         self.screeningButton = QtWidgets.QPushButton('Live')
         self.screeningButton.setToolTip(
-            'Use the selected profile roles for screening at their current Live laser powers.'
+            'Use the selected profile illumination for screening at current Live laser powers.'
         )
         self.screeningButton.clicked.connect(self.sigScreeningRequested.emit)
         # Base layout: stretch, hidden generic Live, Acquire, Stop. Reorder the
@@ -530,10 +530,11 @@ class MoNaLISAView(ScanCloakView):
         self._estimateRefusal = ''
 
     def setLiveRoles(self, roles, selected_roles, *, available=True, reason=''):
-        """Render profile-role screening choices.
+        """Render profile screening choices.
 
-        ``roles`` is an iterable of ``(role, label, devices)`` tuples. The
-        profile/mode owns the candidate roles; the controller owns the saved
+        ``roles`` is an iterable of ``(selection, label, devices)`` tuples.
+        Semantic steps use role selections, while CUSTOM/alignment steps may
+        expose individual laser devices.  The controller owns the saved
         selection and hardware behavior.
         """
         self._updating = True
@@ -562,7 +563,7 @@ class MoNaLISAView(ScanCloakView):
             self._liveAvailable = bool(available)
             self._liveUnavailableReason = str(reason or '')
             baseTip = (
-                'Choose which illumination roles participate in screening. '
+                'Choose which illumination sources participate in screening. '
                 'Only laser ON/OFF state is controlled here; Live power stays in the Laser widget.'
             )
             self.liveRolesWidget.setToolTip(
@@ -983,7 +984,7 @@ class MoNaLISAView(ScanCloakView):
             bound and self._liveAvailable and not running and not screening
         )
         liveTip = self._liveUnavailableReason if not self._liveAvailable else (
-            'Use the selected profile roles for screening at their current Live laser powers.'
+            'Use the selected profile illumination for screening at current Live laser powers.'
         )
         self.screeningButton.setToolTip(liveTip)
         hasProfiles = bool(

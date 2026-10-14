@@ -752,27 +752,42 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         return f'{plan.profile_id}:{plan.mode_id}'
 
     def _candidateLiveRoles(self):
-        """Return ``role -> profile laser device tuple`` for this mode."""
+        """Return Live screening choices mapped to their laser device tuples.
+
+        Semantic MoNaLISA steps stay role-based (ON/OFF/READOUT).  CUSTOM
+        steps are intentionally device-based instead: alignment profiles often
+        use one shared timing step whose modes enable different laser subsets,
+        and collapsing those lasers into one ``Custom`` checkbox makes Live
+        screening unusable.  For CUSTOM steps expose every laser declared by
+        the profile step, not only the devices enabled by the current mode.
+        """
         if not self.cloakOwnsBackend():
             return {}
         plan = self.acquisitionPlan()
         profile = self.cloakLimits().profile_store.profile(plan.profile_id)
         mode = profile.mode(plan.mode_id)
         configuredLasers = set(getattr(self._setupInfo, 'lasers', {}) or {})
-        byRole = {}
+        choices = {}
         for step in profile.steps:
+            if step.role == 'custom':
+                for device in step.ttl_devices:
+                    if device not in configuredLasers:
+                        continue
+                    choices.setdefault(f'device:{device}', (device,))
+                continue
+
             devices = tuple(
                 device for device in mode.devices_for_step(step)
                 if device in configuredLasers
             )
             if not devices:
                 continue
-            existing = list(byRole.get(step.role, ()))
+            existing = list(choices.get(step.role, ()))
             for device in devices:
                 if device not in existing:
                     existing.append(device)
-            byRole[step.role] = tuple(existing)
-        return byRole
+            choices[step.role] = tuple(existing)
+        return choices
 
     def _selectedLiveRoles(self):
         state = self._monalisa()
@@ -808,12 +823,14 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             'on': 'ON',
             'off': 'OFF',
             'readout': 'Readout',
-            'custom': 'Custom',
         }
-        roles = [
-            (role, labels.get(role, role.title()), devices)
-            for role, devices in candidates.items()
-        ]
+        roles = []
+        for selection, devices in candidates.items():
+            if selection.startswith('device:'):
+                label = selection.split(':', 1)[1]
+            else:
+                label = labels.get(selection, selection.title())
+            roles.append((selection, label, devices))
         available = self._livePowerIsSeparated() and bool(roles)
         reason = ''
         if not self._livePowerIsSeparated():
@@ -822,7 +839,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 'The current laser power mode shares acquisition and Live power.'
             )
         elif not roles:
-            reason = 'The selected profile/mode has no laser roles available for screening.'
+            reason = 'The selected profile/mode has no laser illumination available for screening.'
         elif not self._profileScreeningDetectors():
             available = False
             reason = 'The selected profile/mode has no free-running camera in its Readout role.'
@@ -963,7 +980,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return
         selected = self._selectedLiveRoles()
         if not selected:
-            self._view.showMessage('Select at least one Live screening illumination role.', error=True)
+            self._view.showMessage('Select at least one Live screening illumination source.', error=True)
             return
         detectors = self._profileScreeningDetectors()
         if not detectors:
@@ -982,7 +999,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._ensureScreeningTriggerOverride(detectors)
             targets = self._screeningLaserTargets(selected)
             if not targets:
-                raise RuntimeError('The selected screening roles do not resolve to a laser.')
+                raise RuntimeError('The selected screening choices do not resolve to a laser.')
             self._applyScreeningLaserSet(targets)
         except Exception as error:
             # A failed *first* Live must not leave the camera in internal mode.

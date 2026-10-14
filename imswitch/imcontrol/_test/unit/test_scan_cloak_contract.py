@@ -572,6 +572,54 @@ def _monalisaSetupWithoutProfiles():
     return json.dumps(data)
 
 
+def _monalisaSetupWithCustomAlignmentProfile():
+    data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
+    simple = dict(data['scan'].get('simpleMoNaLISA') or {})
+    simple['defaultProfile'] = 'align'
+    simple['profiles'] = {
+        'align': {
+            'label': 'Align',
+            'defaultMode': 'exc',
+            'scanExtentSource': 'ulens',
+            'steps': [
+                {
+                    'id': 'align',
+                    'label': 'Align',
+                    'role': 'custom',
+                    'ttlDevices': [
+                        '405 (ON)',
+                        '488 (EXC)',
+                        '488 (OFF)',
+                        'Camera',
+                    ],
+                    'defaultDurationMs': 10.0,
+                }
+            ],
+            'modes': {
+                'exc': {
+                    'label': 'Exc',
+                    'enabledSteps': ['align'],
+                    'enabledDevices': {
+                        'align': ['488 (EXC)', 'Camera'],
+                    },
+                },
+                'off': {
+                    'label': 'OFF',
+                    'enabledSteps': ['align'],
+                    'enabledDevices': {
+                        'align': ['488 (OFF)', 'Camera'],
+                    },
+                },
+            },
+        }
+    }
+    data['scan']['simpleMoNaLISA'] = simple
+    data.setdefault('deviceCategorySettings', {}).setdefault('lasers', {})[
+        'powerMode'
+    ] = 'separated'
+    return json.dumps(data)
+
+
 def test_monalisa_without_profiles_starts_restricted_and_does_not_adopt_advanced(qtbot):
     rig = CloakRig('SimpleMoNaLISA', _monalisaSetupWithoutProfiles())
     try:
@@ -616,6 +664,37 @@ def test_monalisa_live_defaults_to_on_and_readout_roles_in_separated_mode(qtbot)
     finally:
         rig.close()
 
+
+def test_monalisa_custom_live_exposes_profile_lasers_not_custom_role(qtbot):
+    rig = CloakRig(
+        'SimpleMoNaLISA', _monalisaSetupWithCustomAlignmentProfile()
+    )
+    try:
+        assert rig.view.screeningButton.isEnabled()
+        expected = {
+            'device:405 (ON)',
+            'device:488 (EXC)',
+            'device:488 (OFF)',
+        }
+        assert set(rig.view._liveRoleChecks) == expected
+        assert {check.text() for check in rig.view._liveRoleChecks.values()} == {
+            '405 (ON)', '488 (EXC)', '488 (OFF)'
+        }
+        assert all(
+            'Camera' not in check.text()
+            for check in rig.view._liveRoleChecks.values()
+        )
+
+        # The current mode only enables 488 (EXC), but Live screening exposes
+        # every laser declared by the CUSTOM profile step for alignment use.
+        assert rig.acquisition().mode_id == 'exc'
+        assert rig.scan._candidateLiveRoles() == {
+            'device:405 (ON)': ('405 (ON)',),
+            'device:488 (EXC)': ('488 (EXC)',),
+            'device:488 (OFF)': ('488 (OFF)',),
+        }
+    finally:
+        rig.close()
 def test_monalisa_profiles_and_modes_are_explicit_simple_choices(qtbot):
     rig = CloakRig('SimpleMoNaLISA')
     try:
