@@ -218,6 +218,14 @@ class ScanCloakController:
             self._digitalParameterDict = copy.deepcopy(digital)
             self._positionersScan = self._cloak.scanned_positioners(analog)
             super().setParameters()
+            # ``setParameters`` mirrors the scan into the hidden backend UI but
+            # does not rebuild/publish semantic laser participation (that
+            # normally happens in Advanced ``getParameters``).  Publish while
+            # the mirrored dictionaries are installed so LaserController stays
+            # in sync with Simple profile/mode changes immediately.
+            publish_laser_state = getattr(self, '_publishLaserScanState', None)
+            if callable(publish_laser_state):
+                publish_laser_state()
         finally:
             self.__dict__['_mirroring'] = False
             self.__dict__['_servingAcquisition'] = False

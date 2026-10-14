@@ -745,3 +745,24 @@ def test_monalisa_deleting_active_profile_refreshes_combo_and_plan(qtbot, monkey
         assert rig.view._renderedProfileId == replacement_id
     finally:
         rig.close()
+
+
+def test_monalisa_mode_change_republishes_scan_laser_participation(qtbot):
+    rig = CloakRig(
+        'SimpleMoNaLISA', _monalisaSetupWithCustomAlignmentProfile()
+    )
+    try:
+        rig.settle()
+        state = rig.channel.scanWorkflow.laser_scan_state()
+        assert state['488 (EXC)'].active_for_scan is True
+        assert state['488 (OFF)'].active_for_scan is False
+
+        mode_index = rig.view.modeCombo.findData('off')
+        rig.view.modeCombo.setCurrentIndex(mode_index)
+        rig.settle()
+
+        state = rig.channel.scanWorkflow.laser_scan_state()
+        assert state['488 (EXC)'].active_for_scan is False
+        assert state['488 (OFF)'].active_for_scan is True
+    finally:
+        rig.close()
