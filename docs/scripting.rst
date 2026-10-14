@@ -55,6 +55,21 @@ voltage range. A refused start never runs, so there is no end to wait for.
 On rigs with several scanners, ``getScanSourceNames()`` lists the choices
 for ``runScan(source=...)``.
 
+**A scan's frames as an array.** ``api.imcontrol.recordScanToMemory()``
+runs the scan the Scan widget holds once and returns the frames it
+triggers as a NumPy array ``(frames, rows, columns)``, without writing a
+file: the recording goes to memory, is read back and dropped. Pass a
+detector's name, a list of names (the result is then a dict by name),
+``-1`` for the current detector or ``-2`` for all. It blocks until the
+scan is over (``timeout`` seconds at most), raises ``RuntimeError`` when
+the recording fails and puts the Recording widget back as it was;
+``keep=True`` leaves the recording listed in ImProcess as well::
+
+    frames = api.imcontrol.recordScanToMemory('Camera', timeout=120)
+    mean = frames.mean(axis=0)
+
+``tutorial/scanning/06_scan_into_memory.py`` is this in full.
+
 **Stopping a script.** Pressing *Stop* (or *Run* while a script runs)
 delivers ``OperationCancelled`` **once**, at the script's
 next wait (``getWaitForSignal``, ``sleep``, ``waitUntil``,

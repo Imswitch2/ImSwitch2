@@ -148,6 +148,7 @@
   "scripts/tutorial/README.md": [
    "40711c2c3bc22851052349080561e25285f864207bdb6b0212946a0256e3759c",
    "9e1f5152c82cc64572abfd2497c8d0b8baa8598bf1928822c26f81c813e8caf8",
+   "b573cb226ec706eaea00bc21a6f693cfabc731ff4edc841adbdba98e158dd408",
    "dea4553a5d72f090260f650fbdc66e17eea97fe90a22120ce6fac87d19b11d7b",
    "e9d6666d52b729e649bd9eb6a28b55478b8599197f6bab6d92361b1259bd705f"
   ],
@@ -228,6 +229,9 @@
   "scripts/tutorial/scanning/05_laser_power_series.py": [
    "b413f4a9938b186e0a5bda86f7332d8daa357d53cf942026e19bf3cf47387775",
    "f941dd8bede21141e7090b0a706648ee1f3ed4120d4925740a8f13a58a0bc9b0"
+  ],
+  "scripts/tutorial/scanning/06_scan_into_memory.py": [
+   "e84945869366ac51b25dca6f3ba46b2a2614d6b5cf8a86c930c2f7c3c5ddb2be"
   ],
   "scripts/tutorial/scanning/scan_helpers.py": [
    "f48634c922897f13fc97a3b827651566ce7f6d75757b758201d43b0cec3b5739"
