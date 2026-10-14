@@ -640,3 +640,29 @@ def test_monalisa_profiles_and_modes_are_explicit_simple_choices(qtbot):
         assert rig.held() == rig.acquisition()
     finally:
         rig.close()
+
+
+def test_monalisa_deleting_active_profile_refreshes_combo_and_plan(qtbot, monkeypatch):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        # Avoid touching the user's setup file; the controller still updates
+        # its in-memory profile store exactly as after a successful save.
+        monkeypatch.setattr(rig.scan, '_persistSimpleConfig', lambda raw: None)
+        monkeypatch.setattr(rig.view, 'confirmProfileDelete', lambda label: True)
+
+        rig.scan._onProfileRequested('dual_color')
+        assert rig.acquisition().profile_id == 'dual_color'
+
+        rig.scan._onProfileDeleteRequested('dual_color')
+
+        profile_ids = [
+            rig.view.profileCombo.itemData(i)
+            for i in range(rig.view.profileCombo.count())
+        ]
+        replacement_id = rig.limits().profile_store.default_profile
+        assert 'dual_color' not in profile_ids
+        assert rig.view.profileCombo.currentData() == replacement_id
+        assert rig.acquisition().profile_id == replacement_id
+        assert rig.view._renderedProfileId == replacement_id
+    finally:
+        rig.close()

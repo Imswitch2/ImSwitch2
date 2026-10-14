@@ -390,7 +390,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._mirrorToBackend(force=True)
         self._refreshEstimate()
 
-    def _persistProfileStore(self, store):
+    def _persistProfileStore(self, store, *, refresh_view=True):
         """Persist one atomic profile-store replacement into the active setup."""
         state = self._monalisa()
         raw = config_with_profile_store(
@@ -398,7 +398,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
         self._persistSimpleConfig(raw)
         state['limits'] = dataclasses.replace(state['limits'], profile_store=store)
-        self._refreshResolvedSetup(refreshView=True)
+        self._refreshResolvedSetup(refreshView=refresh_view)
 
     def _persistSimpleConfig(self, raw):
         """Persist one complete ``simpleMoNaLISA`` block atomically."""
@@ -528,9 +528,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._refreshLiveControls()
         self._refreshEstimate()
 
-    def _saveProfileStoreOrReport(self, store):
+    def _saveProfileStoreOrReport(self, store, *, refresh_view=True):
         try:
-            self._persistProfileStore(store)
+            self._persistProfileStore(store, refresh_view=refresh_view)
         except Exception as error:
             self._view.showMessage(f'Could not save MoNaLISA profiles: {error}', error=True)
             return False
@@ -690,8 +690,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._view.showMessage(str(error), error=True)
             return
         active = state['plan'] is not None and state['plan'].profile_id == profile_id
-        if not self._saveProfileStoreOrReport(new_store):
+        # Do not refresh through the old plan while persisting.  If the active
+        # profile is being deleted, setPlan(old_plan) can otherwise reinsert
+        # the deleted id into the combo before we select the replacement.
+        if not self._saveProfileStoreOrReport(new_store, refresh_view=False):
             return
+        state = self._monalisa()
+        self._view.configure(state['limits'])
         if active and not new_store.profiles:
             self._setUnboundProfileState()
         elif active:
