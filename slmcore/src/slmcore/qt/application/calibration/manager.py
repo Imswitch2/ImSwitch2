@@ -1032,6 +1032,11 @@ class CalibrationManager(QtCore.QObject):
         widget.sigLocalizeRequested.connect(
             lambda key=section_key,plane=plane_name:self._registration_localize(key,plane)
         )
+        widget.sigCorrespondenceChanged.connect(
+            lambda correspondence,key=section_key,plane=plane_name:self._registration_correspondence_changed(
+                key,plane,correspondence
+            )
+        )
         widget.sigFitRequested.connect(
             lambda model,degree,key=section_key,plane=plane_name:self._registration_fit(key,plane,model,degree)
         )
@@ -1081,6 +1086,19 @@ class CalibrationManager(QtCore.QObject):
                 section_key,plane_name,widget.canonical_reference_name,
             )
             widget.clear_error(); self._render_observation_registration(section_key,plane_name,quiet=True)
+        except Exception as error:widget.set_error(error)
+
+
+    def _registration_correspondence_changed(
+        self,section_key: str,plane_name: str,correspondence: str,
+    ) -> None:
+        widget=self._registration_widget
+        if widget is None:return
+        try:
+            self.controller.observation_registration_calibration_service.set_correspondence(
+                section_key,plane_name,widget.canonical_reference_name,correspondence,
+            )
+            widget.clear_error(); self._render_observation_registration(section_key,plane_name)
         except Exception as error:widget.set_error(error)
 
     def _registration_fit(self,section_key: str,plane_name: str,model: str,degree: int) -> None:

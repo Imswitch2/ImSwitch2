@@ -56,6 +56,9 @@ def test_registration_widget_presents_fit_diagnostics_and_reference_availability
         native_points_px=np.array([[0.,1.,0.,1.],[0.,0.,1.,1.]]),
         canonical_points_px=np.array([[2.,3.,2.,3.],[4.,4.,5.,5.]]),
         transformed_native_points_px=np.array([[2.,3.,2.,3.],[4.,4.,5.,5.]]),
+        forward_residual_vectors_px=np.zeros((2,4)),
+        transformed_canonical_points_px=np.array([[0.,1.,0.,1.],[0.,0.,1.,1.]]),
+        reverse_residual_vectors_px=np.zeros((2,4)),
         forward_rms_residual_px=0.01,forward_max_residual_px=0.02,
         reverse_rms_residual_px=0.015,reverse_max_residual_px=0.03,
     )
@@ -70,6 +73,13 @@ def test_registration_widget_presents_fit_diagnostics_and_reference_availability
         available_references=(reference,),canonical_reference_name="488-ref",
         latest_native_available=True,fit_enabled=True,save_enabled=True,
         common_site_count=4,diagnostics=diagnostics,
+        correspondence_requested="auto",correspondence_resolved="flip_x",
+        correspondence_options=("auto","canonical","flip_x","flip_y","rotate_180"),
+        correspondence_diagnostics={
+            "requested":"auto","resolved":"flip_x","fit_count":4,
+            "relative_rotation_deg":0.1,"rms_px":0.2,"reflection":False,
+            "median_displacement_px":3.0,
+        },
         candidate=SimpleNamespace(transform_model="polynomial",polynomial_degree=2),
     )
     try:
@@ -80,6 +90,53 @@ def test_registration_widget_presents_fit_diagnostics_and_reference_availability
         assert widget.native_use.isEnabled()
         assert widget.canonical_reference_name=="488-ref"
         assert "SER488" in widget.reference_status.text()
+        assert widget.correspondence_combo.currentData()=="auto"
+        assert "Auto" in widget.correspondence_combo.currentText()
+        assert "Flip X" in widget.correspondence_info.text()
+        assert "4 matched sites" in widget.correspondence_info.text()
+        assert widget.preview.direction_combo.count()==2
+        assert "Native → Canonical" in widget.preview.summary_label.text()
+        widget.preview.direction_combo.setCurrentIndex(1)
+        assert "Canonical → Native" in widget.preview.summary_label.text()
     finally:
         widget.deleteLater()
 
+
+
+def test_registration_widget_emits_manual_correspondence_override():
+    _app()
+    from slmcore.qt.calibration.observation_registration_dialog import ObservationRegistrationCalibrationWidget
+    reference=SimpleNamespace(
+        name="488-ref",lifetime=SimpleNamespace(value="session"),
+        reference=SimpleNamespace(metadata={"source_slm_serial":"SER488","source_section":"sec_488"}),
+    )
+    widget=ObservationRegistrationCalibrationWidget(
+        native_section_key="sec_405",native_section_title="405",
+        observation_plane_name="Intermediate",references=(reference,),
+        canonical_reference_name="488-ref",
+    )
+    native=SimpleNamespace(measurement_id="m1",matched_count=4)
+    canonical=SimpleNamespace(
+        lifetime=SimpleNamespace(value="session"),valid_count=4,total_count=4,
+        frame=SimpleNamespace(slm_serial="SER488",section_key="sec_488"),
+        sample_policy="genuinely_measured_sites_from_reference",
+    )
+    context=SimpleNamespace(
+        native_snapshot=native,canonical_snapshot=canonical,
+        available_references=(reference,),canonical_reference_name="488-ref",
+        latest_native_available=True,fit_enabled=True,save_enabled=False,
+        common_site_count=4,diagnostics=None,candidate=None,
+        correspondence_requested="auto",correspondence_resolved="flip_x",
+        correspondence_options=("auto","canonical","flip_x"),
+        correspondence_diagnostics={"resolved":"flip_x","fit_count":4,"rms_px":0.2},
+    )
+    emitted=[]
+    widget.sigCorrespondenceChanged.connect(emitted.append)
+    try:
+        widget.set_context(context)
+        index=widget.correspondence_combo.findData("flip_x")
+        assert index>=0
+        widget.correspondence_combo.setCurrentIndex(index)
+        assert emitted==["flip_x"]
+    finally:
+        widget.deleteLater()

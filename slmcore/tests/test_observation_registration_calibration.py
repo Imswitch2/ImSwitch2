@@ -210,12 +210,122 @@ def test_calibration_resolves_flip_x_before_fitting_continuous_registration(tmp_
         "sec_0","Intermediate","488-flipped",model="affine",
     )
 
+    assert candidate.provenance["correspondence"] == "exact_lattice"
+    assert candidate.provenance["correspondence_requested"] == "auto"
+    assert candidate.provenance["correspondence_resolved"] == "flip_x"
     assert candidate.provenance["resolved_correspondence"] == "flip_x"
-    assert candidate.provenance["correspondence"] == "exact_lattice_auto"
     assert np.linalg.det(candidate.forward_transform.matrix[:,:2]) > 0.0
     np.testing.assert_allclose(
         candidate.native_to_canonical(native),native,atol=1e-9,
     )
+
+
+def test_calibration_context_exposes_position_feedback_correspondence_contract(tmp_path):
+    session,_store=_session(tmp_path,nx=5,ny=4)
+    native=_grid(5,4)
+    native_localization,_measurement=_attach_localization(
+        session,"sec_0",native,detector="cam405",
+    )
+    flip=spot_ordering_permutation(
+        native_localization.lattice_indices,SpotOrdering.FLIP_X,
+    )
+    _add_reference(
+        session,"sec_1",native[:,flip],name="488-flipped",detector="cam488",
+    )
+    service=session.observation_registration_calibration
+    service.use_latest_localization("sec_0","Intermediate","488-flipped")
+
+    context=service.context("sec_0","Intermediate","488-flipped")
+    assert context.correspondence_requested=="auto"
+    assert context.correspondence_resolved=="flip_x"
+    assert "auto" in context.correspondence_options
+    assert "canonical" in context.correspondence_options
+    assert "flip_x" in context.correspondence_options
+    assert context.correspondence_diagnostics["requested"]=="auto"
+    assert context.correspondence_diagnostics["resolved"]=="flip_x"
+    assert context.correspondence_diagnostics["fit_count"]==native.shape[1]
+    assert context.correspondence_diagnostics["reflection"] is False
+
+
+def test_manual_registration_correspondence_override_invalidates_fit_and_changes_pairing(tmp_path):
+    session,_store=_session(tmp_path,nx=5,ny=4)
+    native=_grid(5,4)
+    native_localization,_measurement=_attach_localization(
+        session,"sec_0",native,detector="cam405",
+    )
+    flip=spot_ordering_permutation(
+        native_localization.lattice_indices,SpotOrdering.FLIP_X,
+    )
+    _add_reference(
+        session,"sec_1",native[:,flip],name="488-flipped",detector="cam488",
+    )
+    service=session.observation_registration_calibration
+    service.use_latest_localization("sec_0","Intermediate","488-flipped")
+    auto_candidate=service.fit(
+        "sec_0","Intermediate","488-flipped",model="affine",
+    )
+    assert np.linalg.det(auto_candidate.forward_transform.matrix[:,:2])>0.0
+
+    details=service.set_correspondence(
+        "sec_0","Intermediate","488-flipped","canonical",
+    )
+    assert details["requested"]=="canonical"
+    assert details["resolved"]=="canonical"
+    context=service.context("sec_0","Intermediate","488-flipped")
+    assert context.correspondence_requested=="canonical"
+    assert context.correspondence_resolved=="canonical"
+    assert context.candidate is None
+    assert context.diagnostics is None
+
+    manual_candidate=service.fit(
+        "sec_0","Intermediate","488-flipped",model="affine",
+    )
+    assert manual_candidate.provenance["correspondence_requested"]=="canonical"
+    assert manual_candidate.provenance["correspondence_resolved"]=="canonical"
+    assert np.linalg.det(manual_candidate.forward_transform.matrix[:,:2])<0.0
+
+
+def test_manual_registration_correspondence_rejects_shape_incompatible_choice(tmp_path):
+    session,_store=_session(tmp_path,nx=5,ny=4)
+    native=_grid(5,4)
+    _attach_localization(session,"sec_0",native,detector="cam405")
+    _add_reference(session,"sec_1",native,name="488-ref",detector="cam488")
+    service=session.observation_registration_calibration
+    service.use_latest_localization("sec_0","Intermediate","488-ref")
+    context=service.context("sec_0","Intermediate","488-ref")
+    assert "rotate_90_cw" not in context.correspondence_options
+    with pytest.raises(ValueError,match="not valid for this finite lattice"):
+        service.set_correspondence(
+            "sec_0","Intermediate","488-ref","rotate_90_cw",
+        )
+
+
+def test_saved_manual_correspondence_is_restored_for_recalibration(tmp_path):
+    session,_store=_session(tmp_path,nx=5,ny=4)
+    native=_grid(5,4)
+    native_localization,_measurement=_attach_localization(
+        session,"sec_0",native,detector="cam405",
+    )
+    flip=spot_ordering_permutation(
+        native_localization.lattice_indices,SpotOrdering.FLIP_X,
+    )
+    _add_reference(
+        session,"sec_1",native[:,flip],name="488-flipped",detector="cam488",
+    )
+    service=session.observation_registration_calibration
+    service.use_latest_localization("sec_0","Intermediate","488-flipped")
+    service.set_correspondence(
+        "sec_0","Intermediate","488-flipped","flip_x",
+    )
+    service.fit("sec_0","Intermediate","488-flipped",model="affine")
+    service.save("sec_0","Intermediate","488-flipped")
+
+    service.prepare_runtime_change()
+    service.use_latest_localization("sec_0","Intermediate","488-flipped")
+    context=service.context("sec_0","Intermediate","488-flipped")
+    assert context.correspondence_requested=="flip_x"
+    assert context.correspondence_resolved=="flip_x"
+
 
 def test_cross_slm_session_reference_can_define_canonical_frame(tmp_path):
     plane_store=ObservationPlaneStore(tmp_path/"planes")

@@ -1,75 +1,176 @@
 from __future__ import annotations
 
-from typing import Any,Mapping,Sequence
+from typing import Any,Sequence
 
 import numpy as np
-from qtpy import QtCore,QtGui,QtWidgets
+import pyqtgraph as pg
+from qtpy import QtCore,QtWidgets
+
+from ...core.cgh.localization import spot_ordering_label
 
 
-class ObservationRegistrationPreview(QtWidgets.QWidget):
-    """Compact visualization of canonical points and registration residuals."""
+_MUTED_COLOR="#888"
+_WARNING_COLOR="#a66a00"
+
+
+class ObservationRegistrationAlignmentView(QtWidgets.QWidget):
+    """Point-alignment workbench using the same visual language as feedback.
+
+    Observation registration relates two detector coordinate frames, so the raw
+    native and canonical coordinates should not be overlaid directly.  Instead
+    the view shows either native -> canonical or canonical -> native and compares
+    transformed source points with the target points in that frame.
+    """
 
     def __init__(self,parent=None) -> None:
         super().__init__(parent)
-        self._canonical=np.empty((2,0),dtype=float)
-        self._transformed=np.empty((2,0),dtype=float)
-        self.setMinimumSize(420,300)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,QtWidgets.QSizePolicy.Expanding)
+        self._diagnostics=None
+        root=QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0,0,0,0)
+        root.setSpacing(4)
+
+        controls=QtWidgets.QHBoxLayout()
+        controls.setContentsMargins(0,0,0,0)
+        controls.addWidget(QtWidgets.QLabel("View:"))
+        self.direction_combo=QtWidgets.QComboBox()
+        self.direction_combo.addItem("Native → Canonical","forward")
+        self.direction_combo.addItem("Canonical → Native","reverse")
+        controls.addWidget(self.direction_combo)
+        controls.addStretch(1)
+        root.addLayout(controls)
+
+        self.graphics=pg.GraphicsLayoutWidget(self)
+        self.graphics.setMinimumHeight(300)
+        self.view_box=self.graphics.addViewBox(row=0,col=0)
+        self.view_box.setAspectLocked(True)
+        self.view_box.invertY(True)
+        self.view_box.setMouseMode(pg.ViewBox.PanMode)
+
+        # Match PositionReferenceView conventions: reference/target is a magenta
+        # open circle, transformed/predicted source is a cyan plus, residuals red.
+        self.target_item=pg.ScatterPlotItem(
+            symbol="o",size=10,pen=pg.mkPen("#e06cdb",width=1.3),brush=None,
+        )
+        self.transformed_item=pg.ScatterPlotItem(
+            symbol="+",size=12,pen=pg.mkPen("#55c7d9",width=1.8),
+        )
+        self.residual_item=pg.PlotCurveItem(
+            pen=pg.mkPen("#cc6666",width=1.1),
+        )
+        for item in (self.residual_item,self.target_item,self.transformed_item):
+            self.view_box.addItem(item)
+        root.addWidget(self.graphics,1)
+
+        overlays=QtWidgets.QHBoxLayout()
+        overlays.setContentsMargins(0,2,0,0)
+        overlays.setSpacing(8)
+        self.target_checkbox=QtWidgets.QCheckBox("○  Canonical")
+        self.transformed_checkbox=QtWidgets.QCheckBox("+  Transformed native")
+        self.residual_checkbox=QtWidgets.QCheckBox("—  Residuals")
+        self.target_checkbox.setStyleSheet("color: #e06cdb;")
+        self.transformed_checkbox.setStyleSheet("color: #55c7d9;")
+        self.residual_checkbox.setStyleSheet("color: #cc6666;")
+        self.target_checkbox.setChecked(True)
+        self.transformed_checkbox.setChecked(True)
+        self.residual_checkbox.setChecked(False)
+        for checkbox in (
+            self.target_checkbox,self.transformed_checkbox,self.residual_checkbox,
+        ):
+            checkbox.toggled.connect(self._apply_visibility)
+            overlays.addWidget(checkbox)
+        overlays.addStretch(1)
+        root.addLayout(overlays)
+
+        self.summary_label=QtWidgets.QLabel("Fit a registration to inspect alignment.")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        self.summary_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        root.addWidget(self.summary_label)
+
+        self.direction_combo.currentIndexChanged.connect(self._refresh)
+        self._update_overlay_labels()
 
     def clear(self) -> None:
-        self._canonical=np.empty((2,0),dtype=float)
-        self._transformed=np.empty((2,0),dtype=float)
-        self.update()
+        self._diagnostics=None
+        self.target_item.setData(x=[],y=[])
+        self.transformed_item.setData(x=[],y=[])
+        self.residual_item.setData([],[])
+        self.summary_label.setText("Fit a registration to inspect alignment.")
 
-    def set_points(self,canonical_points: Any,transformed_native_points: Any) -> None:
-        canonical=np.asarray(canonical_points,dtype=float)
-        transformed=np.asarray(transformed_native_points,dtype=float)
-        if canonical.ndim!=2 or transformed.ndim!=2 or canonical.shape!=transformed.shape or canonical.shape[0]!=2:
-            self.clear(); return
-        self._canonical=np.array(canonical,copy=True)
-        self._transformed=np.array(transformed,copy=True)
-        self.update()
+    def set_diagnostics(self,diagnostics: Any) -> None:
+        self._diagnostics=diagnostics
+        self._refresh(reset_view=True)
 
-    def paintEvent(self,event) -> None:  # noqa: N802 - Qt API
-        super().paintEvent(event)
-        painter=QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing,True)
-        rect=self.rect().adjusted(10,10,-10,-10)
-        painter.fillRect(rect,self.palette().base())
-        painter.setPen(QtGui.QPen(self.palette().mid().color(),1)); painter.drawRect(rect)
-        painter.setPen(self.palette().text().color())
-        title=painter.font(); title.setBold(True); painter.setFont(title)
-        painter.drawText(rect.adjusted(8,6,-8,-6),QtCore.Qt.AlignTop|QtCore.Qt.AlignLeft,"Registration fit — canonical frame")
-        title.setBold(False); painter.setFont(title)
-        if self._canonical.shape[1]==0:
-            painter.drawText(rect,QtCore.Qt.AlignCenter,"Fit a registration to inspect residuals.")
-            painter.end(); return
+    @staticmethod
+    def _residual_curve(source: np.ndarray,target: np.ndarray) -> tuple[np.ndarray,np.ndarray]:
+        count=int(source.shape[1])
+        if count<=0:
+            return np.empty(0),np.empty(0)
+        x=np.empty(count*3,dtype=np.float64)
+        y=np.empty(count*3,dtype=np.float64)
+        x[0::3]=source[0]; x[1::3]=target[0]; x[2::3]=np.nan
+        y[0::3]=source[1]; y[1::3]=target[1]; y[2::3]=np.nan
+        return x,y
 
-        all_points=np.concatenate((self._canonical,self._transformed),axis=1)
-        xmin,ymin=np.min(all_points,axis=1); xmax,ymax=np.max(all_points,axis=1)
-        dx=max(float(xmax-xmin),1.0); dy=max(float(ymax-ymin),1.0)
-        plot=rect.adjusted(28,36,-18,-28)
-        scale=min(plot.width()/dx,plot.height()/dy)*0.88
-        cx=float((xmin+xmax)/2.0); cy=float((ymin+ymax)/2.0)
-        center=plot.center()
+    def _refresh(self,*_args,reset_view: bool=False) -> None:
+        self._update_overlay_labels()
+        diagnostics=self._diagnostics
+        if diagnostics is None:
+            self.clear()
+            return
+        direction=str(self.direction_combo.currentData() or "forward")
+        if direction=="reverse":
+            target=np.asarray(diagnostics.native_points_px,dtype=np.float64)
+            transformed=np.asarray(diagnostics.transformed_canonical_points_px,dtype=np.float64)
+            rms=float(diagnostics.reverse_rms_residual_px)
+            maximum=float(diagnostics.reverse_max_residual_px)
+            label="Canonical → Native"
+        else:
+            target=np.asarray(diagnostics.canonical_points_px,dtype=np.float64)
+            transformed=np.asarray(diagnostics.transformed_native_points_px,dtype=np.float64)
+            rms=float(diagnostics.forward_rms_residual_px)
+            maximum=float(diagnostics.forward_max_residual_px)
+            label="Native → Canonical"
+        self.target_item.setData(x=target[0],y=target[1])
+        self.transformed_item.setData(x=transformed[0],y=transformed[1])
+        x,y=self._residual_curve(transformed,target)
+        self.residual_item.setData(x,y,connect="finite")
+        self.summary_label.setText(
+            "%s · %d points · RMS %.4g px · max %.4g px"
+            % (label,target.shape[1],rms,maximum)
+        )
+        self._apply_visibility()
+        if reset_view:
+            self.view_box.autoRange()
 
-        def map_point(x: float,y: float) -> QtCore.QPointF:
-            return QtCore.QPointF(center.x()+(x-cx)*scale,center.y()-(y-cy)*scale)
+    def _update_overlay_labels(self) -> None:
+        reverse=str(self.direction_combo.currentData() or "forward")=="reverse"
+        if reverse:
+            self.target_checkbox.setText("○  Native")
+            self.transformed_checkbox.setText("+  Transformed canonical")
+            self.target_checkbox.setToolTip("Measured native calibration points.")
+            self.transformed_checkbox.setToolTip(
+                "Canonical reference points transformed into the native detector frame."
+            )
+            self.residual_checkbox.setToolTip("Transformed canonical → native residual vectors.")
+        else:
+            self.target_checkbox.setText("○  Canonical")
+            self.transformed_checkbox.setText("+  Transformed native")
+            self.target_checkbox.setToolTip("Canonical reference calibration points.")
+            self.transformed_checkbox.setToolTip(
+                "Native localization points transformed into the canonical detector frame."
+            )
+            self.residual_checkbox.setToolTip("Transformed native → canonical residual vectors.")
 
-        residual_pen=QtGui.QPen(self.palette().mid().color(),1.3)
-        canonical_pen=QtGui.QPen(self.palette().highlight().color(),1.6)
-        transformed_pen=QtGui.QPen(self.palette().text().color(),1.4)
-        for index in range(self._canonical.shape[1]):
-            tx,ty=self._transformed[:,index]; cxp,cyp=self._canonical[:,index]
-            p0=map_point(float(tx),float(ty)); p1=map_point(float(cxp),float(cyp))
-            painter.setPen(residual_pen); painter.drawLine(p0,p1)
-            painter.setPen(transformed_pen)
-            painter.drawLine(QtCore.QPointF(p0.x()-4,p0.y()),QtCore.QPointF(p0.x()+4,p0.y()))
-            painter.drawLine(QtCore.QPointF(p0.x(),p0.y()-4),QtCore.QPointF(p0.x(),p0.y()+4))
-            painter.setPen(canonical_pen); painter.setBrush(QtCore.Qt.NoBrush); painter.drawEllipse(p1,4,4)
-        painter.setPen(self.palette().text().color())
-        painter.drawText(rect.adjusted(8,0,-8,-6),QtCore.Qt.AlignBottom|QtCore.Qt.AlignLeft,"Cross: transformed native   Circle: canonical   Line: residual")
-        painter.end()
+    def _apply_visibility(self,*_args) -> None:
+        self.target_item.setVisible(self.target_checkbox.isChecked())
+        self.transformed_item.setVisible(self.transformed_checkbox.isChecked())
+        self.residual_item.setVisible(self.residual_checkbox.isChecked())
+
+
+# Backward-compatible public name retained for downstream imports/tests while the
+# old custom QPainter preview is replaced by the shared feedback-style workbench.
+ObservationRegistrationPreview=ObservationRegistrationAlignmentView
 
 
 class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
@@ -78,6 +179,7 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
     sigReferenceChanged=QtCore.Signal(str)
     sigUseLatestRequested=QtCore.Signal()
     sigLocalizeRequested=QtCore.Signal()
+    sigCorrespondenceChanged=QtCore.Signal(str)
     sigFitRequested=QtCore.Signal(str,int)
     sigSaveRequested=QtCore.Signal()
     sigCancelRequested=QtCore.Signal()
@@ -91,6 +193,7 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.native_section_key=str(native_section_key)
         self.observation_plane_name=str(observation_plane_name)
+        self._setting_context=False
         root=QtWidgets.QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(8)
 
         heading=QtWidgets.QLabel("Observation registration — %s / %s" % (observation_plane_name,native_section_title))
@@ -114,6 +217,24 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
         self.reference_status=QtWidgets.QLabel("Select a saved or session reference."); self.reference_status.setWordWrap(True); reference_layout.addWidget(self.reference_status,1)
         localizations.addWidget(self.native_group,1); localizations.addWidget(self.reference_group,1); root.addLayout(localizations)
 
+        correspondence_group=QtWidgets.QGroupBox("Correspondence")
+        correspondence_layout=QtWidgets.QVBoxLayout(correspondence_group)
+        correspondence_row=QtWidgets.QHBoxLayout()
+        correspondence_row.addWidget(QtWidgets.QLabel("Mode:"))
+        self.correspondence_combo=QtWidgets.QComboBox()
+        self.correspondence_combo.setToolTip(
+            "Discrete finite-lattice correspondence used only to pair calibration spots. "
+            "Auto uses the same exact-lattice resolver as Position Feedback."
+        )
+        correspondence_row.addWidget(self.correspondence_combo,1)
+        correspondence_layout.addLayout(correspondence_row)
+        self.correspondence_info=QtWidgets.QLabel("")
+        self.correspondence_info.setWordWrap(True)
+        self.correspondence_info.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.correspondence_info.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        correspondence_layout.addWidget(self.correspondence_info)
+        root.addWidget(correspondence_group)
+
         fit_row=QtWidgets.QHBoxLayout(); fit_row.addWidget(QtWidgets.QLabel("Model:"))
         self.model_combo=QtWidgets.QComboBox(); self.model_combo.addItem("Affine","affine"); self.model_combo.addItem("Polynomial","polynomial"); fit_row.addWidget(self.model_combo)
         fit_row.addWidget(QtWidgets.QLabel("Degree:")); self.degree_combo=QtWidgets.QComboBox()
@@ -123,13 +244,14 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
 
         self.diagnostics_label=QtWidgets.QLabel("Use a native localization and select a canonical reference, then Fit.")
         self.diagnostics_label.setWordWrap(True); self.diagnostics_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); root.addWidget(self.diagnostics_label)
-        self.preview=ObservationRegistrationPreview(self); root.addWidget(self.preview,1)
+        self.preview=ObservationRegistrationAlignmentView(self); root.addWidget(self.preview,1)
 
         buttons=QtWidgets.QHBoxLayout(); buttons.addStretch(1)
         self.cancel_button=QtWidgets.QPushButton("Cancel"); self.save_button=QtWidgets.QPushButton("Save registration")
         buttons.addWidget(self.cancel_button); buttons.addWidget(self.save_button); root.addLayout(buttons)
 
         self.reference_combo.currentIndexChanged.connect(self._reference_changed)
+        self.correspondence_combo.currentIndexChanged.connect(self._correspondence_changed)
         self.model_combo.currentIndexChanged.connect(self._model_changed)
         self.fit_button.clicked.connect(self._fit)
         self.save_button.clicked.connect(self.sigSaveRequested.emit)
@@ -144,6 +266,10 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
     @property
     def canonical_reference_name(self) -> str:
         return str(self.reference_combo.currentData() or "")
+
+    @property
+    def correspondence(self) -> str:
+        return str(self.correspondence_combo.currentData() or "auto")
 
     def _build_native_group(self,section_title: str):
         group=QtWidgets.QGroupBox("Native localization"); layout=QtWidgets.QVBoxLayout(group)
@@ -167,19 +293,26 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
 
     def _set_reference_choices(self,references: Sequence[Any],selected: str | None=None) -> None:
         current=str(selected or self.canonical_reference_name if hasattr(self,"reference_combo") else selected or "")
-        self.reference_combo.blockSignals(True)
-        self.reference_combo.clear()
-        for record in references:
-            name=str(getattr(record,"name","") or "")
-            if name:self.reference_combo.addItem(self._reference_label(record),name)
-        index=self.reference_combo.findData(current) if current else -1
-        if index>=0:self.reference_combo.setCurrentIndex(index)
-        elif self.reference_combo.count():self.reference_combo.setCurrentIndex(0)
-        self.reference_combo.blockSignals(False)
+        blocker=QtCore.QSignalBlocker(self.reference_combo)
+        try:
+            self.reference_combo.clear()
+            for record in references:
+                name=str(getattr(record,"name","") or "")
+                if name:self.reference_combo.addItem(self._reference_label(record),name)
+            index=self.reference_combo.findData(current) if current else -1
+            if index>=0:self.reference_combo.setCurrentIndex(index)
+            elif self.reference_combo.count():self.reference_combo.setCurrentIndex(0)
+        finally:
+            del blocker
 
     def _reference_changed(self,*_args) -> None:
         self.reference_title.setText(self.reference_combo.currentText() or "—")
-        self.sigReferenceChanged.emit(self.canonical_reference_name)
+        if not self._setting_context:
+            self.sigReferenceChanged.emit(self.canonical_reference_name)
+
+    def _correspondence_changed(self,*_args) -> None:
+        if not self._setting_context and self.correspondence_combo.count():
+            self.sigCorrespondenceChanged.emit(self.correspondence)
 
     def _model_changed(self,*_args) -> None:
         self.degree_combo.setEnabled(str(self.model_combo.currentData())=="polynomial")
@@ -187,44 +320,109 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
     def _fit(self) -> None:
         self.sigFitRequested.emit(str(self.model_combo.currentData() or "affine"),int(self.degree_combo.currentData() or 2))
 
+    @staticmethod
+    def _correspondence_label(value: str,resolved: str) -> str:
+        if value=="auto":
+            try:return "Auto — %s" % spot_ordering_label(resolved)
+            except Exception:return "Auto"
+        try:return spot_ordering_label(value)
+        except Exception:return value.replace("_"," ").title()
+
+    def _set_correspondence_context(self,context: Any) -> None:
+        requested=str(getattr(context,"correspondence_requested","auto") or "auto")
+        resolved=str(getattr(context,"correspondence_resolved","") or "canonical")
+        options=tuple(str(value) for value in (getattr(context,"correspondence_options",()) or ()))
+        if "auto" not in options:options=("auto",)+options
+        if "canonical" not in options:options=options+("canonical",)
+        blocker=QtCore.QSignalBlocker(self.correspondence_combo)
+        try:
+            self.correspondence_combo.clear()
+            for value in options:
+                self.correspondence_combo.addItem(self._correspondence_label(value,resolved),value)
+            index=self.correspondence_combo.findData(requested)
+            self.correspondence_combo.setCurrentIndex(index if index>=0 else 0)
+        finally:
+            del blocker
+        native=getattr(context,"native_snapshot",None)
+        canonical=getattr(context,"canonical_snapshot",None)
+        self.correspondence_combo.setEnabled(
+            native is not None and canonical is not None and self.correspondence_combo.count()>0
+        )
+
+        diagnostics=dict(getattr(context,"correspondence_diagnostics",{}) or {})
+        if not diagnostics:
+            self.correspondence_info.setText(
+                "Use a native localization and canonical reference to resolve lattice correspondence."
+                if native is None or canonical is None else "Correspondence unavailable."
+            )
+            self.correspondence_info.setStyleSheet("color: %s;" % _MUTED_COLOR)
+            return
+        resolved_value=str(diagnostics.get("resolved") or resolved)
+        try:resolved_label=spot_ordering_label(resolved_value)
+        except Exception:resolved_label=resolved_value.replace("_"," ").title()
+        details=["Auto → %s" % resolved_label if requested=="auto" else resolved_label]
+        fit_count=diagnostics.get("fit_count")
+        rotation=diagnostics.get("relative_rotation_deg")
+        rms=diagnostics.get("rms_px")
+        median=diagnostics.get("median_displacement_px")
+        if fit_count is not None:details.append("%d matched sites" % int(fit_count))
+        if rotation is not None:details.append("Δrot %+.2f°" % float(rotation))
+        if rms is not None:details.append("screening RMS %.3g px" % float(rms))
+        if median is not None:details.append("median shift %.3g px" % float(median))
+        reflection=bool(diagnostics.get("reflection",False))
+        if reflection:details.append("reflection")
+        self.correspondence_info.setText(" · ".join(details))
+        self.correspondence_info.setStyleSheet(
+            "color: %s;" % (_WARNING_COLOR if reflection else _MUTED_COLOR)
+        )
+
     def set_context(self,context: Any) -> None:
-        selected=str(getattr(context,"canonical_reference_name","") or self.canonical_reference_name)
-        self._set_reference_choices(getattr(context,"available_references",()) or (),selected)
-        self.reference_title.setText(self.reference_combo.currentText() or "—")
-        native=getattr(context,"native_snapshot",None); canonical=getattr(context,"canonical_snapshot",None)
-        self._set_native_status(native,bool(getattr(context,"latest_native_available",False)))
-        if canonical is None:
-            self.reference_status.setText("No compatible named reference selected.")
-        else:
-            self.reference_status.setText(
-                "%s reference · %d/%d usable lattice sites\nSource: %s / %s\nSample policy: %s" % (
-                    getattr(getattr(canonical,"lifetime",None),"value",getattr(canonical,"lifetime","")),
-                    int(getattr(canonical,"valid_count",0)),int(getattr(canonical,"total_count",0)),
-                    getattr(getattr(canonical,"frame",None),"slm_serial","—"),
-                    getattr(getattr(canonical,"frame",None),"section_key","—"),
-                    getattr(canonical,"sample_policy","—"),
+        self._setting_context=True
+        try:
+            selected=str(getattr(context,"canonical_reference_name","") or self.canonical_reference_name)
+            self._set_reference_choices(getattr(context,"available_references",()) or (),selected)
+            self.reference_title.setText(self.reference_combo.currentText() or "—")
+            native=getattr(context,"native_snapshot",None); canonical=getattr(context,"canonical_snapshot",None)
+            self._set_native_status(native,bool(getattr(context,"latest_native_available",False)))
+            if canonical is None:
+                self.reference_status.setText("No compatible named reference selected.")
+            else:
+                self.reference_status.setText(
+                    "%s reference · %d/%d usable lattice sites\nSource: %s / %s\nSample policy: %s" % (
+                        getattr(getattr(canonical,"lifetime",None),"value",getattr(canonical,"lifetime","")),
+                        int(getattr(canonical,"valid_count",0)),int(getattr(canonical,"total_count",0)),
+                        getattr(getattr(canonical,"frame",None),"slm_serial","—"),
+                        getattr(getattr(canonical,"frame",None),"section_key","—"),
+                        getattr(canonical,"sample_policy","—"),
+                    )
                 )
-            )
-        self.fit_button.setEnabled(bool(getattr(context,"fit_enabled",False)))
-        self.save_button.setEnabled(bool(getattr(context,"save_enabled",False)))
-        diagnostics=getattr(context,"diagnostics",None)
-        if diagnostics is None:
-            common=int(getattr(context,"common_site_count",0) or 0)
-            self.diagnostics_label.setText("Native localization and reference selected. %d common valid lattice sites." % common if native is not None and canonical is not None else "Use a native localization and select a canonical reference, then Fit.")
-            self.preview.clear()
-        else:
-            candidate=getattr(context,"candidate",None)
-            model=str(getattr(candidate,"transform_model","") or "")
-            degree=getattr(candidate,"polynomial_degree",None)
-            model_text=model if degree is None else "%s %s" % (model,degree)
-            self.diagnostics_label.setText(
-                "%s · %d points\nForward RMS %.4g px · max %.4g px\nReverse RMS %.4g px · max %.4g px" % (
-                    model_text,diagnostics.point_count,
-                    diagnostics.forward_rms_residual_px,diagnostics.forward_max_residual_px,
-                    diagnostics.reverse_rms_residual_px,diagnostics.reverse_max_residual_px,
+            self._set_correspondence_context(context)
+            self.fit_button.setEnabled(bool(getattr(context,"fit_enabled",False)))
+            self.save_button.setEnabled(bool(getattr(context,"save_enabled",False)))
+            diagnostics=getattr(context,"diagnostics",None)
+            if diagnostics is None:
+                common=int(getattr(context,"common_site_count",0) or 0)
+                self.diagnostics_label.setText(
+                    "Native localization and reference selected. %d common valid lattice sites." % common
+                    if native is not None and canonical is not None
+                    else "Use a native localization and select a canonical reference, then Fit."
                 )
-            )
-            self.preview.set_points(diagnostics.canonical_points_px,diagnostics.transformed_native_points_px)
+                self.preview.clear()
+            else:
+                candidate=getattr(context,"candidate",None)
+                model=str(getattr(candidate,"transform_model","") or "")
+                degree=getattr(candidate,"polynomial_degree",None)
+                model_text=model if degree is None else "%s %s" % (model,degree)
+                self.diagnostics_label.setText(
+                    "%s · %d points\nForward RMS %.4g px · max %.4g px\nReverse RMS %.4g px · max %.4g px" % (
+                        model_text,diagnostics.point_count,
+                        diagnostics.forward_rms_residual_px,diagnostics.forward_max_residual_px,
+                        diagnostics.reverse_rms_residual_px,diagnostics.reverse_max_residual_px,
+                    )
+                )
+                self.preview.set_diagnostics(diagnostics)
+        finally:
+            self._setting_context=False
 
     def _set_native_status(self,snapshot: Any,available: bool) -> None:
         self.native_use.setEnabled(bool(available))
@@ -242,4 +440,7 @@ class ObservationRegistrationCalibrationWidget(QtWidgets.QWidget):
         self.error_label.setText(str(error or "Observation-registration calibration failed.")); self.error_label.show()
 
 
-__all__=["ObservationRegistrationCalibrationWidget","ObservationRegistrationPreview"]
+__all__=[
+    "ObservationRegistrationCalibrationWidget",
+    "ObservationRegistrationAlignmentView","ObservationRegistrationPreview",
+]
