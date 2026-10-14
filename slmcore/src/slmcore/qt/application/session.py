@@ -94,6 +94,7 @@ class SLMQtSession(QtCore.QObject):
             on_frame_changed=self.sigFrameChanged.emit,
             on_transition_committed=self._on_application_transition_committed,
             on_section_refresh_requested=self.synchronize_section,
+            on_position_reference_changed=self._on_position_reference_changed,
             on_cgh_computing_changed=self._on_application_cgh_computing_changed,
             on_warning=self.sigWarning.emit,
             on_error=self.sigError.emit,
@@ -946,6 +947,10 @@ class SLMQtSession(QtCore.QObject):
         if hasattr(self,"_calibration"):
             self._calibration.synchronize_section(section_key)
         self.sigSectionSynchronized.emit(section_key)
+
+    def _on_position_reference_changed(self,section_key: str) -> None:
+        if hasattr(self,"_feedback"):
+            self._feedback.synchronize_position_reference(section_key)
 
     def synchronize_all_sections(self) -> None:
         for section_key in self.runtime.section_keys:

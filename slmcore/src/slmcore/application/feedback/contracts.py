@@ -80,6 +80,7 @@ class SLMFeedbackCallbacks:
     """
 
     on_section_changed: Callable[[str],None]=_noop
+    on_position_reference_changed: Callable[[str],None]=_noop
     on_transition_committed: Callable[[str,SectionStateTransition],None]=_noop
     on_measurement_busy_changed: Callable[[str,bool,str],None]=_noop
     on_measurement_error: Callable[[str,Exception],None]=_noop

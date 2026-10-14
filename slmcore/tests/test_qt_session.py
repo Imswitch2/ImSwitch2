@@ -260,3 +260,26 @@ def test_panel_session_owns_standard_view_and_device_wiring():
     finally:
         session.dispose()
         panel.deleteLater()
+
+
+def test_feedback_window_reuses_one_cgh_session_inspection_per_refresh():
+    app=_app()
+    runtime,_collection,session,_uploads=_session()
+    original=runtime.get_section_cgh_session_inspection
+    calls=[]
+    def counted(section_key):
+        calls.append(section_key)
+        return original(section_key)
+    runtime.get_section_cgh_session_inspection=counted
+    try:
+        session._feedback.open_window("sec_0")
+        app.processEvents()
+        assert calls == ["sec_0"]
+
+        calls.clear()
+        session._feedback.synchronize_section("sec_0")
+        app.processEvents()
+        assert calls == ["sec_0"]
+    finally:
+        runtime.get_section_cgh_session_inspection=original
+        session.dispose()

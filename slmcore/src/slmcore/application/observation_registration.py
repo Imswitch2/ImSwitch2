@@ -12,6 +12,8 @@ from ..core.measurement.observation_registration import (
 )
 from ..workspace.observation_registration_store import ObservationRegistrationStore
 
+_UNSET=object()
+
 
 class ObservationRegistrationService:
     """Resolve and evaluate saved observation registrations for one native SLM.
@@ -150,7 +152,8 @@ class ObservationRegistrationService:
 
     def project_points(
         self,source_frame: ObservationFrame,target_frame: ObservationFrame,
-        positions_px: Any,
+        positions_px: Any,*,source_registration: Any=_UNSET,
+        target_registration: Any=_UNSET,
     ) -> np.ndarray:
         """Project full-detector points source-native -> canonical -> target-native.
 
@@ -167,8 +170,14 @@ class ObservationRegistrationService:
         if source_frame.observation_plane_name!=target_frame.observation_plane_name:
             raise ValueError("Observation registration cannot bridge different observation planes")
 
-        source_registration=self.registration_for_frame(source_frame)
-        target_registration=self.registration_for_frame(target_frame)
+        if source_registration is _UNSET:
+            source_registration=self.registration_for_frame(source_frame)
+        elif source_registration is not None:
+            source_registration.validate_native_frame(source_frame)
+        if target_registration is _UNSET:
+            target_registration=self.registration_for_frame(target_frame)
+        elif target_registration is not None:
+            target_registration.validate_native_frame(target_frame)
         if source_registration is None and target_registration is None:
             raise ValueError("No observation registration explicitly bridges these frames")
 

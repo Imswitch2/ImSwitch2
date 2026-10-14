@@ -35,7 +35,20 @@ class PositionReferenceCoordinator:
 
     def ui_context(self,section_key: str) -> dict[str,Any]:
         """Adapt the application reference context to the window mapping contract."""
-        context = self._feedback.position_reference_context(section_key)
+        return self._ui_context_from_context(
+            self._feedback.position_reference_context(section_key)
+        )
+
+    def synchronize(
+        self,section_key: str,window: "CGHSessionWindow",
+    ) -> None:
+        context,preview=self._feedback.position_reference_presentation(section_key)
+        window.set_position_reference_state(
+            self._ui_context_from_context(context),preview,
+        )
+
+    def _ui_context_from_context(self,context: Any) -> dict[str,Any]:
+        """Adapt an already-resolved application context without resolving it again."""
         selection = context.selection
         return {
             "mode":selection.mode.value,
@@ -94,14 +107,6 @@ class PositionReferenceCoordinator:
             "create_unavailable_reason":context.create_unavailable_reason,
         }
 
-    def synchronize(
-        self,section_key: str,window: "CGHSessionWindow",
-    ) -> None:
-        window.set_position_reference_state(
-            self.ui_context(section_key),
-            self._feedback.position_reference_preview(section_key),
-        )
-
     def set_position_reference(
         self,
         section_key: str,
@@ -140,9 +145,11 @@ class PositionReferenceCoordinator:
             if lightweight:
                 window=self._window_for(section_key)
                 if window is not None:
+                    context,preview=self._feedback.position_reference_presentation(
+                        section_key
+                    )
                     window.set_position_reference_state(
-                        self.ui_context(section_key),
-                        self._feedback.position_reference_preview(section_key),
+                        self._ui_context_from_context(context),preview,
                         lightweight=True,
                     )
         except Exception as error:

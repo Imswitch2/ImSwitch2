@@ -1635,9 +1635,19 @@ def test_named_reference_projects_between_two_registered_frames_with_polynomial(
     target_session.feedback.set_position_reference(
         "sec_0",mode="reference",reference_name="source",
     )
+    load_calls=[]
+    original_load=registrations.load
+    def counted_load(*args,**kwargs):
+        load_calls.append(tuple(args))
+        return original_load(*args,**kwargs)
+    registrations.load=counted_load
     _effective,raw,metadata,_=(
         target_session.feedback._references._resolve_position_reference_details("sec_0")
     )
+    # Reference projection resolves each side once for provenance and reuses
+    # those calibrations for the actual source -> canonical -> target mapping.
+    assert len(load_calls) == 2
+    registrations.load=original_load
     source_registration=registrations.load("SER-A","sec_0","Intermediate")
     target_registration=registrations.load("SER-B","sec_0","Intermediate")
     expected_full=target_registration.canonical_to_native(
@@ -1650,6 +1660,46 @@ def test_named_reference_projects_between_two_registered_frames_with_polynomial(
     assert metadata["registration"]["target_registration"]["transform_model"] == "polynomial"
 
     source_session.dispose(); target_session.dispose()
+
+
+def test_position_reference_presentation_resolves_reference_once(tmp_path):
+    from slmcore import PositionReferenceStore
+
+    runtime=_runtime()
+    session=SLMSession(
+        runtime=runtime,
+        position_reference_store=PositionReferenceStore(tmp_path/"references"),
+    )
+    _set_feedback_observation_planes(session,"sample")
+    from dataclasses import replace
+    localization=_attach_reference_localization(runtime)
+    diagnostics=dict(localization.diagnostics)
+    diagnostics.update({
+        "affine_linear":((32.0,0.0),(0.0,32.0)),
+        "affine_translation":(12.0,12.0),
+    })
+    localization=replace(localization,diagnostics=diagnostics)
+    runtime.commit_section_feedback_localization(
+        "sec_0",localization,
+        dict(runtime.get_section_feedback_status("sec_0").localization_params),
+    )
+
+    references=session.feedback._references
+    original=references._resolve_position_reference_details
+    calls=[]
+    def counted(*args,**kwargs):
+        calls.append(args[0])
+        return original(*args,**kwargs)
+    references._resolve_position_reference_details=counted
+    try:
+        context,preview=session.feedback.position_reference_presentation("sec_0")
+    finally:
+        references._resolve_position_reference_details=original
+
+    assert context.compatible
+    assert preview is not None
+    assert calls == ["sec_0"]
+    session.dispose()
 
 
 def test_same_native_section_reference_bypasses_registration_round_trip(tmp_path):
@@ -1765,3 +1815,94 @@ def test_identity_registration_preserves_named_reference_coordinates(tmp_path):
     assert metadata["registration"]["applied"] is True
 
     source_session.dispose(); target_session.dispose()
+
+
+def test_position_reference_changes_use_narrow_refresh_callback(tmp_path):
+    from slmcore import PositionReferenceMode,PositionReferenceStore
+
+    store=PositionReferenceStore(tmp_path / "position_references")
+    section_refreshes=[]
+    reference_refreshes=[]
+    runtime=_runtime()
+    session=SLMSession(
+        runtime=runtime,
+        position_reference_store=store,
+        callbacks=SLMSessionCallbacks(
+            on_section_refresh_requested=section_refreshes.append,
+            on_position_reference_changed=reference_refreshes.append,
+        ),
+    )
+    _set_feedback_observation_planes(session,"sample")
+    _attach_reference_localization(runtime)
+    section_refreshes.clear()
+    reference_refreshes.clear()
+
+    session.feedback.add_position_reference("sec_0","reference")
+    assert section_refreshes == []
+    assert reference_refreshes == ["sec_0"]
+    assert session.feedback.position_reference_selection(
+        "sec_0"
+    ).reference_name == "reference"
+
+    reference_refreshes.clear()
+    session.feedback.persist_position_reference("sec_0","reference")
+    assert section_refreshes == []
+    assert reference_refreshes == ["sec_0"]
+
+    reference_refreshes.clear()
+    session.feedback.set_position_reference(
+        "sec_0",mode=PositionReferenceMode.GLOBAL_FIT,
+    )
+    assert section_refreshes == []
+    assert reference_refreshes == ["sec_0"]
+
+    reference_refreshes.clear()
+    session.feedback.delete_position_reference("sec_0","reference")
+    assert section_refreshes == []
+    assert reference_refreshes == ["sec_0"]
+    session.dispose()
+
+
+def test_shared_position_reference_store_notifies_each_session_narrowly(tmp_path):
+    from slmcore import PositionReferenceStore
+
+    store=PositionReferenceStore(tmp_path / "position_references")
+    refreshes_a=[]
+    refreshes_b=[]
+    section_refreshes_a=[]
+    section_refreshes_b=[]
+    runtime_a=_runtime(serial="SER-A")
+    runtime_b=_runtime(serial="SER-B")
+    session_a=SLMSession(
+        runtime=runtime_a,
+        position_reference_store=store,
+        callbacks=SLMSessionCallbacks(
+            on_section_refresh_requested=section_refreshes_a.append,
+            on_position_reference_changed=refreshes_a.append,
+        ),
+    )
+    session_b=SLMSession(
+        runtime=runtime_b,
+        position_reference_store=store,
+        callbacks=SLMSessionCallbacks(
+            on_section_refresh_requested=section_refreshes_b.append,
+            on_position_reference_changed=refreshes_b.append,
+        ),
+    )
+    _set_feedback_observation_planes(session_a,"sample")
+    _set_feedback_observation_planes(session_b,"sample")
+    _attach_reference_localization(runtime_a)
+    section_refreshes_a.clear(); section_refreshes_b.clear()
+    refreshes_a.clear(); refreshes_b.clear()
+
+    session_a.feedback.add_position_reference("sec_0","shared")
+
+    assert section_refreshes_a == []
+    assert section_refreshes_b == []
+    assert refreshes_a == ["sec_0"]
+    assert refreshes_b == ["sec_0"]
+    assert tuple(
+        record.name
+        for record in session_b.feedback.position_reference_context("sec_0").references
+    ) == ("shared",)
+    session_a.dispose(); session_b.dispose()

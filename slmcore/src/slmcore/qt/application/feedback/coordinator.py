@@ -124,6 +124,11 @@ class FeedbackCoordinator(QtCore.QObject):
                 self._feedback_service.active_observation_plane(section_key)
             )
             if window is None:
+                session_inspection=(
+                    self._qt_session.runtime.get_section_cgh_session_inspection(
+                        section_key
+                    )
+                )
                 parent = self._qt_session.section_collection.section_view(
                     section_key
                 ).window()
@@ -136,11 +141,7 @@ class FeedbackCoordinator(QtCore.QObject):
                             section_key
                         )
                     ),
-                    session_inspection=(
-                        self._qt_session.runtime.get_section_cgh_session_inspection(
-                            section_key
-                        )
-                    ),
+                    session_inspection=session_inspection,
                     cgh_status=self._qt_session.runtime.get_section_cgh_status(
                         section_key
                     ),
@@ -149,7 +150,9 @@ class FeedbackCoordinator(QtCore.QObject):
                     current_detector=current,
                     observation_planes=observation_planes,
                     current_observation_plane=current_observation,
-                    cgh_summary=self.measurements_cgh_summary(section_key),
+                    cgh_summary=self.measurements_cgh_summary(
+                        section_key,inspection=session_inspection,
+                    ),
                     title="CGH Session - %s/%s" % (
                         self._qt_session.presenter.display_name,section_key,
                     ),
@@ -222,6 +225,7 @@ class FeedbackCoordinator(QtCore.QObject):
             section_key
         )
         sources = self.available_sources(section_key)
+        session_inspection=runtime.get_section_cgh_session_inspection(section_key)
         window.configure_observation_planes(observation_planes,current_observation)
         window.configure_detectors(
             sources,self.preferred_source(section_key,sources),
@@ -229,15 +233,23 @@ class FeedbackCoordinator(QtCore.QObject):
         window.set_session_state(
             runtime.get_section_feedback_status(section_key),
             runtime.get_section_feedback_inspection(section_key),
-            runtime.get_section_cgh_session_inspection(section_key),
+            session_inspection,
             runtime.get_section_cgh_status(section_key),
             self.localization_context(section_key),
-            self.measurements_cgh_summary(section_key),
+            self.measurements_cgh_summary(
+                section_key,inspection=session_inspection,
+            ),
         )
         self._references.synchronize(section_key,window)
         self._synchronize_geometry_warning(section_key,window)
         self._automatic.configure_availability(window)
         self._automatic.apply_state_to_window(section_key,window)
+
+    def synchronize_position_reference(self,section_key: str) -> None:
+        """Refresh only position-reference presentation for one open window."""
+        window=self._windows.get(section_key)
+        if window is not None:
+            self._references.synchronize(section_key,window)
 
     def _synchronize_geometry_warning(
         self,section_key: str,window: CGHSessionWindow,
@@ -259,9 +271,12 @@ class FeedbackCoordinator(QtCore.QObject):
             window.set_cgh_computing(bool(computing))
             self._automatic.apply_state_to_window(section_key,window)
 
-    def measurements_cgh_summary(self,section_key: str) -> Mapping[str,Any]:
+    def measurements_cgh_summary(
+        self,section_key: str,*,inspection: Any | None=None,
+    ) -> Mapping[str,Any]:
         runtime = self._qt_session.runtime
-        inspection = runtime.get_section_cgh_session_inspection(section_key)
+        if inspection is None:
+            inspection = runtime.get_section_cgh_session_inspection(section_key)
         target_state = None
         working = inspection.working_round
         if working is not None and working.target_state is not None:

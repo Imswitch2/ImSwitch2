@@ -320,6 +320,11 @@ class SLMFeedbackService:
     ) -> PositionReferenceContext:
         return self._references.position_reference_context(section_key)
 
+    def position_reference_presentation(
+        self,section_key: str,
+    ) -> tuple[PositionReferenceContext,PositionReferencePreview | None]:
+        return self._references.position_reference_presentation(section_key)
+
     def position_reference_records(
         self,observation_plane_name: str,
     ) -> tuple[PositionReferenceRecord,...]:

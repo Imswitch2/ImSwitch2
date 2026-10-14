@@ -62,6 +62,7 @@ class SLMSessionCallbacks:
     on_frame_changed: Callable[[Any],None] = _noop
     on_transition_committed: Callable[[str,SectionStateTransition],None] = _noop
     on_section_refresh_requested: Callable[[str],None] = _noop
+    on_position_reference_changed: Callable[[str],None] = _noop
     on_cgh_computing_changed: Callable[[str,bool],None] = _noop
     on_warning: Callable[[str,Any],None] = _noop
     on_error: Callable[[str,Exception],None] = _noop
@@ -1134,6 +1135,9 @@ class SLMSession:
         return SLMFeedbackCallbacks(
             on_section_changed=lambda key:self._notify(
                 "on_section_refresh_requested",key,
+            ),
+            on_position_reference_changed=lambda key:self._notify(
+                "on_position_reference_changed",key,
             ),
             on_transition_committed=lambda key,transition:
                 self._handle_committed_transition(key,transition),
