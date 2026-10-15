@@ -681,12 +681,12 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        sample volumes and a saved multicolor alignment HDF5.
      - ``MulticolorApplyResult`` with ``C, Z, Y, X`` or ``T, C, Z, Y, X`` data.
    * - ``smlm-render``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only.
      - ``ArrayProcessingResult`` render with ``Y, X`` or ``Z, Y, X`` axes,
        nanometer axis scales and image display levels.
    * - ``smlm-filter``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only.  One property at a time (``property``),
        a band on it (``lower``/``upper``, either side open when unset) and a
        ``mode``: ``bandpass`` keeps the rows inside the band, ``bandstop``
@@ -705,20 +705,20 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        result is selected.  Chains with
        ``smlm-drift``/``smlm-group``/``smlm-render``.
    * - ``smlm-drift``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only; needs a frame span of at least the
        segment count and 2+ non-empty temporal segments.
      - ``DriftCorrectedLocalizationResult`` with positions minus the
        estimated per-frame drift, plus an X/Y drift-trace graph payload.
    * - ``smlm-drift-comet``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only; needs the optional ``comet-smlm``
        package and a chosen window size (COMET has no default for it).
      - ``DriftCorrectedLocalizationResult`` with x, y and z corrected by
        COMET's all-pairs estimate; the drift trace gains a Z series on a 3D
        table.  See :ref:`improcess-comet-drift`.
    * - ``smlm-group``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only.
      - ``LocalizationResult`` with blinking repeats within the link radius
        merged: photon-weighted mean position/sigmas, summed photons, first

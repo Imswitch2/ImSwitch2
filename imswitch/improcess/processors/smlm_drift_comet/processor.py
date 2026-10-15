@@ -254,7 +254,7 @@ class SmlmCometDriftProcessor(Processor):
 
     name = "COMET drift correction"
     id = "smlm-drift-comet"
-    category = "Localization"
+    category = "SMLM"
     kinds = ("localization",)
     #: Taken from a workflow or a script, not offered in the panel: a random
     #: cap on the localizations per window, to bound memory and time (COMET

@@ -18,7 +18,7 @@ class SmlmGroupProcessor(Processor):
 
     name = "SMLM group/link"
     id = "smlm-group"
-    category = "Localization"
+    category = "SMLM"
     kinds = ("localization",)
 
     @classmethod

@@ -28,7 +28,7 @@ class SmlmDriftProcessor(Processor):
 
     name = "SMLM drift correction"
     id = "smlm-drift"
-    category = "Localization"
+    category = "SMLM"
     kinds = ("localization",)
 
     @classmethod
