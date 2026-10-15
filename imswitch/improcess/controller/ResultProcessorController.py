@@ -96,6 +96,11 @@ def finish_run(panel, commChannel, processor, inputs, results, failures, logger)
     Shared by the asynchronous path (called when the worker reports) and the
     inline one, so both publish the same way.
     """
+    # Decided before the widget hears how the run went: the SMLM filter's
+    # after_run turns its Copy box off for the *next* run, and reading the
+    # box after that made the first filter replace the original instead of
+    # copying it.
+    replace = replaces_input(panel, inputs, results, logger)
     notify_param_widget(panel, results, failures, logger)
 
     if not results:
@@ -108,7 +113,6 @@ def finish_run(panel, commChannel, processor, inputs, results, failures, logger)
         panel.setStatusText(f"Cancelled: would have created {len(results)} results.")
         return
 
-    replace = replaces_input(panel, inputs, results, logger)
     last_result = None
     for index, result in enumerate(results):
         display_name = (

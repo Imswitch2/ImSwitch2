@@ -270,6 +270,43 @@ def test_the_run_replaces_the_input_in_the_list_when_copy_is_off(monkeypatch):
     assert [kind for kind, _a in emitted] == ["produced", "produced"]
 
 
+def test_the_first_filter_copies_and_the_second_replaces_through_the_real_finish_path(
+    monkeypatch, qapp
+):
+    """The real widget, with its hooks called in the controller's own order.
+
+    after_run turns Copy off for the next run; the publication of *this*
+    run must still be the copy the box asked for when it was pressed.
+    """
+    from types import SimpleNamespace
+
+    import imswitch.improcess.controller.ResultProcessorController as module
+
+    monkeypatch.setattr(module, "confirm_bulk_publish", lambda parent, results: True)
+    emitted = []
+    channel = SimpleNamespace(
+        sigResultProduced=SimpleNamespace(emit=lambda r, n: emitted.append(("produced", r))),
+        sigResultReplaced=SimpleNamespace(emit=lambda o, r, n: emitted.append(("replaced", o, r))),
+        sigCurrentResultChanged=SimpleNamespace(emit=lambda *a: None),
+    )
+    processor = SmlmFilterProcessor()
+    panel = ResultProcessorWidget(processor)
+    original = _result()
+    panel.setCurrentResult(original)
+
+    first = processor.apply(original, panel.parameterValues())
+    module.finish_run(panel, channel, processor, [original], [first], [], None)
+    panel.setCurrentResult(first)  # what the controller does on sigCurrentResultChanged
+
+    assert emitted == [("produced", first)]
+    assert not panel.paramWidget.copyCheck.isChecked()
+
+    second = processor.apply(first, {**panel.parameterValues(), "property": "frame", "lower": 2})
+    module.finish_run(panel, channel, processor, [first], [second], [], None)
+
+    assert emitted[-1] == ("replaced", first, second)
+
+
 def test_the_list_controller_swaps_the_entry_and_redraws_what_is_on_screen():
     from types import SimpleNamespace
 
