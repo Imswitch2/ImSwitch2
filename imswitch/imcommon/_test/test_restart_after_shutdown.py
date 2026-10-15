@@ -6,6 +6,8 @@ it was emitting, and the new process inherits all of it. ``requestRestart``
 instead defers the re-exec to ``launchApp``, which runs it only after the
 modules have shut down.
 """
+import os
+import subprocess
 import sys
 from unittest.mock import Mock, patch
 
@@ -210,20 +212,37 @@ def test_a_failed_exec_exits_cleanly_instead_of_crashing():
     assert log == ['shutdown', 'restart-attempt', 'sys.exit:0']
 
 
-def test_qt_objects_python_still_owns_are_handed_to_cpp_before_exit(qapp):
+_DISOWN_PROBE = """
+import sys
+from qtpy import QtCore, QtWidgets, sip
+from imswitch.imcommon import applaunch
+
+app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+appOwnedBefore = sip.ispyowned(app)
+stray = QtCore.QObject()
+assert sip.ispyowned(stray)
+applaunch.disownQtObjects(app)
+assert not sip.ispyowned(stray)
+assert sip.ispyowned(app) == appOwnedBefore
+print('ok')
+"""
+
+
+def test_qt_objects_python_still_owns_are_handed_to_cpp_before_exit():
     """PyQt5's atexit hook destroys every Python-owned QObject in hash order,
     which segfaulted ImSwitch after a clean shutdown; disowning them makes the
-    hook skip them."""
-    from qtpy import QtCore, sip
+    hook skip them.
 
-    stray = QtCore.QObject()
-    assert sip.ispyowned(stray)
-    # Whether pytest-qt's application wrapper is Python-owned depends on how
-    # the fixture created it; what matters is that disowning leaves it alone.
-    appOwnedBefore = sip.ispyowned(qapp)
-    try:
-        applaunch.disownQtObjects(qapp)
-        assert not sip.ispyowned(stray)
-        assert sip.ispyowned(qapp) == appOwnedBefore
-    finally:
-        sip.transferback(stray)
+    ``disownQtObjects`` disowns every live QObject in the process, so it runs
+    in a fresh interpreter: in the test process it would also disown other
+    tests' objects and keep them from being cleaned up. """
+    # Import the same checkout as this test, not whatever an editable
+    # install happens to point at.
+    packageRoot = os.path.dirname(os.path.dirname(os.path.dirname(applaunch.__file__)))
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen',
+               PYTHONPATH=os.pathsep.join(
+                   filter(None, [packageRoot, os.environ.get('PYTHONPATH')])))
+    result = subprocess.run([sys.executable, '-c', _DISOWN_PROBE], env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith('ok')
