@@ -222,6 +222,7 @@ def _rs232_info(port="COM10"):
 
 
 def test_rs232_reconnect_replaces_backend_in_place_and_can_heal_io_error(monkeypatch):
+    pytest.importorskip("pyvisa")  # RS232Driver imports pyvisa at module level
     from imswitch.imcontrol.model.interfaces import RS232Driver
     from imswitch.imcontrol.model.managers.rs232.RS232Manager import RS232Manager
 
