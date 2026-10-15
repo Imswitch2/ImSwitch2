@@ -6,6 +6,14 @@ spin boxes, and the shaded region on the histogram, which are two handles
 on the same two numbers -- is what the filter keeps (band-pass) or drops
 (band-stop). The count line says what the band would keep before anything
 is run.
+
+*Copy* decides where the filtered table goes. On, **Apply filter** makes a
+new result and the panel follows it; off, the filtered table takes the
+current result's place in the list. It starts on and turns itself off after
+the first filter applied, so the first step keeps the original and the
+following ones refine the copy in place instead of leaving one result per
+step; it turns back on when the panel is pointed at a result the filter did
+not just make.
 """
 
 from __future__ import annotations
@@ -64,6 +72,7 @@ class SmlmFilterWidget(QtWidgets.QWidget):
         self._syncing = False
         self._boundsActive = False
         self._bars = None
+        self._lastProduced = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -112,6 +121,16 @@ class SmlmFilterWidget(QtWidgets.QWidget):
         bandForm.addRow("Upper:", self.upperSpin)
         layout.addLayout(bandForm)
 
+        self.copyCheck = QtWidgets.QCheckBox("Copy: filter into a new result")
+        self.copyCheck.setChecked(True)
+        self.copyCheck.setToolTip(
+            "On: Apply filter makes a new result and the panel follows it. "
+            "Off: the filtered table replaces the current result in place. "
+            "Turns itself off after the first filter applied, so the next ones "
+            "refine that copy, and back on when another result is selected."
+        )
+        layout.addWidget(self.copyCheck)
+
         self.countLabel = QtWidgets.QLabel("")
         self.countLabel.setStyleSheet("color: palette(mid); font-size: 9pt; padding: 0px 4px;")
         self.countLabel.setWordWrap(True)
@@ -157,6 +176,10 @@ class SmlmFilterWidget(QtWidgets.QWidget):
 
     def setResult(self, result, rois=()) -> None:
         """Show ``result``'s table: its columns, the chosen one's histogram."""
+        if result is not self._lastProduced:
+            # A result the filter did not just make is somebody's original:
+            # the first step on it copies, whatever the box said before.
+            self.copyCheck.setChecked(True)
         locs = result.locs if isinstance(result, LocalizationResult) else None
         self._locs = locs if locs is not None and len(locs) else None
         columns = informative_columns(self._locs) if self._locs is not None else LOCALIZATION_COLUMNS
@@ -283,6 +306,19 @@ class SmlmFilterWidget(QtWidgets.QWidget):
             self.countLabel.setText(str(exc))
             return
         self.countLabel.setText(f"Keeps {int(mask.sum())} of {len(mask)} localizations.")
+
+    # -- where the filtered table goes ------------------------------------
+
+    def replaces_input(self) -> bool:
+        """Whether the next run replaces the current result rather than copying it."""
+        return not self.copyCheck.isChecked()
+
+    def after_run(self, results, failures) -> None:
+        """The first applied filter made the copy; the next ones refine it."""
+        if not results:
+            return
+        self._lastProduced = results[-1]
+        self.copyCheck.setChecked(False)
 
     # -- the parameter contract -------------------------------------------
 

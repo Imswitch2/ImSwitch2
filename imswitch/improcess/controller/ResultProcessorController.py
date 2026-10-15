@@ -49,6 +49,47 @@ def notify_param_widget(panel, results, failures, logger) -> None:
     call_param_hook(panel, "after_run", results, failures, logger=logger)
 
 
+def no_results_status(panel) -> str:
+    """The status line for a run that ended well and made nothing.
+
+    Usually a surprise worth saying; a widget whose run can legitimately make
+    nothing (COMET's pair estimate) says what happened instead, through
+    ``no_results_status()``.
+    """
+    hook = getattr(getattr(panel, "paramWidget", None), "no_results_status", None)
+    if callable(hook):
+        try:
+            text = hook()
+        except Exception:
+            text = None
+        if text:
+            return str(text)
+    return "The processor produced no results."
+
+
+def replaces_input(panel, inputs, results, logger=None) -> bool:
+    """Whether this run's one result takes its one input's place in the list.
+
+    Opt-in through the parameter widget's ``replaces_input()`` (the SMLM
+    filter's *Copy* box, off). Only a run of exactly one input to exactly one
+    result can say which entry it supersedes; anything else is published as
+    new results, as always.
+    """
+    hook = getattr(getattr(panel, "paramWidget", None), "replaces_input", None)
+    if not callable(hook):
+        return False
+    try:
+        wanted = bool(hook())
+    except Exception:
+        if logger is not None:
+            logger.exception(
+                "The parameter widget of %s failed in replaces_input",
+                getattr(getattr(panel, "processor", None), "id", "a processor"),
+            )
+        return False
+    return wanted and len(inputs) == 1 and len(results) == 1 and results[0] is not inputs[0]
+
+
 def finish_run(panel, commChannel, processor, inputs, results, failures, logger) -> None:
     """Report a finished run to the panel and publish what it made.
 
@@ -58,9 +99,7 @@ def finish_run(panel, commChannel, processor, inputs, results, failures, logger)
     notify_param_widget(panel, results, failures, logger)
 
     if not results:
-        panel.setStatusText(
-            failures[0][1] if failures else "The processor produced no results."
-        )
+        panel.setStatusText(failures[0][1] if failures else no_results_status(panel))
         return
 
     # Safety valve: any processor (built-in or drop-in plugin) producing a
@@ -69,13 +108,17 @@ def finish_run(panel, commChannel, processor, inputs, results, failures, logger)
         panel.setStatusText(f"Cancelled: would have created {len(results)} results.")
         return
 
+    replace = replaces_input(panel, inputs, results, logger)
     last_result = None
     for index, result in enumerate(results):
         display_name = (
             getattr(result, "name", "")
             or f"{getattr(inputs[0], 'name', 'result')}_{processor.id}_{index}"
         )
-        commChannel.sigResultProduced.emit(result, display_name)
+        if replace:
+            commChannel.sigResultReplaced.emit(inputs[0], result, display_name)
+        else:
+            commChannel.sigResultProduced.emit(result, display_name)
         last_result = result
 
     if last_result is not None:

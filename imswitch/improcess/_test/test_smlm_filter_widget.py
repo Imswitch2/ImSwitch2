@@ -188,3 +188,123 @@ def test_an_open_band_stop_says_why_nothing_runs(qapp):
     widget.set_values({"mode": "bandstop", "lower": None, "upper": None})
     with pytest.raises(ValueError, match="band-stop needs at least one threshold"):
         SmlmFilterProcessor().apply(_result(), widget.get_values())
+
+
+# -- Copy: new result first, then refine in place -----------------------------
+
+
+def test_copy_is_on_until_the_first_filter_is_applied(qapp):
+    widget = SmlmFilterProcessor().make_param_widget(None)
+    first = _result()
+    widget.setResult(first)
+    assert widget.copyCheck.isChecked()
+    assert widget.replaces_input() is False
+
+    copy = SmlmFilterProcessor().apply(first, widget.get_values())
+    widget.after_run([copy], [])
+    widget.setResult(copy)  # the panel follows what the run made
+
+    assert not widget.copyCheck.isChecked()
+    assert widget.replaces_input() is True
+
+
+def test_copy_turns_back_on_for_a_result_the_filter_did_not_make(qapp):
+    widget = SmlmFilterProcessor().make_param_widget(None)
+    first = _result()
+    widget.setResult(first)
+    copy = SmlmFilterProcessor().apply(first, widget.get_values())
+    widget.after_run([copy], [])
+    widget.setResult(copy)
+    assert widget.replaces_input() is True
+
+    widget.setResult(_result(n=3))  # somebody's original, selected by hand
+
+    assert widget.copyCheck.isChecked()
+    assert widget.replaces_input() is False
+
+
+def test_a_failed_run_leaves_copy_as_it_was(qapp):
+    widget = SmlmFilterProcessor().make_param_widget(None)
+    widget.setResult(_result())
+    widget.after_run([], [(None, "boom")])
+    assert widget.copyCheck.isChecked()
+
+
+def test_the_run_replaces_the_input_in_the_list_when_copy_is_off(monkeypatch):
+    from types import SimpleNamespace
+
+    import imswitch.improcess.controller.ResultProcessorController as module
+
+    monkeypatch.setattr(module, "confirm_bulk_publish", lambda parent, results: True)
+    emitted = []
+    source = _result()
+    copy = SmlmFilterProcessor().apply(source, {"property": "photons", "lower": 250.0})
+    channel = SimpleNamespace(
+        sigResultProduced=SimpleNamespace(emit=lambda *a: emitted.append(("produced", a))),
+        sigResultReplaced=SimpleNamespace(emit=lambda *a: emitted.append(("replaced", a))),
+        sigCurrentResultChanged=SimpleNamespace(emit=lambda *a: None),
+    )
+    followed = []
+    panel = SimpleNamespace(
+        processor=SmlmFilterProcessor(),
+        paramWidget=SimpleNamespace(replaces_input=lambda: True),
+        setStatusText=lambda text: None,
+        setCurrentResult=followed.append,
+    )
+
+    module.finish_run(panel, channel, panel.processor, [source], [copy], [], None)
+
+    assert emitted == [("replaced", (source, copy, copy.name))]
+    assert followed == [copy]
+
+    # Copy on: a new entry, as always.
+    emitted.clear()
+    panel.paramWidget = SimpleNamespace(replaces_input=lambda: False)
+    module.finish_run(panel, channel, panel.processor, [source], [copy], [], None)
+    assert emitted == [("produced", (copy, copy.name))]
+
+    # Two results cannot both take one input's place: published as new.
+    emitted.clear()
+    panel.paramWidget = SimpleNamespace(replaces_input=lambda: True)
+    module.finish_run(panel, channel, panel.processor, [source], [copy, copy], [], None)
+    assert [kind for kind, _a in emitted] == ["produced", "produced"]
+
+
+def test_the_list_controller_swaps_the_entry_and_redraws_what_is_on_screen():
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ReconstructionViewController import (
+        ReconstructionViewController,
+    )
+
+    controller = ReconstructionViewController.__new__(ReconstructionViewController)
+    source, copy = _result(), _result(n=3)
+    entries = {"a": source}
+    calls = []
+
+    def replaceData(old, new, name):
+        for key, value in entries.items():
+            if value is old:
+                entries[key] = new
+                calls.append(("replace", name))
+                return True
+        return False
+
+    controller._widget = SimpleNamespace(
+        replaceData=replaceData,
+        getCurrentItemData=lambda: entries["a"],
+        addNewData=lambda result, name: calls.append(("add", name)),
+    )
+    controller._commChannel = SimpleNamespace(sigResultsChanged=SimpleNamespace(emit=lambda: calls.append("changed")))
+    controller.listItemChanged = lambda: calls.append("redraw")
+    controller._retainNapariStormDatasets = lambda: None
+
+    controller.resultReplaced(source, copy, "locs (filtered)")
+    assert entries["a"] is copy
+    assert calls == [("replace", "locs (filtered)"), "redraw", "changed"]
+
+    # An entry the user removed meanwhile: the result is simply added.
+    calls.clear()
+    controller.resultReplaced(_result(n=2), copy, "late")
+    assert calls[0] == ("add", "late")
+

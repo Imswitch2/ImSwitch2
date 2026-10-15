@@ -2,9 +2,11 @@
 
 One property at a time, by design: the panel shows that property's
 histogram and the band placed on it, and **Apply filter** produces the
-filtered table as a new result, which the panel then follows -- so a second
-property is filtered by applying again on the result. Band-pass keeps the
-rows inside the band, band-stop drops them.
+filtered table, which the panel then follows -- so a second property is
+filtered by applying again. The first application copies (a new result);
+the panel's *Copy* box then turns itself off, and the following ones replace
+that copy in place rather than leaving one result per step. Band-pass keeps
+the rows inside the band, band-stop drops them.
 
 The earlier contract (``min_photons``/``max_photons``, the two sigma bounds
 applied to both lateral sigmas, the frame range) is ``params_version`` 1;
