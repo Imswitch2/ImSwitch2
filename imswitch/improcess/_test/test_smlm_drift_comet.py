@@ -138,7 +138,8 @@ def test_the_panel_defaults_to_500_localizations_per_window():
     assert defaults["window_size"] == 500
     # The former advanced group is gone from the contract; the two settings a
     # script may still want are accepted without being offered.
-    assert set(defaults) == {"window_mode", "window_size", "max_drift_nm", "backend"}
+    assert set(defaults) == {"window_mode", "window_size", "max_drift_nm", "backend", "stage"}
+    assert defaults["stage"] == "run"
     assert SmlmCometDriftProcessor.param_keys() == set(defaults) | {"max_locs_per_window", "seed"}
 
 
@@ -196,8 +197,13 @@ def test_the_widget_says_so_and_disables_its_controls_without_the_package(monkey
     assert widget.problem
     assert not widget.form.isEnabled()
     assert widget.installEdit.text() == INSTALL_HINT
-    # The declared defaults are what the (disabled) controls hold.
-    assert widget.get_values() == SmlmCometDriftProcessor.default_params()
+    # The declared defaults are what the (disabled) controls hold; the stage
+    # is the panel's own business (estimate first) and declared volatile.
+    values = widget.get_values()
+    assert values.pop("stage") == "estimate"
+    defaults = SmlmCometDriftProcessor.default_params()
+    defaults.pop("stage")
+    assert values == defaults
 
 
 def test_check_again_enables_the_widget_once_the_package_appears(monkeypatch, qapp):
@@ -339,6 +345,119 @@ def test_the_widget_shows_what_the_run_prints(monkeypatch, qapp):
     assert widget.logView.toPlainText() == ""
 
 
+def test_the_estimate_stage_counts_and_publishes_nothing_and_the_run_reuses_it(monkeypatch, capsys):
+    from imswitch.improcess.processors.base import normalize_processor_output
+
+    calls = []
+    fake = _fake_comet({})
+    fake.estimate_pairs = lambda coordinates, radius: calls.append(radius) or 1234
+    monkeypatch.setitem(sys.modules, "comet", fake)
+    processor = SmlmCometDriftProcessor()
+    result = _result(_drifting_cloud())
+
+    output = processor.apply(result, {**_PARAMS, "stage": "estimate"})
+
+    assert normalize_processor_output(output) == ()
+    assert processor.last_estimate.pairs == 1234
+    assert processor.last_estimate.matches(result.result_uid, result.count, 300.0)
+    out = capsys.readouterr().out
+    assert "Estimated pairs within 300 nm: 1,234" in out
+    assert "Pairs estimated; nothing was corrected." in out
+    assert calls == [300.0]
+
+    corrected = processor.apply(result, _PARAMS)
+    assert calls == [300.0]  # the same table at the same radius: not counted again
+    assert corrected.metadata["drift_pairs_estimated"] == 1234
+
+    processor.apply(result, {**_PARAMS, "max_drift_nm": 200.0})
+    assert calls == [300.0, 200.0]  # another radius: counted afresh
+
+
+def test_the_panel_button_estimates_first_then_runs(monkeypatch, qapp):
+    from imswitch.improcess.processors.base import normalize_processor_output
+    from imswitch.improcess.view.ResultProcessorWidget import ResultProcessorWidget
+
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}))
+    processor = SmlmCometDriftProcessor()
+    panel = ResultProcessorWidget(processor)
+    result = _result(_drifting_cloud())
+    panel.setCurrentResult(result)
+    widget = panel.paramWidget
+
+    assert panel.runButton.text() == "Estimate pairs"
+    params = panel.parameterValues()
+    assert params["stage"] == "estimate"
+
+    # What the controller does with that click, in short.
+    widget.before_run()
+    assert normalize_processor_output(processor.apply(result, params)) == ()
+    widget.after_run([], [])
+
+    assert panel.runButton.text() == "Run COMET"
+    assert panel.parameterValues()["stage"] == "run"
+    assert widget.statusLabel.text() == "1,234 pairs within 300 nm."
+    assert widget.no_results_status() == "Pairs estimated. Press Run COMET to correct the drift."
+
+    # The count is only good for this table at this radius.
+    widget.driftSpin.setValue(200.0)
+    assert panel.runButton.text() == "Estimate pairs"
+    assert widget.estimate is None
+    widget.driftSpin.setValue(300.0)
+    widget.after_run([], [])
+    assert panel.runButton.text() == "Run COMET"
+    panel.setCurrentResult(_result(_drifting_cloud(n_frames=10)))
+    assert panel.runButton.text() == "Estimate pairs"
+
+
+def test_a_huge_estimate_is_said_in_the_panel(monkeypatch, qapp):
+    huge = PAIR_WARNING_THRESHOLD + 1
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}, estimated_pairs=huge))
+    processor = SmlmCometDriftProcessor()
+    monkeypatch.setattr(processor._logger, "warning", lambda *a: None)
+    widget = processor.make_param_widget(None)
+    result = _result(_drifting_cloud())
+    widget.setResult(result)
+
+    processor.apply(result, {**_PARAMS, "stage": "estimate"})
+    widget.after_run([], [])
+
+    assert widget.statusLabel.text().startswith(f"{huge:,} pairs within 300 nm. Warning:")
+    assert widget.run_label() == "Run COMET"
+
+
+def test_a_count_made_for_another_table_is_not_adopted(monkeypatch, qapp):
+    monkeypatch.setitem(sys.modules, "comet", _fake_comet({}))
+    processor = SmlmCometDriftProcessor()
+    widget = processor.make_param_widget(None)
+    widget.setResult(_result(_drifting_cloud()))
+
+    processor.apply(_result(_drifting_cloud(n_frames=10)), {**_PARAMS, "stage": "estimate"})
+    widget.after_run([], [])
+
+    assert widget.estimate is None
+    assert widget.run_label() == "Estimate pairs"
+
+
+def test_the_controller_shows_the_widgets_word_for_a_run_that_made_nothing():
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ResultProcessorController import finish_run
+
+    statuses = []
+    panel = SimpleNamespace(
+        processor=SimpleNamespace(id="x"),
+        paramWidget=SimpleNamespace(no_results_status=lambda: "Pairs estimated."),
+        setStatusText=statuses.append,
+        setCurrentResult=lambda r: None,
+    )
+    finish_run(panel, SimpleNamespace(), panel.processor, [object()], [], [], None)
+    assert statuses == ["Pairs estimated."]
+
+    panel.paramWidget = SimpleNamespace()
+    finish_run(panel, SimpleNamespace(), panel.processor, [object()], [], [], None)
+    assert statuses[-1] == "The processor produced no results."
+
+
 def test_summarize_run_reads_the_recorded_metadata():
     line = summarize_run(
         {
@@ -396,6 +515,20 @@ def test_processor_recovers_linear_drift_and_leaves_the_input_alone():
     payload = corrected.plot_payloads()[0]
     assert payload.title == "Estimated drift"
     assert {series.name for series in payload.series} == {"X drift", "Y drift"}
+
+
+def test_a_real_estimate_counts_what_the_run_then_finds():
+    from imswitch.improcess.processors.base import normalize_processor_output
+
+    processor = SmlmCometDriftProcessor()
+    result = _result(_drifting_cloud())
+    assert normalize_processor_output(processor.apply(result, {**_PARAMS, "stage": "estimate"})) == ()
+    counted = processor.last_estimate.pairs
+    assert counted > 0
+
+    corrected = processor.apply(result, _PARAMS)
+    assert corrected.metadata["drift_pairs"] == counted
+    assert corrected.metadata["drift_pairs_estimated"] == counted
 
 
 def test_a_real_run_prints_its_pair_estimate_and_progress(capsys):

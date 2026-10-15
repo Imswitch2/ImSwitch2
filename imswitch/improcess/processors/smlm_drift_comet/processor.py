@@ -28,6 +28,7 @@ and seed that cap (:attr:`SmlmCometDriftProcessor.extra_param_keys`).
 from __future__ import annotations
 
 import importlib
+from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
@@ -38,7 +39,7 @@ from imswitch.imcommon.model.cancellation import checkpoint
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.result import ProcessingResult
-from imswitch.improcess.processors.base import Processor
+from imswitch.improcess.processors.base import Processor, ProcessorOutput
 from imswitch.improcess.processors.smlm_drift.result import (
     DriftCorrectedLocalizationResult,
 )
@@ -71,6 +72,11 @@ DEFAULT_WINDOW_SIZE = 500
 #: Pair count above which COMET's own safety check warns: runs above it are
 #: slow and usually need the per-window cap; billions exhaust memory.
 PAIR_WARNING_THRESHOLD = 500_000_000
+
+#: What a run does: ``run`` corrects the drift; ``estimate`` only counts the
+#: pairs, says so, and publishes nothing. The panel's button goes through
+#: the two in turn.
+STAGES: tuple[str, ...] = ("run", "estimate")
 
 #: Progress lines are printed every this many cost-function evaluations of
 #: an optimizer step; every evaluation would flood the panel.
@@ -140,6 +146,32 @@ def _estimate_pairs(comet, coordinates: np.ndarray, radius_nm: float) -> int | N
         except Exception:  # noqa: BLE001 - the estimate is a courtesy, not the run
             return None
     return int(estimate(coordinates, float(radius_nm)))
+
+
+@dataclass(frozen=True)
+class PairEstimate:
+    """The pair count of one table at one maximum drift.
+
+    What the estimate stage leaves behind for the run stage, and for the
+    panel: the count is only good for the table and the radius it was made
+    for, so both are kept with it.
+    """
+
+    result_uid: str | None
+    n_locs: int
+    max_drift_nm: float
+    pairs: int
+
+    def matches(self, result_uid, n_locs: int, max_drift_nm: float) -> bool:
+        return (
+            self.result_uid == result_uid
+            and self.n_locs == int(n_locs)
+            and abs(self.max_drift_nm - float(max_drift_nm)) < 1e-9
+        )
+
+    @property
+    def huge(self) -> bool:
+        return self.pairs > PAIR_WARNING_THRESHOLD
 
 
 class ProgressReporter:
@@ -237,7 +269,12 @@ class SmlmCometDriftProcessor(Processor):
             "window_size": DEFAULT_WINDOW_SIZE,
             "max_drift_nm": 300.0,
             "backend": "auto",
+            "stage": "run",
         }
+
+    #: The panel hands over ``estimate`` until the pairs are counted, so its
+    #: value is not the declared default by design.
+    default_params_volatile = ("stage",)
 
     @classmethod
     def param_spec(cls) -> tuple:
@@ -267,10 +304,19 @@ class SmlmCometDriftProcessor(Processor):
                      "else the CPU kernel). _qc variants drop windows whose fit "
                      "looks flawed.",
             ),
+            ParamField(
+                "stage", "select", "run", label="Stage", options=STAGES,
+                help="run corrects the drift; estimate only counts the pairs within "
+                     "'Max drift' and publishes nothing (the panel does this first).",
+            ),
         )
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
+        #: The last pair count made, by the estimate stage or a run; what the
+        #: panel reads after an estimate, and what a run reuses when it still
+        #: fits the table and the radius.
+        self.last_estimate: PairEstimate | None = None
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -287,7 +333,7 @@ class SmlmCometDriftProcessor(Processor):
         return True, ""
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
-        return CometParamWidget(parent)
+        return CometParamWidget(parent, processor=self)
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
         if not isinstance(result, LocalizationResult):
@@ -310,6 +356,9 @@ class SmlmCometDriftProcessor(Processor):
         backend = str(params.get("backend", "auto"))
         if backend not in BACKENDS:
             raise ValueError(f"Unknown backend {backend!r}; expected one of {BACKENDS}")
+        stage = str(params.get("stage", "run"))
+        if stage not in STAGES:
+            raise ValueError(f"Unknown stage {stage!r}; expected one of {STAGES}")
 
         locs = result.locs
         if len(locs) == 0:
@@ -333,15 +382,29 @@ class SmlmCometDriftProcessor(Processor):
 
         # COMET's own safety check, done here so the panel sees it: the pair
         # count decides how long the run takes and whether it fits in memory,
-        # and is known before the first optimizer step.
-        estimated_pairs = _estimate_pairs(comet, dataset[:, :3], max_drift_nm)
-        if estimated_pairs is not None:
-            print(f"Estimated pairs within {max_drift_nm:g} nm: {estimated_pairs:,}")
-            if estimated_pairs > PAIR_WARNING_THRESHOLD:
-                warning = pair_warning(estimated_pairs)
+        # and is known before the first optimizer step. The panel asks for it
+        # on its own first (stage "estimate"), then for the run, which reuses
+        # the count when the table and the radius are still the same.
+        uid = getattr(result, "result_uid", None)
+        estimate = self.last_estimate
+        if estimate is None or not estimate.matches(uid, len(locs), max_drift_nm):
+            estimated_pairs = _estimate_pairs(comet, dataset[:, :3], max_drift_nm)
+            estimate = (
+                None if estimated_pairs is None
+                else PairEstimate(uid, len(locs), max_drift_nm, estimated_pairs)
+            )
+            self.last_estimate = estimate
+        if estimate is not None:
+            print(f"Estimated pairs within {max_drift_nm:g} nm: {estimate.pairs:,}")
+            if estimate.huge:
+                warning = pair_warning(estimate.pairs)
                 print(f"Warning: {warning}")
                 self._logger.warning(warning)
         checkpoint()
+        if stage == "estimate":
+            print("Pairs estimated; nothing was corrected.")
+            return ProcessorOutput(())
+        estimated_pairs = None if estimate is None else estimate.pairs
 
         # Every report is a cancellation checkpoint; COMET reports after every
         # cost-function evaluation, where a long run spends its time, so
@@ -424,13 +487,22 @@ class CometParamWidget(QtWidgets.QWidget):
     Built with the package looked for, so a missing or broken install is
     said on the spot, with the install line ready to copy, and the controls
     are off until **Check again** finds it.
+
+    The panel's button does two things in turn. It says **Estimate pairs**
+    until the pairs within *Max drift* have been counted for the current
+    table; that run publishes nothing and leaves the count (and its warning,
+    if huge) in the panel. Then it says **Run COMET**. Changing the table or
+    *Max drift* puts it back to the estimate.
     """
 
     sigRunStateChanged = QtCore.Signal()
-    """Whether a run is possible changed; the panel re-decides its Run button."""
+    """Whether a run is possible, or what it does, changed; the panel re-decides its Run button."""
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None):
+    def __init__(self, parent: QtWidgets.QWidget | None = None, processor=None):
         super().__init__(parent)
+        self._processor = processor
+        self._result = None
+        self._estimate: PairEstimate | None = None
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -484,6 +556,7 @@ class CometParamWidget(QtWidgets.QWidget):
             "neighbour-search radius (COMET default 300 nm). The refinement "
             "starts from a kernel a third as wide."
         )
+        self.driftSpin.valueChanged.connect(self._invalidateEstimate)
         form.addRow("Max drift:", self.driftSpin)
 
         self.backendCombo = QtWidgets.QComboBox()
@@ -534,19 +607,74 @@ class CometParamWidget(QtWidgets.QWidget):
         if bool(before) != bool(self._problem):
             self.sigRunStateChanged.emit()
 
+    # -- the two stages ---------------------------------------------------
+
+    def setResult(self, result, rois=()) -> None:
+        """The table the next run is about; a count made for another is void."""
+        if result is not self._result:
+            self._result = result
+            self._invalidateEstimate()
+
+    @property
+    def estimate(self) -> PairEstimate | None:
+        """The pair count of the current table at the current max drift, if made."""
+        return self._estimate
+
+    def stage(self) -> str:
+        return "run" if self._estimate is not None else "estimate"
+
+    def run_label(self) -> str:
+        return "Run COMET" if self._estimate is not None else "Estimate pairs"
+
+    def no_results_status(self) -> str:
+        if self._estimate is None:
+            return ""
+        return "Pairs estimated. Press Run COMET to correct the drift."
+
+    def _invalidateEstimate(self, *_args) -> None:
+        if self._estimate is None:
+            return
+        self._estimate = None
+        self.statusLabel.setText("")
+        self.sigRunStateChanged.emit()
+
+    def _takeEstimate(self) -> None:
+        """Adopt the count the estimate stage left on the processor, if it is ours."""
+        estimate = getattr(self._processor, "last_estimate", None)
+        if estimate is None or self._result is None:
+            return
+        if not estimate.matches(
+            getattr(self._result, "result_uid", None),
+            len(getattr(self._result, "locs", ())),
+            self.driftSpin.value(),
+        ):
+            return
+        self._estimate = estimate
+        text = f"{estimate.pairs:,} pairs within {estimate.max_drift_nm:g} nm."
+        if estimate.huge:
+            text += f" Warning: {pair_warning(estimate.pairs)}"
+        self.statusLabel.setText(text)
+        self.sigRunStateChanged.emit()
+
+    # -- the parameter contract -------------------------------------------
+
     def get_values(self) -> dict:
         return {
             "window_mode": str(self.modeCombo.currentData()),
             "window_size": int(self.sizeSpin.value()),
             "max_drift_nm": float(self.driftSpin.value()),
             "backend": str(self.backendCombo.currentText()),
+            "stage": self.stage(),
         }
 
     def before_run(self) -> None:
         self.logView.clear()
-        self.statusLabel.setText(
-            "Running COMET… (the first CPU run also compiles its kernel)"
-        )
+        if self._estimate is None:
+            self.statusLabel.setText("Counting the pairs within the max drift…")
+        else:
+            self.statusLabel.setText(
+                "Running COMET… (the first CPU run also compiles its kernel)"
+            )
 
     def output_appended(self, text: str) -> None:
         """A piece of what the run printed, as it is printed."""
@@ -561,7 +689,9 @@ class CometParamWidget(QtWidgets.QWidget):
             self.statusLabel.setText(f"Failed: {failures[0][1]}")
             return
         if not results:
+            # The estimate stage ended: the count is on the processor.
             self.statusLabel.setText("")
+            self._takeEstimate()
             return
         self.statusLabel.setText(summarize_run(getattr(results[0], "metadata", {}) or {}))
 
@@ -600,6 +730,8 @@ __all__ = [
     "DEFAULT_WINDOW_SIZE",
     "INSTALL_HINT",
     "PAIR_WARNING_THRESHOLD",
+    "STAGES",
+    "PairEstimate",
     "TARGET_SIGMA_NM",
     "WINDOW_MODES",
     "CometParamWidget",

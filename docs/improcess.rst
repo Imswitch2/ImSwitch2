@@ -698,7 +698,11 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        the frame gets one bin per number.
      - ``LocalizationResult`` with the rows the band keeps; property and
        kept/total counts recorded in name and metadata.  **Apply filter** again
-       on the result to filter a second property.  Chains with
+       to filter a second property: with *Copy* on (the default) the first
+       filter makes a new result and the panel follows it; the box then turns
+       itself off and the next filters replace that copy in place, so a table
+       refined step by step stays one entry.  It turns back on when another
+       result is selected.  Chains with
        ``smlm-drift``/``smlm-group``/``smlm-render``.
    * - ``smlm-drift``
      - Localization
@@ -1911,18 +1915,23 @@ kernel, and *Backend* ``auto`` takes the fastest COMET finds on the machine;
 a backend asked for by name that is not available is refused with the ones
 that are.  The first CPU run compiles the kernel, which takes a moment.
 
-The panel shows the run as it goes.  First comes COMET's own safety check:
-the exact number of localization pairs within *Max drift*, which is what
-decides how long the run takes and whether it fits in memory, counted before
-the first optimizer step.  Above 500 million pairs the panel warns (and the
-log records it) that the run will be slow and may run out of memory, in which
-case COMET caps the localizations per window by itself and starts again; a
-smaller *Max drift*, or ``max_locs_per_window`` from a workflow, brings the
-count down.  Then come the windows and the localizations they hold, the
-pairs found, each optimizer step with its kernel width, every 25th
-cost-function evaluation with its cost, whether the step was accepted, the
-interpolation and the correction.  The estimate is recorded in the result's
-metadata (``drift_pairs_estimated``) beside the pairs actually found.
+The panel's button does two things in turn.  It first says **Estimate
+pairs**: that run is COMET's own safety check, the exact number of
+localization pairs within *Max drift*, which is what decides how long the
+correction takes and whether it fits in memory; it publishes nothing and
+leaves the count in the panel.  Above 500 million pairs the panel warns (and
+the log records it) that the run will be slow and may run out of memory, in
+which case COMET caps the localizations per window by itself and starts
+again; a smaller *Max drift*, or ``max_locs_per_window`` from a workflow,
+brings the count down.  The button then says **Run COMET**, and that run
+reuses the count; changing the table or *Max drift* puts the button back to
+the estimate.  (A workflow runs in one go: the ``stage`` parameter is ``run``
+unless it says ``estimate``.)  While the correction runs the panel shows the
+windows and the localizations they hold, the pairs found, each optimizer step
+with its kernel width, every 25th cost-function evaluation with its cost,
+whether the step was accepted, the interpolation and the correction.  The
+estimate is recorded in the result's metadata (``drift_pairs_estimated``)
+beside the pairs actually found.
 **Cancel** in the panel lands at COMET's next progress report, after any
 cost-function evaluation, and leaves the input untouched.
 

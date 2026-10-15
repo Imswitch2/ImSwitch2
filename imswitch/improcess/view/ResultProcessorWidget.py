@@ -136,12 +136,26 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         self.runButton.clicked.connect(self._run)
 
-        # A parameter widget whose readiness can change on its own (an
-        # optional package found on "Check again") asks for Run to be
+        # A parameter widget whose readiness, or whose idea of what Run does,
+        # can change on its own (an optional package found on "Check again";
+        # a count made that turns "Estimate" into "Run") asks for Run to be
         # re-decided. Opt-in, like its other hooks.
+        self.runButton.setText(self._runLabel())
         runStateChanged = getattr(self.paramWidget, "sigRunStateChanged", None)
         if callable(getattr(runStateChanged, "connect", None)):
             runStateChanged.connect(self.refreshRunState)
+
+    def _runLabel(self) -> str:
+        """What the Run button says: the widget's word for it, else the processor's."""
+        hook = getattr(self.paramWidget, "run_label", None)
+        if callable(hook):
+            try:
+                label = hook()
+            except Exception:
+                label = None
+            if label:
+                return str(label)
+        return getattr(self.processor, "run_label", None) or f"Run {self.processor.name}"
 
     # -- arity ------------------------------------------------------------
 
@@ -388,6 +402,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         again; the parameter widget calls this through ``sigRunStateChanged``
         when something it knows about has changed.
         """
+        self.runButton.setText(self._runLabel())
         if self.isMultiInput():
             self._refreshMultiInput()
         else:
