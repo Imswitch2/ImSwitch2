@@ -1,4 +1,4 @@
-# Configurable scan timing: findings and plan (draft 3, 2026-10-16: S0 built)
+# Configurable scan timing: findings and plan (draft 4, 2026-10-16: S0, S1, S2, S5 (TTL shift), S6 built)
 
 Lenny's observation: scans at 10 µs dwell work, 15 µs produces broken
 images, `scan.sampleRate` cannot be changed, and a PCIe-6363 could play a
@@ -230,7 +230,7 @@ the contract records both. Goldens at 10 and 20 µs stay sample-exact; the
 `ScanControllerAdvanced.py`, `APDManager.py`/`PMTManager.py` (refuse a
 partial pixel instead of dropping it), `ScanWidgetAdvanced.py`.
 
-**S1 -- the clock is configurable.** `NidaqManager`: the AO task's sample
+**S1 -- the clock is configurable. DONE 2026-10-16 (software; the driver's division of the 100 MHz timebase, the read-back and the device limits are the rig's to confirm, §8).** `NidaqManager`: the AO task's sample
 clock from the 100 MHz timebase at `scan.sampleRate`
 (`cfg_samp_clk_timing(source='', rate=…)` with
 `samp_clk_timebase_src = '100MHzTimebase'`), DO on `ao/SampleClock` as now,
@@ -240,7 +240,7 @@ The simulated NI-DAQ and the mock detectors follow the configured rates.
 Setup: `scan.sampleRate` keeps its name; `nidaq.detectionRateHz` is new
 (absent = 1 MHz, as today, said in the docs).
 
-**S2 -- the Expert engine follows.** `NidaqScanEngine.rate_hz` and
+**S2 -- the Expert engine follows. DONE 2026-10-16.** `NidaqScanEngine.rate_hz` and
 `timing_grid_s` from the setup; `scan_info_for` and the schedule already
 take a rate. The capability report names the grid and its source.
 

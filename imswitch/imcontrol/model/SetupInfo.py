@@ -498,7 +498,11 @@ class ScanInfo:
     """ Params to be read by the TTL cycle designer. """
 
     sampleRate: int
-    """ Scan sample rate. """
+    """ The scan clock in Hz: every dwell is a whole number of its samples,
+    and the analog and digital waveforms are built and played at it. 100000
+    is what every setup ran at; other rates are played from the board's
+    100 MHz timebase divided down, within the driver's limits, and must
+    divide ``nidaq.detectionRateHz``. """
 
     maxScanTimeMin: Optional[int] = None
     """ Max scan time allowed, in min. ``null``/omitted = no limit. """
@@ -603,6 +607,11 @@ class NidaqInfo:
 
     simulation: Optional[bool] = False
     """ Boolean for allowing to run nidaq-commands without access to a nidaq card. """
+
+    detectionRateHz: Optional[float] = None
+    """ Rate of the timer counter's pulse train the point detectors (APD, PMT)
+    sample on, in Hz. Absent: 1 000 000 Hz, as it always was. Must be a whole
+    multiple of ``scan.sampleRate``. """
 
     def getTimerCounterChannel(self):
         """ :meta private: """

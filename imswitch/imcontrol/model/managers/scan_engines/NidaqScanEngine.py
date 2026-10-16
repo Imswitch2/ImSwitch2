@@ -29,7 +29,7 @@ from typing import Dict, Mapping, Optional
 import numpy as np
 
 from imswitch.imcontrol.model.managers.NidaqManager import (
-    SCAN_CLOCK_RATE_HZ, SCAN_CLOCK_TERMINAL, nidaq_drives_line, nidaq_raw_line,
+    SCAN_CLOCK_RATE_HZ, nidaq_drives_line, nidaq_raw_line,
 )
 from imswitch.imcontrol.model.managers.lasers._power_volts import level_volts
 from imswitch.imcontrol.model.scan_program.densify import densify
@@ -129,12 +129,12 @@ class NidaqScanEngine(ScanEngine):
             name=self.name, analog=analog, digital=tuple(sorted(set(digital))),
             streaming=True, stepping='emulated',
             transitions=frozenset({'jump', 'linear', 'smooth'}), intra_step_offsets=True,
-            timing_grid_s=1.0 / SCAN_CLOCK_RATE_HZ,
+            timing_grid_s=1.0 / self.rate_hz,
             waits=frozenset({'time'}), detector_inputs=frozenset({'counter', 'ai'}),
             triggers_out=tuple(triggers), abort='none',
             sources={
-                'timing_grid_s': f'NidaqManager: scans run on {SCAN_CLOCK_TERMINAL} '
-                                 f'({SCAN_CLOCK_RATE_HZ} Hz)',
+                'timing_grid_s': f'scan.sampleRate ({self.rate_hz:g} Hz): the NI-DAQ sample '
+                                 'clock the waveforms are built and played at',
                 'digital': 'NidaqManager.runScan drives NI-DAQmx digital lines '
                            '(<device>/port<n>/line<m>, <device>/PFI<n>)',
                 'abort': 'NI-DAQ scans cannot be stopped mid-iteration today',
@@ -143,7 +143,17 @@ class NidaqScanEngine(ScanEngine):
 
     @property
     def rate_hz(self):
-        return SCAN_CLOCK_RATE_HZ
+        """The scan clock: ``scan.sampleRate`` (the manager's, when it has
+        one), the default rate without a setup."""
+        manager = getattr(self, '_nidaq', None)
+        try:
+            rate = float(getattr(manager, 'scanRateHz'))
+        except (AttributeError, TypeError, ValueError):
+            rate = 0.0
+        if rate > 0:
+            return rate
+        scan = getattr(self._setupInfo, 'scan', None)
+        return float(getattr(scan, 'sampleRate', None) or SCAN_CLOCK_RATE_HZ)
 
     # -- running what today's designers build ----------------------------------
 
@@ -240,7 +250,7 @@ class NidaqScanEngine(ScanEngine):
             schedule = realize(
                 expand(program, RunContext(captured_um=dict(captured_um or {}),
                                            devices=dict(devices or {}))),
-                self.rate_hz, rate_source=f'NidaqManager ({SCAN_CLOCK_TERMINAL})')
+                self.rate_hz, rate_source=f'scan.sampleRate ({self.rate_hz:g} Hz)')
         except ScheduleRefused as error:
             report.add('timing', IMPOSSIBLE, str(error))
             raise ScanEngineRefused(report) from error

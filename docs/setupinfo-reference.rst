@@ -365,7 +365,15 @@ Key fields:
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
-* ``sampleRate``: DAQ sample rate in Hz
+* ``sampleRate``: The scan clock in Hz: the pixel clock every dwell is a
+  whole number of samples of, the rate the analog and digital waveforms are
+  built and played at, and the Expert panel's timing grid. ``100000`` is
+  what every setup ran at; another rate is played from the board's 100 MHz
+  timebase divided down (the rate the driver configures is read back and a
+  mismatch refuses the scan), within the device's own limits (the driver's
+  ``ao_max_rate`` and ``do_max_rate``), and must divide
+  ``nidaq.detectionRateHz`` exactly. A 1 µs pixel on a PCIe-6363 is
+  ``1000000``.
 * ``maxScanTimeMin``: Optional scan-duration guard in minutes; ``null``,
   ``0`` or omission disables it.  ``GalvoScanDesigner`` also refuses scans
   above 10 million spatial positions.
@@ -477,6 +485,11 @@ Key fields:
 * ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
 * ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
 * ``simulation``: Allow NI-DAQ commands without physical hardware (``true`` / ``false``)
+* ``detectionRateHz``: Rate of the timer's pulse train the point detectors
+  sample on, in Hz; absent, ``1000000`` as it always was. Must be a whole
+  multiple of ``scan.sampleRate`` (the detectors bin a whole number of timer
+  samples per scan sample); a setup that is not is refused at start, naming
+  both numbers.
 
 **Example** (simulation mode, no physical DAQ):
 

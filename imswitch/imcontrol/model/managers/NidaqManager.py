@@ -8,6 +8,7 @@ try:
     import nidaqmx
     import nidaqmx._lib
     import nidaqmx.constants
+    import nidaqmx.system
     _NIDAQMX_AVAILABLE = True
 except ImportError:
     _NIDAQMX_AVAILABLE = False
@@ -54,9 +55,11 @@ except ImportError:
 
     nidaqmx = _UnavailableNidaqmx()
 
+import math
+
 import numpy as np
 
-from imswitch.imcontrol.model.scan_parameters import samples_for_duration
+from imswitch.imcontrol.model.scan_parameters import GRID_RELATIVE_ERROR, samples_for_duration
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
 from imswitch.imcommon.model import initLogger
@@ -68,17 +71,18 @@ _TASK_DRIVER_TEARDOWN_TIMEOUT_MS = 2000
 _ONE_SHOT_WAIT_TIMEOUT_S = 2.0
 
 
-#: The board timebase every NI-DAQ scan is clocked from, and its rate. The
-#: rate was a literal at eight sites while ``scan.sampleRate`` was a required
-#: config field every designer, the simulator and the detectors honoured: a
-#: setup declaring another rate got waveforms built at that rate and played
-#: out at this one, so the scan ran slower by the ratio with the metadata
-#: claiming the requested timing. The constructor now refuses a mismatch on
-#: hardware instead. Declared here once so nothing can restate it.
+#: The board timebase a 100 kHz scan is clocked from, and the rate every
+#: setup ran at until the scan clock became configurable (scan timing plan,
+#: S1): ``scan.sampleRate`` is now the AO and DO sample clock, derived from
+#: the board's 100 MHz timebase at any other rate (the driver divides it
+#: down; the rate it configured is read back and a mismatch refused), and
+#: the detectors' timer runs at ``nidaq.detectionRateHz``, a whole multiple
+#: of it. These two numbers are the defaults a setup gets when it says
+#: nothing, declared once so nothing can restate them.
 SCAN_CLOCK_TERMINAL = r'100kHzTimebase'
 SCAN_CLOCK_RATE_HZ = 100_000
-#: Rate of the pulse train the timer counter generates; the point detectors
-#: sample on it.
+#: Rate of the pulse train the timer counter generates when the setup does
+#: not declare ``nidaq.detectionRateHz``; the point detectors sample on it.
 TIMER_COUNTER_RATE_HZ = 1_000_000
 #: nidaqmx's own default read timeout, kept as the floor. A read used to
 #: inherit it silently, so a fast-axis line longer than ten seconds -- an
@@ -216,8 +220,12 @@ class NidaqManager(SignalInterface):
         self.__simulating = bool(setupInfo.nidaq.simulation)
         self.__warnedRuntimeErrors = set()
         scanInfo = getattr(setupInfo, 'scan', None)
-        if not self.__simulating and scanInfo is not None:
-            self._checkScanClockRate(getattr(scanInfo, 'sampleRate', None))
+        # The scan clock and the detectors' timer, from the setup (S1): the
+        # waveforms are built at the one and played at the same one.
+        self._scanRateHz = float(getattr(scanInfo, 'sampleRate', None) or SCAN_CLOCK_RATE_HZ)
+        self._timerRateHz = float(getattr(getattr(setupInfo, 'nidaq', None), 'detectionRateHz',
+                                          None) or TIMER_COUNTER_RATE_HZ)
+        self._checkScanClockRate(self._scanRateHz, self._timerRateHz)
 
         if not _NIDAQMX_AVAILABLE:
             hasNidaqDevices = any(
@@ -543,6 +551,23 @@ class NidaqManager(SignalInterface):
         #self.__logger.debug(f'Created CO task: {name}')
         return cotask
 
+    def _checkInputRate(self, channel, rate):
+        """Refuse an analog input sampled faster than the driver says the
+        device can (``ai_max_single_chan_rate``): a PMT samples at the
+        detectors' timer rate, ``nidaq.detectionRateHz``."""
+        if not _NIDAQMX_AVAILABLE:
+            return
+        name = str(channel).lstrip('/').split('/')[0]
+        try:
+            limit = float(nidaqmx.system.Device(name).ai_max_single_chan_rate)
+        except Exception:
+            return
+        if float(rate) > limit:
+            raise NidaqManagerError(
+                f'An analog input on {name} cannot sample at {float(rate):g} Hz: the driver '
+                f'reports {limit:g} Hz as its ai_max_single_chan_rate. Lower '
+                'nidaq.detectionRateHz.')
+
     def __createChanAITask(self, name, channel, acquisitionType, source, rate,
                            min_val=-5.0, max_val=5.0, sampsInScan=1000, starttrig=False,
                            reference_trigger='ai/StartTrigger'):
@@ -560,6 +585,7 @@ class NidaqManager(SignalInterface):
             )
         if self.__simulating:
             return None
+        self._checkInputRate(channel, rate)
         aitask = nidaqmx.Task(name)
         aitask.ai_channels.add_ai_voltage_chan(
             channel, min_val=float(min_val), max_val=float(max_val)
@@ -631,19 +657,87 @@ class NidaqManager(SignalInterface):
         return max(READ_TIMEOUT_FLOOR_S, READ_TIMEOUT_MARGIN * expected + READ_TIMEOUT_FLOOR_S)
 
     @staticmethod
-    def _checkScanClockRate(sampleRate):
-        """Refuse a ``scan.sampleRate`` the board timebase cannot run."""
+    def _checkScanClockRate(sampleRate, timerRate=TIMER_COUNTER_RATE_HZ):
+        """Refuse a ``scan.sampleRate`` and ``nidaq.detectionRateHz`` the
+        scan cannot run on: a rate that is not positive, or a timer that is
+        not a whole multiple of the scan clock (the point detectors bin a
+        whole number of timer samples per scan sample). The device's own
+        limits are checked against the driver when a scan is armed."""
         if sampleRate is None:
             return
-        if int(round(float(sampleRate))) != SCAN_CLOCK_RATE_HZ:
+        rate = float(sampleRate)
+        timer = float(timerRate)
+        if not rate > 0 or not timer > 0:
             raise NidaqManagerError(
-                f'NI-DAQ scans are clocked from the board\'s {SCAN_CLOCK_TERMINAL} '
-                f'({SCAN_CLOCK_RATE_HZ} Hz), but scan.sampleRate is {sampleRate}. '
-                f'The waveforms would be built at one rate and played at the '
-                f'other, so the scan would run {float(sampleRate) / SCAN_CLOCK_RATE_HZ:g}x '
-                f'slower than its metadata claims. Set scan.sampleRate to '
-                f'{SCAN_CLOCK_RATE_HZ}.'
-            )
+                f'scan.sampleRate ({sampleRate}) and nidaq.detectionRateHz ({timerRate}) '
+                'must be positive.')
+        ratio = timer / rate
+        if abs(ratio - round(ratio)) > GRID_RELATIVE_ERROR * max(1.0, ratio) or ratio < 1:
+            if ratio < 1:
+                remedy = (f'Raise nidaq.detectionRateHz to a whole multiple of {rate:g} Hz, '
+                          f'such as {rate:g} Hz.')
+            else:
+                # the two scan rates nearest the one asked for that the
+                # timer divides exactly
+                above, below = timer / math.floor(ratio), timer / math.ceil(ratio)
+                remedy = (f'The nearest scan rates the {timer:g} Hz timer divides are '
+                          f'{below:g} and {above:g} Hz.')
+            raise NidaqManagerError(
+                f'nidaq.detectionRateHz ({timer:g} Hz) must be a whole multiple of '
+                f'scan.sampleRate ({rate:g} Hz): the point detectors bin a whole number of '
+                f'timer samples per scan sample, and got {ratio:g}. {remedy}')
+
+    @property
+    def scanRateHz(self):
+        """The scan clock, in hertz: ``scan.sampleRate``, the rate every
+        waveform is built at and played at."""
+        return float(self._scanRateHz)
+
+    def _scanClockSource(self):
+        """The AO (and, without AO, DO) sample clock source: the board's
+        100 kHz timebase at 100 kHz, as every rig ran; else the onboard
+        clock, which the driver divides down from the 100 MHz timebase to
+        the rate asked for."""
+        return SCAN_CLOCK_TERMINAL if self._scanRateHz == SCAN_CLOCK_RATE_HZ else ''
+
+    def _checkConfiguredRate(self, task, what):
+        """Refuse a task whose driver-configured sample clock differs from
+        the scan clock: the waveforms would play at another rate than they
+        were built for (a rate the 100 MHz timebase does not divide exactly,
+        or one above the device's limit)."""
+        try:
+            configured = float(task.timing.samp_clk_rate)
+        except Exception:
+            return
+        if abs(configured - self._scanRateHz) > GRID_RELATIVE_ERROR * max(1.0, self._scanRateHz):
+            raise NidaqManagerError(
+                f'The {what} task runs at {configured:g} Hz, not the {self._scanRateHz:g} Hz '
+                'scan.sampleRate asks for: the board plays rates its 100 MHz timebase divides '
+                'exactly, within its maximum. Choose such a rate.')
+
+    def _checkDeviceRates(self, aoChannels, doLines):
+        """Refuse a scan clock above what the driver says the device can
+        play (``ao_max_rate``, ``do_max_rate``), where it says."""
+        if not _NIDAQMX_AVAILABLE:
+            return
+        names = {str(c).split('/')[0].lstrip('/') for c in list(aoChannels) + list(doLines)}
+        for name in sorted(n for n in names if n):
+            try:
+                device = nidaqmx.system.Device(name)
+            except Exception:
+                continue
+            for attribute, uses in (('ao_max_rate', bool(aoChannels)),
+                                    ('do_max_rate', bool(doLines))):
+                if not uses:
+                    continue
+                try:
+                    limit = float(getattr(device, attribute))
+                except Exception:
+                    continue
+                if self._scanRateHz > limit:
+                    raise NidaqManagerError(
+                        f'scan.sampleRate {self._scanRateHz:g} Hz is above the {limit:g} Hz '
+                        f'the driver reports as {name}\'s {attribute}.')
 
     def getTimerClockTerminal(self):
         """Terminal the timer counter's pulse train appears on, or None.
@@ -668,8 +762,9 @@ class NidaqManager(SignalInterface):
 
     @property
     def timerRateHz(self):
-        """Rate of the timer counter's pulse train, in hertz."""
-        return float(TIMER_COUNTER_RATE_HZ)
+        """Rate of the timer counter's pulse train, in hertz
+        (``nidaq.detectionRateHz``; 1 MHz when not declared)."""
+        return float(self._timerRateHz)
 
     def reportScanBuildFailure(self, source, error=None):
         """Record a detector preparation/start failure in the active scan.
@@ -1380,7 +1475,7 @@ class NidaqManager(SignalInterface):
 
             # The digital lines follow the beam: delayed by the galvo's lag
             # (the contract's phase delay), as the detectors' readout is.
-            lagShift = lag_samples(scanInfoDict)
+            lagShift = lag_samples(scanInfoDict, self._scanRateHz)
             if lagShift and DOsignals:
                 DOsignals = delayed_lines(DOsignals, lagShift,
                                           idle_levels(DOdevices, self.__setupInfo.getDevice))
@@ -1412,12 +1507,12 @@ class NidaqManager(SignalInterface):
                     (DOsignals[0] if DOsignals else [])
                 )
                 outputSamples = int(np.asarray(outputSignal).size)
-                timerSamples = int(outputSamples * (TIMER_COUNTER_RATE_HZ / SCAN_CLOCK_RATE_HZ))
+                timerSamples = int(outputSamples * (self._timerRateHz / self._scanRateHz))
                 scanTimeStep = float(
                     scanInfoDict.get('scan_time_step', 0) or 0
                 )
                 apdSamplesPerScanSample = (
-                    max(1, int(round(TIMER_COUNTER_RATE_HZ * scanTimeStep)))
+                    max(1, int(round(self._timerRateHz * scanTimeStep)))
                     if scanTimeStep > 0 else None
                 )
                 apdFiniteSamples = (
@@ -1465,11 +1560,11 @@ class NidaqManager(SignalInterface):
                     self.timerTaskWaiter = WaitThread()
                     # create timer counter output task, to control the acquisition timing (1 MHz)
                     detSampsInScan = int(
-                        len(AOsignals[0] if len(AOsignals) > 0 else DOsignals[0]) * (TIMER_COUNTER_RATE_HZ / SCAN_CLOCK_RATE_HZ)
+                        len(AOsignals[0] if len(AOsignals) > 0 else DOsignals[0]) * (self._timerRateHz / self._scanRateHz)
                     )
                     #self.__logger.debug(f'Total detection samples in scan: {detSampsInScan}')
                     self.timerTask = self.__createChanCOTask(
-                        'TimerTask', channel=self.__timerCounterChannel, rate=TIMER_COUNTER_RATE_HZ,
+                        'TimerTask', channel=self.__timerCounterChannel, rate=self._timerRateHz,
                         sampsInScan=detSampsInScan, starttrig=self.__startTrigger,
                         reference_trigger='ao/StartTrigger'
                     )
@@ -1486,18 +1581,20 @@ class NidaqManager(SignalInterface):
                         scanGeneration,
                     )
                 acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
-                scanclock = SCAN_CLOCK_TERMINAL
+                self._checkDeviceRates(AOchannels, DOlines)
+                scanclock = self._scanClockSource()
                 clockDO = scanclock
                 if len(AOsignals) > 0:
                     self.aoTaskWaiter = WaitThread()
                     scanSampsInScan = len(AOsignals[0])
                     self.__logger.debug(f'Total scan samples in scan: {scanSampsInScan}')
-                    self.__logger.debug(f'Total scan time: {scanSampsInScan / SCAN_CLOCK_RATE_HZ} s')
+                    self.__logger.debug(f'Total scan time: {scanSampsInScan / self._scanRateHz} s')
                     self.aoTask = self.__createChanAOTask('ScanAOTask', AOchannels,
                                                           acquisitionTypeFinite, scanclock,
-                                                          SCAN_CLOCK_RATE_HZ, min_val=-10, max_val=10,
+                                                          self._scanRateHz, min_val=-10, max_val=10,
                                                           sampsInScan=scanSampsInScan,
                                                           starttrig=False)
+                    self._checkConfiguredRate(self.aoTask, 'analog output')
                     self._registerScanTask(
                         'ao', self.aoTask, self.aoTaskWaiter, scanGeneration
                     )
@@ -1517,9 +1614,11 @@ class NidaqManager(SignalInterface):
                     scanSampsInScan = len(DOsignals[0])
                     self.doTask = self.__createLineDOTask('ScanDOTask', DOlines,
                                                           acquisitionTypeFinite, clockDO,
-                                                          SCAN_CLOCK_RATE_HZ, sampsInScan=scanSampsInScan,
+                                                          self._scanRateHz, sampsInScan=scanSampsInScan,
                                                           starttrig=self.__startTrigger,
                                                           reference_trigger='ao/StartTrigger')
+                    if not AOsignals:
+                        self._checkConfiguredRate(self.doTask, 'digital output')
                     self._registerScanTask(
                         'do', self.doTask, self.doTaskWaiter, scanGeneration
                     )

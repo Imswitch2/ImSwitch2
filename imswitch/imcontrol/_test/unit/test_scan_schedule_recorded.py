@@ -30,7 +30,7 @@ def test_an_expert_run_records_its_realized_timing(qtbot):
         assert summary['approach_s'] == 1e-3          # Z's move and settle, §7.9
         assert summary['changes'] == []
         assert {'quantity': 'timing grid', 'value': 1e-5, 'unit': 's',
-                'source': 'NidaqManager (100kHzTimebase)'} in summary['sources']
+                'source': 'scan.sampleRate (100000 Hz)'} in summary['sources']
     finally:
         rig.close()
 
