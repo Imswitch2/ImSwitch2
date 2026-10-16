@@ -199,9 +199,21 @@ class FocusLockController(ImConWidgetController):
             pass
 
     def closeEvent(self) -> bool:
+        lifecycleService = getattr(self.__dict__.get('_master'), 'deviceLifecycleService', None)
+        listener = self.__dict__.get('_deviceLifecycleListener')
+        if lifecycleService is not None and listener is not None:
+            lifecycleService.removeListener(listener)
+            self._deviceLifecycleListener = None
         self._shutdown()
         super().closeEvent()
         return self.shutdownComplete()
+
+    def _deviceLifecycleChanged(self, result):
+        """Lifecycle listener (reconnecting thread): the focus camera may come
+        back with another sensor size -- refresh the Camera tab's limits."""
+        if any(getattr(d, 'kind', None) == 'detector' and d.name == self.camera
+               for d in getattr(result, 'affected_device_ids', ())):
+            self._invokeOnControllerThreadIfNeeded(self._refreshFocusCameraSettings)
 
     def _shutdown(self):
         """Stop all focus work before releasing the camera lease."""
@@ -445,6 +457,10 @@ class FocusLockController(ImConWidgetController):
             )
 
         self._refreshFocusCameraSettings()
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        if lifecycleService is not None and self.__dict__.get('_deviceLifecycleListener') is None:
+            self._deviceLifecycleListener = self._deviceLifecycleChanged
+            lifecycleService.addListener(self._deviceLifecycleListener)
 
     def _refreshFocusCameraSettings(self):
         """Read the current focus-camera state back into its dedicated tree."""
