@@ -652,47 +652,107 @@ def test_monalisa_live_is_disabled_when_live_and_scan_power_are_coupled(qtbot):
         rig.close()
 
 
-def test_monalisa_live_defaults_to_on_and_readout_roles_in_separated_mode(qtbot):
+def test_monalisa_legacy_live_sources_are_derived_and_default_to_on_readout(qtbot):
     rig = CloakRig(
         'SimpleMoNaLISA', _monalisaSetupWithPowerMode('separated')
     )
     try:
         assert rig.view.screeningButton.isEnabled()
-        assert rig.view.selectedLiveRoles() == {'on', 'readout'}
-        assert set(rig.view._liveRoleChecks) == {'on', 'off', 'readout'}
-        assert not rig.view._liveRoleChecks['off'].isChecked()
+        assert rig.view.selectedLiveSources() == {'405 (ON)', '488 (EXC)'}
+        assert set(rig.view._liveSourceChecks) == {
+            '405 (ON)', '488 (OFF)', '488 (EXC)'
+        }
+        assert not rig.view._liveSourceChecks['488 (OFF)'].isChecked()
     finally:
         rig.close()
 
 
-def test_monalisa_custom_live_exposes_profile_lasers_not_custom_role(qtbot):
+def test_monalisa_custom_profile_seeds_global_live_source_choices(qtbot):
     rig = CloakRig(
         'SimpleMoNaLISA', _monalisaSetupWithCustomAlignmentProfile()
     )
     try:
         assert rig.view.screeningButton.isEnabled()
         expected = {
-            'device:405 (ON)',
-            'device:488 (EXC)',
-            'device:488 (OFF)',
+            '405 (ON)',
+            '488 (EXC)',
+            '488 (OFF)',
         }
-        assert set(rig.view._liveRoleChecks) == expected
-        assert {check.text() for check in rig.view._liveRoleChecks.values()} == {
+        assert set(rig.view._liveSourceChecks) == expected
+        assert {check.text() for check in rig.view._liveSourceChecks.values()} == {
             '405 (ON)', '488 (EXC)', '488 (OFF)'
         }
         assert all(
             'Camera' not in check.text()
-            for check in rig.view._liveRoleChecks.values()
+            for check in rig.view._liveSourceChecks.values()
         )
 
-        # The current mode only enables 488 (EXC), but Live screening exposes
-        # every laser declared by the CUSTOM profile step for alignment use.
+        # The current mode only enables 488 (EXC), but the legacy migration
+        # seeds all laser sources declared by the profile, independently of
+        # the active mode.
         assert rig.acquisition().mode_id == 'exc'
-        assert rig.scan._candidateLiveRoles() == {
-            'device:405 (ON)': ('405 (ON)',),
-            'device:488 (EXC)': ('488 (EXC)',),
-            'device:488 (OFF)': ('488 (OFF)',),
+        assert set(rig.scan._availableLiveSources()) == expected
+    finally:
+        rig.close()
+
+
+def test_monalisa_explicit_global_live_sources_override_profile_sources(qtbot):
+    data = json.loads(_monalisaSetupWithCustomAlignmentProfile())
+    data['scan']['simpleMoNaLISA']['liveSources'] = ['488 (OFF)']
+    rig = CloakRig('SimpleMoNaLISA', json.dumps(data))
+    try:
+        assert rig.scan._availableLiveSources() == ('488 (OFF)',)
+        assert set(rig.view._liveSourceChecks) == {'488 (OFF)'}
+        rig.scan._setSelectedLiveSources({'488 (OFF)'})
+        rig.scan._refreshLiveControls()
+        assert rig.view.selectedLiveSources() == {'488 (OFF)'}
+
+        # Changing acquisition mode must not repopulate Live sources from the
+        # profile or reset the current Live selection now that the setup-level
+        # list exists.
+        mode_index = rig.view.modeCombo.findData('off')
+        rig.view.modeCombo.setCurrentIndex(mode_index)
+        rig.settle()
+        assert rig.scan._availableLiveSources() == ('488 (OFF)',)
+        assert set(rig.view._liveSourceChecks) == {'488 (OFF)'}
+        assert rig.view.selectedLiveSources() == {'488 (OFF)'}
+    finally:
+        rig.close()
+
+
+def test_monalisa_live_sources_migrate_to_setup_level_on_next_save(qtbot):
+    rig = CloakRig(
+        'SimpleMoNaLISA', _monalisaSetupWithPowerMode('separated')
+    )
+    try:
+        raw = copy.deepcopy(rig.setup.scan.simpleMoNaLISA)
+        assert 'liveSources' not in raw
+        legacy = rig.scan._legacyLiveSourcesFromConfig(raw)
+
+        migrated = rig.scan._normalizeLiveSourcesForSave(raw)
+        assert migrated['liveSources'] == list(legacy)
+    finally:
+        rig.close()
+
+
+def test_monalisa_transitional_profile_live_sources_are_read_and_migrated(qtbot):
+    rig = CloakRig(
+        'SimpleMoNaLISA', _monalisaSetupWithPowerMode('separated')
+    )
+    try:
+        source = rig.scan._configuredLaserNames()[0]
+        raw = {
+            'profiles': {
+                'legacy': {
+                    'liveSources': [source],
+                    'steps': [],
+                }
+            }
         }
+        assert rig.scan._legacyLiveSourcesFromConfig(raw) == (source,)
+        migrated = rig.scan._normalizeLiveSourcesForSave(raw)
+        assert migrated['liveSources'] == [source]
+        assert 'liveSources' not in migrated['profiles']['legacy']
     finally:
         rig.close()
 def test_monalisa_profiles_and_modes_are_explicit_simple_choices(qtbot):

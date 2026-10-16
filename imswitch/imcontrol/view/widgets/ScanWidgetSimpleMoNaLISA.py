@@ -292,7 +292,8 @@ class MoNaLISAView(ScanCloakView):
     sigSetupEditRequested = QtCore.Signal()
     sigCameraReadoutAutoRequested = QtCore.Signal()
     sigScreeningRequested = QtCore.Signal()
-    sigLiveRoleToggled = QtCore.Signal(str, bool)
+    sigLiveSourceToggled = QtCore.Signal(str, bool)
+    sigLiveSourcesEditRequested = QtCore.Signal()
 
     def __init__(self, parent=None, *, napariViewer=None):
         super().__init__(parent)
@@ -306,14 +307,14 @@ class MoNaLISAView(ScanCloakView):
         self._screeningActive = False
         self._liveAvailable = False
         self._liveUnavailableReason = ''
-        self._liveRoleChecks = {}
+        self._liveSourceChecks = {}
 
         self.liveBox.hide()
         self.startButton.setText('Acquire')
         self.startButton.setToolTip('Run one MoNaLISA acquisition with these settings.')
         self.screeningButton = QtWidgets.QPushButton('Live')
         self.screeningButton.setToolTip(
-            'Use the selected profile illumination for screening at current Live laser powers.'
+            'Use the selected Live illumination sources at their current Live laser powers.'
         )
         self.screeningButton.clicked.connect(self.sigScreeningRequested.emit)
         # Base layout: stretch, hidden generic Live, Acquire, Stop. Reorder the
@@ -343,6 +344,15 @@ class MoNaLISAView(ScanCloakView):
         run_font.setBold(True)
         self.runTitle.setFont(run_font)
         self.runRow.insertWidget(0, self.runTitle)
+        self.liveSourcesButton = QtWidgets.QToolButton()
+        self.liveSourcesButton.setText('…')
+        self.liveSourcesButton.setAutoRaise(True)
+        self.liveSourcesButton.setFixedWidth(24)
+        self.liveSourcesButton.setToolTip(
+            'Choose which illumination sources are available for Live screening.'
+        )
+        self.liveSourcesButton.clicked.connect(self.sigLiveSourcesEditRequested.emit)
+        self.runRow.insertWidget(1, self.liveSourcesButton)
         self.estimateTitle.hide()
         self.frameTimeLabel.hide()
         self.estimateNote.hide()
@@ -365,7 +375,7 @@ class MoNaLISAView(ScanCloakView):
         return label
 
     def _buildUi(self):
-        # The screening role selection belongs directly under the top action
+        # The screening source selection belongs directly under the top action
         # row; it is intentionally not another boxed settings section.
         separator = QtWidgets.QFrame()
         separator.setFrameShape(QtWidgets.QFrame.HLine)
@@ -378,8 +388,8 @@ class MoNaLISAView(ScanCloakView):
         self.liveRolesLayout.setSpacing(10)
         self.liveRolesLayout.addStretch(1)
         self.liveRolesWidget.setToolTip(
-            'Choose which profile roles participate in screening. Live power remains '
-            'owned by the Laser widget.'
+            'Choose which configured illumination sources are currently enabled for '
+            'screening. Live power remains owned by the Laser widget.'
         )
         self.content.addWidget(self.liveRolesWidget)
 
@@ -536,14 +546,68 @@ class MoNaLISAView(ScanCloakView):
         self._estimateText = ''
         self._estimateRefusal = ''
 
-    def setLiveRoles(self, roles, selected_roles, *, available=True, reason=''):
-        """Render profile screening choices.
+    def editLiveSources(self, sources, selected_sources):
+        """Choose the setup-level illumination sources shown in the LIVE row."""
+        sources = tuple(str(source) for source in sources)
+        selected = set(str(source) for source in (selected_sources or ()))
 
-        ``roles`` is an iterable of ``(selection, label, devices)`` tuples.
-        Semantic steps use role selections, while CUSTOM/alignment steps may
-        expose individual laser devices.  The controller owns the saved
-        selection and hardware behavior.
-        """
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Live screening sources')
+        dialog.resize(420, 460)
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        note = QtWidgets.QLabel(
+            'Choose which configured illumination sources are available in the '
+            'Simple MoNaLISA LIVE row. This selection is independent of profiles.'
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        filterEdit = QtWidgets.QLineEdit()
+        filterEdit.setPlaceholderText('Filter sources…')
+        layout.addWidget(filterEdit)
+
+        sourceList = QtWidgets.QListWidget()
+        items = []
+        for source in sources:
+            item = QtWidgets.QListWidgetItem(source)
+            item.setData(QtCore.Qt.UserRole, source)
+            item.setCheckState(
+                QtCore.Qt.Checked if source in selected else QtCore.Qt.Unchecked
+            )
+            sourceList.addItem(item)
+            items.append(item)
+        layout.addWidget(sourceList, 1)
+
+        if not sources:
+            empty = QtWidgets.QLabel('No illumination sources are configured.')
+            empty.setEnabled(False)
+            layout.insertWidget(2, empty)
+
+        def filterSources(text):
+            needle = str(text or '').strip().lower()
+            for item in items:
+                item.setHidden(needle not in item.text().lower())
+
+        filterEdit.textChanged.connect(filterSources)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+        return tuple(
+            item.data(QtCore.Qt.UserRole)
+            for item in items
+            if item.checkState() == QtCore.Qt.Checked
+        )
+
+    def setLiveSources(self, sources, selected_sources, *, available=True, reason=''):
+        """Render the setup-owned Live screening illumination sources."""
         self._updating = True
         try:
             while self.liveRolesLayout.count():
@@ -551,27 +615,27 @@ class MoNaLISAView(ScanCloakView):
                 widget = item.widget()
                 if widget is not None:
                     widget.deleteLater()
-            self._liveRoleChecks = {}
-            selected = set(selected_roles or ())
-            for role, label, devices in roles:
-                devices = tuple(devices or ())
-                check = QtWidgets.QCheckBox(str(label))
-                check.setChecked(str(role) in selected)
+            self._liveSourceChecks = {}
+            selected = set(selected_sources or ())
+            for source in sources:
+                source = str(source)
+                check = QtWidgets.QCheckBox(source)
+                check.setChecked(source in selected)
                 check.setToolTip(
-                    f'{label} screening illumination. Uses the current Live power.\n'
-                    + ('Devices: ' + ' + '.join(devices) if devices else 'No laser devices.')
+                    f'{source} Live screening illumination. Uses the current Live power.'
                 )
                 check.toggled.connect(
-                    lambda checked, role=str(role): self._liveRoleChanged(role, checked)
+                    lambda checked, source=source: self._liveSourceChanged(source, checked)
                 )
                 self.liveRolesLayout.addWidget(check)
-                self._liveRoleChecks[str(role)] = check
+                self._liveSourceChecks[source] = check
             self.liveRolesLayout.addStretch(1)
             self._liveAvailable = bool(available)
             self._liveUnavailableReason = str(reason or '')
             baseTip = (
                 'Choose which illumination sources participate in screening. '
-                'Only laser ON/OFF state is controlled here; Live power stays in the Laser widget.'
+                'Use the button next to LIVE to change which sources are shown. '
+                'Live power stays in the Laser widget.'
             )
             self.liveRolesWidget.setToolTip(
                 self._liveUnavailableReason if self._liveUnavailableReason else baseTip
@@ -580,14 +644,14 @@ class MoNaLISAView(ScanCloakView):
             self._updating = False
         self._updateControlState()
 
-    def _liveRoleChanged(self, role, checked):
+    def _liveSourceChanged(self, source, checked):
         if self._updating:
             return
-        self.sigLiveRoleToggled.emit(str(role), bool(checked))
+        self.sigLiveSourceToggled.emit(str(source), bool(checked))
 
-    def selectedLiveRoles(self):
+    def selectedLiveSources(self):
         return {
-            role for role, check in self._liveRoleChecks.items()
+            source for source, check in self._liveSourceChecks.items()
             if check.isChecked()
         }
 
@@ -995,9 +1059,10 @@ class MoNaLISAView(ScanCloakView):
             bound and self._liveAvailable and not running and not screening
         )
         liveTip = self._liveUnavailableReason if not self._liveAvailable else (
-            'Use the selected profile illumination for screening at current Live laser powers.'
+            'Use the selected Live illumination sources at their current Live powers.'
         )
         self.screeningButton.setToolTip(liveTip)
+        self.liveSourcesButton.setEnabled(not running and not screening)
         hasProfiles = bool(
             self._limits is not None and self._limits.profile_store.profiles
         )
@@ -1017,7 +1082,7 @@ class MoNaLISAView(ScanCloakView):
 
         if self._plan is None or self._limits is None:
             self.lateralLengthControl.setEnabled(False)
-            for check in self._liveRoleChecks.values():
+            for check in self._liveSourceChecks.values():
                 check.setEnabled(False)
             return
         profile = self._profile(self._plan.profile_id)
@@ -1035,7 +1100,7 @@ class MoNaLISAView(ScanCloakView):
             step_enabled = editable and bool(mode.devices_for_step(step))
             for widget in widgets:
                 widget.setEnabled(step_enabled)
-        for check in self._liveRoleChecks.values():
+        for check in self._liveSourceChecks.values():
             check.setEnabled(bound and self._liveAvailable and not running)
 
     def _runningChanged(self, running: bool):

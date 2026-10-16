@@ -73,7 +73,10 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._onCameraReadoutAutoRequested
         )
         self._view.sigScreeningRequested.connect(self._onScreeningRequested)
-        self._view.sigLiveRoleToggled.connect(self._onLiveRoleToggled)
+        self._view.sigLiveSourceToggled.connect(self._onLiveSourceToggled)
+        self._view.sigLiveSourcesEditRequested.connect(
+            self._onLiveSourcesEditRequested
+        )
         self._panel.sigLoadResolutionActionRequested.connect(
             self._onLoadResolutionActionRequested
         )
@@ -117,7 +120,10 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 'limits': limits,
                 'plan': plan,
                 'binding': binding,
-                'liveRolesByMode': {},
+                # Live screening illumination is intentionally independent of
+                # the acquisition profile/mode. The setup owns which sources
+                # are shown; this runtime set owns which of those are enabled.
+                'selectedLiveSources': None,
                 'resolvedSetup': {},
             }
         return state
@@ -417,15 +423,128 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
     def _persistProfileStore(self, store, *, refresh_view=True):
         """Persist one atomic profile-store replacement into the active setup."""
         state = self._monalisa()
+        configured = self._normalizeLiveSourcesForSave(
+            getattr(self._setupInfo.scan, 'simpleMoNaLISA', None)
+        )
         raw = config_with_profile_store(
-            getattr(self._setupInfo.scan, 'simpleMoNaLISA', None), store
+            configured, store
         )
         self._persistSimpleConfig(raw)
         state['limits'] = dataclasses.replace(state['limits'], profile_store=store)
         self._refreshResolvedSetup(refreshView=refresh_view)
 
+    def _configuredLaserNames(self):
+        """Configured illumination device names in the Laser widget order."""
+        try:
+            return tuple(name for name, _ in self._master.lasersManager)
+        except Exception:
+            return tuple((getattr(self._setupInfo, 'lasers', {}) or {}).keys())
+
+    def _legacyLiveSourcesFromConfig(self, configured=None):
+        """Derive the old profile-owned Live source set in stable order.
+
+        Older SimpleMoNaLISA setups did not have a setup-level ``liveSources``
+        list: screening choices were inferred from the laser devices present in
+        each profile.  Accept an explicit per-profile ``liveSources`` field as
+        well, so configurations produced during intermediate development remain
+        readable.  Only configured laser devices are returned; camera/TTL
+        entries in profile steps are ignored.
+        """
+        raw = dict(
+            configured
+            if configured is not None
+            else (getattr(self._setupInfo.scan, 'simpleMoNaLISA', None) or {})
+        )
+        profiles = raw.get('profiles') or {}
+        if not isinstance(profiles, dict):
+            return ()
+        configuredLasers = set(self._configuredLaserNames())
+        result = []
+
+        def append(device):
+            device = str(device).strip()
+            if device in configuredLasers and device not in result:
+                result.append(device)
+
+        for profile in profiles.values():
+            if not isinstance(profile, dict):
+                continue
+            legacy = profile.get('liveSources') or ()
+            if isinstance(legacy, (list, tuple, set)):
+                for device in legacy:
+                    append(device)
+            steps = profile.get('steps') or ()
+            if isinstance(steps, dict):
+                steps = tuple(steps.values())
+            if not isinstance(steps, (list, tuple)):
+                continue
+            modes = profile.get('modes') or {}
+            if not isinstance(modes, dict):
+                modes = {}
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                step_id = str(step.get('id') or '').strip()
+                declared = step.get('ttlDevices') or ()
+                if not isinstance(declared, (list, tuple, set)):
+                    declared = ()
+                # This mirrors the former candidate logic: CUSTOM steps made
+                # every declared laser available, while semantic steps only
+                # exposed devices enabled by a profile mode. Unioning over all
+                # modes gives the old profile-owned choices without tying the
+                # migrated list to whichever mode happens to be active now.
+                if str(step.get('role') or '').strip().lower() == 'custom':
+                    for device in declared:
+                        append(device)
+                    continue
+                found_enabled_mode = False
+                for mode in modes.values():
+                    if not isinstance(mode, dict):
+                        continue
+                    if step_id not in (mode.get('enabledSteps') or ()):
+                        continue
+                    found_enabled_mode = True
+                    enabled_devices = mode.get('enabledDevices') or {}
+                    override = (
+                        enabled_devices.get(step_id)
+                        if isinstance(enabled_devices, dict)
+                        else None
+                    )
+                    devices = declared if override is None else override
+                    if isinstance(devices, (list, tuple, set)):
+                        for device in devices:
+                            append(device)
+                if not modes or not found_enabled_mode:
+                    for device in declared:
+                        append(device)
+        return tuple(result)
+
+    def _normalizeLiveSourcesForSave(self, raw):
+        """Migrate legacy profile-owned Live choices to setup-level storage."""
+        result = copy.deepcopy(dict(raw or {}))
+        if 'liveSources' not in result:
+            result['liveSources'] = list(self._legacyLiveSourcesFromConfig(result))
+        else:
+            values = result.get('liveSources') or ()
+            if not isinstance(values, (list, tuple, set)):
+                values = ()
+            result['liveSources'] = list(dict.fromkeys(
+                str(value).strip() for value in values if str(value).strip()
+            ))
+
+        # Transitional per-profile ``liveSources`` is accepted on read, but a
+        # successful save finishes the one-way migration to the setup-level
+        # field. Acquisition TTL definitions are left untouched.
+        profiles = result.get('profiles')
+        if isinstance(profiles, dict):
+            for profile in profiles.values():
+                if isinstance(profile, dict):
+                    profile.pop('liveSources', None)
+        return result
+
     def _persistSimpleConfig(self, raw):
         """Persist one complete ``simpleMoNaLISA`` block atomically."""
+        raw = self._normalizeLiveSourcesForSave(raw)
         previous_scan = self._setupInfo.scan
         new_scan = dataclasses.replace(previous_scan, simpleMoNaLISA=raw)
         self._setupInfo.scan = new_scan
@@ -466,6 +585,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         new_policy = str(raw.get('ulensPeriodPolicy') or 'fixed')
         store = state['limits'].profile_store
         if old_policy != 'per_profile' and new_policy == 'per_profile' and store.profiles:
+            raw = self._normalizeLiveSourcesForSave(raw)
             seed_period = state['limits'].fixed_ulens_period_um
             profiles = {
                 profile_id: (
@@ -783,68 +903,86 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
     def _livePowerIsSeparated(self) -> bool:
         return laserPowerModeFromSetup(self._setupInfo) is LaserPowerMode.SEPARATED
 
-    def _liveSelectionKey(self):
-        plan = self.acquisitionPlan()
-        return f'{plan.profile_id}:{plan.mode_id}'
+    def _availableLiveSources(self):
+        """Setup-owned Live screening sources, independent of profile/mode.
 
-    def _candidateLiveRoles(self):
-        """Return Live screening choices mapped to their laser device tuples.
-
-        Semantic MoNaLISA steps stay role-based (ON/OFF/READOUT).  CUSTOM
-        steps are intentionally device-based instead: alignment profiles often
-        use one shared timing step whose modes enable different laser subsets,
-        and collapsing those lasers into one ``Custom`` checkbox makes Live
-        screening unusable.  For CUSTOM steps expose every laser declared by
-        the profile step, not only the devices enabled by the current mode.
+        New setups persist ``simpleMoNaLISA.liveSources``.  Older setups are
+        accepted without modification by deriving the same list from all
+        profile laser devices until the next successful SimpleMoNaLISA config
+        save performs the one-way migration.
         """
-        if not self.cloakOwnsBackend():
-            return {}
+        configured = dict(getattr(self._setupInfo.scan, 'simpleMoNaLISA', None) or {})
+        known = set(self._configuredLaserNames())
+        if 'liveSources' in configured:
+            values = configured.get('liveSources') or ()
+            if not isinstance(values, (list, tuple, set)):
+                return ()
+            return tuple(dict.fromkeys(
+                str(value).strip()
+                for value in values
+                if str(value).strip() in known
+            ))
+        return self._legacyLiveSourcesFromConfig(configured)
+
+    def _defaultSelectedLiveSources(self):
+        """Preserve the old ON + READOUT default for the first runtime use."""
+        if not self.cloakOwnsBackend() or self.acquisitionPlan() is None:
+            return set()
         plan = self.acquisitionPlan()
         profile = self.cloakLimits().profile_store.profile(plan.profile_id)
         mode = profile.mode(plan.mode_id)
-        configuredLasers = set(getattr(self._setupInfo, 'lasers', {}) or {})
-        choices = {}
+        available = set(self._availableLiveSources())
+        selected = set()
         for step in profile.steps:
-            if step.role == 'custom':
-                for device in step.ttl_devices:
-                    if device not in configuredLasers:
-                        continue
-                    choices.setdefault(f'device:{device}', (device,))
+            if step.role not in ('on', 'readout'):
                 continue
+            for device in mode.devices_for_step(step):
+                if device in available:
+                    selected.add(device)
+        return selected
 
-            devices = tuple(
-                device for device in mode.devices_for_step(step)
-                if device in configuredLasers
-            )
-            if not devices:
-                continue
-            existing = list(choices.get(step.role, ()))
-            for device in devices:
-                if device not in existing:
-                    existing.append(device)
-            choices[step.role] = tuple(existing)
-        return choices
-
-    def _selectedLiveRoles(self):
+    def _selectedLiveSources(self):
         state = self._monalisa()
-        key = self._liveSelectionKey()
-        candidates = self._candidateLiveRoles()
-        selections = state['liveRolesByMode']
-        if key not in selections:
-            selections[key] = {
-                role for role in ('on', 'readout') if role in candidates
-            }
-        else:
-            selections[key] = {
-                role for role in selections[key] if role in candidates
-            }
-        return set(selections[key])
+        available = set(self._availableLiveSources())
+        selected = state.get('selectedLiveSources')
+        if selected is None:
+            selected = self._defaultSelectedLiveSources()
+        selected = {source for source in selected if source in available}
+        state['selectedLiveSources'] = selected
+        return set(selected)
 
-    def _setSelectedLiveRoles(self, roles):
-        candidates = self._candidateLiveRoles()
-        self._monalisa()['liveRolesByMode'][self._liveSelectionKey()] = {
-            role for role in roles if role in candidates
+    def _setSelectedLiveSources(self, sources):
+        available = set(self._availableLiveSources())
+        self._monalisa()['selectedLiveSources'] = {
+            str(source) for source in sources if str(source) in available
         }
+
+    def _onLiveSourcesEditRequested(self):
+        if self._isBusy() or self.__dict__.get('_screeningActive', False):
+            return
+        configured = self._configuredLaserNames()
+        chosen = self._view.editLiveSources(
+            configured,
+            self._availableLiveSources(),
+        )
+        if chosen is None:
+            return
+        chosen = tuple(
+            source for source in configured if source in set(chosen)
+        )
+        raw = dict(getattr(self._setupInfo.scan, 'simpleMoNaLISA', None) or {})
+        raw['liveSources'] = list(chosen)
+        selected = self._selectedLiveSources()
+        try:
+            self._persistSimpleConfig(raw)
+        except Exception as error:
+            self._view.showMessage(
+                f'Could not save Live screening sources: {error}', error=True
+            )
+            return
+        self._setSelectedLiveSources(selected.intersection(chosen))
+        self._refreshLiveControls()
+        self._view.showMessage('')
 
     def _profileScreeningDetectors(self):
         """Free-running acquisition detectors in active READOUT steps."""
@@ -854,47 +992,39 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         if not hasattr(self, '_view'):
             return
         self._releaseScreeningTriggerIfCameraChanged()
-        candidates = self._candidateLiveRoles()
-        labels = {
-            'on': 'ON',
-            'off': 'OFF',
-            'readout': 'Readout',
-        }
-        roles = []
-        for selection, devices in candidates.items():
-            if selection.startswith('device:'):
-                label = selection.split(':', 1)[1]
-            else:
-                label = labels.get(selection, selection.title())
-            roles.append((selection, label, devices))
-        available = self._livePowerIsSeparated() and bool(roles)
+        sources = self._availableLiveSources()
+        available = self._livePowerIsSeparated() and bool(sources)
         reason = ''
         if not self._livePowerIsSeparated():
             reason = (
                 'Live screening requires separated Live/Scan laser powers. '
                 'The current laser power mode shares acquisition and Live power.'
             )
-        elif not roles:
-            reason = 'The selected profile/mode has no laser illumination available for screening.'
+        elif not sources:
+            reason = (
+                'No Live screening sources are configured. Use the source button '
+                'next to LIVE to choose them.'
+            )
         elif not self._profileScreeningDetectors():
             available = False
-            reason = 'The selected profile/mode has no free-running camera in its Readout role.'
-        self._view.setLiveRoles(
-            roles,
-            self._selectedLiveRoles() if roles else set(),
+            reason = 'The selected profile/mode has no free-running acquisition camera.'
+        self._view.setLiveSources(
+            sources,
+            self._selectedLiveSources() if sources else set(),
             available=available,
             reason=reason,
         )
 
-    def _screeningLaserTargets(self, roles=None):
-        candidates = self._candidateLiveRoles()
-        selected = self._selectedLiveRoles() if roles is None else set(roles)
-        profileDevices = []
-        for role in selected:
-            for device in candidates.get(role, ()):
-                if device not in profileDevices:
-                    profileDevices.append(device)
-        return tuple(self._commChannel.liveScreeningWorkflow.resolve_live_lasers(profileDevices))
+    def _screeningLaserTargets(self, sources=None):
+        selected = self._selectedLiveSources() if sources is None else set(sources)
+        available = set(self._availableLiveSources())
+        devices = [
+            source for source in self._availableLiveSources()
+            if source in selected and source in available
+        ]
+        return tuple(
+            self._commChannel.liveScreeningWorkflow.resolve_live_lasers(devices)
+        )
 
     def _missingLiveViewDetectors(self):
         detectors = self._profileScreeningDetectors()
@@ -1015,7 +1145,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         if not self._livePowerIsSeparated():
             self._refreshLiveControls()
             return
-        selected = self._selectedLiveRoles()
+        selected = self._selectedLiveSources()
         if not selected:
             self._view.showMessage('Select at least one Live screening illumination source.', error=True)
             return
@@ -1077,14 +1207,14 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._view.showMessage('')
         return True
 
-    def _onLiveRoleToggled(self, role: str, checked: bool):
-        before = self._selectedLiveRoles()
+    def _onLiveSourceToggled(self, source: str, checked: bool):
+        before = self._selectedLiveSources()
         after = set(before)
         if checked:
-            after.add(role)
+            after.add(source)
         else:
-            after.discard(role)
-        self._setSelectedLiveRoles(after)
+            after.discard(source)
+        self._setSelectedLiveSources(after)
         if not self.__dict__.get('_screeningActive', False):
             return
         try:
@@ -1094,7 +1224,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 self.__dict__['_screeningActive'] = False
                 self._view.setScreeningActive(False)
         except Exception as error:
-            self._setSelectedLiveRoles(before)
+            self._setSelectedLiveSources(before)
             self._refreshLiveControls()
             self._view.showMessage(
                 f'Could not change Live screening illumination: {error}', error=True
@@ -1351,23 +1481,15 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def cloakStateExtras(self) -> dict:
         extras = super().cloakStateExtras()
-        extras['liveRolesByMode'] = {
-            key: sorted(value)
-            for key, value in self._monalisa()['liveRolesByMode'].items()
-        }
         monalisa = self._savedMoNaLISAMetadata()
         if monalisa is not None:
             extras['monalisa'] = monalisa
         return extras
 
     def applyCloakStateExtras(self, extras):
-        saved = extras.get('liveRolesByMode', {}) if isinstance(extras, dict) else {}
-        if isinstance(saved, dict):
-            self._monalisa()['liveRolesByMode'] = {
-                str(key): {str(role) for role in value}
-                for key, value in saved.items()
-                if isinstance(value, (list, tuple, set))
-            }
+        # ``liveRolesByMode`` from older scan files is intentionally ignored.
+        # Live screening illumination is now setup/session UI state and loading
+        # an acquisition must not change it.
         self._refreshLiveControls()
 
     @staticmethod
