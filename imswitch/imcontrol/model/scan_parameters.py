@@ -25,9 +25,60 @@ Dict formats:
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import numpy as np
+
+
+#: How a requested duration becomes a whole number of samples, in every
+#: designer and in the Advanced controller: the ``step`` rule of the
+#: ``advanced-compatible-v1`` timing policy (ceil: a dwell is never
+#: shortened). A test holds the two together.
+DWELL_ROUNDING = 'ceil'
+
+#: A product that lands this close to a whole number is that whole number:
+#: ``2e-05 * 100000`` is not exactly 2 in floating point, and a ceil of
+#: it would be 3 samples. Relative to the product, two ulps.
+GRID_RELATIVE_ERROR = 2 * sys.float_info.epsilon
+
+
+def samples_for_duration(seconds, rate_hz, rounding=DWELL_ROUNDING) -> int:
+    """The whole number of samples a duration takes on a ``rate_hz`` grid,
+    under ``rounding``: 'ceil' (never shorter), 'nearest-even'
+    (``round``), or 'exact' (a duration off the grid raises ValueError
+    naming its two neighbours). The ONE arithmetic the galvo and Beta
+    designers, the TTL designer, the Advanced controller and the scan
+    program's timing policies share (plan scan-timing, rule 3)."""
+    product = float(seconds) * float(rate_hz)
+    nearest = int(round(product))
+    if abs(product - nearest) <= GRID_RELATIVE_ERROR * max(1.0, abs(product)):
+        return nearest
+    if rounding == 'ceil':
+        return int(np.ceil(product))
+    if rounding == 'nearest-even':
+        return nearest
+    if rounding == 'exact':
+        low, high = int(np.floor(product)), int(np.ceil(product))
+        raise ValueError(f'{float(seconds):g} s is not on the {1 / float(rate_hz):g} s grid: '
+                         f'{low / float(rate_hz):g} or {high / float(rate_hz):g} s')
+    raise ValueError(f'Unknown rounding {rounding!r}')
+
+
+def realized_dwell_s(dwell_s, rate_hz, rounding=DWELL_ROUNDING) -> float:
+    """The dwell as it plays: a whole number of samples on the grid."""
+    return samples_for_duration(dwell_s, rate_hz, rounding) / float(rate_hz)
+
+
+def dwell_request_if_changed(dwell_s, rate_hz, rounding=DWELL_ROUNDING):
+    """The requested dwell when realizing it changed it, else ``None``: what
+    a contract records beside ``dwell_time``. A request that is the realized
+    dwell to within the grid tolerance (``1e-5`` typed as ``10 * 1e-6``) is
+    not a change."""
+    realized = realized_dwell_s(dwell_s, rate_hz, rounding)
+    if abs(float(dwell_s) - realized) <= GRID_RELATIVE_ERROR * max(abs(realized), abs(float(dwell_s))):
+        return None
+    return float(dwell_s)
 
 
 def pixels_for_length_step(length, step) -> int:
@@ -545,7 +596,9 @@ class AdvancedScanParameterSerializer:
             pass
 
 
-__all__ = ["AdvancedScanParameterSerializer"]
+__all__ = ["AdvancedScanParameterSerializer", "DWELL_ROUNDING", "GRID_RELATIVE_ERROR",
+           "dwell_request_if_changed", "pixels_for_length_step", "realized_dwell_s",
+           "samples_for_duration"]
 
 
 def seed_scan_delays_from_setup(widget, setupInfo) -> None:

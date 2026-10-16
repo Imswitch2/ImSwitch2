@@ -155,7 +155,11 @@ runs as before (``advanced-compatible-v1``): when the clock rounds a time,
 the panel shows the time it runs at beside the requested one -- the dwell
 (*Dwell 1.005 ms runs as 1.01 ms*), and every move, settle, return and
 line-step window edge the scan plays differently (*405 (ON) ttl start at
-15 µs runs at 20 µs*), each once. Saved scans record the policy they run under as
+15 µs runs at 20 µs*), each once. The dwell that plays is a whole number of
+samples, rounded up, and it is the one dwell of the whole scan: the sweep,
+the laser and camera lines and the point detectors' bins all follow it,
+and the recording's ``dwell_time`` is that value, with the request beside
+it as ``dwell_requested_s`` when they differ. Saved scans record the policy they run under as
 ``timingPolicy``; a file without it is a scan saved before, and runs as
 before. A file naming a policy this version does not know is not applied.
 A recording holds what the scan realized (``ScanStage:scan_schedule``): the

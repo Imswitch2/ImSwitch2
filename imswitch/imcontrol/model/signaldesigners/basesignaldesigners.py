@@ -360,6 +360,9 @@ class ScanInfoContract:
     # --- Optional / informational ---
     minmaxes: list = field(default_factory=list)
     tot_scan_time_s: float = 0.0
+    #: The dwell as requested, when the designer realized another
+    #: (``dwell_time`` is the one that plays); None when they agree.
+    dwell_requested_s: float = None
 
     # --- Beta-designer compatibility (BetaTTLCycleDesigner reads these) ---
     positions: list = field(default_factory=list)

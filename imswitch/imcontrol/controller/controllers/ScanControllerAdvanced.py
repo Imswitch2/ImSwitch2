@@ -10,6 +10,7 @@ from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.scan_parameters import (
+    samples_for_duration,
     seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
     pixels_for_length_step,
@@ -739,15 +740,8 @@ class ScanControllerAdvanced(SuperScanController):
         signals = self._get_ttl_designer().make_single_pixel_signal(
             forced, self._setupInfo
         )
-        samplesPerPixel = max(
-            1,
-            int(
-                round(
-                    float(parameters["sequence_time"])
-                    * float(self._setupInfo.scan.sampleRate)
-                )
-            ),
-        )
+        samplesPerPixel = max(1, samples_for_duration(
+            float(parameters["sequence_time"]), float(self._setupInfo.scan.sampleRate)))
         counts = {}
         for detector in requested:
             signal = signals.get(detector)

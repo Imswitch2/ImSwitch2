@@ -1,4 +1,4 @@
-# Configurable scan timing: findings and plan (draft 2, 2026-10-16)
+# Configurable scan timing: findings and plan (draft 3, 2026-10-16: S0 built)
 
 Lenny's observation: scans at 10 µs dwell work, 15 µs produces broken
 images, `scan.sampleRate` cannot be changed, and a PCIe-6363 could play a
@@ -220,7 +220,7 @@ per pixel at 100 kHz and one per pixel at 1 MHz.
 
 ## 6. Staged implementation
 
-**S0 -- one source at 100 kHz (fixes the 15 µs rig failure).** Rules 2–4
+**S0 -- one source at 100 kHz (fixes the 15 µs rig failure). DONE 2026-10-16** (decisions taken: the rule is the policy's `ceil`, so a dwell is never shortened; the Advanced panel snaps and its timing note says so; the contract carries `dwell_requested_s`). Rules 2–4
 and 9 without touching the clock: galvo designer, TTL designer, controller
 and detectors take `samples_per_pixel` from one place; the Advanced panel
 snaps the dwell and says so; the velocity check uses the realized dwell;

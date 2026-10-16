@@ -1390,7 +1390,11 @@ class ScanWorker(Worker):
         if n == 0:
             return np.zeros((0,), dtype=self._manager.dtype)
         if n != len(line_samples):
-            # optional: logger warning
+            # A line that is not a whole number of pixels: the grids disagree
+            # (plan scan-timing, F1). Said once per line, never silent.
+            self.__logger.error(
+                f'{self._name}: a line of {len(line_samples)} samples is not a whole number '
+                f'of {frac}-sample pixels; {len(line_samples) - n} samples dropped.')
             line_samples = line_samples[:n]
         pixels = np.asarray(line_samples).reshape(-1, frac).sum(axis=1)
         if self._manager._simulation_mode and not self._manager._ttlmultiplying:

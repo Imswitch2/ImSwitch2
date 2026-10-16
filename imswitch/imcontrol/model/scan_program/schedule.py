@@ -20,12 +20,12 @@ Qt-free.
 from __future__ import annotations
 
 import math
-import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
 
+from ..scan_parameters import GRID_RELATIVE_ERROR, samples_for_duration
 from .interpreter import Expansion, Span, inner_drives
 from .policy import TimingPolicy, resolve_policy
 from .units import format_seconds
@@ -36,7 +36,7 @@ from .units import format_seconds
 #: reciprocal when one is derived from the other, the product -- each at most
 #: half an ULP: two machine epsilons together. A tick count within it of a
 #: whole number IS that whole number; nothing coarser is accepted as exact.
-GRID_RELATIVE_ERROR = 2 * sys.float_info.epsilon
+# GRID_RELATIVE_ERROR: imported from scan_parameters, the one place.
 
 
 def grid_ticks(seconds, rate_hz):
@@ -168,11 +168,9 @@ class _Converter:
     def ticks(self, seconds, quantity, where):
         mode = self.policy.rounding[quantity]
         product = float(seconds) * self.rate
-        if mode == 'ceil':
-            # Today's designers' arithmetic, unchanged: np.ceil on the product.
-            ticks = int(np.ceil(product))
-        elif mode == 'nearest-even':
-            ticks = int(round(product))
+        if mode in ('ceil', 'nearest-even'):
+            # The designers' arithmetic, from the one place they share.
+            ticks = samples_for_duration(seconds, self.rate, mode)
         else:
             ticks, exact = grid_ticks(seconds, self.rate)
             if not exact:

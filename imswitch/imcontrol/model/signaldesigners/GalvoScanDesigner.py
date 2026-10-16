@@ -9,6 +9,7 @@ from .basesignaldesigners import (
     ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
 )
 from ..errors import ScanDesignRefusedError
+from ..scan_parameters import dwell_request_if_changed, realized_dwell_s, samples_for_duration
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
@@ -175,7 +176,9 @@ class GalvoScanDesigner(ScanDesigner):
         name = scanParameters['target_device'][fast]
         props = setupInfo.positioners[name].managerProperties
         vel_max = fast_axis_speed_limit(name, props)
-        dwell_us = float(scanParameters['sequence_time']) * 1e6
+        # the dwell as it plays: the sweep is as fast as the realized dwell
+        dwell_us = realized_dwell_s(scanParameters['sequence_time'],
+                                    setupInfo.scan.sampleRate) * 1e6
         if vel_max is None or dwell_us <= 0:
             return ''
         step_um = abs(float(scanParameters['axis_step_size'][fast]))
@@ -234,6 +237,16 @@ class GalvoScanDesigner(ScanDesigner):
     def make_signal(self, parameterDict, setupInfo):
         # --- Per-call state (reset each invocation, accumulated by private methods) ---
         self.__timestep = 1e6 / setupInfo.scan.sampleRate  # time step [µs]
+        # The dwell is a whole number of samples (plan scan-timing, rules 2
+        # and 3): realized ONCE here, and every count below -- the pixel, the
+        # line, the sweep, the speed check -- follows from it. The request is
+        # kept for the contract. (The pixel and the line used to be rounded
+        # separately, so at 15 µs the galvo swept 15 µs per pixel while the
+        # TTL designer gated 10 µs of each.)
+        dwell_requested_s = float(parameterDict['sequence_time'])
+        samples_per_pixel = samples_for_duration(dwell_requested_s, setupInfo.scan.sampleRate)
+        dwell_s = samples_per_pixel / float(setupInfo.scan.sampleRate)
+        parameterDict = dict(parameterDict, sequence_time=dwell_s)
         self.__paddingtime_d3step = int(parameterDict['d3step_delay'])  # inter-slice delay [µs]
         self.__paddingtime_full = 100  # safety padding [µs]
         self._samples_initpos = []
@@ -331,8 +344,7 @@ class GalvoScanDesigner(ScanDesigner):
         # get list of number of axis steps (round(len/step); see pixels_for_length_step)
         n_steps_dx = [pixels_for_length_step(self.axis_length[i], self.axis_step_size[i]) for i in range(axis_count_scan)]
         # get list of number of axis scan samples, for first two axes initially
-        n_scan_samples_dx = [int(round(parameterDict['sequence_time'] * 1e6 / self.__timestep))]
-        n_scan_samples_dx.append(int(round(n_steps_dx[0] * parameterDict['sequence_time'] * 1e6 / self.__timestep)))
+        n_scan_samples_dx = [samples_per_pixel, n_steps_dx[0] * samples_per_pixel]
         # Per ACTIVE axis, in signal order -- indexing the unfiltered
         # parameterDict here reported the wrong step sizes whenever a
         # configured axis collapsed to one step (see sig_dict below).
@@ -423,7 +435,9 @@ class GalvoScanDesigner(ScanDesigner):
             scan_samples_d2_period=samples_d2_period_read,
             n_pixels_fast=n_steps_dx[0],
             samples_per_pixel=n_scan_samples_dx[0],
-            dwell_time=parameterDict['sequence_time'],
+            dwell_time=dwell_s,
+            dwell_requested_s=dwell_request_if_changed(dwell_requested_s,
+                                                       setupInfo.scan.sampleRate),
             scan_time_step=round(self.__timestep * 1e-6, ndigits=10),
             n_linesteps=n_linesteps,
             scan_throw_startzero=int(round(self.__paddingtime_full / self.__timestep)),
