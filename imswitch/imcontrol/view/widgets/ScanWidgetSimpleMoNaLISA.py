@@ -977,6 +977,8 @@ class MoNaLISAView(ScanCloakView):
             fixed_ulens_period_um=limits.fixed_ulens_period_um,
             readout_pulse_time_ms=limits.readout_pulse_time_s * 1e3,
             default_camera_readout_time_ms=limits.default_camera_readout_time_s * 1e3,
+            default_z_step_um=limits.default_z_step_um,
+            default_z_scan_length_um=limits.default_z_scan_length_um,
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return None
@@ -1141,28 +1143,62 @@ class MoNaLISAView(ScanCloakView):
             return
         profile = self._profile(self._plan.profile_id)
         manual_extent = profile.scan_extent_source == 'manual'
-        independent = str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled') == 'independent'
+        independent = (
+            str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled')
+            == 'independent'
+        )
         x_used = 'X' in self._plan.scan_type
-        y_used = 'Y' in self._plan.scan_type and independent
-        self.pixelCaption.setText('X pixel size' if independent else 'Pixel size')
-        self.lateralLengthCaption.setText('X scan length' if independent else 'Scan length')
-        self.pixelField.setVisible(True)
-        self.lateralLengthField.setVisible(True)
-        self.yStepField.setVisible(y_used)
-        self.yLengthField.setVisible(y_used)
-        self.lateralStepControl.setEnabled(editable and x_used)
-        self.lateralLengthControl.setEnabled(editable and manual_extent and x_used)
-        self.lateralLengthControl.setToolTip(
-            'Editable X scan length for this profile.' if (manual_extent and independent)
-            else ('Editable scan length for this profile.' if manual_extent
-                  else 'This profile locks lateral scan length to one uLens period.')
-        )
-        self.yStepControl.setEnabled(editable and y_used)
-        self.yLengthControl.setEnabled(editable and manual_extent and y_used)
-        self.yLengthControl.setToolTip(
-            'Editable Y scan length for this profile.' if (manual_extent and y_used)
-            else 'This profile locks lateral scan length to one uLens period.'
-        )
+        y_axis_used = 'Y' in self._plan.scan_type
+
+        if independent:
+            self.pixelCaption.setText('X pixel size')
+            self.lateralLengthCaption.setText('X scan length')
+            self.pixelField.setVisible(x_used)
+            self.lateralLengthField.setVisible(x_used)
+            self.yStepField.setVisible(y_axis_used)
+            self.yLengthField.setVisible(y_axis_used)
+            self.lateralStepControl.setEnabled(editable and x_used)
+            self.lateralLengthControl.setEnabled(editable and manual_extent and x_used)
+            self.yStepControl.setEnabled(editable and y_axis_used)
+            self.yLengthControl.setEnabled(
+                editable and manual_extent and y_axis_used
+            )
+            self.lateralLengthControl.setToolTip(
+                'Editable X scan length for this profile.' if manual_extent
+                else 'This profile locks X scan length to one uLens period.'
+            )
+            self.yLengthControl.setToolTip(
+                'Editable Y scan length for this profile.' if manual_extent
+                else 'This profile locks Y scan length to one uLens period.'
+            )
+        else:
+            # Coupled geometry has one shared lateral value. Present it through
+            # whichever lateral axis is actually part of the scan so YZ does
+            # not become read-only merely because X is absent.
+            lateral_used = x_used or y_axis_used
+            if x_used and y_axis_used:
+                axis_prefix = ''
+            elif y_axis_used:
+                axis_prefix = 'Y '
+            else:
+                axis_prefix = 'X '
+            self.pixelCaption.setText(f'{axis_prefix}pixel size')
+            self.lateralLengthCaption.setText(f'{axis_prefix}scan length')
+            self.pixelField.setVisible(lateral_used)
+            self.lateralLengthField.setVisible(lateral_used)
+            self.yStepField.setVisible(False)
+            self.yLengthField.setVisible(False)
+            self.lateralStepControl.setEnabled(editable and lateral_used)
+            self.lateralLengthControl.setEnabled(
+                editable and manual_extent and lateral_used
+            )
+            self.lateralLengthControl.setToolTip(
+                'Editable shared lateral scan length for this profile.'
+                if manual_extent
+                else 'This profile locks lateral scan length to one uLens period.'
+            )
+            self.yStepControl.setEnabled(False)
+            self.yLengthControl.setEnabled(False)
         mode = profile.mode(self._plan.mode_id)
         for step in profile.steps:
             widgets = self._stepWidgets.get(step.id)

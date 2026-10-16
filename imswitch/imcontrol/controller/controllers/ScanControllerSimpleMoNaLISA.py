@@ -681,6 +681,8 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         updates = {
             'default_mode': plan.mode_id,
             'steps': tuple(steps),
+            'default_z_step_um': float(plan.z_step_um),
+            'default_z_scan_length_um': float(plan.z_length_um),
         }
         if geometry_mode == 'independent':
             updates.update({

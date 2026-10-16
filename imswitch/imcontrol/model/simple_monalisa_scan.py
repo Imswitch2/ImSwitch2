@@ -289,7 +289,11 @@ class MoNaLISALimits:
         axis = str(logical_axis).upper()
         profile = self.profile_store.profile(profile_id)
         if axis == 'Z':
-            return float(self.default_z_scan_length_um)
+            profile_value = getattr(profile, 'default_z_scan_length_um', None)
+            return float(
+                profile_value if profile_value is not None
+                else self.default_z_scan_length_um
+            )
         if profile.scan_extent_source == 'ulens':
             return self.ulens_period_um(profile.id)
         if self.lateral_geometry_mode(profile.id) == 'independent':
@@ -307,7 +311,10 @@ class MoNaLISALimits:
         axis = str(logical_axis).upper()
         profile = self.profile_store.profile(profile_id)
         if axis == 'Z':
-            return float(self.default_z_step_um)
+            profile_value = getattr(profile, 'default_z_step_um', None)
+            return float(
+                profile_value if profile_value is not None else self.default_z_step_um
+            )
         if axis == 'X' and getattr(profile, 'default_x_step_um', None):
             return float(profile.default_x_step_um)
         if axis == 'Y' and getattr(profile, 'default_y_step_um', None):
@@ -516,8 +523,8 @@ def default_plan(
         scan_type=limits.default_scan_type,
         lateral_length_um=limits.default_axis_scan_length_um('X', profile.id),
         lateral_step_um=limits.default_axis_step_um('X', profile.id),
-        z_length_um=limits.default_z_scan_length_um,
-        z_step_um=limits.default_z_step_um,
+        z_length_um=limits.default_axis_scan_length_um('Z', profile.id),
+        z_step_um=limits.default_axis_step_um('Z', profile.id),
         profile_id=profile.id,
         mode_id=profile.default_mode,
         step_durations_s={step.id: step.default_duration_s for step in profile.steps},
@@ -590,6 +597,8 @@ def select_profile(
         y_length_um=limits.default_axis_scan_length_um('Y', profile.id),
         x_step_um=limits.default_axis_step_um('X', profile.id),
         y_step_um=limits.default_axis_step_um('Y', profile.id),
+        z_length_um=limits.default_axis_scan_length_um('Z', profile.id),
+        z_step_um=limits.default_axis_step_um('Z', profile.id),
         step_durations_s=durations,
     ), limits)
 
@@ -636,8 +645,8 @@ def _parse_geometry(
     by_device = {name: i for i, name in enumerate(devices)}
     lateral_lengths = {}
     lateral_steps = {}
-    z_length = limits.default_z_scan_length_um
-    z_step = limits.default_z_step_um
+    z_length = reference_plan.z_length_um
+    z_step = reference_plan.z_step_um
     for axis in logical:
         device = limits.axis_device(axis)
         if device not in by_device:

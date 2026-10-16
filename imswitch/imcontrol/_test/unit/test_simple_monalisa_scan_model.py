@@ -378,3 +378,64 @@ def test_legacy_setup_camera_readout_is_default_compatibility_fallback():
     limits = MoNaLISALimits.from_setup(setup)
     assert limits.default_camera_readout_time_s == pytest.approx(0.006)
     assert limits.camera_readout_time_s('green') == pytest.approx(0.006)
+
+
+def test_profile_z_geometry_defaults_override_setup_and_round_trip():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['profiles']['green']['defaultZStepUm'] = 0.08
+    setup.scan.simpleMoNaLISA['profiles']['green']['defaultZScanLengthUm'] = 2.4
+    limits = MoNaLISALimits.from_setup(setup)
+
+    plan = default_plan(limits)
+    profile = limits.profile_store.profile('green')
+
+    assert profile.default_z_step_um == pytest.approx(0.08)
+    assert profile.default_z_scan_length_um == pytest.approx(2.4)
+    assert plan.z_step_um == pytest.approx(0.08)
+    assert plan.z_length_um == pytest.approx(2.4)
+    saved = profile.to_config()
+    assert saved['defaultZStepUm'] == pytest.approx(0.08)
+    assert saved['defaultZScanLengthUm'] == pytest.approx(2.4)
+
+
+def test_profile_without_z_defaults_keeps_setup_fallback():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['defaultZStepUm'] = 0.22
+    setup.scan.simpleMoNaLISA['defaultZScanLengthUm'] = 1.7
+    limits = MoNaLISALimits.from_setup(setup)
+
+    profile = limits.profile_store.profile('green')
+    plan = default_plan(limits)
+
+    assert profile.default_z_step_um is None
+    assert profile.default_z_scan_length_um is None
+    assert plan.z_step_um == pytest.approx(0.22)
+    assert plan.z_length_um == pytest.approx(1.7)
+
+
+def test_xy_backend_parse_preserves_reference_profile_z_geometry():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['profiles']['green']['defaultZStepUm'] = 0.09
+    setup.scan.simpleMoNaLISA['profiles']['green']['defaultZScanLengthUm'] = 2.1
+    limits = MoNaLISALimits.from_setup(setup)
+    reference = default_plan(limits)
+    analog, digital = plan_to_dicts(reference, limits)
+
+    restored = dicts_to_plan(analog, digital, limits, reference)
+
+    assert restored.scan_type == 'XY'
+    assert restored.z_step_um == pytest.approx(0.09)
+    assert restored.z_length_um == pytest.approx(2.1)
+
+
+def test_profile_reload_uses_profile_owned_z_defaults():
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['profiles']['dual_off']['defaultZStepUm'] = 0.11
+    setup.scan.simpleMoNaLISA['profiles']['dual_off']['defaultZScanLengthUm'] = 1.9
+    limits = MoNaLISALimits.from_setup(setup)
+    current = dataclasses.replace(default_plan(limits), z_step_um=0.3, z_length_um=4.0)
+
+    reloaded = select_profile(current, 'dual_off', limits, preserve_if_same=False)
+
+    assert reloaded.z_step_um == pytest.approx(0.11)
+    assert reloaded.z_length_um == pytest.approx(1.9)

@@ -18,16 +18,19 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
 
     def __init__(self, profile, available_devices, parent=None, *,
                  ulens_period_policy='fixed', fixed_ulens_period_um=None,
-                 readout_pulse_time_ms=1.0, default_camera_readout_time_ms=3.0):
+                 readout_pulse_time_ms=1.0, default_camera_readout_time_ms=3.0,
+                 default_z_step_um=0.15, default_z_scan_length_um=1.0):
         super().__init__(parent)
         self.setWindowTitle(f'Edit MoNaLISA profile — {profile.label}')
-        self.resize(780, 590)
+        self.resize(780, 650)
         self._profile_id = profile.id
         self._available_devices = tuple(str(name) for name in available_devices)
         self._ulens_period_policy = str(ulens_period_policy)
         self._fixed_ulens_period_um = fixed_ulens_period_um
         self._readout_pulse_time_ms = max(1.0, float(readout_pulse_time_ms))
         self._default_camera_readout_time_ms = max(0.0, float(default_camera_readout_time_ms))
+        self._default_z_step_um = max(0.001, float(default_z_step_um))
+        self._default_z_scan_length_um = max(0.001, float(default_z_scan_length_um))
         self._updating = False
         self._steps = [
             {
@@ -178,6 +181,43 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         self.manualScanExtentYLabel = QtWidgets.QLabel('Manual Y scan length')
         top.addRow(self.manualScanExtentYLabel, self.manualScanExtentYSpin)
 
+        self.zGeometrySourceCombo = QtWidgets.QComboBox()
+        self.zGeometrySourceCombo.addItem(
+            f'Use setup defaults ({self._default_z_step_um:.4g} µm step, '
+            f'{self._default_z_scan_length_um:.4g} µm length)',
+            'setup',
+        )
+        self.zGeometrySourceCombo.addItem('Profile defaults', 'profile')
+        profile_z_owned = (
+            getattr(profile, 'default_z_step_um', None) is not None
+            or getattr(profile, 'default_z_scan_length_um', None) is not None
+        )
+        self.zGeometrySourceCombo.setCurrentIndex(1 if profile_z_owned else 0)
+        self.defaultZStepSpin = QtWidgets.QDoubleSpinBox()
+        self.defaultZStepSpin.setRange(0.001, 100000.0)
+        self.defaultZStepSpin.setDecimals(4)
+        self.defaultZStepSpin.setSuffix(' µm')
+        self.defaultZStepSpin.setKeyboardTracking(False)
+        self.defaultZStepSpin.setValue(float(
+            profile.default_z_step_um
+            if getattr(profile, 'default_z_step_um', None) is not None
+            else self._default_z_step_um
+        ))
+        self.defaultZLengthSpin = QtWidgets.QDoubleSpinBox()
+        self.defaultZLengthSpin.setRange(0.001, 100000.0)
+        self.defaultZLengthSpin.setDecimals(4)
+        self.defaultZLengthSpin.setSuffix(' µm')
+        self.defaultZLengthSpin.setKeyboardTracking(False)
+        self.defaultZLengthSpin.setValue(float(
+            profile.default_z_scan_length_um
+            if getattr(profile, 'default_z_scan_length_um', None) is not None
+            else self._default_z_scan_length_um
+        ))
+        self.zGeometrySourceCombo.currentIndexChanged.connect(self._updateZGeometryState)
+        top.addRow('Z geometry', self.zGeometrySourceCombo)
+        top.addRow('Default Z pixel size', self.defaultZStepSpin)
+        top.addRow('Default Z scan length', self.defaultZLengthSpin)
+
         self.cameraReadoutSourceCombo = QtWidgets.QComboBox()
         self.cameraReadoutSourceCombo.addItem(
             f'Use setup default ({self._default_camera_readout_time_ms:.3g} ms)', 'setup'
@@ -217,7 +257,19 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         self._refreshModesList(0)
         self._refreshDefaultModes()
         self._updateGeometryState()
+        self._updateZGeometryState()
         self._updateCameraReadoutState()
+
+    def _updateZGeometryState(self, *args):
+        use_profile = self.zGeometrySourceCombo.currentData() == 'profile'
+        self.defaultZStepSpin.setEnabled(use_profile)
+        self.defaultZLengthSpin.setEnabled(use_profile)
+        tooltip = (
+            'Optional profile-specific Z defaults. When disabled, this profile '
+            'inherits the Simple MoNaLISA setup Z defaults.'
+        )
+        self.defaultZStepSpin.setToolTip(tooltip)
+        self.defaultZLengthSpin.setToolTip(tooltip)
 
     def _updateCameraReadoutState(self, *args):
         use_profile = self.cameraReadoutSourceCombo.currentData() == 'profile'
@@ -704,6 +756,9 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
                 config['scanExtentYUm'] = self.manualScanExtentYSpin.value()
             else:
                 config['scanExtentUm'] = self.manualScanExtentSpin.value()
+        if self.zGeometrySourceCombo.currentData() == 'profile':
+            config['defaultZStepUm'] = self.defaultZStepSpin.value()
+            config['defaultZScanLengthUm'] = self.defaultZLengthSpin.value()
         if self.cameraReadoutSourceCombo.currentData() == 'profile':
             config['cameraReadoutTimeMs'] = self.cameraReadoutSpin.value()
         return MoNaLISAProfileDefinition.from_config(self._profile_id, config)

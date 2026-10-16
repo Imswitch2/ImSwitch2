@@ -1241,3 +1241,26 @@ def test_monalisa_stop_prepares_external_frame_trigger(qtbot, monkeypatch):
         assert calls == [(('Camera',), 'external_frame')]
     finally:
         rig.close()
+
+
+def test_monalisa_coupled_yz_exposes_editable_y_lateral_geometry(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        profile = rig.limits().profile_store.profile(rig.scan.acquisitionPlan().profile_id)
+        assert profile.lateral_geometry_mode == 'coupled'
+
+        rig.view.scanTypeCombo.setCurrentText('YZ')
+        qtbot.wait(10)
+
+        assert rig.scan.acquisitionPlan().scan_type == 'YZ'
+        assert rig.view.pixelField.isVisible()
+        assert rig.view.pixelCaption.text() == 'Y pixel size'
+        assert rig.view.lateralStepControl.isEnabled()
+        assert not rig.view.yStepField.isVisible()
+
+        rig.view.lateralStepControl.spin.setValue(73.0)
+        qtbot.wait(10)
+        assert rig.scan.acquisitionPlan().step_um_for_axis('Y') == pytest.approx(0.073)
+        assert rig.scan.acquisitionPlan().step_um_for_axis('X') == pytest.approx(0.073)
+    finally:
+        rig.close()
