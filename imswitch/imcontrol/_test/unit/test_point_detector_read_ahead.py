@@ -94,3 +94,71 @@ def test_chunked_reads_give_the_same_image_with_far_fewer_driver_reads(qtbot, mo
     np.testing.assert_array_equal(chunked, per_line)       # the same counts, pixel for pixel
     assert per_line_reads >= lines                          # a read per line, and the throws
     assert chunked_reads <= 3                               # the whole short scan: one interval
+
+
+# --- the read limit: what the raster plan consumes, never the end padding -------------------
+
+def _worker(scanInfoDict, signalDict, timerHz=1_000_000):
+    """The real APD raster worker, on a simulated NI-DAQ, for one design."""
+    from types import SimpleNamespace
+    from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
+    from imswitch.imcontrol.model.managers.detectors.APDManager import APDManager, ScanWorker
+    from .test_nidaq_clock_contract import _apd_info, _setup
+    setup = _setup('Dev1/ctr2')
+    nidaq = NidaqManager(setup)
+    apd = APDManager(_apd_info(liveUpdateIntervalMs=5), 'APD', nidaq)
+    worker = ScanWorker(apd, scanInfoDict, signalDict)
+    worker.scanning = True
+    return worker
+
+
+def _galvo_3d(planes):
+    from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import GalvoScanDesigner
+    from .test_galvo_signal_goldens import _params, _setup_sted_like
+    params = _params(['GalvoX', 'GalvoY', 'PiezoZ'], [2.0, 1.0, float(planes)], [0.5, 0.5, 1.0],
+                     centers=[0.0, 0.0, 5.0])
+    params['phase_delay'] = 30.0
+    signals, _positions, info = GalvoScanDesigner().make_signal(params, _setup_sted_like())
+    return info, {'scanSignalsDict': signals, 'TTLCycleSignalsDict': {}}
+
+
+def _beta_3d(planes):
+    from imswitch.imcontrol.model.signaldesigners.BetaScanDesigner import BetaScanDesigner
+    from .test_beta_signal_goldens import _params, _setup
+    params = _params([20.0, 10.0, 2.0 * planes], [5.0, 5.0, 2.0], n_linesteps=2)
+    signals, _positions, info = BetaScanDesigner().make_signal(params, _setup())
+    return info, {'scanSignalsDict': signals, 'TTLCycleSignalsDict': {}}
+
+
+@pytest.mark.parametrize('design', [lambda: _galvo_3d(1), lambda: _galvo_3d(3),
+                                    lambda: _beta_3d(1), lambda: _beta_3d(3)],
+                         ids=['galvo-2d', 'galvo-3planes', 'beta-1plane', 'beta-3planes'])
+def test_the_reads_stop_where_the_raster_plan_ends(qtbot, design):
+    """The worker consumes exactly what ``raster_samples_consumed`` says,
+    and the read-ahead never fetches past it -- not the last flyback, the
+    final moves or the end padding. A task one sample short (an input task
+    that missed the timer's first edge) used to cost nothing, as the old
+    line-by-line reads never reached its end; a chunk reaching it waited for
+    the timeout and lost the frame (review 2026-10-16)."""
+    info, signals = design()
+    worker = _worker(info, signals)
+    planned = worker._plannedSamples()
+    worker.run()
+    reader = worker.__dict__['_readAhead']
+    assert worker._samples_read == planned
+    assert reader.fetched <= planned <= worker._samples_total
+
+
+def test_a_task_one_sample_short_still_completes_the_frame(qtbot):
+    info, signals = _galvo_3d(1)
+    worker = _worker(info, signals)
+    short = worker._samples_total - 1
+    original = worker._fetchSamples
+
+    def fetch(count, kind):
+        assert worker.__dict__['_readAhead'].fetched + count <= short, \
+            'a read reached the sample the task never delivers'
+        return original(count, kind)
+    worker._fetchSamples = fetch
+    worker.run()
+    assert worker._samples_read == worker._plannedSamples() <= short

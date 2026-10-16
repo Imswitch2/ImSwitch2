@@ -155,3 +155,14 @@ def test_a_dwell_below_the_sample_step_rounds_up_to_one_sample(dwell_us, step_um
     assert info['samples_per_pixel'] == 1
     assert info['dwell_time'] == pytest.approx(10e-6)
     assert info['dwell_requested_s'] == pytest.approx(dwell_us * 1e-6)
+
+
+@pytest.mark.parametrize('typed_ms,rate_hz', [(0.07, 100_000), (0.03, 100_000), (0.12, 100_000),
+                                              (0.009, 1_000_000), (0.021, 1_000_000)])
+def test_a_dwell_typed_on_the_clock_is_not_reported_as_rounded(typed_ms, rate_hz):
+    """0.07 ms is 7.000000000000001e-05 s: on the 10 µs clock, played as
+    typed. The note compared the floats exactly and said "Dwell 70 µs runs
+    as 70 µs" for hundreds of such values (review 2026-10-16)."""
+    from imswitch.imcontrol.model.scan_program.advanced import timing_note
+    assert timing_note({'sequence_time': typed_ms / 1000}, rate_hz) == ''
+    assert 'runs as 20 µs' in timing_note({'sequence_time': 15e-6}, 100_000)

@@ -1010,11 +1010,25 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def getNumScanPositions(self):
         """ Returns the number of scan positions for the configured scan. """
         with self._positionSnapshotForScanDesign():
-            _, positions, _ = self._master.scanManager.getScanSignalsDict(
+            _, positions, scanInfoDict = self._master.scanManager.getScanSignalsDict(
                 self._analogParameterDict
             )
+        # a recording asks before it starts: its file gets the played dwell
+        self._publishRealizedDwell(scanInfoDict)
         numPositions = functools.reduce(lambda x, y: x * y, positions)
         return numPositions
+
+    def _publishRealizedDwell(self, scanInfoDict):
+        """The dwell the scan plays -- whole samples of the waveform clock
+        (scan timing plan, rule 4) -- as ``ScanStage:dwell_time``, beside the
+        dwell asked for (``ScanStage:sequence_time``): a file says what its
+        pixels integrated, 20 µs where 15 µs was typed on a 10 µs clock."""
+        try:
+            dwell = scanInfoDict.get('dwell_time') if scanInfoDict is not None else None
+        except AttributeError:
+            dwell = None
+        if dwell is not None:
+            self.setSharedAttr(_attrCategoryStage, 'dwell_time', float(dwell))
 
     def saveScan(self):
         """ Save scan parameters template. """
@@ -1328,6 +1342,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             nonlocal builtForNewRun
             if needsSignals:
                 self.signalDict, self.scanInfoDict = self._buildScanSignals()
+                self._publishRealizedDwell(self.scanInfoDict)
                 builtForNewRun = True
 
         token = self._beginScanRun(
@@ -1342,6 +1357,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self._logger.error(f'Scan stopped: {error}')
             self.scanFailed(message=str(error))
             return None
+        self._publishRealizedDwell(self.scanInfoDict)
         return token
 
     def _scanRunReleaseProven(self, token) -> bool:

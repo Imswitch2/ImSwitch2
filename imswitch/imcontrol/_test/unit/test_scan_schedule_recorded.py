@@ -98,6 +98,30 @@ def test_a_galvo_scan_records_how_its_phase_delay_plays(qtbot):
         beta.close()
 
 
+
+def test_the_file_says_the_dwell_that_played(qtbot):
+    """``ScanStage:dwell_time`` is the dwell the pixels integrated -- whole
+    samples of the waveform clock (plan rule 4) -- whatever path set the
+    requested one (``ScanStage:sequence_time``: the Advanced panel shows the
+    realized dwell, a script or a saved file may not). A recording asks for
+    the scan's positions before it starts, which designs the scan and
+    publishes it."""
+    galvo = AdvancedRig(designer='GalvoScanDesigner')
+    try:
+        galvo.load(lengths=[3.0, 3.0, 0.0], steps=[0.5, 0.5, 1.0], dwell=15e-6)
+        galvo.scan.getNumScanPositions()                # as a recording does first
+        assert galvo.channel.sharedAttrs[('ScanStage', 'dwell_time')] == 2e-5
+    finally:
+        galvo.close()
+    beta = AdvancedRig()
+    try:
+        beta.load(lengths=[3.0, 3.0, 0.0], steps=[0.5, 0.5, 1.0], dwell=4.025e-3)
+        beta.run()
+        assert abs(beta.channel.sharedAttrs[('ScanStage', 'dwell_time')] - 4.03e-3) < 1e-12
+    finally:
+        beta.close()
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #

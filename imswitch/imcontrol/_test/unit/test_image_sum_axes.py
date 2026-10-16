@@ -67,6 +67,28 @@ def test_one_checkbox_per_dimension_and_hidden_while_no_frame_has_one(qtbot):
     assert not widget._boxes['line steps'].isChecked() and changed[-1] == ('line steps',)
 
 
+
+def test_hiding_the_panel_by_hand_unticks_every_sum_and_out_of_view_does_not(qtbot):
+    """The panel can be hidden from its title bar (it cannot be closed: that
+    destroyed it for the session and left a ticked sum on with no box to
+    untick, review 2026-10-16). Hidden by hand, it unticks every sum; out of
+    view only (a minimized window, a tab behind another), it keeps them."""
+    widget, dock = _docked(qtbot)
+    dock.visibilityChanged.connect(widget._onDockVisibility)
+    widget.setAxes('APD', ['line steps'])
+    widget._boxes['line steps'].setChecked(True)
+    changed = []
+    widget.sigSumAxesChanged.connect(changed.append)
+    widget._onDockVisibility(False)                      # out of view, not hidden
+    assert widget.summedAxes() == ('line steps',) and changed == []
+    dock.show()
+    dock.hide()                                          # hidden by hand
+    assert widget.summedAxes() == () and changed == [()]
+    assert not widget._boxes['line steps'].isChecked()
+    widget.setAxes('APD', [])                            # this widget hiding its dock:
+    assert changed == [()]                               # no further change
+
+
 # --- the controller ---------------------------------------------------------------------------
 
 class _Signal:
@@ -156,6 +178,22 @@ def test_the_real_checkbox_reaches_the_live_layer(qtbot):
     assert _shown(view)[1].shape == (3, 4, 5)
     controller.update('APD', np.zeros((4, 5), dtype=np.uint16), True, (0.5, 0.5), True)
     assert dock.isHidden()                                             # a 2-D scan: no panel
+
+
+
+def test_a_restored_state_without_a_sum_clears_one(qtbot):
+    """A state saved with nothing summed has no summedDimensions; applying it
+    (another setup mode) left a sum from the mode before on (review
+    2026-10-16)."""
+    controller, widget = _controller(axisNames=('line steps', 'y', 'x'))
+    frame = np.ones((2, 3, 4), dtype=np.uint16)
+    controller.update('APD', frame, True, (1.0, 0.5, 0.5), True)
+    widget.sigSumAxesChanged.emit(('line steps',))
+    assert _shown(widget)[1].shape == (3, 4)
+    controller.applyComponentState({'layers': {}, 'liveLayers': {}},
+                                   applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
+    assert 'summedDimensions' not in controller.getComponentState()
+    assert _shown(widget)[1].shape == (2, 3, 4)                     # redrawn unsummed
 
 
 def test_dimensions_without_a_name_are_numbered_and_a_2d_frame_offers_none():

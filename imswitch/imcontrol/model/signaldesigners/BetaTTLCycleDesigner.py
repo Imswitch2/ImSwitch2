@@ -1,6 +1,7 @@
 import numpy as np
 
 from .basesignaldesigners import TTLCycleDesigner
+from ..errors import ScanDesignRefusedError
 from ..scan_parameters import dwell_request_if_changed, samples_for_duration
 
 
@@ -49,6 +50,17 @@ class BetaTTLCycleDesigner(TTLCycleDesigner):
                                                'nearest-even')
                 tmpSigArr[startSamp:endSamp] = True
 
+            # A camera is triggered on its line's rising edge, one exposure
+            # per pixel: a pulse that fills the whole cycle never falls
+            # between pixels, so the camera saw one edge per line while the
+            # recording waited for one frame per pixel (review 2026-10-16).
+            if cycleSamples > 0 and tmpSigArr.all() and target in (
+                    getattr(setupInfo, 'detectors', None) or {}):
+                raise ScanDesignRefusedError(
+                    f"{target}'s pulse fills the whole {parameterDict['sequence_time'] * 1e3:g} ms "
+                    'cycle, so it never falls between pixels: the camera would see one '
+                    'rising edge per line, not one per pixel. End it at least one sample '
+                    f'({1e3 / float(sampleRate):g} ms) before the cycle ends.')
             signalDict[target] = np.copy(tmpSigArr)
 
         if scanInfoDict is not None:

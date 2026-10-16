@@ -169,3 +169,41 @@ def test_a_simulated_run_writes_the_lines_delayed_by_the_phase_delay():
             manager.finalize()
         except Exception:
             pass
+
+def test_a_lasers_analog_power_is_delayed_with_its_gate():
+    """A laser with a gate (DO) and a per-line-step power (AO), like the STED
+    rig's 775 AOM: both are built on command time, the power masked by the
+    gate. Delaying only the gate left it open for the lag at every line's
+    end while the power was already 0 V -- excitation without depletion on
+    the last pixels (review 2026-10-16). Both now play the same lag."""
+    setup = SetupInfo.from_json(json.dumps({
+        'detectors': {}, 'positioners': {},
+        'lasers': {'L775': {'analogChannel': 'Dev1/ao3', 'digitalLine': 'Dev1/port0/line2',
+                            'managerName': 'NidaqLaserManager', 'managerProperties': {},
+                            'wavelength': 775, 'valueRangeMin': 0, 'valueRangeMax': 1}},
+        'scan': {'scanWidgetType': 'PointScan', 'scanDesigner': 'GalvoScanDesigner',
+                 'scanDesignerParams': {}, 'TTLCycleDesigner': 'PointScanTTLCycleDesigner',
+                 'TTLCycleDesignerParams': {}, 'sampleRate': SCAN_CLOCK_RATE_HZ},
+        'nidaq': {'simulation': True, 'timerCounterChannel': 'Dev1/ctr2', 'startTrigger': False},
+    }), infer_missing=True)
+    manager = NidaqManager(setup)
+    try:
+        gate = np.array([False] * 2 + [True] * 6 + [False] * 4 + [True] * 6 + [False] * 6)
+        levels = np.r_[[1.0] * 12, [0.5] * 12]                    # 100 %, then 50 %
+        power = np.where(gate, levels, 0.0)                     # masked by the gate
+        info = {'phase_delay': 30, 'n_linesteps': 2, 'scan_time_step': 1 / SCAN_CLOCK_RATE_HZ,
+                'scan_samples_total': gate.size, 'img_dims': [6, 2], 'scan_samples': [1, 6, 24],
+                'scan_samples_d2_period': 10}
+        manager.runScan({'scanSignalsDict': {'L775': power},
+                         'TTLCycleSignalsDict': {'L775': gate}}, info)
+        (_dev, (played_gate,), shift) = manager._lastDigitalWrite
+        devices, analog, _ = manager._lastAnalogWrite
+        played_power = analog[devices.index('L775')]
+        assert shift == 3
+        np.testing.assert_array_equal(played_power > 0, played_gate)     # on together
+        np.testing.assert_array_equal(played_power[3:], power[:-3])      # the same delay
+    finally:
+        try:
+            manager.finalize()
+        except Exception:
+            pass

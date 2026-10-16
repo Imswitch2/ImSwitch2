@@ -52,6 +52,7 @@ def test_the_sum_box_appears_with_line_steps_and_sums_the_live_layer(live, qtbot
     panel = widget.sumAxesWidget
     dock = panel._dock()
     assert dock is not None and dock.isHidden()                   # nothing to sum yet
+    assert dock.title.close_button.isHidden()                     # hidden, never closed
     frame = np.random.default_rng(0).poisson(5, (3, 50, 50)).astype(np.uint16)
     controller.update('APD', frame, False, [1.0, 0.1, 0.1], True)
     assert not dock.isHidden()

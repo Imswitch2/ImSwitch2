@@ -127,9 +127,49 @@ class DeviceChannels:
     kind: str = ''
 
 
+#: Laser managers whose integer ``digitalLine`` and ``analogChannel`` are a
+#: pulse generator's channel numbers. For every other device an integer is
+#: the legacy NI-DAQ shorthand ``Dev1/port0/line<N>`` / ``Dev1/ao<N>``
+#: (``DeviceInfo.getDigitalLine``/``getAnalogChannel``).
+PULSE_GENERATOR_LASER_MANAGERS = frozenset({'PulseGeneratorLaserManager',
+                                            'PulseStreamerLaserManager'})
+
+
+def is_pulse_generator_device(info) -> bool:
+    return getattr(info, 'managerName', None) in PULSE_GENERATOR_LASER_MANAGERS
+
+
+def _channel_name(info, attribute, nidaqGetter):
+    raw = getattr(info, attribute, None)
+    if raw is None or raw in ('None', ''):
+        return None
+    if isinstance(raw, int) and not isinstance(raw, bool) and not is_pulse_generator_device(info):
+        getter = getattr(info, nidaqGetter, None)
+        if callable(getter):
+            return str(getter())
+    return str(raw)
+
+
+def device_digital_line(info):
+    """The digital line ``info`` is wired to, as the engines name it: an
+    integer is a pulse generator's channel for a pulse-generator laser and
+    the NI-DAQ shorthand ``Dev1/port0/line<N>`` for every other device. The
+    two readings disagreed (review 2026-10-16): an NI-DAQ laser written
+    ``"digitalLine": 1`` was owned by the Teensy engine, and a Teensy laser
+    written ``"digitalLine": 3`` was played on Dev1/port0/line3."""
+    return _channel_name(info, 'digitalLine', 'getDigitalLine')
+
+
+def device_analog_channel(info):
+    """The analog channel ``info`` is wired to, read as
+    :func:`device_digital_line` reads lines."""
+    return _channel_name(info, 'analogChannel', 'getAnalogChannel')
+
+
 def setup_channels(setupInfo) -> Dict[str, DeviceChannels]:
     """Every device's channels from a setup: positioners' and lasers' analog
-    channels, lasers' and detectors' digital lines."""
+    channels, lasers' and detectors' digital lines, each named as the
+    engines name it (:func:`device_digital_line`)."""
     out = {}
     for kind, section in (('positioner', 'positioners'), ('laser', 'lasers'),
                           ('detector', 'detectors')):
@@ -137,10 +177,8 @@ def setup_channels(setupInfo) -> Dict[str, DeviceChannels]:
         if not isinstance(devices, Mapping):
             continue
         for name, info in devices.items():
-            analog = getattr(info, 'analogChannel', None)
-            digital = getattr(info, 'digitalLine', None)
-            analog = None if analog in (None, 'None', '') else str(analog)
-            digital = None if digital in (None, 'None', '') else str(digital)
+            analog = device_analog_channel(info)
+            digital = device_digital_line(info)
             if analog or digital:
                 out[name] = DeviceChannels(name, analog, digital, kind)
     return out

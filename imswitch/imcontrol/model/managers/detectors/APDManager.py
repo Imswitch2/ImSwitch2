@@ -20,7 +20,7 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
-from ._read_ahead import ReadAhead, read_ahead_samples
+from ._read_ahead import ReadAhead, raster_samples_consumed, read_ahead_samples
 from imswitch.imcontrol.model.scan_parameters import lag_samples_for
 from ._mock_sample import MockSample
 from ._visit_order import VisitOrder
@@ -1337,6 +1337,27 @@ class ScanWorker(Worker):
             ),
         )
 
+    def _readLimit(self):
+        """The last sample a read may reach: what this raster plan consumes
+        (``raster_samples_consumed``), never past the task's own count. A
+        worker of another plan (a trajectory) reads to the task's count."""
+        total = getattr(self, '_samples_total', None)
+        planned = self._plannedSamples()
+        if planned is None:
+            return total
+        return planned if total is None else min(int(total), int(planned))
+
+    def _plannedSamples(self):
+        try:
+            return raster_samples_consumed(
+                phase_delay=self._phase_delay, throw_startzero=self._throw_startzero,
+                scan_pads_initpos=self._scan_pads_initpos,
+                throw_init_smooth=self._throw_init_smooth, loop_dims=self._loop_dims,
+                samples_d_scanstep=self._samples_d_scanstep,
+                samples_d2_period=self._samples_d2_period)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+
     def _reader(self):
         """The task's samples, fetched in chunks of one live-update interval
         (``_read_ahead``); made on first use, once the sample plan is known."""
@@ -1345,7 +1366,7 @@ class ScanWorker(Worker):
             throttle = getattr(self._manager, '_liveThrottle', None)
             chunk = read_ahead_samples(getattr(throttle, 'interval_s', 0.0),
                                        self._manager._detection_samplerate)
-            reader = ReadAhead(self._fetchSamples, getattr(self, '_samples_total', None), chunk)
+            reader = ReadAhead(self._fetchSamples, self._readLimit(), chunk)
             self.__dict__['_readAhead'] = reader
             self.__dict__['_fetchedLast'] = self._last_value
         return reader
@@ -1635,6 +1656,9 @@ class TrajectoryScanWorker(ScanWorker):
 
     def _runAcquisition(self):
         run_trajectory(self, self._windowCounts, self._publishTrajectory)
+
+    def _plannedSamples(self):
+        return None                    # windows, not the raster plan: the task's count
 
     def _windowCounts(self, data, offsets, lengths):
         # The counter is cumulative: counts per sample, then per window.

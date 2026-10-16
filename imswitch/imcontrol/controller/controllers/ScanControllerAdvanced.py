@@ -12,6 +12,7 @@ from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import lag_note,
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.scan_program.engine import device_digital_line
 from imswitch.imcontrol.model.scan_parameters import (
     lag_report,
     samples_for_duration,
@@ -106,9 +107,6 @@ class ScanControllerAdvanced(SuperScanController):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        seed_scan_delays_from_setup(self._widget, self._setupInfo)
-        if hasattr(self._widget, 'setScanClock'):
-            self._widget.setScanClock(self._setupInfo.scan.sampleRate)
 
         # The last full scan design and the parameters that produced it, so a
         # recording's layout query, the run that follows it and repeated scan
@@ -144,6 +142,15 @@ class ScanControllerAdvanced(SuperScanController):
             self._widget.setLinestepPowerCapableDevices(power_capable)
         except Exception:
             self._logger.debug("Could not detect power-capable devices:\n%s", traceback.format_exc())
+
+        # The setup's first dwell and delays, and the clock the dwell counts
+        # on. Only now: setting a field emits the change signals the base
+        # class wired to the shared-attribute updates, which read the whole
+        # panel through the serializer and the controls built above (seeded
+        # earlier, every setup with a dwell_ms logged an AttributeError).
+        seed_scan_delays_from_setup(self._widget, self._setupInfo)
+        if hasattr(self._widget, 'setScanClock'):
+            self._widget.setScanClock(self._setupInfo.scan.sampleRate)
 
         # ---- initial state ----
         self.updatePixels()
@@ -207,12 +214,15 @@ class ScanControllerAdvanced(SuperScanController):
         """``({device: reason}, note)`` for the TTL devices the scan engine
         does not drive, and the analog-only note when it drives none."""
         engine = self._engineForScans()
+        # The Advanced scan plays on the leading engine alone: a line a
+        # follower owns is not driven by it (review 2026-10-16).
+        player = getattr(engine, 'leader', None) or engine
         unavailable = {}
         for name, info in self.TTLDevices.items():
-            line = info.getDigitalLine()
-            if line is not None and not engine.owns(line):
+            line = device_digital_line(info)
+            if line is not None and not player.owns(line):
                 unavailable[name] = (f'{name} is wired to {line}, which the scan engine '
-                                     f'{engine.name!r} does not drive.')
+                                     f'{player.name!r} does not drive.')
         drivable = [name for name in self.TTLDevices if name not in unavailable]
         return unavailable, (self.ANALOG_ONLY_NOTE if not drivable else '')
 
@@ -965,15 +975,15 @@ class ScanControllerAdvanced(SuperScanController):
         # the digital lines in whole scan-clock samples, the detectors' in
         # whole timer samples, and the residual between them. Beside the
         # schedule, so the file has it under the same conditions.
-        if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'GalvoScanDesigner':
-            try:
+        try:
+            if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'GalvoScanDesigner':
                 self.setSharedAttr('ScanStage', 'lag', lag_report(
                     self._analogParameterDict.get('phase_delay', 0),
                     self._setupInfo.scan.sampleRate, self._detectorTimerRateHz()))
-            except Exception:
-                logger = self.__dict__.get('_logger')
-                if logger is not None:
-                    logger.warning('How the phase delay plays is not recorded', exc_info=True)
+        except Exception:
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                logger.warning('How the phase delay plays is not recorded', exc_info=True)
 
     def _cachedFullScan(self):
         """Full scan design for the current parameters, built at most once.

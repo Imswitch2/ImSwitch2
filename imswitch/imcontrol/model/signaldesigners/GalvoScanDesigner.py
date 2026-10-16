@@ -57,12 +57,14 @@ SETTLE_TIME_KEY = 'settleTimeS'
 
 
 def slice_pause_us(parameterDict, setupInfo, sliceDevices):
-    """``(pause_us, source)``: the pause before every slice of a 3-D scan, in
-    whole µs rounded up, and what declared it -- the longest of the slice
-    axes' positioners' ``settleTimeS``, the setup's legacy
-    ``scan.scanDesignerParams.d3step_delay`` (µs) and a per-scan
-    ``d3step_delay`` (µs) a caller still passes (the old PointScan panel, a
-    script). ``(0, '')`` when nothing declares one."""
+    """``(pause_us, source)``: the pause before every slice of a 3-D scan --
+    and before a 2-D scan's first line -- in whole µs rounded up, and what
+    declared it: the longest of the slice axes' positioners' ``settleTimeS``,
+    the setup's legacy ``scan.scanDesignerParams.d3step_delay`` (µs) and a
+    per-scan ``d3step_delay`` (µs) a caller still passes (the old PointScan
+    panel, a script). The two D3 values count for every scan, as they did
+    before the field went: a 2-D scan has no slice axis but still started
+    after them (review 2026-10-16). ``(0, '')`` when nothing declares one."""
     candidates = []
     for name in sliceDevices:
         info = (getattr(setupInfo, 'positioners', None) or {}).get(name)
@@ -71,34 +73,45 @@ def slice_pause_us(parameterDict, setupInfo, sliceDevices):
         if value is not None:
             candidates.append((int(math.ceil(float(value) * 1e6 - 1e-9)),
                                f'{name} declares {SETTLE_TIME_KEY} {float(value):g} s'))
-    if sliceDevices:
-        legacy = (getattr(getattr(setupInfo, 'scan', None), 'scanDesignerParams', None)
-                  or {}).get('d3step_delay')
-        if legacy is not None:
-            candidates.append((int(math.ceil(float(legacy) - 1e-9)),
-                               f'the setup\'s scanDesignerParams.d3step_delay is {float(legacy):g} µs '
-                               f'(declare {SETTLE_TIME_KEY} on the slice positioner instead)'))
-        typed = parameterDict.get('d3step_delay')
-        if typed is not None:
-            candidates.append((int(math.ceil(float(typed) - 1e-9)),
-                               f'this scan\'s d3step_delay is {float(typed):g} µs'))
+    legacy = (getattr(getattr(setupInfo, 'scan', None), 'scanDesignerParams', None)
+              or {}).get('d3step_delay')
+    if legacy is not None:
+        candidates.append((int(math.ceil(float(legacy) - 1e-9)),
+                           f'the setup\'s scanDesignerParams.d3step_delay is {float(legacy):g} µs'
+                           + (f' (declare {SETTLE_TIME_KEY} on the slice positioner instead)'
+                              if sliceDevices else '')))
+    typed = parameterDict.get('d3step_delay')
+    if typed is not None:
+        candidates.append((int(math.ceil(float(typed) - 1e-9)),
+                           f'this scan\'s d3step_delay is {float(typed):g} µs'))
     best = max(candidates, key=lambda c: c[0], default=(0, ''))
     return (best[0], best[1]) if best[0] > 0 else (0, '')
 
 
 def slice_pause_note(parameterDict, setupInfo) -> str:
     """What the timing note says about the pause before every slice of a
-    3-D scan, or ``''`` for a scan without slices."""
-    positionerNames = [name for name, info in (setupInfo.positioners or {}).items()
-                       if info.forScanning]
+    3-D scan (or before a 2-D scan's first line), and whether it is played:
+    only a smoothly swept fast axis starts after it, a stepped one does not.
+    ``''`` for a 2-D scan without one."""
+    positioners = setupInfo.positioners or {}
+    positionerNames = [name for name, info in positioners.items() if info.forScanning]
     active = GalvoScanDesigner._active_axis_indices(
         parameterDict['axis_length'], parameterDict['axis_step_size'], len(positionerNames))
     devices = [parameterDict['target_device'][i] for i in active]
-    if len(devices) < 3:
+    if not devices:
         return ''
-    pause, source = slice_pause_us(parameterDict, setupInfo, devices[2:])
+    slices = devices[2:]
+    pause, source = slice_pause_us(parameterDict, setupInfo, slices)
+    fast = devices[0]
+    props = getattr(positioners.get(fast), 'managerProperties', None) or {}
+    if pause and not is_smooth_scan_axis(fast, props):
+        return (f'A {pause} µs pause is declared ({source}) but not played: the fast axis '
+                f'{fast} is stepped.')
     if pause:
-        return f'Every slice starts after a {pause} µs pause: {source}.'
+        where = 'Every slice starts' if slices else 'The scan starts'
+        return f'{where} after a {pause} µs pause: {source}.'
+    if not slices:
+        return ''
     return (f'Slices start without a settle pause: no slice positioner declares '
             f'{SETTLE_TIME_KEY}.')
 
@@ -525,8 +538,12 @@ class GalvoScanDesigner(ScanDesigner):
             dwell_time=dwell_s,
             dwell_requested_s=dwell_request_if_changed(dwell_requested_s,
                                                        setupInfo.scan.sampleRate),
-            slice_pause_us=self.__paddingtime_d3step,
-            slice_pause_source=slice_pause_source,
+            # what plays: the pause is in the settling of a smoothly swept
+            # fast axis, and a stepped one has none
+            slice_pause_us=self.__paddingtime_d3step if self.__smooth_axis[0] else 0,
+            slice_pause_source=(slice_pause_source if self.__smooth_axis[0] or not
+                                slice_pause_source else
+                                f'{slice_pause_source}; not played: the fast axis is stepped'),
             scan_time_step=round(self.__timestep * 1e-6, ndigits=10),
             n_linesteps=n_linesteps,
             scan_throw_startzero=int(round(self.__paddingtime_full / self.__timestep)),

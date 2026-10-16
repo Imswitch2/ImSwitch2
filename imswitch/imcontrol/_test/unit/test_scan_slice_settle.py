@@ -59,7 +59,9 @@ def test_only_the_slice_axes_count():
     setup = _setup()
     setup.positioners['GalvoX'].managerProperties[SETTLE_TIME_KEY] = 1.0   # the fast axis
     assert slice_pause_us({}, setup, ['PiezoZ']) == (0, '')
-    assert slice_pause_us({'d3step_delay': 300}, setup, []) == (0, '')     # a 2-D scan
+    # a 2-D scan has no slice axis; a D3 value still counts (before its first line)
+    assert slice_pause_us({'d3step_delay': 300}, setup, []) == (
+        300, "this scan's d3step_delay is 300 µs")
     _sig, _pos, info = GalvoScanDesigner().make_signal(_xyz(), setup)
     assert info['slice_pause_us'] == 0
 
@@ -71,6 +73,31 @@ def test_the_timing_note_says_the_pause_or_that_there_is_none():
         'Slices start without a settle pause: no slice positioner declares settleTimeS.')
     two_d = _params(['GalvoX', 'GalvoY'], [5.0, 5.0], [1.0, 1.0])
     assert slice_pause_note(two_d, _setup(settle_s=2e-3)) == ''          # no slice axis
+    assert slice_pause_note(dict(two_d, d3step_delay=500), _setup()) == (
+        "The scan starts after a 500 µs pause: this scan's d3step_delay is 500 µs.")
+
+
+def test_a_d3_value_still_settles_a_2d_scan_before_its_first_line():
+    """Before the D3 field went, its value was part of the settling before
+    a 2-D scan's first line (scan_throw_settling); a setup or a script that
+    still passes one keeps it (review 2026-10-16)."""
+    two_d = _params(['GalvoX', 'GalvoY'], [5.0, 5.0], [1.0, 1.0])
+    _sig, _pos, plain = GalvoScanDesigner().make_signal(two_d, _setup())
+    _sig, _pos, settled = GalvoScanDesigner().make_signal(dict(two_d, d3step_delay=500), _setup())
+    assert settled['scan_throw_settling'] - plain['scan_throw_settling'] == 50   # 500 µs at 100 kHz
+    _sig, _pos, legacy = GalvoScanDesigner().make_signal(two_d, _setup(legacy_us=500))
+    assert legacy['scan_throw_settling'] == settled['scan_throw_settling']
+
+
+def test_a_stepped_fast_axis_plays_no_pause_and_says_so():
+    setup = _setup(settle_s=2e-3)
+    setup.positioners['GalvoX'].managerProperties['smoothScan'] = False
+    _sig, _pos, info = GalvoScanDesigner().make_signal(_xyz(), setup)
+    assert info['slice_pause_us'] == 0
+    assert info['slice_pause_source'].endswith('not played: the fast axis is stepped')
+    assert slice_pause_note(_xyz(), setup) == (
+        'A 2000 µs pause is declared (PiezoZ declares settleTimeS 0.002 s) but not played: '
+        'the fast axis GalvoX is stepped.')
 
 
 def test_the_advanced_panel_has_no_d3_field_and_writes_no_d3_key(qtbot):

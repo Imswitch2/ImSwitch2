@@ -25,8 +25,9 @@ from .test_galvo_signal_goldens import _params, _setup_sted_like
 from .test_scan_controller_advanced_orders import AdvancedRig, SETUP as GALVO_SETUP
 
 
-def _manager(sampleRate, detectionRateHz=None):
-    nidaq = {'simulation': True, 'timerCounterChannel': 'Dev1/ctr2', 'startTrigger': False}
+def _manager(sampleRate, detectionRateHz=None, timerCounterChannel='Dev1/ctr2'):
+    nidaq = {'simulation': True, 'timerCounterChannel': timerCounterChannel,
+             'startTrigger': False}
     if detectionRateHz is not None:
         nidaq['detectionRateHz'] = detectionRateHz
     setup = SetupInfo.from_json(json.dumps({
@@ -43,10 +44,14 @@ def test_the_rates_come_from_the_setup_and_default_as_before():
     manager = _manager(SCAN_CLOCK_RATE_HZ)
     assert (manager.scanRateHz, manager.timerRateHz) == (SCAN_CLOCK_RATE_HZ,
                                                          TIMER_COUNTER_RATE_HZ)
-    assert manager._scanClockSource() == SCAN_CLOCK_TERMINAL       # the 100 kHz rig: as it was
+    # the analog output on the onboard clock at every rate, 100 kHz included:
+    # its first sample a fixed time after the trigger the timer starts on
+    assert manager._scanClockSource() == ''
+    # a digital-only scan at 100 kHz on the board's 100 kHz timebase, as before
+    assert manager._scanClockSource(analogOutput=False) == SCAN_CLOCK_TERMINAL
     fast = _manager(1_000_000)
     assert (fast.scanRateHz, fast.timerRateHz) == (1e6, 1e6)
-    assert fast._scanClockSource() == ''                             # the onboard clock, divided
+    assert fast._scanClockSource() == fast._scanClockSource(analogOutput=False) == ''
     faster = _manager(1_000_000, detectionRateHz=4_000_000)
     assert faster.timerRateHz == 4e6
     with pytest.raises(Exception, match='whole multiple.*nearest scan rates the 1e\\+06 Hz '
@@ -54,6 +59,15 @@ def test_the_rates_come_from_the_setup_and_default_as_before():
         _manager(300_000)
     with pytest.raises(Exception, match='Raise nidaq.detectionRateHz'):
         _manager(2_000_000)
+
+
+def test_a_setup_without_the_detectors_timer_is_not_held_to_its_ratio():
+    """A camera rig has no timer counter: a scan rate the 1 MHz timer would
+    not divide is no reason to refuse it (review 2026-10-16)."""
+    manager = _manager(300_000, timerCounterChannel=None)
+    assert manager.scanRateHz == 300_000
+    with pytest.raises(Exception, match='must be positive'):
+        _manager(-5, timerCounterChannel=None)
 
 
 class _Unreported:

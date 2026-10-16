@@ -402,6 +402,15 @@ class NapariSumAxesWidget(NapariBaseWidget):
     @classmethod
     def addToViewer(cls, napariViewer, position='left'):
         widget = super().addToViewer(napariViewer, position)
+        dock = widget._dock()
+        if dock is not None:
+            # Closing the dock destroyed it for the session, leaving a ticked
+            # sum on with no box to untick (review 2026-10-16): it can be
+            # hidden, not closed, and hiding it by hand unticks every sum.
+            closer = getattr(getattr(dock, 'title', None), 'close_button', None)
+            if closer is not None:
+                closer.hide()
+            dock.visibilityChanged.connect(widget._onDockVisibility)
         widget._showIfOffered()            # docked now: hidden until a frame has a dimension
         return widget
 
@@ -410,6 +419,7 @@ class NapariSumAxesWidget(NapariBaseWidget):
         self._axes = {}            # source -> [name per extra dimension, outermost first]
         self._summed = set()       # the summed dimensions, by name
         self._boxes = {}           # dimension name -> its checkbox
+        self._hidingDock = False   # this widget hides its dock, not the user
         self.setLayout(QtWidgets.QVBoxLayout())
         self.layout().setContentsMargins(4, 4, 4, 4)
         self.setSizePolicy(QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding,
@@ -476,7 +486,27 @@ class NapariSumAxesWidget(NapariBaseWidget):
     def _showIfOffered(self):
         dock = self._dock()
         if dock is not None:
-            dock.setVisible(self.isOffered())
+            self._hidingDock = True
+            try:
+                dock.setVisible(self.isOffered())
+            finally:
+                self._hidingDock = False
+
+    def _onDockVisibility(self, visible):
+        """The user hid the panel (its title bar's hide button): every sum is
+        unticked, so no image stays summed with its box out of reach. A dock
+        merely out of view -- a minimized window, a tab behind another -- is
+        not hidden and keeps its sums."""
+        dock = self._dock()
+        if visible or self._hidingDock or dock is None or not dock.isHidden():
+            return
+        if self._summed:
+            self._summed = set()
+            for box in self._boxes.values():
+                box.blockSignals(True)
+                box.setChecked(False)
+                box.blockSignals(False)
+            self.sigSumAxesChanged.emit(self.summedAxes())
 
     def _toggled(self, label, on):
         if on:

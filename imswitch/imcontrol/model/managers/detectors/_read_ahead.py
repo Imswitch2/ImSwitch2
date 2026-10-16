@@ -12,8 +12,10 @@ bookkeeping (what it has consumed, where a line starts) is unchanged.
 ``chunk`` is derived, not chosen: one live-update interval of samples
 (``liveUpdateIntervalMs``, the detector's own setting): lines read faster
 than the view redraws are not seen, and the recording takes the whole
-frame. A fetch never runs past the task's own sample count, which a finite
-task never delivers beyond -- such a read would only wait for its timeout.
+frame. A fetch never runs past the samples the worker will consume
+(:func:`raster_samples_consumed`), nor past the task's own sample count,
+which a finite task never delivers beyond -- such a read would only wait
+for its timeout. A request beyond either is fetched as asked.
 """
 
 from __future__ import annotations
@@ -32,6 +34,31 @@ def read_ahead_samples(interval_s, rate_hz) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, int(samples))
+
+
+def raster_samples_consumed(*, phase_delay, throw_startzero, scan_pads_initpos,
+                            throw_init_smooth, loop_dims, samples_d_scanstep,
+                            samples_d2_period) -> int:
+    """The samples a raster scan worker (APD and PMT ``ScanWorker.run``)
+    consumes in all, from its plan: the throws before the first line (the
+    phase delay, the start padding, a higher axis's longer first move), then
+    -- a 2-D scan -- the smooth start and every line's period but the last
+    line's flyback; a scan of more dimensions realigns after every step of
+    an outer axis to where the next step would begin, so it ends where its
+    last outer step ends. Nothing after that is read: the last flyback, the
+    final moves and the end padding, which also holds the phase delay
+    (review 2026-10-16). A fetch past this point would wait on samples no
+    line needs -- and, from a task one sample short, for its timeout."""
+    pads = [int(p) for p in (scan_pads_initpos or [])]
+    higher = max(pads[1:]) - pads[0] if len(pads) > 1 and max(pads[1:]) > pads[0] else 0
+    start = int(phase_delay) + int(throw_startzero) + int(higher)
+    dims = [int(d) for d in loop_dims]
+    if len(dims) <= 2:
+        lines = dims[1] if len(dims) > 1 else 1
+        return (start + int(throw_init_smooth) + max(0, lines - 1) * int(samples_d2_period)
+                + int(samples_d_scanstep[1]))
+    outer = len(dims) - 1
+    return start + dims[outer] * int(samples_d_scanstep[outer])
 
 
 class ReadAhead:
@@ -86,4 +113,4 @@ class ReadAhead:
         return out
 
 
-__all__ = ['ReadAhead', 'read_ahead_samples']
+__all__ = ['ReadAhead', 'raster_samples_consumed', 'read_ahead_samples']

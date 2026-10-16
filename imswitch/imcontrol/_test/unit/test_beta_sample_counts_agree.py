@@ -84,6 +84,30 @@ def test_beta_estimates_the_time_that_plays():
     assert estimate == pytest.approx(info['scan_samples_total'] / 100_000)
 
 
+
+@pytest.mark.parametrize('dwell_ms', [5.0, 5.03])
+def test_a_camera_pulse_that_fills_the_cycle_is_refused_with_the_reason(dwell_ms):
+    """A camera pulse from the start to the end of the dwell never falls
+    between pixels: one rising edge per line, while the recording counts one
+    frame per pixel and waits. On main a clean dwell already did that; a
+    noisy one (5.03 ms) had a one-sample gap by accident, which the exact
+    count closed (review 2026-10-16). Refused, with what to change."""
+    from imswitch.imcontrol.model.errors import ScanDesignRefusedError
+    setup, params, _signals, info = _scan(100_000, dwell_ms)
+    setup.detectors = {'Camera': object()}
+    seconds = params['sequence_time']
+    with pytest.raises(ScanDesignRefusedError, match="Camera's pulse fills the whole"):
+        BetaTTLCycleDesigner().make_signal(
+            {'target_device': ['Camera'], 'TTL_start': [[0.0]], 'TTL_end': [[seconds]],
+             'sequence_time': seconds}, setup, info)
+    # a laser on for the whole pixel is fine, and so is a camera pulse that falls
+    ttl = BetaTTLCycleDesigner().make_signal(
+        {'target_device': ['L488', 'Camera'], 'TTL_start': [[0.0], [0.0]],
+         'TTL_end': [[seconds], [seconds - 1e-5]], 'sequence_time': seconds}, setup, info)
+    rises = np.flatnonzero(np.diff(np.r_[False, ttl['Camera']].astype(np.int8)) == 1)
+    assert len(rises) == info['positions'][0] * info['positions'][1]
+
+
 # --- end to end on the simulated rig ----------------------------------------------------------
 
 def _betaRig(sampleRate):

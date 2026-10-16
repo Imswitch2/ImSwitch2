@@ -245,10 +245,13 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
     ) -> list[str]:
         """Restore visibility for layers that already exist in the viewer,
         and which dimensions the view sums over."""
-        summed = state.get('summedDimensions') if isinstance(state, dict) else None
-        if isinstance(summed, (list, tuple)):
-            self._summedDims = {str(name) for name in summed}
-            self._toldAxes = {}
+        if isinstance(state, dict):
+            # Absent is nothing summed: a state saved with no sum clears one
+            # left on by another setup mode (review 2026-10-16).
+            summed = state.get('summedDimensions') or []
+            if isinstance(summed, (list, tuple)):
+                self._onSumAxesChanged(tuple(summed))
+                self._toldAxes = {}            # the next frame tells the boxes
         return self._widget.applyLayerVisibilityState(state)
 
     def describeComponentState(self, state: dict) -> list[str]:

@@ -31,7 +31,7 @@ import re
 from typing import List, Mapping, Optional, Tuple
 
 from ..errors import ScanDesignRefusedError
-from ..scan_parameters import pixels_for_length_step
+from ..scan_parameters import GRID_RELATIVE_ERROR, pixels_for_length_step
 from ..signaldesigners.BetaScanDesigner import DEFAULT_MOVE_TIME_S, DEFAULT_SETTLE_TIME_S
 from .densify import densify
 from .interpreter import InterpretError, RunContext, expand
@@ -474,7 +474,9 @@ def timing_note(stage: Mapping, rate_hz, digital: Optional[Mapping] = None,
             return note + f' {refusal}.'
         return note + (f' {problem}' if problem else '')
     lines = []
-    if realized != dwell:
+    # within the grid's tolerance: a dwell typed on the clock (0.07 ms is
+    # 7.000000000000001e-05 s) plays as typed and is not reported as rounded
+    if abs(realized - dwell) > GRID_RELATIVE_ERROR * max(abs(dwell), 1.0 / float(rate_hz)):
         lines.append(f'Dwell {format_seconds(dwell)} runs as {format_seconds(realized)} '
                      f'(whole samples at {format_seconds(1 / float(rate_hz))}, {policy}).')
     return ' '.join(lines + others)
