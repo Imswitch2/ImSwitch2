@@ -1,4 +1,4 @@
-# Configurable scan timing: findings and plan (draft 1, 2026-10-16)
+# Configurable scan timing: findings and plan (draft 2, 2026-10-16)
 
 Lenny's observation: scans at 10 µs dwell work, 15 µs produces broken
 images, `scan.sampleRate` cannot be changed, and a PCIe-6363 could play a
@@ -257,8 +257,75 @@ config editor offers the two rates with the driver's limits as help;
 `setupinfo-reference.rst`, `advanced-scanning.rst`, `expert-scanning.rst`,
 the changelog.
 
-Each stage ends green on the unit lane and on the goldens; S1 and S3 end
-with the hardware checks of §8.
+**S5 -- the lag and the settle (Lenny, 2026-10-16).** Two fields of the
+Advanced panel are device properties typed per scan: **D2**, the galvo's
+response lag (`ScanWidgetAdvanced.py:373`, `phase_delay`, applied as samples
+the detector discards at the start, `APDManager.py:1232-1238, 1476`), and
+**D3**, a pause before each slice (`GalvoScanDesigner.py:227, 464`,
+`d3step_delay`), there so the slow axis has settled. The speed-up itself is
+not a field: the designer derives the acceleration run-in and the settling
+from `vel_max` and `acc_max` and tells the detector what to discard
+(`scan_throw_startacc`, `scan_throw_settling`).
+
+- **D3 goes.** The slow axis's settle time is declared on the positioner
+  (the Expert model's `settle_s` per drive, the Beta setups' `settle_time`)
+  and the designer reads it; a slice-to-slice gap shorter than it is
+  refused with the number.
+- **D2 stays a field for now.** The lag depends on the scan speed: Lenny
+  needs a different D2 at 10 and at 20 µs dwell, so one declared number
+  would be wrong half the time. What changes: the value in use and its
+  source are shown; a positioner may declare `responseLag` as a table of
+  (sweep speed, lag) measured by a calibration run (scan a structure
+  forward and back with the same waveform; the shift that aligns the two
+  directions is twice the lag), and the panel fills D2 from the entry
+  nearest the scan's speed when one exists, else leaves it to the user.
+- **The TTL lines are shifted by the lag.** Today only the readout is
+  shifted (`APDManager.py:1476`): the detector's pixel *k* integrates
+  command-time samples `[k·d + lag, (k+1)·d + lag)`, while a gated laser is
+  on for the command-time line `[0, N·d)`. The last pixel of every line
+  therefore integrates `lag` samples after the gate closed and comes out
+  dark by `lag / dwell`; with the shift the other way, the first pixel.
+  That is the dark edge pixel Lenny sees on fast scans, and it grows as
+  the dwell shrinks: a third of a pixel at a 3 µs lag and 10 µs dwell, three
+  pixels at 1 µs. With pulses inside the pixel (advanced TTL) every pixel is
+  gated against the wrong part of the sweep. The fix: delay the DO stream
+  by the lag so gating follows the beam, not the command. On the sample
+  grid that is a shift by `round(lag · sampleRate)` samples (coarse at
+  100 kHz, 10 µs steps; exact enough at 1 MHz); finer, and independent of
+  the rate, is the DO task's start-trigger delay (DAQmx
+  `start_trigger.delay` in timebase ticks, 10 ns on the X Series) -- to be
+  verified on the 6363 (§8). The Expert engine applies the same shift to
+  its digital lines; the `ttlMultiplying` mask is shifted with them.
+
+**S6 -- a sum projection over line steps and other extra dimensions in
+the live view (Lenny, 2026-10-16).** A line-step scan (and a z or time
+stack) reaches the napari viewer as a stack with a slider. Lenny wants,
+under the levels tool, a checkbox per displayed dimension beyond the two
+image axes that sums over it and shows the reduced image. The detectors
+already hold half of this with no GUI: `_linestep_view_mode` ("sum",
+"max", "slice") reduces the line steps before display (`APDManager.py:
+1026-1036`, `PMTManager.py:850-893`), set by nothing, and the two defaults
+disagree (the PMT sums, the APD shows the stack, `PMTManager.py:191`).
+
+- A `NapariDimReduceWidget` beside `NapariUpdateLevelsWidget`
+  (`imcommon/view/guitools/naparitools.py:242`, docked by
+  `ImageWidget.py:21`): for the selected layer, one row per dimension
+  beyond the last two, named from the layer's axis labels (*line steps*,
+  *z*, *t*), each with a **Sum** checkbox; a checked dimension is summed
+  (float, so counts do not saturate) and the layer shows the reduced
+  array; unchecked, the slider is back. Display only: the recording and the
+  detector's frame are untouched.
+- The detector-level modes are retired in favour of it (one place, every
+  layer, cameras' stacks included); until then the APD's default follows
+  the PMT's or both follow the checkbox.
+- Levels: auto-levels run on the displayed (reduced) image, so a summed
+  stack is not clipped by the single-step range.
+- Persisted per detector with the panel state, so a line-step rig opens
+  summed if that is how it was left.
+
+Each stage ends green on the unit lane and on the goldens; S1, S3 and S5
+end with the hardware checks of §8. S6 is independent of the clock work
+and can go first.
 
 ## 7. Costs at a 1 µs pixel (512 × 512, ~20 % flyback)
 
@@ -304,9 +371,20 @@ kind is the read cadence (S3).
 - repeated scans (Repeat, time-lapse): frame-to-frame alignment;
 - two PMTs at 1 MHz: the refusal; one PMT at 1 MHz: a clean image;
 - the driver's read-back rate logged for 100 kHz, 500 kHz, 1 MHz and an
-  off-divisor request.
+  off-divisor request;
+- S5: the DO start-trigger delay on the 6363 -- scope on a TTL line
+  against the AO, the delay set to the lag, edge-to-edge within one
+  timebase tick; then the dark edge pixel gone at 10 and 20 µs with the
+  lag the rig uses today.
 
-## 9. Open questions for Lenny
+## 9. Decisions and open questions
+
+Decided (Lenny, 2026-10-16): D2 stays a per-scan field for now, because the
+lag changes with the scan speed; D3 moves to the positioner; the TTL lines
+are shifted by the lag (S5); the sum projection is a per-dimension checkbox
+in the live view (S6), to be folded in before the work begins.
+
+Open:
 
 1. Refuse or snap an off-grid dwell in the Advanced panel? (The plan says
    snap and say so in Advanced, refuse in Expert; one rule would be simpler.)
@@ -314,3 +392,7 @@ kind is the read cadence (S3).
    timer rate until a rig needs more?
 3. Which rig tests first: the 15 µs case at S0 (no clock change), or S1 on
    the 6363 straight away?
+4. S5: shift the DO stream on the sample grid (simple, coarse at 100 kHz)
+   or by the start-trigger delay (10 ns, needs the hardware check)?
+5. S6: should the checkbox also offer *max*, as the detectors' hidden mode
+   does, or is *sum* enough?
