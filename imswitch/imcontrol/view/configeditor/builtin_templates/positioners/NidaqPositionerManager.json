@@ -16,6 +16,6 @@
     {"key": "acc_max",          "label": "Max Acceleration",   "type": "float", "default": 0.1,   "req": false, "grp": "Advanced", "tip": "",     "opts": []},
     {"key": "smoothScan",       "label": "Smooth Scan Sweep",  "type": "bool_auto", "default": null, "req": false, "grp": "Advanced", "tip": "Automatic (key absent): decided by the device name -- 'mock' devices are stepped, everything else sweeps like a galvo. On: swept continuously when on the fast scan axis. Off: stepped and held per pixel (piezo/stage); vel_max/acc_max not needed.", "opts": []},
     {"key": "defaultReferenceVoltage","label": "Default Reference Voltage (V)","default": null,"req": false,"grp": "Basic","tip": "Voltage explicitly commanded when referencing this open-loop positioner. No default is inferred.","opts": []},
-    {"key": "settleTimeS",      "label": "Settle time (s)",    "type": "float", "default": null,  "req": false, "grp": "Advanced", "tip": "Seconds this positioner needs to stand still after a step before the scan measures. As the slice axis of a 3-D galvo scan, no slice pause (D3) is shorter. Measure it on the rig.", "opts": []}
+    {"key": "settleTimeS",      "label": "Settle time (s)",    "type": "float", "default": null,  "req": false, "grp": "Advanced", "tip": "Seconds this positioner needs to stand still after a step before the scan measures. As the slice axis of a 3-D galvo scan, every slice pauses this long (it replaces the D3 field). Measure it on the rig.", "opts": []}
   ]
 }

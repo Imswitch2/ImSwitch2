@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 import numpy as np
 
-from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import slice_settle_note
+from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import slice_pause_note
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
@@ -363,7 +363,7 @@ class ScanControllerAdvanced(SuperScanController):
             note = f'Timing: {error}'
         if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'GalvoScanDesigner':
             try:
-                settle = slice_settle_note(self._analogParameterDict, self._setupInfo)
+                settle = slice_pause_note(self._analogParameterDict, self._setupInfo)
             except Exception:
                 settle = ''
             if settle:

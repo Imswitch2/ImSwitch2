@@ -49,43 +49,56 @@ def fast_axis_speed_limit(name, props):
 
 #: The managerProperties key a positioner declares its settle time under:
 #: how long it must stand still after a step before the scan measures, in
-#: seconds. GalvoScanDesigner never pauses a slice for less (plan scan
-#: timing, S5).
+#: seconds. GalvoScanDesigner pauses every slice of a 3-D scan for it (plan
+#: scan timing, S5; the D3 field is gone).
 SETTLE_TIME_KEY = 'settleTimeS'
 
 
-def slice_settle_floor_us(setupInfo, sliceDevices):
-    """``(floor_us, device)``: the longest settle time the positioners of
-    the slice axes declare (``managerProperties.settleTimeS``), in whole µs
-    rounded up, and the positioner that declares it; ``(0, None)`` when none
-    declares one -- the slice pause is then D3 as typed."""
-    floor, source = 0, None
+def slice_pause_us(parameterDict, setupInfo, sliceDevices):
+    """``(pause_us, source)``: the pause before every slice of a 3-D scan, in
+    whole µs rounded up, and what declared it -- the longest of the slice
+    axes' positioners' ``settleTimeS``, the setup's legacy
+    ``scan.scanDesignerParams.d3step_delay`` (µs) and a per-scan
+    ``d3step_delay`` (µs) a caller still passes (the old PointScan panel, a
+    script). ``(0, '')`` when nothing declares one."""
+    candidates = []
     for name in sliceDevices:
         info = (getattr(setupInfo, 'positioners', None) or {}).get(name)
         props = getattr(info, 'managerProperties', None) or {}
         value = props.get(SETTLE_TIME_KEY)
-        if value is None:
-            continue
-        us = int(math.ceil(float(value) * 1e6 - 1e-9))
-        if us > floor:
-            floor, source = us, name
-    return floor, source
+        if value is not None:
+            candidates.append((int(math.ceil(float(value) * 1e6 - 1e-9)),
+                               f'{name} declares {SETTLE_TIME_KEY} {float(value):g} s'))
+    if sliceDevices:
+        legacy = (getattr(getattr(setupInfo, 'scan', None), 'scanDesignerParams', None)
+                  or {}).get('d3step_delay')
+        if legacy is not None:
+            candidates.append((int(math.ceil(float(legacy) - 1e-9)),
+                               f'the setup\'s scanDesignerParams.d3step_delay is {float(legacy):g} µs '
+                               f'(declare {SETTLE_TIME_KEY} on the slice positioner instead)'))
+        typed = parameterDict.get('d3step_delay')
+        if typed is not None:
+            candidates.append((int(math.ceil(float(typed) - 1e-9)),
+                               f'this scan\'s d3step_delay is {float(typed):g} µs'))
+    best = max(candidates, key=lambda c: c[0], default=(0, ''))
+    return (best[0], best[1]) if best[0] > 0 else (0, '')
 
 
-def slice_settle_note(parameterDict, setupInfo) -> str:
-    """What the timing note says when a slice axis's declared settle time
-    raises the D3 pause, or ``''``."""
+def slice_pause_note(parameterDict, setupInfo) -> str:
+    """What the timing note says about the pause before every slice of a
+    3-D scan, or ``''`` for a scan without slices."""
     positionerNames = [name for name, info in (setupInfo.positioners or {}).items()
                        if info.forScanning]
     active = GalvoScanDesigner._active_axis_indices(
         parameterDict['axis_length'], parameterDict['axis_step_size'], len(positionerNames))
     devices = [parameterDict['target_device'][i] for i in active]
-    floor, source = slice_settle_floor_us(setupInfo, devices[2:])
-    typed = int(float(parameterDict.get('d3step_delay', 0) or 0))
-    if floor <= typed:
+    if len(devices) < 3:
         return ''
-    return (f'D3 {typed} µs runs as {floor} µs: {source} declares {SETTLE_TIME_KEY} '
-            f'{floor / 1e6:g} s, and a slice never starts before it has settled.')
+    pause, source = slice_pause_us(parameterDict, setupInfo, devices[2:])
+    if pause:
+        return f'Every slice starts after a {pause} µs pause: {source}.'
+    return (f'Slices start without a settle pause: no slice positioner declares '
+            f'{SETTLE_TIME_KEY}.')
 
 
 def scan_axes_missing_limits(positioners) -> list:
@@ -290,7 +303,7 @@ class GalvoScanDesigner(ScanDesigner):
         samples_per_pixel = samples_for_duration(dwell_requested_s, setupInfo.scan.sampleRate)
         dwell_s = samples_per_pixel / float(setupInfo.scan.sampleRate)
         parameterDict = dict(parameterDict, sequence_time=dwell_s)
-        self.__paddingtime_d3step = int(parameterDict['d3step_delay'])  # inter-slice delay [µs]
+        self.__paddingtime_d3step = 0  # the pause before a slice [µs], set with the axes below
         self.__paddingtime_full = 100  # safety padding [µs]
         self._samples_initpos = []
         self._samples_finalpos = []
@@ -360,11 +373,10 @@ class GalvoScanDesigner(ScanDesigner):
         self.axis_centerpos = [parameterDict['axis_centerpos'][i] / convFactors[pos_idx[j]]
                                for j, i in enumerate(active)]
         self.axis_vel_max = [vel_max[pos_idx[j]] for j in range(len(active))]
-        # The slice pause (D3) is never shorter than what the slice axes'
-        # positioners declare they need to settle; the request is kept.
-        d3_requested_us = self.__paddingtime_d3step
-        floor_us, _source = slice_settle_floor_us(setupInfo, self.axis_devs_order[2:])
-        self.__paddingtime_d3step = max(d3_requested_us, floor_us)
+        # The pause before every slice: what the slice axes' positioners
+        # declare they need to settle (no panel field any more).
+        self.__paddingtime_d3step, slice_pause_source = slice_pause_us(
+            parameterDict, setupInfo, self.axis_devs_order[2:])
         self.axis_acc_max = [acc_max[pos_idx[j]] for j in range(len(active))]
         self.axis_jerk_max = [jerk_max[pos_idx[j]] for j in range(len(active))]
 
@@ -486,9 +498,8 @@ class GalvoScanDesigner(ScanDesigner):
             dwell_time=dwell_s,
             dwell_requested_s=dwell_request_if_changed(dwell_requested_s,
                                                        setupInfo.scan.sampleRate),
-            d3step_delay_us=self.__paddingtime_d3step,
-            d3step_delay_requested_us=(None if d3_requested_us == self.__paddingtime_d3step
-                                       else d3_requested_us),
+            slice_pause_us=self.__paddingtime_d3step,
+            slice_pause_source=slice_pause_source,
             scan_time_step=round(self.__timestep * 1e-6, ndigits=10),
             n_linesteps=n_linesteps,
             scan_throw_startzero=int(round(self.__paddingtime_full / self.__timestep)),

@@ -906,12 +906,13 @@ so you can see how much of each pixel is not being used.
 **Phase delay D2 (µs)** is the galvo's response lag: the detectors read, and the
 laser and camera lines play, that much after the command, so a gate follows
 the beam (the dark first or last pixel of fast scans was the gate closing on
-command time). It changes with the scan speed, so it stays a field. **D3 (µs)**
-is the settling time before each slice step of a 3-D scan; a slice
-positioner that declares ``settleTimeS`` in its ``managerProperties`` is
-never given less, and the timing note says when it raised D3. Both start from
-``phase_delay`` / ``d3step_delay`` in ``scan.scanDesignerParams`` of the setup
-file.  **Plot** previews the generated waveforms, with **include TTL** to
+command time). It changes with the scan speed, so it stays a field, and starts from
+``phase_delay`` in ``scan.scanDesignerParams`` of the setup file. There is no
+D3 field: the pause before every slice of a 3-D scan is what the slice
+positioner declares it needs to settle, ``settleTimeS`` in its
+``managerProperties``, and the timing note says it (*Every slice starts after
+a 2000 µs pause: Z declares settleTimeS 0.002 s*, or that no slice positioner
+declares one).  **Plot** previews the generated waveforms, with **include TTL** to
 overlay the device gating.
 
 With point detectors, a line-step scan produces one frame per scan holding all

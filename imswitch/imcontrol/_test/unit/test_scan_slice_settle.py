@@ -1,66 +1,95 @@
-"""A slice axis's settle time is declared on its positioner (scan timing
-plan, S5): ``managerProperties.settleTimeS``. GalvoScanDesigner never pauses
-a slice (D3) for less, records the pause as played beside the request, and
-the Advanced panel's timing note says when it raised D3. The D3 field stays
-as an optional longer pause."""
+"""The pause before every slice of a 3-D scan is declared, not typed per scan
+(scan timing plan, S5; Lenny: "remove D3 field"): a slice positioner's
+``managerProperties.settleTimeS``. GalvoScanDesigner pauses every slice for
+the longest declared value -- that, a user setup's legacy
+``scanDesignerParams.d3step_delay``, or a per-scan ``d3step_delay`` the old
+PointScan panel or a script still passes -- records the pause and its
+source, and the Advanced panel's timing note says it."""
 import copy
+from types import SimpleNamespace
 
 import pytest
 
 from imswitch.imcontrol.model.configeditor import resources, roles as roles_module
 from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
-    SETTLE_TIME_KEY, GalvoScanDesigner, slice_settle_floor_us, slice_settle_note,
+    SETTLE_TIME_KEY, GalvoScanDesigner, slice_pause_note, slice_pause_us,
 )
 
 from .test_galvo_signal_goldens import _params, _setup_sted_like
 
 
-def _setup(settle_s=None):
+def _setup(settle_s=None, legacy_us=None):
     setup = _setup_sted_like()
     if settle_s is not None:
         setup.positioners['PiezoZ'].managerProperties[SETTLE_TIME_KEY] = settle_s
+    if legacy_us is not None:
+        setup.scan.scanDesignerParams = {'d3step_delay': legacy_us}
     return setup
 
 
-def _xyz(d3_us=0.0):
+def _xyz(**extra):
     params = _params(['GalvoX', 'GalvoY', 'PiezoZ'], [5.0, 5.0, 2.0], [1.0, 1.0, 1.0])
-    params['d3step_delay'] = d3_us
+    params.update(extra)
     return params
 
 
-def test_a_declared_settle_is_the_slice_pause_floor_and_is_recorded():
-    _sig, _pos, info = GalvoScanDesigner().make_signal(_xyz(0), _setup(settle_s=2e-3))
-    assert info['d3step_delay_us'] == 2000 and info['d3step_delay_requested_us'] == 0
-    _sig, _pos, longer = GalvoScanDesigner().make_signal(_xyz(5000), _setup(settle_s=2e-3))
-    assert longer['d3step_delay_us'] == 5000 and longer['d3step_delay_requested_us'] is None
-    _sig, _pos, plain = GalvoScanDesigner().make_signal(_xyz(0), _setup())
-    assert plain['d3step_delay_us'] == 0 and plain['d3step_delay_requested_us'] is None
+def test_the_declared_settle_is_the_slice_pause_and_is_recorded_with_its_source():
+    _sig, _pos, info = GalvoScanDesigner().make_signal(_xyz(), _setup(settle_s=2e-3))
+    assert info['slice_pause_us'] == 2000
+    assert info['slice_pause_source'] == 'PiezoZ declares settleTimeS 0.002 s'
+    _sig, _pos, plain = GalvoScanDesigner().make_signal(_xyz(), _setup())
+    assert plain['slice_pause_us'] == 0 and plain['slice_pause_source'] == ''
     # the pause is in the waveform: the settling before each slice's first
     # line grows by the 2 ms (200 samples at 100 kHz)
     assert info['scan_throw_settling'] - plain['scan_throw_settling'] == 200
 
 
+def test_the_longest_declaration_wins_whatever_declares_it():
+    setup = _setup(settle_s=2e-3, legacy_us=500)
+    assert slice_pause_us({}, setup, ['PiezoZ'])[0] == 2000
+    assert slice_pause_us({'d3step_delay': 5000}, setup, ['PiezoZ']) == (
+        5000, "this scan's d3step_delay is 5000 µs")
+    legacy = slice_pause_us({}, _setup(legacy_us=500), ['PiezoZ'])
+    assert legacy[0] == 500 and 'declare settleTimeS on the slice positioner instead' in legacy[1]
+    assert slice_pause_us({}, _setup(settle_s=1.5e-6), ['PiezoZ']) == (
+        2, 'PiezoZ declares settleTimeS 1.5e-06 s')                         # rounded up
+
+
 def test_only_the_slice_axes_count():
     setup = _setup()
     setup.positioners['GalvoX'].managerProperties[SETTLE_TIME_KEY] = 1.0   # the fast axis
-    assert slice_settle_floor_us(setup, ['PiezoZ']) == (0, None)
-    _sig, _pos, info = GalvoScanDesigner().make_signal(_xyz(0), setup)
-    assert info['d3step_delay_us'] == 0
-    assert slice_settle_floor_us(_setup(settle_s=1.5e-6), ['PiezoZ']) == (2, 'PiezoZ')  # up
+    assert slice_pause_us({}, setup, ['PiezoZ']) == (0, '')
+    assert slice_pause_us({'d3step_delay': 300}, setup, []) == (0, '')     # a 2-D scan
+    _sig, _pos, info = GalvoScanDesigner().make_signal(_xyz(), setup)
+    assert info['slice_pause_us'] == 0
 
 
-def test_the_timing_note_says_when_d3_was_raised():
-    note = slice_settle_note(_xyz(0), _setup(settle_s=2e-3))
-    assert note == ('D3 0 µs runs as 2000 µs: PiezoZ declares settleTimeS 0.002 s, and a '
-                    'slice never starts before it has settled.')
-    assert slice_settle_note(_xyz(5000), _setup(settle_s=2e-3)) == ''
+def test_the_timing_note_says_the_pause_or_that_there_is_none():
+    assert slice_pause_note(_xyz(), _setup(settle_s=2e-3)) == (
+        'Every slice starts after a 2000 µs pause: PiezoZ declares settleTimeS 0.002 s.')
+    assert slice_pause_note(_xyz(), _setup()) == (
+        'Slices start without a settle pause: no slice positioner declares settleTimeS.')
     two_d = _params(['GalvoX', 'GalvoY'], [5.0, 5.0], [1.0, 1.0])
-    two_d['d3step_delay'] = 0
-    assert slice_settle_note(two_d, _setup(settle_s=2e-3)) == ''      # no slice axis
+    assert slice_pause_note(two_d, _setup(settle_s=2e-3)) == ''          # no slice axis
+
+
+def test_the_advanced_panel_has_no_d3_field_and_writes_no_d3_key(qtbot):
+    from imswitch.imcontrol._test import optionsBasic
+    from imswitch.imcontrol.model.scan_parameters import AdvancedScanParameterSerializer
+    from imswitch.imcontrol.view.widgets.ScanWidgetAdvanced import ScanWidgetAdvanced
+    widget = ScanWidgetAdvanced(optionsBasic)
+    qtbot.addWidget(widget)
+    assert not hasattr(widget, 'd3StepDelayPar') and 'frameDelay' not in widget.scanPar
+    assert not hasattr(widget, 'setd3StepDelayPar')
+    reader = SimpleNamespace(getSeqTimePar=lambda: 0.02, getPhaseDelayPar=lambda: 30.0,
+                             getScanDim=lambda i: 'None')
+    analog, _ = AdvancedScanParameterSerializer().build_analog(reader, positioners=[])
+    assert 'd3step_delay' not in analog and analog['phase_delay'] == 30.0
 
 
 def test_the_role_rule_offers_the_key_the_designer_reads():
     [role] = [r for r in resources.roles() if r['role'] == 'galvo_slice_axis']
+    assert role['consumer'].endswith(':slice_pause_us')
     assert [read['key'] for read in role['reads']] == [SETTLE_TIME_KEY]
     assert SETTLE_TIME_KEY in role['properties']
     assert role['requires'] == []                  # offered, never required
@@ -77,7 +106,6 @@ def test_the_role_rule_offers_the_key_the_designer_reads():
     beta['scan']['scanDesigner'] = 'BetaScanDesigner'
     assert not offered(beta, 'Z')
     # an optional read without a fallback: the validator reports nothing
-    # (it notes only reads with a declared fallback)
     [finding] = roles_module.evaluate(role, setup)
     assert finding.missing_required == ()
     assert [(r.key, r.fallback) for r in finding.missing_reads] == [(SETTLE_TIME_KEY, None)]

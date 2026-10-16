@@ -178,7 +178,6 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             dwell_s=limits.min_dwell_s(dims[0], step),
             channels=((limits.gates[0].name,),) if limits.gates else (),
             phase_delay_us=float(self._designerParam('phase_delay', 0.0)),
-            d3step_delay_us=float(self._designerParam('d3step_delay', 0.0)),
         ))
 
     def _designerParam(self, key, default):
@@ -244,7 +243,6 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             channel_power=power,
             channel_power_enabled=dict(acquisition.channel_power_enabled),
             phase_delay_us=acquisition.phase_delay_us,
-            d3step_delay_us=acquisition.d3step_delay_us,
         )
 
     def currentPlan(self) -> SimpleScanPlan:

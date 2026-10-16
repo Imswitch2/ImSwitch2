@@ -210,8 +210,7 @@ def test_advanced_mode_with_empty_windows_is_channel_power(limits):
 def test_the_plan_survives_json():
     import json
     plan = _plan(channel_power_on=True, channel_power={'488 (EXC)': (80.0, 20.0)},
-                 channel_power_enabled={'488 (EXC)': True}, phase_delay_us=12.5,
-                 d3step_delay_us=500.0)
+                 channel_power_enabled={'488 (EXC)': True}, phase_delay_us=12.5)
     assert SimpleScanPlan.from_dict(json.loads(json.dumps(plan.to_dict()))) == plan
 
 

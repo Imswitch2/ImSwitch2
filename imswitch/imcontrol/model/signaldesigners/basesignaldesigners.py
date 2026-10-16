@@ -363,11 +363,11 @@ class ScanInfoContract:
     #: The dwell as requested, when the designer realized another
     #: (``dwell_time`` is the one that plays); None when they agree.
     dwell_requested_s: float = None
-    #: The pause before every slice, in µs, as it plays (D3, never shorter
-    #: than the slice axes' declared settleTimeS), and the request when it
-    #: was raised; None where the designer has no slice pause.
-    d3step_delay_us: float = None
-    d3step_delay_requested_us: float = None
+    #: The pause before every slice, in µs, as it plays, and what declared it
+    #: (a slice positioner's settleTimeS, ...); None where the designer has
+    #: no slice pause.
+    slice_pause_us: float = None
+    slice_pause_source: str = None
 
     # --- Beta-designer compatibility (BetaTTLCycleDesigner reads these) ---
     positions: list = field(default_factory=list)

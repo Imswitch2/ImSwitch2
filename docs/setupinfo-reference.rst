@@ -359,9 +359,12 @@ Key fields:
   ``move_time`` / ``settle_time`` (the fast-axis ramp and rest inside each
   pixel dwell, 2 ms each by default); a dwell not longer than
   ``move_time + settle_time`` is refused. The scan panels also read
-  ``phase_delay`` and ``d3step_delay`` (µs) and ``dwell_ms``, the dwell they
+  ``phase_delay`` (µs) and ``dwell_ms``, the dwell they
   open with when their own default does not suit the rig (the Advanced panel
   opens at 0.02 ms, made for galvos; a stepped stage needs more).
+  ``d3step_delay`` (µs) is read only as a fallback: the pause before every
+  slice of a 3-D galvo scan is the slice positioner's ``settleTimeS`` (in its
+  ``managerProperties``, seconds); declare it there.
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``

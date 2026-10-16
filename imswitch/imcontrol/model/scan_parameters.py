@@ -241,10 +241,11 @@ class AdvancedScanParameterSerializer:
             analogParameterDict["phase_delay"] = widget.getPhaseDelayPar()
         except AttributeError:
             analogParameterDict["phase_delay"] = 0
-        try:
+        # The pause before a slice: only the old PointScan panel still has a
+        # field for it; elsewhere it is the slice positioner's declared
+        # settleTimeS, read by the designer, and no key is written.
+        if hasattr(widget, "getd3StepDelayPar"):
             analogParameterDict["d3step_delay"] = widget.getd3StepDelayPar()
-        except AttributeError:
-            analogParameterDict["d3step_delay"] = 0
 
         return analogParameterDict, positionersScan
 

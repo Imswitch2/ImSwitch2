@@ -257,7 +257,7 @@ config editor offers the two rates with the driver's limits as help;
 `setupinfo-reference.rst`, `advanced-scanning.rst`, `expert-scanning.rst`,
 the changelog.
 
-**S5 -- the lag and the settle (Lenny, 2026-10-16). DONE 2026-10-16 as far as decided:** the TTL shift on the sample grid (`NidaqManager.delayed_lines`, `lag_samples`); the slice settle declared on the positioner (`managerProperties.settleTimeS`) as D3's floor, recorded and reported. Not done, for Lenny: removing the D3 field (it stays as an optional longer pause; old scan files carry it), and the start-trigger-delay variant of the shift (10 ns, needs the 6363). Two fields of the
+**S5 -- the lag and the settle (Lenny, 2026-10-16). DONE 2026-10-16 as far as decided:** the TTL shift on the sample grid (`NidaqManager.delayed_lines`, `lag_samples`); the slice settle declared on the positioner (`managerProperties.settleTimeS`); the D3 field removed (Lenny, 2026-10-16: "remove D3 field"), the pause recorded with its source and said in the timing note. Two fields of the
 Advanced panel are device properties typed per scan: **D2**, the galvo's
 response lag (`ScanWidgetAdvanced.py:373`, `phase_delay`, applied as samples
 the detector discards at the start, `APDManager.py:1232-1238, 1476`), and
@@ -381,7 +381,9 @@ kind is the read cadence (S3).
 
 Decided (Lenny, 2026-10-16): D2 stays a per-scan field for now, because the
 lag changes with the scan speed; the TTL lines are shifted by the lag (S5);
-the sum projection is a per-dimension checkbox in the live view (S6).
+the sum projection is a per-dimension checkbox in the live view (S6); the D3
+field is removed, the slice pause coming from the slice positioner's
+declared `settleTimeS`.
 
 Taken as the plan's defaults while building (Lenny said "proceed until
 done"), each reversible:
@@ -395,11 +397,9 @@ done"), each reversible:
 
 Still open for Lenny:
 
-1. **D3:** the positioner's declared `settleTimeS` is now D3's floor; remove
-   the D3 field altogether? (Old scan files carry `d3step_delay`.)
-2. **The start-trigger delay** for the TTL shift (10 ns resolution instead of
+1. **The start-trigger delay** for the TTL shift (10 ns resolution instead of
    the sample grid) -- needs a scope on the 6363.
-3. **Which rig test first:** 15 µs at 100 kHz (S0, no clock change), then
+2. **Which rig test first:** 15 µs at 100 kHz (S0, no clock change), then
    1 MHz on the 6363 (S1), then the lag shift at 10 and 20 µs (S5).
-4. **The PMT's own line-step sum** before display stays until its live
+3. **The PMT's own line-step sum** before display stays until its live
    buffer carries the stack (S6 note).

@@ -42,13 +42,13 @@ class ScanWidgetAdvanced(SuperScanWidget):
         # --- Scan timing params ---
         self.seqTimePar = QtWidgets.QLineEdit("0.02")  # ms
         self.phaseDelayPar = QtWidgets.QLineEdit("0")  # µs (see ScanWidgetPointScan)
-        self.d3StepDelayPar = QtWidgets.QLineEdit("0")  # µs
+        # No D3 field: the pause before a slice is the slice positioner's
+        # declared settleTimeS (GalvoScanDesigner.slice_pause_us).
 
 
         self.scanPar = {
             "seqTime": self.seqTimePar,
             "phaseDelay": self.phaseDelayPar,
-            "frameDelay": self.d3StepDelayPar,
         }
 
         # --- TTL params containers ---
@@ -207,7 +207,6 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.seqTimePar.textChanged.connect(lambda: self.sigSeqTimeParChanged.emit())
         self.seqTimePar.textChanged.connect(lambda: self._refreshDwellDeadTimeLabel())
         self.phaseDelayPar.textChanged.connect(lambda: self.sigStageParChanged.emit())
-        self.d3StepDelayPar.textChanged.connect(lambda: self.sigStageParChanged.emit())
 
         # Connect TTL signals
         self.lineProgramDevicesBox.stateChanged.connect(self._onLineProgramDevicesChanged)
@@ -371,9 +370,8 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.grid.addWidget(self._dwellLabel, currentRow, 0)
         self.grid.addWidget(self.seqTimePar, currentRow, 1)
 
-        # Both delays are times in µs (the contract's phase_delay and
-        # d3step_delay); the D2 label said samples, which they only were at
-        # a 1 MHz detector timer.
+        # The phase delay is a time in µs (the contract's phase_delay); the
+        # D2 label said samples, which it only was at a 1 MHz detector timer.
         phaseDelayLabel = QtWidgets.QLabel("Phase delay D2 (µs):")
         phaseDelayLabel.setToolTip(
             "The galvo's response lag: the detectors read, and the laser and camera lines "
@@ -381,10 +379,6 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.grid.addWidget(phaseDelayLabel, currentRow, 2)
         self.grid.addWidget(self.phaseDelayPar, currentRow, 3)
 
-        d3Label = QtWidgets.QLabel("D3 (µs):")
-        d3Label.setToolTip("A pause before every slice, for the slow axis to settle.")
-        self.grid.addWidget(d3Label, currentRow, 4)
-        self.grid.addWidget(self.d3StepDelayPar, currentRow, 5)
         currentRow += 1
         # Realized dwell, or strict timing, when it matters (plan §2.6).
         self.timingNoteLabel = QtWidgets.QLabel('')
@@ -858,8 +852,6 @@ class ScanWidgetAdvanced(SuperScanWidget):
     def getPhaseDelayPar(self):
         return float(self.phaseDelayPar.text())
 
-    def getd3StepDelayPar(self):
-        return float(self.d3StepDelayPar.text())
 
     # Setters used by controller
     def setScanStepSize(self, positionerName, stepSize):
@@ -951,8 +943,6 @@ class ScanWidgetAdvanced(SuperScanWidget):
     def setPhaseDelayPar(self, phaseDelayPar):
         self.phaseDelayPar.setText(str(round(int(phaseDelayPar))))
 
-    def setd3StepDelayPar(self, d3StepDelayPar):
-        self.d3StepDelayPar.setText(str(round(int(d3StepDelayPar))))
 
     def plotSignalGraph(self, signals, colors, sampleRate, labels=None):
         # labels are optional; if not provided, make something sane

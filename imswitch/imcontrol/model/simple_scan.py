@@ -247,7 +247,6 @@ class SimpleScanPlan:
     channel_power: Mapping[str, Tuple[float, ...]] = field(default_factory=dict)
     channel_power_enabled: Mapping[str, bool] = field(default_factory=dict)
     phase_delay_us: float = 0.0
-    d3step_delay_us: float = 0.0
     frames: int = 1
 
     def pixels(self, dim: str) -> int:
@@ -275,7 +274,6 @@ class SimpleScanPlan:
             'channel_power': {k: list(v) for k, v in self.channel_power.items()},
             'channel_power_enabled': dict(self.channel_power_enabled),
             'phase_delay_us': self.phase_delay_us,
-            'd3step_delay_us': self.d3step_delay_us,
             'frames': self.frames,
         }
 
@@ -299,7 +297,6 @@ class SimpleScanPlan:
                 k: bool(v) for k, v in (data.get('channel_power_enabled') or {}).items()
             },
             phase_delay_us=float(data.get('phase_delay_us', 0.0)),
-            d3step_delay_us=float(data.get('d3step_delay_us', 0.0)),
             frames=int(data.get('frames', 1)),
         )
 
@@ -334,7 +331,6 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
             add(name, 1.0, 1.0, plan.park.get(name, 0.0))
     analog['sequence_time'] = float(plan.dwell_s)
     analog['phase_delay'] = plan.phase_delay_us
-    analog['d3step_delay'] = plan.d3step_delay_us
 
     # A plan with no channel still scans: one line pass that fires nothing
     # (a scanner without digital lines, or every laser taken out). Zero line
@@ -492,7 +488,6 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
         channel_power=power,
         channel_power_enabled=enabled,
         phase_delay_us=float(analog.get('phase_delay', 0.0) or 0.0),
-        d3step_delay_us=float(analog.get('d3step_delay', 0.0) or 0.0),
     )
 
 
@@ -570,7 +565,6 @@ def normalize_plan(plan: 'SimpleScanPlan') -> 'SimpleScanPlan':
         regions=regions,
         park={name: quantize_um(value) for name, value in plan.park.items()},
         phase_delay_us=float(round(plan.phase_delay_us)),
-        d3step_delay_us=float(round(plan.d3step_delay_us)),
     )
     power, enabled = _canonical_power(
         plan.channel_power, plan.channel_power_enabled, len(plan.channels))
