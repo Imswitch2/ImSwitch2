@@ -142,3 +142,33 @@ def test_reference_identity_is_plane_scoped_not_section_scoped(tmp_path):
     assert store.exists("sample", "shared in sample")
     assert store.get("sample", "shared in sample").observation_plane_name == "sample"
     assert not store.exists("fourier", "shared in sample")
+
+
+def test_list_all_spans_planes_and_is_deterministically_sorted(tmp_path):
+    store=PositionReferenceStore(tmp_path)
+    store.add(_reference("Zulu",plane="sample"))
+    store.add(_reference("alpha",plane="Intermediate"))
+    store.add(_reference("Beta",plane="sample"))
+
+    records=store.list_all()
+
+    assert [
+        (record.observation_plane_name,record.name) for record in records
+    ] == [
+        ("Intermediate","alpha"),
+        ("sample","Beta"),
+        ("sample","Zulu"),
+    ]
+
+
+def test_list_all_includes_session_and_persistent_records(tmp_path):
+    store=PositionReferenceStore(tmp_path)
+    store.add(_reference("session",plane="sample"))
+    store.add(_reference("persistent",plane="intermediate"))
+    store.persist("intermediate","persistent")
+
+    records=store.list_all()
+    by_key={(record.observation_plane_name,record.name):record for record in records}
+
+    assert by_key[("sample","session")].lifetime is PositionReferenceLifetime.SESSION
+    assert by_key[("intermediate","persistent")].lifetime is PositionReferenceLifetime.PERSISTENT

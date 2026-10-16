@@ -1,3 +1,4 @@
+from .addressing import SLMSectionAddress
 from .calibration import (
     CalibrationAcquisitionAvailability,PreparedMappingSelection,
     SLMCalibrationCallbacks,SLMCalibrationService,TargetCalibrationState,
@@ -73,6 +74,7 @@ __all__ = [
     "SLMFeedbackCallbacks",
     "SLMFeedbackService",
     "SLMRuntimeFactory",
+    "SLMSectionAddress",
     "SLMSectionLayoutService",
     "SLMSession",
     "SLMSessionCallbacks",

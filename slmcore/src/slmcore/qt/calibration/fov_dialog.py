@@ -49,6 +49,8 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
         super().__init__(parent)
         self._correction=None
         self._preview=None
+        self._mutations_enabled=True
+        self._mutation_disabled_reason=""
         root=QtWidgets.QVBoxLayout(self); root.setContentsMargins(4,4,4,4); root.setSpacing(6)
 
         self.summary=QtWidgets.QLabel(); self.summary.setWordWrap(True)
@@ -95,6 +97,21 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
     def preview(self):
         return self._preview
 
+    def set_mutations_enabled(self,enabled: bool,reason: str="") -> None:
+        self._mutations_enabled=bool(enabled)
+        self._mutation_disabled_reason=str(reason or "")
+        for widget in (
+            self.model_combo,self.degree_combo,self.refit_button,self.rename_button,
+        ):
+            widget.setEnabled(self._mutations_enabled)
+            widget.setToolTip("" if self._mutations_enabled else self._mutation_disabled_reason)
+        self.save_update_button.setEnabled(
+            self._mutations_enabled and self._preview is not None
+        )
+        self.save_update_button.setToolTip(
+            "" if self._mutations_enabled else self._mutation_disabled_reason
+        )
+
     def set_correction(self,correction,*,compatibility: str="",is_default: bool=False) -> None:
         self._correction=correction; self._preview=None
         if correction is None:
@@ -122,6 +139,7 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
         self._show_field(correction)
         self.preview_label.setText("Saved %s fit." % _transform_label(correction))
         self.save_update_button.setEnabled(False)
+        self.set_mutations_enabled(self._mutations_enabled,self._mutation_disabled_reason)
 
     def set_preview(self,correction) -> None:
         self._preview=correction
@@ -136,7 +154,7 @@ class SavedFOVCorrectionView(QtWidgets.QWidget):
                 correction.max_residual_kxy,
             )
         )
-        self.save_update_button.setEnabled(True)
+        self.save_update_button.setEnabled(self._mutations_enabled)
 
     def _model_changed(self) -> None:
         polynomial=str(self.model_combo.currentData() or "")=="polynomial"

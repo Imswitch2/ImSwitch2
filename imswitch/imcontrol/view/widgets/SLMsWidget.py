@@ -19,6 +19,7 @@ class SLMsWidget(Widget):
     """Thin ImSwitch multi-SLM shell around reusable :class:`SLMPanel`."""
 
     sigControlModeRequested = QtCore.Signal(object)
+    sigWorkspaceRequested = QtCore.Signal()
 
     def __init__(self,*args: Any,**kwargs: Any) -> None:
         super().__init__(*args,**kwargs)
@@ -29,13 +30,24 @@ class SLMsWidget(Widget):
         layout.setSpacing(4)
         self.slm_tabs = QtWidgets.QTabWidget()
         self.slm_tabs.setMovable(True)
-        self.control_mode_selector = SLMControlModeSelector(self.slm_tabs)
+
+        corner = QtWidgets.QWidget(self.slm_tabs)
+        corner_layout = QtWidgets.QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0,0,0,0)
+        corner_layout.setSpacing(6)
+
+        self.workspace_button = QtWidgets.QPushButton("Workspace…",corner)
+        self.workspace_button.setToolTip("Open the shared multi-SLM workspace.")
+        self.workspace_button.clicked.connect(self.sigWorkspaceRequested.emit)
+        corner_layout.addWidget(self.workspace_button)
+
+        self.control_mode_selector = SLMControlModeSelector(corner)
         self.control_mode_selector.sigModeRequested.connect(
             self.sigControlModeRequested.emit,
         )
-        self.slm_tabs.setCornerWidget(
-            self.control_mode_selector,QtCore.Qt.TopRightCorner,
-        )
+        corner_layout.addWidget(self.control_mode_selector)
+
+        self.slm_tabs.setCornerWidget(corner,QtCore.Qt.TopRightCorner)
         layout.addWidget(self.slm_tabs,1)
 
     def add_slm(
@@ -53,6 +65,13 @@ class SLMsWidget(Widget):
             return self._slms[slm_key].panel
         except KeyError as error:
             raise KeyError(f"Unknown SLM {slm_key!r}") from error
+
+    def current_slm_key(self) -> str | None:
+        current = self.slm_tabs.currentWidget()
+        for slm_key,slm_ui in self._slms.items():
+            if slm_ui.panel is current:
+                return slm_key
+        return None
 
     def remove_slm(self,slm_key: str) -> None:
         """Unmount one SLM panel without owning its disposal lifecycle."""

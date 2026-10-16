@@ -13,6 +13,7 @@ class DemoMainWindow(QtWidgets.QMainWindow):
     """Thin host window; all per-SLM workflow UI remains inside slmcore."""
 
     sigControlModeRequested = QtCore.Signal(object)
+    sigWorkspaceRequested = QtCore.Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -27,13 +28,19 @@ class DemoMainWindow(QtWidgets.QMainWindow):
 
         self.slm_tabs = QtWidgets.QTabWidget(central)
         self.slm_tabs.setMovable(True)
-        self.control_mode_selector = SLMControlModeSelector(self.slm_tabs)
+        corner = QtWidgets.QWidget(self.slm_tabs)
+        corner_layout = QtWidgets.QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0,0,0,0)
+        corner_layout.setSpacing(6)
+        self.workspace_button = QtWidgets.QPushButton("Workspace…",corner)
+        self.workspace_button.clicked.connect(self.sigWorkspaceRequested.emit)
+        corner_layout.addWidget(self.workspace_button)
+        self.control_mode_selector = SLMControlModeSelector(corner)
         self.control_mode_selector.sigModeRequested.connect(
             self.sigControlModeRequested.emit,
         )
-        self.slm_tabs.setCornerWidget(
-            self.control_mode_selector,QtCore.Qt.TopRightCorner,
-        )
+        corner_layout.addWidget(self.control_mode_selector)
+        self.slm_tabs.setCornerWidget(corner,QtCore.Qt.TopRightCorner)
         layout.addWidget(self.slm_tabs,1)
         self.setCentralWidget(central)
 
@@ -52,6 +59,13 @@ class DemoMainWindow(QtWidgets.QMainWindow):
         index = self.slm_tabs.indexOf(panel)
         if index >= 0:
             self.slm_tabs.removeTab(index)
+
+    def current_slm_key(self) -> str | None:
+        current=self.slm_tabs.currentWidget()
+        for key,panel in self._panels.items():
+            if panel is current:
+                return key
+        return None
 
     def set_control_mode(self,mode: Any) -> None:
         self.control_mode_selector.set_mode(SLMControlMode.normalize(mode))

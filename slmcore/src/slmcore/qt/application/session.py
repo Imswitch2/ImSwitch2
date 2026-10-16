@@ -140,6 +140,9 @@ class SLMQtSession(QtCore.QObject):
         self._calibration = CalibrationManager(
             self,parent=self,
         )
+        self._calibration.sigManagementWorkflowActiveChanged.connect(
+            self._refresh_control_mode_availability,
+        )
         self._section_settings = SectionSettingsManager(
             self,section_host=self.section_host,parent=self,
         )
@@ -210,6 +213,11 @@ class SLMQtSession(QtCore.QObject):
         return self._geometry_calibration
 
     @property
+    def calibration_manager(self) -> CalibrationManager:
+        """Return the Qt calibration/workspace adapter for this physical SLM."""
+        return self._calibration
+
+    @property
     def auto_upload_frame(self) -> bool:
         return self._application_session.auto_upload_frame
 
@@ -266,9 +274,14 @@ class SLMQtSession(QtCore.QObject):
 
     @property
     def can_change_control_mode(self) -> bool:
+        calibration_active=bool(
+            hasattr(self,"_calibration")
+            and self._calibration.management_workflow_active
+        )
         return bool(
             not self.is_cgh_busy
             and not self.automatic_operation_active
+            and not calibration_active
         )
 
     def set_control_mode(self,mode) -> bool:
@@ -287,6 +300,15 @@ class SLMQtSession(QtCore.QObject):
             self.sigWarning.emit(
                 "SLM control mode",
                 "Stop automatic feedback before changing control mode.",
+            )
+            return False
+        if (
+            hasattr(self,"_calibration")
+            and self._calibration.management_workflow_active
+        ):
+            self.sigWarning.emit(
+                "SLM control mode",
+                "Finish or cancel the active calibration workflow before changing control mode.",
             )
             return False
 
@@ -808,8 +830,8 @@ class SLMQtSession(QtCore.QObject):
             self._binding.set_writes_enabled(True)
             self.panel.set_config_only_view(False)
             self.panel.config_controls.clear_selected_path_override()
-            if hasattr(self,"_calibration"):
-                self._calibration.control_mode_changed()
+        if hasattr(self,"_calibration"):
+            self._calibration.control_mode_changed()
         if hasattr(self,"_feedback"):
             self._feedback.refresh_automatic_availability()
         self.sigControlModeChanged.emit(mode)

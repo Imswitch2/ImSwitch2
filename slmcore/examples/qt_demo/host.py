@@ -6,7 +6,9 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from slmcore import SLMDefinition,SLMStartupPreferences,SLMWorkspace
+from slmcore import (
+    SLMDefinition,SLMSectionAddress,SLMStartupPreferences,SLMWorkspace,
+)
 from slmcore.host import MockSLMDeviceProvider,SLMHostServices
 from slmcore.qt import (
     PreviewContainer,
@@ -15,6 +17,7 @@ from slmcore.qt import (
     SLMQtSession,
     SLMQtSessionFactory,
     SLMQtSessionGroup,
+    SLMWorkspaceCoordinator,
 )
 
 from .setup import load_demo_setups
@@ -33,6 +36,9 @@ class DemoHost:
         self.workspace = SLMWorkspace(self.data_dir)
         self.factory = SLMQtSessionFactory(workspace=self.workspace)
         self.group = SLMQtSessionGroup(parent=window)
+        self.workspace_coordinator = SLMWorkspaceCoordinator(
+            self.group,self.workspace,parent_widget=window,parent=window,
+        )
         self.sessions: dict[str,SLMQtSession] = {}
         self.devices: dict[str,MockSLMDeviceProvider] = {}
         self._disposed = False
@@ -42,6 +48,7 @@ class DemoHost:
             window.set_control_mode_change_enabled,
         )
         window.sigControlModeRequested.connect(self.set_control_mode)
+        window.sigWorkspaceRequested.connect(self.open_workspace)
 
     def initialize(self) -> None:
         """Construct, mount and initialize every demo SLM."""
@@ -56,10 +63,25 @@ class DemoHost:
         if not self.group.set_control_mode(mode):
             self.window.set_control_mode(self.group.control_mode)
 
+    def open_workspace(self) -> None:
+        slm_key=self.window.current_slm_key()
+        if slm_key and self.group.contains(slm_key):
+            session=self.group.session(slm_key)
+            section=session.section_host.current_section_key()
+            if section is None and session.runtime.section_keys:
+                section=session.runtime.section_keys[0]
+            if section is not None:
+                self.workspace_coordinator.open(
+                    SLMSectionAddress(slm_key,section)
+                )
+                return
+        self.workspace_coordinator.open()
+
     def dispose(self) -> None:
         if self._disposed:
             return
         self._disposed = True
+        self.workspace_coordinator.dispose()
         for slm_key,session in tuple(self.sessions.items()):
             self.group.remove_session(slm_key)
             self.window.remove_slm(slm_key)

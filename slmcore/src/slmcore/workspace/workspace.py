@@ -12,6 +12,7 @@ from .geometry_orientation_calibration_store import SLMGeometryOrientationCalibr
 from .mapping_store import MappingStore
 from .observation_plane_store import ObservationPlaneStore
 from .observation_registration_store import ObservationRegistrationStore
+from .position_reference_store import PositionReferenceStore
 
 
 class SLMWorkspace:
@@ -57,6 +58,7 @@ class SLMWorkspace:
         self._geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None = None
         self._observation_plane_store: ObservationPlaneStore | None = None
         self._observation_registration_store: ObservationRegistrationStore | None = None
+        self._position_reference_store: PositionReferenceStore | None = None
         self._mapping_store: MappingStore | None = None
 
     @property
@@ -85,6 +87,14 @@ class SLMWorkspace:
         if self._observation_plane_store is None:
             self._observation_plane_store = ObservationPlaneStore(self.observation_planes_root)
         return self._observation_plane_store
+
+    @property
+    def position_reference_store(self) -> PositionReferenceStore:
+        if self._position_reference_store is None:
+            self._position_reference_store = PositionReferenceStore(
+                self.position_references_root
+            )
+        return self._position_reference_store
 
     @property
     def observation_registration_store(self) -> ObservationRegistrationStore:

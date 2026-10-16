@@ -13,6 +13,7 @@ from .application.interaction import (
 )
 from .application.session import SLMQtSession
 from .application.session_group import SLMQtSessionGroup
+from .application.workspace_coordinator import SLMWorkspaceCoordinator
 from .panel.panel import SLMPanel
 from .panel.policy import (
     DEFAULT_SLM_PANEL_LAYOUT_POLICY,
@@ -42,6 +43,7 @@ __all__ = [
     "SLMQtSession",
     "SLMQtSessionFactory",
     "SLMQtSessionGroup",
+    "SLMWorkspaceCoordinator",
     "SLMControlMode",
     "SLMControlModeSelector",
 ]

@@ -81,6 +81,16 @@ class PositionReferenceStore:
         ]
         return tuple(sorted(records,key=lambda item:item.name.casefold()))
 
+    def list_all(self) -> tuple[PositionReferenceRecord,...]:
+        """Return all live references across observation planes deterministically."""
+        return tuple(sorted(
+            self._entries.values(),
+            key=lambda item:(
+                item.observation_plane_name.casefold(),
+                item.name.casefold(),
+            ),
+        ))
+
     def names(self,observation_plane_name: str) -> tuple[str,...]:
         return tuple(record.name for record in self.list(observation_plane_name))
 

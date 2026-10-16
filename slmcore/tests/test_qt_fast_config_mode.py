@@ -166,7 +166,7 @@ def test_fast_activation_rejects_wrong_identity_without_changing_selection(tmp_p
     finally:
         session.dispose()
         panel.deleteLater()
-        
+
 def test_fast_activation_rejects_wrong_geometry_without_changing_selection(tmp_path):
     _app()
     from slmcore.qt import SLMControlMode
@@ -228,6 +228,59 @@ def test_session_group_is_optional_and_rolls_back_failed_mode_change(tmp_path,mo
         assert group.set_control_mode(SLMControlMode.FAST_CONFIG)
         assert session_a.control_mode is SLMControlMode.FAST_CONFIG
         assert session_b.control_mode is SLMControlMode.FAST_CONFIG
+    finally:
+        group.remove_session("a")
+        group.remove_session("b")
+        session_a.dispose()
+        session_b.dispose()
+        panel_a.deleteLater()
+        panel_b.deleteLater()
+
+
+def test_session_group_catalog_resolves_explicit_section_addresses(tmp_path):
+    _app()
+    from slmcore import SLMSectionAddress
+    from slmcore.qt import SLMQtSessionGroup
+
+    session_a,panel_a,_device_a,_store_a = _create_session(tmp_path / "a","a","A")
+    session_b,panel_b,_device_b,_store_b = _create_session(tmp_path / "b","b","B")
+    group = SLMQtSessionGroup()
+    added = []
+    removed = []
+    catalog_changes = []
+    group.sigSessionAdded.connect(lambda key,session:added.append((key,session)))
+    group.sigSessionRemoved.connect(removed.append)
+    group.sigCatalogChanged.connect(lambda:catalog_changes.append(True))
+    try:
+        group.add_session(session_a,key="  a  ")
+        group.add_session(session_b,key="b")
+
+        section_a = session_a.runtime.section_keys[0]
+        section_b = session_b.runtime.section_keys[0]
+        address_a = SLMSectionAddress("a",section_a)
+        address_b = SLMSectionAddress("b",section_b)
+
+        assert group.contains(" a ")
+        assert group.session(" a ") is session_a
+        assert group.session_items() == (("a",session_a),("b",session_b))
+        assert group.resolve(address_a) is session_a
+        assert group.resolve(address_b) is session_b
+        assert address_a in group.section_addresses()
+        assert address_b in group.section_addresses()
+        assert added == [("a",session_a),("b",session_b)]
+        assert len(catalog_changes) == 2
+
+        with pytest.raises(KeyError,match="not registered"):
+            group.resolve(SLMSectionAddress("missing",section_a))
+        with pytest.raises(KeyError,match="not present"):
+            group.resolve(SLMSectionAddress("a","missing"))
+        with pytest.raises(TypeError,match="SLMSectionAddress"):
+            group.resolve(("a",section_a))
+
+        group.remove_session("a")
+        assert not group.contains("a")
+        assert removed == ["a"]
+        assert len(catalog_changes) == 3
     finally:
         group.remove_session("a")
         group.remove_session("b")

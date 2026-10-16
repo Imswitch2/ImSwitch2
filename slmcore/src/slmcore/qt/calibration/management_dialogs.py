@@ -9,6 +9,7 @@ from qtpy import QtCore,QtWidgets
 from ...workspace import ObservationPlaneDefinition
 from .fov_dialog import SavedFOVCorrectionView
 from .geometry_calibration_dialog import GeometryOrientationPreview
+from .reference_manager import PositionReferenceManagerView
 
 
 class ObservationPlaneEditorDialog(QtWidgets.QDialog):
@@ -249,7 +250,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Calibration & Characterization")
+        self.setWindowTitle("SLM Workspace")
         self.setWindowFlags(
             self.windowFlags()
             | QtCore.Qt.WindowMinimizeButtonHint
@@ -268,6 +269,10 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self._editing_observation_name: str | None=None
         self._workspace_widget: QtWidgets.QWidget | None=None
         self._inspection_kind="base"
+        self._context_switching_enabled=True
+        self._context_switching_reason=""
+        self._mutations_enabled=True
+        self._mutation_disabled_reason=""
 
         outer=QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(8,8,8,8)
@@ -296,6 +301,8 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.tabs=QtWidgets.QTabWidget(self)
         self.tabs.addTab(self._build_mapping_tab(),"Mapping")
         self.tabs.addTab(self._build_observation_tab(),"Observation & Geometry")
+        self.reference_view=PositionReferenceManagerView(self)
+        self.tabs.addTab(self.reference_view,"References")
         outer.addWidget(self.tabs,1)
 
         close=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
@@ -309,6 +316,8 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.section_combo.currentIndexChanged.connect(self._section_changed)
         self.slm_combo.currentIndexChanged.connect(self._slm_changed)
         self.tabs.currentChanged.connect(self._tab_changed)
+        self._apply_context_switching_state()
+        self._apply_mutation_state()
 
     # ------------------------------------------------------------------
     # Basic selection state
@@ -321,6 +330,114 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     def _slm_changed(self,*_args: Any) -> None:
         if self.slm_key:self.sigSlmChanged.emit(self.slm_key)
+
+    def set_slm_catalog(
+        self,slms: Sequence[tuple[str,str]],*,current_slm: str | None=None,
+    ) -> None:
+        previous=str(current_slm or self.slm_key or "").strip()
+        blocker=QtCore.QSignalBlocker(self.slm_combo)
+        self.slm_combo.clear()
+        for key,label in slms:
+            self.slm_combo.addItem(str(label),str(key).strip())
+        index=self.slm_combo.findData(previous) if previous else -1
+        if index<0 and self.slm_combo.count():
+            index=0
+        self.slm_combo.setCurrentIndex(index)
+        del blocker
+        self._apply_context_switching_state()
+
+    def select_slm(self,slm_key: str) -> None:
+        index=self.slm_combo.findData(str(slm_key).strip())
+        if index>=0:self.slm_combo.setCurrentIndex(index)
+
+    def clear_slm_context(self) -> None:
+        """Clear per-SLM presentation while retaining workspace-wide resources."""
+        self.finish_observation_edit()
+        self.set_slm_catalog(())
+        self.set_catalog((),(),{}, {})
+        self.set_mapping_summary({})
+        self.set_observation_catalog(())
+        self.set_geometry_rows(())
+        self.set_registration_rows(())
+        self.show_inspection(
+            "Mapping",
+            "No SLM session is currently available.",
+        )
+        self.show_observation_inspection(
+            "Observation & Geometry",
+            "No SLM session is currently available.",
+        )
+        self.set_mutations_enabled(False,"No SLM session is currently available.")
+        self._apply_context_switching_state()
+
+    @property
+    def context_switching_enabled(self) -> bool:
+        return bool(self._context_switching_enabled)
+
+    def set_context_switching_enabled(
+        self,enabled: bool,reason: str="",
+    ) -> None:
+        self._context_switching_enabled=bool(enabled)
+        self._context_switching_reason=str(reason or "")
+        self._apply_context_switching_state()
+
+    def _apply_context_switching_state(self) -> None:
+        enabled=bool(self._context_switching_enabled)
+        workspace_scope=(hasattr(self,"tabs") and self.tabs.currentIndex()==2)
+        selectors_enabled=enabled and not workspace_scope
+        self.slm_combo.setEnabled(selectors_enabled and self.slm_combo.count()>1)
+        self.section_combo.setEnabled(selectors_enabled and self.section_combo.count()>0)
+        if not enabled:
+            tooltip=self._context_switching_reason
+        elif workspace_scope:
+            tooltip="References are workspace-wide and are not filtered by SLM or section."
+        else:
+            tooltip=""
+        self.slm_combo.setToolTip(tooltip)
+        self.section_combo.setToolTip(tooltip)
+
+    @property
+    def mutations_enabled(self) -> bool:
+        return bool(self._mutations_enabled)
+
+    def set_mutations_enabled(self,enabled: bool,reason: str="") -> None:
+        self._mutations_enabled=bool(enabled)
+        self._mutation_disabled_reason=str(reason or "")
+        self._apply_mutation_state()
+
+    def _set_mutation_widget_enabled(self,widget,enabled: bool=True) -> None:
+        widget.setEnabled(bool(enabled) and self._mutations_enabled)
+        widget.setToolTip("" if self._mutations_enabled else self._mutation_disabled_reason)
+
+    def _apply_mutation_state(self) -> None:
+        for widget in (
+            self.mapping_add,self.mapping_delete,self.base_calibrate,self.fov_calibrate,
+            self.observation_new,self.observation_edit,self.obs_save,
+        ):
+            self._set_mutation_widget_enabled(widget,True)
+        self._set_mutation_widget_enabled(
+            self.base_delete,
+            self._mapping_summary.get("calibrated",False)
+            or bool(self._mapping_summary.get("load_error")),
+        )
+        self._refresh_fov_actions()
+        self.fov_inspector.set_mutations_enabled(
+            self._mutations_enabled,self._mutation_disabled_reason,
+        )
+        self._set_mutation_widget_enabled(
+            self.geometry_calibrate,bool(self.geometry_list.currentItem()),
+        )
+        self._update_registration_actions()
+        self._set_mutation_widget_enabled(
+            self.observation_delete,
+            self._observation_edit_mode != "new" and bool(self.observation_plane_name),
+        )
+        editing=self._observation_edit_mode is not None
+        self.obs_name.setReadOnly(not editing or self._observation_edit_mode != "new" or not self._mutations_enabled)
+        self.obs_detector_combo.setEnabled(editing and self._mutations_enabled)
+        self.obs_pixel.setEnabled(editing and self._mutations_enabled)
+        self.obs_description.setReadOnly(not editing or not self._mutations_enabled)
+        self._obs_detector_changed()
 
     @property
     def section_key(self) -> str:
@@ -364,6 +481,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
             mappings,current_mapping=mapping,
             descriptions=mapping_descriptions,
         )
+        self._apply_context_switching_state()
         self._emit_context()
 
     def set_mapping_catalog(
@@ -426,12 +544,33 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     def _tab_changed(self,_index: int) -> None:
         self.sigWorkspaceResetRequested.emit()
-        if self.tabs.currentIndex()==0:
+        self._apply_context_switching_state()
+        index=self.tabs.currentIndex()
+        if index==0:
             self._show_current_mapping_inspection()
-        else:
+        elif index==1:
             plane=self.observation_plane_name
             if plane:self.sigObservationSelectionChanged.emit(plane)
             self._show_observation_inspection()
+
+    def set_reference_records(self,rows: Sequence[Mapping[str,Any]]) -> None:
+        self.reference_view.set_records(rows)
+
+    def set_reference_mutations_enabled(self,enabled: bool,reason: str="") -> None:
+        self.reference_view.set_mutations_enabled(enabled,reason)
+
+    def closeEvent(self,event) -> None:
+        if not self._context_switching_enabled:
+            QtWidgets.QMessageBox.information(
+                self,
+                "SLM Workspace",
+                (self._context_switching_reason + "\n\nFinish or cancel it before closing the SLM Workspace.")
+                if self._context_switching_reason
+                else "Finish or cancel the active calibration workflow before closing the SLM Workspace.",
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Mapping tab / persisted-state selection
@@ -528,7 +667,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.base_provenance.setText(
             "Load error: %s" % load_error if load_error else str(summary.get("provenance") or "—")
         )
-        self.base_delete.setEnabled(calibrated or bool(load_error))
+        self._set_mutation_widget_enabled(self.base_delete,calibrated or bool(load_error))
         default=str(summary.get("default_fov") or "").strip() or None
         self.fov_default.setText("Default: %s" % (default or "—"))
         selected=self._selected_fov()
@@ -579,8 +718,8 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     def _refresh_fov_actions(self) -> None:
         selected=bool(self._selected_fov())
-        self.fov_default_button.setEnabled(selected)
-        self.fov_delete.setEnabled(selected)
+        self._set_mutation_widget_enabled(self.fov_default_button,selected)
+        self._set_mutation_widget_enabled(self.fov_delete,selected)
 
     def _show_current_mapping_inspection(self) -> None:
         if self._inspection_kind=="fov" and self._selected_fov():self._show_fov_inspection()
@@ -774,10 +913,10 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
             self.geometry_list.addItem(item)
             if section==selected:self.geometry_list.setCurrentItem(item)
         del blocker
-        self.geometry_calibrate.setEnabled(bool(self.geometry_list.currentItem()))
+        self._set_mutation_widget_enabled(self.geometry_calibrate,bool(self.geometry_list.currentItem()))
 
     def _geometry_selected(self) -> None:
-        self.geometry_calibrate.setEnabled(bool(self.geometry_list.currentItem()))
+        self._set_mutation_widget_enabled(self.geometry_calibrate,bool(self.geometry_list.currentItem()))
         item=self.geometry_list.currentItem()
         if item is None:return
         self.sigWorkspaceResetRequested.emit()
@@ -859,10 +998,13 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.registration_calibrate.setText(
             "Inspect / Refit" if status=="Registered" else "Register"
         )
-        self.registration_calibrate.setEnabled(
-            item is not None and self.registration_list.count()>1 and status!="Canonical"
+        self._set_mutation_widget_enabled(
+            self.registration_calibrate,
+            item is not None and self.registration_list.count()>1 and status!="Canonical",
         )
-        self.registration_delete.setEnabled(status=="Registered")
+        self._set_mutation_widget_enabled(
+            self.registration_delete,status=="Registered",
+        )
 
     def _emit_registration(self) -> None:
         item=self.registration_list.currentItem(); plane=self.observation_plane_name
@@ -909,7 +1051,9 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
     def _obs_detector_changed(self,*_args) -> None:
         other=self.obs_detector_combo.currentData()=="__other__"
         self.obs_detector_other.setVisible(bool(other))
-        self.obs_detector_other.setEnabled(bool(other) and self._observation_edit_mode is not None)
+        self.obs_detector_other.setEnabled(
+            bool(other) and self._observation_edit_mode is not None and self._mutations_enabled
+        )
 
     def _preferred_detector_value(self) -> str | None:
         value=self.obs_detector_combo.currentData()
@@ -918,17 +1062,20 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     def _set_observation_editing(self,editing: bool,new: bool=False) -> None:
         self.obs_name.setReadOnly(not editing or not new)
-        self.obs_detector_combo.setEnabled(editing)
-        self.obs_pixel.setEnabled(editing)
-        self.obs_description.setReadOnly(not editing)
+        self.obs_detector_combo.setEnabled(editing and self._mutations_enabled)
+        self.obs_pixel.setEnabled(editing and self._mutations_enabled)
+        self.obs_description.setReadOnly(not editing or not self._mutations_enabled)
         self.obs_save.setVisible(editing); self.obs_cancel.setVisible(editing)
         self.obs_save.setText("Create" if new else "Save changes")
         # Existing planes stay directly selectable while their metadata fields
         # remain editable.  New-plane creation is the only modal selection state.
         self.observation_list.setEnabled(not new)
-        self.observation_new.setEnabled(not new)
-        self.observation_edit.setEnabled(False)
-        self.observation_delete.setEnabled(not new and bool(self.observation_plane_name))
+        self._set_mutation_widget_enabled(self.observation_new,not new)
+        self._set_mutation_widget_enabled(self.observation_edit,False)
+        self._set_mutation_widget_enabled(
+            self.observation_delete,not new and bool(self.observation_plane_name),
+        )
+        self._set_mutation_widget_enabled(self.obs_save,editing)
         self._obs_detector_changed()
 
     def _new_observation(self) -> None:

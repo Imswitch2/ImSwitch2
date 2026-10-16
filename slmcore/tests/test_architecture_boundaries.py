@@ -100,7 +100,7 @@ def test_calibration_management_has_distinct_persistent_domains():
     assert "sigObservationSelectionChanged" in ui
     assert "sigObservationRegistrationRequested" in ui
     assert "observation_registration_calibration_service" in manager
-    assert "sigCalibrationRequested.connect(self.open_management)" in manager
+    assert "sigCalibrationRequested.connect(self._on_management_requested)" in manager
     assert "sigCalibrationRequested.connect(self.open_dialog)" not in manager
 
 
@@ -138,13 +138,18 @@ def test_calibration_workspace_embeds_calibration_modes_in_one_window():
     fov_dialog = (root / "qt" / "calibration" / "fov_dialog.py").read_text(encoding="utf-8")
     geometry_dialog = (root / "qt" / "calibration" / "geometry_calibration_dialog.py").read_text(encoding="utf-8")
 
-    assert 'QPushButton("Calibration")' in section_view
+    assert 'QPushButton("Workspace…")' in section_view
     assert "mount_workspace" in ui
     assert '"Mapping"' in ui
     assert '"Observation & Geometry"' in ui
     assert "open_dialog(section_key,embedded=True)" in manager
     assert "open_fov_calibration(section_key,mapping_name,embedded=True)" in manager
     assert "embedded=True" in manager
+    coordinator = (root / "qt" / "application" / "workspace_coordinator.py").read_text(encoding="utf-8")
+    assert "SLMSectionAddress" in coordinator
+    assert "attach_management_view" in coordinator
+    assert "sigSlmChanged" in coordinator
+    assert "set_context_switching_enabled" in coordinator
     for source in (base_dialog,fov_dialog,geometry_dialog):
         assert "embedded: bool=False" in source
         assert "QtCore.Qt.Widget" in source

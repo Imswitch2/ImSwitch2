@@ -6,12 +6,13 @@ from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from slmcore import SLMDefinition,SLMStartupPreferences,SLMWorkspace
+from slmcore import SLMDefinition,SLMSectionAddress,SLMStartupPreferences,SLMWorkspace
 from slmcore.host import SLMDeviceProvider,SLMHostServices
 from slmcore.core.measurement import create_image_measurement
 from slmcore.qt import (
     DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,
     SLMControlMode,SLMQtSession,SLMQtSessionFactory,SLMQtSessionGroup,
+    SLMWorkspaceCoordinator,
 )
 
 from ..basecontrollers import (
@@ -48,6 +49,12 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             workspace=self._workspace,
         )
         self._slm_qt_group = SLMQtSessionGroup()
+        self._slm_workspace_coordinator = SLMWorkspaceCoordinator(
+            self._slm_qt_group,
+            self._workspace,
+            parent_widget=self._widget,
+            parent=self._widget,
+        )
         self._slm_qt_group.sigControlModeChanged.connect(
             self._widget.set_control_mode,
         )
@@ -56,6 +63,9 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
         )
         self._widget.sigControlModeRequested.connect(
             self.on_control_mode_requested,
+        )
+        self._widget.sigWorkspaceRequested.connect(
+            self.on_workspace_requested,
         )
         self._initialize_slms()
         if self._slm_display_names:
@@ -339,6 +349,14 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             pass
 
     def _dispose_slm_sessions(self) -> None:
+        coordinator=getattr(self,"_slm_workspace_coordinator",None)
+        if coordinator is not None:
+            try:
+                coordinator.dispose()
+            except Exception:
+                self.__logger.error(traceback.format_exc())
+            self._slm_workspace_coordinator=None
+
         for slm_key,qt_session in tuple(self._slm_qt_sessions.items()):
             try:
                 self._slm_qt_group.remove_session(slm_key)
@@ -353,6 +371,19 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
     def on_control_mode_requested(self,mode: Any) -> None:
         if not self._slm_qt_group.set_control_mode(mode):
             self._widget.set_control_mode(self._slm_qt_group.control_mode)
+
+    def on_workspace_requested(self) -> None:
+        coordinator=self._slm_workspace_coordinator
+        slm_key=self._widget.current_slm_key()
+        if slm_key and self._slm_qt_group.contains(slm_key):
+            session=self._slm_qt_group.session(slm_key)
+            section_key=session.section_host.current_section_key()
+            if section_key is None and session.runtime.section_keys:
+                section_key=session.runtime.section_keys[0]
+            if section_key is not None:
+                coordinator.open(SLMSectionAddress(slm_key,section_key))
+                return
+        coordinator.open()
 
     def _create_host_services(
         self,

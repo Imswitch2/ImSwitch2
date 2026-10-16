@@ -67,3 +67,13 @@ def test_workspace_exposes_position_reference_persistence_root(tmp_path):
 
     assert workspace.position_references_root == tmp_path / "position_references"
     assert not workspace.position_references_root.exists()
+
+
+def test_workspace_owns_one_live_position_reference_store(tmp_path):
+    workspace = SLMWorkspace(tmp_path)
+
+    first = workspace.position_reference_store
+    second = workspace.position_reference_store
+
+    assert first is second
+    assert first.persistent_root == tmp_path / "position_references"

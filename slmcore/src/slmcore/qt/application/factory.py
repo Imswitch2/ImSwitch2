@@ -58,11 +58,21 @@ class SLMQtSessionFactory:
 
         self.registries = registries
         self.workspace = workspace
-        self.position_reference_store = PositionReferenceStore(
-            persistent_root=(
-                None if workspace is None else workspace.position_references_root
-            )
+        self._position_reference_store = (
+            PositionReferenceStore()
+            if workspace is None
+            else workspace.position_reference_store
         )
+
+    @property
+    def position_reference_store(self) -> PositionReferenceStore:
+        """Effective live reference store shared by sessions from this factory.
+
+        Workspace-backed factories use the workspace singleton. Workspace-less
+        factories retain one private in-memory store so their own sessions still
+        share session references.
+        """
+        return self._position_reference_store
 
     def create(
         self,
