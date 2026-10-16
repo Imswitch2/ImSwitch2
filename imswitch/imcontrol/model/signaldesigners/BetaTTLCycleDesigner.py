@@ -1,6 +1,7 @@
 import numpy as np
 
 from .basesignaldesigners import TTLCycleDesigner
+from ..scan_parameters import dwell_request_if_changed, samples_for_duration
 
 
 class BetaTTLCycleDesigner(TTLCycleDesigner):
@@ -31,18 +32,21 @@ class BetaTTLCycleDesigner(TTLCycleDesigner):
 
         sampleRate = setupInfo.scan.sampleRate
         targets = parameterDict['target_device']
-        cycleSamples = parameterDict['sequence_time'] * sampleRate
-        # self._logger.debug(f'DO sample rate: {sampleRate}, cycleSamples: {cycleSamples}')
-        if not cycleSamples.is_integer():
+        # Counted by the rule BetaScanDesigner counts its pixels and returns
+        # with (scan_parameters.samples_for_duration): a float product's
+        # ceiling put one sample more into the cycle than the scan has in its
+        # pixel for about 2 % of dwells (0.07 ms at 100 kHz: 7.000000000000001).
+        if dwell_request_if_changed(parameterDict['sequence_time'], sampleRate) is not None:
             self._logger.warning('Non-integer number of sequence samples, rounding up')
-        cycleSamples = int(np.ceil(cycleSamples))
+        cycleSamples = samples_for_duration(parameterDict['sequence_time'], sampleRate)
         signalDict = {}
         tmpSigArr = np.zeros(cycleSamples, dtype='bool')
         for i, target in enumerate(targets):
             tmpSigArr[:] = False
             for j, start in enumerate(parameterDict['TTL_start'][i]):
-                startSamp = int(np.round(start * sampleRate))
-                endSamp = int(np.round(parameterDict['TTL_end'][i][j] * sampleRate))
+                startSamp = samples_for_duration(start, sampleRate, 'nearest-even')
+                endSamp = samples_for_duration(parameterDict['TTL_end'][i][j], sampleRate,
+                                               'nearest-even')
                 tmpSigArr[startSamp:endSamp] = True
 
             signalDict[target] = np.copy(tmpSigArr)
@@ -51,11 +55,11 @@ class BetaTTLCycleDesigner(TTLCycleDesigner):
             positions = scanInfoDict['positions']
             returnTime = scanInfoDict['return_time']
 
-            # Calculate samples to zero pad TTL signals with
-            TTLZeroPadSamples = returnTime * sampleRate
-            if not TTLZeroPadSamples.is_integer():
+            # Calculate samples to zero pad TTL signals with: the scan's
+            # return, counted as the scan counts it
+            if dwell_request_if_changed(returnTime, sampleRate) is not None:
                 self._logger.warning('Non-integer number of return samples, rounding up')
-            TTLZeroPadSamples = int(np.ceil(TTLZeroPadSamples))
+            TTLZeroPadSamples = samples_for_duration(returnTime, sampleRate)
 
             # Tile and pad TTL signals according to sync parameters
             for target, signal in signalDict.items():

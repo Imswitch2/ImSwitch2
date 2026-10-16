@@ -5,7 +5,7 @@ from .basesignaldesigners import (
 )
 from ..scan_parameters import (
     axis_pixel_positions, dwell_request_if_changed, pixels_for_length_step,
-    samples_for_duration,
+    realized_dwell_s, samples_for_duration,
 )
 from ..scan_program.motion import smooth_ramp
 from imswitch.imcommon.model import initLogger
@@ -81,8 +81,14 @@ class BetaScanDesigner(ScanDesigner):
         fast, middle, slow = positions[:3]
         linesteps = max(1, int(scanParameters.get('n_linesteps', 1)))
         lines = middle * slow * linesteps
-        return (fast * lines * float(scanParameters['sequence_time'])
-                + lines * float(scanParameters.get('return_time', 0) or 0))
+        dwell = float(scanParameters['sequence_time'])
+        back = float(scanParameters.get('return_time', 0) or 0)
+        rate = getattr(getattr(setupInfo, 'scan', None), 'sampleRate', None)
+        if rate:
+            # what plays: whole samples, as make_signal counts them
+            dwell = realized_dwell_s(dwell, rate)
+            back = samples_for_duration(back, rate) / float(rate)
+        return fast * lines * dwell + lines * back
 
     def checkSignalComp(self, scanParameters, setupInfo, scanInfo):
         """ Check analog scanning signals so that they are inside the range of
@@ -273,8 +279,7 @@ class BetaScanDesigner(ScanDesigner):
             )
         if dwell_request_if_changed(dwell_requested_s, sampleRate) is not None:
             self._logger.warning('Non-integer number of sequence samples, rounding up')
-        returnSamples = parameterDict['return_time'] * sampleRate
-        if not returnSamples.is_integer():
+        if dwell_request_if_changed(parameterDict['return_time'], sampleRate) is not None:
             self._logger.warning('Non-integer number of return samples, rounding up')
         returnSamples = samples_for_duration(parameterDict['return_time'], sampleRate)
 
@@ -289,8 +294,8 @@ class BetaScanDesigner(ScanDesigner):
         rampValues = axis_pixel_positions(
             fast_axis_positions, fast_axis_step_size, start=fast_axis_start)
         self._logger.debug(rampValues)
-        smooth = int(np.ceil(moveTime * sampleRate))
-        settling = int(np.ceil(settleTime * sampleRate))
+        smooth = samples_for_duration(moveTime, sampleRate)
+        settling = samples_for_duration(settleTime, sampleRate)
         for s in range(fast_axis_positions):
             start = s * sequenceSamples
             end = s * sequenceSamples + sequenceSamples
