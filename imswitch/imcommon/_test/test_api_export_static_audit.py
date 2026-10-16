@@ -19,7 +19,19 @@ WIDGET_TOKENS = ('self._widget', 'self.__widget', 'QMessageBox', 'QtWidgets.')
 MAX_HOPS = 3
 
 #: {'module.py::Class.method': 'reason'}
-ALLOWED = {}
+_RECORD_TO_MEMORY = (
+    'Blocks on the caller (script) thread until the recording ends, so it '
+    'cannot run on the UI thread; every widget access is a function handed to '
+    '_onControllerThread, which runs it on the GUI thread. Pinned by '
+    'imcontrol/_test/unit/test_record_scan_to_memory.py::'
+    'test_every_widget_access_happens_on_the_controller_thread.'
+)
+ALLOWED = {
+    'imcontrol/controller/controllers/RecordingController.py::'
+    'RecordingController.recordScanToMemory': _RECORD_TO_MEMORY,
+    'imcontrol/controller/controllers/RecordingController.py::'
+    'RecordingController.recordFramesToMemory': _RECORD_TO_MEMORY,
+}
 
 
 def _is_api_export(decorator):

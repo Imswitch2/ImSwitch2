@@ -9,7 +9,7 @@ from skimage.feature import peak_local_max
 from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, Thread, Timer
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import configfiletools
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.view import guitools
@@ -1524,6 +1524,47 @@ class FocusLockController(ImConWidgetController):
             # and does not have one, which is not the same as never asking.
             return STATE_REACQUIRE_FAILED
         return STATE_UNLOCKED
+
+    @APIExport(runOnUIThread=True)
+    def getFocusLockState(self) -> str:
+        """ The focus lock's state: ``'unlocked'``, ``'locked'``,
+        ``'suspended'`` (a scan owns the focus axis and the lock is held for
+        it), ``'reacquiring'`` (the scan is over and the lock waits for the
+        signal to come back) or ``'reacquire-failed'``. """
+        return self.focusLockState()
+
+    @APIExport(runOnUIThread=True)
+    def isFocusLocked(self) -> bool:
+        """ Whether the focus is locked right now. """
+        return bool(self.locked)
+
+    @APIExport(runOnUIThread=True)
+    def setFocusCameraActive(self, active: bool) -> None:
+        """ Starts or stops the focus camera (the camera button of the Focus
+        Lock widget). A lock needs it running. """
+        self.toggleFocusCameraAcquisition(bool(active))
+
+    @APIExport(runOnUIThread=True)
+    def setFocusLocked(self, locked: bool) -> None:
+        """ Locks the focus where it is (True) or releases it (False), as the
+        widget's **Lock**/**Unlock** button does. A lock asked for while a
+        scan owns the focus axis is engaged when the scan ends
+        (waitForFocusLock waits for that). Raises RuntimeError when the focus
+        camera is off. """
+        if locked and not self.focusCameraAcquisitionActive():
+            raise RuntimeError(
+                'The focus camera is off; start it with setFocusCameraActive(True) first'
+            )
+        self._setLockButton(checked=bool(locked))
+        self.toggleFocus()
+
+    @APIExport()
+    def waitForFocusLock(self, timeout: float = 10.0) -> bool:
+        """ Blocks until a lock that was asked for is engaged, at most
+        ``timeout`` seconds: after a scan that owned the focus axis, say.
+        Returns whether the focus is locked; True at once when no lock was
+        asked for. Call it from a script, not from the GUI thread. """
+        return self.waitForFocusReacquired(float(timeout))
 
     def waitForFocusReacquired(self, timeoutS: float = 10.0) -> bool:
         """Block for a requested re-lock; succeed immediately if none exists.

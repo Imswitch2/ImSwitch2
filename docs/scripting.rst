@@ -10,7 +10,9 @@ The scripting API reference lists the available modules and methods:
 :doc:`api/api.imcontrol` for microscope control and
 :doc:`api/mainWindow` for the main window.  In addition to the module
 APIs, a set of global helper functions is documented
-:doc:`here <api/_actions>`.
+:doc:`here <api/_actions>`.  The pages are generated from the code by
+``tools/generateapidocs.py``; a test fails when they are older than the
+code.
 
 The API modules may provide signals – events that can be bound to via
 e.g. the global ``getWaitForSignal`` scripting function.
@@ -21,6 +23,72 @@ Step-by-step tutorials ship with the scripting module; see
 This module drives the microscope.  To script what you do to *results* in
 ImProcess (a one-off transformation, a recipe for a folder of recordings, a
 console over the results list) see :ref:`improcess-python-step`.
+
+Working interactively
+=====================
+
+The editor runs code in two ways:
+
+*Run all*
+    runs the whole script in a **fresh namespace**: nothing is left over
+    from earlier runs, so a script that works with *Run all* works the same
+    way every time -- for a colleague, in a workflow, tomorrow.
+
+*Run cell* (Ctrl+Enter) and *Run selection* (F9)
+    run part of the script in the **session**, a namespace that lives on
+    between runs. A cell runs from a ``# %%`` line to the next (Shift+Enter
+    runs it and moves to the next cell); Run selection runs the selected
+    lines, or the line the cursor is on. What one run defines is there for
+    the next: acquire in one cell, then analyse, change a number and
+    analyse again without acquiring again. Tracebacks name the editor's own
+    line numbers.
+
+The **console** works in the same session, for looking at results --
+``frames.shape``, ``frames[3].mean()``. It is disabled while a script runs,
+since the script may be changing those variables, and it runs on the GUI
+thread, where the blocking calls (``recordScanToMemory``,
+``recordFramesToMemory``) refuse to run: acquire from the editor. The
+**Variables** panel lists the session's data with its type, shape, dtype and
+size in memory; it is updated when a run ends and after each console
+command. **Reset session** forgets every variable (after asking, when there
+are some); it is not available while a script runs.
+
+``show(array, name)`` puts an array into ImControl's image view as a layer of
+that name; showing under the same name again replaces the picture, so a loop
+can update one image. A stack gets a slider, ``scale`` gives the pixel size,
+and a dict of arrays shows one layer per entry. Double-clicking an array in
+the Variables panel does the same::
+
+    # %% acquire
+    frames = api.imcontrol.recordFramesToMemory('Camera', 20)
+
+    # %% analyse -- change the threshold, Ctrl+Enter, look again
+    mean = frames.mean(axis=0)
+    show(mean > mean.mean() + 2 * mean.std(), 'bright pixels')
+
+``tutorial/basic/11_work_interactively.py`` is this in full.
+
+**From the GUI to a script.** Set up an acquisition in ImControl's widgets,
+then choose **File > New script from current settings** (Ctrl+Shift+N) in
+the Scripting tab. A new, unsaved script opens that sets everything again
+and acquires:
+
+* the detectors the Recording widget records, with every editable setting
+  each has in the Settings widget -- but not the calibrations the setup
+  file owns, such as the camera pixel size;
+* every laser's value and whether it is on;
+* the scan the Scan widget holds, as the dict of ``getScanParameters()``;
+* where the stages and rotators are, moved there only when you set
+  ``MOVE_TO_POSITIONS = True`` -- putting a stage back is a decision of its
+  own;
+* the acquisition the Recording widget is set to: the scan once into
+  memory in a scan mode, otherwise its number of frames into memory, then
+  ``show()``.
+
+The script is in cells -- what was set, apply it, acquire -- so it can be
+run a step at a time, and it reads only the scripting API, so every line in
+it is one you could have written. ``api.imcontrol.getRecordingSettings()``
+is what it reads of the Recording widget.
 
 Threading model and waiting for events
 ======================================
@@ -58,6 +126,74 @@ manager refused the design -- a scan longer than the setup's
 voltage range. A refused start never runs, so there is no end to wait for.
 On rigs with several scanners, ``getScanSourceNames()`` lists the choices
 for ``runScan(source=...)``.
+
+**Frames as arrays, nothing written.** ``api.imcontrol.recordScanToMemory()``
+runs the scan the Scan widget holds once and returns the frames it
+triggers as a NumPy array ``(frames, rows, columns)``, without writing a
+file: the recording goes to memory, is read back and dropped. Pass a
+detector's name, a list of names (the result is then a dict by name),
+``-1`` for the current detector or ``-2`` for all. It blocks until the
+scan is over (``timeout`` seconds at most), raises ``RuntimeError`` when
+the recording is refused or fails and puts the Recording widget back as
+it was; ``keep=True`` leaves the recording listed in ImProcess as well.
+``recordFramesToMemory(detector, numFrames)`` does the same for a number
+of frames of a camera, with no scan; ``getLiveFrame(detector)`` returns
+the newest frame of the live view with no recording at all::
+
+    frames = api.imcontrol.recordScanToMemory('Camera', timeout=120)
+    lattice = frames.mean(axis=0)
+    dark = api.imcontrol.recordFramesToMemory('Camera', 50).mean(axis=0)
+    live = api.imcontrol.getLiveFrame('Camera')      # the live view is on
+
+``tutorial/scanning/06_scan_into_memory.py`` and
+``tutorial/basic/10_frames_into_memory.py`` are these in full.
+
+**What each frame was.** With ``structured=True`` both calls return an
+``AcquisitionResult`` instead of bare arrays, read from the recording's own
+file before it is dropped: ``result['Camera']`` is the data, and
+``result.detector('Camera')`` says what it means -- ``axes`` (``'TYX'``),
+``pixelSizeUm``, ``outcome`` and the frame counts (``result.complete`` is
+False for a recording that stopped early), ``settings`` (what the recording
+wrote down: the detector's parameters, the scan plan, the stage positions,
+the recording mode), and ``positions``, which scan position each frame was
+taken at::
+
+    result = api.imcontrol.recordScanToMemory('Camera', structured=True)
+    positions = result.detector('Camera').positions
+    positions.source        # 'recorded' or 'plan'
+    positions.devices       # ('Z', 'Y', 'X'): the loops, outermost first
+    positions.indices[10]   # [0, 1, 0]: frame 10 is the second Y row
+    positions.offsets()     # the same in µm from the first position
+    result.save(folder)     # the recording's HDF5 file, every attribute kept
+    result.show()
+
+A scan that records its acquisition layout (the Advanced, point, MoNaLISA
+and TriggerScope scans) says which position each frame belongs to:
+``source`` is ``'recorded'``. The Base scan does not; its positions are
+reconstructed from the scan plan the file records, as ImProcess does when it
+opens such a file, assuming the scan ran the plan in order: ``'plan'``. Both
+are commanded positions; the stages are not read back frame by frame. A
+point scan's frame is one assembled image, whose pixels are the positions,
+so it has no ``positions`` and its ``pixelSizeUm`` is the scan step.
+
+**Settings for one block.** These context managers set something, and put
+it back when the ``with`` block ends -- normally, on an error, or when *Stop*
+is pressed (the cleanup runs in the cleanup window)::
+
+    with temporaryDetectorSettings('Camera', {'Set exposure time': 0.01}), \
+            temporaryScanParameters(params), \
+            temporaryLaserSettings({'488': {'value': 5.0, 'on': True}}):
+        frames = api.imcontrol.recordScanToMemory('Camera')
+
+``temporaryDetectorSettings(detector)`` and ``temporaryScanParameters()``
+without values only put back what the block changes. A laser that was off
+is switched off before its value is restored. None of them moves anything:
+``returningToPositions(stages=[...], rotators=[...])`` is the one that moves
+stages and rotators back, and a script asks for it separately. When a
+restore fails after a clean block, it raises ``RuntimeError`` naming what
+was not put back; after a block that raised, it is logged and the block's
+own error goes on. ``tutorial/scanning/08_structured_results.py`` uses
+both.
 
 **Stopping a script.** Pressing *Stop* (or *Run* while a script runs)
 delivers ``OperationCancelled`` **once**, at the script's
@@ -97,6 +233,59 @@ can decide whether to wait for the end of the recording
 ``tutorial/scanning/05_laser_power_series.py`` is this pattern in full,
 runnable on a mock setup.
 
+Reading and setting the microscope
+==================================
+
+Every device the setup file declares can be read as well as set, so a
+script can act on what it finds. The names come first --
+``getDetectorNames()``, ``getLaserNames()``, ``getPositionerNames()``,
+``getRotatorNames()`` -- then, per device:
+
+* detectors: ``getDetectorParameters(name)`` lists every setting with its
+  value and units, ``getDetectorParameter`` / ``setDetectorParameter``
+  read and set one, ``getDetectorPixelSize(name)`` gives the pixel size in
+  the sample in µm;
+* lasers: ``getLaserInfo(name)`` says what the laser takes (units, range,
+  or on/off only), ``getLaserValue`` / ``setLaserValue`` and
+  ``isLaserActive`` / ``setLaserActive`` read and set it;
+* positioners: ``getPositionerAxes(name)``,
+  ``getPositionerPosition(name, axis)`` (every axis of every stage at once:
+  ``getPositionerPositions()``), ``setPositioner`` (absolute) and
+  ``movePositioner`` (relative), in µm;
+* rotators: ``getRotatorPosition(name)``, ``setRotatorPosition``
+  (absolute) and ``moveRotator`` (relative), in degrees.
+
+**The scan as a dict.** ``getScanParameters()`` returns the Scan widget's
+settings as a dict -- the scanned axes with their lengths, step sizes and
+centres in µm under ``analogParameterDict``, the trigger pulses under
+``digitalParameterDict`` -- and ``setScanParameters(params)`` puts an
+edited dict back, raising ``ValueError`` that names what could not be
+applied. It is ``saveScanParamsToFile`` / ``loadScanParamsFromFile``
+without the file::
+
+    params = api.imcontrol.getScanParameters()
+    params['analogParameterDict']['axis_step_size'][0] = 0.05     # µm
+    api.imcontrol.setScanParameters(params)
+    runScanAndWait(timeout=600)
+
+**The focus lock.** ``getFocusLockState()`` is ``'unlocked'``,
+``'locked'``, ``'suspended'`` (a scan owns the focus axis and holds the
+lock for it), ``'reacquiring'`` (the scan is over, the lock waits for its
+signal) or ``'reacquire-failed'``. ``setFocusLocked(True)`` locks where
+the sample is, as the widget's **Lock** button does -- the focus camera
+must be running, ``setFocusCameraActive(True)`` starts it -- and
+``waitForFocusLock(timeout)`` blocks until a lock that a scan suspended is
+back, for a time lapse that must not image before it is::
+
+    api.imcontrol.setFocusLocked(True)
+    for _ in range(100):
+        runScanAndWait(timeout=600)
+        if not api.imcontrol.waitForFocusLock(timeout=10):
+            raise RuntimeError('the focus did not come back')
+
+:doc:`api/api.imcontrol` lists every function a script can call, with
+its signature and the widget that provides it.
+
 .. _scripting-tutorials:
 
 Tutorials
@@ -120,14 +309,18 @@ what it will do, and only then press **Run all**.
     and to files, camera settings and the live view, recording a number of
     frames and reading the file back, clean-up that survives the Stop
     button, and sharing code between scripts with ``importScript()``. Then
-    two cameras and stages (``example_no_hardware.json``, steps 07-08).
+    two cameras, stages, rotation mounts, frames into memory, and working
+    interactively with cells, the console and ``show()``
+    (``example_no_hardware.json``, steps 07-11).
 
 ``tutorial/scanning``
     Scans that trigger a camera, one frame per scan position, and scan
     timelapses (``hamamatsu_mock_scan_setup.json``, steps 01-03); a camera
     and an APD in one scan (``mixed_hamamatsu_apd_mock_scan_setup.json``);
-    and a laser power series in one recording
-    (``galvo_apd_mock_scan_setup.json``).
+    a laser power series in one recording
+    (``galvo_apd_mock_scan_setup.json``); and a scan's frames as an array,
+    the scan's settings as a dict, and structured results with settings for
+    one block (``hamamatsu_mock_scan_setup.json``, steps 06-08).
     Scan settings are loaded from files in ``scanning/scan_params``; make
     your own in the Scan widget and save them with
     ``api.imcontrol.saveScanParamsToFile()``.

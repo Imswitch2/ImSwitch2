@@ -3,7 +3,9 @@
 ``PythonCodeEditor`` is QScintilla with the Python lexer (line numbers,
 indentation guides, auto-indent) when QScintilla is installed, and a plain
 monospaced text box otherwise. Both expose ``text()``, ``setText()``,
-``selectedText()`` and ``textChanged``, which is all a caller needs.
+``selectedText()`` and ``textChanged``, and the line-based helpers
+``cursorLine()``, ``selectionFirstLine()`` and ``setCursorLine()`` (0-based
+lines), which is all a caller needs.
 """
 
 from qtpy import QtGui, QtWidgets
@@ -50,6 +52,17 @@ if QSCI_AVAILABLE:
             lexer.setDefaultFont(font)
             self.setLexer(lexer)
 
+        def cursorLine(self) -> int:
+            return self.getCursorPosition()[0]
+
+        def selectionFirstLine(self) -> int:
+            lineFrom, _indexFrom, _lineTo, _indexTo = self.getSelection()
+            return lineFrom if lineFrom >= 0 else self.cursorLine()
+
+        def setCursorLine(self, line: int) -> None:
+            self.setCursorPosition(line, 0)
+            self.ensureLineVisible(line)
+
 else:
 
     class PythonCodeEditor(QtWidgets.QPlainTextEdit):
@@ -70,6 +83,21 @@ else:
         def selectedText(self) -> str:
             # Qt separates the paragraphs of a selection with U+2029.
             return self.textCursor().selectedText().replace(" ", "\n")
+
+        def cursorLine(self) -> int:
+            return self.textCursor().blockNumber()
+
+        def selectionFirstLine(self) -> int:
+            cursor = self.textCursor()
+            return self.document().findBlock(cursor.selectionStart()).blockNumber()
+
+        def setCursorLine(self, line: int) -> None:
+            block = self.document().findBlockByNumber(line)
+            if block.isValid():
+                cursor = self.textCursor()
+                cursor.setPosition(block.position())
+                self.setTextCursor(cursor)
+                self.ensureCursorVisible()
 
 
 __all__ = ["PythonCodeEditor", "QSCI_AVAILABLE"]

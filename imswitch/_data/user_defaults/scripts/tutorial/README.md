@@ -33,10 +33,11 @@ The tutorials are ordered so you only switch when a new block begins:
 | Tutorials | Setup file | It simulates |
 |---|---|---|
 | basic 01-06 | `example_mock.json` | one camera |
-| basic 07-08 | `example_no_hardware.json` | two cameras and three stages |
+| basic 07-11 | `example_no_hardware.json` | two cameras, three stages and three rotation mounts |
 | scanning 01-03 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 | scanning 04 | `mixed_hamamatsu_apd_mock_scan_setup.json` | the same, plus a point detector (APD) |
 | scanning 05 | `galvo_apd_mock_scan_setup.json` | a point-scanning microscope with two lasers |
+| scanning 06-08 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 
 ## Running a tutorial
 
@@ -70,6 +71,9 @@ back, delete your copy and restart ImSwitch.
 | 06 | `06_share_code_between_scripts.py` | `example_mock.json` | `importScript()` (uses `tutorial_helpers.py`) |
 | 07 | `07_two_cameras.py` | `example_no_hardware.json` | one camera after the other, then both together |
 | 08 | `08_move_the_stage.py` | `example_no_hardware.json` | move stages, wait for them, snap a grid |
+| 09 | `09_rotators.py` | `example_no_hardware.json` | turn rotation mounts; an image per angle |
+| 10 | `10_frames_into_memory.py` | `example_no_hardware.json` | frames as an array, nothing written; the live frame |
+| 11 | `11_work_interactively.py` | `example_no_hardware.json` | cells, the console and `show()`: acquire once, analyse again and again |
 
 ## scanning
 
@@ -80,6 +84,9 @@ back, delete your copy and restart ImSwitch.
 | 03 | `03_scan_timelapse.py` | `hamamatsu_mock_scan_setup.json` | repeat a scan at intervals |
 | 04 | `04_camera_and_apd.py` | `mixed_hamamatsu_apd_mock_scan_setup.json` | a camera and an APD in one scan |
 | 05 | `05_laser_power_series.py` | `galvo_apd_mock_scan_setup.json` | lasers; several scans in one recording |
+| 06 | `06_scan_into_memory.py` | `hamamatsu_mock_scan_setup.json` | a scan's frames as an array, nothing written |
+| 07 | `07_scan_parameters_in_code.py` | `hamamatsu_mock_scan_setup.json` | scan settings as a dict, changed in the script |
+| 08 | `08_structured_results.py` | `hamamatsu_mock_scan_setup.json` | what each frame was; settings for one block, put back |
 
 The scanning tutorials load their scan settings from `scanning/scan_params/`
 (double-click one in the Files panel to read it). The camera and stage names
@@ -88,7 +95,7 @@ loaded, so to try a tutorial on another setup you change those names, not
 the file. To make your own settings, set up a scan in the Scan widget and
 save it with `api.imcontrol.saveScanParamsToFile(path)`.
 `scanning/scan_helpers.py` holds the steps of scanning 01 as functions for
-02-04.
+02-04 and 06-08.
 
 ## On your own microscope
 
