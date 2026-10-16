@@ -11,7 +11,9 @@ from .basesignaldesigners import (
     ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
 )
 from ..errors import ScanDesignRefusedError
-from ..scan_parameters import dwell_request_if_changed, realized_dwell_s, samples_for_duration
+from ..scan_parameters import (
+    dwell_request_if_changed, lag_report, realized_dwell_s, samples_for_duration,
+)
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
@@ -99,6 +101,23 @@ def slice_pause_note(parameterDict, setupInfo) -> str:
         return f'Every slice starts after a {pause} µs pause: {source}.'
     return (f'Slices start without a settle pause: no slice positioner declares '
             f'{SETTLE_TIME_KEY}.')
+
+
+def lag_note(phase_delay_us, scan_rate_hz, timer_rate_hz) -> str:
+    """What the timing note says when the phase delay cannot be played the
+    same on both sides: the digital lines are delayed in whole scan-clock
+    samples, the point detectors in whole timer samples, and the two differ
+    (``scan_parameters.lag_report``). ``''`` when they agree."""
+    report = lag_report(phase_delay_us, scan_rate_hz, timer_rate_hz)
+    if report['residual_s'] == 0:
+        return ''
+
+    def us(seconds):                       # the phase delay's own unit
+        return f'{seconds * 1e6:.6g} µs'
+    return (f"The {us(report['requested_s'])} phase delay plays as "
+            f"{us(report['gate_delay_s'])} on the digital lines (whole "
+            f"{us(1.0 / float(scan_rate_hz))} samples) and {us(report['detector_delay_s'])} "
+            f"on the detectors, {us(abs(report['residual_s']))} apart.")
 
 
 def scan_axes_missing_limits(positioners) -> list:
@@ -470,7 +489,13 @@ class GalvoScanDesigner(ScanDesigner):
         n_scan_samples_dx[-1] = n_scan_samples_dx[-1] + pad_max
 
         # pad all signals with zeros, for initial and final settling of galvos and safety start and end
-        axis_signals, pad_max = self.__zero_padding(pos, padlen_base=[int(round(self.__paddingtime_full / self.__timestep)),int(round(self.__paddingtime_full / self.__timestep))])
+        # The end padding is at least the phase delay: the digital lines are
+        # played that much later (NidaqManager.delayed_lines), and what they
+        # push past the end must be idle (review 2026-10-16).
+        pad_start = int(round(self.__paddingtime_full / self.__timestep))
+        pad_end = max(pad_start, int(math.ceil(
+            float(parameterDict.get('phase_delay', 0) or 0) / self.__timestep - 1e-9)))
+        axis_signals, pad_max = self.__zero_padding(pos, padlen_base=[pad_start, pad_end])
 
         # add all signals to a signal dictionary, keyed by the ACTIVE axes in
         # signal order. Indexing the unfiltered target_device list routed

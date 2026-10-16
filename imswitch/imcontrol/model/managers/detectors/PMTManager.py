@@ -21,6 +21,7 @@ from .DetectorManager import (
 )
 from ._live_display import LiveDisplayThrottle
 from ._read_ahead import ReadAhead, read_ahead_samples
+from imswitch.imcontrol.model.scan_parameters import lag_samples_for
 from ._visit_order import VisitOrder
 from ._trajectory_measure import (
     TrajectoryDetectorMixin, TrajectoryMeasurement, is_trajectory, run_trajectory,
@@ -1114,10 +1115,8 @@ class ScanWorker(Worker):
         self._throw_startacc = round(scanInfoDict["scan_throw_startacc"] * self._frac_scan_det_rate)
 
         # Galvo response lag in microseconds, as detection samples (see APD).
-        self._phase_delay = int(round(
-            float(scanInfoDict["phase_delay"] or 0)
-            * self._manager._detection_samplerate / 1e6
-        ))
+        self._phase_delay = lag_samples_for(scanInfoDict.get('phase_delay', 0),
+                                            self._manager._detection_samplerate)
         self._smooth_axes = scanInfoDict["smooth_axes"]
 
         pad_initpos = self._scan_pads_initpos[0] if len(self._scan_pads_initpos) > 0 else 0

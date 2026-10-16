@@ -93,6 +93,30 @@ def dwell_request_if_changed(dwell_s, rate_hz, rounding=DWELL_ROUNDING):
     return float(dwell_s)
 
 
+def lag_samples_for(phase_delay_us, rate_hz) -> int:
+    """The phase delay -- the galvo's response lag, in µs -- as whole
+    samples of a clock at ``rate_hz``, nearest (half to even). The one
+    rounding the digital lines' delay (on the scan clock) and the point
+    detectors' delay (on their timer) share."""
+    lag_us = float(phase_delay_us or 0)
+    if lag_us <= 0:
+        return 0
+    return samples_for_duration(lag_us * 1e-6, rate_hz, 'nearest-even')
+
+
+def lag_report(phase_delay_us, scan_rate_hz, timer_rate_hz) -> dict:
+    """What a phase delay realizes (plan scan timing, S5): the lag asked for,
+    the delay the digital lines play (whole scan-clock samples), the delay
+    the point detectors read with (whole timer samples), and the residual
+    between the two -- at most half a scan-clock sample, where the gate and
+    the detector windows do not coincide. Seconds throughout."""
+    requested = max(0.0, float(phase_delay_us or 0)) * 1e-6
+    gate = lag_samples_for(phase_delay_us, scan_rate_hz) / float(scan_rate_hz)
+    detector = lag_samples_for(phase_delay_us, timer_rate_hz) / float(timer_rate_hz)
+    return {'requested_s': requested, 'gate_delay_s': gate, 'detector_delay_s': detector,
+            'residual_s': detector - gate}
+
+
 def pixels_for_length_step(length, step) -> int:
     """Canonical pixel/step count for one scan axis: ``round(length / step)``.
 
@@ -610,8 +634,8 @@ class AdvancedScanParameterSerializer:
 
 
 __all__ = ["AdvancedScanParameterSerializer", "DWELL_ROUNDING", "GRID_RELATIVE_ERROR",
-           "dwell_request_if_changed", "pixels_for_length_step", "realized_dwell_s",
-           "samples_for_duration"]
+           "dwell_request_if_changed", "lag_report", "lag_samples_for",
+           "pixels_for_length_step", "realized_dwell_s", "samples_for_duration"]
 
 
 def seed_scan_delays_from_setup(widget, setupInfo) -> None:

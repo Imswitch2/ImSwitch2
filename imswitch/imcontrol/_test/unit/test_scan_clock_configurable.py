@@ -56,32 +56,184 @@ def test_the_rates_come_from_the_setup_and_default_as_before():
         _manager(2_000_000)
 
 
-def test_the_device_limits_and_the_configured_rate_are_checked_against_the_driver(
-        monkeypatch):
-    """On hardware (here a driver stand-in): a scan clock above the device's
-    ao_max_rate or do_max_rate, an analog input above ai_max_single_chan_rate,
-    and a task the driver configured at another rate than asked are refused
-    by name."""
-    import importlib
-    module = importlib.import_module('imswitch.imcontrol.model.managers.NidaqManager')
-    device = SimpleNamespace(ao_max_rate=2.0e6, do_max_rate=10e6, ai_max_single_chan_rate=2e6)
-    monkeypatch.setattr(module, '_NIDAQMX_AVAILABLE', True)
-    monkeypatch.setattr(module, 'nidaqmx', SimpleNamespace(
-        system=SimpleNamespace(Device=lambda name: device)), raising=False)
+class _Unreported:
+    """A driver property the driver does not answer."""
+
+    def __getattr__(self, name):
+        raise RuntimeError(f'DAQmx: property {name} is not supported by this device')
+
+
+def _task(max_rate=2e6, rate=1e6):
+    return SimpleNamespace(timing=SimpleNamespace(samp_clk_max_rate=max_rate, samp_clk_rate=rate))
+
+
+def test_a_task_is_verified_against_what_the_driver_reports_for_it():
+    """The configured task, not the device: its maximum for these channels
+    (four AO channels update slower than one) and, for a task that makes its
+    own clock, the rate the driver coerced it to. A check the driver does
+    not answer refuses the scan -- never a silent pass."""
     manager = _manager(1_000_000)
-    manager._checkDeviceRates(['Dev1/ao0', 'Dev1/ao1'], ['Dev1/port0/line0'])
-    fast = _manager(1_000_000, detectionRateHz=4_000_000)
-    fast._scanRateHz = 4e6                                   # as a setup asking 4 MHz would
-    with pytest.raises(Exception, match="above the 2e\\+06 Hz .* Dev1's ao_max_rate"):
-        fast._checkDeviceRates(['Dev1/ao0'], [])
-    with pytest.raises(Exception, match='ai_max_single_chan_rate'):
-        fast._checkInputRate('Dev1/ai0', 4e6)
-    manager._checkInputRate('Dev1/ai0', 1e6)
-    task = SimpleNamespace(timing=SimpleNamespace(samp_clk_rate=999_000.0))
+    manager._verifyTaskClock(_task(), 'analog output', 1e6, generated=True)
+    with pytest.raises(Exception, match='analog output task cannot run at 2e\\+06 Hz: the '
+                                        'driver reports 1.25e\\+06 Hz'):
+        manager._verifyTaskClock(_task(max_rate=1.25e6, rate=2e6), 'analog output', 2e6,
+                                 generated=True)
     with pytest.raises(Exception, match='runs at 999000 Hz, not the 1e\\+06 Hz'):
-        manager._checkConfiguredRate(task, 'analog output')
-    manager._checkConfiguredRate(SimpleNamespace(timing=SimpleNamespace(samp_clk_rate=1e6)),
-                                 'analog output')
+        manager._verifyTaskClock(_task(rate=999_000.0), 'analog output', 1e6, generated=True)
+    manager._verifyTaskClock(_task(rate=5.0), 'digital output', 1e6, generated=False)
+    with pytest.raises(Exception, match='Cannot verify the analog input Dev1/ai0 task: the '
+                                        'driver did not report its maximum'):
+        manager._verifyTaskClock(SimpleNamespace(timing=_Unreported()), 'analog input Dev1/ai0',
+                                 1e6, generated=False)
+    with pytest.raises(Exception, match='did not report the sample clock rate it configured'):
+        manager._verifyTaskClock(
+            SimpleNamespace(timing=SimpleNamespace(samp_clk_max_rate=2e6, samp_clk_rate=None)),
+            'analog output', 1e6, generated=True)
+    # a counter input's clock is the verified timer: its own maximum is optional
+    manager._verifyTaskClock(SimpleNamespace(timing=_Unreported()), 'counter input Dev1/ctr0',
+                             1e6, generated=False, mandatory=False)
+
+
+def _timer(timebase=100e6, freq=1e6, delay=0.0, unreported=False):
+    commits = []
+    channel = SimpleNamespace(co_ctr_timebase_rate=timebase, co_pulse_freq=freq,
+                              co_pulse_freq_initial_delay=delay)
+    return SimpleNamespace(co_channels=[] if unreported else [channel], control=commits.append,
+                           commits=commits)
+
+
+def test_the_detectors_timer_is_verified_as_the_driver_made_it():
+    manager = _manager(1_000_000)
+    timer = _timer()
+    assert manager._verifyTimerClock(timer, 1e6) == {
+        'rate_hz': 1e6, 'initial_delay_s': 0.0, 'timebase_hz': 100e6}
+    assert len(timer.commits) == 1                              # committed before reading
+    with pytest.raises(Exception, match='3e\\+06 Hz is not a whole division of the '
+                                        "timer's 1e\\+08 Hz timebase; the nearest rates it "
+                                        'makes are 2.94118e\\+06 and 3.0303e\\+06 Hz'):
+        manager._verifyTimerClock(_timer(freq=3e6), 3e6)
+    with pytest.raises(Exception, match='runs at 999000 Hz, not the 1e\\+06 Hz'):
+        manager._verifyTimerClock(_timer(freq=999_000.0), 1e6)
+    with pytest.raises(Exception, match='a whole timer period or more'):
+        manager._verifyTimerClock(_timer(delay=1e-6), 1e6)
+    manager._verifyTimerClock(_timer(delay=2e-8), 1e6)          # two timebase ticks: fine
+    with pytest.raises(Exception, match="Cannot verify the detectors' timer"):
+        manager._verifyTimerClock(_timer(unreported=True), 1e6)
+
+
+def _armedScan(timer, ao=None, phase_delay=30):
+    """A hardware-path scan on stand-in tasks, rolled back by a detector's
+    build failure right after every task is made and verified -- before any
+    starts. Returns the manager, the timer's creation arguments and the scan
+    info the manager filled in."""
+    from .test_nidaq_scan_transaction import _Device, _Setup, _Task
+    manager = NidaqManager(_Setup({'X': _Device(analog='Dev1/ao0')}))
+    manager._NidaqManager__simulating = False
+    manager._NidaqManager__scanSimulator = None
+    manager._NidaqManager__timerCounterChannel = 'Dev1/ctr2'      # startTrigger stays False
+    made = {}
+
+    def makeTimer(name, **kwargs):
+        made.update(kwargs)
+        return timer
+    manager._NidaqManager__createChanCOTask = makeTimer
+    ao = ao if ao is not None else _Task()
+    manager._NidaqManager__createChanAOTask = lambda *args, **kwargs: ao
+    manager.sigScanBuilt.connect(
+        lambda *_args: manager.reportScanBuildFailure('APD.prepare', RuntimeError('stop here')))
+    info = {'img_dims': [4], 'phase_delay': phase_delay, 'scan_time_step': 1e-5,
+            'scan_samples_total': 4}
+    signals = {'scanSignalsDict': {'X': np.zeros(4)}, 'TTLCycleSignalsDict': {}}
+    with pytest.raises(Exception) as refusal:
+        manager.runScan(signals, info)
+    return manager, made, info, ao, refusal.value
+
+
+def test_the_timer_is_armed_on_the_scan_start_whenever_there_is_analog_output():
+    """The detectors are armed on ao/StartTrigger; the timer they sample on
+    now is too, whatever nidaq.startTrigger says -- free-running, it put
+    every bin at a random phase within one timer period (review 2026-10-16).
+    What it realized, and the lag split, are in the scan info."""
+    from .test_nidaq_scan_transaction import _Task
+
+    class _Timer(_Task):
+        def __init__(self):
+            super().__init__()
+            self.co_channels = [SimpleNamespace(co_ctr_timebase_rate=100e6, co_pulse_freq=1e6,
+                                                co_pulse_freq_initial_delay=0.0)]
+
+        def control(self, _mode):
+            pass
+
+    timer = _Timer()
+    manager, made, info, _ao, refusal = _armedScan(timer)
+    assert 'stop here' in str(refusal)
+    assert made['starttrig'] is True and made['reference_trigger'] == 'ao/StartTrigger'
+    assert info['detector_clock'] == {'rate_hz': 1e6, 'initial_delay_s': 0.0,
+                                      'timebase_hz': 100e6}
+    assert info['lag'] == pytest.approx({'requested_s': 30e-6, 'gate_delay_s': 30e-6,
+                                         'detector_delay_s': 30e-6, 'residual_s': 0.0})
+    assert timer.closeCalls == 1 and manager.tasks == {} and not manager.busy
+
+
+def test_a_refused_clock_rolls_the_scan_back_and_closes_its_tasks():
+    from .test_nidaq_scan_transaction import _Task
+
+    class _CoercedTimer(_Task):
+        def __init__(self):
+            super().__init__()
+            self.co_channels = [SimpleNamespace(co_ctr_timebase_rate=100e6, co_pulse_freq=999e3,
+                                                co_pulse_freq_initial_delay=0.0)]
+
+        def control(self, _mode):
+            pass
+
+    timer = _CoercedTimer()
+    manager, _made, _info, _ao, refusal = _armedScan(timer)
+    assert 'runs at 999000 Hz' in str(refusal)
+    assert timer.closeCalls == 1 and manager.tasks == {} and not manager.busy
+
+    ao = _Task()
+    ao.timing = SimpleNamespace(samp_clk_max_rate=2e6, samp_clk_rate=99_999.4)
+    timer = _CoercedTimer()
+    timer.co_channels[0].co_pulse_freq = 1e6
+    manager, _made, _info, ao, refusal = _armedScan(timer, ao=ao)
+    assert 'analog output task runs at 99999.4 Hz' in str(refusal)
+    assert ao.closeCalls == 1 and timer.closeCalls == 1 and not manager.busy
+
+
+def test_a_refused_input_task_is_closed_not_leaked(monkeypatch):
+    """A PMT's analog input asked for more than its task allows: refused by
+    name, and the task it had made is closed -- a leaked task would hold the
+    device's analog input until ImSwitch exits."""
+    import importlib
+    import nidaqmx.constants
+    module = importlib.import_module('imswitch.imcontrol.model.managers.NidaqManager')
+    made = []
+
+    class _AITask:
+        def __init__(self, name):
+            self.closed = False
+            self.ai_channels = SimpleNamespace(add_ai_voltage_chan=lambda *a, **k: None)
+            self.timing = SimpleNamespace(cfg_samp_clk_timing=lambda **k: None,
+                                          samp_clk_max_rate=500e3, samp_clk_rate=1e6)
+            self.triggers = SimpleNamespace(
+                start_trigger=SimpleNamespace(cfg_dig_edge_start_trig=lambda source: None))
+            made.append(self)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(module, 'nidaqmx', SimpleNamespace(Task=_AITask,
+                                                           constants=nidaqmx.constants))
+    manager = _manager(1_000_000)
+    manager._NidaqManager__simulating = False
+    with pytest.raises(Exception, match='analog input Dev1/ai0 task cannot run at 1e\\+06 Hz: '
+                                        'the driver reports 500000 Hz'):
+        manager._NidaqManager__createChanAITask(
+            'PMT', 'Dev1/ai0', 'finite', '/Dev1/Ctr2InternalOutput', 1e6, -1.0, 1.0, 100, True,
+            'ao/StartTrigger')
+    assert made and made[0].closed
 
 
 def _design(rate_hz, dwell_us, step_um):
@@ -224,5 +376,23 @@ def test_the_expert_engine_takes_its_grid_from_the_setup(qtbot):
         assert engine.capabilities().timing_grid_s == pytest.approx(1e-6)
         assert '1e+06 Hz' in engine.capabilities().sources['timing_grid_s'] or \
             '1000000 Hz' in engine.capabilities().sources['timing_grid_s']
+    finally:
+        rig.close()
+
+
+def test_the_timing_note_states_a_lag_the_two_clocks_play_differently(qtbot):
+    """At 100 kHz a 3 µs phase delay is no whole scan-clock sample: the laser
+    lines play none of it, the detectors (1 MHz timer) all of it. The note
+    says so; at 30 µs both play it exactly and the note is silent."""
+    rig = AdvancedRig(designer='GalvoScanDesigner')
+    try:
+        rig.widget.phaseDelayPar.setText('3')
+        rig.scan._refreshTimingNote()
+        note = rig.widget.timingNoteLabel.text()
+        assert ('The 3 µs phase delay plays as 0 µs on the digital lines (whole 10 µs samples) '
+                'and 3 µs on the detectors, 3 µs apart.') in note
+        rig.widget.phaseDelayPar.setText('30')
+        rig.scan._refreshTimingNote()
+        assert 'phase delay plays' not in rig.widget.timingNoteLabel.text()
     finally:
         rig.close()

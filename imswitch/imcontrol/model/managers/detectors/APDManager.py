@@ -21,6 +21,7 @@ from .DetectorManager import (
 )
 from ._live_display import LiveDisplayThrottle
 from ._read_ahead import ReadAhead, read_ahead_samples
+from imswitch.imcontrol.model.scan_parameters import lag_samples_for
 from ._mock_sample import MockSample
 from ._visit_order import VisitOrder
 from ._trajectory_measure import (
@@ -1237,10 +1238,8 @@ class ScanWorker(Worker):
         # Galvo response lag, declared in microseconds; converted to detection
         # samples at the timer rate (identical at 1 MHz, which is why it used
         # to pass as a sample count).
-        self._phase_delay = int(round(
-            float(scanInfoDict.get('phase_delay', 0) or 0)
-            * self._manager._detection_samplerate / 1e6
-        ))
+        self._phase_delay = lag_samples_for(scanInfoDict.get('phase_delay', 0),
+                                            self._manager._detection_samplerate)
         self._smooth_axes = scanInfoDict.get('smooth_axes', [False, False, False])
 
         # samples to throw due to smooth between d>2 step transitioning

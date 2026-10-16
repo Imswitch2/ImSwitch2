@@ -7,7 +7,8 @@ from typing import Dict, Any
 
 import numpy as np
 
-from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import slice_pause_note
+from imswitch.imcontrol.model.managers.NidaqManager import TIMER_COUNTER_RATE_HZ
+from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import lag_note, slice_pause_note
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
@@ -366,9 +367,24 @@ class ScanControllerAdvanced(SuperScanController):
                 settle = slice_pause_note(self._analogParameterDict, self._setupInfo)
             except Exception:
                 settle = ''
-            if settle:
-                note = f'{note} {settle}'.strip()
+            try:
+                lag = lag_note(self._analogParameterDict.get('phase_delay', 0),
+                               self._setupInfo.scan.sampleRate, self._detectorTimerRateHz())
+            except Exception:
+                lag = ''
+            for extra in (settle, lag):
+                if extra:
+                    note = f'{note} {extra}'.strip()
         self._widget.setTimingNote(note)
+
+    def _detectorTimerRateHz(self):
+        """The rate the point detectors sample on: the NI-DAQ manager's
+        timer, else the setup's nidaq.detectionRateHz, else its default."""
+        try:
+            return float(self._master.nidaqManager.timerRateHz)
+        except (AttributeError, TypeError, ValueError):
+            rate = getattr(getattr(self._setupInfo, 'nidaq', None), 'detectionRateHz', None)
+            return float(rate) if rate else TIMER_COUNTER_RATE_HZ
 
     def _log_linestep_scan_diagnostics(
         self,
