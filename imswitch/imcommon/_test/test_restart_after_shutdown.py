@@ -206,10 +206,12 @@ def test_a_failed_exec_exits_cleanly_instead_of_crashing():
     with patch.object(applaunch, 'shutdownModules', lambda *a, **k: log.append('shutdown')), \
             patch.object(applaunch.ostools, 'restartSoftware', _failing_restart), \
             patch.object(applaunch.sys, 'exit', _exit), \
+            patch.object(applaunch, 'disownQtObjects',
+                         lambda app, logger=None: log.append('disown')), \
             patch.object(shutdownState, 'hardwareFinalizationAllowed', return_value=True):
         with pytest.raises(_NeverReturns):
             applaunch.launchApp(app, Mock(), [])
-    assert log == ['shutdown', 'restart-attempt', 'sys.exit:0']
+    assert log == ['shutdown', 'restart-attempt', 'disown', 'sys.exit:0']
 
 
 _DISOWN_PROBE = """
@@ -246,3 +248,67 @@ def test_qt_objects_python_still_owns_are_handed_to_cpp_before_exit():
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith('ok')
+
+
+_LAUNCH_EXIT_PROBE = """
+import atexit
+import sys
+from qtpy import QtCore, QtWidgets, sip
+from imswitch.imcommon import applaunch
+from imswitch.imcommon.model import ostools
+
+app = QtWidgets.QApplication([])
+view = QtWidgets.QMainWindow()
+view.setCentralWidget(QtWidgets.QWidget())
+appOwnedBefore = sip.ispyowned(app)
+events = []
+
+class Controller:
+    def prepareShutdown(self):
+        assert sip.ispyowned(view)
+        events.append('prepare')
+
+    def closeEvent(self):
+        assert sip.ispyowned(view)
+        events.append('close')
+
+if sys.argv[2] == 'failed-restart':
+    def failedRestart(module):
+        assert events == ['prepare', 'close']
+        raise OSError('simulated failed restart')
+    ostools.restartSoftware = failedRestart
+    ostools.requestRestart()
+
+# atexit exceptions do not make Python exit nonzero, so the parent also
+# requires this marker, printed only after every assertion succeeds.
+@atexit.register
+def verifyFinalization():
+    assert events == ['prepare', 'close']
+    assert not sip.ispyowned(view)
+    assert sip.ispyowned(app) == appOwnedBefore
+    print('shutdown-and-atexit-ok', flush=True)
+
+QtCore.QTimer.singleShot(50, lambda: app.exit(int(sys.argv[1])))
+applaunch.launchApp(app, view, [Controller()])
+"""
+
+
+@pytest.mark.parametrize(('exitCode', 'mode'), [
+    (0, 'normal'), (7, 'normal'), (0, 'failed-restart'),
+])
+def test_real_qt_exit_preserves_code_and_runs_finalizers(exitCode, mode):
+    """Exercise the event loop, shutdown, ownership transfer and interpreter exit.
+
+    Keep the destructive ownership operation and native finalization in a
+    child process so neither can corrupt the pytest worker's Qt objects.
+    """
+    packageRoot = os.path.dirname(os.path.dirname(os.path.dirname(applaunch.__file__)))
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen',
+               PYTHONPATH=os.pathsep.join(
+                   filter(None, [packageRoot, os.environ.get('PYTHONPATH')])))
+    result = subprocess.run(
+        [sys.executable, '-c', _LAUNCH_EXIT_PROBE, str(exitCode), mode],
+        cwd=packageRoot, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == exitCode, result.stdout + result.stderr
+    assert 'shutdown-and-atexit-ok' in result.stdout, result.stdout + result.stderr
