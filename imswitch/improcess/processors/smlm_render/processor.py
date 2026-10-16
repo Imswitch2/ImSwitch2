@@ -20,7 +20,7 @@ class SmlmRenderProcessor(Processor):
 
     name = "SMLM render"
     id = "smlm-render"
-    category = "Localization"
+    category = "SMLM"
     kinds = ("localization",)
 
     @classmethod
