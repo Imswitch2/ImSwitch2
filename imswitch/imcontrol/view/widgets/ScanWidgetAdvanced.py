@@ -366,15 +366,24 @@ class ScanWidgetAdvanced(SuperScanWidget):
         currentRow += 1
 
         # --- Timing params ---
-        self.grid.addWidget(QtWidgets.QLabel("Dwell time (ms):"), currentRow, 0)
+        self._dwellLabel = QtWidgets.QLabel("Dwell time (ms):")
+        self._applyScanClock()
+        self.grid.addWidget(self._dwellLabel, currentRow, 0)
         self.grid.addWidget(self.seqTimePar, currentRow, 1)
 
-
-        self.grid.addWidget(QtWidgets.QLabel("Delay [sampl.] D2:"), currentRow, 2)
+        # Both delays are times in µs (the contract's phase_delay and
+        # d3step_delay); the D2 label said samples, which they only were at
+        # a 1 MHz detector timer.
+        phaseDelayLabel = QtWidgets.QLabel("Phase delay D2 (µs):")
+        phaseDelayLabel.setToolTip(
+            "The galvo's response lag: the detectors read, and the laser and camera lines "
+            "play, this much after the command. It changes with the scan speed.")
+        self.grid.addWidget(phaseDelayLabel, currentRow, 2)
         self.grid.addWidget(self.phaseDelayPar, currentRow, 3)
 
-
-        self.grid.addWidget(QtWidgets.QLabel("D3:"), currentRow, 4)
+        d3Label = QtWidgets.QLabel("D3 (µs):")
+        d3Label.setToolTip("A pause before every slice, for the slow axis to settle.")
+        self.grid.addWidget(d3Label, currentRow, 4)
         self.grid.addWidget(self.d3StepDelayPar, currentRow, 5)
         currentRow += 1
         # Realized dwell, or strict timing, when it matters (plan §2.6).
@@ -1252,6 +1261,31 @@ class ScanWidgetAdvanced(SuperScanWidget):
         if sequence_mode:
             self._refreshSequenceTableFromModel()
         self._refreshDwellDeadTimeLabel()
+
+    def setScanClock(self, rate_hz):
+        """Say the scan clock beside the dwell: a dwell is a whole number of
+        its samples, and one between two runs as the next one up (the timing
+        note says so). Kept, and shown once the timing row exists (the
+        controller seeds the widget before its controls are built)."""
+        self.__dict__['_scanClockHz'] = rate_hz
+        self._applyScanClock()
+
+    def _applyScanClock(self):
+        label = self.__dict__.get('_dwellLabel')
+        rate_hz = self.__dict__.get('_scanClockHz')
+        if label is None or rate_hz is None:
+            return
+        try:
+            step_s = 1.0 / float(rate_hz)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return
+        clock = (f'{step_s * 1e6:g} µs' if step_s >= 1e-6 else f'{step_s * 1e9:g} ns')
+        self._dwellLabel.setText(f"Dwell time (ms, {clock} clock):")
+        tip = (f'The pixel dwell in ms: a whole number of {clock} samples of the scan clock '
+               f'(scan.sampleRate, {float(rate_hz):g} Hz). A dwell between two runs as the '
+               'next one up, and the note under the timing fields says so.')
+        self._dwellLabel.setToolTip(tip)
+        self.seqTimePar.setToolTip(tip)
 
     def _onIntraPixelPositionersChanged(self):
         self._refreshAdvancedLineProgramDeviceVisibility()

@@ -251,7 +251,7 @@ second per detector. Read in chunks of a declared minimum duration
 the live image to the display's rate. Measure before and after on the
 simulated NI-DAQ.
 
-**S4 -- panels and docs.** The Advanced dwell field shows the grid and the
+**S4 -- panels and docs. DONE 2026-10-16** (the Advanced dwell label names the clock; D2 and D3 labelled in µs; SimplePointScan's snapping on the shared arithmetic; the config editor offers both rates; setup reference, GUI, Advanced and engine docs). The Advanced dwell field shows the grid and the
 realized value; SimplePointScan's `snap_dwell_s` uses the same rule; the
 config editor offers the two rates with the driver's limits as help;
 `setupinfo-reference.rst`, `advanced-scanning.rst`, `expert-scanning.rst`,

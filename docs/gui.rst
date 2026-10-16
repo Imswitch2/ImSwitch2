@@ -898,11 +898,16 @@ each pixel's dwell time:
   but do not apply them to a stage or galvo waveform; do not rely on this
   control for hardware movement.
 
-**Dwell time (ms)** is the time spent per pixel; the widget shows the resulting
-**Dead time** so you can see how much of each pixel is not being used.
-**Delay [sampl.] D2** is the galvo's response lag, by which the detector
-readout is delayed, and **D3** the settling time before each slice step of a 3-D scan.  Both
-are entered in microseconds, whatever the D2 label says, and start from
+**Dwell time (ms)** is the time spent per pixel; its label names the scan
+clock (*10 µs clock* at ``scan.sampleRate`` 100 kHz, *1 µs* at 1 MHz), since a
+dwell is a whole number of its samples -- one between two runs as the next one
+up, and the timing note says so. The widget shows the resulting **Dead time**
+so you can see how much of each pixel is not being used.
+**Phase delay D2 (µs)** is the galvo's response lag: the detectors read, and the
+laser and camera lines play, that much after the command, so a gate follows
+the beam (the dark first or last pixel of fast scans was the gate closing on
+command time). It changes with the scan speed, so it stays a field. **D3 (µs)**
+is the settling time before each slice step of a 3-D scan. Both start from
 ``phase_delay`` / ``d3step_delay`` in ``scan.scanDesignerParams`` of the setup
 file.  **Plot** previews the generated waveforms, with **include TTL** to
 overlay the device gating.

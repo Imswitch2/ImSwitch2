@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from .scan_cloak import PlanNotRepresentable, ScanCloak
-from .scan_parameters import pixels_for_length_step
+from .scan_parameters import pixels_for_length_step, samples_for_duration
 from .signaldesigners.GalvoScanDesigner import (
     fast_axis_speed_limit,
     is_smooth_scan_axis,
@@ -525,9 +525,12 @@ def power_refusal(plan: SimpleScanPlan, limits: ScanLimits) -> str:
 # ---------------------------------------------------------------------------
 
 def snap_dwell_s(dwell_s: float, sample_rate: float, *, minimum: float = 0.0) -> float:
-    """``dwell_s`` as a whole number of samples, never below ``minimum``."""
-    samples = max(1, round(float(dwell_s) * sample_rate))
-    floor = math.ceil(float(minimum) * sample_rate - 1e-9)
+    """``dwell_s`` as a whole number of samples -- the nearest, as a slider
+    snaps -- never below ``minimum`` (rounded up). The arithmetic the
+    designers share (``scan_parameters.samples_for_duration``), so the dwell
+    Simple sets is the dwell the scan plays."""
+    samples = max(1, samples_for_duration(dwell_s, sample_rate, 'nearest-even'))
+    floor = samples_for_duration(minimum, sample_rate, 'ceil') if minimum else 0
     return max(samples, floor, 1) / sample_rate
 
 

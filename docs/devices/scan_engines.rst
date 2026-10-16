@@ -154,7 +154,9 @@ SimplePointScan panels build run through it exactly as before. It reads no
   dropped from every scan without a word;
 * analog channels in NI-DAQmx form, ``<device>/ao<n>``.
 
-It streams sampled waveforms on the board's 100 kHz timebase, emulates
+It streams sampled waveforms at ``scan.sampleRate`` (the board's 100 kHz
+timebase at 100 kHz, its 100 MHz timebase divided down at any other rate;
+that rate is also its timing grid), emulates
 stepped scans by sampling them, cannot wait for an external trigger, and
 cannot stop a running scan iteration (the run stops after it). It is
 registered as ``NidaqScanEngine`` and ``builtin.nidaq-scan-engine``. For an

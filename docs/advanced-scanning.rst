@@ -296,7 +296,8 @@ Advanced scan troubleshooting
    * - Scan refused: a time "is not on the 10 µs grid"
      - The scan uses an order other than forward or an intra-pixel move, so
        it runs under strict timing. Use one of the two values the message
-       offers.
+       offers. The grid is the scan clock, ``scan.sampleRate`` (10 µs at
+       100 kHz).
    * - Line-step image has the wrong number of lines or channels
      - Search the log for ``[LineStepDiag]``. The scan controller, NI-DAQ
        manager and APD manager each log the expanded line count, sample

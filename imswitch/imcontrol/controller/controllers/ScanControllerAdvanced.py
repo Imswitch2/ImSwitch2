@@ -103,6 +103,8 @@ class ScanControllerAdvanced(SuperScanController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         seed_scan_delays_from_setup(self._widget, self._setupInfo)
+        if hasattr(self._widget, 'setScanClock'):
+            self._widget.setScanClock(self._setupInfo.scan.sampleRate)
 
         # The last full scan design and the parameters that produced it, so a
         # recording's layout query, the run that follows it and repeated scan

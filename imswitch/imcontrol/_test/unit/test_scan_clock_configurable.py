@@ -193,6 +193,25 @@ def test_a_one_microsecond_pixel_scans_end_to_end_on_the_simulated_rig(qtbot):
         rig.close()
 
 
+def test_the_advanced_dwell_names_the_clock_and_simple_snaps_on_it(qtbot):
+    from imswitch.imcontrol.model.simple_scan import snap_dwell_s
+    slow = AdvancedRig(designer='GalvoScanDesigner')
+    try:
+        assert slow.widget._dwellLabel.text() == 'Dwell time (ms, 10 µs clock):'
+        assert 'next one up' in slow.widget.seqTimePar.toolTip()
+    finally:
+        slow.close()
+    fast = _FastRig()
+    try:
+        assert fast.widget._dwellLabel.text() == 'Dwell time (ms, 1 µs clock):'
+    finally:
+        fast.close()
+    assert snap_dwell_s(1.5e-5, 1e5) == pytest.approx(2e-5)        # nearest, ties to even
+    assert snap_dwell_s(1.2e-5, 1e5) == pytest.approx(1e-5)
+    assert snap_dwell_s(1.2e-5, 1e5, minimum=1.1e-5) == pytest.approx(2e-5)   # floor: up
+    assert snap_dwell_s(1e-6, 1e6) == pytest.approx(1e-6)
+
+
 def test_the_expert_engine_takes_its_grid_from_the_setup(qtbot):
     from .test_scan_controller_expert import ExpertRig, _setup_dict
     rig = ExpertRig(setup=_setup_dict(sampleRate=1_000_000))
