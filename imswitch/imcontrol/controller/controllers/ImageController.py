@@ -28,10 +28,11 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self.__logger = initLogger(self, tryInheritParent=True)
         getWidgetStatePersistence().register('Image', self)
         self._shownScanGeometry = {}   # detector -> DisplayedScanGeometry or None
-        # The view's sum over a frame's extra dimensions (line steps, z, t):
-        # per detector, which of them; the last frame, to redraw on a change;
-        # what the widget was told, to tell it only on a change.
-        self._summedAxes = {}          # detector -> tuple of axis indices
+        # The view's sum over the frames' extra dimensions (line steps, z,
+        # t): which, by name, for every detector whose frames have them; the
+        # last such frame per detector, to redraw on a change; what the
+        # widget was told, to tell it only on a change.
+        self._summedDims = set()       # dimension names
         self._lastFrames = {}          # detector -> (im, scale, isCurrentDetector)
         self._toldAxes = {}            # detector -> (labels, summed)
         if hasattr(self._widget, 'sigSumAxesChanged'):
@@ -92,16 +93,12 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             # geometry (scan_frame.ScanFrame), and the geometry describes the
             # untransformed pixels anyway.
             geometry = frame_geometry_of(im)
-            # (``__dict__``: a controller built without __init__ in a test has
-            # none of these, and a QObject raises on a missing attribute)
-            self.__dict__.setdefault('_lastFrames', {})[detectorName] = (
-                im, scale, isCurrentDetector)
-            self._tellSummableAxes(detectorName, im)
+            published_shape = tuple(np.shape(im))
             # The view's sum over extra dimensions, before the transform (the
             # transform acts on the image axes) and before the levels, so
             # they are those of what is shown.
-            summed = self.__dict__.get('_summedAxes', {}).get(detectorName, ())
-            im, scale = sum_axes_for_display(im, scale, summed)
+            im, scale = sum_axes_for_display(
+                im, scale, self._summedAxesOf(detectorName, im, scale, isCurrentDetector))
             transform = self._getDisplayTransform(detectorName)
             display_im, display_scale = apply_display_transform(
                 im,
@@ -113,7 +110,7 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
                 self.autoLevels([detectorName], display_im)
 
             shown = (
-                DisplayedScanGeometry(geometry, transform, tuple(im.shape))
+                DisplayedScanGeometry(geometry, transform, published_shape)
                 if geometry is not None else None
             )
             self._widget.setImage(
@@ -151,23 +148,38 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             return [str(n) for n in names[:extra]]
         return [f'dimension {i}' for i in range(extra)]
 
-    def _tellSummableAxes(self, detectorName, im):
+    def _summedAxesOf(self, detectorName, im, scale, isCurrentDetector):
+        """Which axes of this frame the view sums: those whose dimension the
+        Sum checkboxes name. Tells the widget the frame's dimensions on a
+        change, and keeps a frame that has any, to redraw on a toggle.
+        (``__dict__``: a controller built without __init__ in a test has none
+        of these, and a QObject raises on a missing attribute.)"""
         labels = self._axisLabels(detectorName, im)
-        summed = tuple(a for a in self.__dict__.get('_summedAxes', {}).get(detectorName, ())
-                       if a < len(labels))
+        frames = self.__dict__.setdefault('_lastFrames', {})
+        if labels:
+            frames[detectorName] = (im, scale, isCurrentDetector)
+        else:
+            frames.pop(detectorName, None)
+        summed = self.__dict__.setdefault('_summedDims', set())
         told = self.__dict__.setdefault('_toldAxes', {})
-        if told.get(detectorName) != (labels, summed) and \
-                hasattr(self._widget, 'setSummableAxes'):
-            told[detectorName] = (labels, summed)
-            self._widget.setSummableAxes(detectorName, labels, summed)
+        news = (labels, tuple(sorted(summed)))
+        if told.get(detectorName) != news and hasattr(self._widget, 'setSummableAxes'):
+            told[detectorName] = news
+            self._widget.setSummableAxes(detectorName, labels, news[1])
+        return tuple(i for i, label in enumerate(labels) if label in summed)
 
-    def _onSumAxesChanged(self, detectorName, axes):
-        """The view's checkboxes: remember, and redraw the last frame."""
-        self.__dict__.setdefault('_summedAxes', {})[detectorName] = tuple(int(a) for a in axes)
-        last = self.__dict__.get('_lastFrames', {}).get(detectorName)
-        if last is not None:
-            im, scale, isCurrent = last
-            self.update(detectorName, im, False, scale, isCurrent)
+    def _onSumAxesChanged(self, dimensions):
+        """The view's checkboxes: remember which dimensions are summed, and
+        redraw the last frame of every detector that has one that changed,
+        levelled anew -- a sum is brighter than one slice."""
+        before = set(self.__dict__.get('_summedDims', set()))
+        now = {str(name) for name in dimensions}
+        self.__dict__['_summedDims'] = now
+        for detectorName, (im, scale, isCurrent) in list(
+                self.__dict__.get('_lastFrames', {}).items()):
+            if (before ^ now) & set(self._axisLabels(detectorName, im)):
+                self.update(detectorName, im, True, scale, isCurrent)
+                self.autoLevels([detectorName])
 
     def _getDisplayTransform(self, detectorName):
         detector_info = self._setupInfo.detectors.get(detectorName)
@@ -220,10 +232,9 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         viewer camera pose are intentionally excluded.
         """
         state = dict(self._widget.getLayerVisibilityState())
-        summed = {name: list(axes) for name, axes in self.__dict__.get('_summedAxes', {}).items()
-                  if axes}
+        summed = sorted(self.__dict__.get('_summedDims', set()))
         if summed:
-            state['summedAxes'] = summed
+            state['summedDimensions'] = summed
         return state
 
     def applyComponentState(
@@ -234,11 +245,9 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
     ) -> list[str]:
         """Restore visibility for layers that already exist in the viewer,
         and which dimensions the view sums over."""
-        summed = state.get('summedAxes') if isinstance(state, dict) else None
-        if isinstance(summed, dict):
-            self._summedAxes = {str(name): tuple(int(a) for a in axes)
-                                for name, axes in summed.items()
-                                if isinstance(axes, (list, tuple))}
+        summed = state.get('summedDimensions') if isinstance(state, dict) else None
+        if isinstance(summed, (list, tuple)):
+            self._summedDims = {str(name) for name in summed}
             self._toldAxes = {}
         return self._widget.applyLayerVisibilityState(state)
 
@@ -246,14 +255,13 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         layers = state.get('layers', {}) if isinstance(state, dict) else {}
         liveLayers = state.get('liveLayers', {}) if isinstance(state, dict) else {}
 
-        summed = state.get('summedAxes', {}) if isinstance(state, dict) else {}
+        summed = state.get('summedDimensions', []) if isinstance(state, dict) else []
         if not layers and not liveLayers and not summed:
             return ['  no napari layer visibility saved']
 
         summaries = []
         if summed:
-            summaries.append('  summed in the view: ' + ', '.join(
-                f'{name} over {list(axes)}' for name, axes in sorted(summed.items())))
+            summaries.append('  summed in the view: ' + ', '.join(sorted(map(str, summed))))
         if liveLayers:
             visibleLive = sorted(name for name, visible in liveLayers.items() if visible)
             hiddenLive = sorted(name for name, visible in liveLayers.items() if not visible)

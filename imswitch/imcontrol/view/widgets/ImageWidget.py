@@ -21,8 +21,8 @@ class ImageWidget(QtWidgets.QWidget):
         self.updateLevelsWidget = naparitools.NapariUpdateLevelsWidget.addToViewer(
             self.napariViewer
         )
-        # Under the levels tool: a Sum checkbox per dimension beyond the
-        # image (line steps, z, t) of the selected live layer.
+        # Under the levels tool: a Sum checkbox per dimension the live frames
+        # have beyond their image (line steps, z, t), shown only then.
         self.sumAxesWidget = naparitools.NapariSumAxesWidget.addToViewer(self.napariViewer)
         self.sigSumAxesChanged = self.sumAxesWidget.sigSumAxesChanged
         #LR: The next to widgets are etSTED specific and i.m.o. not needed --> at least for now commented
@@ -202,9 +202,10 @@ class ImageWidget(QtWidgets.QWidget):
     def getCurrentImageName(self):
         return self.napariViewer.active_layer.name
 
-    def setSummableAxes(self, name, labels, summed=()):
-        """The dimensions of live layer ``name`` beyond its image, outermost
-        first, and which are summed in the view."""
+    def setSummableAxes(self, name, labels, summed=None):
+        """The dimensions live layer ``name``'s frames have beyond their
+        image, outermost first, and (when given) which dimensions the view
+        sums, by name."""
         self.sumAxesWidget.setAxes(name, labels, summed)
 
     def getImage(self, name):

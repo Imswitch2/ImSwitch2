@@ -385,92 +385,105 @@ class MplCanvas(FigureCanvas):
 
 
 class NapariSumAxesWidget(NapariBaseWidget):
-    """A Sum checkbox per dimension of the selected live layer beyond its two
-    image axes (line steps, z, t): checked, the view sums over it and shows
-    the reduced image; unchecked, the slider is back. Display only -- the
-    controller that owns the layer's frames does the reduction and tells
-    this widget which dimensions each layer has (``setAxes``).
+    """A "Sum" checkbox per dimension the live frames have beyond their image
+    (line steps, z, t), shown only while some live frame has one: checked,
+    every live layer with that dimension shows the sum over it instead of
+    one slice at a time. Display only -- the controller that owns the
+    frames does the reduction. It tells this widget which dimensions each
+    source's frames have (``setAxes``) and hears which are summed, by name
+    (``sigSumAxesChanged``)."""
 
-    The widget keeps, per layer name, the dimension labels and which are
-    summed, and emits ``sigSumAxesChanged(layer, axes)`` on every change."""
-
-    sigSumAxesChanged = QtCore.Signal(str, tuple)
+    sigSumAxesChanged = QtCore.Signal(tuple)
 
     @property
     def name(self):
         return 'sum over dimensions'
 
+    @classmethod
+    def addToViewer(cls, napariViewer, position='left'):
+        widget = super().addToViewer(napariViewer, position)
+        widget._showIfOffered()            # docked now: hidden until a frame has a dimension
+        return widget
+
     def __init__(self, napariViewer):
         super().__init__(napariViewer)
-        self._axes = {}            # layer name -> [label per extra dimension]
-        self._summed = {}          # layer name -> set of extra-dimension indices
-        self._shown = None         # the layer the rows describe
-        self._boxes = []
+        self._axes = {}            # source -> [name per extra dimension, outermost first]
+        self._summed = set()       # the summed dimensions, by name
+        self._boxes = {}           # dimension name -> its checkbox
         self.setLayout(QtWidgets.QVBoxLayout())
         self.layout().setContentsMargins(4, 4, 4, 4)
-        self.note = QtWidgets.QLabel('')
-        self.note.setWordWrap(True)
-        self.layout().addWidget(self.note)
-        self.rows = QtWidgets.QVBoxLayout()
-        self.layout().addLayout(self.rows)
         self.setSizePolicy(QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding,
                                                  QtWidgets.QSizePolicy.Maximum))
-        try:
-            napariViewer.layers.selection.events.active.connect(lambda _e: self.refresh())
-        except AttributeError:
-            pass                   # a viewer stand-in without events
-        self.refresh()
 
-    def setAxes(self, layer, labels, summed=()):
-        """The extra dimensions of ``layer`` (outermost first) and which of
-        them are summed; the rows follow when that layer is selected."""
+    def setAxes(self, source, labels, summed=None):
+        """The dimensions ``source``'s frames have beyond their image,
+        outermost first (none: the source offers nothing to sum); ``summed``,
+        when given, replaces which dimensions are summed, by name."""
         labels = [str(label) for label in labels]
-        if self._axes.get(layer) != labels or set(summed) != self._summed.get(layer, set()):
-            self._axes[layer] = labels
-            self._summed[layer] = {int(i) for i in summed if 0 <= int(i) < len(labels)}
-            self.refresh()
-
-    def summedAxes(self, layer):
-        return tuple(sorted(self._summed.get(layer, ())))
-
-    def _selectedLayerName(self):
-        try:
-            active = self.viewer.layers.selection.active
-        except AttributeError:
-            return None
-        return None if active is None else active.name
-
-    def refresh(self):
-        name = self._selectedLayerName()
-        while self.rows.count():
-            item = self.rows.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        self._boxes = []
-        self._shown = name
-        labels = self._axes.get(name) if name is not None else None
-        if not labels:
-            self.note.setText('The selected layer has no dimension beyond its image to sum '
-                              'over.' if name else 'Select a live layer.')
-            return
-        self.note.setText('Sum the selected layer over:')
-        summed = self._summed.get(name, set())
-        for index, label in enumerate(labels):
-            box = QtWidgets.QCheckBox(label)
-            box.setChecked(index in summed)
-            box.setToolTip(f'Show the sum over every {label} instead of one at a time. '
-                           'The recording is not changed.')
-            box.toggled.connect(lambda on, i=index, n=name: self._toggled(n, i, on))
-            self.rows.addWidget(box)
-            self._boxes.append(box)
-
-    def _toggled(self, layer, index, on):
-        summed = self._summed.setdefault(layer, set())
-        if on:
-            summed.add(index)
+        changed = self._axes.get(source, []) != labels
+        if labels:
+            self._axes[source] = labels
         else:
-            summed.discard(index)
-        self.sigSumAxesChanged.emit(layer, self.summedAxes(layer))
+            self._axes.pop(source, None)
+        if summed is not None and {str(name) for name in summed} != self._summed:
+            self._summed = {str(name) for name in summed}
+            changed = True
+        if changed:
+            self._rebuild()
+
+    def dimensions(self):
+        """Every dimension some source offers, in the order first offered."""
+        seen = []
+        for labels in self._axes.values():
+            seen.extend(label for label in labels if label not in seen)
+        return seen
+
+    def summedAxes(self):
+        """The summed dimensions, by name -- also those no frame has just now,
+        so a choice outlasts the scans in between."""
+        return tuple(sorted(self._summed))
+
+    def isOffered(self):
+        return bool(self._boxes)
+
+    def _rebuild(self):
+        dimensions = self.dimensions()
+        if list(self._boxes) != dimensions:
+            for box in self._boxes.values():
+                self.layout().removeWidget(box)
+                box.deleteLater()
+            self._boxes = {}
+            for label in dimensions:
+                box = QtWidgets.QCheckBox(f'Sum {label}')
+                box.setToolTip(f'Show the sum over all {label} instead of one at a time. '
+                               'The recording keeps them all.')
+                box.toggled.connect(lambda on, label=label: self._toggled(label, on))
+                self.layout().addWidget(box)
+                self._boxes[label] = box
+        for label, box in self._boxes.items():
+            if box.isChecked() != (label in self._summed):
+                box.blockSignals(True)
+                box.setChecked(label in self._summed)
+                box.blockSignals(False)
+        self._showIfOffered()
+
+    def _dock(self):
+        parent = self.parentWidget()
+        while parent is not None and not isinstance(parent, QtWidgets.QDockWidget):
+            parent = parent.parentWidget()
+        return parent
+
+    def _showIfOffered(self):
+        dock = self._dock()
+        if dock is not None:
+            dock.setVisible(self.isOffered())
+
+    def _toggled(self, label, on):
+        if on:
+            self._summed.add(label)
+        else:
+            self._summed.discard(label)
+        self.sigSumAxesChanged.emit(self.summedAxes())
 
 
 class NapariSumImageWidget(NapariBaseWidget):

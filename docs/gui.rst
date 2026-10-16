@@ -236,16 +236,16 @@ Summing over line steps, z or time in the view
 -----------------------------------------------
 
 A scan with line steps, a z stack or a time series reaches the viewer as a
-stack with a slider. Under the levels tool on the left, **Sum over
-dimensions** lists, for the selected live layer, every dimension beyond its
-image -- *line steps*, *z*, *t* -- with a checkbox each. Ticked, the view
-sums over that dimension and shows the reduced image; unticked, the slider
-is back. It changes what is shown only: the frame the detector delivers and
-the recording keep every dimension. The sum is taken in floating point, so
-counts never wrap, and **Auto levels** runs on the summed image, so a summed
-stack is not clipped to one step's range. The choice is kept with the
-panel's state per detector, so a line-step rig opens summed if that is how
-it was left.
+stack with a slider. While a live frame has such a dimension, a box for it
+appears under the levels tool on the left: **Sum line steps**, **Sum z**,
+**Sum t**. Ticked, every live layer with that dimension shows the sum over
+it, levelled anew; unticked, the slider is back. A 2-D scan shows no boxes.
+It changes what is shown only: the frame the detector delivers and the
+recording keep every dimension. The sum is taken in floating point, so
+counts never wrap, and **Auto levels** runs on the summed image, so a
+summed stack is not clipped to one step's range. The choice is kept with
+the panel's state, so a line-step rig opens summed if that is how it was
+left.
 
 
 Viewer tools
