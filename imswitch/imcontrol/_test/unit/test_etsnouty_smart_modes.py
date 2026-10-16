@@ -342,6 +342,21 @@ def test_the_slow_scan_can_be_a_scan_panels_program():
     assert controller._commChannel.sharedAttrs[etsnouty_module.SCAN_EVENT_KEY] == ''
 
 
+
+def test_an_event_at_numpy_coordinates_still_runs_its_scan():
+    """A pipeline's coordinates are numpy scalars (``peak_local_max`` gives
+    int64, an image float32): json refused them, so the event's program
+    never ran (review 2026-10-16)."""
+    import numpy as np
+    controller = _make_controller(enabled=True)
+    panel, _ = _with_scan_panel(controller)
+    controller._EtSnoutyController__detLog.update(
+        fastscan_x_center=np.int64(12), fastscan_y_center=np.float32(40.5))
+    assert controller.runSlowScan() is True
+    [(_recalculate, _nonFinal, event)] = panel.runs
+    assert json.loads(event)['position_px'] == [12, 40.5]
+
+
 def test_a_scan_panel_that_cannot_run_fails_the_event_and_leaves_no_event_behind():
     controller = _make_controller(enabled=True)
     _with_scan_panel(controller, error=RuntimeError('No controller exposes runScanExternal'))

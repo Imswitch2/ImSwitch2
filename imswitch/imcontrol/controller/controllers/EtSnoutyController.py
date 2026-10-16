@@ -63,6 +63,15 @@ class PeriodicSignalEmitter(QObject):
         self.signal_to_emit.emit()
 
 
+
+def _plain_json(value):
+    """A numpy scalar or array as the plain number or list json writes."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f'{type(value).__name__} is not JSON serializable')
+
 class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
     """Linked to EtSnoutyWidget."""
 
@@ -533,7 +542,10 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         """One run of panel ``key``'s scan, started by the event just
         detected, which the run carries as ``ScanEvent:triggeredBy``."""
         source = self._commChannel.getScanSource(key)
-        self._setScanEvent(json.dumps(self._scanEvent(key)))
+        # numpy scalars from the pipeline (peak_local_max gives int64) as
+        # plain numbers: json refused them, so the event never ran its
+        # scan (review 2026-10-16)
+        self._setScanEvent(json.dumps(self._scanEvent(key), default=_plain_json))
         source.runScanExternal(True, False)
 
     def _scanEvent(self, key):

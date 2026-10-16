@@ -2368,7 +2368,13 @@ class PropertyEditor(QWidget):
         current = self._data.get(key) if isinstance(self._data.get(key), dict) else None
         dlg = SectionEditorDialog(key, schema, current, self._data, self)
         if dlg.exec_() == QDialog.Accepted:
-            self._data[key] = dlg.result_data
+            # The form's fields over the section as it was: a key the form
+            # does not show (a newer one, a comment) is kept, not dropped --
+            # applying the Scan form used to lose scan.engine (review
+            # 2026-10-16).
+            merged = dict(current or {})
+            merged.update(dlg.result_data)
+            self._data[key] = merged
             self._refresh_sections()
             self.sig_modified.emit()
 

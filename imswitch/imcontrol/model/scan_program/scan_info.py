@@ -155,7 +155,13 @@ def scan_info_for(program, schedule, rate_hz) -> Dict[str, object]:
         img_dims=dims, img_axes_phys=labels, pixel_sizes=sizes,
         scan_samples=[max(1, int(v)) for v in levels], scan_samples_total=int(total),
         scan_samples_d2_period=max(1, int(pass_ticks)), n_pixels_fast=dims[0],
-        samples_per_pixel=max(1, int(step_ticks)), dwell_time=float(program.step_s),
+        # the dwell as it plays: the step's whole ticks on this clock, the
+        # count the detectors bin -- the step asked for differs under a
+        # rounding policy (advanced-compatible-v1: 15 µs plays as 20 µs at
+        # 100 kHz), and binning it put 15 timer samples on 20-sample pixels
+        samples_per_pixel=max(1, int(step_ticks)),
+        dwell_time=(max(1, int(step_ticks)) / float(rate_hz)) if step_ticks
+        else float(program.step_s),
         scan_time_step=1.0 / float(rate_hz), n_linesteps=linesteps,
         positions=list(dims),
         return_time=(returns[0] / float(rate_hz)) if returns else 0.0,

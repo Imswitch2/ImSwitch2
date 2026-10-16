@@ -509,6 +509,7 @@ class ScanWidgetExpert(SuperScanWidget):
     sigProgramEdited = QtCore.Signal()
     sigPresetRequested = QtCore.Signal(str)
     sigPlotClicked = QtCore.Signal()
+    sigStopClicked = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -593,6 +594,15 @@ class ScanWidgetExpert(SuperScanWidget):
         self.engineLabel.setObjectName('expertMuted')
         self.scanButton.setText('Run')
         self.scanButton.setObjectName('expertRun')
+        # Run is disabled while a run is in progress; Stop is its way out
+        # (review 2026-10-16: the panel had none, only the Recording panel's).
+        self.stopButton = QtWidgets.QPushButton('Stop')
+        self.stopButton.setObjectName('expertStop')
+        self.stopButton.setEnabled(False)
+        self.stopButton.setToolTip(
+            'Stop the run: a step engine stops at its next step; on the NI-DAQ the pass '
+            'in progress finishes and nothing more starts.')
+        self.stopButton.clicked.connect(self.sigStopClicked)
         self.loadScanBtn.setText('Open…')
         self.saveScanBtn.setText('Save…')
         self.scanProgressBar = QtWidgets.QProgressBar()
@@ -655,6 +665,10 @@ class ScanWidgetExpert(SuperScanWidget):
 
     # -- the panel ------------------------------------------------------------
 
+    def setScanButtonChecked(self, checked):
+        super().setScanButtonChecked(checked)
+        self.stopButton.setEnabled(bool(checked))
+
     def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits=None, *,
                      detectorNames=(), presets=(), policies=(), engine='', wavelengths=None,
                      pointDetectorNames=()):
@@ -673,7 +687,7 @@ class ScanWidgetExpert(SuperScanWidget):
         top = FlowLayout(topHost)
         self.subtitleLabel.setWordWrap(True)
         for widget in (self.titleLabel, self.templateValuesButton, self.statusChip,
-                       self.scanButton):
+                       self.scanButton, self.stopButton):
             top.addWidget(widget)
         headerLayout.addWidget(topHost)
         headerLayout.addWidget(self.subtitleLabel)

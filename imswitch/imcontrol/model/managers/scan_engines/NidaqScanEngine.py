@@ -52,6 +52,48 @@ from imswitch.imcontrol.model.signaldesigners.basesignaldesigners import (
 _NI_ANALOG_OUTPUT = re.compile(r'[^/]+/ao\d+')
 
 #: The clocks Advanced scans carry, and the setup key that wires each.
+def duration_cap_refusal(seconds, setupInfo) -> str:
+    """``scan.maxScanTimeMin`` against a run of ``seconds``: the reason it is
+    refused, or ``''`` (no cap, or within it). The one rule the Expert panel
+    and the NI-DAQ engine both apply -- the engine before it builds any
+    sample, the panel for every engine."""
+    cap = getattr(getattr(setupInfo, 'scan', None), 'maxScanTimeMin', None)
+    if not cap or float(seconds) <= float(cap) * 60:
+        return ''
+    from imswitch.imcontrol.model.scan_program.units import format_seconds
+    return (f'Scan would take {format_seconds(seconds)}, above the {float(cap):g} min cap '
+            '(scan.maxScanTimeMin).')
+
+
+def waveform_memory_refusal(program, ticks, rate_hz, clock_lines, available_bytes) -> str:
+    """The NI-DAQ plays a program as one stream of samples, and compiling it
+    holds, per sample, every drive's positions and volts and every held
+    power level's values and volts (float64 each), and a byte per digital
+    line (``densify``, then the conversion). An hour of a time-lapse at
+    100 kHz is gigabytes, built on the GUI thread for the panel's report:
+    when that peak exceeds the memory free, the reason with both numbers,
+    instead of a MemoryError (review 2026-10-16). ``''`` when it fits or
+    the free memory is not known."""
+    analog = len(program.drives) + len({e.device for e in program.timeline if e.kind == 'level'})
+    digital = len({e.device for e in program.timeline
+                   if e.kind in ('ttl', 'marker', 'detector')}) + int(clock_lines)
+    peak = int(ticks) * (2 * np.dtype(float).itemsize * analog + np.dtype(bool).itemsize * digital)
+    if available_bytes is None or peak <= int(available_bytes):
+        return ''
+    return (f'Its waveforms would take {peak / 1e9:.3g} GB: {int(ticks)} samples at '
+            f'{float(rate_hz):g} Hz of {analog} analog output(s), as positions and volts, '
+            f'and {digital} digital line(s); {int(available_bytes) / 1e9:.3g} GB of memory '
+            'is free. The NI-DAQ plays pauses as samples: shorten them, or the timepoints.')
+
+
+def _free_memory_bytes():
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        return None
+
+
 SCAN_CLOCKS = (('lineClockLine', 'line_clock'),
                ('frameStartClockLine', 'frame_start_clock'),
                ('frameEndClockLine', 'frame_end_clock'))
@@ -257,6 +299,20 @@ class NidaqScanEngine(ScanEngine):
         if len(schedule.segments) > 1:
             report.add('segments', IMPOSSIBLE,
                        'The NI-DAQ plays one stream; it cannot wait for a trigger in it.')
+            raise ScanEngineRefused(report)
+        # Before a sample is built: the duration cap, and the memory the
+        # samples would take.
+        ticks = int(schedule.segments[0].ticks)
+        refusal = duration_cap_refusal(ticks / self.rate_hz, self._setupInfo)
+        if refusal:
+            report.add('duration', IMPOSSIBLE, refusal)
+            raise ScanEngineRefused(report)
+        scan = getattr(self._setupInfo, 'scan', None)
+        clocks = sum(1 for key, _marker in SCAN_CLOCKS if scan is not None and getattr(scan, key, None))
+        refusal = waveform_memory_refusal(program, ticks, self.rate_hz, clocks,
+                                          _free_memory_bytes())
+        if refusal:
+            report.add('waveform size', IMPOSSIBLE, refusal)
             raise ScanEngineRefused(report)
         dense = densify(schedule)
         analog = {}

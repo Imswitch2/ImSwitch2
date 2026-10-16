@@ -201,3 +201,33 @@ def test_validation_warning_includes_clickable_link():
         "Warning should include 'fixsection:tiling' link"
     assert "<a href=" in warning_msg, \
         "Warning should include HTML anchor tag"
+
+
+def test_applying_the_scan_form_keeps_what_it_does_not_show_and_takes_an_expert_scan(qtbot,
+                                                                                    monkeypatch):
+    """Applying a section's form replaced the whole section with the form's
+    fields: scan.engine was dropped, and the setup then failed to load or
+    ran on the NI-DAQ (review 2026-10-16). The form's fields now go over the
+    section as it was; and the designers are not required, so an Expert
+    scan (which leaves them null) can be applied."""
+    import json
+    from qtpy.QtWidgets import QDialog
+    expert = json.load(open(
+        'imswitch/_data/user_defaults/imcontrol_setups/expert_step_boards_mock_setup.json'))
+    assert expert['scan']['engine'] == 'triggerscope'
+    panel = editor.PropertyEditor()
+    qtbot.addWidget(panel)
+    panel._data = expert
+    panel._refresh_sections = lambda: None
+    applied = []
+
+    def accept(dialog):
+        dialog._try_apply()                                  # the form, unchanged
+        applied.append(dialog.result() == QDialog.Accepted)
+        return dialog.result()
+    monkeypatch.setattr(editor.SectionEditorDialog, 'exec_', accept)
+    panel._open_section_schema('scan')
+    assert applied == [True]                                 # no "Missing required"
+    assert panel._data['scan']['engine'] == 'triggerscope'   # kept
+    assert panel._data['scan']['scanDesigner'] is None
+    assert 'engine' in {f['key'] for f in editor.SECTION_SCHEMAS['scan']['fields']}

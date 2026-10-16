@@ -47,6 +47,9 @@ from imswitch.imcontrol.model.scan_program.bindings import (
     binding_lines, binding_problems, frames_per_step,
 )
 from imswitch.imcontrol.model.scan_program.densify import densify
+from imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine import (
+    duration_cap_refusal,
+)
 from imswitch.imcontrol.model.managers.scan_engines.loader import EngineChoice
 from imswitch.imcontrol.model.scan_program.engine import ScanEngineRefused, setup_channels
 from imswitch.imcontrol.model.scan_program.pattern_plugins import load_user_patterns
@@ -204,6 +207,8 @@ class ScanControllerExpert(SuperScanController):
         self._widget.sigProgramEdited.connect(self._onEdited)
         self._widget.sigPresetRequested.connect(self.makeFromPreset)
         self._widget.sigPlotClicked.connect(self.plotProgram)
+        if hasattr(self._widget, 'sigStopClicked'):
+            self._widget.sigStopClicked.connect(self.abortScan)
 
         # Progress while a run of this panel's lasts: a step engine counts its
         # steps (waits included), the rest by time against the duration.
@@ -492,14 +497,8 @@ class ScanControllerExpert(SuperScanController):
         return sum(segment.ticks for segment in schedule.segments) / schedule.rate_hz
 
     def _durationRefusal(self, compiled):
-        cap = getattr(self._setupInfo.scan, 'maxScanTimeMin', None)
-        if not cap:
-            return ''
-        seconds = self._duration_s(self._scheduleOf(compiled))
-        if seconds > float(cap) * 60:
-            return (f'Scan would take {format_seconds(seconds)}, above the '
-                    f'{float(cap):g} min cap (scan.maxScanTimeMin).')
-        return ''
+        return duration_cap_refusal(self._duration_s(self._scheduleOf(compiled)),
+                                    self._setupInfo)
 
     def _buildScanSignals(self):
         """What the run arms: refused, with the reason, before the run is

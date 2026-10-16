@@ -182,3 +182,45 @@ def test_composed_program_samples_against_independent_positions(outer, inner, ta
     actual = [waveform[s.start_tick + 10] for s in compiled.schedule.step_spans()]
     np.testing.assert_array_equal(actual, expected)
     assert sum(wire_frames(compiled.schedule, 'Camera')) == 6
+
+
+@pytest.mark.parametrize('step_s,ticks', [(15e-6, 2), (2.5e-6, 1), (2e-5, 2)])
+def test_the_scan_info_dwell_is_the_step_as_it_plays(step_s, ticks):
+    """Under a rounding policy a step plays as whole ticks (15 µs as 20 µs at
+    100 kHz); the scan info paired those ticks with the step asked for, and
+    the point detectors binned 15 timer samples onto 20-sample pixels
+    (review 2026-10-16). The dwell is the ticks' time now."""
+    p = ScanProgram((Loop('x', 'scan_x', 4),), (), step_s, timing_policy='advanced-compatible-v1')
+    schedule = realize(expand(p), 100_000)
+    info = scan_info_for(p, schedule, 100_000)
+    assert info['samples_per_pixel'] == ticks
+    assert info['dwell_time'] == pytest.approx(ticks / 100_000)
+
+
+def test_a_program_too_large_for_memory_is_refused_before_a_sample_is_built(monkeypatch):
+    """The NI-DAQ plays a program as one stream: a time-lapse with long
+    pauses is gigabytes of samples, built on the GUI thread for the panel's
+    report on every edit, and ended in a MemoryError (review 2026-10-16).
+    The compile's own peak is derived first and set against the free memory."""
+    import importlib
+    from imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine import (
+        waveform_memory_refusal,
+    )
+    from imswitch.imcontrol.model.scan_program.engine import ScanEngineRefused
+    p = pulse_program(0.0009)
+    # 1e6 samples, no drives, one detector line: 1 MB; 2 drives add 32 MB
+    assert waveform_memory_refusal(p, 1_000_000, 1e5, 0, 2_000_000) == ''
+    message = waveform_memory_refusal(p, 1_000_000, 1e5, 0, 500_000)
+    assert 'would take 0.001 GB' in message and '0.0005 GB of memory is free' in message
+    module = importlib.import_module(
+        'imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine')
+    driven = ScanProgram((Loop('x', 'scan_x', 3),),
+                         (DeviceDrive('X', table_loop='x', table_um=(0., 2., 1.),
+                                      motion=Motion(transition='jump', origin='absolute',
+                                                    restore='hold')),), 0.001)
+    monkeypatch.setattr(module, '_free_memory_bytes', lambda: 10)
+    with pytest.raises(ScanEngineRefused) as refused:
+        NIDAQ.compile(driven, CHANNELS)
+    assert any('memory is free' in reason for reason in refused.value.report.reasons())
+    monkeypatch.setattr(module, '_free_memory_bytes', lambda: None)    # unknown: no check
+    NIDAQ.compile(driven, CHANNELS)

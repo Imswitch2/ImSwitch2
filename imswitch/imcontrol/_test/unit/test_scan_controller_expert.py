@@ -952,3 +952,20 @@ def test_a_camera_takes_no_frames_on_a_trajectory(rig):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_the_panel_stops_a_run_from_its_own_stop_button(rig, qtbot):
+    """Run is disabled while a run is in progress, and the panel had no other
+    control: only the Recording panel's Stop reached the abort (review
+    2026-10-16). Stop is enabled for the run, ends it, and is disabled after."""
+    rig.scan.setProgram(_ms_resolft(rig, timepoints=60))   # long enough to stop
+    rig.widget.repeatBox.setChecked(True)                    # would run again unstopped
+    assert not rig.widget.stopButton.isEnabled()
+    rig.ended.clear()
+    rig.scan.runScanAdvanced()
+    qtbot.waitUntil(lambda: rig.scan.isRunning, timeout=10_000)
+    assert rig.widget.stopButton.isEnabled() and not rig.widget.scanButton.isEnabled()
+    rig.widget.stopButton.click()                             # the controller's own wiring
+    assert rig.scan._scanStopRequested
+    qtbot.waitUntil(lambda: bool(rig.ended), timeout=30_000)  # and no repeat after it
+    assert not rig.widget.stopButton.isEnabled() and rig.widget.scanButton.isEnabled()
