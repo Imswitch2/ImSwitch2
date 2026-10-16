@@ -122,18 +122,22 @@ def test_the_galvo_designer_says_why_a_scan_is_too_long():
     assert GalvoScanDesigner().checkSignalLength(analog, _cappedSetup()) is False
 
 
-def test_the_galvo_designer_refuses_a_dwell_shorter_than_one_sample():
-    """Half a DAQ sample per pixel rounded to a zero-sample pixel, which the
-    ScanInfoContract rejected as "scan_samples values must be positive" --
-    true, and no help to whoever typed the dwell."""
+def test_the_galvo_designer_refuses_a_dwell_of_no_samples():
+    """A zero-sample pixel, which the ScanInfoContract rejected as
+    "scan_samples values must be positive" -- true, and no help to whoever
+    typed the dwell -- is refused with the reason. Since the scan timing
+    plan's S0 a dwell under one sample is rounded up to one, as every dwell
+    is (the advanced-compatible-v1 rule; the timing note says it), so only a
+    dwell of no length is left to refuse."""
     analog, _ = _defaultWidgetScan()
-    analog['sequence_time'] = 5e-6     # sampleRate 100 kHz: one sample = 10 us
+    analog['sequence_time'] = 0.0
 
     refusal = GalvoScanDesigner().signalLengthRefusal(analog, _cappedSetup(30))
 
-    assert 'Pixel dwell time 5 µs is shorter than one sample' in refusal
-    analog['sequence_time'] = 1e-5
-    assert GalvoScanDesigner().signalLengthRefusal(analog, _cappedSetup(30)) == ''
+    assert 'Pixel dwell time 0 µs is shorter than one sample' in refusal
+    for dwell in (5e-6, 1e-5):          # sampleRate 100 kHz: one sample = 10 us
+        analog['sequence_time'] = dwell
+        assert GalvoScanDesigner().signalLengthRefusal(analog, _cappedSetup(30)) == ''
 
 
 def test_reading_the_scan_geometry_refuses_like_running_the_scan():

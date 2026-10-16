@@ -186,11 +186,13 @@ class GalvoScanDesigner(ScanDesigner):
     def signalLengthRefusal(self, scanParameters, setupInfo):
         """ Check that the signal would not be too large (to be stored in
         the RAM and to be generated and run inside a reasonable time). """
-        # The same rounding make_signal uses for scan_samples[0]: a dwell
-        # under half a sample becomes a zero-sample pixel, which the
-        # ScanInfoContract rejects with no hint at the cause.
+        # The count make_signal plays (samples_for_duration, rounded up: a
+        # dwell under one sample plays as one, and the timing note says so).
+        # Only a dwell of no length gives a zero-sample pixel, which the
+        # ScanInfoContract would reject with no hint at the cause.
         sampleRate = float(setupInfo.scan.sampleRate)
-        if int(round(scanParameters['sequence_time'] * sampleRate)) < 1:
+        if samples_for_duration(max(0.0, float(scanParameters['sequence_time'])),
+                                sampleRate) < 1:
             return (
                 f'Pixel dwell time {scanParameters["sequence_time"] * 1e6:g} µs '
                 f'is shorter than one sample at the scan sample rate '
