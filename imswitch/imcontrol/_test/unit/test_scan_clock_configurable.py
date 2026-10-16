@@ -140,10 +140,13 @@ def test_every_timer_sample_of_a_line_lands_in_exactly_one_pixel(rate_hz, dwell_
 
 
 class _FastRig(AdvancedRig):
-    def __init__(self):
+    def __init__(self, sampleRate=1_000_000, apdProps=None):
         setup = json.load(open(GALVO_SETUP))
         setup['scan'].update(scanWidgetType='Advanced', scanDesigner='GalvoScanDesigner',
-                             sampleRate=1_000_000)
+                             sampleRate=sampleRate)
+        for name, detector in setup['detectors'].items():
+            if detector.get('managerName') == 'APDManager':
+                detector['managerProperties'].update(apdProps or {})
         from imswitch.imcontrol.view import ViewSetupInfo
         from imswitch.imcontrol.controller.CommunicationChannel import CommunicationChannel
         from imswitch.imcontrol.controller.MasterController import MasterController

@@ -58,7 +58,7 @@
       ]
     },
     "liveUpdateIntervalMs": {
-      "description": "Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  Same meaning as for ``APDManager``; bounds GUI redraws only, never acquired data.",
+      "description": "Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  Same meaning as for ``APDManager``, the least a driver read fetches included; never changes acquired data.",
       "type": [
         "integer",
         "number",

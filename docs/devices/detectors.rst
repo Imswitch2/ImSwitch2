@@ -144,7 +144,7 @@ scan driven by ``NidaqManager``.
    * - ``liveUpdateIntervalMs``
      - float
      - ``50.0``
-     - Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  The image is filled in line by line, but pushing every line to the viewer floods the GUI on fast scans; this bounds the redraw rate independently of line rate and image size.  Raise it if the GUI still lags on a very fast rig, lower it for a more fluid preview on slow scans.  Does not affect acquired or recorded data.
+     - Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  The image is filled in line by line, but pushing every line to the viewer floods the GUI on fast scans; this bounds the redraw rate independently of line rate and image size.  Raise it if the GUI still lags on a very fast rig, lower it for a more fluid preview on slow scans.  It is also the least a driver read fetches: the counter is read in chunks of one interval of samples, not line by line (a 1 µs pixel makes lines of half a millisecond); ``0`` reads line by line.  Does not affect acquired or recorded data: the counts are the same either way.
    * - ``simulation_mode``
      - bool
      - ``false``
@@ -363,7 +363,7 @@ card.  Image is built during a scan driven by ``NidaqManager``.
    * - ``liveUpdateIntervalMs``
      - float
      - ``50.0``
-     - Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  Same meaning as for ``APDManager``; bounds GUI redraws only, never acquired data.
+     - Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  Same meaning as for ``APDManager``, the least a driver read fetches included; never changes acquired data.
    * - ``simulation_mode``
      - bool
      - ``false``

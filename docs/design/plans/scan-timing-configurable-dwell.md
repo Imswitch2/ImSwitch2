@@ -1,4 +1,4 @@
-# Configurable scan timing: findings and plan (draft 4, 2026-10-16: S0, S1, S2, S5 (TTL shift), S6 built)
+# Configurable scan timing: findings and plan (draft 5, 2026-10-16: S0-S6 built; open items in §9)
 
 Lenny's observation: scans at 10 µs dwell work, 15 µs produces broken
 images, `scan.sampleRate` cannot be changed, and a PCIe-6363 could play a
@@ -244,7 +244,7 @@ Setup: `scan.sampleRate` keeps its name; `nidaq.detectionRateHz` is new
 `timing_grid_s` from the setup; `scan_info_for` and the schedule already
 take a rate. The capability report names the grid and its source.
 
-**S3 -- fast lines.** At 1 µs a 512-pixel line is 0.5 ms: the detectors'
+**S3 -- fast lines. DONE 2026-10-16:** `detectors/_read_ahead.py` (`ReadAhead`, chunk = one `liveUpdateIntervalMs` of samples, never past the task's end), APD and PMT; per-line emission and the workers' bookkeeping unchanged. Measured on the simulated rig, 256 × 128 at 1 µs (162 ms of samples): 130 driver reads per detector → 4, image identical count for count with the same seed. The driver-side latency saved is the rig's to measure. At 1 µs a 512-pixel line is 0.5 ms: the detectors'
 one-read-per-line loop (`APDManager.py:1531`) makes ~2000 driver reads per
 second per detector. Read in chunks of a declared minimum duration
 (several lines, split afterwards), keep per-line emission, and throttle
@@ -380,19 +380,26 @@ kind is the read cadence (S3).
 ## 9. Decisions and open questions
 
 Decided (Lenny, 2026-10-16): D2 stays a per-scan field for now, because the
-lag changes with the scan speed; D3 moves to the positioner; the TTL lines
-are shifted by the lag (S5); the sum projection is a per-dimension checkbox
-in the live view (S6), to be folded in before the work begins.
+lag changes with the scan speed; the TTL lines are shifted by the lag (S5);
+the sum projection is a per-dimension checkbox in the live view (S6).
 
-Open:
+Taken as the plan's defaults while building (Lenny said "proceed until
+done"), each reversible:
 
-1. Refuse or snap an off-grid dwell in the Advanced panel? (The plan says
-   snap and say so in Advanced, refuse in Expert; one rule would be simpler.)
-2. Is a per-setup `detectionRateHz` wanted now, or does 1 MHz stay the only
-   timer rate until a rig needs more?
-3. Which rig tests first: the 15 µs case at S0 (no clock change), or S1 on
-   the 6363 straight away?
-4. S5: shift the DO stream on the sample grid (simple, coarse at 100 kHz)
-   or by the start-trigger delay (10 ns, needs the hardware check)?
-5. S6: should the checkbox also offer *max*, as the detectors' hidden mode
-   does, or is *sum* enough?
+1. An off-grid dwell is rounded up in Advanced (the policy's `ceil`, never
+   shorter) and the timing note says so; Expert refuses it (strict-v1).
+2. `nidaq.detectionRateHz` exists, absent = 1 MHz as before.
+3. The TTL shift is on the sample grid (exact at 1 MHz, 10 µs steps at
+   100 kHz).
+4. The checkbox offers *sum* only, as asked.
+
+Still open for Lenny:
+
+1. **D3:** the positioner's declared `settleTimeS` is now D3's floor; remove
+   the D3 field altogether? (Old scan files carry `d3step_delay`.)
+2. **The start-trigger delay** for the TTL shift (10 ns resolution instead of
+   the sample grid) -- needs a scope on the 6363.
+3. **Which rig test first:** 15 µs at 100 kHz (S0, no clock change), then
+   1 MHz on the 6363 (S1), then the lag shift at 10 and 20 µs (S5).
+4. **The PMT's own line-step sum** before display stays until its live
+   buffer carries the stack (S6 note).

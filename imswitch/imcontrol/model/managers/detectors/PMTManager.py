@@ -20,6 +20,7 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
+from ._read_ahead import ReadAhead, read_ahead_samples
 from ._visit_order import VisitOrder
 from ._trajectory_measure import (
     TrajectoryDetectorMixin, TrajectoryMeasurement, is_trajectory, run_trajectory,
@@ -1144,25 +1145,33 @@ class ScanWorker(Worker):
             pixel_sizes.append(pixel_sizes[0])
         self._manager.setPixelSize(pixel_sizes)
 
+    def _reader(self):
+        """The task's samples, fetched in chunks of one live-update interval
+        (``_read_ahead``); made on first use, once the sample plan is known."""
+        reader = self.__dict__.get('_readAhead')
+        if reader is None:
+            throttle = getattr(self._manager, '_liveThrottle', None)
+            chunk = read_ahead_samples(getattr(throttle, 'interval_s', 0.0),
+                                       self._manager._detection_samplerate)
+            reader = ReadAhead(self._fetchSamples, getattr(self, '_samples_total', None), chunk)
+            self.__dict__['_readAhead'] = reader
+        return reader
+
+    def _fetchSamples(self, count, kind):
+        if self._manager._simulation_mode:
+            return self.randomInput(count)
+        return self._manager._nidaqManager.readInputTask(
+            self._name, count,
+            generation=self._inputTaskGeneration,
+        )
+
     def throwdata(self, datalen):
         if datalen > 0:
-            if self._manager._simulation_mode:
-                _ = self.randomInput(datalen)
-            else:
-                _ = self._manager._nidaqManager.readInputTask(
-                    self._name, datalen,
-                    generation=self._inputTaskGeneration,
-                )
+            self._reader().take(datalen, 'throw')
             self._samples_read += datalen
 
     def readdata(self, datalen):
-        if self._manager._simulation_mode:
-            data = self.randomInput(datalen)
-        else:
-            data = self._manager._nidaqManager.readInputTask(
-                self._name, datalen,
-                generation=self._inputTaskGeneration,
-            )
+        data = self._reader().take(datalen, 'line')
         self._samples_read += datalen
         return data
 

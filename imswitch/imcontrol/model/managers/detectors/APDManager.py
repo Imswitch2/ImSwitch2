@@ -20,6 +20,7 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
+from ._read_ahead import ReadAhead, read_ahead_samples
 from ._mock_sample import MockSample
 from ._visit_order import VisitOrder
 from ._trajectory_measure import (
@@ -1335,23 +1336,45 @@ class ScanWorker(Worker):
             ),
         )
 
+    def _reader(self):
+        """The task's samples, fetched in chunks of one live-update interval
+        (``_read_ahead``); made on first use, once the sample plan is known."""
+        reader = self.__dict__.get('_readAhead')
+        if reader is None:
+            throttle = getattr(self._manager, '_liveThrottle', None)
+            chunk = read_ahead_samples(getattr(throttle, 'interval_s', 0.0),
+                                       self._manager._detection_samplerate)
+            reader = ReadAhead(self._fetchSamples, getattr(self, '_samples_total', None), chunk)
+            self.__dict__['_readAhead'] = reader
+            self.__dict__['_fetchedLast'] = self._last_value
+        return reader
+
+    def _fetchSamples(self, count, kind):
+        """One driver read (or simulated one) of the next ``count`` samples."""
+        reader = self.__dict__['_readAhead']
+        self._pending_read = {"kind": kind, "start": int(reader.fetched), "count": int(count)}
+        if self._manager._simulation_mode:
+            # the simulated counter continues where the last fetch ended,
+            # not where the worker has consumed to
+            data = self.randomInput(count, start=reader.fetched,
+                                    base=self.__dict__.get('_fetchedLast', 0))
+        else:
+            data = self._manager._nidaqManager.readInputTask(
+                self._name, count,
+                generation=self._inputTaskGeneration,
+            )
+        data = np.asarray(data)
+        if data.size:
+            self.__dict__['_fetchedLast'] = data[-1]
+        self._pending_read = None
+        return data
+
     def throwdata(self, datalen):
         """ Throw away data with length datalen, save the last value,
         and add length of data to total samples_read length.
         """
         if datalen > 0:
-            self._pending_read = {
-                "kind": "throw",
-                "start": int(self._samples_read),
-                "count": int(datalen),
-            }
-            if self._manager._simulation_mode:
-                throwdata = self.randomInput(datalen)
-            else:
-                throwdata = self._manager._nidaqManager.readInputTask(
-                    self._name, datalen,
-                    generation=self._inputTaskGeneration,
-                )
+            throwdata = self._reader().take(datalen, 'throw')
             if self._manager._debug_mode:
                 self.__plot_curves(plot=True, xvals=range(int((self._samples_read) / 10),
                                                           int((self._samples_read + datalen) / 10)),
@@ -1364,25 +1387,13 @@ class ScanWorker(Worker):
     def readdata(self, datalen):
         """ Read data with length datalen and add length of data to total samples_read length.
         """
-        self._pending_read = {
-            "kind": "line",
-            "start": int(self._samples_read),
-            "count": int(datalen),
-        }
-        if self._manager._simulation_mode:
-            data = self.randomInput(datalen)
-        else:
-            data = self._manager._nidaqManager.readInputTask(
-                self._name, datalen,
-                generation=self._inputTaskGeneration,
-            )
+        data = self._reader().take(datalen, 'line')
         if self._manager._debug_mode:
             self.__plot_curves(plot=True, xvals=range(int((self._samples_read) / 10),
                                                       int((self._samples_read + datalen) / 10)),
                                signal=self._ploty * np.ones(int((datalen) / 10)),
                                style='k-')
         self._samples_read += datalen
-        self._pending_read = None
         return data
 
     def samples_to_pixels(self, line_samples):
@@ -1578,7 +1589,10 @@ class ScanWorker(Worker):
             )
             self._inputTaskClosed = True
 
-    def randomInput(self, datalen):
+    def randomInput(self, datalen, start=None, base=None):
+        """``datalen`` simulated cumulative counts, from sample ``start``
+        (default: what the worker has consumed) on top of count ``base``
+        (default: the last consumed value)."""
         datalen = int(datalen)
         if datalen <= 0:
             return np.empty((0,), dtype=np.int64)
@@ -1587,14 +1601,16 @@ class ScanWorker(Worker):
         mean_per_sample = max(0.0, self._manager._mock_photon_count_mean / frac)
         max_per_sample = max(1, int(np.ceil(self._manager._mock_photon_count_max / frac)))
         if self._mock_positions is not None:
-            mean_per_sample = mean_per_sample * self._mock_brightness(datalen)
+            mean_per_sample = mean_per_sample * self._mock_brightness(datalen, start)
         increments = self._rng.poisson(mean_per_sample, size=datalen).astype(np.int64)
         increments = np.clip(increments, 0, max_per_sample)
-        return np.cumsum(increments, dtype=np.int64) + int(self._last_value)
+        base = self._last_value if base is None else base
+        return np.cumsum(increments, dtype=np.int64) + int(base)
 
-    def _mock_brightness(self, datalen):
-        """The mock sample under the beam for the next ``datalen`` samples."""
-        start = int(self._samples_read)
+    def _mock_brightness(self, datalen, start=None):
+        """The mock sample under the beam for ``datalen`` samples from
+        ``start`` (default: what the worker has consumed)."""
+        start = int(self._samples_read if start is None else start)
         scan_index = np.arange(start, start + datalen) // self._frac_scan_det_rate
         coords = []
         for positions in self._mock_positions:
