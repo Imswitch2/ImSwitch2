@@ -313,6 +313,7 @@ def test_linked_enable_partial_failure_best_effort_darkens_all_ports(monkeypatch
 
 @pytest.mark.nohardware
 def test_legacy_driver_transport_failure_does_not_fake_enabled_off():
+    pytest.importorskip("pyvisa")  # the legacy driver imports pyvisa constants
     from imswitch.imcontrol.model.lantzdrivers.cobolt.cobolt0601 import Cobolt0601_f2
 
     driver = object.__new__(Cobolt0601_f2)
@@ -327,6 +328,7 @@ def test_legacy_driver_transport_failure_does_not_fake_enabled_off():
 
 @pytest.mark.nohardware
 def test_legacy_driver_optional_unsupported_query_still_uses_local_state():
+    pytest.importorskip("pyvisa")  # the legacy driver imports pyvisa constants
     from imswitch.imcontrol.model.lantzdrivers.cobolt.cobolt0601 import Cobolt0601_f2
 
     driver = object.__new__(Cobolt0601_f2)

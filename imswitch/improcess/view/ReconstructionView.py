@@ -275,6 +275,22 @@ class ReconstructionView(QtWidgets.QFrame):
         self.reconList.setCurrentItem(listItem)
         return listItem
 
+    def replaceData(self, oldObj, newObj, name) -> bool:
+        """Put ``newObj`` where ``oldObj`` is listed, under ``name``.
+
+        Returns whether ``oldObj`` was found; the caller adds ``newObj`` as a
+        new entry when it was not (the user removed it while the run went).
+        The entry keeps its place and its selection, so a table refined step
+        by step stays one entry.
+        """
+        for i in range(self.reconList.count()):
+            item = self.reconList.item(i)
+            if item.data(1) is oldObj:
+                item.setData(1, newObj)
+                item.setText(name)
+                return True
+        return False
+
     def getCurrentItemIndex(self):
         currentItem = self.reconList.currentItem()
         if currentItem is None:

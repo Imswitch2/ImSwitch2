@@ -354,7 +354,9 @@ class FileIOController(ImProcessWidgetController):
             return 'cancelled'
 
         try:
-            result = read_generic_csv(dataPath, **kwargs)
+            result = read_generic_csv(
+                dataPath, preview_pixel_size_nm=self._previewPixelSizeNm(), **kwargs
+            )
         except Exception as exc:
             self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
             return 'empty'
@@ -368,11 +370,41 @@ class FileIOController(ImProcessWidgetController):
         publishes its output.
         """
         try:
-            result = read_localizations(dataPath)
+            result = read_localizations(
+                dataPath, preview_pixel_size_nm=self._previewPixelSizeNm()
+            )
         except Exception as exc:
             self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
             return 'empty'
         return self._publishLocalizations(result, dataPath, localizationFormat)
+
+    def _previewPixelSizeNm(self) -> float:
+        """The preview bin the SMLM localizer's panel is set to.
+
+        An imported table is shown exactly as a localized one would be, so
+        it takes the same *Rendering -> Preview pixel size*; the active
+        reconstructor's parameter widget is where that value lives. The
+        localizer's default when no panel is up to ask.
+        """
+        from imswitch.improcess.reconstructors.smlm.localizer import (
+            preview_pixel_size_nm,
+        )
+
+        # Through __dict__: on a controller whose Qt base __init__ has not run
+        # (tests build one without it) a plain getattr raises instead of
+        # answering None.
+        widget = self.__dict__.get('_widget')
+        getter = getattr(getattr(widget, 'parTree', None), 'get_values', None)
+        values = {}
+        if callable(getter):
+            try:
+                values = dict(getter() or {})
+            except Exception:
+                self._logger.debug(
+                    'Could not read the preview pixel size from the parameter widget',
+                    exc_info=True,
+                )
+        return preview_pixel_size_nm(values)
 
     def _publishLocalizations(self, result, dataPath, localizationFormat) -> str:
         """Hand a freshly read localization table to the reconstruction list."""
