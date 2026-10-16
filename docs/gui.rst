@@ -237,9 +237,11 @@ Summing over line steps, z or time in the view
 
 A scan with line steps, a z stack or a time series reaches the viewer as a
 stack with a slider. While a live frame has such a dimension, a box for it
-appears under the levels tool on the left: **Sum line steps**, **Sum z**,
-**Sum t**. Ticked, every live layer with that dimension shows the sum over
-it, levelled anew; unticked, the slider is back. A 2-D scan shows no boxes.
+appears under the levels tool on the left, named as the detector names the
+dimension: **Sum line steps**, **Sum z**, **Sum time**. Ticked, every live
+layer with that dimension shows the sum over it, levelled anew; unticked, the
+slider is back. A 2-D scan shows no boxes. The panel can be hidden from its
+title bar, which unticks every sum; it cannot be closed.
 It changes what is shown only: the frame the detector delivers and the
 recording keep every dimension. The sum is taken in floating point, so
 counts never wrap, and **Auto levels** runs on the summed image, so a
@@ -916,9 +918,12 @@ declares one).  **Plot** previews the generated waveforms, with **include TTL** 
 overlay the device gating.
 
 With point detectors, a line-step scan produces one frame per scan holding all
-steps, saved as ``(T, C, Y, X)`` with one channel per step.  The PMT's live
-view shows the steps summed into one image, but its recordings keep them as
-separate channels, as the APD's do — see :doc:`devices/detectors`.
+steps, saved as ``(T, C, Y, X)`` with one channel per step.  Outside a
+recording the PMT's live view shows the steps as a stack, as the APD's does
+(the **Sum line steps** box sums them); while it records, it shows its own
+sum of the steps, so the box comes and goes with the recording. Its
+recordings keep the steps as separate channels, as the APD's do — see
+:doc:`devices/detectors`.
 
 .. image:: ./images/auto/ScanWidgetAdvanced.png
    :align: center

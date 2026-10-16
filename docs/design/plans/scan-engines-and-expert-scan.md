@@ -2408,6 +2408,46 @@ the check). Open for Lenny: 1 (independent scroll of editor and check), 3
 collisions highlighted), 6 (why a choice is unavailable on this rig, which
 outputs the chosen engine plays).
 
+### 7.14 Rig-readiness review (2026-10-16)
+
+Before the rig test, with the scan-timing work and main (#70, #68) on this
+branch, four read-only reviewers went over the NI-DAQ path, the designers,
+the Expert panel and engines, and the live view, setups and docs. Nothing
+blocked the daily scans. The should-fix items for this plan, each fixed with
+a test that fails without the fix:
+
+1. **No Stop on the Expert panel.** Run is disabled while a run is in
+   progress and nothing else reached `abortScan`. A **Stop** beside Run,
+   enabled for the run: a step engine stops at its next step, the NI-DAQ
+   finishes the pass in progress and starts nothing more.
+2. **An integer channel meant two things.** `setup_channels` kept the raw
+   integer, the NI-DAQ and the Advanced panel read the `Dev1/port0/line<N>`
+   shorthand: an NI-DAQ laser written `"digitalLine": 1` was owned by the
+   Teensy, a Teensy laser written `"digitalLine": 3` was played on
+   Dev1/port0/line3. Now one reading per device (`device_digital_line`,
+   `device_analog_channel`): a pulse generator's channel on a
+   pulse-generator laser, the shorthand on everything else; the NI-DAQ
+   never targets a pulse-generator laser; the Advanced panel greys a line
+   by the engine that plays it (the leader, not the composite).
+3. **EtSnouty events at numpy coordinates** failed in `json.dumps` and
+   never ran their program; serialized as plain numbers.
+4. **NI-DAQ programs densified on the GUI thread with no size check** (an
+   hour of a time-lapse: gigabytes, a MemoryError in the report's timer).
+   The compile's peak (positions and volts per drive and power level, a
+   byte per line) is set against the free memory before a sample is built,
+   and refused with both numbers; `scan.maxScanTimeMin` is checked before
+   it too (one rule, `duration_cap_refusal`, for the panel and the engine).
+   A program that fits still builds on the GUI thread: long pauses make the
+   panel slow until the NI-DAQ can play a pause as anything but samples.
+5. **The Expert scan info paired rounded ticks with the requested step**
+   under `advanced-compatible-v1`; the dwell is the ticks' time now.
+
+Minor, left open and on the rig plan: a step board that never answers STOP
+holds the run when it declares no heartbeat; a Teensy with a wrong port runs
+on its mock (`useMockOnFailure` defaults to true) while the report says it is
+runnable; the hardware status names a step board's `aux/...` lines as an
+NI-DAQ board.
+
 ## Appendix: today's hardware, in short (from draft 1)
 
 - **NI-DAQ:**

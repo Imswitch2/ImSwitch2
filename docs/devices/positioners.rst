@@ -746,6 +746,11 @@ Beta scan designers also read ``minVolt`` / ``maxVolt`` of each scanned
 positioner and refuse a scan whose signal would leave that range
 (*Signal voltages outside scanner ranges*).
 
+``settleTimeS`` (seconds, optional) is read by the galvo scan designer, not
+by this manager: on a slice axis, every slice of a 3-D scan starts after it
+(the longest declaration wins; :doc:`../setupinfo-reference`). Absent, no
+slice pause.
+
 **PositionerInfo fields used**
 
 * ``axes`` — must have length 1 (otherwise ``RuntimeError``).

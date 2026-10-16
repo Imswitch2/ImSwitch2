@@ -30,7 +30,7 @@ are in their plans.
 |---|---|---|---|
 | A1 | Galvo point scan (STED) | An Advanced scan you ran before, same file, same sample | The image matches the old one; the timing note lists what plays differently; the progress bar moves; Stop ends after the current frame |
 | A2 | Stepped camera scan (MoNaLISA, Beta) | An Advanced scan with line steps, recorded | Same frame count and layout as before; reconstruction unchanged. A camera that is off in some line steps now has a repeat axis sized by the steps it takes part in -- check the file opens and reconstructs |
-| A3 | Galvo + APD | SimplePointScan: Live overview, draw a region, Acquire and save with T frames | As before; the file holds T frames |
+| A3 | Galvo + APD | SimplePointScan: Live overview, draw a region; then a **Scan-lapse** recording of T frames in the Recording panel | As before; the file holds T frames |
 | A4 | Any | Record any scan, open the file | `ScanStage:scan_program` (Expert) or the Advanced dicts, and `ScanStage:scan_schedule`: the policy, the grid and its source, what ran differently |
 | A5 | Any rig with an inverted TTL input (a shutter, a laser enable) | Set its `ttlActiveLevel: "low"`; switch by hand, then scan | On the scope, the line is high when the GUI says off -- by hand and in a scan |
 | A6 | Any rig with a laser on a non-NI-DAQ line | Open the Advanced panel | That laser is greyed with the reason, and a scan that fires it is refused (it used to never fire, silently) |
@@ -46,13 +46,14 @@ starts with the scan.
 
 | # | Rig | Do | Passes if |
 |---|---|---|---|
-| T1 | Galvo + APD | Your 10 µs and 20 µs Advanced scans, same D2 as before | The images match the old ones, except that an edge pixel that was dark on fast scans is lit. Scope: each laser gate's edges trail the galvo line by D2 (whole 10 µs samples); the line and frame clock outputs trail by the same D2 |
+| T1 | Galvo + APD | Your 10 µs and 20 µs Advanced scans, same D2 as before | The images match the old ones, except that an edge pixel that was dark on fast scans is lit. Scope: each laser gate's edges trail the galvo line by D2 (whole 10 µs samples); the line and frame clock outputs trail by the same D2; an AOM's per-line-step power (e.g. the 775 AOM's analog channel) trails by the same D2 as its gate. If your rig used a D3 value, put it in `scan.scanDesignerParams.d3step_delay` (it settles a 2-D scan before its first line, as the field did) |
 | T2 | Galvo + APD | The same at 15 µs (the original failure) | The timing note says *Dwell 15 µs runs as 20 µs*; the image is right -- no shear, no drift from line to line |
 | T3 | Galvo + APD | D2 = 3 µs, or any value that is not a multiple of 10 | The timing note says the lag plays as 0 µs on the digital lines and 3 µs on the detectors; the recording's `ScanStage:lag` says the same |
 | T4 | Galvo + APD | A scan with 2 or 3 line steps | A **Sum line steps** box appears under the levels tool and nothing else; ticked, the view shows the summed image and its levels follow; the file keeps every step. Then a 2-D scan: the box is gone |
 | T5 | Galvo, 3-D | Declare `settleTimeS` (e.g. `0.002`) on the Z positioner; scan 3 planes | The D3 field is gone; the timing note says *Every slice starts after a 2000 µs pause: … declares settleTimeS 0.002 s*; each plane is sharp from its first line |
 | T6 | Stage, Beta (MoNaLISA) | A scan you ran before; then the same at a 5.03 ms dwell | Same frames as before. At 5.03 ms the scan ends normally with one frame per pixel (a dwell whose sample count is float noise -- 503.00000000000006 -- now counted the same way by the stage and its TTL designer) |
-| T7 | A rig with `nidaq.startTrigger: false` and a point detector | The same scan three times | No shift between the three images: the timer now starts with the scan instead of running free |
+| T7 | Galvo + APD (any `nidaq.startTrigger`) | The same scan three times, at 100 kHz | No shift between the three images: the timer starts with the scan, and the analog output's first sample a fixed time after it (it was on the free-running 100 kHz timebase). A scope check settles it: `ao/StartTrigger` routed to a PFI pin against the first AO step, over ten scans |
+| T6b | Stage, Beta (Base or MoNaLISA panel) | A camera pulse from 0 to the full dwell | Refused, naming the camera: such a pulse never falls between pixels (one trigger per line). End it a sample earlier |
 | T8 | Any | The first scan after starting | No refusal starting *Cannot verify the … task*. If one appears, note the task and the message: the driver does not report that property on this board, and the check is relaxed for that task (a one-line change) |
 
 ## P1 -- a faster clock on the PCIe-6363
@@ -74,7 +75,7 @@ starts with the scan.
 | B2 | Beta stage | **Serpentine** order | Rows are not mirrored in the image |
 | B3 | Beta stage | Intra-pixel positioner move (line program) | The stage moves inside the pixel as programmed (scope on the positioner AO); it used to do nothing |
 | C1 | Snouty | Expert **MS-RESOLFT** preset, recorded | Frames = cycles x planes x timepoints; the first frame is sharp (the run starts with the approach span the report names, so no window opens while the stage travels); SNOUTY reconstructs |
-| C2 | Snouty | MS-RESOLFT with timepoints and a **pause** | Through the pause every AO **holds** its position on the scope. Before review round 1 a timed wait drove every positioner to 0 V and back -- a safety item, check it first |
+| C2 | Snouty | MS-RESOLFT with timepoints and a **pause** | Through the pause every AO **holds** its position on the scope. Before review round 1 a timed wait drove every positioner to 0 V and back -- a safety item, check it first. Keep the pauses short: the NI-DAQ plays a pause as samples, so a long one makes the panel slow, and one beyond the free memory is refused with the numbers |
 | C3 | Camera rig | Expert **pulse sequence** | Pulse widths and gaps on the scope equal the report's realized schedule; the camera exposes inside its pulse |
 | C4 | Any | Stop an Expert run; then move a positioner by hand; then run again | The positioner widget shows where the run left the stage; the next run starts from there |
 | C5 | A laser with `calibCsvPath` | A `level` event inside the step | The laser's AO (or measured power) follows the calibration during the event and is 0 elsewhere |
@@ -86,7 +87,7 @@ starts with the scan.
 
 | # | Do | Passes if |
 |---|---|---|
-| D1 | Expert pulse program on a laser wired to the Teensy, with `scan.engine` left on the NI-DAQ | The report says *Runnable on teensy*; the Teensy line pulses as the report says (1 µs grid); a time off the grid is refused with its neighbours |
+| D1 | Expert pulse program on a laser wired to the Teensy, with `scan.engine` left on the NI-DAQ | The report says *Runnable on teensy*; the Teensy line pulses as the report says (1 µs grid); a time off the grid is refused with its neighbours. First check the log: the Teensy opened its port (with a wrong port it runs on its mock, `useMockOnFailure`, and the report still says runnable) |
 | D2 | Stop it mid-run; let one finish | Every Teensy line is at its off level afterwards. An active-low line on the Teensy is refused before the run: its stop drives every channel low, which would switch it on |
 | D3 | Switch the Teensy laser by hand | Follows its polarity |
 | D4 | A program with the NI-DAQ's galvo and the Teensy's laser | Refused, naming which device is on which engine (they cannot run one program together yet) |

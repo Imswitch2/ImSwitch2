@@ -112,14 +112,14 @@ above edit them: one program, two views.
 The program
 ===========
 
-**Loops** (outermost first)
+**Dimensions** (outermost first; the model's loops)
     An id, a kind -- ``scan_x``, ``scan_y``, ``scan_z``, ``cycle``,
     ``plane``, ``time``, ``condition`` (line steps, at any level), ... -- and a
     count. **Order** is forward, reverse or serpentine; a serpentine runs
     back on every other pass of the loops right outside it, which
     **Alternates with** names.
 
-**Drives**
+**Positioners** (the model's drives)
     A device's position, in µm, is its **Offset** plus a weight per loop
     (µm per count): ``{cycle: 0.25, plane: 0.5}`` on one device visits
     0, 0.5, 1.0, 0.25, 0.75, 1.25 -- two cycles of three planes. One loop can
@@ -139,7 +139,7 @@ The program
     still unless **During** says ``any``; **Still** names the devices that
     must stand still under it (blank: every drive).
 
-**Waits**
+**Pauses** (the model's waits)
     A pause or an external trigger before the run, before every step, or
     before every iteration of a loop. Every drive holds where it is through
     a wait.
@@ -395,7 +395,8 @@ next run's captured origin, and a move by hand, start from there. Where that
 is not known, the log says so and the tracked position is left as it was.
 
 On a step engine the engine runs the compiled program itself, and **Stop**
-stops it at its next step. A program whose devices are on ``scan.engine``
+(beside **Run**, enabled while a run is in progress) stops it at its next
+step; on the NI-DAQ, the pass in progress finishes and nothing more starts. A program whose devices are on ``scan.engine``
 and the engines wired to follow it runs on all of them as one: ``scan.engine``
 leads, and every follower is stepped by its pulses
 (:doc:`devices/scan_engines`); devices on engines that do not run together
@@ -420,12 +421,12 @@ routine. The run carries the event (``ScanEvent:triggeredBy``). See
 Saving and opening
 ==================
 
-**Save Scan** writes the program (``scan-program/1``) with its timing policy.
+**Save…** writes the program (``scan-program/1``) with its timing policy.
 The file declares that it needs the Expert panel, so the Advanced panel
 refuses it, saying why. A file is read strictly: an unknown key, a malformed
 value or a missing timing policy refuses it, with every problem.
 
-**Load Scan** also opens an **Advanced scan file**, as the program the
+**Open…** also opens an **Advanced scan file**, as the program the
 Advanced panel would run on this setup -- the same waveforms and lines. While
 it is unchanged it is saved in the Advanced format too, so it still opens on
 the Advanced panel; once edited, it is an Expert program.

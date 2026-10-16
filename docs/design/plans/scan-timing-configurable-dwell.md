@@ -239,7 +239,9 @@ per pixel at 100 kHz and one per pixel at 1 MHz.
    delay the stream's end cannot hold rather than cut a line's last edge.
 8. **Repeated scans** restart from the same sample plan. The timer is armed
    on `ao/StartTrigger` with the detectors whenever there is analog output,
-   so every scan's detector bins start at the same phase.
+   and the analog output is on the onboard clock at every rate (its first
+   sample a fixed time after that trigger, §11), so every scan's detector
+   bins start at the same phase to the waveform.
 9. **Electronic versus physical.** Rule 2 is electronic. The physical rule
    stays `step / dwell ≤ vel_max` on the realized dwell, and a stepped fast
    axis needs `dwell ≥ move + settle`. The panel says which rule refused.
@@ -518,3 +520,36 @@ look at S6, and an audit Lenny asked for: does any of this break the Beta
    `samples_for_duration`, as do Beta's move, settle and return and its
    time estimate (`test_beta_sample_counts_agree.py`, which fails with the
    old TTL designer). The Beta goldens are unchanged.
+
+## 11. Rig-readiness review (2026-10-16, with the engines)
+
+The same four reviewers (§7.14 of the engines plan). For this plan, each
+fixed with a test that fails without the fix:
+
+1. **The phase at 100 kHz.** The analog output played on the free-running
+   100 kHz timebase: its first sample came anywhere within 10 µs of the
+   start trigger, the timer's first pulse 20 ns after it -- rule 8 held
+   only off 100 kHz. The analog output now takes the onboard clock at every
+   rate (100 MHz / 1000 at 100 kHz, the same samples); a digital-only scan
+   keeps the timebase at 100 kHz (M-series boards have no onboard DO clock).
+2. **A laser's analog power was not delayed with its gate** (the
+   per-line-step power of an AOM: the gate open for the lag at every line's
+   end with the power off). Delayed together now.
+3. **The reads to the task's last sample** (S3): a task one sample short
+   (an input task missing the timer's first edge) stalled the scan's end
+   for the read timeout and lost the frame. The reads stop where the raster
+   plan ends (`raster_samples_consumed`, checked against the real worker in
+   2-D and 3-D, galvo and Beta).
+4. **A task leaked when its configuration raised**; every builder closes it.
+5. **The ratio rule refused camera rigs** for the timer they do not have.
+6. **The realized dwell was not in the file** (`ScanStage:dwell_time` now).
+7. **A camera pulse filling the Beta TTL cycle** gave one edge per line;
+   the exact count had closed the accidental one-sample gap noisy dwells
+   used to leave. Refused with the reason.
+8. **D3 had also settled 2-D scans** before their first line; a setup's or
+   a script's value does again. A pause on a stepped fast axis is not
+   played, and the note says so instead of claiming it.
+9. **The timing note compared floats exactly** ("Dwell 70 µs runs as
+   70 µs"); within the grid's tolerance now.
+10. **A startup AttributeError** on setups with `dwell_ms` (the panel seeded
+    its fields before its serializer existed; already on main).

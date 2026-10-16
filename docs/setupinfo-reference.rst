@@ -362,9 +362,12 @@ Key fields:
   ``phase_delay`` (µs) and ``dwell_ms``, the dwell they
   open with when their own default does not suit the rig (the Advanced panel
   opens at 0.02 ms, made for galvos; a stepped stage needs more).
-  ``d3step_delay`` (µs) is read only as a fallback: the pause before every
-  slice of a 3-D galvo scan is the slice positioner's ``settleTimeS`` (in its
-  ``managerProperties``, seconds); declare it there.
+  ``d3step_delay`` (µs) still counts: the pause before every slice of a 3-D
+  galvo scan is the longest of it, a per-scan ``d3step_delay`` and the slice
+  positioners' ``settleTimeS`` (in their ``managerProperties``, seconds) --
+  declare it there -- and a 2-D scan starts after a ``d3step_delay``, as it
+  did before the panel's D3 field went. A stepped fast axis plays no such
+  pause; the timing note says so.
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
@@ -372,8 +375,10 @@ Key fields:
   waveforms are built and played at it, and it is the Expert panel's timing
   grid. Every dwell is a whole number of its samples; the pixel rate is
   ``sampleRate`` divided by the samples per pixel. ``100000`` is what every
-  setup ran at; another rate is played from the board's 100 MHz timebase
-  divided down. Each task is checked as the driver configured it: the rate
+  setup ran at. The analog output is clocked from the board's 100 MHz
+  timebase divided down at every rate, 100 kHz included, so its first sample
+  comes a fixed time after the scan's start, which the detectors' timer
+  starts on too; the digital output follows its clock. Each task is checked as the driver configured it: the rate
   must be within what the driver reports for that task and its channels
   (four analog outputs update slower than one), the rate the driver
   configured is read back and a mismatch refuses the scan, and a check the
@@ -488,7 +493,7 @@ Controls NI-DAQ card behavior.
 
 Key fields:
 
-* ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
+* ``timerCounterChannel``: Counter that generates the pulse train the point detectors (APD, PMT) sample on (``nidaq.detectionRateHz``, 1 MHz by default) (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
 * ``startTrigger``: Start the digital output on the analog output's start
   trigger (``true`` / ``false``). The point detectors and their timer start
   on it whenever the scan has analog output, whatever this says.
