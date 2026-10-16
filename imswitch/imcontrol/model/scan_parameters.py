@@ -26,6 +26,7 @@ Dict formats:
 from __future__ import annotations
 
 import sys
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 import numpy as np
@@ -43,25 +44,36 @@ DWELL_ROUNDING = 'ceil'
 GRID_RELATIVE_ERROR = 2 * sys.float_info.epsilon
 
 
+#: A product of seconds and rate within this many samples of a whole or a
+#: half is taken as it: times are typed as decimals (0.015 ms), and the
+#: float that carries one (1.4999999999999999e-05) must not land its
+#: product on the wrong side of 1.5.
+SAMPLE_PRODUCT_RESOLUTION = Decimal('1e-9')
+
+
 def samples_for_duration(seconds, rate_hz, rounding=DWELL_ROUNDING) -> int:
     """The whole number of samples a duration takes on a ``rate_hz`` grid,
     under ``rounding``: 'ceil' (never shorter), 'nearest-even'
     (``round``), or 'exact' (a duration off the grid raises ValueError
     naming its two neighbours). The ONE arithmetic the galvo and Beta
     designers, the TTL designer, the Advanced controller and the scan
-    program's timing policies share (plan scan-timing, rule 3)."""
-    product = float(seconds) * float(rate_hz)
-    nearest = int(round(product))
-    if abs(product - nearest) <= GRID_RELATIVE_ERROR * max(1.0, abs(product)):
-        return nearest
+    program's timing policies share (plan scan-timing, rule 3). The product
+    is taken as the decimals were written (``repr``), to a nanosample, so
+    ``2e-05 * 100000`` is 2 and ``35e-6 * 100000`` is 3.5, not their float
+    neighbours."""
+    product = (Decimal(repr(float(seconds))) * Decimal(repr(float(rate_hz)))) \
+        .quantize(SAMPLE_PRODUCT_RESOLUTION)
     if rounding == 'ceil':
-        return int(np.ceil(product))
+        return int(product.to_integral_value(rounding=ROUND_CEILING))
     if rounding == 'nearest-even':
-        return nearest
+        return int(product.to_integral_value(rounding=ROUND_HALF_EVEN))
     if rounding == 'exact':
-        low, high = int(np.floor(product)), int(np.ceil(product))
+        whole = product.to_integral_value(rounding=ROUND_HALF_EVEN)
+        if whole == product:
+            return int(whole)
+        low = int(product.to_integral_value(rounding=ROUND_FLOOR))
         raise ValueError(f'{float(seconds):g} s is not on the {1 / float(rate_hz):g} s grid: '
-                         f'{low / float(rate_hz):g} or {high / float(rate_hz):g} s')
+                         f'{low / float(rate_hz):g} or {(low + 1) / float(rate_hz):g} s')
     raise ValueError(f'Unknown rounding {rounding!r}')
 
 

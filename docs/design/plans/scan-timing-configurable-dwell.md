@@ -257,7 +257,7 @@ config editor offers the two rates with the driver's limits as help;
 `setupinfo-reference.rst`, `advanced-scanning.rst`, `expert-scanning.rst`,
 the changelog.
 
-**S5 -- the lag and the settle (Lenny, 2026-10-16).** Two fields of the
+**S5 -- the lag and the settle (Lenny, 2026-10-16). TTL shift DONE 2026-10-16** on the sample grid (`NidaqManager.delayed_lines`, `lag_samples`; the start-trigger-delay variant and the D3 move to the positioner remain open). Two fields of the
 Advanced panel are device properties typed per scan: **D2**, the galvo's
 response lag (`ScanWidgetAdvanced.py:373`, `phase_delay`, applied as samples
 the detector discards at the start, `APDManager.py:1232-1238, 1476`), and

@@ -56,6 +56,8 @@ except ImportError:
 
 import numpy as np
 
+from imswitch.imcontrol.model.scan_parameters import samples_for_duration
+
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
 from imswitch.imcommon.model import initLogger
 from .mockscan import ScanSimulationCoordinator
@@ -132,6 +134,58 @@ def scan_digital_outputs(ttlDic, targetPairs, getDevice):
         signals.append(np.asarray(signal, dtype=bool))
         lines.append(key)
     return devices, signals, lines
+
+
+def lag_samples(scanInfoDict, rate_hz=SCAN_CLOCK_RATE_HZ) -> int:
+    """The scan's phase delay -- the galvo's response lag, in µs in the
+    contract -- as whole samples of the scan clock, nearest: the shift the
+    digital lines are played with so gating follows the beam, not the
+    command (scan timing plan, S5)."""
+    lag_us = float((scanInfoDict or {}).get('phase_delay', 0) or 0)
+    if lag_us <= 0:
+        return 0
+    return samples_for_duration(lag_us * 1e-6, rate_hz, 'nearest-even')
+
+
+def idle_levels(devices, getDevice):
+    """Each named line's level for logical off: an active-low device's
+    line idles high; a clock, a marker or a device the setup does not know
+    idles low."""
+    levels = []
+    for device in devices:
+        try:
+            info = getDevice(device)
+        except Exception:
+            info = None
+        levels.append(bool(_ttl_level(info, False)) if info is not None else False)
+    return levels
+
+
+def delayed_lines(signals, shift: int, idle=None):
+    """Every digital signal played ``shift`` samples later: the first
+    ``shift`` samples hold the line's idle level (``idle``, one per signal:
+    the level for off -- an active-low line idles high; without it, low),
+    the tail that would run past the stream is dropped. The stream keeps
+    its length, so the AO, the timer and the detectors' plans are
+    untouched. ``shift`` 0 returns the signals as they are.
+
+    Why: the detector's readout is shifted by the lag (the beam trails the
+    command), the laser gate was not, so the last pixel of every line
+    integrated past the gate and came out dark by lag / dwell -- the dark
+    edge pixel of fast scans."""
+    shift = int(shift)
+    if shift <= 0:
+        return list(signals)
+    out = []
+    levels = list(idle) if idle is not None else [False] * len(signals)
+    for signal, level in zip(signals, levels):
+        signal = np.asarray(signal)
+        if signal.size == 0 or shift >= signal.size:
+            out.append(signal)
+            continue
+        head = np.full(shift, level, dtype=signal.dtype)
+        out.append(np.concatenate([head, signal[:-shift]]))
+    return out
 
 
 def _ttl_level(device, on):
@@ -1323,6 +1377,19 @@ class NidaqManager(SignalInterface):
                 DOdevices.append('FrameEndClock')
                 DOsignals.append(ttlDic['frame_end_clock'])
                 DOlines.append(self.__setupInfo.scan.frameEndClockLine)
+
+            # The digital lines follow the beam: delayed by the galvo's lag
+            # (the contract's phase delay), as the detectors' readout is.
+            lagShift = lag_samples(scanInfoDict)
+            if lagShift and DOsignals:
+                DOsignals = delayed_lines(DOsignals, lagShift,
+                                          idle_levels(DOdevices, self.__setupInfo.getDevice))
+                self.__logger.debug(
+                    f'Digital lines delayed by {lagShift} samples '
+                    f'({scanInfoDict.get("phase_delay")} µs phase delay) so gating follows '
+                    'the beam.')
+            self._lastDigitalWrite = (list(DOdevices), [np.asarray(s) for s in DOsignals],
+                                      lagShift)
 
             hasOutputSignals = len(AOsignals) > 0 or len(DOsignals) > 0
             if not hasOutputSignals and not self.__simulating:
