@@ -231,6 +231,24 @@ class LiveScreeningWorkflowService:
         ).setDetectorParameterExact(detector_name, parameter_name, value)
 
 
+class RecordingWorkflowService:
+    """Narrow scan-panel seam into Recording's scan-series transaction.
+
+    Scan panels may ask for an acquisition to be recorded, but Recording keeps
+    ownership of writer configuration, arming, file naming and finalization.
+    The Recording controller then starts the exact scan source supplied here.
+    """
+
+    def __init__(self, comm_channel) -> None:
+        self._comm_channel = comm_channel
+
+    def record_scan_series(self, source, detector_names, frames: int = 1):
+        controller = self._comm_channel.controllerRegistry().get('Recording')
+        if controller is None:
+            raise RuntimeError('Required Recording widget not available')
+        return controller.recordScanSeries(source, detector_names, frames)
+
+
 class ScanWorkflowService(SignalInterface):
     """Small service wrapper for scan/recording workflow signals.
 

@@ -323,10 +323,17 @@ class MoNaLISAView(ScanCloakView):
         self.runRow.addWidget(self.screeningButton)
         self.runRow.addWidget(self.stopButton)
         self.runRow.addSpacing(12)
+        self.saveAcquireCheck = QtWidgets.QCheckBox('Save')
+        self.saveAcquireCheck.setToolTip(
+            'Record this acquisition using the Recording panel folder, file name and '
+            'save format. Recording is armed before the scan starts.'
+        )
+        self.runRow.addWidget(self.saveAcquireCheck)
         self.runRow.addWidget(self.startButton)
         self.stopButton.setToolTip(
-            'Switch off the lasers enabled by MoNaLISA Live screening. '
-            'The camera live view and trigger mode are left running.'
+            'Switch off the lasers enabled by MoNaLISA Live screening and prepare '
+            'the acquisition camera for external frame trigger. Camera live view '
+            'remains running.'
         )
         # MoNaLISA keeps the operational controls at the very top. The scan
         # estimate is shown once, inside the compact Scan summary instead of
@@ -583,6 +590,9 @@ class MoNaLISAView(ScanCloakView):
             role for role, check in self._liveRoleChecks.items()
             if check.isChecked()
         }
+
+    def saveAcquisitionRequested(self) -> bool:
+        return bool(self.saveAcquireCheck.isChecked())
 
     def setScreeningActive(self, active: bool):
         self._screeningActive = bool(active)
@@ -979,6 +989,7 @@ class MoNaLISAView(ScanCloakView):
         screening = self._screeningActive
         editable = bound and not running and not screening
         self.startButton.setEnabled(bound and not running)
+        self.saveAcquireCheck.setEnabled(bound and not running)
         self.stopButton.setEnabled(screening and not running)
         self.screeningButton.setEnabled(
             bound and self._liveAvailable and not running and not screening

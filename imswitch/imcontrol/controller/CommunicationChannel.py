@@ -5,7 +5,8 @@ from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import pythontools, APIExport, SharedAttributes
 from imswitch.imcommon.model import initLogger
 from .WorkflowServices import (
-    BeadRecWorkflowService, LiveScreeningWorkflowService, ScanWorkflowService,
+    BeadRecWorkflowService, LiveScreeningWorkflowService, RecordingWorkflowService,
+    ScanWorkflowService,
 )
 
 if TYPE_CHECKING:
@@ -205,6 +206,7 @@ class CommunicationChannel(SignalInterface):
         self._create_event_groups()
         self.scanWorkflow = ScanWorkflowService(self)
         self.liveScreeningWorkflow = LiveScreeningWorkflowService(self)
+        self.recordingWorkflow = RecordingWorkflowService(self)
         self.beadRecWorkflow = BeadRecWorkflowService(self)
         self.__main._moduleCommChannel.sigExecutionFinished.connect(self.executionFinished)
 

@@ -1122,3 +1122,62 @@ def test_monalisa_manual_advanced_edit_dismisses_stale_load_actions(qtbot):
             target.close()
     finally:
         source.close()
+
+# ---------------------------------------------------------------------------
+# Simple MoNaLISA acquire/save orchestration
+# ---------------------------------------------------------------------------
+
+def test_monalisa_save_acquire_delegates_one_scan_to_recording(qtbot, monkeypatch):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        calls = []
+
+        class Result:
+            accepted = True
+            reason = ''
+
+        def record_scan_series(source, detector_names, frames=1):
+            calls.append((source, tuple(detector_names), frames))
+            return Result()
+
+        monkeypatch.setattr(
+            rig.channel.recordingWorkflow,
+            'record_scan_series',
+            record_scan_series,
+        )
+        rig.view.saveAcquireCheck.setChecked(True)
+
+        result = rig.scan.runScan()
+
+        assert result.accepted
+        assert calls == [(
+            rig.scan,
+            rig.scan._activeProfileDetectors(),
+            1,
+        )]
+        assert not rig.scan._isBusy()
+    finally:
+        rig.close()
+
+
+def test_monalisa_stop_prepares_external_frame_trigger(qtbot, monkeypatch):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        calls = []
+        monkeypatch.setattr(rig.scan, '_stopScreening', lambda: True)
+        monkeypatch.setattr(
+            rig.scan,
+            '_profileScreeningDetectors',
+            lambda: ('Camera',),
+        )
+        monkeypatch.setattr(
+            rig.scan,
+            '_ensureSimpleCameraTriggerOverride',
+            lambda detectors, mode: calls.append((tuple(detectors), mode)),
+        )
+
+        rig.scan._onStopClicked()
+
+        assert calls == [(('Camera',), 'external_frame')]
+    finally:
+        rig.close()

@@ -938,22 +938,23 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 )
         return failures
 
-    def _ensureScreeningTriggerOverride(self, detectorNames):
-        """Keep the current Simple Live camera set in internal-trigger mode.
+    def _ensureSimpleCameraTriggerOverride(self, detectorNames, mode):
+        """Set the Simple camera trigger while retaining its original setting.
 
-        Stop deliberately leaves this override in place.  We therefore keep
-        the *original* pre-Live trigger values until Simple relinquishes the
-        camera (page switch, profile/mode camera change, or controller close),
-        rather than overwriting them on every Live/Stop cycle.
+        Live requests ``internal`` and Stop requests ``external_frame``.  Both
+        belong to one Simple-camera ownership interval: the original pre-Live
+        value is restored only when Simple relinquishes the camera (page switch,
+        profile/mode camera change, or controller close), rather than on every
+        Live/Stop transition.
         """
         detectorNames = tuple(detectorNames)
         snapshot = self.__dict__.get('_screeningTriggerSnapshot')
         if snapshot is not None and set(snapshot) != set(detectorNames):
             if not self._releaseScreeningTriggerOverride():
-                raise RuntimeError('Could not restore the previous screening camera trigger.')
+                raise RuntimeError('Could not restore the previous Simple camera trigger.')
             snapshot = None
 
-        immediate = self._setTriggerModeTransactional(detectorNames, 'internal')
+        immediate = self._setTriggerModeTransactional(detectorNames, mode)
         if snapshot is None:
             self.__dict__['_screeningTriggerSnapshot'] = immediate
 
@@ -1032,7 +1033,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return
         hadTriggerOverride = '_screeningTriggerSnapshot' in self.__dict__
         try:
-            self._ensureScreeningTriggerOverride(detectors)
+            self._ensureSimpleCameraTriggerOverride(detectors, 'internal')
             targets = self._screeningLaserTargets(selected)
             if not targets:
                 raise RuntimeError('The selected screening choices do not resolve to a laser.')
@@ -1183,6 +1184,24 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             reason = 'Create and select a MoNaLISA profile before acquiring.'
             self._recordScanStartRejection(reason)
             return None
+        if self._view.saveAcquisitionRequested():
+            detectors = self._activeProfileDetectors()
+            try:
+                result = self._commChannel.recordingWorkflow.record_scan_series(
+                    self, detectors, frames=1
+                )
+            except Exception as error:
+                self._view.showMessage(
+                    f'Could not start recorded acquisition: {error}', error=True
+                )
+                return None
+            if not result.accepted:
+                self._view.showMessage(
+                    f'Could not start recorded acquisition: {result.reason}', error=True
+                )
+            else:
+                self._view.showMessage('')
+            return result
         return self._runSimpleAcquisition(super().runScan, requireLiveView=True)
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
@@ -1201,10 +1220,28 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
 
     def _onStopClicked(self):
-        # In this Simple view Stop is deliberately only the screening-light
-        # OFF action. It is disabled while an acquisition owns the hardware.
+        # In Simple, Stop ends screening and leaves the acquisition camera ready
+        # for a frame-triggered scan. This supports the direct workflow
+        # Live -> Stop -> Recording/Scan timelapse without another camera click.
+        # It remains disabled while an acquisition owns the hardware.
         if self._onSimplePage():
-            self._stopScreening()
+            if not self._stopScreening():
+                return
+            detectors = self._profileScreeningDetectors()
+            if not detectors:
+                self._view.showMessage(
+                    'No acquisition camera is available to prepare.', error=True
+                )
+                return
+            try:
+                self._ensureSimpleCameraTriggerOverride(detectors, 'external_frame')
+            except Exception as error:
+                self._view.showMessage(
+                    f'Screening stopped, but camera trigger preparation failed: {error}',
+                    error=True,
+                )
+                return
+            self._view.showMessage('')
             return
         return super()._onStopClicked()
 
@@ -1244,8 +1281,8 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return True
 
         # The Stop control disappears on Advanced, so do not carry Simple-owned
-        # illumination or its persistent internal-trigger override across the
-        # page boundary. Stop itself still remains laser-only.
+        # illumination or its persistent camera-trigger override across the
+        # page boundary.
         leavingSimple = self._onSimplePage() and page != self.scanPage()
         if leavingSimple and self.__dict__.get('_screeningActive', False):
             if not self._stopScreening():
