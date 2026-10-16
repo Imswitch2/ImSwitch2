@@ -1036,5 +1036,61 @@ class ScanWidgetSimpleMoNaLISA(ScanCloakPanel):
     viewClass = MoNaLISAView
     title = 'MoNaLISA scan'
 
+    # A loaded scan may be perfectly valid while no longer matching the
+    # current Simple profile/setup.  Keep those decisions separate from the
+    # generic cloak note (which is also used for transient page/run messages).
+    sigLoadResolutionActionRequested = QtCore.Signal(str)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loadResolutionFrame = QtWidgets.QFrame()
+        self.loadResolutionFrame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        frameLayout = QtWidgets.QVBoxLayout(self.loadResolutionFrame)
+        frameLayout.setContentsMargins(8, 6, 8, 6)
+        frameLayout.setSpacing(4)
+
+        self.loadResolutionTitle = QtWidgets.QLabel('⚠  Loaded scan needs attention')
+        titleFont = self.loadResolutionTitle.font()
+        titleFont.setBold(True)
+        self.loadResolutionTitle.setFont(titleFont)
+        self.loadResolutionTitle.setStyleSheet('color: #d98c10;')
+        frameLayout.addWidget(self.loadResolutionTitle)
+
+        self.loadResolutionLabel = QtWidgets.QLabel('')
+        self.loadResolutionLabel.setWordWrap(True)
+        self.loadResolutionLabel.setStyleSheet('color: #d98c10;')
+        frameLayout.addWidget(self.loadResolutionLabel)
+
+        self.loadResolutionActions = QtWidgets.QHBoxLayout()
+        self.loadResolutionActions.addStretch(1)
+        frameLayout.addLayout(self.loadResolutionActions)
+        self.loadResolutionButtons = {}
+        self.loadResolutionFrame.setVisible(False)
+
+        # Header is item 0; put load resolution directly below it and above
+        # the generic note/stack so it remains visible on both pages.
+        self.layout().insertWidget(1, self.loadResolutionFrame)
+
+    def setLoadResolution(self, message: str = '', actions=()):
+        while self.loadResolutionActions.count() > 1:
+            item = self.loadResolutionActions.takeAt(1)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.loadResolutionButtons = {}
+        self.loadResolutionLabel.setText(str(message or ''))
+        for action_id, label in actions:
+            button = QtWidgets.QPushButton(str(label))
+            button.clicked.connect(
+                lambda checked=False, key=str(action_id):
+                    self.sigLoadResolutionActionRequested.emit(key)
+            )
+            self.loadResolutionActions.addWidget(button)
+            self.loadResolutionButtons[str(action_id)] = button
+        self.loadResolutionFrame.setVisible(bool(message))
+
+    def clearLoadResolution(self):
+        self.setLoadResolution('', ())
+
 
 __all__ = ['MoNaLISAView', 'ScanWidgetSimpleMoNaLISA']

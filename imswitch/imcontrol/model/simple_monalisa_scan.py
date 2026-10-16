@@ -97,6 +97,20 @@ def _snap_time_s(value_s: float, sample_rate: float) -> float:
 
 
 @dataclass(frozen=True)
+class ULensPeriodResolution:
+    """Effective uLens period together with the configuration that supplied it.
+
+    SimpleMoNaLISA deliberately consumes this small resolver contract rather than
+    knowing how a period is produced.  Today periods come from setup/profile
+    configuration; an SLM-backed provider can later return the same contract.
+    """
+
+    value_um: float
+    source_kind: str
+    source_id: str
+
+
+@dataclass(frozen=True)
 class MoNaLISALimits:
     """Fixed microscope/setup facts used by the simplified MoNaLISA panel."""
 
@@ -209,16 +223,36 @@ class MoNaLISALimits:
             slider_ranges=_configured_slider_ranges(raw.get('sliderRanges')),
         )
 
-    def ulens_period_um(self, profile_id: Optional[str] = None) -> float:
+    def resolve_ulens_period(
+        self, profile_id: Optional[str] = None
+    ) -> ULensPeriodResolution:
+        """Resolve the current effective uLens period and its provenance.
+
+        ``ulens_period_policy`` remains the ownership/configuration policy.  The
+        returned provenance is intentionally a separate seam so a future SLM
+        bridge can provide ``source_kind='slm'`` without teaching the scan plan
+        or save/load code about SLM internals.
+        """
         if self.ulens_period_policy == 'fixed':
-            return self.fixed_ulens_period_um
+            return ULensPeriodResolution(
+                value_um=float(self.fixed_ulens_period_um),
+                source_kind='setup',
+                source_id='simpleMoNaLISA.ulensPeriodUm',
+            )
         profile = self.profile_store.profile(profile_id)
         if profile.ulens_period_um is None or profile.ulens_period_um <= 0:
             raise PlanNotRepresentable(
                 f'Profile {profile.label!r} needs a uLens period because this setup '
                 'uses per-profile uLens periods.'
             )
-        return float(profile.ulens_period_um)
+        return ULensPeriodResolution(
+            value_um=float(profile.ulens_period_um),
+            source_kind='profile',
+            source_id=f'simpleMoNaLISA.profiles.{profile.id}.ulensPeriodUm',
+        )
+
+    def ulens_period_um(self, profile_id: Optional[str] = None) -> float:
+        return self.resolve_ulens_period(profile_id).value_um
 
 
     def camera_readout_time_s(self, profile_id: Optional[str] = None) -> float:

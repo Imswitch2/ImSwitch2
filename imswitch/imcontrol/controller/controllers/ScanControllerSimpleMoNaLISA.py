@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import math
 
 from imswitch.imcontrol.model import (
     LaserPowerMode,
@@ -13,8 +15,11 @@ from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.scan_cloak import PlanNotRepresentable
 from imswitch.imcontrol.model.monalisa_profiles import (
     MoNaLISAProfileBinding,
+    MoNaLISAProfileDefinition,
     MoNaLISAProfileError,
+    MoNaLISAProfileStore,
     config_with_profile_store,
+    profile_fingerprint,
     profile_id_from_label,
     starter_monalisa_profile,
 )
@@ -36,10 +41,22 @@ from ._scan_cloak import ScanCloakController
 from .ScanControllerAdvanced import ScanControllerAdvanced
 
 
+@dataclasses.dataclass(frozen=True)
+class _LoadedMoNaLISACompatibility:
+    plan: object = None
+    issue: str = ''
+    message: str = ''
+
+    @property
+    def compatible(self) -> bool:
+        return self.plan is not None and not self.issue
+
+
 class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
     """Simple MoNaLISA acquisition mapped onto the Advanced scan backend."""
 
     cloakClass = MoNaLISAScanCloak
+    savedMoNaLISASchemaVersion = 1
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -57,6 +74,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
         self._view.sigScreeningRequested.connect(self._onScreeningRequested)
         self._view.sigLiveRoleToggled.connect(self._onLiveRoleToggled)
+        self._panel.sigLoadResolutionActionRequested.connect(
+            self._onLoadResolutionActionRequested
+        )
         self._commChannel.sigScanEnded.connect(self._onAcquisitionRunEnded)
         self._commChannel.sigAdjustFrame.connect(self._onDetectorGeometryChanged)
         self._commChannel.sigDetectorParametersChanged.connect(
@@ -376,6 +396,10 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
 
     def _setBoundPlan(self, plan):
+        # Explicit Simple-side profile selection/edit supersedes any unresolved
+        # loaded-scan decision. The user is deliberately creating a new Simple
+        # acquisition at this point.
+        self._clearPendingLoadResolution()
         state = self._monalisa()
         plan = normalize_plan(plan, state['limits'])
         state['plan'] = plan
@@ -726,9 +750,21 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return
         self._setBoundPlan(plan)
 
+    def _onBackendWidgetEdited(self, *args):
+        # Once the user manually edits Advanced, the retained loaded snapshot
+        # is no longer the acquisition on screen. Do not leave actions around
+        # that could later overwrite those edits. Programmatic setParameters()
+        # during a resolution action is protected by ``settingParameters``.
+        if (not self._onSimplePage()
+                and self.__dict__.get('_pendingMoNaLISALoadResolution') is not None
+                and not getattr(self, 'settingParameters', False)):
+            self._clearPendingLoadResolution()
+        return super()._onBackendWidgetEdited(*args)
+
     def _onPlanEdited(self, plan):
         if not self.cloakOwnsBackend():
             return
+        self._clearPendingLoadResolution()
         plan = normalize_plan(plan, self.cloakLimits())
         state = self._monalisa()
         state['plan'] = plan
@@ -1221,12 +1257,70 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._refreshLiveControls()
         return switched
 
+    def _acquisitionContext(self, profile_id: str) -> dict:
+        """Setup-derived values that materially define one Simple acquisition."""
+        limits = self.cloakLimits()
+        ulens = limits.resolve_ulens_period(profile_id)
+        return {
+            'sampleRateHz': float(limits.sample_rate),
+            'interPulseDelayMs': float(limits.inter_pulse_delay_s * 1e3),
+            'readoutPulseTimeMs': float(limits.readout_pulse_time_s * 1e3),
+            'cameraReadoutTimeMs': float(
+                limits.camera_readout_time_s(profile_id) * 1e3
+            ),
+            'cameraReadoutSource': limits.camera_readout_source(profile_id),
+            'ulens': {
+                'effectivePeriodUm': float(ulens.value_um),
+                'sourceKind': str(ulens.source_kind),
+                'sourceId': str(ulens.source_id),
+            },
+        }
+
+    def _savedMoNaLISAMetadata(self):
+        """Return provenance for a genuinely bound Simple scan, else ``None``.
+
+        A binding object is intentionally kept while the Advanced page is being
+        edited, so ``binding.is_bound`` alone is not enough: provenance is only
+        valid while Simple owns the backend and the binding still fingerprints
+        the profile currently in the setup.
+        """
+        if not self._onSimplePage() or not self.cloakOwnsBackend():
+            return None
+        state = self._monalisa()
+        plan = state['plan']
+        binding = state['binding']
+        if plan is None or not binding.is_bound:
+            return None
+        try:
+            profile = state['limits'].profile_store.profile(plan.profile_id)
+            profile.mode(plan.mode_id)
+        except MoNaLISAProfileError:
+            return None
+        current_fingerprint = profile_fingerprint(profile)
+        if (
+            binding.profile_id != plan.profile_id
+            or binding.mode_id != plan.mode_id
+            or binding.profile_fingerprint != current_fingerprint
+        ):
+            return None
+        return {
+            'schemaVersion': self.savedMoNaLISASchemaVersion,
+            'profileId': profile.id,
+            'modeId': plan.mode_id,
+            'profileFingerprint': current_fingerprint,
+            'profileSnapshot': profile.to_config(),
+            'acquisitionContext': self._acquisitionContext(profile.id),
+        }
+
     def cloakStateExtras(self) -> dict:
         extras = super().cloakStateExtras()
         extras['liveRolesByMode'] = {
             key: sorted(value)
             for key, value in self._monalisa()['liveRolesByMode'].items()
         }
+        monalisa = self._savedMoNaLISAMetadata()
+        if monalisa is not None:
+            extras['monalisa'] = monalisa
         return extras
 
     def applyCloakStateExtras(self, extras):
@@ -1238,6 +1332,545 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 if isinstance(value, (list, tuple, set))
             }
         self._refreshLiveControls()
+
+    @staticmethod
+    def _savedFloatMatches(saved, current) -> bool:
+        try:
+            return math.isclose(
+                float(saved), float(current), rel_tol=1e-9, abs_tol=1e-12
+            )
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _formatULensPeriod(value_um) -> str:
+        try:
+            value_um = float(value_um)
+        except (TypeError, ValueError):
+            return 'unknown'
+        if value_um < 1.0:
+            return f'{value_um * 1000:g} nm'
+        return f'{value_um:g} µm'
+
+    @staticmethod
+    def _ulensSourceDescription(kind: str) -> str:
+        return {
+            'setup': 'setup uLens',
+            'profile': 'profile uLens',
+            'slm': 'SLM-derived uLens',
+        }.get(str(kind), f'{kind or "unknown"} uLens')
+
+    def _loadCompatibilityFailure(self, issue: str, message: str):
+        return _LoadedMoNaLISACompatibility(
+            plan=None, issue=str(issue), message=str(message)
+        )
+
+    def _loadedMoNaLISACompatibility(self, metadata, state):
+        """Describe whether a saved Simple binding still matches this setup.
+
+        The backend dictionaries in ``state`` are authoritative.  A failure is
+        classified so the load-resolution bar can offer only explicit actions
+        that make sense for that mismatch.
+        """
+        fail = self._loadCompatibilityFailure
+        if not isinstance(metadata, dict):
+            return fail(
+                'legacy_metadata',
+                'No Simple MoNaLISA binding metadata was saved.',
+            )
+        if metadata.get('schemaVersion') != self.savedMoNaLISASchemaVersion:
+            return fail(
+                'unsupported_metadata',
+                'The saved Simple MoNaLISA metadata version is not supported by '
+                'this installation.',
+            )
+
+        profile_id = metadata.get('profileId')
+        mode_id = metadata.get('modeId')
+        saved_fingerprint = metadata.get('profileFingerprint')
+        snapshot = metadata.get('profileSnapshot')
+        context = metadata.get('acquisitionContext')
+        if not all((profile_id, mode_id, saved_fingerprint)) or not isinstance(snapshot, dict):
+            return fail(
+                'incomplete_metadata',
+                'The saved Simple MoNaLISA binding metadata is incomplete.',
+            )
+        if not isinstance(context, dict):
+            return fail(
+                'incomplete_metadata',
+                'The saved Simple MoNaLISA acquisition context is missing.',
+            )
+
+        limits = self.cloakLimits()
+        try:
+            profile = limits.profile_store.profile(str(profile_id))
+        except MoNaLISAProfileError:
+            return fail(
+                'profile_missing',
+                f'MoNaLISA profile {profile_id!r} is not available in this setup.',
+            )
+        try:
+            profile.mode(str(mode_id))
+        except MoNaLISAProfileError:
+            return fail(
+                'profile_changed',
+                f'MoNaLISA mode {mode_id!r} is no longer available in profile '
+                f'{profile.label!r}.',
+            )
+
+        # Check acquisition-driving setup values before the broad fingerprint so
+        # setup/uLens/readout changes get a specific, resolvable diagnostic.
+        try:
+            current_context = self._acquisitionContext(profile.id)
+        except Exception as error:
+            return fail(
+                'backend_incompatible',
+                f'The current MoNaLISA acquisition context cannot be resolved: {error}',
+            )
+
+        saved_ulens = context.get('ulens')
+        current_ulens = current_context['ulens']
+        if not isinstance(saved_ulens, dict):
+            return fail('incomplete_metadata', 'The saved uLens acquisition context is missing.')
+        saved_kind = str(saved_ulens.get('sourceKind') or '')
+        current_kind = str(current_ulens.get('sourceKind') or '')
+        saved_source_id = str(saved_ulens.get('sourceId') or '')
+        current_source_id = str(current_ulens.get('sourceId') or '')
+        if saved_kind != current_kind or saved_source_id != current_source_id:
+            return fail(
+                'ulens_mismatch',
+                'The uLens period source changed from '
+                f'{self._ulensSourceDescription(saved_kind)} ({saved_source_id or "unknown"}) '
+                f'to {self._ulensSourceDescription(current_kind)} '
+                f'({current_source_id or "unknown"}).',
+            )
+        if not self._savedFloatMatches(
+            saved_ulens.get('effectivePeriodUm'), current_ulens['effectivePeriodUm']
+        ):
+            return fail(
+                'ulens_mismatch',
+                f'The saved scan used '
+                f'{self._ulensSourceDescription(saved_kind)} period '
+                f'{self._formatULensPeriod(saved_ulens.get("effectivePeriodUm"))}; '
+                f'the current configuration resolves '
+                f'{self._formatULensPeriod(current_ulens["effectivePeriodUm"])}.',
+            )
+
+        timing_checks = (
+            ('sampleRateHz', 'sample rate', 'Hz'),
+            ('interPulseDelayMs', 'inter-pulse delay', 'ms'),
+            ('readoutPulseTimeMs', 'readout pulse time', 'ms'),
+        )
+        for key, label, unit in timing_checks:
+            if not self._savedFloatMatches(context.get(key), current_context[key]):
+                return fail(
+                    'timing_mismatch',
+                    f'The saved {label} was {context.get(key)!r} {unit}; '
+                    f'the current Simple configuration resolves '
+                    f'{current_context[key]:g} {unit}.',
+                )
+
+        if not self._savedFloatMatches(
+            context.get('cameraReadoutTimeMs'), current_context['cameraReadoutTimeMs']
+        ):
+            return fail(
+                'readout_mismatch',
+                f'The saved camera readout time was '
+                f'{context.get("cameraReadoutTimeMs")!r} ms; the current Simple '
+                f'configuration resolves {current_context["cameraReadoutTimeMs"]:g} ms.',
+            )
+        if str(context.get('cameraReadoutSource') or '') != str(
+            current_context['cameraReadoutSource']
+        ):
+            return fail(
+                'readout_mismatch',
+                'The camera readout source changed from '
+                f'{context.get("cameraReadoutSource")!r} to '
+                f'{current_context["cameraReadoutSource"]!r}.',
+            )
+
+        if profile_fingerprint(profile) != str(saved_fingerprint):
+            return fail(
+                'profile_changed',
+                f'MoNaLISA profile {profile.label!r} has changed since this scan was saved.',
+            )
+
+        try:
+            reference = default_plan(limits, profile.id)
+            reference = select_mode(reference, str(mode_id), limits)
+            parsed = dicts_to_plan(
+                state.get('analogParameterDict') or {},
+                state.get('digitalParameterDict') or {},
+                limits,
+                reference_plan=reference,
+            )
+        except (PlanNotRepresentable, MoNaLISAProfileError) as error:
+            return fail(
+                'backend_incompatible',
+                f'The saved backend scan no longer matches that profile/mode: {error}',
+            )
+
+        canonical = self._cloak.to_backend(parsed, limits)
+        saved_backend = (
+            state.get('analogParameterDict') or {},
+            state.get('digitalParameterDict') or {},
+        )
+        if canonical != saved_backend:
+            return fail(
+                'backend_incompatible',
+                'The saved backend scan is not an exact Simple MoNaLISA round-trip '
+                'with the current code/setup.',
+            )
+        return _LoadedMoNaLISACompatibility(plan=parsed)
+
+    @staticmethod
+    def _loadResolutionActions(issue: str):
+        actions = {
+            'profile_missing': (
+                ('import_saved_profile', 'Import saved profile'),
+                ('keep_advanced', 'Keep as Advanced'),
+            ),
+            'profile_changed': (
+                ('use_current_profile', 'Use current profile'),
+                ('import_saved_profile', 'Import saved profile'),
+                ('keep_advanced', 'Keep as Advanced'),
+            ),
+            'ulens_mismatch': (
+                ('use_current_ulens', 'Use current uLens'),
+                ('keep_advanced', 'Keep as Advanced'),
+            ),
+            'readout_mismatch': (
+                ('use_current_readout', 'Use current readout'),
+                ('keep_advanced', 'Keep as Advanced'),
+            ),
+            'timing_mismatch': (
+                ('use_current_timing', 'Use current timing'),
+                ('keep_advanced', 'Keep as Advanced'),
+            ),
+        }
+        return actions.get(str(issue), (('keep_advanced', 'Keep as Advanced'),))
+
+    def _showPendingLoadResolution(self, result):
+        pending = self.__dict__.get('_pendingMoNaLISALoadResolution')
+        if pending is None:
+            self._panel.clearLoadResolution()
+            return
+        pending['issue'] = result.issue
+        message = f'Loaded scan kept unchanged. {result.message}'
+        self._panel.setLoadResolution(
+            message, self._loadResolutionActions(result.issue)
+        )
+
+    def _setPendingLoadResolution(self, metadata, state, result):
+        self.__dict__['_pendingMoNaLISALoadResolution'] = {
+            'metadata': copy.deepcopy(metadata),
+            'state': copy.deepcopy(state),
+            'issue': result.issue,
+        }
+        self._showPendingLoadResolution(result)
+
+    def _clearPendingLoadResolution(self):
+        self.__dict__.pop('_pendingMoNaLISALoadResolution', None)
+        if hasattr(self, '_panel'):
+            self._panel.clearLoadResolution()
+
+    def _savedContextLimits(self, metadata):
+        """Recreate the historical Simple context from saved provenance.
+
+        Provenance is intentionally reduced to effective values here.  This is
+        only a parser/compiler context for the saved acquisition; current setup
+        compatibility is checked separately by ``_loadedMoNaLISACompatibility``.
+        """
+        if not isinstance(metadata, dict):
+            raise PlanNotRepresentable('Saved MoNaLISA metadata is missing.')
+        profile_id = str(metadata.get('profileId') or '')
+        snapshot = metadata.get('profileSnapshot')
+        context = metadata.get('acquisitionContext')
+        if not profile_id or not isinstance(snapshot, dict) or not isinstance(context, dict):
+            raise PlanNotRepresentable('Saved MoNaLISA metadata is incomplete.')
+
+        try:
+            profile = MoNaLISAProfileDefinition.from_config(profile_id, snapshot)
+        except MoNaLISAProfileError as error:
+            raise PlanNotRepresentable(str(error)) from error
+
+        ulens = context.get('ulens') or {}
+        try:
+            period_um = float(ulens.get('effectivePeriodUm'))
+            sample_rate = float(context.get('sampleRateHz'))
+            inter_delay_s = float(context.get('interPulseDelayMs')) * 1e-3
+            readout_pulse_s = float(context.get('readoutPulseTimeMs')) * 1e-3
+            camera_readout_s = float(context.get('cameraReadoutTimeMs')) * 1e-3
+        except (TypeError, ValueError) as error:
+            raise PlanNotRepresentable(
+                f'Saved MoNaLISA acquisition context is invalid: {error}'
+            ) from error
+
+        ulens_kind = str(ulens.get('sourceKind') or '')
+        if ulens_kind == 'profile':
+            profile = dataclasses.replace(profile, ulens_period_um=period_um)
+            period_policy = 'per_profile'
+        else:
+            period_policy = 'fixed'
+
+        if str(context.get('cameraReadoutSource') or '') == 'profile':
+            profile = dataclasses.replace(profile, camera_readout_time_s=camera_readout_s)
+            default_readout_s = self.cloakLimits().default_camera_readout_time_s
+        else:
+            profile = dataclasses.replace(profile, camera_readout_time_s=None)
+            default_readout_s = camera_readout_s
+
+        store = MoNaLISAProfileStore(
+            profiles={profile.id: profile}, default_profile=profile.id
+        )
+        return dataclasses.replace(
+            self.cloakLimits(),
+            sample_rate=sample_rate,
+            ulens_period_policy=period_policy,
+            fixed_ulens_period_um=period_um,
+            profile_store=store,
+            inter_pulse_delay_s=max(0.0, inter_delay_s),
+            readout_pulse_time_s=max(1e-3, readout_pulse_s),
+            default_camera_readout_time_s=max(0.0, default_readout_s),
+        )
+
+    def _savedPlanForPendingResolution(self, pending=None):
+        pending = pending or self.__dict__.get('_pendingMoNaLISALoadResolution')
+        if not pending:
+            raise PlanNotRepresentable('There is no loaded MoNaLISA scan to resolve.')
+        metadata = pending['metadata']
+        state = pending['state']
+        limits = self._savedContextLimits(metadata)
+        profile_id = str(metadata['profileId'])
+        mode_id = str(metadata['modeId'])
+        try:
+            reference = default_plan(limits, profile_id)
+            reference = select_mode(reference, mode_id, limits)
+            plan = dicts_to_plan(
+                state.get('analogParameterDict') or {},
+                state.get('digitalParameterDict') or {},
+                limits,
+                reference_plan=reference,
+            )
+        except (PlanNotRepresentable, MoNaLISAProfileError) as error:
+            raise PlanNotRepresentable(
+                f'The saved Simple plan cannot be reconstructed: {error}'
+            ) from error
+        if self._cloak.to_backend(plan, limits) != (
+            state.get('analogParameterDict') or {},
+            state.get('digitalParameterDict') or {},
+        ):
+            raise PlanNotRepresentable(
+                'The saved scan is not an exact round-trip in its saved acquisition context.'
+            )
+        return plan
+
+    def _writePendingBackend(self, analog, digital):
+        self._analogParameterDict = copy.deepcopy(analog)
+        self._digitalParameterDict = copy.deepcopy(digital)
+        self._positionersScan = self._cloak.scanned_positioners(analog)
+        ScanControllerAdvanced.setParameters(self)
+        publish_laser_state = getattr(self, '_publishLaserScanState', None)
+        if callable(publish_laser_state):
+            publish_laser_state()
+        self._designCache = None
+
+    def _replacePendingAcquisition(self, plan, metadata, limits):
+        pending = self.__dict__.get('_pendingMoNaLISALoadResolution')
+        if pending is None:
+            raise PlanNotRepresentable('There is no loaded MoNaLISA scan to resolve.')
+        plan = normalize_plan(plan, limits)
+        analog, digital = self._cloak.to_backend(plan, limits)
+        self._writePendingBackend(analog, digital)
+        pending['metadata'] = copy.deepcopy(metadata)
+        pending['state']['analogParameterDict'] = copy.deepcopy(analog)
+        pending['state']['digitalParameterDict'] = copy.deepcopy(digital)
+        return plan
+
+    def _rerunPendingLoadCompatibility(self):
+        pending = self.__dict__.get('_pendingMoNaLISALoadResolution')
+        if pending is None:
+            return
+        result = self._loadedMoNaLISACompatibility(
+            pending['metadata'], pending['state']
+        )
+        if not result.compatible:
+            self._clearLoadedSimpleBinding()
+            self._enterPage('advanced')
+            self._panel.showPage('advanced')
+            self._showPendingLoadResolution(result)
+            return
+
+        self.adoptPlan(result.plan)
+        self._enterPage('simple')
+        self._panel.showPage('simple')
+        self._panel.showNote('')
+        self._clearPendingLoadResolution()
+        self._mirrorToBackend(force=True)
+
+    def _onLoadResolutionActionRequested(self, action: str):
+        if self._isBusy():
+            return
+        pending = self.__dict__.get('_pendingMoNaLISALoadResolution')
+        if pending is None:
+            return
+        action = str(action)
+        if action == 'keep_advanced':
+            self._clearPendingLoadResolution()
+            self._enterPage('advanced')
+            self._panel.showPage('advanced')
+            self._panel.showNote('')
+            return
+
+        try:
+            if action == 'import_saved_profile':
+                self._resolveLoadByImportingSavedProfile(pending)
+            elif action == 'use_current_profile':
+                self._resolveLoadUsingCurrentProfile(pending)
+            elif action == 'use_current_ulens':
+                self._resolveLoadUsingCurrentContext(pending, 'ulens')
+            elif action == 'use_current_readout':
+                self._resolveLoadUsingCurrentContext(pending, 'readout')
+            elif action == 'use_current_timing':
+                self._resolveLoadUsingCurrentContext(pending, 'timing')
+            else:
+                return
+        except Exception as error:
+            self._view.showMessage(
+                f'Could not resolve loaded scan: {error}', error=True
+            )
+            return
+        self._rerunPendingLoadCompatibility()
+
+    def _resolveLoadUsingCurrentContext(self, pending, section: str):
+        metadata = copy.deepcopy(pending['metadata'])
+        profile_id = str(metadata.get('profileId') or '')
+        current = self._acquisitionContext(profile_id)
+        context = metadata['acquisitionContext']
+        if section == 'ulens':
+            context['ulens'] = copy.deepcopy(current['ulens'])
+        elif section == 'readout':
+            context['cameraReadoutTimeMs'] = current['cameraReadoutTimeMs']
+            context['cameraReadoutSource'] = current['cameraReadoutSource']
+        elif section == 'timing':
+            for key in ('sampleRateHz', 'interPulseDelayMs', 'readoutPulseTimeMs'):
+                context[key] = current[key]
+        else:
+            raise ValueError(f'Unknown load-resolution context {section!r}.')
+
+        plan = self._savedPlanForPendingResolution(pending)
+        target_limits = self._savedContextLimits(metadata)
+        plan = normalize_plan(plan, target_limits)
+        self._replacePendingAcquisition(plan, metadata, target_limits)
+
+    def _resolveLoadUsingCurrentProfile(self, pending):
+        metadata = copy.deepcopy(pending['metadata'])
+        profile_id = str(metadata.get('profileId') or '')
+        current_profile = self.cloakLimits().profile_store.profile(profile_id)
+        saved_plan = self._savedPlanForPendingResolution(pending)
+        plan = adapt_plan_to_profile_definition(
+            saved_plan, current_profile, self.cloakLimits()
+        )
+        metadata['modeId'] = plan.mode_id
+        metadata['profileFingerprint'] = profile_fingerprint(current_profile)
+        metadata['profileSnapshot'] = current_profile.to_config()
+        metadata['acquisitionContext'] = self._acquisitionContext(current_profile.id)
+        self._replacePendingAcquisition(plan, metadata, self.cloakLimits())
+
+    def _resolveLoadByImportingSavedProfile(self, pending):
+        metadata = copy.deepcopy(pending['metadata'])
+        snapshot = metadata.get('profileSnapshot')
+        original_id = str(metadata.get('profileId') or '')
+        if not original_id or not isinstance(snapshot, dict):
+            raise PlanNotRepresentable('The saved profile snapshot is missing.')
+        saved_profile = MoNaLISAProfileDefinition.from_config(original_id, snapshot)
+        store = self.cloakLimits().profile_store
+
+        if original_id not in store.profiles:
+            imported = saved_profile
+        else:
+            label = f'{saved_profile.label} (saved)'
+            new_id = profile_id_from_label(label, store.profiles)
+            imported = dataclasses.replace(saved_profile, id=new_id, label=label)
+
+        new_store = store.with_profile(imported)
+        if not self._saveProfileStoreOrReport(new_store):
+            raise RuntimeError('The saved profile could not be persisted.')
+
+        metadata['profileId'] = imported.id
+        metadata['profileFingerprint'] = profile_fingerprint(imported)
+        metadata['profileSnapshot'] = imported.to_config()
+        ulens = metadata.get('acquisitionContext', {}).get('ulens')
+        if isinstance(ulens, dict) and str(ulens.get('sourceKind') or '') == 'profile':
+            ulens['sourceId'] = (
+                f'simpleMoNaLISA.profiles.{imported.id}.ulensPeriodUm'
+            )
+        pending['metadata'] = metadata
+
+    def _clearLoadedSimpleBinding(self):
+        """Forget pre-load Simple interpretation while preserving the backend."""
+        state = self._monalisa()
+        state['plan'] = None
+        state['binding'] = MoNaLISAProfileBinding.unbound()
+        if hasattr(self, '_view'):
+            self._view.setPlan(None)
+            self._view.setBinding(state['binding'])
+            self._refreshSetupSummary()
+            self._refreshLiveControls()
+            self._refreshEstimate()
+
+    def applyComponentState(self, state, *, applyMode):
+        """Load backend first; re-bind Simple only when provenance still matches."""
+        original_page = self.scanPage()
+        if self._isBusy():
+            return super().applyComponentState(state, applyMode=applyMode)
+
+        # Applying while Advanced prevents ScanCloakController.setParameters()
+        # from interpreting/recompiling the incoming dictionaries before they
+        # have been accepted as the authoritative saved acquisition.
+        self._enterPage('advanced')
+        self._panel.showPage('advanced')
+        warnings = super().applyComponentState(state, applyMode=applyMode)
+        if not bool(self.__dict__.get('_stateApplied')):
+            self._enterPage(original_page)
+            self._panel.showPage(original_page)
+            if original_page == 'simple':
+                self._mirrorToBackend(force=True)
+            return warnings
+
+        cloak = state.get('cloak') if isinstance(state, dict) else None
+        cloak = cloak if isinstance(cloak, dict) else None
+        self._clearPendingLoadResolution()
+        # A scan intentionally saved from Advanced is an Advanced scan. Do not
+        # try to manufacture Simple provenance for it.
+        if cloak and cloak.get('page') == 'advanced':
+            self._clearLoadedSimpleBinding()
+            self._enterPage('advanced')
+            self._panel.showPage('advanced')
+            self._panel.showNote('')
+            return warnings
+
+        metadata = cloak.get('monalisa') if cloak else None
+        result = self._loadedMoNaLISACompatibility(metadata, state)
+        if not result.compatible:
+            self._clearLoadedSimpleBinding()
+            self._enterPage('advanced')
+            self._panel.showPage('advanced')
+            self._panel.showNote('')
+            self._setPendingLoadResolution(metadata, state, result)
+            warning = f'Loaded scan kept unchanged in Advanced. {result.message}'
+            warnings.append(warning)
+            return warnings
+
+        self.adoptPlan(result.plan)
+        self._enterPage('simple')
+        self._panel.showPage('simple')
+        self._panel.showNote('')
+        self._clearPendingLoadResolution()
+        # Exact round-trip was checked above, so this does not alter the saved
+        # acquisition; it only re-establishes the normal Simple/backend mirror.
+        self._mirrorToBackend(force=True)
+        return warnings
 
     def _setupRefusal(self) -> str:
         limits = self.cloakLimits()

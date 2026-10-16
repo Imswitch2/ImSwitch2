@@ -766,3 +766,359 @@ def test_monalisa_mode_change_republishes_scan_laser_participation(qtbot):
         assert state['488 (OFF)'].active_for_scan is True
     finally:
         rig.close()
+
+
+# ---------------------------------------------------------------------------
+# Simple MoNaLISA save/load provenance
+# ---------------------------------------------------------------------------
+
+def _monalisaSetupWithFixedULensPeriod(period_um):
+    data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
+    simple = dict(data['scan'].get('simpleMoNaLISA') or {})
+    simple['ulensPeriodPolicy'] = 'fixed'
+    simple['ulensPeriodUm'] = float(period_um)
+    data['scan']['simpleMoNaLISA'] = simple
+    return json.dumps(data)
+
+
+def _monalisaSetupWithModifiedProfile(profile_id):
+    data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
+    simple = dict(data['scan'].get('simpleMoNaLISA') or {})
+    profiles = copy.deepcopy(simple.get('profiles') or {})
+    profile = dict(profiles[profile_id])
+    profile['label'] = str(profile.get('label') or profile_id) + ' changed'
+    profiles[profile_id] = profile
+    simple['profiles'] = profiles
+    data['scan']['simpleMoNaLISA'] = simple
+    return json.dumps(data)
+
+
+def test_monalisa_simple_save_records_binding_and_acquisition_context(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        state = rig.scan.getComponentState()
+        metadata = state['cloak']['monalisa']
+        plan = rig.scan.acquisitionPlan()
+        profile = rig.limits().profile_store.profile(plan.profile_id)
+        ulens = rig.limits().resolve_ulens_period(plan.profile_id)
+
+        assert metadata['schemaVersion'] == rig.scan.savedMoNaLISASchemaVersion
+        assert metadata['profileId'] == plan.profile_id
+        assert metadata['modeId'] == plan.mode_id
+        assert metadata['profileSnapshot'] == profile.to_config()
+        assert metadata['profileFingerprint'] == rig.scan.profileBinding().profile_fingerprint
+        assert metadata['acquisitionContext']['ulens'] == {
+            'effectivePeriodUm': ulens.value_um,
+            'sourceKind': ulens.source_kind,
+            'sourceId': ulens.source_id,
+        }
+        assert metadata['acquisitionContext']['sampleRateHz'] == rig.limits().sample_rate
+    finally:
+        rig.close()
+
+
+def test_monalisa_advanced_save_does_not_claim_simple_binding(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        assert rig.scan.setScanPage('advanced')
+        state = rig.scan.getComponentState()
+        assert state['cloak']['page'] == 'advanced'
+        assert 'monalisa' not in state['cloak']
+    finally:
+        rig.close()
+
+
+def test_monalisa_exact_simple_state_load_rebinds_without_changing_backend(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        expected_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+        saved_profile = state['cloak']['monalisa']['profileId']
+        saved_mode = state['cloak']['monalisa']['modeId']
+
+        target = CloakRig('SimpleMoNaLISA')
+        try:
+            warnings = target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            assert not warnings
+            assert target.scan.scanPage() == 'simple'
+            assert target.scan.cloakOwnsBackend()
+            assert target.scan.acquisitionPlan().profile_id == saved_profile
+            assert target.scan.acquisitionPlan().mode_id == saved_mode
+            assert target.scan._readBackendWidget() == expected_backend
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_load_without_binding_metadata_stays_advanced_and_unbound(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        state['cloak'].pop('monalisa')
+        expected_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+
+        target = CloakRig('SimpleMoNaLISA')
+        try:
+            warnings = target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            assert target.scan.scanPage() == 'advanced'
+            assert target.scan.acquisitionPlan() is None
+            assert not target.scan.cloakOwnsBackend()
+            assert target.scan._readBackendWidget() == expected_backend
+            assert 'No Simple MoNaLISA binding metadata' in target.panel.loadResolutionLabel.text()
+            assert not target.panel.loadResolutionFrame.isHidden()
+            assert set(target.panel.loadResolutionButtons) == {'keep_advanced'}
+            assert any('No Simple MoNaLISA binding metadata' in warning for warning in warnings)
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_ulens_change_keeps_saved_scan_advanced(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        saved_period = state['cloak']['monalisa']['acquisitionContext']['ulens'][
+            'effectivePeriodUm'
+        ]
+        expected_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+        target = CloakRig(
+            'SimpleMoNaLISA',
+            _monalisaSetupWithFixedULensPeriod(float(saved_period) + 0.1),
+        )
+        try:
+            warnings = target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            assert target.scan.scanPage() == 'advanced'
+            assert target.scan.acquisitionPlan() is None
+            assert target.scan._readBackendWidget() == expected_backend
+            assert 'uLens' in target.panel.loadResolutionLabel.text()
+            assert set(target.panel.loadResolutionButtons) == {
+                'use_current_ulens', 'keep_advanced'
+            }
+            assert any('uLens' in warning for warning in warnings)
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_profile_change_keeps_saved_scan_advanced(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        profile_id = state['cloak']['monalisa']['profileId']
+        expected_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+        target = CloakRig(
+            'SimpleMoNaLISA',
+            _monalisaSetupWithModifiedProfile(profile_id),
+        )
+        try:
+            warnings = target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            assert target.scan.scanPage() == 'advanced'
+            assert target.scan.acquisitionPlan() is None
+            assert target.scan._readBackendWidget() == expected_backend
+            assert 'has changed since this scan was saved' in target.panel.loadResolutionLabel.text()
+            assert set(target.panel.loadResolutionButtons) == {
+                'use_current_profile', 'import_saved_profile', 'keep_advanced'
+            }
+            assert any('has changed since this scan was saved' in warning for warning in warnings)
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_ulens_load_action_explicitly_adapts_to_current_setup(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        saved_period = state['cloak']['monalisa']['acquisitionContext']['ulens'][
+            'effectivePeriodUm'
+        ]
+        saved_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+        current_period = float(saved_period) + 0.1
+        target = CloakRig(
+            'SimpleMoNaLISA', _monalisaSetupWithFixedULensPeriod(current_period)
+        )
+        try:
+            target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            target.panel.loadResolutionButtons['use_current_ulens'].click()
+
+            assert target.scan.scanPage() == 'simple'
+            assert target.scan.cloakOwnsBackend()
+            assert target.scan.acquisitionPlan().lateral_length_um == pytest.approx(
+                current_period
+            )
+            assert target.scan._readBackendWidget() != saved_backend
+            assert target.panel.loadResolutionFrame.isHidden()
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_changed_profile_can_explicitly_use_current_definition(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        profile_id = state['cloak']['monalisa']['profileId']
+        saved_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+        target = CloakRig(
+            'SimpleMoNaLISA', _monalisaSetupWithModifiedProfile(profile_id)
+        )
+        try:
+            target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            target.panel.loadResolutionButtons['use_current_profile'].click()
+
+            assert target.scan.scanPage() == 'simple'
+            assert target.scan.cloakOwnsBackend()
+            assert target.scan.acquisitionPlan().profile_id == profile_id
+            # This fixture changes only the profile label, so adopting the
+            # current profile definition does not need to alter acquisition TTLs.
+            assert target.scan._readBackendWidget() == saved_backend
+            assert target.panel.loadResolutionFrame.isHidden()
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_keep_advanced_dismisses_load_resolution_without_changes(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        saved_period = state['cloak']['monalisa']['acquisitionContext']['ulens'][
+            'effectivePeriodUm'
+        ]
+        saved_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+        target = CloakRig(
+            'SimpleMoNaLISA',
+            _monalisaSetupWithFixedULensPeriod(float(saved_period) + 0.1),
+        )
+        try:
+            target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            target.panel.loadResolutionButtons['keep_advanced'].click()
+
+            assert target.scan.scanPage() == 'advanced'
+            assert target.scan._readBackendWidget() == saved_backend
+            assert target.panel.loadResolutionFrame.isHidden()
+            assert target.scan.acquisitionPlan() is None
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_changed_profile_can_import_saved_snapshot_without_overwrite(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        original_id = state['cloak']['monalisa']['profileId']
+        saved_backend = (
+            copy.deepcopy(state['analogParameterDict']),
+            copy.deepcopy(state['digitalParameterDict']),
+        )
+        target = CloakRig(
+            'SimpleMoNaLISA', _monalisaSetupWithModifiedProfile(original_id)
+        )
+        try:
+            # Exercise the import/resolution logic without writing the test
+            # setup to the user's configuration directory.
+            def install_store(store, *, refresh_view=True):
+                monalisa = target.scan._monalisa()
+                monalisa['limits'] = dataclasses.replace(
+                    monalisa['limits'], profile_store=store
+                )
+                target.scan._refreshResolvedSetup(refreshView=refresh_view)
+                return True
+
+            target.scan._saveProfileStoreOrReport = install_store
+            target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            target.panel.loadResolutionButtons['import_saved_profile'].click()
+
+            imported_id = target.scan.acquisitionPlan().profile_id
+            assert imported_id != original_id
+            assert original_id in target.limits().profile_store.profiles
+            assert imported_id in target.limits().profile_store.profiles
+            assert target.scan.scanPage() == 'simple'
+            assert target.scan._readBackendWidget() == saved_backend
+            assert target.panel.loadResolutionFrame.isHidden()
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def test_monalisa_manual_advanced_edit_dismisses_stale_load_actions(qtbot):
+    source = CloakRig('SimpleMoNaLISA')
+    try:
+        state = source.scan.getComponentState()
+        saved_period = state['cloak']['monalisa']['acquisitionContext']['ulens'][
+            'effectivePeriodUm'
+        ]
+        target = CloakRig(
+            'SimpleMoNaLISA',
+            _monalisaSetupWithFixedULensPeriod(float(saved_period) + 0.1),
+        )
+        try:
+            target.scan.applyComponentState(
+                copy.deepcopy(state),
+                applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+            )
+            assert not target.panel.loadResolutionFrame.isHidden()
+
+            axis = target.limits().axis_device('X')
+            target.panel.backend.setScanStepSize(axis, 0.123)
+
+            assert target.panel.loadResolutionFrame.isHidden()
+            assert target.scan.scanPage() == 'advanced'
+        finally:
+            target.close()
+    finally:
+        source.close()
