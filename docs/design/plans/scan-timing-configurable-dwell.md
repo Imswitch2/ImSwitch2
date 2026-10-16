@@ -298,7 +298,7 @@ from `vel_max` and `acc_max` and tells the detector what to discard
   its digital lines; the `ttlMultiplying` mask is shifted with them.
 
 **S6 -- a sum projection over line steps and other extra dimensions in
-the live view (Lenny, 2026-10-16).** A line-step scan (and a z or time
+the live view (Lenny, 2026-10-16). DONE 2026-10-16** (sum only, per Lenny's words; the PMT's own line-step sum stays until its live buffer carries the stack; `displayAxisNames` on the APD and PMT name the dimensions). A line-step scan (and a z or time
 stack) reaches the napari viewer as a stack with a slider. Lenny wants,
 under the levels tool, a checkbox per displayed dimension beyond the two
 image axes that sums over it and shows the reduced image. The detectors

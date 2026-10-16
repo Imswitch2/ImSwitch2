@@ -384,6 +384,95 @@ class MplCanvas(FigureCanvas):
         super(MplCanvas, self).__init__(fig)
 
 
+class NapariSumAxesWidget(NapariBaseWidget):
+    """A Sum checkbox per dimension of the selected live layer beyond its two
+    image axes (line steps, z, t): checked, the view sums over it and shows
+    the reduced image; unchecked, the slider is back. Display only -- the
+    controller that owns the layer's frames does the reduction and tells
+    this widget which dimensions each layer has (``setAxes``).
+
+    The widget keeps, per layer name, the dimension labels and which are
+    summed, and emits ``sigSumAxesChanged(layer, axes)`` on every change."""
+
+    sigSumAxesChanged = QtCore.Signal(str, tuple)
+
+    @property
+    def name(self):
+        return 'sum over dimensions'
+
+    def __init__(self, napariViewer):
+        super().__init__(napariViewer)
+        self._axes = {}            # layer name -> [label per extra dimension]
+        self._summed = {}          # layer name -> set of extra-dimension indices
+        self._shown = None         # the layer the rows describe
+        self._boxes = []
+        self.setLayout(QtWidgets.QVBoxLayout())
+        self.layout().setContentsMargins(4, 4, 4, 4)
+        self.note = QtWidgets.QLabel('')
+        self.note.setWordWrap(True)
+        self.layout().addWidget(self.note)
+        self.rows = QtWidgets.QVBoxLayout()
+        self.layout().addLayout(self.rows)
+        self.setSizePolicy(QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                                 QtWidgets.QSizePolicy.Maximum))
+        try:
+            napariViewer.layers.selection.events.active.connect(lambda _e: self.refresh())
+        except AttributeError:
+            pass                   # a viewer stand-in without events
+        self.refresh()
+
+    def setAxes(self, layer, labels, summed=()):
+        """The extra dimensions of ``layer`` (outermost first) and which of
+        them are summed; the rows follow when that layer is selected."""
+        labels = [str(label) for label in labels]
+        if self._axes.get(layer) != labels or set(summed) != self._summed.get(layer, set()):
+            self._axes[layer] = labels
+            self._summed[layer] = {int(i) for i in summed if 0 <= int(i) < len(labels)}
+            self.refresh()
+
+    def summedAxes(self, layer):
+        return tuple(sorted(self._summed.get(layer, ())))
+
+    def _selectedLayerName(self):
+        try:
+            active = self.viewer.layers.selection.active
+        except AttributeError:
+            return None
+        return None if active is None else active.name
+
+    def refresh(self):
+        name = self._selectedLayerName()
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._boxes = []
+        self._shown = name
+        labels = self._axes.get(name) if name is not None else None
+        if not labels:
+            self.note.setText('The selected layer has no dimension beyond its image to sum '
+                              'over.' if name else 'Select a live layer.')
+            return
+        self.note.setText('Sum the selected layer over:')
+        summed = self._summed.get(name, set())
+        for index, label in enumerate(labels):
+            box = QtWidgets.QCheckBox(label)
+            box.setChecked(index in summed)
+            box.setToolTip(f'Show the sum over every {label} instead of one at a time. '
+                           'The recording is not changed.')
+            box.toggled.connect(lambda on, i=index, n=name: self._toggled(n, i, on))
+            self.rows.addWidget(box)
+            self._boxes.append(box)
+
+    def _toggled(self, layer, index, on):
+        summed = self._summed.setdefault(layer, set())
+        if on:
+            summed.add(index)
+        else:
+            summed.discard(index)
+        self.sigSumAxesChanged.emit(layer, self.summedAxes(layer))
+
+
 class NapariSumImageWidget(NapariBaseWidget):
     """ Napari widget for plotting the sum of individual frames in a stack. """
 

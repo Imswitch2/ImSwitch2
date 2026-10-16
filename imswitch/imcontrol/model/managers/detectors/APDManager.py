@@ -1212,6 +1212,10 @@ class ScanWorker(Worker):
         # Output dims for manager allocation: keep linestep as its own axis (for later stack/sum/max)
         # We append linestep as the LAST axis in output_image_dims (manager can reorder if desired)
         self._output_image_dims = tuple(scan_dims + ([self._linestep] if self._linestep > 1 else []))
+        # The frame's dimensions as the manager's buffer holds them (reversed,
+        # line steps outermost), for the view's Sum checkboxes.
+        self._manager.displayAxisNames = tuple(reversed(
+            list(scan_axes) + (['line steps'] if self._linestep > 1 else [])))
 
         # det samples per scan steps in different dims
         self._samples_d_scanstep = [round(samples) * self._frac_scan_det_rate for samples in

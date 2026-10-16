@@ -1082,6 +1082,10 @@ class ScanWorker(Worker):
 
         # output dims for manager allocation: append linestep at end if >1 (keeps stack possible)
         self._output_image_dims = tuple(scan_dims + ([self._linestep] if self._linestep > 1 else []))
+        # The frame's dimensions as the manager's buffer holds them (reversed,
+        # line steps outermost), for the view's Sum checkboxes.
+        self._manager.displayAxisNames = tuple(reversed(
+            list(scan_axes) + (['line steps'] if self._linestep > 1 else [])))
 
         # Nx for pixel binning (by convention img_dims starts with Nx,Ny,...)
         self._Nx = int(scan_dims[0]) if len(scan_dims) >= 1 else 1
