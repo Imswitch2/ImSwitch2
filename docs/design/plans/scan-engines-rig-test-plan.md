@@ -1,9 +1,12 @@
 # Scan engines: what to test on the rig
 
-For `feat/scan-engines` (the plan: `scan-engines-and-expert-scan.md`). Every
-item below passed in software (simulated NI-DAQ, simulated boards, mock
-detectors); the rig is where timing on a wire, real stages and real cameras
-answer. Ordered by what blocks a merge first.
+For `feat/scan-engines` (the plans: `scan-engines-and-expert-scan.md` and,
+for the T rows, `scan-timing-configurable-dwell.md`). Every item below
+passed in software (simulated NI-DAQ, simulated boards, mock detectors); the
+rig is where timing on a wire, real stages and real cameras answer. Ordered
+by what blocks a merge first. The branch also carries main as of
+2026-10-16 (device reconnection, #70; COMET drift, #68): their own rig items
+are in their plans.
 
 **Before the rig**
 
@@ -17,6 +20,9 @@ answer. Ordered by what blocks a merge first.
 - Have an oscilloscope on the scan's AO and TTL lines for the first runs;
   lasers off or at minimum power, small scan ranges, until a test says
   otherwise.
+- From the build you run today, keep an image of a known sample at 10 µs
+  and at 20 µs dwell and note the D2 (phase delay) you use for each: T1
+  compares against them.
 
 ## P0 -- nothing that worked breaks (must pass before merging)
 
@@ -29,6 +35,36 @@ answer. Ordered by what blocks a merge first.
 | A5 | Any rig with an inverted TTL input (a shutter, a laser enable) | Set its `ttlActiveLevel: "low"`; switch by hand, then scan | On the scope, the line is high when the GUI says off -- by hand and in a scan |
 | A6 | Any rig with a laser on a non-NI-DAQ line | Open the Advanced panel | That laser is greyed with the reason, and a scan that fires it is refused (it used to never fire, silently) |
 | A7 | A rig with NI-DAQ lines on a `PXI…` device | Scan with that line | It now fires (it used to be dropped) |
+
+## P0 -- scan timing at the rig's own 100 kHz clock
+
+Nothing in the setup file changes for these rows. What changed for every
+galvo scan: every count follows one rounding (the dwell rounds up to whole
+samples), the digital lines -- lasers, cameras, line and frame clocks -- are
+played D2 later so the gate follows the beam, and the detectors' timer
+starts with the scan.
+
+| # | Rig | Do | Passes if |
+|---|---|---|---|
+| T1 | Galvo + APD | Your 10 µs and 20 µs Advanced scans, same D2 as before | The images match the old ones, except that an edge pixel that was dark on fast scans is lit. Scope: each laser gate's edges trail the galvo line by D2 (whole 10 µs samples); the line and frame clock outputs trail by the same D2 |
+| T2 | Galvo + APD | The same at 15 µs (the original failure) | The timing note says *Dwell 15 µs runs as 20 µs*; the image is right -- no shear, no drift from line to line |
+| T3 | Galvo + APD | D2 = 3 µs, or any value that is not a multiple of 10 | The timing note says the lag plays as 0 µs on the digital lines and 3 µs on the detectors; the recording's `ScanStage:lag` says the same |
+| T4 | Galvo + APD | A scan with 2 or 3 line steps | A **Sum line steps** box appears under the levels tool and nothing else; ticked, the view shows the summed image and its levels follow; the file keeps every step. Then a 2-D scan: the box is gone |
+| T5 | Galvo, 3-D | Declare `settleTimeS` (e.g. `0.002`) on the Z positioner; scan 3 planes | The D3 field is gone; the timing note says *Every slice starts after a 2000 µs pause: … declares settleTimeS 0.002 s*; each plane is sharp from its first line |
+| T6 | Stage, Beta (MoNaLISA) | A scan you ran before; then the same at a 5.03 ms dwell | Same frames as before. At 5.03 ms the scan ends normally with one frame per pixel (a dwell whose sample count is float noise -- 503.00000000000006 -- now counted the same way by the stage and its TTL designer) |
+| T7 | A rig with `nidaq.startTrigger: false` and a point detector | The same scan three times | No shift between the three images: the timer now starts with the scan instead of running free |
+| T8 | Any | The first scan after starting | No refusal starting *Cannot verify the … task*. If one appears, note the task and the message: the driver does not report that property on this board, and the check is relaxed for that task (a one-line change) |
+
+## P1 -- a faster clock on the PCIe-6363
+
+| # | Rig | Do | Passes if |
+|---|---|---|---|
+| T9 | 6363 | `scan.sampleRate: 1000000` in the setup (`nidaq.detectionRateHz` absent: 1 MHz); start | Starts; the dwell label reads *(ms, 1 µs clock)*; the first scan logs *Detector timer: 1e+06 Hz from a 1e+08 Hz timebase, first pulse … s after the scan starts* |
+| T10 | 6363, galvo + APD | 1 µs dwell on a small field (at 1 µs the turnaround is v²/2a: keep pixels small, the designer refuses what the galvo cannot do), then 2 and 5 µs | A clean image; the scope shows the AO updating every 1 µs and the gate edges at whole microseconds of D2; a steady source at 1 µs × 10 frames gives the counts of 10 µs × 1 frame within Poisson error |
+| T11 | 6363 | `scan.sampleRate: 300000` | Refused at startup, naming 250000 and 333333 Hz as the nearest rates the timer divides |
+| T12 | 6363 + PMT (if fitted) | One PMT at 1 MHz; then two on one device | One: a clean image. Two: the driver refuses the second analog input task when the scan arms, the scan rolls back, the next scan runs |
+| T13 | 6363 | 512 × 512 at 1 µs | The live view keeps up; no read timeouts in the log |
+| T14 | Galvo | Forward and backward lines at 2, 5, 10 and 20 µs: the D2 that aligns them at each | A table of (dwell or sweep speed, D2) for this rig -- the lag changes with speed, which is why D2 stays a field; the table is what a per-speed lag would be filled from |
 
 ## P1 -- new on the NI-DAQ
 
@@ -91,4 +127,4 @@ simulated boards. When the lab's firmware exists:
   unmeasured), to know when a densified program becomes too large.
 
 Report results per row (pass, fail with what was seen, not run) in plan
-§7.10 or a new §7.11.
+§7.10 or a new §7.11; the T rows in `scan-timing-configurable-dwell.md` §8.

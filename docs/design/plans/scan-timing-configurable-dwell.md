@@ -231,8 +231,9 @@ per pixel at 100 kHz and one per pixel at 1 MHz.
 7. **Phase delay** stays a time in µs, converted once per clock by one
    function (`lag_samples_for`, nearest, half to even): whole scan-clock
    samples for the digital lines, whole timer samples for the detectors.
-   What each plays and the residual between them are recorded
-   (`scan_info['lag']`), and the Advanced timing note says when they differ
+   What each plays and the residual between them are recorded (the scan
+   info's `lag`, and the recording's `ScanStage:lag` for a galvo scan), and
+   the Advanced timing note says when they differ
    (3 µs at 100 kHz: the lines play 0 µs, the detectors 3 µs). The stream
    ends with at least the lag of idle samples, and the manager refuses a
    delay the stream's end cannot hold rather than cut a line's last edge.
@@ -390,7 +391,8 @@ kind is the read cadence (S3).
   not report -- each refused by name, the scan rolled back and its tasks
   closed; a detector rate that is not a multiple refused at startup;
 - the timer armed on `ao/StartTrigger` with `nidaq.startTrigger` false;
-  `scan_info['lag']` and `scan_info['detector_clock']` recorded;
+  the scan info's `lag` and `detector_clock` filled in, `ScanStage:lag`
+  published for a galvo scan and not for a Beta one;
 - the end of the stream: a galvo scan at 1 MHz keeps the delayed gate's
   last falling edge and gates its last pixel for lags up to 1 ms, and a
   delay longer than the idle end is refused;
@@ -410,8 +412,9 @@ kind is the read cadence (S3).
 - counts: a steady source at 1 µs × 10 frames against 10 µs × 1 frame
   within Poisson error (conservation);
 - the lag, two ways. An injected, known delay first: scope the laser gate
-  against the AO and confirm the gate plays `scan_info['lag']
-  ['gate_delay_s']` to one scan-clock sample, independent of the galvo.
+  against the AO and confirm the gate plays the recording's
+  `ScanStage:lag` `gate_delay_s` to one scan-clock sample, independent of
+  the galvo.
   Then controlled sweep speeds: the same field at several dwells, the lag
   at each read from the alignment of forward and backward lines, compared
   against the galvo's calibration at that speed. The lag is expected to
@@ -422,9 +425,10 @@ kind is the read cadence (S3).
   timer armed on the scan's start);
 - a second PMT on the same device: the driver's refusal, the scan rolled
   back cleanly; one PMT at 1 MHz: a clean image;
-- the driver's read-back rate logged for 100 kHz, 500 kHz, 1 MHz and an
-  off-divisor request, with `scan_info['detector_clock']` (timebase,
-  frequency, first-pulse delay) for each;
+- the driver's read-back rate for 100 kHz, 500 kHz, 1 MHz and an
+  off-divisor request, with the timer's line in the log (*Detector timer:
+  … Hz from a … Hz timebase, first pulse … s after the scan starts*) for
+  each;
 - S5: the dark edge pixel gone at 10 and 20 µs with the lag the rig uses
   today; a 3 µs lag at 100 kHz shows the residual the timing note states;
 - Beta (stage) scans on a camera rig at a dwell whose float product is
@@ -474,8 +478,9 @@ look at S6, and an audit Lenny asked for: does any of this break the Beta
    phase within one timer period -- a whole pixel at 1 µs on a 1 MHz timer.
    Now it is armed whenever there is analog output, committed and read
    back (`NidaqManager._verifyTimerClock`: timebase divides the rate,
-   frequency equals it, first pulse within one period), and recorded as
-   `scan_info['detector_clock']`. Tests: `test_scan_clock_configurable.py`.
+   frequency equals it, first pulse within one period), kept in the scan
+   info as `detector_clock` and logged. Tests:
+   `test_scan_clock_configurable.py`.
 3. **Device validation was not a contract (P1).** The device-level checks
    (`_checkDeviceRates`, `_checkInputRate`, `_checkConfiguredRate`) read
    properties the Python API lacks, skipped PMTs and counters, and passed
@@ -484,9 +489,9 @@ look at S6, and an audit Lenny asked for: does any of this break the Beta
    mandatory check refuses; a refused task is registered first or closed,
    so the rollback never leaks it. Two PMTs: see §3.
 4. **The residual and the end of the stream (P1).** One rounding for both
-   clocks (`lag_samples_for`; the APD and PMT used their own),
-   `scan_info['lag']` with the requested, gate, detector and residual
-   delays, the residual in the timing note. `delayed_lines` dropped the
+   clocks (`lag_samples_for`; the APD and PMT used their own); the
+   requested, gate, detector and residual delays in the scan info (`lag`)
+   and the recording (`ScanStage:lag`); the residual in the timing note. `delayed_lines` dropped the
    samples it pushed past the end, which could cut a gate's last edge, and
    returned a stream shorter than the shift unchanged: it now refuses both,
    naming the line, and the galvo designer's end padding is at least the

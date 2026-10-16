@@ -1715,8 +1715,12 @@ class NidaqManager(SignalInterface):
                         scanGeneration,
                     )
                     # verified once registered: a refusal's rollback closes it
-                    scanInfoDict['detector_clock'] = self._verifyTimerClock(
+                    scanInfoDict['detector_clock'] = clock = self._verifyTimerClock(
                         self.timerTask, self._timerRateHz)
+                    self.__logger.info(
+                        f"Detector timer: {clock['rate_hz']:g} Hz from a "
+                        f"{clock['timebase_hz']:g} Hz timebase, first pulse "
+                        f"{clock['initial_delay_s']:g} s after the scan starts.")
                 acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
                 scanclock = self._scanClockSource()
                 clockDO = scanclock

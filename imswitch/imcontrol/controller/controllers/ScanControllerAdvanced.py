@@ -13,6 +13,7 @@ from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.scan_parameters import (
+    lag_report,
     samples_for_duration,
     seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
@@ -960,6 +961,19 @@ class ScanControllerAdvanced(SuperScanController):
             logger = self.__dict__.get('_logger')
             if logger is not None:
                 logger.warning('The scan\'s realized timing is not recorded', exc_info=True)
+        # How the galvo's lag plays (scan timing plan, rule 7): the delay of
+        # the digital lines in whole scan-clock samples, the detectors' in
+        # whole timer samples, and the residual between them. Beside the
+        # schedule, so the file has it under the same conditions.
+        if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'GalvoScanDesigner':
+            try:
+                self.setSharedAttr('ScanStage', 'lag', lag_report(
+                    self._analogParameterDict.get('phase_delay', 0),
+                    self._setupInfo.scan.sampleRate, self._detectorTimerRateHz()))
+            except Exception:
+                logger = self.__dict__.get('_logger')
+                if logger is not None:
+                    logger.warning('How the phase delay plays is not recorded', exc_info=True)
 
     def _cachedFullScan(self):
         """Full scan design for the current parameters, built at most once.

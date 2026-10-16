@@ -500,7 +500,8 @@ Key fields:
   both numbers. When a scan is armed the timer is read back from the
   driver: its timebase must divide the rate, its frequency must be the rate
   and its first pulse must come within one period of the scan's start. What
-  it realized is recorded in the scan info (``detector_clock``).
+  it realized is logged (*Detector timer: … Hz from a … Hz timebase, first
+  pulse … s after the scan starts*).
 
 **Example** (simulation mode, no physical DAQ):
 

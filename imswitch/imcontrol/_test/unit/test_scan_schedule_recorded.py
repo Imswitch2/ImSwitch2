@@ -74,6 +74,30 @@ def test_the_shared_test_helper_makes_a_widget_ready_application():
     assert isinstance(_ensure_qcore_app(), QtWidgets.QApplication)
 
 
+
+def test_a_galvo_scan_records_how_its_phase_delay_plays(qtbot):
+    """Beside the schedule: the galvo's lag as the digital lines play it
+    (whole scan-clock samples), as the detectors read it (whole timer
+    samples), and the residual between them (scan timing plan, rule 7)."""
+    rig = AdvancedRig(designer='GalvoScanDesigner')
+    try:
+        rig.load(lengths=[3.0, 3.0, 0.0], steps=[0.5, 0.5, 1.0])
+        rig.widget.phaseDelayPar.setText('3')
+        rig.scan._buildScanSignals()                  # as a run arms
+        assert rig.channel.sharedAttrs[('ScanStage', 'lag')] == {
+            'requested_s': 3e-6, 'gate_delay_s': 0.0, 'detector_delay_s': 3e-6,
+            'residual_s': 3e-6}
+    finally:
+        rig.close()
+    beta = AdvancedRig()                              # Beta plays no phase delay
+    try:
+        beta.load(lengths=[3.0, 3.0, 0.0], steps=[0.5, 0.5, 1.0])
+        beta.scan._buildScanSignals()
+        assert ('ScanStage', 'lag') not in beta.channel.sharedAttrs
+    finally:
+        beta.close()
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #
