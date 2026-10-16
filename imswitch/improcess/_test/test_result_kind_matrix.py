@@ -114,7 +114,9 @@ def test_duck_typed_results_default_to_image_kind():
 
 
 #: Processors that operate on localization tables (LocalizationResult).
-LOCALIZATION_PROCESSOR_IDS = {"smlm-render", "smlm-filter", "smlm-drift", "smlm-group"}
+LOCALIZATION_PROCESSOR_IDS = {
+    "smlm-render", "smlm-filter", "smlm-drift", "smlm-drift-comet", "smlm-group",
+}
 #: Processors that operate on label masks (segmentation output).
 #:
 #: ``image-calculator`` is here because a label image is an array of numbers on

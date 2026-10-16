@@ -212,6 +212,8 @@ class PMTManager(TrajectoryDetectorMixin, DetectorManager):
             parameters=parameters,
             croppable=False
         )
+        if self._simulation_mode:
+            self._setMockActive("Simulated NI-DAQ detector backend")
 
     def crop(self, hpos, vpos, hsize, vsize):
         pass

@@ -99,14 +99,54 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._widget.sigSavePresetClicked.connect(self.savePreset)
         self._widget.sigSavePresetAsClicked.connect(self.savePresetAs)
         self._widget.sigDeletePresetClicked.connect(self.deletePreset)
+
+        # Lifecycle changes are published by the scoped device lifecycle
+        # service, not the global CommunicationChannel. The callback may run on
+        # a worker thread, so the handler marshals UI synchronization back onto
+        # this controller's affinity thread.
+        self._deviceLifecycleListener = None
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            self._deviceLifecycleListener = self._deviceLifecycleChanged
+            lifecycleService.addListener(self._deviceLifecycleListener)
         
         # Register for unified state persistence (canonical name)
         getWidgetStatePersistence().register('Laser', self)
 
     def closeEvent(self):
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        listener = getattr(self, '_deviceLifecycleListener', None)
+        if lifecycleService is not None and listener is not None:
+            lifecycleService.removeListener(listener)
+            self._deviceLifecycleListener = None
         self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
         self._master.lasersManager.execOnAll(lambda l: l.setValue(0))
         self._master.lasersManager.execOnAll(lambda l: l.setEnabled(False))
+
+    def _deviceLifecycleChanged(self, result):
+        deactivated = tuple(
+            device_id
+            for device_id in getattr(result, 'deactivated_device_ids', ())
+            if getattr(device_id, 'kind', None) == 'laser'
+        )
+        if not deactivated:
+            return
+
+        self._invokeOnControllerThreadIfNeeded(
+            lambda: self._applyLifecycleDeactivation(deactivated)
+        )
+
+    def _applyLifecycleDeactivation(self, device_ids):
+        knownLasers = {name for name, _ in self._master.lasersManager}
+        for device_id in device_ids:
+            laserName = device_id.name
+            if laserName not in knownLasers:
+                continue
+            # The lifecycle adapter already forced the physical output OFF.
+            # Synchronize desired/UI state without issuing another hardware
+            # command from the controller.
+            self._widget.setLaserActive(laserName, False, emitSignal=False)
+            self.setSharedAttr(laserName, _enabledAttr, False)
 
     def toggleLaser(self, laserName, enabled):
         """ Enable or disable laser (on/off)."""

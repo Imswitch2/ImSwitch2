@@ -12,6 +12,9 @@ class MockCameraTIS:
             'subarray_vpos': 0,
             'subarray_hpos': 0,
             'exposure_time': 0.1,
+            'exposure': 100,
+            'gain': 1,
+            'brightness': 1,
             'subarray_vsize': 800,
             'subarray_hsize': 800,
             'SensorHeight': 1024,
@@ -42,8 +45,9 @@ class MockCameraTIS:
         pass
 
     def setROI(self, hpos, vpos, hsize, vsize):
-        self.shape = (self.shape[0], hsize)
-        self.shape = (vsize, self.shape[1])
+        self.shape = (vsize, hsize)
+        self.properties['image_width'] = hsize
+        self.properties['image_height'] = vsize
 
     def setBinning(self, binning):
         pass
@@ -113,21 +117,16 @@ class MockCameraTIS:
         # the real camera. The geometry keys stay fixed: the mock's frame
         # size does not follow them.
         if property_name in ('exposure', 'gain', 'brightness'):
+            setattr(self, property_name, property_value)
             self.properties[property_name] = property_value
         return property_value
 
     def getPropertyValue(self, property_name):
-        try:
-            return self.properties[property_name]
-        except Exception as e:
-            return 0
+        return self.properties.get(property_name, 0)
 
     def openPropertiesGUI(self):
         pass
     
-    def close(self):
-        pass
-
     def close(self):
         pass
     

@@ -1,18 +1,18 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 48,
+    "constrained": 49,
     "docs_agree": 164,
     "docs_documented": 164,
     "keys": 244,
     "managers": 68,
-    "none_default_only": 48,
+    "none_default_only": 51,
     "none_only": 16,
-    "optional": 181,
+    "optional": 179,
     "reads_any": 64,
     "refs": 15,
-    "required": 63,
-    "typed_by_code": 98,
+    "required": 65,
+    "typed_by_code": 100,
     "typed_with_docs": 188,
     "typed_with_examples": 138,
     "uncertain": 0,
@@ -156,7 +156,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 0
+      "required": 1
     },
     "ESP32LEDLaserManager": {
       "category": "lasers",
@@ -397,7 +397,7 @@
       ],
       "overridden": false,
       "properties": 7,
-      "required": 0
+      "required": 1
     },
     "MockPositionerManager": {
       "category": "positioners",
