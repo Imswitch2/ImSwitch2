@@ -87,6 +87,44 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
             )
         top.addRow('uLens period', self.ulensPeriodSpin)
 
+        self.lateralGeometryModeCombo = QtWidgets.QComboBox()
+        self.lateralGeometryModeCombo.addItem('Coupled XY', 'coupled')
+        self.lateralGeometryModeCombo.addItem('Independent X / Y', 'independent')
+        self.lateralGeometryModeCombo.setCurrentIndex(max(
+            0, self.lateralGeometryModeCombo.findData(getattr(profile, 'lateral_geometry_mode', 'coupled'))
+        ))
+
+        self.defaultLateralStepSpin = QtWidgets.QDoubleSpinBox()
+        self.defaultLateralStepSpin.setRange(0.001, 100000.0)
+        self.defaultLateralStepSpin.setDecimals(4)
+        self.defaultLateralStepSpin.setSuffix(' µm')
+        self.defaultLateralStepSpin.setKeyboardTracking(False)
+        self.defaultLateralStepSpin.setValue(float(
+            profile.default_lateral_step_um
+            if getattr(profile, 'default_lateral_step_um', None) is not None
+            else 0.04
+        ))
+        self.defaultXStepSpin = QtWidgets.QDoubleSpinBox()
+        self.defaultXStepSpin.setRange(0.001, 100000.0)
+        self.defaultXStepSpin.setDecimals(4)
+        self.defaultXStepSpin.setSuffix(' µm')
+        self.defaultXStepSpin.setKeyboardTracking(False)
+        self.defaultXStepSpin.setValue(float(
+            getattr(profile, 'default_x_step_um', None)
+            if getattr(profile, 'default_x_step_um', None) is not None
+            else (profile.default_lateral_step_um if getattr(profile, 'default_lateral_step_um', None) is not None else 0.04)
+        ))
+        self.defaultYStepSpin = QtWidgets.QDoubleSpinBox()
+        self.defaultYStepSpin.setRange(0.001, 100000.0)
+        self.defaultYStepSpin.setDecimals(4)
+        self.defaultYStepSpin.setSuffix(' µm')
+        self.defaultYStepSpin.setKeyboardTracking(False)
+        self.defaultYStepSpin.setValue(float(
+            getattr(profile, 'default_y_step_um', None)
+            if getattr(profile, 'default_y_step_um', None) is not None
+            else (profile.default_lateral_step_um if getattr(profile, 'default_lateral_step_um', None) is not None else 0.04)
+        ))
+
         self.scanExtentSourceCombo = QtWidgets.QComboBox()
         self.scanExtentSourceCombo.addItem('One uLens period', 'ulens')
         self.scanExtentSourceCombo.addItem('Manual scan length', 'manual')
@@ -103,9 +141,42 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
             if profile.manual_scan_extent_um is not None
             else profile_period
         ))
+        self.manualScanExtentXSpin = QtWidgets.QDoubleSpinBox()
+        self.manualScanExtentXSpin.setRange(0.001, 100000.0)
+        self.manualScanExtentXSpin.setDecimals(4)
+        self.manualScanExtentXSpin.setSuffix(' µm')
+        self.manualScanExtentXSpin.setKeyboardTracking(False)
+        self.manualScanExtentXSpin.setValue(float(
+            getattr(profile, 'manual_scan_extent_x_um', None)
+            if getattr(profile, 'manual_scan_extent_x_um', None) is not None
+            else (profile.manual_scan_extent_um if profile.manual_scan_extent_um is not None else profile_period)
+        ))
+        self.manualScanExtentYSpin = QtWidgets.QDoubleSpinBox()
+        self.manualScanExtentYSpin.setRange(0.001, 100000.0)
+        self.manualScanExtentYSpin.setDecimals(4)
+        self.manualScanExtentYSpin.setSuffix(' µm')
+        self.manualScanExtentYSpin.setKeyboardTracking(False)
+        self.manualScanExtentYSpin.setValue(float(
+            getattr(profile, 'manual_scan_extent_y_um', None)
+            if getattr(profile, 'manual_scan_extent_y_um', None) is not None
+            else (profile.manual_scan_extent_um if profile.manual_scan_extent_um is not None else profile_period)
+        ))
         self.scanExtentSourceCombo.currentIndexChanged.connect(self._updateGeometryState)
+        self.lateralGeometryModeCombo.currentIndexChanged.connect(self._updateGeometryState)
+        top.addRow('XY geometry', self.lateralGeometryModeCombo)
+        self.defaultLateralStepLabel = QtWidgets.QLabel('Default pixel size')
+        top.addRow(self.defaultLateralStepLabel, self.defaultLateralStepSpin)
+        self.defaultXStepLabel = QtWidgets.QLabel('Default X pixel size')
+        top.addRow(self.defaultXStepLabel, self.defaultXStepSpin)
+        self.defaultYStepLabel = QtWidgets.QLabel('Default Y pixel size')
+        top.addRow(self.defaultYStepLabel, self.defaultYStepSpin)
         top.addRow('Lateral scan length', self.scanExtentSourceCombo)
-        top.addRow('Manual scan length', self.manualScanExtentSpin)
+        self.manualScanExtentLabel = QtWidgets.QLabel('Manual scan length')
+        top.addRow(self.manualScanExtentLabel, self.manualScanExtentSpin)
+        self.manualScanExtentXLabel = QtWidgets.QLabel('Manual X scan length')
+        top.addRow(self.manualScanExtentXLabel, self.manualScanExtentXSpin)
+        self.manualScanExtentYLabel = QtWidgets.QLabel('Manual Y scan length')
+        top.addRow(self.manualScanExtentYLabel, self.manualScanExtentYSpin)
 
         self.cameraReadoutSourceCombo = QtWidgets.QComboBox()
         self.cameraReadoutSourceCombo.addItem(
@@ -157,9 +228,24 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         )
 
     def _updateGeometryState(self, *args):
-        self.manualScanExtentSpin.setEnabled(
-            self.scanExtentSourceCombo.currentData() == 'manual'
-        )
+        manual = self.scanExtentSourceCombo.currentData() == 'manual'
+        independent = self.lateralGeometryModeCombo.currentData() == 'independent'
+        self.defaultLateralStepLabel.setVisible(not independent)
+        self.defaultLateralStepSpin.setVisible(not independent)
+        self.defaultXStepLabel.setVisible(independent)
+        self.defaultXStepSpin.setVisible(independent)
+        self.defaultYStepLabel.setVisible(independent)
+        self.defaultYStepSpin.setVisible(independent)
+
+        self.manualScanExtentLabel.setVisible(manual and not independent)
+        self.manualScanExtentSpin.setVisible(manual and not independent)
+        self.manualScanExtentSpin.setEnabled(manual and not independent)
+        self.manualScanExtentXLabel.setVisible(manual and independent)
+        self.manualScanExtentXSpin.setVisible(manual and independent)
+        self.manualScanExtentXSpin.setEnabled(manual and independent)
+        self.manualScanExtentYLabel.setVisible(manual and independent)
+        self.manualScanExtentYSpin.setVisible(manual and independent)
+        self.manualScanExtentYSpin.setEnabled(manual and independent)
 
     def _buildStepsTab(self):
         tab = QtWidgets.QWidget()
@@ -579,10 +665,12 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
         self._refreshModesList(max(0, row - 1))
 
     def profile(self):
+        geometry_mode = str(self.lateralGeometryModeCombo.currentData())
         config = {
             'label': self.profileLabelEdit.text().strip(),
             'defaultMode': self._default_mode,
             'scanExtentSource': str(self.scanExtentSourceCombo.currentData()),
+            'lateralGeometryMode': geometry_mode,
             'steps': [dict(step) for step in self._steps],
             'modes': {
                 mode_id: {
@@ -605,8 +693,17 @@ class MoNaLISAProfileEditor(QtWidgets.QDialog):
             # A previously stored per-profile value is deliberately omitted in
             # fixed mode; the setup owns this number while that policy is active.
             pass
+        if geometry_mode == 'independent':
+            config['defaultXStepUm'] = self.defaultXStepSpin.value()
+            config['defaultYStepUm'] = self.defaultYStepSpin.value()
+        else:
+            config['defaultLateralStepUm'] = self.defaultLateralStepSpin.value()
         if self.scanExtentSourceCombo.currentData() == 'manual':
-            config['scanExtentUm'] = self.manualScanExtentSpin.value()
+            if geometry_mode == 'independent':
+                config['scanExtentXUm'] = self.manualScanExtentXSpin.value()
+                config['scanExtentYUm'] = self.manualScanExtentYSpin.value()
+            else:
+                config['scanExtentUm'] = self.manualScanExtentSpin.value()
         if self.cameraReadoutSourceCombo.currentData() == 'profile':
             config['cameraReadoutTimeMs'] = self.cameraReadoutSpin.value()
         return MoNaLISAProfileDefinition.from_config(self._profile_id, config)

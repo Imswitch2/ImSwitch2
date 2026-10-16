@@ -283,6 +283,8 @@ class MoNaLISAView(ScanCloakView):
 
     sigPlanEdited = QtCore.Signal(object)
     sigProfileRequested = QtCore.Signal(str)
+    sigProfileReloadRequested = QtCore.Signal(str)
+    sigProfileDefaultsUpdateRequested = QtCore.Signal(str)
     sigModeRequested = QtCore.Signal(str)
     sigProfileNewRequested = QtCore.Signal()
     sigProfileDuplicateRequested = QtCore.Signal(str)
@@ -401,7 +403,7 @@ class MoNaLISAView(ScanCloakView):
             'Profiles are selected only in Simple. Advanced edits may preserve or break the selection, '
             'but never select another profile automatically.'
         )
-        self.profileCombo.currentIndexChanged.connect(self._profileChanged)
+        self.profileCombo.activated.connect(self._profileChanged)
         self.modeCombo = QtWidgets.QComboBox()
         self.modeCombo.currentIndexChanged.connect(self._modeChanged)
         self.bindingLabel = QtWidgets.QLabel('')
@@ -424,6 +426,17 @@ class MoNaLISAView(ScanCloakView):
         self.renameProfileAction.triggered.connect(self._requestRenameProfile)
         self.deleteProfileAction.triggered.connect(self._requestDeleteProfile)
 
+        self.profileReloadButton = QtWidgets.QToolButton()
+        self.profileReloadButton.setText('⟳')
+        self.profileReloadButton.setToolTip('Reload this profile from its saved defaults.')
+        self.profileReloadButton.clicked.connect(self._requestReloadProfile)
+        self.profileDefaultsButton = QtWidgets.QToolButton()
+        self.profileDefaultsButton.setText('⇪')
+        self.profileDefaultsButton.setToolTip(
+            'Update this profile defaults from the current Simple scan settings.'
+        )
+        self.profileDefaultsButton.clicked.connect(self._requestUpdateProfileDefaults)
+
         self.setupButton = QtWidgets.QPushButton('Setup…')
         self.setupButton.setToolTip('Edit and persist all SimpleMoNaLISA setup parameters.')
         self.setupButton.clicked.connect(self.sigSetupEditRequested.emit)
@@ -434,6 +447,8 @@ class MoNaLISAView(ScanCloakView):
         profileRowLayout.setSpacing(6)
         profileRowLayout.addWidget(QtWidgets.QLabel('Profile'))
         profileRowLayout.addWidget(self.profileCombo, 2)
+        profileRowLayout.addWidget(self.profileReloadButton)
+        profileRowLayout.addWidget(self.profileDefaultsButton)
         profileRowLayout.addWidget(self.profileMenuButton)
         profileRowLayout.addSpacing(8)
         profileRowLayout.addWidget(QtWidgets.QLabel('Mode'))
@@ -467,6 +482,10 @@ class MoNaLISAView(ScanCloakView):
         self.lateralStepControl.valueChanged.connect(self._emitEdited)
         self.lateralLengthControl = _RangeControl(suffix=' µm', decimals=4, low=0.05, high=10.0)
         self.lateralLengthControl.valueChanged.connect(self._emitEdited)
+        self.yStepControl = _RangeControl(suffix=' nm', decimals=1, low=5.0, high=1000.0)
+        self.yStepControl.valueChanged.connect(self._emitEdited)
+        self.yLengthControl = _RangeControl(suffix=' µm', decimals=4, low=0.05, high=10.0)
+        self.yLengthControl.valueChanged.connect(self._emitEdited)
         self.zStepControl = _RangeControl(suffix=' nm', decimals=1, low=5.0, high=1000.0)
         self.zStepControl.valueChanged.connect(self._emitEdited)
         self.zLengthControl = _RangeControl(suffix=' µm', decimals=4, low=0.1, high=10.0)
@@ -477,6 +496,8 @@ class MoNaLISAView(ScanCloakView):
         self.lateralStepSpin = self.lateralStepControl.spin
         self.lateralStepSlider = self.lateralStepControl.slider
         self.lateralLengthSpin = self.lateralLengthControl.spin
+        self.yStepSpin = self.yStepControl.spin
+        self.yLengthSpin = self.yLengthControl.spin
         self.zStepSpin = self.zStepControl.spin
         self.zLengthSpin = self.zLengthControl.spin
 
@@ -495,12 +516,16 @@ class MoNaLISAView(ScanCloakView):
 
         self.pixelField, self.pixelCaption = field('Pixel size', self.lateralStepControl)
         self.lateralLengthField, self.lateralLengthCaption = field('Scan length', self.lateralLengthControl)
+        self.yStepField, self.yStepCaption = field('Y pixel size', self.yStepControl)
+        self.yLengthField, self.yLengthCaption = field('Y scan length', self.yLengthControl)
         self.zStepField, self.zStepCaption = field('Z step', self.zStepControl)
         self.zLengthField, self.zLengthCaption = field('Z scan length', self.zLengthControl)
         layout.addWidget(self.pixelField, 1, 0)
         layout.addWidget(self.lateralLengthField, 1, 1)
-        layout.addWidget(self.zStepField, 2, 0)
-        layout.addWidget(self.zLengthField, 2, 1)
+        layout.addWidget(self.yStepField, 2, 0)
+        layout.addWidget(self.yLengthField, 2, 1)
+        layout.addWidget(self.zStepField, 3, 0)
+        layout.addWidget(self.zLengthField, 3, 1)
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(1, 1)
         self.content.addWidget(box)
@@ -717,6 +742,8 @@ class MoNaLISAView(ScanCloakView):
             ranges = limits.slider_ranges
             self.lateralStepControl.setRange(*ranges['pixelSizeNm'])
             self.lateralLengthControl.setRange(*ranges['lateralScanLengthUm'])
+            self.yStepControl.setRange(*ranges['pixelSizeNm'])
+            self.yLengthControl.setRange(*ranges['lateralScanLengthUm'])
             self.zStepControl.setRange(*ranges['zStepNm'])
             self.zLengthControl.setRange(*ranges['zScanLengthUm'])
             self.profileCombo.clear()
@@ -792,6 +819,8 @@ class MoNaLISAView(ScanCloakView):
                 self.scanTypeCombo.setCurrentIndex(max(0, index))
                 self.lateralLengthControl.setValue(self._limits.fixed_ulens_period_um)
                 self.lateralStepControl.setValue(self._limits.default_lateral_step_um * 1000.0)
+                self.yLengthControl.setValue(self._limits.fixed_ulens_period_um)
+                self.yStepControl.setValue(self._limits.default_lateral_step_um * 1000.0)
                 self.zLengthControl.setValue(self._limits.default_z_scan_length_um)
                 self.zStepControl.setValue(self._limits.default_z_step_um * 1000.0)
                 self.modeCombo.clear()
@@ -809,8 +838,10 @@ class MoNaLISAView(ScanCloakView):
         try:
             index = self.scanTypeCombo.findText(plan.scan_type)
             self.scanTypeCombo.setCurrentIndex(max(0, index))
-            self.lateralLengthControl.setValue(plan.lateral_length_um)
-            self.lateralStepControl.setValue(plan.lateral_step_um * 1000.0)
+            self.lateralLengthControl.setValue(plan.length_um_for_axis('X'))
+            self.lateralStepControl.setValue(plan.step_um_for_axis('X') * 1000.0)
+            self.yLengthControl.setValue(plan.length_um_for_axis('Y'))
+            self.yStepControl.setValue(plan.step_um_for_axis('Y') * 1000.0)
             self.zLengthControl.setValue(plan.z_length_um)
             self.zStepControl.setValue(plan.z_step_um * 1000.0)
 
@@ -987,13 +1018,25 @@ class MoNaLISAView(ScanCloakView):
         if profile_id:
             self.sigProfileDeleteRequested.emit(profile_id)
 
+    def _requestReloadProfile(self):
+        profile_id = self.currentProfileId()
+        if profile_id:
+            self.sigProfileReloadRequested.emit(profile_id)
+
+    def _requestUpdateProfileDefaults(self):
+        profile_id = self.currentProfileId()
+        if profile_id:
+            self.sigProfileDefaultsUpdateRequested.emit(profile_id)
+
     def _updateProfileActions(self):
         profile_id = self.currentProfileId()
-        available = profile_id is not None and not self.isRunning()
+        available = profile_id is not None and not self.isRunning() and not self._screeningActive
         self.duplicateProfileAction.setEnabled(available)
         self.editProfileAction.setEnabled(available)
         self.renameProfileAction.setEnabled(available)
         self.deleteProfileAction.setEnabled(available)
+        self.profileReloadButton.setEnabled(available)
+        self.profileDefaultsButton.setEnabled(available)
         self.newProfileAction.setEnabled(not self.isRunning())
 
     def _profileChanged(self, index):
@@ -1020,15 +1063,25 @@ class MoNaLISAView(ScanCloakView):
             if widgets is None or step.role == 'readout' or not step.duration_editable:
                 continue
             durations[step.id] = widgets[1].value() * 1e-3
+        profile = self._profile(self._plan.profile_id)
+        independent = str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled') == 'independent'
+        x_length = self.lateralLengthControl.value()
+        x_step = self.lateralStepControl.value() / 1000.0
+        y_length = self.yLengthControl.value() if independent else x_length
+        y_step = self.yStepControl.value() / 1000.0 if independent else x_step
         plan = MoNaLISAScanPlan(
             scan_type=self.scanTypeCombo.currentText(),
-            lateral_length_um=self.lateralLengthControl.value(),
-            lateral_step_um=self.lateralStepControl.value() / 1000.0,
+            lateral_length_um=x_length,
+            lateral_step_um=x_step,
             z_length_um=self.zLengthControl.value(),
             z_step_um=self.zStepControl.value() / 1000.0,
             profile_id=self._plan.profile_id,
             mode_id=self._plan.mode_id,
             step_durations_s=durations,
+            x_length_um=x_length,
+            y_length_um=y_length,
+            x_step_um=x_step,
+            y_step_um=y_step,
         )
         self._plan = plan
         self._updateDerived()
@@ -1082,14 +1135,32 @@ class MoNaLISAView(ScanCloakView):
 
         if self._plan is None or self._limits is None:
             self.lateralLengthControl.setEnabled(False)
+            self.yLengthControl.setEnabled(False)
             for check in self._liveSourceChecks.values():
                 check.setEnabled(False)
             return
         profile = self._profile(self._plan.profile_id)
         manual_extent = profile.scan_extent_source == 'manual'
-        self.lateralLengthControl.setEnabled(editable and manual_extent)
+        independent = str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled') == 'independent'
+        x_used = 'X' in self._plan.scan_type
+        y_used = 'Y' in self._plan.scan_type and independent
+        self.pixelCaption.setText('X pixel size' if independent else 'Pixel size')
+        self.lateralLengthCaption.setText('X scan length' if independent else 'Scan length')
+        self.pixelField.setVisible(True)
+        self.lateralLengthField.setVisible(True)
+        self.yStepField.setVisible(y_used)
+        self.yLengthField.setVisible(y_used)
+        self.lateralStepControl.setEnabled(editable and x_used)
+        self.lateralLengthControl.setEnabled(editable and manual_extent and x_used)
         self.lateralLengthControl.setToolTip(
-            'Editable scan length for this profile.' if manual_extent
+            'Editable X scan length for this profile.' if (manual_extent and independent)
+            else ('Editable scan length for this profile.' if manual_extent
+                  else 'This profile locks lateral scan length to one uLens period.')
+        )
+        self.yStepControl.setEnabled(editable and y_used)
+        self.yLengthControl.setEnabled(editable and manual_extent and y_used)
+        self.yLengthControl.setToolTip(
+            'Editable Y scan length for this profile.' if (manual_extent and y_used)
             else 'This profile locks lateral scan length to one uLens period.'
         )
         mode = profile.mode(self._plan.mode_id)

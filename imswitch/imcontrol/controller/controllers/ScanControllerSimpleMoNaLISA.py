@@ -62,6 +62,10 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         super().__init__(*args, **kwargs)
         self._view.sigPlanEdited.connect(self._onPlanEdited)
         self._view.sigProfileRequested.connect(self._onProfileRequested)
+        self._view.sigProfileReloadRequested.connect(self._onProfileReloadRequested)
+        self._view.sigProfileDefaultsUpdateRequested.connect(
+            self._onProfileDefaultsUpdateRequested
+        )
         self._view.sigModeRequested.connect(self._onModeRequested)
         self._view.sigProfileNewRequested.connect(self._onProfileNewRequested)
         self._view.sigProfileDuplicateRequested.connect(self._onProfileDuplicateRequested)
@@ -664,6 +668,46 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._mirrorToBackend(force=True)
         self._refreshEstimate()
 
+    def _profileWithCurrentDefaults(self, profile, plan):
+        geometry_mode = str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled')
+        steps = []
+        for step in profile.steps:
+            if step.role != 'readout' and step.duration_editable and step.id in plan.step_durations_s:
+                steps.append(dataclasses.replace(
+                    step, default_duration_s=float(plan.step_durations_s[step.id])
+                ))
+            else:
+                steps.append(step)
+        updates = {
+            'default_mode': plan.mode_id,
+            'steps': tuple(steps),
+        }
+        if geometry_mode == 'independent':
+            updates.update({
+                'default_lateral_step_um': None,
+                'default_x_step_um': plan.step_um_for_axis('X'),
+                'default_y_step_um': plan.step_um_for_axis('Y'),
+            })
+            if profile.scan_extent_source == 'manual':
+                updates.update({
+                    'manual_scan_extent_um': None,
+                    'manual_scan_extent_x_um': plan.length_um_for_axis('X'),
+                    'manual_scan_extent_y_um': plan.length_um_for_axis('Y'),
+                })
+        else:
+            updates.update({
+                'default_lateral_step_um': plan.step_um_for_axis('X'),
+                'default_x_step_um': None,
+                'default_y_step_um': None,
+            })
+            if profile.scan_extent_source == 'manual':
+                updates.update({
+                    'manual_scan_extent_um': plan.length_um_for_axis('X'),
+                    'manual_scan_extent_x_um': None,
+                    'manual_scan_extent_y_um': None,
+                })
+        return dataclasses.replace(profile, **updates)
+
     def _refreshViewAfterProfileStoreChange(self):
         state = self._monalisa()
         self._view.setPlan(state['plan'])
@@ -854,11 +898,55 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         if self._isBusy() or not profile_id:
             return
         try:
-            plan = self._planForProfile(profile_id, preserve_if_same=True)
+            plan = self._planForProfile(profile_id, preserve_if_same=False)
         except Exception as error:
             self._view.showMessage(str(error), error=True)
             return
         self._setBoundPlan(plan)
+
+    def _onProfileReloadRequested(self, profile_id: str):
+        if self._isBusy() or not profile_id:
+            return
+        try:
+            plan = self._planForProfile(profile_id, preserve_if_same=False)
+        except Exception as error:
+            self._view.showMessage(str(error), error=True)
+            return
+        self._setBoundPlan(plan)
+
+    def _onProfileDefaultsUpdateRequested(self, profile_id: str):
+        if self._isBusy() or not self.cloakOwnsBackend() or not profile_id:
+            return
+        state = self._monalisa()
+        plan = state['plan']
+        if plan is None or plan.profile_id != profile_id:
+            self._view.showMessage(
+                'Select the profile you want to update before saving defaults.',
+                error=True,
+            )
+            return
+        store = state['limits'].profile_store
+        try:
+            profile = store.profile(profile_id)
+            updated = self._profileWithCurrentDefaults(profile, plan)
+            new_store = store.with_profile(updated)
+        except Exception as error:
+            self._view.showMessage(
+                f'Could not update MoNaLISA profile defaults: {error}', error=True
+            )
+            return
+        if not self._saveProfileStoreOrReport(new_store):
+            return
+        state = self._monalisa()
+        try:
+            rebound = adapt_plan_to_profile_definition(state['plan'], updated, state['limits'])
+        except Exception:
+            rebound = state['plan']
+        state['plan'] = rebound
+        state['binding'] = MoNaLISAProfileBinding.bound(updated, rebound.mode_id)
+        self._refreshViewAfterProfileStoreChange()
+        self._mirrorToBackend(force=True)
+        self._view.showMessage('Profile defaults updated from the current Simple settings.', error=False)
 
     def _onModeRequested(self, mode_id: str):
         if self._isBusy() or not self.cloakOwnsBackend() or not mode_id:

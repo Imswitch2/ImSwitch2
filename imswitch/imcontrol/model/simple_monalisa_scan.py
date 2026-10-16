@@ -271,6 +271,10 @@ class MoNaLISALimits:
         profile = self.profile_store.profile(profile_id)
         return 'profile' if profile.camera_readout_time_s is not None else 'setup default'
 
+    def lateral_geometry_mode(self, profile_id: Optional[str] = None) -> str:
+        profile = self.profile_store.profile(profile_id)
+        return str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled')
+
     def default_lateral_scan_length_um(self, profile_id: Optional[str] = None) -> float:
         profile = self.profile_store.profile(profile_id)
         if profile.scan_extent_source == 'manual':
@@ -280,6 +284,37 @@ class MoNaLISALimits:
                 )
             return float(profile.manual_scan_extent_um)
         return self.ulens_period_um(profile.id)
+
+    def default_axis_scan_length_um(self, logical_axis: str, profile_id: Optional[str] = None) -> float:
+        axis = str(logical_axis).upper()
+        profile = self.profile_store.profile(profile_id)
+        if axis == 'Z':
+            return float(self.default_z_scan_length_um)
+        if profile.scan_extent_source == 'ulens':
+            return self.ulens_period_um(profile.id)
+        if self.lateral_geometry_mode(profile.id) == 'independent':
+            if axis == 'X' and getattr(profile, 'manual_scan_extent_x_um', None) is not None:
+                return float(profile.manual_scan_extent_x_um)
+            if axis == 'Y' and getattr(profile, 'manual_scan_extent_y_um', None) is not None:
+                return float(profile.manual_scan_extent_y_um)
+        if profile.manual_scan_extent_um is None or profile.manual_scan_extent_um <= 0:
+            raise PlanNotRepresentable(
+                f'Profile {profile.label!r} needs a positive manual scan extent.'
+            )
+        return float(profile.manual_scan_extent_um)
+
+    def default_axis_step_um(self, logical_axis: str, profile_id: Optional[str] = None) -> float:
+        axis = str(logical_axis).upper()
+        profile = self.profile_store.profile(profile_id)
+        if axis == 'Z':
+            return float(self.default_z_step_um)
+        if axis == 'X' and getattr(profile, 'default_x_step_um', None):
+            return float(profile.default_x_step_um)
+        if axis == 'Y' and getattr(profile, 'default_y_step_um', None):
+            return float(profile.default_y_step_um)
+        if getattr(profile, 'default_lateral_step_um', None):
+            return float(profile.default_lateral_step_um)
+        return float(self.default_lateral_step_um)
 
     def axis_device(self, logical_axis: str) -> str:
         try:
@@ -317,6 +352,10 @@ class MoNaLISAScanPlan:
     profile_id: str
     mode_id: str
     step_durations_s: Mapping[str, float]
+    x_length_um: Optional[float] = None
+    y_length_um: Optional[float] = None
+    x_step_um: Optional[float] = None
+    y_step_um: Optional[float] = None
 
     @property
     def axes(self) -> Tuple[str, ...]:
@@ -325,6 +364,26 @@ class MoNaLISAScanPlan:
     def profile(self, limits: MoNaLISALimits):
         return limits.profile_store.profile(self.profile_id)
 
+    def length_um_for_axis(self, logical_axis: str) -> float:
+        axis = str(logical_axis).upper()
+        if axis == 'Z':
+            return float(self.z_length_um)
+        if axis == 'X':
+            return float(self.x_length_um if self.x_length_um is not None else self.lateral_length_um)
+        if axis == 'Y':
+            return float(self.y_length_um if self.y_length_um is not None else self.lateral_length_um)
+        return float(self.lateral_length_um)
+
+    def step_um_for_axis(self, logical_axis: str) -> float:
+        axis = str(logical_axis).upper()
+        if axis == 'Z':
+            return float(self.z_step_um)
+        if axis == 'X':
+            return float(self.x_step_um if self.x_step_um is not None else self.lateral_step_um)
+        if axis == 'Y':
+            return float(self.y_step_um if self.y_step_um is not None else self.lateral_step_um)
+        return float(self.lateral_step_um)
+
     def dwell_s(self, limits: MoNaLISALimits) -> float:
         compiled = compile_plan_sequence(self, limits)
         return compiled.end_time_s + limits.camera_readout_time_s(self.profile_id)
@@ -332,9 +391,9 @@ class MoNaLISAScanPlan:
     def pixels(self, limits: MoNaLISALimits) -> Tuple[int, ...]:
         result = []
         for axis in self.axes:
-            step = self.z_step_um if axis == 'Z' else self.lateral_step_um
-            length = self.z_length_um if axis == 'Z' else self.lateral_length_um
-            result.append(pixels_for_length_step(length, step))
+            result.append(
+                pixels_for_length_step(self.length_um_for_axis(axis), self.step_um_for_axis(axis))
+            )
         return tuple(result)
 
     def estimate_s(self, limits: MoNaLISALimits) -> float:
@@ -355,6 +414,10 @@ class MoNaLISAScanPlan:
             'profile_id': self.profile_id,
             'mode_id': self.mode_id,
             'step_durations_s': dict(self.step_durations_s),
+            'x_length_um': self.x_length_um,
+            'y_length_um': self.y_length_um,
+            'x_step_um': self.x_step_um,
+            'y_step_um': self.y_step_um,
         }
 
     @classmethod
@@ -371,6 +434,10 @@ class MoNaLISAScanPlan:
                 str(key): float(value)
                 for key, value in (data.get('step_durations_s') or {}).items()
             },
+            x_length_um=(None if data.get('x_length_um') in (None, '') else float(data.get('x_length_um'))),
+            y_length_um=(None if data.get('y_length_um') in (None, '') else float(data.get('y_length_um'))),
+            x_step_um=(None if data.get('x_step_um') in (None, '') else float(data.get('x_step_um'))),
+            y_step_um=(None if data.get('y_step_um') in (None, '') else float(data.get('y_step_um'))),
         )
 
 
@@ -404,19 +471,38 @@ def normalize_plan(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> MoNaLISASc
             )
         durations[step.id] = duration
 
+    geometry_mode = str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled')
     if profile.scan_extent_source == 'ulens':
-        lateral_length = limits.ulens_period_um(profile.id)
+        x_length = y_length = limits.ulens_period_um(profile.id)
     else:
-        lateral_length = max(0.001, _round_um(plan.lateral_length_um))
+        x_length = max(0.001, _round_um(
+            plan.x_length_um if plan.x_length_um is not None else plan.lateral_length_um
+        ))
+        y_length = max(0.001, _round_um(
+            plan.y_length_um if plan.y_length_um is not None else plan.lateral_length_um
+        ))
+    x_step = max(0.001, _round_um(
+        plan.x_step_um if plan.x_step_um is not None else plan.lateral_step_um
+    ))
+    y_step = max(0.001, _round_um(
+        plan.y_step_um if plan.y_step_um is not None else plan.lateral_step_um
+    ))
+    if geometry_mode != 'independent':
+        x_length = y_length = x_length
+        x_step = y_step = x_step
 
     return dataclasses.replace(
         plan,
         scan_type=scan_type,
-        lateral_length_um=lateral_length,
+        lateral_length_um=x_length,
+        lateral_step_um=x_step,
+        x_length_um=x_length,
+        y_length_um=y_length,
+        x_step_um=x_step,
+        y_step_um=y_step,
         profile_id=profile.id,
         mode_id=mode_id,
         step_durations_s=durations,
-        lateral_step_um=max(0.001, _round_um(plan.lateral_step_um)),
         z_length_um=max(0.001, _round_um(plan.z_length_um)),
         z_step_um=max(0.001, _round_um(plan.z_step_um)),
     )
@@ -428,13 +514,17 @@ def default_plan(
     profile = limits.profile_store.profile(profile_id)
     return normalize_plan(MoNaLISAScanPlan(
         scan_type=limits.default_scan_type,
-        lateral_length_um=limits.default_lateral_scan_length_um(profile.id),
-        lateral_step_um=limits.default_lateral_step_um,
+        lateral_length_um=limits.default_axis_scan_length_um('X', profile.id),
+        lateral_step_um=limits.default_axis_step_um('X', profile.id),
         z_length_um=limits.default_z_scan_length_um,
         z_step_um=limits.default_z_step_um,
         profile_id=profile.id,
         mode_id=profile.default_mode,
         step_durations_s={step.id: step.default_duration_s for step in profile.steps},
+        x_length_um=limits.default_axis_scan_length_um('X', profile.id),
+        y_length_um=limits.default_axis_scan_length_um('Y', profile.id),
+        x_step_um=limits.default_axis_step_um('X', profile.id),
+        y_step_um=limits.default_axis_step_um('Y', profile.id),
     ), limits)
 
 
@@ -457,16 +547,21 @@ def adapt_plan_to_profile_definition(
             durations[step.id] = current[step.id]
         else:
             durations[step.id] = step.default_duration_s
-    lateral_length = (
-        limits.default_lateral_scan_length_um(profile.id)
-        if profile.scan_extent_source == 'ulens'
-        else plan.lateral_length_um
-    )
+    if profile.scan_extent_source == 'ulens':
+        x_length = limits.default_axis_scan_length_um('X', profile.id)
+        y_length = limits.default_axis_scan_length_um('Y', profile.id)
+    else:
+        x_length = plan.length_um_for_axis('X')
+        y_length = plan.length_um_for_axis('Y')
     return normalize_plan(dataclasses.replace(
         plan,
         profile_id=profile.id,
         mode_id=mode_id,
-        lateral_length_um=lateral_length,
+        lateral_length_um=x_length,
+        x_length_um=x_length,
+        y_length_um=y_length,
+        x_step_um=plan.step_um_for_axis('X'),
+        y_step_um=plan.step_um_for_axis('Y'),
         step_durations_s=durations,
     ), limits)
 
@@ -489,7 +584,12 @@ def select_profile(
         plan,
         profile_id=profile.id,
         mode_id=mode_id,
-        lateral_length_um=limits.default_lateral_scan_length_um(profile.id),
+        lateral_length_um=limits.default_axis_scan_length_um('X', profile.id),
+        lateral_step_um=limits.default_axis_step_um('X', profile.id),
+        x_length_um=limits.default_axis_scan_length_um('X', profile.id),
+        y_length_um=limits.default_axis_scan_length_um('Y', profile.id),
+        x_step_um=limits.default_axis_step_um('X', profile.id),
+        y_step_um=limits.default_axis_step_um('Y', profile.id),
         step_durations_s=durations,
     ), limits)
 
@@ -518,7 +618,7 @@ def compile_plan_sequence(plan: MoNaLISAScanPlan, limits: MoNaLISALimits):
 
 def _parse_geometry(
     analog: Mapping[str, Any], limits: MoNaLISALimits, reference_plan: MoNaLISAScanPlan
-) -> Tuple[str, float, float, float, float]:
+) -> Tuple[str, float, float, float, float, float, float, float, float]:
     reverse_axes = {device: axis for axis, device in limits.axis_devices.items()}
     dims = [name for name in (analog.get('scan_dim_target_device') or ()) if name and name != 'None']
     try:
@@ -534,8 +634,8 @@ def _parse_geometry(
     lengths = list(analog.get('axis_length') or ())
     steps = list(analog.get('axis_step_size') or ())
     by_device = {name: i for i, name in enumerate(devices)}
-    lateral_steps = []
-    lateral_lengths = []
+    lateral_lengths = {}
+    lateral_steps = {}
     z_length = limits.default_z_scan_length_um
     z_step = limits.default_z_step_um
     for axis in logical:
@@ -546,44 +646,54 @@ def _parse_geometry(
         if index >= len(lengths) or index >= len(steps):
             raise PlanNotRepresentable(f'This scan has incomplete geometry for the configured {axis} axis.')
         length = float(lengths[index])
+        step = float(steps[index])
         if axis == 'Z':
             if length <= 0:
                 raise PlanNotRepresentable('Z scan length must be positive.')
             z_length = length
-        else:
-            if length <= 0:
-                raise PlanNotRepresentable('Lateral scan length must be positive.')
-            lateral_lengths.append(length)
-        step = float(steps[index])
-        if axis == 'Z':
             z_step = step
-        else:
-            lateral_steps.append(step)
-    if lateral_steps and any(not math.isclose(step, lateral_steps[0], abs_tol=1e-3)
-                             for step in lateral_steps[1:]):
-        raise PlanNotRepresentable('X and Y must use the same lateral step in SimpleMoNaLISA.')
-    if lateral_lengths and any(
-        not math.isclose(length, lateral_lengths[0], abs_tol=1e-3)
-        for length in lateral_lengths[1:]
-    ):
-        raise PlanNotRepresentable('X and Y must use the same scan length in SimpleMoNaLISA.')
+            continue
+        if length <= 0:
+            raise PlanNotRepresentable('Lateral scan length must be positive.')
+        lateral_lengths[axis] = length
+        lateral_steps[axis] = step
+
     profile = limits.profile_store.profile(reference_plan.profile_id)
-    lateral_length = lateral_lengths[0] if lateral_lengths else reference_plan.lateral_length_um
+    geometry_mode = str(getattr(profile, 'lateral_geometry_mode', 'coupled') or 'coupled')
+    if geometry_mode != 'independent':
+        steps_values = list(lateral_steps.values())
+        if steps_values and any(not math.isclose(step, steps_values[0], abs_tol=1e-3)
+                                 for step in steps_values[1:]):
+            raise PlanNotRepresentable('X and Y must use the same lateral step in SimpleMoNaLISA.')
+        length_values = list(lateral_lengths.values())
+        if length_values and any(
+            not math.isclose(length, length_values[0], abs_tol=1e-3)
+            for length in length_values[1:]
+        ):
+            raise PlanNotRepresentable('X and Y must use the same scan length in SimpleMoNaLISA.')
+
     if profile.scan_extent_source == 'ulens':
         expected = limits.ulens_period_um(profile.id)
-        if not math.isclose(lateral_length, expected, abs_tol=1e-3):
-            raise PlanNotRepresentable(
-                f'Lateral scan length must stay at the profile uLens period {expected:g} µm.'
-            )
-        lateral_length = expected
-    lateral = lateral_steps[0] if lateral_steps else limits.default_lateral_step_um
-    return logical, lateral_length, lateral, z_length, z_step
+        for axis, length in lateral_lengths.items():
+            if not math.isclose(length, expected, abs_tol=1e-3):
+                raise PlanNotRepresentable(
+                    f'{axis} scan length must stay at the profile uLens period {expected:g} µm.'
+                )
+        x_length = y_length = expected
+    else:
+        x_length = lateral_lengths.get('X', reference_plan.length_um_for_axis('X'))
+        y_length = lateral_lengths.get('Y', reference_plan.length_um_for_axis('Y'))
+    x_step = lateral_steps.get('X', reference_plan.step_um_for_axis('X'))
+    y_step = lateral_steps.get('Y', reference_plan.step_um_for_axis('Y'))
+    lateral_length = x_length
+    lateral_step = x_step
+    return logical, lateral_length, lateral_step, z_length, z_step, x_length, y_length, x_step, y_step
 
 
 def plan_with_backend_geometry(
     plan: MoNaLISAScanPlan, analog: Mapping[str, Any], limits: MoNaLISALimits
 ) -> MoNaLISAScanPlan:
-    logical, lateral_length, lateral, z_length, z_step = _parse_geometry(
+    logical, lateral_length, lateral, z_length, z_step, x_length, y_length, x_step, y_step = _parse_geometry(
         analog, limits, plan
     )
     return normalize_plan(dataclasses.replace(
@@ -591,6 +701,10 @@ def plan_with_backend_geometry(
         scan_type=logical,
         lateral_length_um=lateral_length,
         lateral_step_um=lateral,
+        x_length_um=x_length,
+        y_length_um=y_length,
+        x_step_um=x_step,
+        y_step_um=y_step,
         z_length_um=z_length,
         z_step_um=z_step,
     ), limits)
@@ -619,11 +733,10 @@ def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict,
     }
     for axis, device in zip(logical_all, device_order):
         active = axis in logical_active
-        length = plan.z_length_um if axis == 'Z' else plan.lateral_length_um
         analog['target_device'].append(device)
-        analog['axis_length'].append(float(length) if active else 0.0)
+        analog['axis_length'].append(float(plan.length_um_for_axis(axis)) if active else 0.0)
         analog['axis_step_size'].append(
-            float(plan.z_step_um if axis == 'Z' else plan.lateral_step_um) if active else 1.0
+            float(plan.step_um_for_axis(axis)) if active else 1.0
         )
         analog['axis_centerpos'].append(0.0)
         analog['axis_startpos'].append([0.0])
@@ -748,6 +861,10 @@ class MoNaLISAScanCloak(ScanCloak):
             mode_id=str(plan.mode_id),
             lateral_length_um=max(0.001, _round_um(plan.lateral_length_um)),
             lateral_step_um=max(0.001, _round_um(plan.lateral_step_um)),
+            x_length_um=(None if plan.x_length_um is None else max(0.001, _round_um(plan.x_length_um))),
+            y_length_um=(None if plan.y_length_um is None else max(0.001, _round_um(plan.y_length_um))),
+            x_step_um=(None if plan.x_step_um is None else max(0.001, _round_um(plan.x_step_um))),
+            y_step_um=(None if plan.y_step_um is None else max(0.001, _round_um(plan.y_step_um))),
             z_length_um=max(0.001, _round_um(plan.z_length_um)),
             z_step_um=max(0.001, _round_um(plan.z_step_um)),
             step_durations_s=dict(plan.step_durations_s),
@@ -761,7 +878,7 @@ class MoNaLISAScanCloak(ScanCloak):
 
 
 __all__ = [
-    'CONFIG_DEFAULTS', 'DETECTOR_VALUE_SOURCES', 'SCAN_TYPES',
+    'CONFIG_DEFAULTS', 'SCAN_TYPES',
     'ULENS_PERIOD_POLICIES', 'MoNaLISALimits', 'MoNaLISAScanCloak',
     'MoNaLISAScanPlan', 'compile_plan_sequence', 'default_plan', 'dicts_to_plan',
     'normalize_plan', 'plan_to_dicts', 'plan_with_backend_geometry', 'select_mode',

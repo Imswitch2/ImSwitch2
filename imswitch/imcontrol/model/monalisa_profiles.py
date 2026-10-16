@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 MONALISA_STEP_ROLES = ('on', 'off', 'readout', 'custom')
 MONALISA_SCAN_EXTENT_SOURCES = ('ulens', 'manual')
+MONALISA_LATERAL_GEOMETRY_MODES = ('coupled', 'independent')
 
 
 MONALISA_BINDING_BOUND = 'bound'
@@ -228,6 +229,12 @@ class MoNaLISAProfileDefinition:
     ulens_period_um: Optional[float] = None
     scan_extent_source: str = 'ulens'
     manual_scan_extent_um: Optional[float] = None
+    lateral_geometry_mode: str = 'coupled'
+    default_lateral_step_um: Optional[float] = None
+    default_x_step_um: Optional[float] = None
+    default_y_step_um: Optional[float] = None
+    manual_scan_extent_x_um: Optional[float] = None
+    manual_scan_extent_y_um: Optional[float] = None
     camera_readout_time_s: Optional[float] = None
 
     @classmethod
@@ -259,6 +266,21 @@ class MoNaLISAProfileDefinition:
         scan_extent_source = str(data.get('scanExtentSource') or 'ulens').strip().lower()
         raw_extent = data.get('scanExtentUm')
         manual_scan_extent_um = None if raw_extent in (None, '') else float(raw_extent)
+        lateral_geometry_mode = str(data.get('lateralGeometryMode') or 'coupled').strip().lower()
+        raw_default_step = data.get('defaultLateralStepUm')
+        default_lateral_step_um = None if raw_default_step in (None, '') else float(raw_default_step)
+        raw_default_x_step = data.get('defaultXStepUm')
+        default_x_step_um = None if raw_default_x_step in (None, '') else float(raw_default_x_step)
+        raw_default_y_step = data.get('defaultYStepUm')
+        default_y_step_um = None if raw_default_y_step in (None, '') else float(raw_default_y_step)
+        raw_extent_x = data.get('scanExtentXUm')
+        manual_scan_extent_x_um = (
+            manual_scan_extent_um if raw_extent_x in (None, '') else float(raw_extent_x)
+        )
+        raw_extent_y = data.get('scanExtentYUm')
+        manual_scan_extent_y_um = (
+            manual_scan_extent_um if raw_extent_y in (None, '') else float(raw_extent_y)
+        )
         raw_camera_readout = data.get('cameraReadoutTimeMs')
         camera_readout_time_s = (
             None if raw_camera_readout in (None, '')
@@ -273,6 +295,12 @@ class MoNaLISAProfileDefinition:
             ulens_period_um=ulens_period_um,
             scan_extent_source=scan_extent_source,
             manual_scan_extent_um=manual_scan_extent_um,
+            lateral_geometry_mode=lateral_geometry_mode,
+            default_lateral_step_um=default_lateral_step_um,
+            default_x_step_um=default_x_step_um,
+            default_y_step_um=default_y_step_um,
+            manual_scan_extent_x_um=manual_scan_extent_x_um,
+            manual_scan_extent_y_um=manual_scan_extent_y_um,
             camera_readout_time_s=camera_readout_time_s,
         )
         errors = validate_profile_definition(profile)
@@ -329,8 +357,24 @@ class MoNaLISAProfileDefinition:
         if self.ulens_period_um is not None:
             result['ulensPeriodUm'] = self.ulens_period_um
         result['scanExtentSource'] = self.scan_extent_source
-        if self.scan_extent_source == 'manual' and self.manual_scan_extent_um is not None:
-            result['scanExtentUm'] = self.manual_scan_extent_um
+        result['lateralGeometryMode'] = self.lateral_geometry_mode
+        if self.default_lateral_step_um is not None:
+            result['defaultLateralStepUm'] = self.default_lateral_step_um
+        if self.default_x_step_um is not None:
+            result['defaultXStepUm'] = self.default_x_step_um
+        if self.default_y_step_um is not None:
+            result['defaultYStepUm'] = self.default_y_step_um
+        if self.scan_extent_source == 'manual':
+            if self.lateral_geometry_mode == 'independent':
+                if self.manual_scan_extent_x_um is not None:
+                    result['scanExtentXUm'] = self.manual_scan_extent_x_um
+                if self.manual_scan_extent_y_um is not None:
+                    result['scanExtentYUm'] = self.manual_scan_extent_y_um
+                if (self.manual_scan_extent_x_um is not None and self.manual_scan_extent_y_um is not None
+                        and self.manual_scan_extent_x_um == self.manual_scan_extent_y_um):
+                    result['scanExtentUm'] = self.manual_scan_extent_x_um
+            elif self.manual_scan_extent_um is not None:
+                result['scanExtentUm'] = self.manual_scan_extent_um
         if self.camera_readout_time_s is not None:
             result['cameraReadoutTimeMs'] = self.camera_readout_time_s * 1e3
         return result
@@ -480,8 +524,33 @@ def validate_profile_definition(profile: MoNaLISAProfileDefinition) -> Tuple[str
             f'Profile {profile.id!r} scan extent source must be one of '
             + ', '.join(MONALISA_SCAN_EXTENT_SOURCES)
         )
+    if profile.lateral_geometry_mode not in MONALISA_LATERAL_GEOMETRY_MODES:
+        errors.append(
+            f'Profile {profile.id!r} lateral geometry mode must be one of '
+            + ', '.join(MONALISA_LATERAL_GEOMETRY_MODES)
+        )
+    for label, value in (
+        ('default lateral step', profile.default_lateral_step_um),
+        ('default X step', profile.default_x_step_um),
+        ('default Y step', profile.default_y_step_um),
+    ):
+        if value is not None and value <= 0:
+            errors.append(f'Profile {profile.id!r} {label} must be positive')
     if profile.scan_extent_source == 'manual':
-        if profile.manual_scan_extent_um is None or profile.manual_scan_extent_um <= 0:
+        if profile.lateral_geometry_mode == 'independent':
+            x_extent = profile.manual_scan_extent_x_um
+            y_extent = profile.manual_scan_extent_y_um
+            if x_extent is None and y_extent is None and profile.manual_scan_extent_um is not None:
+                x_extent = y_extent = profile.manual_scan_extent_um
+            if x_extent is None or x_extent <= 0:
+                errors.append(
+                    f'Profile {profile.id!r} manual X scan extent must be positive'
+                )
+            if y_extent is None or y_extent <= 0:
+                errors.append(
+                    f'Profile {profile.id!r} manual Y scan extent must be positive'
+                )
+        elif profile.manual_scan_extent_um is None or profile.manual_scan_extent_um <= 0:
             errors.append(
                 f'Profile {profile.id!r} manual scan extent must be positive'
             )
@@ -584,6 +653,12 @@ def starter_monalisa_profile(
         ulens_period_um=None,
         scan_extent_source='ulens',
         manual_scan_extent_um=None,
+        lateral_geometry_mode='coupled',
+        default_lateral_step_um=None,
+        default_x_step_um=None,
+        default_y_step_um=None,
+        manual_scan_extent_x_um=None,
+        manual_scan_extent_y_um=None,
         camera_readout_time_s=None,
     )
 
