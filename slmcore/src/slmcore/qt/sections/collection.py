@@ -26,9 +26,6 @@ class SectionsCollectionView(QtCore.QObject):
     sigSectionPatchRequested = QtCore.Signal(str,object)
     sigSectionTopologyRequested = QtCore.Signal(str,object)
     sigActiveMappingRequested = QtCore.Signal(str,str)
-    sigAddMappingRequested = QtCore.Signal(str)
-    sigDeleteMappingRequested = QtCore.Signal(str,str)
-    sigDeleteCalibrationRequested = QtCore.Signal(str,str)
     sigCalibrationRequested = QtCore.Signal(str)
     sigCghActionRequested = QtCore.Signal(str,str,object)
     sigTargetLockRequested = QtCore.Signal(str,str,object)
@@ -214,15 +211,6 @@ class SectionsCollectionView(QtCore.QObject):
         )
         view.sigActiveMappingRequested.connect(
             self.sigActiveMappingRequested.emit,
-        )
-        view.sigAddMappingRequested.connect(
-            self.sigAddMappingRequested.emit,
-        )
-        view.sigDeleteMappingRequested.connect(
-            self.sigDeleteMappingRequested.emit,
-        )
-        view.sigDeleteCalibrationRequested.connect(
-            self.sigDeleteCalibrationRequested.emit,
         )
         view.sigCalibrationRequested.connect(
             self.sigCalibrationRequested.emit,

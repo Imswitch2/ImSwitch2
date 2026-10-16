@@ -75,7 +75,9 @@ class SLMWorkspaceCoordinator(QtCore.QObject):
             return None
         return SLMSectionAddress(key,dialog.section_key)
 
-    def open(self,address: SLMSectionAddress | None=None) -> bool:
+    def open(
+        self,address: SLMSectionAddress | None=None,*,page: str | None=None,
+    ) -> bool:
         if self._disposed:
             raise RuntimeError("SLMWorkspaceCoordinator has been disposed")
         if address is not None:
@@ -109,8 +111,18 @@ class SLMWorkspaceCoordinator(QtCore.QObject):
         if not self._activate_slm(target_key,section_key=target_section):
             self._show_dialog()
             return False
+        if page is not None:
+            page_key=str(page).strip().casefold()
+            if page_key != "mapping":
+                raise ValueError("Unknown SLM Workspace page %r" % page)
+            if not self._active_manager.management_workflow_active:
+                self._dialog.select_mapping_tab()
         self._show_dialog()
         return True
+
+    def open_mapping(self,address: SLMSectionAddress) -> bool:
+        """Open an exact physical section directly on Mapping management."""
+        return self.open(address,page="mapping")
 
     def close(self) -> None:
         if self._dialog is not None:
@@ -530,7 +542,7 @@ class SLMWorkspaceCoordinator(QtCore.QObject):
         manager=session.calibration_manager
         self._managers[key]=manager
         manager.set_shared_workspace_opener(
-            lambda section,key=key:self.open(SLMSectionAddress(key,section))
+            lambda section,key=key:self.open_mapping(SLMSectionAddress(key,section))
         )
         host=session.section_host
         sections_slot=lambda key=key:self._sections_changed(key)

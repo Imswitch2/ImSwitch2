@@ -94,15 +94,24 @@ def test_shared_workspace_reuses_one_dialog_and_switches_physical_manager(tmp_pa
         )
 
 
-def test_section_local_workspace_request_routes_to_exact_slm_and_section(tmp_path):
+def test_section_local_workspace_request_routes_to_exact_slm_and_mapping_tab(tmp_path):
     (
         _workspace,group,coordinator,first,first_panel,second,second_panel,
     )=_two_session_workspace(tmp_path)
     try:
+        assert coordinator.open(SLMSectionAddress("slm_a",first.runtime.section_keys[0]))
+        dialog=coordinator.dialog
+        dialog.tabs.setCurrentIndex(2)
+
         section=second.runtime.section_keys[-1]
         second.section_collection.sigCalibrationRequested.emit(section)
+
         assert coordinator.active_address==SLMSectionAddress("slm_b",section)
-        assert coordinator.dialog is not None
+        assert coordinator.dialog is dialog
+        assert dialog.tabs.currentIndex()==0
+        view=second.section_collection.section_view(section)
+        assert view.mapping_manage_button is not None
+        assert view.mapping_manage_button.isEnabled()
     finally:
         _dispose(
             group,coordinator,(first,first_panel),(second,second_panel),

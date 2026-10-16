@@ -323,6 +323,10 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
     # Basic selection state
     # ------------------------------------------------------------------
 
+    def select_mapping_tab(self) -> None:
+        """Show the Mapping page without changing the selected SLM/section."""
+        self.tabs.setCurrentIndex(0)
+
     @property
     def slm_key(self) -> str:
         value=self.slm_combo.currentData()

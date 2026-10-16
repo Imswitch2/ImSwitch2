@@ -101,9 +101,6 @@ class SectionView(QtWidgets.QWidget):
     sigPatchRequested = QtCore.Signal(str,object)  # section_key, changes
     sigTopologyRequested = QtCore.Signal(str,object)  # section_key, topologies
     sigActiveMappingRequested = QtCore.Signal(str,str)  # section_key, mapping
-    sigAddMappingRequested = QtCore.Signal(str)  # section_key
-    sigDeleteMappingRequested = QtCore.Signal(str,str)  # section_key, mapping
-    sigDeleteCalibrationRequested = QtCore.Signal(str,str)  # section_key, mapping
     sigCalibrationRequested = QtCore.Signal(str)  # section_key
     sigCghActionRequested = QtCore.Signal(str,str,object)
     sigTargetLockRequested = QtCore.Signal(str,str,object)
@@ -165,11 +162,7 @@ class SectionView(QtWidgets.QWidget):
         self.active_mapping_combo: QtWidgets.QComboBox | None = None
         self.fov_apply_checkbox: QtWidgets.QCheckBox | None = None
         self._fov_mapping_context: dict[str,Any] = {}
-        self.calibration_button: QtWidgets.QPushButton | None = None
-        self.mapping_more_button: QtWidgets.QToolButton | None = None
-        self.add_mapping_action: QtWidgets.QAction | None = None
-        self.delete_mapping_action: QtWidgets.QAction | None = None
-        self.delete_calibration_action: QtWidgets.QAction | None = None
+        self.mapping_manage_button: QtWidgets.QPushButton | None = None
         self.topology_settings_button: QtWidgets.QPushButton | None = None
         if (
             self.render_policy.show_unit_controls
@@ -286,36 +279,19 @@ class SectionView(QtWidgets.QWidget):
             self.fov_apply_checkbox = fov_apply
             interface_layout.addWidget(fov_apply)
 
-            calibrate = QtWidgets.QPushButton("Workspace…")
-            calibrate.setFixedHeight(22)
-            calibrate.clicked.connect(
+            manage = QtWidgets.QPushButton("Manage…")
+            manage.setFixedHeight(22)
+            manage.setToolTip(
+                "Manage mappings, base calibration and FOV corrections "
+                "for this section in SLM Workspace."
+            )
+            manage.clicked.connect(
                 lambda _checked=False:self.sigCalibrationRequested.emit(
                     self.section_key,
                 )
             )
-            self.calibration_button = calibrate
-            interface_layout.addWidget(calibrate)
-
-            more = QtWidgets.QToolButton()
-            more.setText("More")
-            more.setFixedHeight(22)
-            more.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-            menu = QtWidgets.QMenu(more)
-            self.add_mapping_action = menu.addAction(
-                "Add mapping...",
-                lambda:self.sigAddMappingRequested.emit(self.section_key),
-            )
-            self.delete_calibration_action = menu.addAction(
-                "Delete calibration...",
-                self._request_delete_calibration,
-            )
-            self.delete_mapping_action = menu.addAction(
-                "Delete mapping...",
-                self._request_delete_mapping,
-            )
-            more.setMenu(menu)
-            self.mapping_more_button = more
-            interface_layout.addWidget(more)
+            self.mapping_manage_button = manage
+            interface_layout.addWidget(manage)
 
         if self.calibration_interface_widget is not None:
             row.addWidget(self.calibration_interface_widget,1)
@@ -337,20 +313,6 @@ class SectionView(QtWidgets.QWidget):
         self.sigActiveMappingRequested.emit(
             self.section_key,str(mapping_name or ""),
         )
-
-    def _request_delete_calibration(self) -> None:
-        mapping_name = self.get_active_mapping()
-        if mapping_name and _has_valid_calibration(self.calibration):
-            self.sigDeleteCalibrationRequested.emit(
-                self.section_key,mapping_name,
-            )
-
-    def _request_delete_mapping(self) -> None:
-        mapping_name = self.get_active_mapping()
-        if mapping_name:
-            self.sigDeleteMappingRequested.emit(
-                self.section_key,mapping_name,
-            )
 
     @property
     def has_editable_topology(self) -> bool:
@@ -811,12 +773,6 @@ class SectionView(QtWidgets.QWidget):
                 label.setStyleSheet("color: #888;")
                 label.setToolTip("")
 
-        if self.calibration_button is not None:
-            self.calibration_button.setEnabled(bool(mapping))
-        if self.delete_calibration_action is not None:
-            self.delete_calibration_action.setEnabled(bool(mapping) and valid)
-        if self.delete_mapping_action is not None:
-            self.delete_mapping_action.setEnabled(bool(mapping))
 
     def set_cgh_target_presentation(
         self,summary: Mapping[str,Any],

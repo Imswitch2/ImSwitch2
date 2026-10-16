@@ -88,23 +88,12 @@ class CalibrationManager(QtCore.QObject):
     def _connect_collection(self) -> None:
         collection = self.controller.section_collection
         collection.sigActiveMappingRequested.connect(self._on_active_mapping_requested)
-        collection.sigAddMappingRequested.connect(self._on_add_mapping_requested)
-        collection.sigDeleteMappingRequested.connect(self._on_delete_mapping_requested)
-        collection.sigDeleteCalibrationRequested.connect(
-            self._on_delete_calibration_requested,
-        )
         collection.sigCalibrationRequested.connect(self._on_management_requested)
 
     def _disconnect_collection(self) -> None:
         collection = self.controller.section_collection
         for signal,slot in (
             (collection.sigActiveMappingRequested,self._on_active_mapping_requested),
-            (collection.sigAddMappingRequested,self._on_add_mapping_requested),
-            (collection.sigDeleteMappingRequested,self._on_delete_mapping_requested),
-            (
-                collection.sigDeleteCalibrationRequested,
-                self._on_delete_calibration_requested,
-            ),
             (collection.sigCalibrationRequested,self._on_management_requested),
         ):
             try:
@@ -232,87 +221,6 @@ class CalibrationManager(QtCore.QObject):
             self.refresh_mappings()
             self._error("SLM mapping selection failed",error)
             return False
-
-    @QtCore.Slot(str)
-    def _on_add_mapping_requested(self,section_key: str) -> None:
-        if (
-            not self.controller.editor_writes_allowed
-            or self.controller.automatic_operation_active
-        ):
-            return
-        parent = self.controller.section_collection.section_view(section_key)
-        definition = request_mapping_definition(parent)
-        if definition is None:
-            return
-        try:
-            mapping = self.service.add_mapping(definition)
-            if self.set_active_mapping(section_key,mapping):
-                self.controller.sigInfo.emit("SLM Mapping",'Added mapping "%s".' % mapping)
-        except Exception as error:
-            self.refresh_mappings()
-            self._error("Add SLM Mapping Failed",error)
-
-    @QtCore.Slot(str,str)
-    def _on_delete_calibration_requested(
-        self,section_key: str,mapping_name: str,
-    ) -> None:
-        if (
-            not self.controller.editor_writes_allowed
-            or self.controller.automatic_operation_active
-        ):
-            return
-        mapping = str(mapping_name or "").strip()
-        if not mapping or self.service.active_mapping(section_key) != mapping:
-            self.refresh_mappings()
-            return
-        parent = self.controller.section_collection.section_view(section_key)
-        if not confirm_calibration_deletion(mapping,parent):
-            return
-        try:
-            deleted = self.service.delete_calibration(section_key)
-            self.close_dialog(section_key)
-            self.refresh_mappings()
-            self.controller._restore_section(section_key)
-            self.controller.sigInfo.emit(
-                "SLM Calibration",
-                (
-                    'Deleted calibration for mapping "%s".' % mapping
-                    if deleted else
-                    'No saved calibration file existed for mapping "%s"; '
-                    'the active calibration was cleared.' % mapping
-                ),
-            )
-        except Exception as error:
-            self.controller._restore_section(section_key)
-            self.refresh_mappings()
-            self._error("Delete SLM Calibration Failed",error)
-
-    @QtCore.Slot(str,str)
-    def _on_delete_mapping_requested(
-        self,section_key: str,mapping_name: str,
-    ) -> None:
-        if (
-            not self.controller.editor_writes_allowed
-            or self.controller.automatic_operation_active
-        ):
-            return
-        mapping = str(mapping_name or "").strip()
-        if not mapping:
-            return
-        parent = self.controller.section_collection.section_view(section_key)
-        if not confirm_mapping_deletion(mapping,parent):
-            return
-        try:
-            deleted = self.service.delete_mapping(mapping)
-            self.controller.sigInfo.emit(
-                "SLM Mapping",
-                'Deleted mapping "%s" and %d calibration file(s).'
-                % (mapping,len(deleted)),
-            )
-            self.refresh_mappings()
-        except Exception as error:
-            self.refresh_mappings()
-            self._error("Delete SLM Mapping Failed",error)
 
     # ------------------------------------------------------------------
     # Persistent calibration management

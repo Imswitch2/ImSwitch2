@@ -138,7 +138,10 @@ def test_calibration_workspace_embeds_calibration_modes_in_one_window():
     fov_dialog = (root / "qt" / "calibration" / "fov_dialog.py").read_text(encoding="utf-8")
     geometry_dialog = (root / "qt" / "calibration" / "geometry_calibration_dialog.py").read_text(encoding="utf-8")
 
-    assert 'QPushButton("Workspace…")' in section_view
+    assert 'QPushButton("Manage…")' in section_view
+    assert 'QPushButton("Workspace…")' not in section_view
+    assert 'QToolButton()' not in section_view
+    assert section_view.index('self.calibration_label = QtWidgets.QLabel()') < section_view.index('QtWidgets.QLabel("Mapping:")')
     assert "mount_workspace" in ui
     assert '"Mapping"' in ui
     assert '"Observation & Geometry"' in ui
@@ -150,6 +153,8 @@ def test_calibration_workspace_embeds_calibration_modes_in_one_window():
     assert "attach_management_view" in coordinator
     assert "sigSlmChanged" in coordinator
     assert "set_context_switching_enabled" in coordinator
+    assert "open_mapping" in coordinator
+    assert "select_mapping_tab" in coordinator
     for source in (base_dialog,fov_dialog,geometry_dialog):
         assert "embedded: bool=False" in source
         assert "QtCore.Qt.Widget" in source
