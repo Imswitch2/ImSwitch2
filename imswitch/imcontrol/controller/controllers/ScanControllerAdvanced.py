@@ -6,6 +6,8 @@ import traceback
 from typing import Dict, Any
 
 import numpy as np
+
+from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import slice_settle_note
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
@@ -359,6 +361,13 @@ class ScanControllerAdvanced(SuperScanController):
                 self._setupInfo)
         except Exception as error:
             note = f'Timing: {error}'
+        if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'GalvoScanDesigner':
+            try:
+                settle = slice_settle_note(self._analogParameterDict, self._setupInfo)
+            except Exception:
+                settle = ''
+            if settle:
+                note = f'{note} {settle}'.strip()
         self._widget.setTimingNote(note)
 
     def _log_linestep_scan_diagnostics(

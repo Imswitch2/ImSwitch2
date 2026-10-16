@@ -1,0 +1,31 @@
+{
+  "role": "galvo_slice_axis",
+  "title": "Slice axis (GalvoScanDesigner)",
+  "applies_to": "positioners",
+  "consumer": "imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner:slice_settle_floor_us",
+  "when": {
+    "all": [
+      {
+        "setup": "scan.scanDesigner",
+        "equals": "GalvoScanDesigner"
+      },
+      {
+        "field": "forScanning",
+        "equals": true
+      }
+    ]
+  },
+  "requires": [],
+  "reads": [
+    {
+      "key": "settleTimeS"
+    }
+  ],
+  "message": "",
+  "properties": {
+    "settleTimeS": {
+      "x-imswitch-kind": "number",
+      "description": "Seconds this positioner needs to stand still after a step before the scan measures. When it scans the slices of a 3-D scan, GalvoScanDesigner never pauses a slice for less than this, whatever D3 says, and the Advanced panel's timing note says when it raised D3. Measure it on the rig."
+    }
+  }
+}

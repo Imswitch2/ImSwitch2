@@ -907,7 +907,9 @@ so you can see how much of each pixel is not being used.
 laser and camera lines play, that much after the command, so a gate follows
 the beam (the dark first or last pixel of fast scans was the gate closing on
 command time). It changes with the scan speed, so it stays a field. **D3 (µs)**
-is the settling time before each slice step of a 3-D scan. Both start from
+is the settling time before each slice step of a 3-D scan; a slice
+positioner that declares ``settleTimeS`` in its ``managerProperties`` is
+never given less, and the timing note says when it raised D3. Both start from
 ``phase_delay`` / ``d3step_delay`` in ``scan.scanDesignerParams`` of the setup
 file.  **Plot** previews the generated waveforms, with **include TTL** to
 overlay the device gating.
