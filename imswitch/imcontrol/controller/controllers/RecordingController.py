@@ -2227,8 +2227,21 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         reportFailure = getattr(
             recordingManager, 'reportRecordingFailure', None
         )
+        operationActive = self.__dict__.get('_recordingOperationActive', False)
+        if operationActive and not isinstance(generation, int):
+            # Refused before this operation had a manager session of its own
+            # (preflight, scan geometry, a scan the designer will not build).
+            # A session the manager opened and then failed while starting is
+            # still the one to report into; it publishes at most once.
+            started = getattr(recordingManager, 'recordingGeneration', None)
+            baseline = self.__dict__.get('_recordingGenerationBeforeOperation')
+            if (
+                isinstance(started, int) and isinstance(baseline, int)
+                and started > baseline
+            ):
+                generation = started
         if (
-            self.__dict__.get('_recordingOperationActive', False)
+            operationActive
             and isinstance(generation, int)
             and callable(reportFailure)
         ):
@@ -2239,6 +2252,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.__logger.error(
                     'Failed to publish recording-session failure',
                     exc_info=True,
+                )
+        elif operationActive:
+            # No manager session exists to carry the terminal, so publish it
+            # here: a caller waiting on recordingEnded/recordingFailed would
+            # otherwise wait forever for a recording that never started.
+            try:
+                self._commChannel.sigRecordingFailed.emit(str(message))
+            except Exception:
+                self.__logger.error(
+                    'Failed to publish recording failure', exc_info=True,
                 )
 
         try:

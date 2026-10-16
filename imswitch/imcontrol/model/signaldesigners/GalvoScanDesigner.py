@@ -110,6 +110,16 @@ class GalvoScanDesigner(ScanDesigner):
     def signalLengthRefusal(self, scanParameters, setupInfo):
         """ Check that the signal would not be too large (to be stored in
         the RAM and to be generated and run inside a reasonable time). """
+        # The same rounding make_signal uses for scan_samples[0]: a dwell
+        # under half a sample becomes a zero-sample pixel, which the
+        # ScanInfoContract rejects with no hint at the cause.
+        sampleRate = float(setupInfo.scan.sampleRate)
+        if int(round(scanParameters['sequence_time'] * sampleRate)) < 1:
+            return (
+                f'Pixel dwell time {scanParameters["sequence_time"] * 1e6:g} µs '
+                f'is shorter than one sample at the scan sample rate '
+                f'({1e6 / sampleRate:g} µs at scan.sampleRate {sampleRate:g} Hz).'
+            )
         # TODO: Think about changing the way >d3 steps are generated and sent to the nidaq -
         # could run scans as simple d2 scans and repeat them, with steps on the axes that needs steps between.
         # Keep track of that in ScanController for example, alternatively directly in NidaqController.runScan?
