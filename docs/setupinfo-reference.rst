@@ -368,13 +368,16 @@ Key fields:
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
-* ``sampleRate``: The scan clock in Hz: the pixel clock every dwell is a
-  whole number of samples of, the rate the analog and digital waveforms are
-  built and played at, and the Expert panel's timing grid. ``100000`` is
-  what every setup ran at; another rate is played from the board's 100 MHz
-  timebase divided down (the rate the driver configures is read back and a
-  mismatch refuses the scan), within the device's own limits (the driver's
-  ``ao_max_rate`` and ``do_max_rate``), and must divide
+* ``sampleRate``: The waveform sample rate in Hz: the analog and digital
+  waveforms are built and played at it, and it is the Expert panel's timing
+  grid. Every dwell is a whole number of its samples; the pixel rate is
+  ``sampleRate`` divided by the samples per pixel. ``100000`` is what every
+  setup ran at; another rate is played from the board's 100 MHz timebase
+  divided down. Each task is checked as the driver configured it: the rate
+  must be within what the driver reports for that task and its channels
+  (four analog outputs update slower than one), the rate the driver
+  configured is read back and a mismatch refuses the scan, and a check the
+  driver does not answer refuses it too. It must divide
   ``nidaq.detectionRateHz`` exactly. A 1 µs pixel on a PCIe-6363 is
   ``1000000``.
 * ``maxScanTimeMin``: Optional scan-duration guard in minutes; ``null``,
@@ -486,13 +489,18 @@ Controls NI-DAQ card behavior.
 Key fields:
 
 * ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
-* ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
+* ``startTrigger``: Start the digital output on the analog output's start
+  trigger (``true`` / ``false``). The point detectors and their timer start
+  on it whenever the scan has analog output, whatever this says.
 * ``simulation``: Allow NI-DAQ commands without physical hardware (``true`` / ``false``)
 * ``detectionRateHz``: Rate of the timer's pulse train the point detectors
   sample on, in Hz; absent, ``1000000`` as it always was. Must be a whole
   multiple of ``scan.sampleRate`` (the detectors bin a whole number of timer
   samples per scan sample); a setup that is not is refused at start, naming
-  both numbers.
+  both numbers. When a scan is armed the timer is read back from the
+  driver: its timebase must divide the rate, its frequency must be the rate
+  and its first pulse must come within one period of the scan's start. What
+  it realized is recorded in the scan info (``detector_clock``).
 
 **Example** (simulation mode, no physical DAQ):
 

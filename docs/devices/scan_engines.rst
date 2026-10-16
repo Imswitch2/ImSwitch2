@@ -170,9 +170,10 @@ Expert program:
 * a positioner without a ``conversionFactor`` is refused as unknown: its
   volts are not taken as its µm;
 * the scan starts with its analog output, whose start trigger starts the
-  rest -- the DO and timer tasks with ``nidaq.startTrigger``, and every APD's
-  and PMT's input task. A program that drives no analog output is refused
-  when one of them is in the setup: it would wait forever.
+  rest -- the DO task with ``nidaq.startTrigger``, the detectors' timer and
+  every APD's and PMT's input task always. A program that drives no analog
+  output is refused when one of them is in the setup: it would wait
+  forever.
 
 
 SimulatedStepEngine

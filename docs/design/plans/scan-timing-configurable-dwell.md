@@ -1,13 +1,14 @@
-# Configurable scan timing: findings and plan (draft 5, 2026-10-16: S0-S6 built; open items in §9)
+# Configurable scan timing: findings and plan (draft 6, 2026-10-16: S0-S6 built, the review answered in §10)
 
 Lenny's observation: scans at 10 µs dwell work, 15 µs produces broken
 images, `scan.sampleRate` cannot be changed, and a PCIe-6363 could play a
-1 µs pixel on a continuous galvo scan. This is the analysis and the plan;
-nothing is implemented. Findings are verified in code and reproduced by
-`imswitch/imcontrol/_test/unit/test_scan_dwell_timing_grids.py` (the failing
-cases are `xfail(strict)`, so they flip when the plan is built). Everything
-cited is on branch `feat/scan-engines` at e74f4a5ed; line numbers are from
-that commit.
+1 µs pixel on a continuous galvo scan. Sections 1-5 are the analysis as
+written before any change: verified in code on `feat/scan-engines` at
+e74f4a5ed (line numbers are from that commit) and reproduced by
+`imswitch/imcontrol/_test/unit/test_scan_dwell_timing_grids.py`, whose
+failing cases were `xfail(strict)` and pass since S0. Section 6 records what
+was built, §8 what the rig still has to show, §10 the review of 2026-10-16
+and the Beta audit, and how each was answered.
 
 ## 1. How timing flows today
 
@@ -126,15 +127,26 @@ From the NI *PCIe-6363 Specifications* (377777A-01, 2018-10-23) and the
 | AO sample clock timebase | Sources: **100 MHz Timebase (default)**, 20 MHz Timebase, 100 kHz Timebase, PXI_CLK10, PFI, RTSI, …; "divided down to provide a source for AO Sample Clock" | 1 MHz = 100 MHz / 100 exactly; 100 kHz = /1000; any rate `100 MHz / n` is exact, others are coerced by the driver -- the software must ask the driver for the rate it got |
 | Digital output, port 0 | hardware-timed waveform generation 0–10 MHz regenerating from the 2047-sample FIFO, 0–10 MHz streaming "system and bus activity dependent"; DO sample clock and sample clock timebase can be external (`ao/SampleClock` is used today) | 1 MHz on `ao/SampleClock` is within the limit; streaming at 4 MB/s |
 | Counters | 4 × 32-bit; internal base clocks **100 MHz, 20 MHz, 100 kHz**; 50 ppm; external source 0–25 MHz; DMA per counter | the 1 MHz timer and any integer multiple of the pixel clock up to 25 MHz source are available; the APD counter samples on the timer at up to the base clock |
-| Analog input (PMT) | 2.00 MS/s single channel, **1.00 MS/s aggregate** multi-channel; 10 ns resolution | two PMTs at 1 MHz each exceed the aggregate limit: a constraint the rate validator must enforce |
-| Triggers | AO: start, pause, sample clock, sample clock timebase from any PFI/RTSI; DO likewise; counters: gate, source, arm | the present start-trigger wiring (`ao/StartTrigger` arms the counters and starts the DO) carries over unchanged |
+| Analog input (PMT) | 2.00 MS/s single channel, **1.00 MS/s aggregate** multi-channel; 10 ns resolution | each PMT runs its own AI task, and a device runs one hardware-timed AI task at a time: a second PMT on the same device is refused by the driver when its task reserves the AI timing engine, and the scan rolls back. The aggregate limit would bind a multi-channel AI task, which is not built |
+| Triggers | AO: start, pause, sample clock, sample clock timebase from any PFI/RTSI; DO likewise; counters: gate, source, arm | the detectors' input tasks are armed on `ao/StartTrigger`, and since the review the timer is too whenever there is analog output (§10); DO runs on `ao/SampleClock` |
 
-The DAQmx device properties `ao_max_rate`, `ao_max_multi_chan_rate` (per
-channel count), `do_max_rate`, `ai_max_single_chan_rate`,
-`ai_max_multi_chan_rate`, `ci_max_timebase` and `co_max_timebase` expose
-these numbers at run time, and `Task.timing.samp_clk_rate` returns the rate
-the driver actually configured. Those are the sources the validator reads;
-nothing is restated in code (no-magic-numbers).
+At run time the manager reads the configured task, not the device:
+`timing.samp_clk_max_rate` is the maximum for that task and its channels
+(channel-dependent, as the AO row shows), `timing.samp_clk_rate` the rate
+the driver configured, and, for the timer after commit,
+`co_ctr_timebase_rate`, `co_pulse_freq` and `co_pulse_freq_initial_delay`.
+A per-channel-count device property such as `ao_max_multi_chan_rate`, which
+the first draft named, is not in the nidaqmx Python API. Nothing is
+restated in code (no-magic-numbers).
+
+Digital output changes only on edges of its sample clock. On
+`ao/SampleClock` every DO edge is an AO sample edge, so no trigger delay
+can place a TTL edge between two AO samples: a start-trigger delay on the
+DO task only changes which AO sample its first sample lands on, a
+whole-sample shift that the sample-grid shift already makes. A TTL delay
+finer than the grid needs a DO sample clock of its own, phased against the
+AO's -- a separate clock design, not built (NI X Series User Manual,
+*Digital Waveform Generation*, DO Sample Clock Signal).
 
 Sources: NI PCIe-6363 Specifications, sections *Analog Output*, *Digital
 I/O/PFI -- Waveform Characteristics (Port 0 Only)*, *General-Purpose
@@ -180,14 +192,17 @@ per pixel at 100 kHz and one per pixel at 1 MHz.
 
 ## 5. Timing rules (the design)
 
-1. **One grid.** `scan.sampleRate` (Hz) is the pixel clock, the AO and DO
-   sample clock, and the Expert engine's `timing_grid_s`. The timer
-   (detector) rate is `detectionRateHz`, a whole multiple `k ≥ 1` of it.
+1. **One grid.** `scan.sampleRate` (Hz) is the waveform sample rate: the
+   AO and DO sample clock and the Expert engine's `timing_grid_s`. The
+   pixel rate is `sampleRate / samples_per_pixel`. The timer (detector)
+   rate is `detectionRateHz`, a whole multiple `k ≥ 1` of it.
 2. **The dwell is a whole number of samples.** `samples_per_pixel =
-   round(dwell · sampleRate)`; a dwell not on the grid is **refused with
-   its two neighbours** (the Expert `strict-v1` wording), or, in the
-   Advanced panel, **snapped explicitly**: the field shows the realized
-   dwell and the timing note names the change. Nothing is rounded silently.
+   ceil(dwell · sampleRate)`, counted exactly (`samples_for_duration`
+   takes the product to a nanosample, so a float product's noise --
+   7.000000000000001 -- is not a sample); a dwell is never shortened.
+   Expert `strict-v1` refuses an off-grid dwell with its two neighbours;
+   the Advanced panel rounds up, shows the realized dwell, and the timing
+   note names the change. Nothing is rounded silently.
 3. **One source for every count.** `samples_per_line = N_x ·
    samples_per_pixel`; the line period, the flyback, the TTL line, the
    detector's line read and `scan_samples` are all derived from that one
@@ -198,22 +213,32 @@ per pixel at 100 kHz and one per pixel at 1 MHz.
    `dwell_time`, the recording's `ScanStage` attributes and the metadata
    carry the realized value, with the request beside it when it differed
    (`dwell_requested_s`), as the Expert schedule already does.
-5. **Rates are validated against the device, not against a constant.**
-   The NI-DAQ manager asks the driver (`Device.ao_max_multi_chan_rate` for
-   the channel count in use, `do_max_rate`, `ai_max_multi_chan_rate` for
-   the PMTs, `co_max_timebase`), configures the AO clock from the 100 MHz
-   timebase, reads back `samp_clk_rate`, and refuses when the read-back
-   differs from `scan.sampleRate` ("the driver can play 999 000 Hz, not
-   999 123 Hz"). In simulation the mock declares its limits in the setup
-   (`nidaq.simulatedLimits`), never defaulted.
+5. **Rates are validated against the task the driver configured, not
+   against a constant.** The manager checks every task it arms: the task's
+   `samp_clk_max_rate` for its channels must allow the rate; a task that
+   makes its own clock must read back `samp_clk_rate` equal to
+   `scan.sampleRate`; the timer's timebase must divide `detectionRateHz`,
+   its read-back frequency must equal it, and its first pulse must come
+   within one timer period of the scan's start. A check the driver does not
+   answer refuses the scan; only a counter input's own maximum is optional,
+   its clock being the verified timer. A refused task is closed and the
+   scan rolled back. In simulation no driver answers and no check runs; the
+   rig test plays them (§8).
 6. **Line and frame boundaries** are sample counts, exact, on the one
    grid: `scan_samples_d2_period = samples_per_line + flyback_samples`,
    the frame `N_y · period` (+ the settling and the first-line start); the
    detectors compute their plan from these and never from the dwell.
-7. **Phase delay** stays a time in µs, converted once to **timer**
-   samples; at a pixel clock of 1 MHz with `k = 1` it is whole microseconds.
-8. **Repeated scans** restart from the same sample plan; the timer and the
-   AO are retriggered together as today.
+7. **Phase delay** stays a time in µs, converted once per clock by one
+   function (`lag_samples_for`, nearest, half to even): whole scan-clock
+   samples for the digital lines, whole timer samples for the detectors.
+   What each plays and the residual between them are recorded
+   (`scan_info['lag']`), and the Advanced timing note says when they differ
+   (3 µs at 100 kHz: the lines play 0 µs, the detectors 3 µs). The stream
+   ends with at least the lag of idle samples, and the manager refuses a
+   delay the stream's end cannot hold rather than cut a line's last edge.
+8. **Repeated scans** restart from the same sample plan. The timer is armed
+   on `ao/StartTrigger` with the detectors whenever there is analog output,
+   so every scan's detector bins start at the same phase.
 9. **Electronic versus physical.** Rule 2 is electronic. The physical rule
    stays `step / dwell ≤ vel_max` on the realized dwell, and a stepped fast
    axis needs `dwell ≥ move + settle`. The panel says which rule refused.
@@ -268,9 +293,11 @@ from `vel_max` and `acc_max` and tells the detector what to discard
 (`scan_throw_startacc`, `scan_throw_settling`).
 
 - **D3 goes.** The slow axis's settle time is declared on the positioner
-  (the Expert model's `settle_s` per drive, the Beta setups' `settle_time`)
-  and the designer reads it; a slice-to-slice gap shorter than it is
-  refused with the number.
+  (`managerProperties.settleTimeS`); the designer pauses every slice for
+  the longest declared by the slice positioners (a legacy
+  `scanDesignerParams.d3step_delay` still counts), records the pause and
+  its source (`slice_pause_us`, `slice_pause_source`), and the timing note
+  says it.
 - **D2 stays a field for now.** The lag depends on the scan speed: Lenny
   needs a different D2 at 10 and at 20 µs dwell, so one declared number
   would be wrong half the time. What changes: the value in use and its
@@ -290,12 +317,12 @@ from `vel_max` and `acc_max` and tells the detector what to discard
   pixels at 1 µs. With pulses inside the pixel (advanced TTL) every pixel is
   gated against the wrong part of the sweep. The fix: delay the DO stream
   by the lag so gating follows the beam, not the command. On the sample
-  grid that is a shift by `round(lag · sampleRate)` samples (coarse at
-  100 kHz, 10 µs steps; exact enough at 1 MHz); finer, and independent of
-  the rate, is the DO task's start-trigger delay (DAQmx
-  `start_trigger.delay` in timebase ticks, 10 ns on the X Series) -- to be
-  verified on the 6363 (§8). The Expert engine applies the same shift to
-  its digital lines; the `ttlMultiplying` mask is shifted with them.
+  grid that is a shift by the lag in whole samples, nearest (coarse at
+  100 kHz, 10 µs steps; whole microseconds exact at 1 MHz). Finer needs a
+  separately phased DO clock (§3); the start-trigger delay the first draft
+  proposed cannot do it (review, §10). The Expert engine applies the same
+  shift to its digital lines; the `ttlMultiplying` mask is shifted with
+  them.
 
 **S6 -- a sum projection over line steps and other extra dimensions in
 the live view (Lenny, 2026-10-16). DONE 2026-10-16** (sum only, per Lenny's words; the PMT's own line-step sum stays until its live buffer carries the stack; `displayAxisNames` on the APD and PMT name the dimensions). A line-step scan (and a z or time
@@ -307,25 +334,31 @@ already hold half of this with no GUI: `_linestep_view_mode` ("sum",
 1026-1036`, `PMTManager.py:850-893`), set by nothing, and the two defaults
 disagree (the PMT sums, the APD shows the stack, `PMTManager.py:191`).
 
-- A `NapariDimReduceWidget` beside `NapariUpdateLevelsWidget`
-  (`imcommon/view/guitools/naparitools.py:242`, docked by
-  `ImageWidget.py:21`): for the selected layer, one row per dimension
-  beyond the last two, named from the layer's axis labels (*line steps*,
-  *z*, *t*), each with a **Sum** checkbox; a checked dimension is summed
-  (float, so counts do not saturate) and the layer shows the reduced
-  array; unchecked, the slider is back. Display only: the recording and the
-  detector's frame are untouched.
+- Built as `NapariSumAxesWidget` under `NapariUpdateLevelsWidget`: one
+  **Sum** box per dimension beyond the image axes that some live frame has,
+  named from the detector's axis names (*Sum line steps*, *Sum z*), no
+  other text, and the panel hidden while no live frame has such a
+  dimension (Lenny, 2026-10-16, after the first rig look). A box applies to
+  every live layer with that dimension; the layer shows the float sum, the
+  slider is back when unchecked. Display only: the recording and the
+  detector's frame are untouched. The first build keyed the dimensions by
+  detector name on one side and by napari layer name on the other, so the
+  boxes never appeared; they are keyed by dimension name now, and a
+  real-viewer test (`test_image_sum_axes_viewer.py`, `glviewer`) covers
+  the wiring.
 - The detector-level modes are retired in favour of it (one place, every
   layer, cameras' stacks included); until then the APD's default follows
   the PMT's or both follow the checkbox.
 - Levels: auto-levels run on the displayed (reduced) image, so a summed
   stack is not clipped by the single-step range.
-- Persisted per detector with the panel state, so a line-step rig opens
-  summed if that is how it was left.
+- Persisted with the panel state (`summedDimensions`), so a line-step rig
+  opens summed if that is how it was left.
 
 Each stage ends green on the unit lane and on the goldens; S1, S3 and S5
-end with the hardware checks of §8. S6 is independent of the clock work
-and can go first.
+end with the hardware checks of §8. S6 is independent of the clock work:
+it touches only the live view and the detectors' axis names. It sits on
+this branch with the rest (one branch per effort) and can be split out if
+it should ship on its own.
 
 ## 7. Costs at a 1 µs pixel (512 × 512, ~20 % flyback)
 
@@ -351,10 +384,20 @@ kind is the read cadence (S3).
   (realized), off-grid dwell refused or snapped and recorded;
 - photon-count conservation on the simulated APD: the sum of the frame's
   pixels equals the sum of the timer samples over the lines, at each dwell;
-- the rate validator against declared mock limits: a rate the device cannot
-  play, a detector rate that is not a multiple, two PMTs over the AI
-  aggregate, each refused by name;
-- the Beta and galvo goldens unchanged at 100 kHz; new goldens at 1 MHz;
+- the task checks against stand-in driver tasks: a rate above a task's
+  maximum, a coerced read-back, a timer whose timebase does not divide the
+  rate or whose first pulse is a period late, a property the driver does
+  not report -- each refused by name, the scan rolled back and its tasks
+  closed; a detector rate that is not a multiple refused at startup;
+- the timer armed on `ao/StartTrigger` with `nidaq.startTrigger` false;
+  `scan_info['lag']` and `scan_info['detector_clock']` recorded;
+- the end of the stream: a galvo scan at 1 MHz keeps the delayed gate's
+  last falling edge and gates its last pixel for lags up to 1 ms, and a
+  delay longer than the idle end is refused;
+- the Beta and galvo goldens unchanged at 100 kHz; at 1 MHz the clock tests
+  (every grid agrees, a 1 µs pixel end to end on the simulated rig); Beta's
+  scan and TTL designers agreeing on the dwells whose float product is
+  noise, end to end at 100 kHz and 1 MHz (§10);
 - the Expert strict policy at a 1 µs grid; `scan_info_for` periods against
   realized step starts (the round-3 boundary tests, parametrized by rate).
 
@@ -366,16 +409,26 @@ kind is the read cadence (S3).
   wrap, pixel size as recorded;
 - counts: a steady source at 1 µs × 10 frames against 10 µs × 1 frame
   within Poisson error (conservation);
-- a `phase_delay` sweep: the delay that aligns forward lines is the same at
-  every dwell, scaled by nothing;
-- repeated scans (Repeat, time-lapse): frame-to-frame alignment;
-- two PMTs at 1 MHz: the refusal; one PMT at 1 MHz: a clean image;
+- the lag, two ways. An injected, known delay first: scope the laser gate
+  against the AO and confirm the gate plays `scan_info['lag']
+  ['gate_delay_s']` to one scan-clock sample, independent of the galvo.
+  Then controlled sweep speeds: the same field at several dwells, the lag
+  at each read from the alignment of forward and backward lines, compared
+  against the galvo's calibration at that speed. The lag is expected to
+  change with speed -- that is why D2 stays a field -- so the check is the
+  calibration, not one number for every dwell;
+- repeated scans (Repeat, time-lapse): frame-to-frame alignment, and with
+  `nidaq.startTrigger` false the same image phase scan after scan (the
+  timer armed on the scan's start);
+- a second PMT on the same device: the driver's refusal, the scan rolled
+  back cleanly; one PMT at 1 MHz: a clean image;
 - the driver's read-back rate logged for 100 kHz, 500 kHz, 1 MHz and an
-  off-divisor request;
-- S5: the DO start-trigger delay on the 6363 -- scope on a TTL line
-  against the AO, the delay set to the lag, edge-to-edge within one
-  timebase tick; then the dark edge pixel gone at 10 and 20 µs with the
-  lag the rig uses today.
+  off-divisor request, with `scan_info['detector_clock']` (timebase,
+  frequency, first-pulse delay) for each;
+- S5: the dark edge pixel gone at 10 and 20 µs with the lag the rig uses
+  today; a 3 µs lag at 100 kHz shows the residual the timing note states;
+- Beta (stage) scans on a camera rig at a dwell whose float product is
+  noise (5.03 ms at 100 kHz): one camera frame per pixel, and the scan ends.
 
 ## 9. Decisions and open questions
 
@@ -397,9 +450,66 @@ done"), each reversible:
 
 Still open for Lenny:
 
-1. **The start-trigger delay** for the TTL shift (10 ns resolution instead of
-   the sample grid) -- needs a scope on the 6363.
-2. **Which rig test first:** 15 µs at 100 kHz (S0, no clock change), then
+1. **Which rig test first:** 15 µs at 100 kHz (S0, no clock change), then
    1 MHz on the 6363 (S1), then the lag shift at 10 and 20 µs (S5).
-3. **The PMT's own line-step sum** before display stays until its live
+2. **The PMT's own line-step sum** before display stays until its live
    buffer carries the stack (S6 note).
+3. **A TTL delay finer than the sample grid** -- a separately phased DO
+   clock (§3) -- only if the rig shows the whole-sample shift too coarse at
+   100 kHz. The start-trigger delay of the first draft is withdrawn (§10).
+
+## 10. Review of 2026-10-16, and the Beta audit
+
+An external review of S1 and S5 (five points, all taken), Lenny's first rig
+look at S6, and an audit Lenny asked for: does any of this break the Beta
+(stage) designer?
+
+1. **A 10 ns TTL delay conflicts with `ao/SampleClock` (P1).** Taken: DO
+   moves only on its clock's edges (§3), so the start-trigger delay is
+   withdrawn; the shift stays on the sample grid, and finer is a separate
+   clock design.
+2. **The detector clock is not verified, its first edge undefined (P1).**
+   The timer was armed on `ao/StartTrigger` only when `nidaq.startTrigger`
+   was set; free-running, its pulses put the detectors' bins at a random
+   phase within one timer period -- a whole pixel at 1 µs on a 1 MHz timer.
+   Now it is armed whenever there is analog output, committed and read
+   back (`NidaqManager._verifyTimerClock`: timebase divides the rate,
+   frequency equals it, first pulse within one period), and recorded as
+   `scan_info['detector_clock']`. Tests: `test_scan_clock_configurable.py`.
+3. **Device validation was not a contract (P1).** The device-level checks
+   (`_checkDeviceRates`, `_checkInputRate`, `_checkConfiguredRate`) read
+   properties the Python API lacks, skipped PMTs and counters, and passed
+   silently when the driver did not answer. Replaced by one task-level
+   check (`_verifyTaskClock`, rule 5) on AO, DO, AI and CI; an unanswered
+   mandatory check refuses; a refused task is registered first or closed,
+   so the rollback never leaks it. Two PMTs: see §3.
+4. **The residual and the end of the stream (P1).** One rounding for both
+   clocks (`lag_samples_for`; the APD and PMT used their own),
+   `scan_info['lag']` with the requested, gate, detector and residual
+   delays, the residual in the timing note. `delayed_lines` dropped the
+   samples it pushed past the end, which could cut a gate's last edge, and
+   returned a stream shorter than the shift unchanged: it now refuses both,
+   naming the line, and the galvo designer's end padding is at least the
+   lag (`test_scan_ttl_lag_shift.py`, which fails with the old padding).
+5. **The lag validation contradicted D2 (P2).** §8 asked for one lag at
+   every dwell while D2 stays a field because the lag changes with speed.
+   Now: an injected, known delay, then controlled sweep speeds against the
+   calibration.
+6. **Smaller edits.** Rule 2 says `ceil`, as built; `scan.sampleRate` is the
+   waveform sample rate, the pixel rate `sampleRate / samples_per_pixel`;
+   "nothing is implemented" and the resolved open question are gone; S6 is
+   stated independent (§6).
+7. **S6 on the rig (Lenny).** The Sum boxes never appeared: the two halves
+   keyed the dimensions differently (§6, S6). Fixed, the explanatory text
+   removed, the panel shown only with a dimension to sum.
+8. **The Beta audit.** Beta never sets a phase delay, so the lag shift, the
+   end-of-stream refusal and the residual leave its scans untouched (an
+   end-to-end test asserts a zero shift). One real break was found: S0
+   moved `BetaScanDesigner` onto the exact count while
+   `BetaTTLCycleDesigner` -- the pairing of the Base and MoNaLISA setups --
+   still took the ceiling of a float product, which is one sample more for
+   about 2 % of dwells (5.03 ms at 100 kHz is 503.00000000000006). The two
+   streams then differed in length. Both now count by
+   `samples_for_duration`, as do Beta's move, settle and return and its
+   time estimate (`test_beta_sample_counts_agree.py`, which fails with the
+   old TTL designer). The Beta goldens are unchanged.
