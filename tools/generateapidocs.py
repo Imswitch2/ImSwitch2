@@ -60,7 +60,9 @@ def _rst(docstring):
         from sphinx.ext.napoleon import Config
         from sphinx.ext.napoleon.docstring import GoogleDocstring
     except ImportError:
-        return docstring
+        # Without the conversion the pages come out different, so a run
+        # without Sphinx would rewrite them, or fail --check, for nothing.
+        sys.exit('tools/generateapidocs.py needs Sphinx: pip install "sphinx>=7,<9"')
     return str(GoogleDocstring(docstring, Config(napoleon_use_param=True, napoleon_use_rtype=True)))
 
 
