@@ -294,6 +294,7 @@ def _load_section_schemas() -> dict:
 IMPROCESS_RECONSTRUCTOR_FALLBACK = [
     "beadrec",
     "monalisa",
+    "monalisa-lattice",
     "monalisa-legacy",
     "smlm-localizer",
     "snouty",

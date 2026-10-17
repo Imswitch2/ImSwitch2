@@ -582,9 +582,11 @@ class DataObj:
 
     def _applyResolvedImageMetadata(self, image):
         ndim = len(image.array.shape)
-        fallback_scales, fallback_unit = axis_scales_from_element_size(image.attrs, ndim)
-
         self._axis_labels = image.axis_labels or default_axis_labels(ndim)
+        fallback_scales, fallback_unit = axis_scales_from_element_size(
+            image.attrs, ndim, self._axis_labels
+        )
+
         self._axis_scales = image.axis_scales or fallback_scales or [1.0] * ndim
         self._scale_unit = image.scale_unit or fallback_unit or "px"
         self._source_info = {

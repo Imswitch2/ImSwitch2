@@ -337,7 +337,12 @@ class MonalisaProcessingResult(ProcessingResult):
         return out
     
 
-    supported_formats = ("tiff", "imagej")
+    # The shared OME writers take the serialization view below, so HDF5 and
+    # Zarr are as available as TIFF; only the ImageJ hyperstack is this
+    # type's own writer. Listing TIFF and ImageJ alone, as this once did,
+    # made the save dialog's HDF5 and Zarr choices fail for MoNaLISA results
+    # only, with the same data every other image result saves to them.
+    supported_formats = ("tiff", "hdf5", "zarr", "imagej")
 
     def _fold_for_disk(self):
         """(Dataset, Base, T, Z, Y, X) -> (T, Z, C, Y, X), C = Dataset x Base,
@@ -375,15 +380,20 @@ class MonalisaProcessingResult(ProcessingResult):
         )
 
     def write_files(self, plan, document) -> None:
-        """OME-TIFF through the shared writer (the default), or the ImageJ
-        hyperstack writer of old under ``fmt="imagej"`` for one release."""
-        if plan.fmt == "tiff":
+        """OME-TIFF, HDF5 or OME-Zarr through the shared image writer (all
+        three carry the ``(T, Z, C, Y, X)`` layout of :meth:`serialization_view`),
+        or the ImageJ hyperstack writer of old under ``fmt="imagej"`` for one
+        release."""
+        if plan.fmt in ("tiff", "hdf5", "zarr"):
             from imswitch.improcess.model.result_io import save_image_result
 
-            save_image_result(self, plan.primary, "tiff", document=document)
+            save_image_result(self, plan.primary, plan.fmt, document=document)
             return
         if plan.fmt != "imagej":
-            raise ValueError(f"MoNaLISA result supports 'tiff' or 'imagej', got {plan.fmt!r}")
+            raise ValueError(
+                f"MoNaLISA result supports 'tiff', 'hdf5', 'zarr' or 'imagej', "
+                f"got {plan.fmt!r}"
+            )
         folded, (vxsizec, vxsizer, _vxsizez), _names = self._fold_for_disk()
         ijmetadata = {'axes': 'TZCYX', 'provenance': document.to_json()}
         resolution = (10000.0 / vxsizec, 10000.0 / vxsizer)

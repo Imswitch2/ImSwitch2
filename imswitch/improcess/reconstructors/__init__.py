@@ -25,6 +25,7 @@ from .smlm import SmlmLocalizer
 from .beadrec import BeadRecReconstructor
 from .tiling import TilingReconstructor
 from .monalisa.legacy import LegacyMonalisaReconstructor
+from .monalisa_lattice import MonalisaLatticeReconstructor
 from .time_lapse import TimeLapseReconstructor
 
 
@@ -38,6 +39,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'beadrec': BeadRecReconstructor,
     'tiling-mosaic': TilingReconstructor,
     'monalisa-legacy': LegacyMonalisaReconstructor,
+    'monalisa-lattice': MonalisaLatticeReconstructor,
     'time-lapse': TimeLapseReconstructor,
 }
 

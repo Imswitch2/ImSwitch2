@@ -853,12 +853,18 @@ def _scale_unit_from_ngff_axes(axes: Any) -> str | None:
 def axis_scales_from_element_size(
     attrs: dict[str, Any] | None,
     ndim: int,
+    axis_labels: list[str] | None = None,
 ) -> tuple[list[float] | None, str | None]:
     """Derive ``(axis_scales, unit)`` from a Fiji/ImSwitch ``element_size_um`` attr.
 
     ``element_size_um`` is the historical ImSwitch/Fiji calibration carried on
     HDF5/Zarr arrays. Returns ``(None, None)`` when absent or unparsable so the
     caller can fall back to unit pixels.
+
+    The triplet is ``[z, y, x]``. With ``axis_labels`` it goes to the axes
+    so named, wherever they are; without, to the last three axes, which is
+    wrong for a ``(T, Z, C, Y, X)`` hyperstack whose channel axis sits
+    between Z and Y.
     """
     if attrs is None:
         return None, None
@@ -874,6 +880,14 @@ def axis_scales_from_element_size(
 
     if array.size == 0:
         return None, None
+    if array.size == 3 and axis_labels and len(axis_labels) == ndim and (
+        "Y" in axis_labels and "X" in axis_labels
+    ):
+        scales = [1.0] * ndim
+        for name, scale in zip(("Z", "Y", "X"), array):
+            if name in axis_labels:
+                scales[axis_labels.index(name)] = float(scale)
+        return scales, "um"
     if array.size == 1:
         if ndim < 2:
             return [float(array[0])] * ndim, "um"
