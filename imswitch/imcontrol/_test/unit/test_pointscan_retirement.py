@@ -47,3 +47,20 @@ def test_changed3StepDelayPar_is_a_script_api_export():
     method = ScanControllerAdvanced.__dict__['changed3StepDelayPar']
     assert method._APIExport is True
     assert method._APIRunOnUIThread is True
+
+
+def test_main_view_skips_a_layout_key_that_names_no_widget():
+    """A widgetLayout naming a removed panel (the single-SLM "SLM") is skipped
+    with a warning instead of stopping ImControl, as availableWidgets does."""
+    warnings = []
+    view = ImConMainView.__new__(ImConMainView)
+    view.viewSetupInfo = SimpleNamespace(scan=SimpleNamespace(scanWidgetType='Base'))
+    view.widgets = {}
+    view.docks = {}
+    view._ImConMainView__logger = SimpleNamespace(warning=warnings.append)
+
+    docks = view._addDocks({'SLM': SimpleNamespace(name='SLM', yPosition=0)}, None, 'left')
+
+    assert docks == []
+    assert view.widgets == {}
+    assert len(warnings) == 1 and '"SLM"' in warnings[0]
