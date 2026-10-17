@@ -9,6 +9,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.analysis.smlm_tables import link_localizations
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 
@@ -17,12 +18,22 @@ class SmlmGroupProcessor(Processor):
 
     name = "SMLM group/link"
     id = "smlm-group"
-    category = "Localization"
+    category = "SMLM"
     kinds = ("localization",)
 
     @classmethod
     def default_params(cls) -> dict:
         return {'radius_nm': 50.0, 'max_dark_frames': 0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'radius_nm', 'float', 50.0, label='Link radius', min=0.1, max=100000, decimals=2,
+                suffix='nm',
+            ),
+            ParamField('max_dark_frames', 'int', 0, label='Max dark frames', min=0, max=1000),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -69,6 +80,7 @@ class SmlmGroupProcessor(Processor):
             dims=result.dims,
             source_name=result.source_name,
             source_shape=result.source_shape,
+            preview_pixel_size_nm=result.preview_pixel_size_requested_nm,
             metadata={
                 **result.metadata,
                 "group_params": dict(params),

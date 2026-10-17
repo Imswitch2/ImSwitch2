@@ -5,7 +5,7 @@
     "managerProperties": {
       "avcam": {},
       "cameraListIndex": "example",
-      "cameraPixelSizeUm": null
+      "cameraPixelSizeUm": 1.5
     }
   }
 }

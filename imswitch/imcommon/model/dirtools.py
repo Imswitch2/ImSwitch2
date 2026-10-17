@@ -2,12 +2,23 @@ import glob
 import hashlib
 import json
 import os
+import sys
 from abc import ABC
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import copy2
 
 import imswitch
+
+
+def isBundle():
+    """ Whether ImSwitch2 is running from a frozen PyInstaller bundle.
+
+    ``IMSWITCH_IS_BUNDLE`` is set by the bundle entry point; ``sys.frozen`` is
+    PyInstaller's own marker and covers anyone who freezes ImSwitch2 without
+    going through ``release/pyinstaller/imswitch_bundle_entry.py``. """
+
+    return os.environ.get('IMSWITCH_IS_BUNDLE') == '1' or getattr(sys, 'frozen', False)
 
 
 def getSystemUserDir():

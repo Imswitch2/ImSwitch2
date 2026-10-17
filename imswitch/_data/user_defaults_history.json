@@ -7,6 +7,7 @@
   ],
   "imcontrol_setups/example_coolLED.json": [
    "0c89c6437c20943e93cd643f257a7caa3fd962bb44a5a72ca528fc5b0b975e1a",
+   "70d0ad1db5a278ce18c07ead262c74f5fb4a4ad6335c49cd4c007b5f2ef1f7e3",
    "b445dd7e3db4abb3b6d4a678cd830a18cd7aaf8d698bebe38b77202c0d5c0b6e",
    "d833b2017fb20a5b433adbf6a02e37f34f43f0aecb88c0aa929d7949946f8066"
   ],
@@ -19,6 +20,7 @@
   ],
   "imcontrol_setups/example_mock.json": [
    "12efe5299bc4a8d2a3c67baf426d201680022da8a87b35aa393233700220fca8",
+   "5771cf8e7e604d0cb7147199a8a1757634888bff6fb0ce86cbdce53c0277650a",
    "59bdbe19f2d1321b92132d682bcb0ba2c31de944852cd8faad6d17f58331936f",
    "59cc88bd6661eafc81159d49f8a06997505d9a8028fe2dfcf454e4b04427f13e",
    "b3fdb980b50ff51b22c3c1eb7150dfdd32b343bb6024695c4419d0566ea91255",
@@ -27,6 +29,7 @@
   "imcontrol_setups/example_monalisa.json": [
    "1ce905516d0ac688f89e4f81a5b2c60bccf8fb79db44cd46a0a6556c7294f05a",
    "8dc21536088c9c1aebfae3ec5fd98ee27968102a7f3c9fb15ea0868345bb9259",
+   "bad464d960a72602739ca52f3e481a39e223e5f6c230632afa76d561fe39db12",
    "cc9f88589aabece6071ce5eab77d0184456bb4ebdb338ca59952d76008ada039",
    "dcb9efbcf0ee178b8e918a0db6b4f6e154027a7f46624e8ef43f0231ec7a37f6"
   ],
@@ -34,6 +37,7 @@
    "132438db97fec149db6ec29398933194ed905a2c9ee75e66b7d059c59b05d4b6",
    "19e7fc18373f2407cc4e7950d8027865fd57efa0f85936e3f4597c5c8ae0c427",
    "33053e4e940756b1d399b9bfe5715f3b409a7c2e7c983603eeb398dbdd313c83",
+   "3561fb5d79daac9e05e16e7ae7b563033a9f786ea2d4b06c18ca3cc3acc4deb6",
    "44cd7632d0da4ec08b5806777075030e550744cc1ba8584c98b7d5f657ae8fab",
    "51d4bb12982152d280bde13a9920d27d9fcfbcca1882cfde0d93fdba9bf32042",
    "a92d4b0426a6990ecc961c72a682b1acfc48d9a52ae89853542dd013dcca28f2"
@@ -44,10 +48,12 @@
    "f6e8babc511f8dc5e569e0c7a730ebc65ec774813682e9106b84cf4d81e785bb"
   ],
   "imcontrol_setups/example_snouty_smart_modes.json": [
+   "c903149922b096197a1b1e88afdb150b2ea2750e1e39ba68dfd9774a990eca37",
    "fc8e8e40711b8c7900e0765f35f60b7fcf52e3772eb9a418900d05bedb26feee"
   ],
   "imcontrol_setups/example_sted.json": [
    "18224c6754018b36fdf04ba000b04f8c2d250ce5adbc4c0ac8b861c27b7c4ddf",
+   "1dae5ce50373fcf42c5c9c2d34ef88110d47ce51a55429cfb769ba4c023f7ca6",
    "37d3471c207d9f2baefcba161c2f49129dbdb3c27980705f3b206c4cecb580aa",
    "39eb4e5b79107b59443990c17ece5e43d871716b9eeeb70e7dc2c17abafebe87",
    "6811982d01d5f941131d09e8c1da7d616240b98932ed0efec70f74796218808d",
@@ -80,16 +86,20 @@
   ],
   "imcontrol_setups/hamamatsu_mock_scan_setup.json": [
    "0bfdb63500380741a3f8569935f742a4bc378e76fd5c1cab267041743224c4ce",
+   "a195d52e370c5b6f9aa7f963ac8b2507f42b0c7cdc88cf5b031f81653e056d2c",
    "e7116ce5a3cce7e65f6d5ef53dfb6052fe310205db0f97f811330d84d2787ba1"
   ],
   "imcontrol_setups/mixed_hamamatsu_apd_mock_scan_setup.json": [
    "5e70b40e26bdf6eb1ef46f4c073500bc9d9d2cc157b885df8ff5148e1952c122",
+   "6d89817110c58bcb4a80039cd2711f102ea600716500d21ee26baa58bd1f3a70",
    "e3385e22358b59d10510e3f05b1010255af97c1e556a0dd287af84b571eac6ad"
   ],
   "imcontrol_setups/mock_scan_monalisa_live.json": [
+   "1b6365a2a9296eed5d1fe20e9dd29a67b5a5dea1e447e4f2c9610ef3d6832516",
    "bd62a73d62cb636e38fd894959dd2cc391037b64cfef881c998b2b58eef45da8"
   ],
   "imcontrol_setups/mock_scan_setup.json": [
+   "89d279b13fe6cde4beaf0f547194e111bfc9b97aadaa57553197f9256e9a7241",
    "bdacbca888e84613129cfc5938e14f532f9dfe44f7df0a930501798ee249ff01"
   ],
   "imcontrol_setups/monalisa_processor.json": [
@@ -114,6 +124,34 @@
   "imcontrol_slm/info_oil.json": [
    "3c0bdc5593905cd58200640f7b119efb8795cfba5609528bc4f43bf97ebc5948",
    "92f092f6619b177e7e2171e521ed9be134ff0e0eefc0a08fead135cf3f27de5d"
+  ],
+  "improcess_snippets/autocrop.py": [
+   "44930296629e6a081f23e6cae5f25ffc1bf1fd1cfdea43cac47762e2c53c8223"
+  ],
+  "improcess_snippets/best_focus.py": [
+   "01d05f43238046a2ff117bcb592250cfac504d057ae363f0a39864a419fbd7a1",
+   "6c1173fce010fda66f9d3a7eba98b8528bdfcf64d84388ba059acb406bd3aef2"
+  ],
+  "improcess_snippets/crosstalk.py": [
+   "6c232af6530d134f6e764b16178fa1f5327580542fafa5eeef3e587291095ef1"
+  ],
+  "improcess_snippets/despeckle.py": [
+   "6efbc430ca3f9a8f9b64ccc002e77cdec0b5690cf65e786b65487a0882b82c30"
+  ],
+  "improcess_snippets/normalize_frames.py": [
+   "55d874094d3bd25421f91c373ea47b06564485d6c741198b6d59947aa9cfdcb5"
+  ],
+  "improcess_snippets/ratio_mask.py": [
+   "549331ccedd63232e1cdaa48671d1cf2983d59ab3a293047a2636c882723e980"
+  ],
+  "improcess_snippets/signal_trace.py": [
+   "627ede593eda3552c9ef79348899085e9b97e8f938608f799c0816663c436cd5"
+  ],
+  "improcess_snippets/snake_mosaic.py": [
+   "f4a929584160759da9a9b0ff6f521acbcf0727b98b8801fc6b4518cdc7c17df2"
+  ],
+  "improcess_snippets/temporal_bin.py": [
+   "3fe3aad7a7a984edf72d360667d1b7039c1f836d48fa51d4fe595c7702f6ae96"
   ],
   "scripts/example_import.py": [
    "1cecec798864cf5bb35a4b8416e6941c79a7c0e54345809ea4bd5ed84ab2fb96",

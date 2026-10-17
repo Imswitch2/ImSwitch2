@@ -168,6 +168,9 @@ class Processor(ABC):
     name: str = "Unnamed Processor"  # Human-readable
     id: str = "unnamed"  # Stable identifier for config + registry; every concrete subclass sets it
     category: str = "Other"  # Human-readable grouping for runtime tools/docs
+    #: Text of the panel's run button. ``None`` is "Run <name>"; a processor
+    #: whose run reads as something else to its user ("Apply filter") says so.
+    run_label: str | None = None
     #: Semantic result kinds this processor accepts (ProcessingResult.kind).
     #: Checked by accepts() BEFORE the shape/axis gate, so a table result with
     #: a 2D data array is never offered to an image processor.
@@ -242,6 +245,24 @@ class Processor(ABC):
         if cls.extra_param_keys is None:
             return None
         return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys)
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        """Field-level description of :meth:`default_params`, one
+        :class:`~imswitch.improcess.model.param_spec.ParamField` per key.
+
+        What a form builder, the ``workflows list`` catalogue and the workflow
+        editor read. The framework default derives each field from the
+        default value's type (a number, a flag, free text, JSON), which is
+        enough for a plain form; override it to say what the widget knows --
+        the choices behind a combo box, the bounds and unit of a spin box,
+        the tooltip -- with the same keys and the same defaults. A test pins
+        the two together
+        (:func:`~imswitch.improcess.model.param_spec.spec_problems`).
+        """
+        from imswitch.improcess.model.param_spec import spec_from_defaults
+
+        return spec_from_defaults(cls.default_params())
 
     def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
         """``(encoded, reasons)``: params as lossless JSON, or why not.
@@ -338,7 +359,9 @@ class Processor(ABC):
         """
         Return the parameter editor widget shown in the processing chain panel.
         
-        Should expose a `get_values() -> dict` method.
+        Should expose a `get_values() -> dict` method. A widget may also declare
+        `after_run(results, failures)`, which the panel calls once a run has ended
+        (to show what the processor printed, or why it failed).
         """
         ...
     

@@ -20,6 +20,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.processors.combine import elementwise_compatibility
 
@@ -54,10 +55,27 @@ class ImageCalculatorProcessor(Processor):
     # image processor, not to stop a mask being applied to the image it was
     # drawn on.
     kinds = ("image", "labels")
+    #: ``name`` renames the result. No widget offers it, so it is not a
+    #: default; a workflow may still set it.
+    extra_param_keys = ("name",)
 
     @classmethod
     def default_params(cls) -> dict:
         return {'operation': 'add', 'float32': True}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'operation', 'select', 'add', label='Operation',
+                help='Applied as A <operation> B, in the order the inputs are listed',
+                options=('add', 'subtract', 'multiply', 'divide', 'min', 'max', 'average', 'difference'),
+            ),
+            ParamField(
+                'float32', 'bool', True, label='32-bit float result',
+                help='Compute in float32 so subtraction and division never clip or wrap',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

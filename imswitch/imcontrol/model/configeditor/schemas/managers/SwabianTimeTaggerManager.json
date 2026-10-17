@@ -188,8 +188,8 @@
     "DetectorManager"
   ],
   "x-imswitch-unresolved-reads": [
-    "tl.get(str(self._click_ch), 0.5) (line 93; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._line_ch), 0.5) (line 99; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._start_ch), 0.5) (line 96; sub-key of 'trigger_levels' is not a literal)"
+    "tl.get(str(self._click_ch), 0.5) (line 97; sub-key of 'trigger_levels' is not a literal)",
+    "tl.get(str(self._line_ch), 0.5) (line 103; sub-key of 'trigger_levels' is not a literal)",
+    "tl.get(str(self._start_ch), 0.5) (line 100; sub-key of 'trigger_levels' is not a literal)"
   ]
 }

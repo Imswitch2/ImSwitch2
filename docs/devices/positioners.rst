@@ -706,7 +706,8 @@ Analog-controlled positioner driven via NI-DAQ analog out.
             "managerProperties": {
                 "conversionFactor": 10.0,
                 "minVolt": -10.0,
-                "maxVolt": 10.0
+                "maxVolt": 10.0,
+                "defaultReferenceVoltage": 0.0
             },
             "analogChannel": 0,
             "axes": ["Z"],
@@ -734,8 +735,13 @@ Analog-controlled positioner driven via NI-DAQ analog out.
    * - ``maxVolt``
      - float
      - Maximum allowed analog voltage.
+   * - ``defaultReferenceVoltage``
+     - float or null
+     - Optional analog voltage used by the explicit open-loop reference
+       workflow. If omitted, no default reference target is configured.
 
-All three are **required** (subscripted, no defaults).  The Galvo and
+``conversionFactor``, ``minVolt`` and ``maxVolt`` are **required**
+(subscripted, no defaults); ``defaultReferenceVoltage`` is optional. The Galvo and
 Beta scan designers also read ``minVolt`` / ``maxVolt`` of each scanned
 positioner and refuse a scan whose signal would leave that range
 (*Signal voltages outside scanner ranges*).

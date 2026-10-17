@@ -377,7 +377,8 @@ selection.
 * *Interacting/measuring tools* (ROI Manager, ROI stats, Profile) operate on
   the *active napari layer* and display their measurements in place; they do
   not create results.  All of them resolve their source layer through the
-  shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
+  shared ``imswitch.imcommon.algorithms.layer_selection`` helper (also
+  importable as ``imswitch.improcess.layer_selection``), so what counts as an
   image source cannot drift between tools.  They also re-measure when the
   selected result changes: the ROI stays where it is and the numbers follow
   the result now under it, rather than lingering from the previous one.
@@ -386,7 +387,18 @@ The Profile tool can draw line and rectangle ROIs, plot the sampled profile,
 and optionally overlay fitted curves.  Available profile fits are no fit,
 single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
-profile is pushed to the results table or saved as CSV.
+profile is pushed to the results table or saved with *Save summary…*; *Save
+data…* writes the plotted curves themselves as CSV.
+
+*Layer* says which image is profiled, and the plot title names it.  *Active*
+is the layer selected in napari's layer list, kept while you draw (drawing
+selects the *Viewer Tools* layer rather than an image); choosing a layer by
+name keeps profiling it whatever is selected, and *All visible layers* plots
+one curve per visible image layer, each sampled in its own pixel size and
+offset.  The panel is shared with imcontrol's *Line Profile* panel — one
+widget, ``imswitch.imcommon.view.guitools.ProfileWidget`` — so a fix to one is
+a fix to both; imcontrol adds live redrawing and an *Intensity vs T* trace (see
+:doc:`gui`).
 
 The *Source* list chooses between the shape drawn in the panel (*Drawn*) and
 a named ROI from the ROI manager, which is re-plotted when the selected
@@ -468,8 +480,9 @@ multicolor-registration Processor      Three-color X-strip bead calibration and 
 multicolor-apply        Processor      Apply saved three-color X-strip alignment to deskewed sample volumes
 denoise                 Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
 smlm-render             Processor      Render a localization table into a super-resolved image/volume
-smlm-filter             Processor      Filter localizations by photons, lateral sigma and frame range
+smlm-filter             Processor      Keep or drop the localizations inside a band of one property (histogram-guided)
 smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
+smlm-drift-comet        Processor      COMET all-pairs drift correction in x, y and z, GPU-optional (needs comet-smlm)
 smlm-group              Processor      Link blinking repeats into photon-weighted merged localizations
 table-to-localizations  Processor      Promote a points table to localizations with an explicit column mapping
 ======================= ============== ====================================================
@@ -509,8 +522,9 @@ accept kind ``image`` unless noted; ``stack-subset``, ``projection``,
 intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
 ``smlm-drift``, ``smlm-group``) accept only ``localization``.
 ``label-morphology`` accepts only ``labels``, ``image-calculator`` accepts
-``image`` and ``labels``, and ``table-to-localizations`` accepts only
-``table``.
+``image`` and ``labels``, ``python`` (the :ref:`Python step
+<improcess-python-step>`) accepts ``image``, ``labels`` and ``composite``, and
+``table-to-localizations`` accepts only ``table``.
 
 .. list-table::
    :header-rows: 1
@@ -608,6 +622,12 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        have; a ``px`` result combines with a calibrated one.
      - ``ArrayProcessingResult`` from pixel-wise arithmetic; division by zero
        yields zero. The toolbar dialog is the normal two-input entry point.
+   * - ``python``
+     - Scripting
+     - Any ``image``, ``labels`` or ``composite`` result, one or several; the
+       code decides what the axes mean.
+     - One result per output port the step declares (``out`` by default),
+       named in ``ports``; see :ref:`improcess-python-step`.
    * - ``drift-correct``
      - Restoration
      - Any result whose ``axis_labels`` contain ``T``.
@@ -661,25 +681,44 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        sample volumes and a saved multicolor alignment HDF5.
      - ``MulticolorApplyResult`` with ``C, Z, Y, X`` or ``T, C, Z, Y, X`` data.
    * - ``smlm-render``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only.
      - ``ArrayProcessingResult`` render with ``Y, X`` or ``Z, Y, X`` axes,
        nanometer axis scales and image display levels.
    * - ``smlm-filter``
-     - Localization
-     - ``LocalizationResult`` only.  Bounds set to 0 are disabled; the
-       results-table histograms are the intended way to choose cutoffs.
-     - ``LocalizationResult`` with rows outside the photon/sigma/frame ranges
-       removed; kept/total counts recorded in name and metadata.  Chains with
+     - SMLM
+     - ``LocalizationResult`` only.  One property at a time (``property``),
+       a band on it (``lower``/``upper``, either side open when unset) and a
+       ``mode``: ``bandpass`` keeps the rows inside the band, ``bandstop``
+       drops them; a band-stop with neither side set is refused, since the
+       whole range would be the band.  The panel shows the property's
+       histogram with the band drawn on it.  Its bins are derived from the
+       data (the narrower of the Freedman-Diaconis and Sturges rules, never
+       more than the plot has pixels), and a column of whole numbers such as
+       the frame gets one bin per number.
+     - ``LocalizationResult`` with the rows the band keeps; property and
+       kept/total counts recorded in name and metadata.  **Apply filter** again
+       to filter a second property: with *Copy* on (the default) the first
+       filter makes a new result and the panel follows it; the box then turns
+       itself off and the next filters replace that copy in place, so a table
+       refined step by step stays one entry.  It turns back on when another
+       result is selected.  Chains with
        ``smlm-drift``/``smlm-group``/``smlm-render``.
    * - ``smlm-drift``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only; needs a frame span of at least the
        segment count and 2+ non-empty temporal segments.
      - ``DriftCorrectedLocalizationResult`` with positions minus the
        estimated per-frame drift, plus an X/Y drift-trace graph payload.
+   * - ``smlm-drift-comet``
+     - SMLM
+     - ``LocalizationResult`` only; needs the optional ``comet-smlm``
+       package and a chosen window size (COMET has no default for it).
+     - ``DriftCorrectedLocalizationResult`` with x, y and z corrected by
+       COMET's all-pairs estimate; the drift trace gains a Z series on a 3D
+       table.  See :ref:`improcess-comet-drift`.
    * - ``smlm-group``
-     - Localization
+     - SMLM
      - ``LocalizationResult`` only.
      - ``LocalizationResult`` with blinking repeats within the link radius
        merged: photon-weighted mean position/sigmas, summed photons, first
@@ -702,6 +741,8 @@ or ``rgb`` result would come out as a plain ``image``.  The axis processors
 are therefore not offered for those two kinds.  RGB results are
 visualization and export artifacts (autoscaled ``uint8`` display values, not
 calibrated intensities), so no analysis processor accepts them either.
+
+.. _improcess-result-graph:
 
 Result graph panel
 ==================
@@ -742,12 +783,27 @@ amplitudes, time constants and R².  Without the opt-in the numbers exist only
 inside the result, drawn but unreadable.
 
 Built-in graph producers include ``drift-correct`` and ``widefield-starss``.
-Drift-corrected results expose Y and X drift traces over frame number.
+Drift-corrected results expose Y and X drift traces over frame number (and
+Z, from ``smlm-drift-comet`` on a 3D table).
 WidefieldSTARSS results expose an anisotropy histogram and region
 area-vs-anisotropy scatter plot.  ``frc`` results expose the FRC curve,
 threshold curve and cutoff marker.  The same graph contract is intended for
 future processing units such as batch summaries, FLIM traces and line-profile
 tools.
+
+Log panel
+=========
+
+Toggle the log panel at any time from **View > Log**, or set
+``"logPanel": true`` in the ``processing`` block to have it open at startup.  It
+is the same log, the
+same buffer and the same panel ImControl uses, so the two are two views of one
+thing — see :ref:`the Log panel <log-panel>` in :doc:`gui` for what the
+controls do.
+
+Worth enabling for a standalone bundle, which has no console behind it on
+macOS.  The log is also written to ``ImSwitchConfig/logs/imswitch.log``
+regardless of whether the panel is open.
 
 Metadata panel
 ==============
@@ -1026,6 +1082,484 @@ The same functionality is available as registered processors:
 ``multicolor-registration`` extracts and optionally saves the transform, while
 ``multicolor-apply`` applies a saved HDF5 transform to later data.
 
+.. _improcess-python-step:
+
+Python step
+===========
+
+The Python step is the built-in processor ``python`` (category *Scripting*): a
+few lines of Python that turn the selected result, or several, into new
+results.  It is the escape hatch for the one-off transformation no processor
+covers — three slices at a time alternating between two outputs, say — where
+writing a drop-in plugin (*Drop-in analysis plugins*, below) would be more
+work than the job.  Open it from **Tools → Python step**.
+
+The code is an ordinary parameter of the step (next to the output port names),
+so everything a processor gets comes with it: the result's provenance records
+the whole code, **File → Export workflow of current result…** writes it into a
+workflow file, *Run workflow over files…* applies it to a folder, and replay
+reproduces it.  For exploring before recording, **Tools → Console** runs the
+same kind of code over the results list (:ref:`below <improcess-console>`).
+
+Which tool for which job
+------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - You want to
+     - Use
+   * - Try something on the results you have open, look at it, adjust
+     - The :ref:`console <improcess-console>`: nothing is recorded until you
+       say so, and ``data`` follows the selection.
+   * - Do it again on other files, in a workflow, with the code recorded and
+       replayable
+     - The **Python step**: the code is a parameter, so it travels with the
+       result and with a workflow file.
+   * - Use it often, with its own name and a form of widgets, or hand it to
+       someone
+     - A drop-in plugin (*Drop-in analysis plugins*, below).  A snippet that
+       earns it becomes one.
+   * - Drive the hardware, a scan or an acquisition, or automate across modules
+     - ImScripting (:doc:`scripting`).
+   * - Use a tool from an installed napari plugin
+     - :doc:`improcess-napari-plugins`.
+
+When a built-in processor does the job, use that: it has a form, validation of
+its parameters and a name in the provenance.  The :ref:`recipes
+<improcess-recipes>` below are jobs none of them does.
+
+The panel
+---------
+
+The panel is a code editor (ImScripting's Python editor when QScintilla is
+installed, a plain monospaced box otherwise), an **Output ports** line, and a
+read-only **Output** pane.  Like every processor that takes several results,
+it runs once over the inputs checked in the list, in the order listed.
+**Load snippet…** and **Save as snippet…** (below) keep code between sessions.
+**Run** starts the code on a thread of its own, so the window stays alive; while
+it runs, **Cancel** replaces **Run** (:ref:`below <improcess-runs>`).
+
+The *Output ports* line names the results the code will produce, separated by
+commas; it defaults to ``out``.  Names use letters, digits, ``_`` and ``-``,
+the same as a step reference, and a later step in a workflow refers to them as
+``step.port`` (``split.a``), checked before the run.
+
+What the code sees
+------------------
+
+The code starts with these names, and no others:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Name
+     - What it is
+   * - ``np``
+     - numpy.
+   * - ``data``
+     - The first input's array.  A lazily loaded result is read into memory.
+       It is **read-only**: the input is a result in the list, recorded as it
+       is, so a write into it (``data[0] = 0``, ``data *= 2``) is an error at
+       that line.  Change a copy instead (``work = data.copy()``).
+   * - ``inputs``
+     - The array of every input, in the order listed; read-only like ``data``.
+   * - ``axes``, ``scales``, ``unit``
+     - The first input's axis labels, pixel scales and scale unit.
+   * - ``axis(label_or_index)``
+     - The index of an axis: ``axis("Z")`` (any capitalisation), or the index
+       itself when given a number.  An unknown axis is an error listing the
+       labels.
+   * - ``results``
+     - The input result objects themselves, for their metadata.  Read them;
+       do not change them.
+   * - ``make_result(array, *, axes=None, scales=None, name=None)``
+     - An output with axes you name, for an array whose number of dimensions
+       differs from the input's.
+   * - ``make_labels(array, *, axes=None, scales=None, name=None)``
+     - The same for a label image (``labels`` kind, as segmentation makes):
+       integers, or floats holding whole numbers.
+   * - ``outputs``, ``out``
+     - What the code sets, below.
+
+Outputs
+-------
+
+Set ``outputs`` to a dict from port name to array, with one entry for every
+declared port and no others.  With a single port, ``out = array`` is enough,
+and so is ``outputs = array`` for the default port ``out``.  The run checks
+this and says which ports are
+missing and which are not declared, with the declared list.  Each entry is a
+numeric array (boolean, integer or float) or the result of ``make_result`` /
+``make_labels``:
+
+* an array with the **same number of dimensions** as the first input inherits
+  its axis labels, scales and unit, whatever its shape;
+* any other array must come through ``make_result(array, axes=["Y", "X"])``;
+  the scales of axes it shares with the input come along (``scales=`` sets
+  them), and the error otherwise names the port and both dimensionalities;
+* a **one-dimensional** array is a *curve*, not an image: it comes through
+  ``make_result(values, axes=["Frame"])`` (naming the axis; ``scales=[0.5]``
+  calibrates it) unless the input is one-dimensional itself, and it is drawn in
+  the :ref:`Graph panel <improcess-graph-curves>`;
+* an output is named ``<input name> (<port>)`` unless ``name=`` says
+  otherwise;
+* an output that is an input, or a slice of one (``out = data``,
+  ``out = data[::2]``), is copied, so a new result never shares its pixels
+  with an existing one.
+
+A single number is not an array: ``print()`` it, or output ``np.array([value])``.
+An empty array is refused too, naming the port and its shape: it nearly always
+means a selection picked nothing, such as the wrong axis or a stack shorter than
+the code assumed.
+
+Things to know
+--------------
+
+* **Integer data wraps around.**  ``data`` has the recording's own type, and
+  numpy does not widen it: on a 16-bit stack, ``data - 200`` turns a pixel of
+  100 into 65436, with no error.  Convert first (``data.astype(np.float32)``);
+  every shipped recipe does.
+* **Every run starts fresh.**  Names one run sets are not there in the next, and
+  the code is the whole record of what was done.  (The console is the
+  opposite: its namespace persists.)
+* **Axis names.**  ``axes`` lists them in the order of ``data``.  A recording
+  that does not name its axes reads as ``Frame, Y, X``, so ``axis("Z")`` on it
+  raises an error that lists the names; ``print(axes)`` once, or use the index.
+* **Only numeric arrays come out.**  A step makes arrays, not tables.  One with
+  two or more dimensions is an image (or labels); a one-dimensional one is a
+  curve, shown in the **Graph** panel, which opens when the run ends, instead of
+  the image viewer, which has nothing to draw for it (see
+  :ref:`improcess-graph-curves`).  Several numbers that belong together as rows
+  of a table are still ``print()`` territory, which the **Output** pane shows.
+* **Imports.**  ``import scipy.ndimage`` works (scipy ships with ImSwitch).  The
+  provenance records the code and ImSwitch's version, not the versions of the
+  modules it imported, so a replay on another installation can differ if they do.
+* **Memory.**  The inputs are in memory, and a conversion to float makes a
+  second copy: a stack that barely fits will not fit in a step that converts it.
+
+.. _improcess-graph-curves:
+
+One-dimensional outputs: curves
+-------------------------------
+
+A measurement per frame, per plane or per time point is one-dimensional, and its
+place is the :ref:`Graph panel <improcess-result-graph>`, not the image viewer.  A
+step (or the console) that outputs a one-dimensional array makes a *curve* result,
+the kind FRC makes:
+
+* the Graph panel plots it against its axis, at ``index × scale`` along it
+  (``scales=[0.5]`` for a frame every half second), and opens when the run ends;
+  the viewer clears, since it has no pixels to show;
+* the axis is captioned with its unit only when it has one: a calibrated ``Z``,
+  ``Y`` or ``X`` axis takes the pixel unit, a ``T`` axis is in seconds, and an
+  uncalibrated axis, or one called ``Frame`` or ``Index``, has none;
+* **Push to table** in the Graph panel puts one summary row (points, range, mean)
+  in the Results dock; **Measure Δx** works on it as on any graph;
+* it saves as **CSV** (two columns, the axis then the values, with a
+  ``.provenance.json`` beside it), **HDF5** or **Zarr**, and not as TIFF: asking
+  for TIFF is refused before anything is written, and a workflow's ``save`` step
+  for a curve says ``fmt: csv``;
+* no processor takes a curve as input (as for FRC's), so a curve is where a
+  chain of steps ends.  A later step given one stops the run with ``'python'
+  does not accept result … (kind 'curve' …)``; the workflow's validation cannot
+  see that beforehand, because it does not know what a script will output.  The
+  console can read a selected curve (``data`` is its values), to post-process it
+  by hand.
+
+The sampling is even, by construction: ``x`` is the index times one scale.  A
+measurement against an irregular axis (stage positions, say) is a table, not a
+curve.
+
+Errors and printed output
+-------------------------
+
+An error in the code is reported as one line with the line of *your* code it
+came from — ``line 3: NameError: name 'x' is not defined`` — in the panel's
+status line and the **Output** pane, and in a workflow run's error next to the
+step's id; the log has the full traceback, in which your code's frames are the
+ones in ``<python step>``.  A syntax error reports its own line.  Nothing is
+published when a run fails.
+
+What the code prints (and writes to ``stderr``) appears in the **Output** pane
+*as it prints*, while the run is still going, and stays there when the run
+fails (the error is added below it) or is cancelled.  Only this run's own
+output is captured: what the rest of the application prints meanwhile is not.  Up
+to 4000 characters of it are also kept in each output's metadata under
+``python_step``.
+
+Snippets
+--------
+
+**Save as snippet…** writes the code and the ports line to
+``~/ImSwitchConfig/improcess_snippets/<name>.py`` (asking before it replaces
+one); **Load snippet…** puts a saved one back into the editor.  A snippet is a
+plain Python file whose first line may name the ports::
+
+    # ports: a, b
+    ax = 0
+    ...
+
+That line is the only part that is not the code, and it is removed on load.  A
+snippet that turns out to be useful beyond one session can become a drop-in
+plugin by the template in *Drop-in analysis plugins*; nothing forces that step.
+
+Trust
+-----
+
+The code runs in-process with full Python: like a drop-in plugin or an
+ImScripting script, **not sandboxed**, with the same access as ImSwitch.  A
+workflow file can therefore carry code that runs when it is run:
+**File → Run workflow…** (and the variants that run a file) asks once, naming
+the Python steps, before it runs a file that contains any; the workflow
+editor, which hands over a workflow it is showing you, does not ask, and shows
+a step's code in its form.  Only run files you trust.
+
+The code runs where processors run: on a worker thread from this panel and from
+the toolbar, and on the workflow worker thread from the editor and the File
+menu; :ref:`it can be cancelled <improcess-runs>`.
+
+.. _improcess-runs:
+
+Runs, Cancel and live output
+----------------------------
+
+A processor run from a panel (this one, and every other processor panel,
+Segmentation, PSF resolution and Colocalization included; the Multicolor panel,
+which does its own computing, is the exception) and from the image toolbar
+(project, split, merge, combine, calculator, composite, RGB, crop) happens
+on a thread of its own, so a slow one no longer freezes the window.  The results
+are published, on the GUI thread, when the run ends.  One run at a time per panel;
+a second request is refused with a message, not queued.  The toolbar takes one
+operation at a time as well.
+
+While a panel runs, **Run** is off (however the selection changes meanwhile) and
+**Cancel** is on.  Cancelling discards everything the run had made: nothing
+half-finished reaches the results list.  It works in steps:
+
+#. **Cancel** asks.  A processor that calls
+   ``imswitch.imcommon.model.checkpoint()`` (in a loop, say) stops at its next one.
+#. One that does not is **interrupted**: after a second and a half an
+   ``OperationCancelled`` is raised inside its thread, and again every second if
+   the code caught it.  It is a ``BaseException``, so an ``except Exception`` in a
+   script cannot swallow it; a bare ``except:`` can, and is asked again.  The
+   interruption lands at the next line of Python, so a long call into compiled code
+   (a large numpy operation) finishes first.
+#. At application exit a run that is still going is stopped the same way, and a
+   thread that will not stop is left alone rather than destroyed while running.
+
+A Python step is interrupted like any other processor; a script that never
+looks at the clock is stopped within about two seconds.  A workflow run can be
+cancelled *inside* a step the same way (the editor's **Cancel run**, and quitting
+the application): only while a **processor** step is running.  A save, a
+reconstruction or a source being opened finishes first and the run stops after
+it, so no file is left half published.  The command line is cancelled with
+Ctrl+C, as before.
+
+.. _improcess-console:
+
+The console
+-----------
+
+**Tools → Console** opens a dock with a code editor above the Python console (the
+same one ImScripting has): one-line commands with history below, code of more than
+a line above.  Both run in one namespace, on the GUI thread, like every console
+command: a long script freezes the window until it returns, which is what the
+Python step is for.
+
+The namespace is the step's (``np``, ``data``, ``inputs``, ``axes``, ``scales``,
+``unit``, ``axis()``, ``results``, ``make_result()``, ``make_labels()``) bound to
+what is selected in the results list, or to the current result when nothing is;
+``outputs`` and ``out`` are not there, since nothing reads them.  A result that is
+not loaded into memory stays the lazy array it is (``np.asarray(data)`` reads it),
+so following the selection never reads a whole recording; one that is in memory is
+read-only, as in the step, and a published array never shares its pixels with
+a result in the list.  These names are rebound
+when the selection *changes* and before a command runs, and only then: what you
+assigned to another name is never touched, and neither is ``data`` while the
+selection stays the same, so ``data = data[0]`` survives until you select something
+else.  Three functions reach the list itself:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Name
+     - What it does
+   * - ``current()``
+     - The result shown now, or ``None``.
+   * - ``selected()``
+     - The results selected in the list, in list order.
+   * - ``publish(array_or_result, *, name=None, axes=None, scales=None, like=None)``
+     - Adds a result to the list and returns it.  An array of the dimensionality of
+       ``like`` (by default the first result ``data`` is bound to) inherits its axes,
+       scales and unit; any other says its ``axes`` (``make_result`` and
+       ``make_labels`` work too), by the same rules as a step's outputs.
+
+**Run** (Ctrl+Enter) runs the selected lines, or all of the code, with what it
+prints and any error (with its line in the editor) shown in the console pane.
+
+A result made with ``publish`` records an **opaque** provenance node, "made in the
+console", with no inputs and no replay: the console cannot know which of the lines
+typed into it made the array, and claiming a lineage would be a guess.  What was
+selected when it was published is kept as a label, which is context, not a claim.
+A step run on such a result chains on that node and cannot be replayed either, and
+the error says why.  The recorded form is the Python step:
+**Send to Python step** puts the editor's text in the step's code field (opening the
+panel) and runs nothing, so you choose its inputs and output ports.  There,
+``outputs = {...}`` replaces ``publish(...)``, and the panel says so when the code
+contains ``publish(``.
+
+A first example
+---------------
+
+Three slices at a time along the first axis, alternating between outputs ``a``
+and ``b`` (ports ``a, b``)::
+
+    ax = 0
+    group = (np.arange(data.shape[ax]) // 3) % 2
+    outputs = {
+        "a": np.take(data, np.flatnonzero(group == 0), axis=ax),
+        "b": np.take(data, np.flatnonzero(group == 1), axis=ax),
+    }
+
+On a 12-slice stack ``a`` holds slices 0–2 and 6–8 and ``b`` the rest, each
+with the input's axes.  Use ``axis("Z")`` instead of ``0`` when the file names
+its axes.  As a workflow step, with a filter on ``split.a`` and saves of both
+branches, it is ``examples/improcess_workflows/python_step_interleave.yaml``
+(see :doc:`improcess-workflows`).
+
+.. _improcess-recipes:
+
+Recipes
+-------
+
+ImSwitch ships a handful of jobs that no processor does and a short script does
+well.  Each is a **snippet**: ImSwitch copies them into
+``~/ImSwitchConfig/improcess_snippets`` the first time it starts after you update,
+so **Load snippet…** lists them, in the panel and for the console's editor (copy
+the text across).  A copy you have edited is kept; delete the file and restart to
+get the current one back.  The same code is also a workflow file in
+``examples/improcess_workflows/``, ``python_step_<recipe>.yaml``, to run over a
+folder with ``python -m imswitch.improcess.workflows run``; it is generated from
+the snippet (``tools/make_python_recipe_workflows.py``), and a test fails if the
+two disagree.  Each opens with what it does and why a script, has its settings
+at the top, and checks its input and says what is wrong when it does not fit.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Recipe
+     - What it does
+     - Why not a processor
+   * - ``normalize_frames``
+     - Flatten brightness changes between frames.  Lamp flicker or bleaching: every plane is divided by its own median.
+     - Math applies one constant to the whole result.
+   * - ``temporal_bin``
+     - Average every n frames.  Temporal binning, with the frame spacing stretched to match.
+     - Resize works on Y/X; Projection collapses an axis to one image.
+   * - ``best_focus``
+     - Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; a second output is the score of every plane, a curve in the Graph panel.
+     - No processor chooses a plane by looking at the data.
+   * - ``signal_trace``
+     - Follow the bright signal through a recording.  Per frame: the mean signal above its own background, relative to the first frame, and how many pixels are signal: two curves.
+     - Multi Measure reads one fixed region; the signal moves and grows.
+   * - ``snake_mosaic``
+     - Assemble a tile scan into one image.  Puts the tiles of a serpentine scan back in grid order; butt-joined, no blending.
+     - Stack combine joins stacks along an axis, not in a grid.
+   * - ``ratio_mask``
+     - Ratio of two channels, empty where the denominator is dim.  A ratio image and a ``labels`` mask of the pixels used: two outputs.
+     - Image calculator writes 0 where it cannot divide.
+   * - ``despeckle``
+     - Replace hot pixels and touch nothing else.  Only outliers become the local median; every other pixel is bit-identical.
+     - Filter's median blurs every pixel.
+   * - ``autocrop``
+     - Crop to the bright region, plus a margin.  The ranges come from the data, so a batch crops each file to its own region.
+     - Stack subset needs the ranges typed in.
+   * - ``crosstalk``
+     - Remove bleed-through between channels.  A measured mixing matrix, inverted and applied across all channels at once.
+     - No processor mixes channels.
+
+``normalize_frames``
+~~~~~~~~~~~~~~~~~~~~
+
+Flatten brightness changes between frames.  Lamp flicker or bleaching: every plane is divided by its own median.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/normalize_frames.py
+   :language: python
+
+``temporal_bin``
+~~~~~~~~~~~~~~~~
+
+Average every n frames.  Temporal binning, with the frame spacing stretched to match.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/temporal_bin.py
+   :language: python
+
+``best_focus``
+~~~~~~~~~~~~~~
+
+Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; a second output, ``sharpness``, is the score of every plane along the stack, drawn in the Graph panel with its peak at the focus.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/best_focus.py
+   :language: python
+
+``signal_trace``
+~~~~~~~~~~~~~~~~
+
+Follow the bright signal through a recording.  Each frame's background is its median and signal is what lies more than ``k`` robust standard deviations above it.  ``level`` is the mean signal above background relative to the first frame (1.0 is unchanged, 0.5 is bleached to half) and ``area`` is how many pixels count as signal; both are curves along the frame axis.  A frame that loses all its signal is a gap in ``level``, not a made-up number.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/signal_trace.py
+   :language: python
+
+``snake_mosaic``
+~~~~~~~~~~~~~~~~
+
+Assemble a tile scan into one image.  Puts the tiles of a serpentine scan back in grid order; butt-joined, no blending.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/snake_mosaic.py
+   :language: python
+
+``ratio_mask``
+~~~~~~~~~~~~~~
+
+Ratio of two channels, empty where the denominator is dim.  A ratio image and a ``labels`` mask of the pixels used: two outputs.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/ratio_mask.py
+   :language: python
+
+``despeckle``
+~~~~~~~~~~~~~
+
+Replace hot pixels and touch nothing else.  Only outliers become the local median; every other pixel is bit-identical.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/despeckle.py
+   :language: python
+
+``autocrop``
+~~~~~~~~~~~~
+
+Crop to the bright region, plus a margin.  The ranges come from the data, so a batch crops each file to its own region.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/autocrop.py
+   :language: python
+
+``crosstalk``
+~~~~~~~~~~~~~
+
+Remove bleed-through between channels.  A measured mixing matrix, inverted and applied across all channels at once.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/crosstalk.py
+   :language: python
+
+Write your own the same way: start from the recipe closest to the job, keep the
+settings at the top, and convert to float before doing arithmetic.  A recipe that
+you use every day belongs in a drop-in plugin; one that is a one-off belongs in
+**Save as snippet…**.
+
 Active reconstructor
 ====================
 
@@ -1274,6 +1808,19 @@ The SMLM parameter widget exposes:
   entered value applies when the recording has no calibration (with neither,
   1 nm pixels are assumed), and is required when it is calibrated
   differently along Y and X.
+* **Rendering → Preview pixel size (nm)**, the bin size of the histogram the
+  localizations are first shown as (10 nm by default).  The result's own
+  payload is the table; this only sets how finely that first rendering bins
+  it, and it holds one float per bin over the whole field.  The size you
+  chose is kept through the filter, drift-correction and group processors, so
+  a result does not change scale from one step to the next.  A size whose
+  image would exceed the processing working set
+  (``memory.processingWorkingSetMB``, 1 GiB by default) is raised to the
+  smallest that fits, with a warning in the log and the adjustment recorded in
+  the result's metadata (``preview_pixel_size_adjusted``); a 10 nm bin that is
+  fine over a 20 µm field would be 1.5 GiB over a 200 µm one.  The
+  ``smlm-render`` processor makes the publication render, with its own pixel
+  size and blur.
 * **Preview detection** toggle — when enabled, candidate spots from the
   detection step (before fitting) appear as a live scatter overlay on the
   raw-data frame viewer. The overlay updates automatically whenever detection
@@ -1308,7 +1855,9 @@ Coordinate tables written by other SMLM software open straight into the
 reconstruction list.  A localization table is a *result*, not raw data to
 reconstruct, so it bypasses the data loader and is published the same way a
 reconstructor publishes its output: filter, drift-correct, group, render and
-view it exactly as if the ``smlm-localizer`` had produced it.
+view it exactly as if the ``smlm-localizer`` had produced it -- including its
+first rendering, which is binned at the localizer panel's *Rendering → Preview
+pixel size* (10 nm unless changed), the same as for a table localized here.
 
 Two formats are recognised by content and need no interaction:
 
@@ -1330,9 +1879,99 @@ left empty when the file has nothing to put there.
 
 Files that declare no pixel size fall back to an assumed 100 nm, which is
 recorded in ``metadata["pixel_size_assumed"]`` and logged.  The coordinates
-themselves are exact either way — the pixel size only sets the preview
-histogram's bin floor and the scale of a later Picasso export — but nothing
-downstream should report the assumed value as measured.
+themselves are exact either way — the pixel size only sets the scale of a
+later Picasso export, and the preview histogram's bin floor when no preview
+pixel size was chosen — but nothing downstream should report the assumed
+value as measured.
+
+.. _improcess-comet-drift:
+
+COMET drift correction
+----------------------
+
+Two drift corrections take a localization table.  ``smlm-drift`` is built
+in: it renders temporal segments and cross-correlates each against the
+first, which is quick and needs nothing installed, but resolves only lateral
+drift at the render pixel and only as well as the first segment represents
+the sample.  ``smlm-drift-comet`` runs `COMET
+<https://github.com/gpufit/Comet>`_ (Cost-function Optimized Maximal Overlap
+Drift EsTimation; `preprint <https://doi.org/10.64898/2026.03.27.714864>`_)
+through the optional ``comet-smlm`` package::
+
+    pip install comet-smlm
+
+(the ``comet`` extra, ``pip install "imswitch2[comet]"`` or ``pip install -e
+".[comet]"`` in a checkout, installs the same thing; an editable install
+made before the extra existed does not know it until it is reinstalled,
+which is why the panel names the package itself).
+
+COMET estimates one drift vector per time window by maximising the overlap
+of every pair of localizations closer than *Max drift* across windows,
+refining its kernel from a coarse width down to *Target sigma*, and
+interpolating the window drifts to a per-frame curve that it subtracts from
+x, y **and z**.  It runs on numba-cuda (an NVIDIA GPU), on PyTorch (its own
+``comet-smlm[torch]`` extra; CUDA or Apple MPS) or on a numba-compiled CPU
+kernel, and *Backend* ``auto`` takes the fastest COMET finds on the machine;
+a backend asked for by name that is not available is refused with the ones
+that are.  The first CPU run compiles the kernel, which takes a moment.
+
+The panel's button does two things in turn.  It first says **Estimate
+pairs**: that run is COMET's own safety check, the exact number of
+localization pairs within *Max drift*, which is what decides how long the
+correction takes and whether it fits in memory; it publishes nothing and
+leaves the count in the panel.  Above 500 million pairs the panel warns (and
+the log records it) that the run will be slow and may run out of memory, in
+which case COMET caps the localizations per window by itself and starts
+again; a smaller *Max drift*, or ``max_locs_per_window`` from a workflow,
+brings the count down.  The button then says **Run COMET**, and that run
+reuses the count; changing the table or *Max drift* puts the button back to
+the estimate.  (A workflow runs in one go: the ``stage`` parameter is ``run``
+unless it says ``estimate``.)  While the correction runs the panel shows the
+windows and the localizations they hold, the pairs found, each optimizer step
+with its kernel width, every 25th cost-function evaluation with its cost,
+whether the step was accepted, the interpolation and the correction.  The
+estimate is recorded in the result's metadata (``drift_pairs_estimated``)
+beside the pairs actually found.
+**Cancel** in the panel lands at COMET's next progress report, after any
+cost-function evaluation, and leaves the input untouched.
+
+The panel asks for four things.  The **window** — localizations per window
+(the default, 500), frames per window or the number of windows, by *Window
+mode* — cuts the acquisition into the pieces COMET estimates one drift
+vector for; the right size depends on how many localizations each frame
+holds and how fast the sample drifts: enough windows to resolve the drift,
+enough localizations per window to constrain it.  A window too coarse for
+the movie is reported in COMET's words.  **Max drift** (COMET's default,
+300 nm) is the largest drift expected over the acquisition and the
+neighbour-search radius; the refinement starts from a kernel a third as
+wide, COMET's own rule.  **Backend** is described above.  The kernel width
+the refinement stops at is fixed at 10 nm for every run from this panel
+(COMET's own default is 1 nm), and the remaining ``comet_run_kd`` settings
+stay at COMET's defaults — no boxcar smoothing between optimizer steps,
+cubic interpolation — and are not offered.  A workflow or a script may
+additionally pass ``max_locs_per_window``, a random cap on localizations per
+window to bound memory and time (COMET lowers it by itself if the pair
+search runs out of memory), and ``seed``, which makes a capped run repeat
+exactly.
+
+The result is the same ``DriftCorrectedLocalizationResult`` the built-in
+correction produces, so everything downstream (render, filter, group, export)
+is unchanged.  Its drift trace is referenced to the acquisition's centre,
+where ``smlm-drift``'s is referenced to its first segment.  The result's
+metadata records the backend that ran, the number of windows and pairs, the
+kernel width the estimate was accepted at, whether the cap was lowered,
+COMET's per-stage timings and the package version, and the panel shows the
+summary line after each run.
+
+The package is looked for the moment the panel is built, by importing it:
+without it (or with an installation that does not import) the panel says so
+in bold, shows the install line ready to copy, keeps its controls and the
+Run button off, and offers **Check again**, which finds a package installed
+in the meantime without a restart.  The processor's own ``check_inputs``
+gate gives the same reason, so a workflow step is refused before the run
+starts, and a headless ``apply`` without the package fails with the same
+message; nothing else notices.  If you use COMET in published work, cite
+its preprint.
 
 Localization precision versus PSF width
 ---------------------------------------
@@ -1864,10 +2503,60 @@ Widget agreement (checked)
     Machine-dependent widget defaults (a model path found at import time)
     go in ``default_params_volatile`` so the value comparison skips them.
 
+Widget hooks (optional)
+    Methods the processor panel calls on the widget ``make_param_widget``
+    returns, when it declares them.  ``setResult(result, rois)`` is called
+    whenever the selected result changes, for a widget whose parameters
+    depend on its input (a row per axis, say).  ``set_values(dict)`` lets
+    another part of the application fill the widget in (the console hands
+    code to the Python step this way); it takes the keys it is given and
+    leaves the rest.  Around a run: ``before_run()`` when it starts;
+    ``output_appended(text)`` with what the processor prints, as it prints it
+    (declaring it is what asks for the output to be streamed); and
+    ``after_run(results, failures)`` once it has ended, with the results it
+    produced and the ``(input, message)`` pairs of the inputs it failed on
+    (one saying ``"Cancelled."`` when it was cancelled).  An exception raised in
+    any of them is logged and does not stop the run or the results being
+    published.
+
+Running and cancelling
+    ``apply`` is run on a worker thread by every panel, the toolbar and the
+    workflow runner: no Qt objects, and nothing that must run on the GUI thread.
+    A loop that may run long can call ``imswitch.imcommon.model.checkpoint()``
+    to stop at a point of its choosing when the person cancels; without it the
+    run is interrupted after a moment, which lands at the next line of Python, so
+    clean up in ``finally`` and let ``OperationCancelled`` (a ``BaseException``)
+    pass.  What a cancelled run made is discarded.
+
 ``extra_param_keys`` (optional)
     Keys a workflow may set beyond the defaults, for a setting no widget
     default names (MoNaLISA's ``scan_params``).  It only *permits* a key; it
     injects and records nothing.
+
+``param_spec()`` (optional)
+    A class method returning one
+    :class:`~imswitch.improcess.model.param_spec.ParamField` per key of
+    ``default_params()``: its type (``int``, ``float``, ``bool``, ``text``,
+    ``code``, ``select``, ``multiselect``, ``path``, ``json``; a ``code`` field
+    is multi-line text that a form shows in a code editor), the choices behind a
+    combo box, the bounds, step and unit of a spin box, a label, a tooltip,
+    a group, and whether ``None`` is a value ("from the recording").  It is
+    what the workflow editor builds a step's form from, what
+    ``python -m imswitch.improcess.workflows list --json`` prints as
+    ``fields``, and what the LLM prompt in :doc:`improcess-workflows` can
+    be given.  The framework default derives one plain field per key from
+    the default value's type, so a plugin that declares nothing still gets a
+    working form; declare it to say what the widget knows.  The same keys and
+    the same defaults are required, and each default must be a value of its
+    own field (a ``select`` default among its options, a bounded number
+    within its bounds); ``check_plugin_contract`` reports any disagreement
+    and the built-ins are pinned by a test.  Every built-in declares one,
+    and a second test reads each built-in's widget back (the choices in
+    its combo boxes, the bounds and units of its spin boxes) and holds the
+    declaration to it.  ``python tools/draft_improcess_param_specs.py
+    my.plugin-id`` drafts the declaration for your own plugin from its
+    widget the same way; ``examples/improcess_plugins/gaussian_blur.py``
+    shows the result.
 
 ``output_spec()`` (optional)
     One port ``out`` unless you say otherwise: named ports when ``apply``

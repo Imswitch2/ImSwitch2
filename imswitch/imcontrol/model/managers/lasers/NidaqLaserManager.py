@@ -13,6 +13,8 @@ class NidaqLaserManager(LaserManager):
     def __init__(self, laserInfo, name, **lowLevelManagers):
 
         self._nidaqManager = lowLevelManagers['nidaqManager']
+        if getattr(self._nidaqManager, 'isSimulated', False):
+            self._setMockActive("Simulated NI-DAQ laser backend")
         self.__logger = initLogger(self, tryInheritParent=True)
 
         self._lut = None
@@ -36,8 +38,10 @@ class NidaqLaserManager(LaserManager):
     def setEnabled(self, enabled):
         try:
             self._nidaqManager.setDigital(self.name, enabled)
+            return True
         except Exception as e:
             self.__logger.error(f"Error trying to enable laser: {e}")
+            return False
 
     def setValue(self, val, enabled=True, for_scanning=False):
         if self.isBinary:
@@ -53,8 +57,10 @@ class NidaqLaserManager(LaserManager):
                 target=self.name, voltage=voltage,
                 min_val=self.valueRangeMin, max_val=self.valueRangeMax
             )
+            return True
         except Exception as e:
             self.__logger.error(f"Error trying to set value to laser: {e}")
+            return False
 
     def setScanModeActive(self, active):
         if active:

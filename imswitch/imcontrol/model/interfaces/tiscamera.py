@@ -10,31 +10,41 @@ class CameraTIS:
         super().__init__()
         self.__logger = initLogger(self, tryInheritParent=True)
 
+        # Initialize all owned SDK resources before touching hardware so that
+        # constructor failures can always use the normal close() path.
         self._closed = False
-
-        self._ic_ic = IC_ImagingControl.IC_ImagingControl()
-        self._ic_ic.init_library()
-        cam_names = self._ic_ic.get_unique_device_names()
-        if not cam_names:
-            raise RuntimeError('No TIS cameras detected. Check USB connection and driver.')
-        if cameraNo >= len(cam_names):
-            raise IndexError(
-                f'cameraNo={cameraNo} out of range — only {len(cam_names)} TIS camera(s) found: {cam_names}'
-            )
-        self.model = cam_names[cameraNo]
-        self.cam = self._ic_ic.get_device(cam_names[cameraNo])
-
-        self.cam.open()
-
+        self._ic_ic = None
+        self.cam = None
+        self.roi_filter = None
+        self.model = 'unknown'
         self.shape = (0, 0)
         self._lastFrame = None
-        self.cam.colorenable = 0
 
-        self.cam.enable_continuous_mode(True)  # image in continuous mode
-        self.cam.enable_trigger(False)  # camera will wait for trigger
+        try:
+            self._ic_ic = IC_ImagingControl.IC_ImagingControl()
+            self._ic_ic.init_library()
+            cam_names = self._ic_ic.get_unique_device_names()
+            if not cam_names:
+                raise RuntimeError('No TIS cameras detected. Check USB connection and driver.')
+            if cameraNo >= len(cam_names):
+                raise IndexError(
+                    f'cameraNo={cameraNo} out of range — only {len(cam_names)} TIS camera(s) found: {cam_names}'
+                )
+            self.model = cam_names[cameraNo]
+            self.cam = self._ic_ic.get_device(cam_names[cameraNo])
 
-        self.roi_filter = self.cam.create_frame_filter('ROI')
-        self.cam.add_frame_filter_to_device(self.roi_filter)
+            self.cam.open()
+            self.cam.colorenable = 0
+            self.cam.enable_continuous_mode(True)  # image in continuous mode
+            self.cam.enable_trigger(False)  # camera will wait for trigger
+
+            self.roi_filter = self.cam.create_frame_filter('ROI')
+            self.cam.add_frame_filter_to_device(self.roi_filter)
+        except Exception:
+            # A failed ROI-filter creation still leaves an opened camera and
+            # grabber behind unless we explicitly tear the partial object down.
+            self.close()
+            raise
 
     def start_live(self):
         self.cam.start_live()  # start imaging
@@ -94,14 +104,30 @@ class CameraTIS:
             f'ROI set: w{wid} x h{hei} at l{left},t{top}'
         )
 
+    # Video properties pyicic exposes as IC_Property objects, in integer
+    # device units.
+    _VIDEO_PROPERTIES = ('gain', 'brightness')
+
     def setPropertyValue(self, property_name, property_value):
-        # Check if the property exists.
-        if property_name == "gain":
-            self.cam.gain = property_value
-        elif property_name == "brightness":
-            self.cam.brightness = property_value
+        """Write a property and return the value the camera reports back.
+
+        ``gain`` and ``brightness`` are integer device units, clamped to the
+        camera's range; ``exposure`` is in milliseconds. An IC_Property is
+        written through ``.value``. Assigning ``self.cam.gain = value``, as
+        this used to, only shadowed the attribute on the Python object
+        (pyicic's IC_Camera.__setattr__ is commented out), so none of the
+        three ever reached the camera.
+        """
+        if property_name in self._VIDEO_PROPERTIES:
+            prop = getattr(self.cam, property_name)
+            low, high = prop.range
+            prop.value = int(round(min(max(float(property_value), low), high)))
+            return prop.value
         elif property_name == "exposure":
-            self.cam.exposure = property_value
+            low, high = self.cam.get_exposure_abs_range()
+            seconds = min(max(float(property_value) / 1000.0, low), high)
+            self.cam.set_exposure_abs(seconds)
+            return self.cam.get_exposure_abs() * 1000.0
         elif property_name == 'image_height':
             self.shape = (self.shape[0], property_value)
         elif property_name == 'image_width':
@@ -113,12 +139,10 @@ class CameraTIS:
 
     def getPropertyValue(self, property_name):
         # Check if the property exists.
-        if property_name == "gain":
-            property_value = self.cam.gain.value
-        elif property_name == "brightness":
-            property_value = self.cam.brightness.value
+        if property_name in self._VIDEO_PROPERTIES:
+            property_value = getattr(self.cam, property_name).value
         elif property_name == "exposure":
-            property_value = self.cam.exposure.values
+            property_value = self.cam.get_exposure_abs() * 1000.0
         elif property_name == "image_width":
             property_value = self.shape[0]
         elif property_name == "image_height":
@@ -135,8 +159,10 @@ class CameraTIS:
         self.close()
 
     def close(self):
-        """Stop acquisition, close the TIS device, release grabber handles,
-        and close the IC Imaging Control library.
+        """Release this camera's device/filter/grabber resources.
+
+        The process-global IC Imaging Control library deliberately remains
+        initialized across reconnects and is closed only at application exit.
         """
         if getattr(self, "_closed", False):
             return
@@ -155,6 +181,25 @@ class CameraTIS:
                 # stop_live may fail if the camera was not in live mode.
                 self.__logger.debug(f"TIS stop_live ignored during close: {e}")
 
+            roi_filter = getattr(self, "roi_filter", None)
+            if roi_filter is not None:
+                try:
+                    # Detach filters before deleting their handles. Keep
+                    # per-camera filter lifetime separate from the process-global
+                    # IC Imaging Control library lifetime.
+                    cam.clear_frame_filters_from_device()
+                    self.__logger.debug("TIS frame filters removed from device")
+                except Exception as e:
+                    self.__logger.warning(f"Could not clear TIS frame filters cleanly: {e}")
+
+                try:
+                    cam.delete_frame_filter(roi_filter)
+                    self.__logger.debug("TIS ROI frame-filter handle deleted")
+                except Exception as e:
+                    self.__logger.warning(f"Could not delete TIS ROI frame filter cleanly: {e}")
+                finally:
+                    self.roi_filter = None
+
             try:
                 if cam.is_open():
                     cam.close()
@@ -165,10 +210,12 @@ class CameraTIS:
         try:
             ic_ic = getattr(self, "_ic_ic", None)
             if ic_ic is not None:
-                ic_ic.close_library()
-                self.__logger.debug("TIS IC Imaging Control library closed")
+                ic_ic.release_resources()
+                self.__logger.debug(
+                    "TIS camera SDK resources released; global library kept initialized"
+                )
         except Exception as e:
-            self.__logger.warning(f"Could not close TIS IC Imaging Control library cleanly: {e}")
+            self.__logger.warning(f"Could not release TIS IC Imaging Control resources cleanly: {e}")
 
         self.cam = None
         self._ic_ic = None

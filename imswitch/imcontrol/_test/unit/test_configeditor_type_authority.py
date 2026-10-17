@@ -217,7 +217,8 @@ class TestMaterialize:
         form = editor._schema_for_manager("ThorCamTSIManager")
         props = {f["key"]: f for f in form["props"]}
         assert {k: f["type"] for k, f in props.items()} == {
-            "cameraPixelSizeUm": "json", "cameraSerial": "text", "defaults": "json",
+            # A number since example_no_hardware's mock TSI camera declares one.
+            "cameraPixelSizeUm": "float", "cameraSerial": "text", "defaults": "json",
             "dllLocation": "text", "flushFrameLimit": "int",
             # The SDK ring depth, declared when the audit made it settable.
             "frameBufferDepth": "int",

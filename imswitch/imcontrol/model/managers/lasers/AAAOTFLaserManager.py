@@ -3,6 +3,7 @@ from scipy.interpolate import interp1d
 
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
 from .aa_aotf_protocols import DEFAULT_PROFILE_ID, build_profiles
 from .aa_aotf_protocols.frequency_startup import validate_frequency_mhz
 from ._protocol import DeviceInitializationError, ProtocolError
@@ -57,9 +58,8 @@ class AAAOTFLaserManager(LaserManager):
         self._channel = self._parse_channel(
             laserInfo.managerProperties['channel'], name
         )
-        self._rs232manager = lowLevelManagers['rs232sManager'][
-            laserInfo.managerProperties['rs232device']
-        ]
+        self._rs232Name = laserInfo.managerProperties['rs232device']
+        self._rs232manager = lowLevelManagers['rs232sManager'][self._rs232Name]
         self._use_mock_on_failure = _as_bool(
             laserInfo.managerProperties.get('useMockOnFailure', True)
         )
@@ -158,6 +158,7 @@ class AAAOTFLaserManager(LaserManager):
             self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
+        self._setConnected("AA AOTF initialized")
 
     @staticmethod
     def _parse_channel(value, name):
@@ -273,11 +274,20 @@ class AAAOTFLaserManager(LaserManager):
         else:
             self.internalControl()
 
+    def getDeviceDescriptorSpec(self):
+        return sharedRs232ComponentSpec(
+            category='laser',
+            family='aa-aotf',
+            display_name='AA AOTF',
+            rs232_name=str(self._rs232Name),
+        )
+
     def setEnabled(self, enabled):
-        """Turn on (1) or off (0) laser emission"""
+        """Turn emission on/off and report whether the command succeeded."""
         self._apply_ttl_control_mode(before_command=True)
-        self._run('set_channel_enabled', bool(enabled))
+        succeeded = self._run('set_channel_enabled', bool(enabled))
         self._apply_ttl_control_mode(before_command=False)
+        return succeeded
 
     def setValue(self, power):
         """Handles output power.
@@ -285,10 +295,12 @@ class AAAOTFLaserManager(LaserManager):
         """
         amplitude = self._amplitude_for(power)
         if amplitude is None:
-            return
+            return False
         self._apply_ttl_control_mode(before_command=True)
-        self._run('set_channel_amplitude', amplitude)
+        succeeded = self._run('set_channel_amplitude', amplitude)
         self._apply_ttl_control_mode(before_command=False)
+        return succeeded
+        return True
 
     def _amplitude_for(self, power):
         """Convert an ImSwitch value to a raw AOTF amplitude.

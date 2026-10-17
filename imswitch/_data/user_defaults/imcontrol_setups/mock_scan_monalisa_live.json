@@ -7,6 +7,7 @@
             "managerName": "AVManager",
             "managerProperties": {
                 "cameraListIndex": "mock",
+                "cameraPixelSizeUm": 0.15,
                 "avcam": {
                     "exposure": 100,
                     "gain": 1

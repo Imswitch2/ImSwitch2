@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from imswitch.imcommon.model import OperationCancelled
 from imswitch.improcess.workflows.sources import (
     SourceError,
     SourceSpec,
@@ -48,6 +49,10 @@ MODES = ("run", "replay")
 
 _SUFFIX = {"tiff": ".ome.tif", "hdf5": ".h5", "zarr": ".ome.zarr", "csv": ".csv",
            "picasso": ".hdf5", "imagej": ".tif", "json": ".json"}
+
+#: The placeholders a ``Save`` step's ``path_template`` may use; what
+#: :func:`render_save_path` fills in, and what an editor can offer.
+PATH_PLACEHOLDERS = ("out_dir", "source_stem", "step", "input_step", "name", "ext", "fmt")
 
 
 class RunError(RuntimeError):
@@ -406,9 +411,12 @@ def run(
                 report.receipts.append(receipt)
             else:  # pragma: no cover - the step types are closed
                 raise WorkflowError(f"unknown step type {type(step).__name__}")
-        except Exception as exc:
+        except (Exception, OperationCancelled) as exc:
+            # A cancellation raised *inside* a step (a processor that called
+            # checkpoint(), or the worker interrupting one) is reported like the
+            # between-steps one: a failure of this step, with the report attached.
             report.failed_step = step.id
-            report.error = f"{step.id}: {exc}"
+            report.error = f"{step.id}: {'cancelled' if isinstance(exc, OperationCancelled) else exc}"
             error = RunError(report.error)
             error.report = report          # type: ignore[attr-defined]
             raise error from exc

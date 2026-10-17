@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtWidgets
 
+from imswitch.improcess.view.runstate import RunState
 from imswitch.improcess.processors import PSFResolutionProcessor
 
 
@@ -19,6 +20,8 @@ class PSFResolutionWidget(QtWidgets.QWidget):
     """Fit 2D Gaussian PSFs on the selected result, full-frame or per ROI."""
 
     sigRunRequested = QtCore.Signal(object, dict)
+    sigCancelRequested = QtCore.Signal()
+    """**Cancel** was pressed while a run was going."""
 
     def __init__(self, napariViewer, roiManagerWidget=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -64,6 +67,8 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         controls.addLayout(form)
         controls.addWidget(self.fitButton)
         controls.addStretch()
+        self._runState = RunState(self.fitButton, controls, self.sigCancelRequested.emit)
+        self.cancelButton = self._runState.cancelButton
 
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
@@ -110,13 +115,30 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         """Conform to result-processor widget contract: store the current result."""
         self._currentResult = result
         accepted = self._acceptsResult(result)
-        self.fitButton.setEnabled(accepted)
+        self._allowRun(accepted)
         if result is None:
             self.summaryLabel.setText(self._selectText)
         elif accepted:
             self.summaryLabel.setText(self._readyText)
         else:
             self.summaryLabel.setText(self._incompatibleText)
+
+    def _allowRun(self, allowed: bool) -> None:
+        """Whether Run may be pressed, were nothing running."""
+        # Read through __dict__: a widget built without its __init__ (tests do)
+        # has no run state, and a plain getattr on it raises.
+        state = self.__dict__.get("_runState")
+        if state is None:
+            self.fitButton.setEnabled(allowed)
+        else:
+            state.setRunEnabled(allowed)
+
+    def isRunning(self) -> bool:
+        return self._runState.running
+
+    def setRunning(self, running: bool) -> None:
+        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        self._runState.setRunning(running)
 
     def setStatusText(self, text: str) -> None:
         """Conform to result-processor widget contract: forward to summaryLabel."""

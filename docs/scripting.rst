@@ -18,6 +18,10 @@ e.g. the global ``getWaitForSignal`` scripting function.
 Step-by-step tutorials ship with the scripting module; see
 :ref:`scripting-tutorials` below.
 
+This module drives the microscope.  To script what you do to *results* in
+ImProcess (a one-off transformation, a recipe for a folder of recordings, a
+console over the results list) see :ref:`improcess-python-step`.
+
 Threading model and waiting for events
 ======================================
 

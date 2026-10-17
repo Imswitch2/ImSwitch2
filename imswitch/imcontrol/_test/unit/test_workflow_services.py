@@ -819,3 +819,28 @@ def test_bead_rec_workflow_service_wraps_legacy_signals():
     assert comm_channel.sigShowBeadRecCenterCross.emitted == [(True,), ('connect', slot)]
     assert comm_channel.sigAutoAxialToggled.emitted == [(False,), ('connect', slot)]
     assert comm_channel.sigNewAxialListBuffer.emitted == [(['XZ'],), ('connect', slot)]
+
+
+def test_scan_workflow_service_publishes_and_retains_laser_scan_state():
+    comm_channel = _CommChannel()
+    workflow = ScanWorkflowService(comm_channel)
+    observed = []
+    workflow.sigLaserScanStateChanged.connect(lambda state: observed.append(state))
+
+    state = {
+        '488': {'active_for_scan': True, 'power_control': 'ao'},
+        '640': {'active_for_scan': False, 'power_control': 'direct'},
+    }
+    workflow.publish_laser_scan_state(state)
+
+    assert workflow.laser_scan_state() == state
+    assert observed == [state]
+
+    # Defensive copies: consumers cannot mutate the service-owned mapping.
+    returned = workflow.laser_scan_state()
+    returned['488'] = {'active_for_scan': False, 'power_control': 'direct'}
+    assert workflow.laser_scan_state() == state
+
+    # Identical semantic publication is deduplicated.
+    workflow.publish_laser_scan_state(state)
+    assert observed == [state]

@@ -3,9 +3,11 @@
   "additionalProperties": true,
   "properties": {
     "cameraPixelSizeUm": {
+      "x-imswitch-kind": "number",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(get)"
+        "code:optional(get)",
+        "example:number"
       ]
     },
     "cameraSerial": {
