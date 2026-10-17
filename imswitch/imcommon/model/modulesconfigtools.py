@@ -82,8 +82,22 @@ else:
     with open(_modulesFilePath, 'r') as modulesFile:
         _modules = _Modules.from_json(modulesFile.read(), infer_missing=True)
 
-with open(_modulesFilePath, 'w') as modulesFile:
-    modulesFile.write(_modules.to_json(indent=4))
+# Rewritten only when it changes, and then atomically: every process that
+# imports this module used to truncate and rewrite the file, so another one
+# reading it at that moment -- parallel test workers sharing a config folder,
+# two ImSwitch instances starting together -- got an empty file and a
+# JSONDecodeError on import.
+_modulesText = _modules.to_json(indent=4)
+try:
+    with open(_modulesFilePath, 'r') as modulesFile:
+        _modulesUnchanged = modulesFile.read() == _modulesText
+except OSError:
+    _modulesUnchanged = False
+if not _modulesUnchanged:
+    _modulesTemp = f'{_modulesFilePath}.{os.getpid()}.tmp'
+    with open(_modulesTemp, 'w') as modulesFile:
+        modulesFile.write(_modulesText)
+    os.replace(_modulesTemp, _modulesFilePath)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
