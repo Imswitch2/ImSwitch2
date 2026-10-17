@@ -159,6 +159,9 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/scan_engines
     devices/step-engine-protocol
     Hdf5datafile
+    timetagger/index
+    timetagger/debugging
+    timetagger/validation
 
 .. toctree::
     :hidden:

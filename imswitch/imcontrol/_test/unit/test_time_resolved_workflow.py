@@ -163,8 +163,41 @@ def test_time_resolved_workflow_uses_facade_scan_when_no_acquisition_given(tmp_p
         "time_resolved.configure",
         "scan.run_once",
         "time_resolved.wait_for_final",
+        "time_resolved.clear",
     ]
     assert facade.calls[2][2]["timeout_s"] == 0.1
+
+
+def test_workflow_disarms_product_capture_after_the_run(tmp_path):
+    """The detector is cleared once the final products are drained.
+
+    Left armed, every later scan would copy products and compute gates, and
+    the Swabian backend would reject later z/t scans as unsupported.
+    """
+    facade = build_mock_facade()
+    facade.time_resolved.set_canned_products(_products())
+    params = TimeResolvedWorkflowParams(
+        save_folder=tmp_path, save_h5=False, save_npz=False, save_tiff=False,
+    )
+
+    TimeResolvedScanWorkflow(facade, params).run(acquisition=lambda: None)
+
+    assert facade.call_names()[-1] == "time_resolved.clear"
+
+
+def test_workflow_disarms_product_capture_when_the_wait_fails(tmp_path):
+    facade = build_mock_facade()
+    params = TimeResolvedWorkflowParams(
+        save_folder=tmp_path, save_h5=False, save_npz=False, save_tiff=False,
+    )
+
+    def _boom():
+        raise RuntimeError("scan refused")
+
+    with pytest.raises(RuntimeError, match="scan refused"):
+        TimeResolvedScanWorkflow(facade, params).run(acquisition=_boom)
+
+    assert facade.call_names()[-1] == "time_resolved.clear"
 
 
 def test_gated_sted_workflow_requires_at_least_one_gate(tmp_path):

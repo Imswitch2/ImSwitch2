@@ -22,12 +22,12 @@ _CONTROLLER_MODULES = {
     "EtSnoutyController": "EtSnoutyController",
     # "EtController": "EtController",  # Prototype on old Monalisa machine.
     "FFTController": "FFTController",
-    "FLIMHistController": "FLIMHistController",
     "FlipMirrorController": "FlipMirrorController",
     "FocusLockController": "FocusLockController",
     "ImageController": "ImageController",
     "HardwareStatusController": "HardwareStatusController",
     "LaserController": "LaserController",
+    "LifetimeController": "LifetimeController",
     "LightSheetMulticolorController": "LightSheetMulticolorController",
     "LeicaStandController": "LeicaStandController",
     "LineProfileController": "LineProfileController",

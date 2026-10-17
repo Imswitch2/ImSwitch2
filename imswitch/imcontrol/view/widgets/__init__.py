@@ -23,12 +23,12 @@ _WIDGET_MODULES = {
     "EtSnoutyWidget": "EtSnoutyWidget",
     # "EtWidget": "EtWidget",  # Prototype on old Monalisa machine.
     "FFTWidget": "FFTWidget",
-    "FLIMHistWidget": "FLIMHistWidget",
     "FlipMirrorWidget": "FlipMirrorWidget",
     "FocusLockWidget": "FocusLockWidget",
     "ImageWidget": "ImageWidget",
     "HardwareStatusWidget": "HardwareStatusWidget",
     "LaserWidget": "LaserWidget",
+    "LifetimeWidget": "LifetimeWidget",
     "LightSheetMulticolorWidget": "LightSheetMulticolorWidget",
     "LeicaStandWidget": "LeicaStandWidget",
     "LineProfileWidget": "LineProfileWidget",

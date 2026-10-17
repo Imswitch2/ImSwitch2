@@ -588,7 +588,8 @@ Available widget names (case-sensitive):
 * Event-triggered and smart microscopy: ``EtSTED``, ``EtMonalisa``,
   ``EtSnouty``, ``SetupModes``, ``SetupStatus``
 * Analysis tools: ``BeadRec``, ``AlignAverage``, ``AlignXY``,
-  ``AlignmentLine``, ``ULenses``, ``FFT``, ``FLIMHist``
+  ``AlignmentLine``, ``ULenses``, ``FFT``, ``Lifetime`` (``FLIMHist``, its
+  old key, is renamed to it at load)
 * Scripting: ``Console``, ``Watcher``
 
 ``SLM`` and ``BFTimelapse`` have no default dock position: they appear only
@@ -659,6 +660,7 @@ documented below with full field lists and examples:
 * `teensyPulse`_
 * `pulseGenerators`_
 * `scanEngines`_
+* `timeTagger`_
 * `pyroServerInfo`_
 * `smartMicroscopyModes`_ (and its two companion sections)
 * `processing`_ (ImProcess)
@@ -1143,6 +1145,55 @@ may have several. A ``PulseGeneratorScanEngine`` or
        }
    }
 
+timeTagger
+----------
+
+Optional :class:`TimeTaggerInfo` object. **Required to use a Swabian Time
+Tagger** (the ``SwabianTimeTaggerManager`` FLIM detector, and the Time
+Tagger diagnostics from scripts). One block describes the one card; its
+inputs are named by *role* and every consumer refers to the roles, so
+re-cabling the card is one edit here. A negative channel number selects the
+falling edge of that input (a SPAD's NIM pulse: ``-1``). Inputs are 50 Ω,
+trigger range ±2.5 V; an NI DO line drives about 1–1.5 V into 50 Ω, so keep
+the clock thresholds well below that.
+
+Key fields:
+
+* ``serial`` (str or null): the card to open; ``null`` = the first card found
+* ``simulation`` (bool): use the in-process mock instead of a card (default ``false``)
+* ``useMockOnFailure`` (bool): fall back to the mock when the library is missing or the card cannot be opened — honoured **only while** ``nidaq.simulation`` **is also true**; on a rig a missing card stays a hard error that rolls the scan back (default ``false``, unlike ``teensyPulse``)
+* ``photonsChannel`` / ``photonsTriggerV`` / ``photonsDeadtimePs``: the single-photon detector input (defaults ``1`` / ``0.5`` / ``0``)
+* ``laserSyncChannel`` / ``laserSyncTriggerV``: the laser sync, the TCSPC reference (defaults ``2`` / ``0.5``)
+* ``lineClockChannel`` / ``lineClockTriggerV`` / ``lineClockDelayPs``: the scan's ``scan.lineClockLine`` (defaults ``3`` / ``0.5`` / ``0``). The delay moves the FLIM detector's pixel markers against the beam: positive when the line clock fires *early* (a galvo lagging its command; the detector delays its marker pattern by it), negative when it arrives *late* (a long cable; the card moves the line timestamps earlier). The frame clock takes the same delay on the card. Tutorial 09 measures it.
+* ``lineClockDeadtimePs`` (int): dead time on the line clock (and frame clock) inputs, in picoseconds (default ``0`` = the card's minimum). A DAQ line's falling edge bounces back through the threshold and each bounce counts as another line start, which re-triggers the FLIM pixel pattern mid-line; a dead time longer than the clock pulse (10 DAQ samples, 100 µs at 100 kS/s) and far below the line period swallows the bounces. Tutorial 07 shows the bounce and suggests the value.
+* ``pixelPatternOffsetPs`` (int): where the FLIM detector's first pixel marker sits after a line edge, so the frame edge leads pixel 0 whatever the cable skew (default ``10000``; raise it above a measured frame-to-line skew, tutorial 08)
+* ``frameClockChannel`` / ``frameClockTriggerV``: the scan's frame-start clock, if cabled (default ``null`` = not cabled)
+* ``stedPulseChannel`` / ``stedPulseTriggerV``: a photodiode on the STED beam, if cabled (default ``null``)
+* ``filterSyncByPhotons`` (bool): enable the card's conditional filter so only the first sync after each photon is transmitted — needed on a Time Tagger 20 or Ultra with a sync at tens of MHz; the TCSPC direction then reverses (default ``false``)
+* ``mockSample`` (str): what the mock card images with ``simulation`` on — ``"beads_two_lifetimes"`` (default), ``"uniform"`` or ``"gradient"``
+* ``mockFaults`` (dict): faults the mock reproduces for the debugging tutorials, e.g. ``{"missing_line_clock": true}``, ``{"line_delay_ps": 1200}``, ``{"wrong_sync_polarity": true}``, ``{"dead_photons": true}``, ``{"laser_rep_rate_mhz": 40}``, ``{"model": "Time Tagger 20"}``
+
+**Example**:
+
+.. code-block:: json
+
+   "timeTagger": {
+       "photonsChannel": -1,
+       "photonsTriggerV": -0.25,
+       "photonsDeadtimePs": 50000,
+       "laserSyncChannel": 2,
+       "lineClockChannel": 3,
+       "lineClockTriggerV": 0.5
+   }
+
+**Required devices**: a ``SwabianTimeTaggerManager`` detector that names the
+roles (``click_role``, ``start_role``, ``line_role``), see
+:doc:`devices/detectors`. A detector *without* this block keeps working from
+its legacy ``click_channel`` / ``start_channel`` / ``line_channel``
+properties and logs the equivalent block to move them into.
+
+**See also**: :class:`TimeTaggerInfo`
+
 
 pyroServerInfo
 --------------
@@ -1364,6 +1415,10 @@ references, and what fails silently if references are missing or incorrect.
      - None (standalone serial device)
      - None
      - Falls back to mock if ``useMockOnFailure: true``; hard failure otherwise
+   * - ``timeTagger``
+     - A ``SwabianTimeTaggerManager`` detector (names the roles)
+     - None by name: the detector's ``click_role`` / ``start_role`` / ``line_role`` must be roles the block configures
+     - A missing card logs an error at startup and rolls every FLIM scan back; the mock only with ``simulation: true`` or (``useMockOnFailure`` and ``nidaq.simulation``)
    * - ``slms``
      - None (manager constructs per device)
      - None (each SLM is independent)
@@ -1402,6 +1457,8 @@ Hardware-free scan setups (simulated NI-DAQ, see :doc:`mock-infrastructure`):
 * ``mock_scan_setup.json`` — mock camera, MoNaLISA scan, for the
   record-and-reconstruct loop
 * ``galvo_apd_mock_scan_setup.json`` — APD with an Advanced galvo scan
+* ``galvo_flim_mock_scan_setup.json`` — the same plus a simulated Swabian
+  Time Tagger and a FLIM detector (see `timeTagger`_)
 * ``hamamatsu_mock_scan_setup.json`` — mock Hamamatsu camera triggered by a
   Base scan
 * ``mixed_hamamatsu_apd_mock_scan_setup.json`` — mock Hamamatsu camera and

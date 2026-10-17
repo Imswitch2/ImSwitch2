@@ -323,37 +323,101 @@ the plotted curves themselves, both as CSV.
    :align: center
    :width: 500px
 
-FLIM lifetime histogram
------------------------
+Lifetime (FLIM / STED)
+----------------------
 
-Shows, for a FLIM detector, the distribution of the lifetimes fitted per
-pixel, or the photon-arrival decay summed over the image.  It is meant for the
-Swabian Time Tagger (``SwabianTimeTaggerManager``, see
-:doc:`devices/detectors`), whose frames hold one lifetime per pixel in
-nanoseconds; pixels below the manager's ``min_counts_per_pixel`` are left out.
+One panel for a time-resolved detector such as the Swabian Time Tagger
+(``SwabianTimeTaggerManager``, see :doc:`devices/detectors` and
+:doc:`timetagger/index`): the fitted lifetimes of a FLIM scan, the
+tau-STED view, and the card's live signals. ``Lifetime`` in
+``availableWidgets`` loads it (*Lifetime (FLIM / STED)*, in the right dock
+next to Scan); ``FLIMHist``, the panel's old key, is renamed to ``Lifetime``
+when an older setup file loads, with a log line asking for the edit.
 
-``FLIMHist`` in ``availableWidgets`` loads the panel (*FLIM Lifetime
-Histogram*).  It follows the detector selected in the Detector Settings panel.
+* **Detector** and **Mode** -- the time-resolved detector the panel follows
+  and the view: **FLIM**, **Tau STED** or **Signals**.
+* **Decay** (always shown) -- the photon-arrival histogram summed over the
+  valid pixels of the last ready frame, in forward time whatever the
+  card's direction, with the IRF peak (red), the background level (dotted)
+  and **log**; the line under it names the direction, the peak, the
+  global lifetime, the photons and the window.
+* **Fit and display** (FLIM and Tau STED) -- the detector's ``fit_method``,
+  ``min_counts_per_pixel``, ``laser_rep_rate_mhz``, ``binwidth_ps``,
+  ``n_bins``, ``t0_ps`` and ``background_rate_hz``, written through as
+  you edit them (a refused write shows in the footer and the field reverts).
+  **Measure rep rate** runs the laser-sync measurement of tutorial 04 and
+  writes the result; **Find t0 from decay** moves ``t0_ps`` by where the
+  last decay peaks. **Colour range** bounds the lifetime colours, and
+  **Show** picks the viewer layer: the lifetime image, the intensity image,
+  an intensity-weighted lifetime overlay (hue = lifetime, brightness =
+  photons) or none. The layer is one stable napari layer per detector
+  (``FLIM › lifetime``), updated in place with every frame.
+* **FLIM** -- the histogram of the per-pixel lifetimes (bins; **Pool scans**
+  pools the final lifetimes of every scan since ticked) with the mean marked,
+  the number of valid pixels, and the decay's phasor ``(g, s)`` at the laser
+  frequency.
+* **Tau STED** -- lifetime against intensity per pixel, the median lifetime,
+  and **Pile-up map layer**: photons per excitation pulse per pixel, from the
+  configured rep rate (above 10 % the histogram is biased).
+* **Gated STED** -- a table of time gates (name, from, to, and whether the
+  bounds are measured from the IRF **peak** or **absolute** on the axis),
+  drawn as draggable coloured regions on the decay; **+** / **−**;
+  **presets** from ``tutorial/timetagger/gate_presets`` (the files tutorial
+  12 loads); **Gate layers in viewer** puts each gate image of the last
+  frame in its own layer (``FLIM › gate:late``) and **Ratio layer** the
+  last gate over the first; **Measure STED pulse** marks where the STED
+  photodiode's pulse sits on the decay (needs the ``sted_pulse`` role).
+  Gate edits apply on the next Run.
+* **Signals** -- what every role of the card counts, sampled every second,
+  its trigger level (editable; refused with a message while a scan holds the
+  card), the TCSPC direction, the filter state and the overflow count;
+  **Trigger sweep** sweeps a role's level and prints the plateau, **Scope
+  snapshot** lists one line's worth of clock edges, **Pre-flight** runs
+  tutorial 10's checklist in colour. All three take seconds and run on a
+  worker thread.
+* **Status strip** -- the rates, the worst pile-up of the last frame, the
+  overflows since the panel opened, and ``[mock]`` on the simulated card;
+  orange when there is something to look at.
+* **Run once**, **Live**, **Stop** -- run the Scan widget's current scan
+  with the detector's products configured for this run only (the same
+  workflow path the scripts use, so the files are identical), repeatedly
+  in Live; **accumulate** sums that many scans into one result (intensities
+  and decays add, the lifetime image is the intensity-weighted mean);
+  **Stop** aborts the scan. A script's product session is never touched:
+  a run that overlaps one is refused.
+* **name** and **Save** -- write the last result (HDF5 and TIFFs, as a
+  workflow would) into the Recording widget's folder, with the gates and
+  fit of the acquisition that produced it, not the table's current state.
+  A frame the card never closed, or one with dropped tags, is marked
+  ``FRAME INVALID`` in the footer and ``frame_valid = False`` in the file.
 
-* **Live update** — redraw with every incoming frame.  Unticked, the panel
-  ignores frames.
-* **Mode:** — **Lifetime dist.** is a histogram of the per-pixel lifetimes,
-  with the mean marked by a red line.  **Decay** plots the photon-arrival
-  histogram summed over all valid pixels, with the red line at the global
-  lifetime fitted with the manager's ``fit_method``.
-* **Bins:**, **Min (ns):** and **Max (ns):** — the binning of the lifetime
-  histogram.  They take effect with the next frame and do not apply to the
-  decay.
-* **Accumulate** — in lifetime mode, pool the final image of every scan
-  completed since the box was ticked instead of showing the current one.  The
-  histogram is then redrawn when a scan ends; unticking empties the pool.
-
-The label on the right gives the number of valid pixels and their mean
-lifetime, or, in decay mode, the global lifetime and the photon count.
-
-.. image:: ./images/auto/FLIMHistWidget.png
+.. image:: ./images/auto/LifetimeWidget.png
    :align: center
    :width: 600px
+
+The FLIM view: the decay with the IRF peak, the lifetime histogram and the
+phasor readout.
+
+.. image:: ./images/auto/LifetimeWidget-gated.png
+   :align: center
+   :width: 600px
+
+The Gated STED view: the gate table, the regions on the decay, the preset
+and the STED-pulse marker.
+
+.. image:: ./images/auto/LifetimeWidget-tau.png
+   :align: center
+   :width: 600px
+
+The Tau STED view: lifetime against intensity per pixel and the pile-up map
+toggle.
+
+.. image:: ./images/auto/LifetimeWidget-signals.png
+   :align: center
+   :width: 600px
+
+The Signals view: live rates and trigger levels per role, and the pre-flight
+checklist.
 
 
 Hardware control

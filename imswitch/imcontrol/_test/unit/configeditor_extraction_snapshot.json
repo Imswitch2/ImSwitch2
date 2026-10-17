@@ -541,13 +541,13 @@
       "unresolved": 0
     },
     {
-      "constrained": 10,
-      "keys": 15,
+      "constrained": 9,
+      "keys": 21,
       "name": "SwabianTimeTaggerManager",
       "refs": 0,
-      "required": 3,
+      "required": 0,
       "uncertain": 0,
-      "unresolved": 3
+      "unresolved": 0
     },
     {
       "constrained": 1,
@@ -615,22 +615,22 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 49,
-    "docs_agree": 162,
-    "docs_documented": 162,
-    "keys": 242,
+    "constrained": 48,
+    "docs_agree": 168,
+    "docs_documented": 168,
+    "keys": 248,
     "managers": 68,
-    "none_default_only": 50,
+    "none_default_only": 53,
     "none_only": 16,
-    "optional": 177,
+    "optional": 186,
     "reads_any": 63,
     "refs": 14,
-    "required": 65,
-    "typed_by_code": 100,
-    "typed_with_docs": 186,
-    "typed_with_examples": 138,
+    "required": 62,
+    "typed_by_code": 103,
+    "typed_with_docs": 192,
+    "typed_with_examples": 141,
     "uncertain": 0,
-    "unresolved_reads": 3,
+    "unresolved_reads": 0,
     "with_keys": 63,
     "writes": 0
   }

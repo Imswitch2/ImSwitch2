@@ -1,6 +1,8 @@
 # Time-Resolved Detector Workflows
 
-Status: Implementation in progress
+Status: **Superseded** by `lifetime-2-0.md` (its contract and workflows
+were kept and extended there: the shared Time Tagger card, the Lifetime
+widget, products v2 and `timeresolved/io.py`); kept for history.
 
 Implemented so far:
 
@@ -13,7 +15,7 @@ Implemented so far:
 - Detector-neutral photon-arrival, gated-STED, and tau-STED workflows.
 - HDF5/NPZ/TIFF output for workflow products.
 - Default user scripts under
-  `imswitch/_data/user_defaults/scripts/timeresolved/`.
+  `imswitch/_data/user_defaults/scripts/workflows/timeresolved/`.
 
 Still pending:
 
@@ -498,7 +500,7 @@ Compression:
 
 Add an example under:
 
-`imswitch/_data/user_defaults/scripts/timeresolved/`
+`imswitch/_data/user_defaults/scripts/workflows/timeresolved/`
 
 Example:
 

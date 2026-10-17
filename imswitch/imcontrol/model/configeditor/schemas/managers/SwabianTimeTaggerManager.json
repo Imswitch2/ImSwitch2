@@ -1,7 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "description": "This manager hands its whole managerProperties dict to a driver; the driver's own keys are not listed here.",
   "properties": {
+    "background_rate_hz": {
+      "description": "Dark counts plus afterpulsing of the photon detector, in Hz, measured with the laser blocked. Flat over the laser period, it is subtracted from every pixel's histogram before fitting or gating (it pulls the moment towards half the period and the phasor towards the origin). ``0`` = no subtraction. Also a runtime parameter.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
     "binwidth_ps": {
       "description": "Histogram bin width in picoseconds.",
       "type": [
@@ -23,20 +38,24 @@
       ]
     },
     "click_channel": {
-      "description": "TimeTagger input channel receiving photon clicks.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
+      "description": "The photon input, read only when the setup has no ``timeTagger`` block (a negative number selects the falling edge). With the block it is ignored, with a log line naming it.",
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:int()",
-        "code:required"
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "click_role": {
+      "description": "Role on the ``timeTagger`` block whose input receives the photon clicks. The resolved channel shows as the read-only ``click_channel`` parameter.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
       ]
     },
     "click_trigger": {
-      "description": "Trigger threshold in volts for the photon-click channel.",
+      "description": "Trigger threshold in volts for the photon input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -49,7 +68,7 @@
       ]
     },
     "enabled": {
-      "description": "If ``false`` the manager is constructed but ``initiateScan`` is a no-op.",
+      "description": "Whether the detector takes part in scans; also a runtime parameter (``'True'`` / ``'False'``). Off, the manager is constructed but ``initiateScan`` is a no-op, so another detector images while the card is not held and a calibration can run during the scan (tutorials 07 to 09).",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",
@@ -58,6 +77,14 @@
     },
     "fit_method": {
       "description": "Lifetime fit method; one of ``\"moment\"``, ``\"phasor\"``, ``\"exp1\"``.  All three apply automatic IRF-peak compensation (see \"Lifetime fitting\" below); ``exp1`` is the most accurate for clean mono-exponential decays.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "frame_role": {
+      "description": "Role whose input receives the scan's frame-start clock: ``\"auto\"`` uses ``frame_clock`` when the block configures it, ``\"none\"`` never. With it the card re-syncs its pixel index on every frame edge, so a lost line marker costs one frame, not the rest of the scan. The resolved channel shows as the read-only ``frame_channel`` parameter (``0`` when none).",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -79,20 +106,24 @@
       ]
     },
     "line_channel": {
-      "description": "TimeTagger input channel receiving the per-line marker.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
+      "description": "The line-clock input, read only without a ``timeTagger`` block.",
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:int()",
-        "code:required"
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "line_role": {
+      "description": "Role whose input receives the scan's line clock; the pixel markers are generated from its edges, starting ``pixelPatternOffsetPs`` (block field, default 10 ns) plus a positive ``lineClockDelayPs`` after each edge.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
       ]
     },
     "line_trigger": {
-      "description": "Trigger threshold in volts for the per-line marker channel.",
+      "description": "Trigger threshold in volts for the line-clock input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -100,6 +131,20 @@
       ],
       "x-imswitch-kind": "number",
       "x-imswitch-source": [
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "live_fit_period_s": {
+      "description": "How often, during a scan, a preview with per-pixel lifetimes is fitted and emitted; ``0`` emits intensity-only previews (``preview: \"intensity\"`` in their metadata) and fits the final frame only.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
         "code:float()",
         "code:optional(get)"
       ]
@@ -128,20 +173,24 @@
       ]
     },
     "start_channel": {
-      "description": "TimeTagger input channel receiving the TCSPC start (sync) signal.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
+      "description": "The laser-sync input, read only without a ``timeTagger`` block.",
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:int()",
-        "code:required"
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "start_role": {
+      "description": "Role whose input receives the TCSPC start (laser sync).",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
       ]
     },
     "start_trigger": {
-      "description": "Trigger threshold in volts for the TCSPC start/sync channel.",
+      "description": "Trigger threshold in volts for the laser-sync input, read only without a ``timeTagger`` block.",
       "type": [
         "integer",
         "number",
@@ -154,7 +203,7 @@
       ]
     },
     "t0_ps": {
-      "description": "Histogram zero-time offset in picoseconds.",
+      "description": "The IRF peak's position, in picoseconds, measured with the card's configured conditioning (tutorial 06): an absolute number. Forward mode applies it as ``-t0_ps`` on top of the photon input's configured delay for the scan and restores the input afterwards; reverse mode applies it as a circular roll.",
       "type": [
         "integer",
         "number",
@@ -168,7 +217,7 @@
       ]
     },
     "trigger_levels": {
-      "description": "Backward-compatible dict mapping channel-number-as-string to trigger threshold in volts.  Used only to seed the per-role ``click_trigger`` / ``start_trigger`` / ``line_trigger`` defaults.  Direct per-role fields take precedence.",
+      "description": "Dict mapping channel-number-as-string to trigger threshold in volts, seeding the three ``*_trigger`` defaults. Read only without a ``timeTagger`` block.",
       "x-imswitch-kind": "object",
       "x-imswitch-source": [
         "code:default:object",
@@ -176,20 +225,11 @@
       ]
     }
   },
-  "required": [
-    "click_channel",
-    "line_channel",
-    "start_channel"
-  ],
   "title": "SwabianTimeTaggerManager managerProperties",
   "type": "object",
   "x-imswitch-classes": [
     "SwabianTimeTaggerManager",
     "DetectorManager"
   ],
-  "x-imswitch-unresolved-reads": [
-    "tl.get(str(self._click_ch), 0.5) (line 106; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._line_ch), 0.5) (line 112; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._start_ch), 0.5) (line 109; sub-key of 'trigger_levels' is not a literal)"
-  ]
+  "x-imswitch-open-passthrough": true
 }

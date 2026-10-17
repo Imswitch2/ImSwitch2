@@ -95,22 +95,30 @@ def test_the_coverage_the_plan_is_built_on(report):
     # positioner's conversionFactor, minVolt and maxVolt, and its laser's
     # calibCsvPath. 242: a pulseGenerators entry's keys -- the Teensy's seven
     # (the teensyPulse section's), the Pulse Streamer's ipAddress -- and the
-    # pulse-generator laser's pulseGenerator.
-    assert report.keys == 242
+    # pulse-generator laser's pulseGenerator. 248 with Lifetime 2.0:
+    # SwabianTimeTaggerManager's click_role / start_role / line_role (the
+    # roles it reads on the setup's shared timeTagger block), its
+    # background_rate_hz, frame_role and live_fit_period_s.
+    assert report.keys == 248
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 63: the step-board positioner's conversionFactor. 65 with main's
     # device-reconnection rebase: CoolLED and MPB read rs232device unguarded
     # at construction now (their status descriptors reuse that name instead
     # of re-reading it), so it is required, as it is for every other
-    # RS232-backed laser.
-    assert report.required == 65, ("60 under the guard-aware rule, RS232Manager's port and "
+    # RS232-backed laser. 62 with Lifetime 2.0: SwabianTimeTagger's three
+    # channels are read only without a timeTagger block, so the schema no
+    # longer requires them.
+    assert report.required == 62, ("60 under the guard-aware rule, RS232Manager's port and "
                                    "recv_termination, the step-board positioner's "
-                                   "conversionFactor, CoolLED/MPB rs232device")
+                                   "conversionFactor, CoolLED/MPB rs232device, minus the "
+                                   "three Swabian channels")
     # +7 simulated step, +2 pulse-generator, +4 step-protocol engine properties,
     # +3 step-board positioner and laser properties, +9 pulse generators' and
-    # the pulse-generator laser's; -2 CoolLED/MPB rs232device, now required
-    assert report.optional == 177
+    # the pulse-generator laser's; -2 CoolLED/MPB rs232device, now required;
+    # +9 Lifetime 2.0: the three Swabian role properties, background_rate_hz,
+    # frame_role, live_fit_period_s, and the three channels, now optional
+    assert report.optional == 186
     assert report.refs == 14
     # +2 defaultReferenceVoltage, +1 mockSample, +4 simulated step engine
     # properties read with .get(): no default is guessed for a board. 37:
@@ -123,7 +131,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # pulseGenerator a laser or engine names (absent: the teensyPulse one).
     # 50: MHXYStage and PiezoconceptZ read rs232device with .get() (None
     # default) for their status descriptors instead of inside try/except.
-    assert report.none_default_only == 50
+    # 53: the three Swabian legacy channels are read with a None default.
+    assert report.none_default_only == 53
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -140,7 +149,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 153: the step-board positioner's three and laser's one. 162: the
     # Teensy's seven, the Pulse Streamer's one (docs/devices/
     # pulse_generators.rst) and the pulse-generator laser's pulseGenerator.
-    assert (report.docs_agree, report.docs_documented) == (162, 162)
+    # 168 with Lifetime 2.0: the Swabian role properties, background_rate_hz,
+    # frame_role and live_fit_period_s have their own rows.
+    assert (report.docs_agree, report.docs_documented) == (168, 168)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -151,8 +162,8 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 97: the simulated step engine's timingGridS is read as a float. 98:
     # the step-board positioner's conversionFactor. 100 with main's
     # device-reconnection rebase: Elliptec's address (int()) and port (str())
-    # are coerced in code.
-    assert report.typed_by_code == 100
+    # are coerced in code. 103 with Lifetime 2.0's typed Swabian reads.
+    assert report.typed_by_code == 103
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -168,12 +179,15 @@ def test_the_tree_has_no_uncertain_requiredness_today(report):
     assert report.uncertain_keys == []
 
 
-def test_the_only_unresolved_reads_are_dynamic_sub_keys(report):
-    """SwabianTimeTagger indexes trigger_levels by a channel number computed at
-    runtime. Reported, never guessed -- and never silently dropped."""
-    assert len(report.unresolved) == 3
-    assert all(item.startswith("SwabianTimeTaggerManager: tl.get(str(self._") for item in report.unresolved)
-    assert all("sub-key of 'trigger_levels'" in item for item in report.unresolved)
+def test_the_tree_has_no_unresolved_reads_today(report):
+    """SwabianTimeTagger used to index trigger_levels by a channel number
+    computed at runtime in __init__, the three reads the extractor reported
+    as unresolved rather than guessed. The card's channels now live on the
+    setup's timeTagger block; the legacy trigger_levels fallback moved into
+    a helper the extractor follows for its literal keys only, so nothing is
+    reported. Not a rule -- a fact about the tree, so a future one is
+    noticed."""
+    assert report.unresolved == []
 
 
 def test_no_writes_masquerade_as_reads(report):

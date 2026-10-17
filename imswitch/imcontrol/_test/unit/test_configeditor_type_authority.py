@@ -492,7 +492,8 @@ def test_the_corpus_is_what_the_plan_says():
     # setup. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
     # 20: expert_mock_scan_setup.json, the Expert panel's mock setup. 21:
     # expert_step_boards_mock_setup.json, the Expert panel on step boards.
-    assert len(shipped_setups()) == 21
+    # 22: galvo_flim_mock_scan_setup.json, the Lifetime 2.0 FLIM mock.
+    assert len(shipped_setups()) == 22
     # + the four scan engines, + the step-board positioner and laser managers
     assert len(generated_fixtures()) == 68
     assert len(value_shape_fixtures()) == 13

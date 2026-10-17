@@ -32,6 +32,15 @@ from imswitch.imcontrol.model.timeresolved import (
     TimeResolvedScanProducts,
 )
 from .mock_facade import MockMicroscopeFacade, build_mock_facade
+from .time_tagger_facade import (
+    HistogramResult,
+    PeriodResult,
+    SkewResult,
+    RatesResult,
+    RepRateResult,
+    SweepResult,
+    TimeTaggerFacade,
+)
 from .multi_well_tiling import MultiWellTilingParams, MultiWellTilingWorkflow
 from .widefield_starss import WidefieldStarssParams, WidefieldStarssWorkflow
 from .serial_cwstarss import SerialCWSTARSSParams, SerialCWSTARSSWorkflow

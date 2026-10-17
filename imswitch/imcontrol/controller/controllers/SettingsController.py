@@ -677,6 +677,15 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         the detector does not have. """
         return self._getDetectorParameterObj(detectorName, parameterName).value
 
+    @APIExport()
+    def getDetectorLatestFrame(self, detectorName: str) -> np.ndarray:
+        """ Returns a copy of the latest image the specified detector
+        produced -- after a point scan, the scan image (what the live view
+        shows for it). A script compares two detectors' images with it
+        (tutorial timetagger/09). """
+        detector = self._master.detectorsManager[detectorName]
+        return np.array(detector.getLatestFrameShared(), copy=True)
+
     @APIExport(runOnUIThread=True)
     def getDetectorParameters(self, detectorName: str) -> Dict[str, Dict[str, Any]]:
         """ Returns all detector-specific parameters of the specified detector

@@ -2621,7 +2621,7 @@ def _load_widget_registry() -> dict:
         "LeicaStand": "Microscope",
         # Analysis
         "FFT": "Analysis",
-        "FLIMHist": "Analysis",
+        "Lifetime": "Analysis",
         "BeadRec": "Analysis",
         "AlignAverage": "Analysis",
         "AlignXY": "Analysis",
@@ -2664,7 +2664,7 @@ def _load_widget_registry() -> dict:
         ],
         "Analysis": [
             ("FFT",            "Live FFT tool"),
-            ("FLIMHist",       "FLIM lifetime histogram (needs a FLIM detector)"),
+            ("Lifetime",       "Lifetime: FLIM, tau-STED and the Time Tagger's signals (needs a FLIM detector)"),
             ("BeadRec",        "Bead reconstruction"),
             ("AlignAverage",   "Axial alignment tool"),
             ("AlignXY",        "Rotational alignment tool"),
