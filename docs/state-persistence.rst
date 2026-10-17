@@ -78,8 +78,7 @@ Class attributes describe the component:
        component names (``isSetupModeHardwareCritical``).
 
 ``ComponentStateApplyMode`` is defined in
-``imcommon/model/state_contracts.py`` (``imcontrol.model.state_contracts`` and
-``basecontrollers`` re-export it).  Its values serialise as
+``imcommon/model/state_contracts.py`` (``basecontrollers`` re-exports it).  Its values serialise as
 ``"startup_restore"`` and ``"setup_mode_apply"``.  The same module defines
 ``RestoreWarning``, a ``str`` subclass carrying a ``critical`` flag: a plain
 ``str`` counts as critical, and ``RestoreWarning(text, critical=False)`` marks

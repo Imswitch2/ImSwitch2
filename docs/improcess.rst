@@ -377,8 +377,7 @@ selection.
 * *Interacting/measuring tools* (ROI Manager, ROI stats, Profile) operate on
   the *active napari layer* and display their measurements in place; they do
   not create results.  All of them resolve their source layer through the
-  shared ``imswitch.imcommon.algorithms.layer_selection`` helper (also
-  importable as ``imswitch.improcess.layer_selection``), so what counts as an
+  shared ``imswitch.imcommon.algorithms.layer_selection`` helper, so what counts as an
   image source cannot drift between tools.  They also re-measure when the
   selected result changes: the ROI stays where it is and the numbers follow
   the result now under it, rather than lingering from the previous one.

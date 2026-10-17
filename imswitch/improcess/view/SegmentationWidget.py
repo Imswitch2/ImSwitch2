@@ -12,7 +12,7 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.view.runstate import RunState
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis, segment_image
-from imswitch.improcess.layer_selection import active_image_layer
+from imswitch.imcommon.algorithms.layer_selection import active_image_layer
 from imswitch.improcess.processors import SegmentationProcessor
 
 

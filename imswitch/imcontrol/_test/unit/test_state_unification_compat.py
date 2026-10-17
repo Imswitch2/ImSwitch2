@@ -88,7 +88,8 @@ def temp_state_dir(monkeypatch, tmp_path):
 def clean_registry(temp_state_dir):
     """Provide a clean registry instance for each test."""
     # Reset global singleton before test
-    import imswitch.imcontrol.model.WidgetStatePersistence as wsp_module
+    import sys
+    wsp_module = sys.modules['imswitch.imcommon.model.WidgetStatePersistence']
     wsp_module._persistence_instance = None
     
     # Create new registry (will use the patched dirtools.UserFileDirs.Root)
