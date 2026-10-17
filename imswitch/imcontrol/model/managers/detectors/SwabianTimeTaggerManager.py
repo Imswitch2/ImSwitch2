@@ -1603,15 +1603,16 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         scan_dims = list(scanInfoDict['img_dims'])
         scan_axes = list(scanInfoDict.get('img_axes_phys', ['x', 'y', 'z'][:len(scan_dims)]))
         S = max(1, int(scanInfoDict.get('n_linesteps', 1)))
-        if 'x' in scan_axes and 'y' in scan_axes:
-            Nx = int(scan_dims[scan_axes.index('x')])
-            Ny = int(scan_dims[scan_axes.index('y')])
-        else:
-            Nx = int(scan_dims[-1])
-            # a 1-axis scan is a single line: no second dimension to read
-            Ny = int(scan_dims[-2]) if len(scan_dims) >= 2 else 1
-        outer_axes = [a for a in scan_axes if a not in ('y', 'x')]
-        outer_dims = [int(scan_dims[scan_axes.index(a)]) for a in outer_axes]
+        # By position, as the line clock plays them: the fast axis, then the
+        # line axis the line steps repeat, then the outer axes -- whatever
+        # they are called. The designers name their axes by position (x, y,
+        # z), an Expert program physically (a fast-Y raster is ('y', 'x')),
+        # and taking them by name read its lines along the wrong axis.
+        Nx = int(scan_dims[0])
+        # a 1-axis scan is a single line: no second dimension to read
+        Ny = int(scan_dims[1]) if len(scan_dims) >= 2 else 1
+        outer_axes = list(scan_axes[2:])
+        outer_dims = [int(d) for d in scan_dims[2:]]
         return Nx, Ny, S, outer_axes, outer_dims
 
     def _validate_time_resolved_scan_shape(self, outer_axes, outer_dims):

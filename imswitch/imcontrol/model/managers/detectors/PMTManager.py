@@ -1073,16 +1073,15 @@ class ScanWorker(Worker):
             scan_axes.append("y")
         self._linestep = max(1, int(scanInfoDict.get("n_linesteps", 1)))
 
-        # identify Y axis (default to 1)
-        y_idx = scan_axes.index("y") if "y" in scan_axes else 1
-
         # recursion dims (no linestep axis)
         self._img_dims = scan_dims
         self._loop_dims = scan_dims.copy()
 
-        # expand Y by linestep (Ny -> Ny*S)
-        if len(self._loop_dims) > y_idx:
-            self._loop_dims[y_idx] = int(self._loop_dims[y_idx] * self._linestep)
+        # The line steps repeat each line: they expand the dimension right
+        # outside the fast one (N -> N*S), img_dims[1], whatever it is called
+        # (an Expert fast-Y raster names its axes ('y', 'x'); see APDManager).
+        if len(self._loop_dims) > 1:
+            self._loop_dims[1] = int(self._loop_dims[1] * self._linestep)
 
         # output dims for manager allocation: append linestep at end if >1 (keeps stack possible)
         self._output_image_dims = tuple(scan_dims + ([self._linestep] if self._linestep > 1 else []))

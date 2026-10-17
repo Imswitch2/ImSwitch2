@@ -1203,15 +1203,19 @@ class ScanWorker(Worker):
             scan_axes.append("y")
         self._linestep = max(1, int(scanInfoDict.get("n_linesteps", 1)))
 
-        # Y is the slow scan axis
-        y_idx = scan_axes.index("y") if "y" in scan_axes else 1
-        self._y_idx = y_idx
+        # The line steps repeat each line: they expand the dimension right
+        # outside the fast one, img_dims[1], whatever it is called -- the
+        # recursion reads by position. The designers name their axes by
+        # position (x, y, z), an Expert program physically: a fast-Y raster
+        # is ('y', 'x'), and expanding the axis named y there read half its
+        # lines (review 2026-10-17).
+        self._line_axis = 1
 
-        # Loop dims: expand Y by linestep (Ny -> Ny*S), keep other dims unchanged
+        # Loop dims: expand the line axis by linestep (N -> N*S), keep the others
         self._img_dims = scan_dims  # recursion uses physical scan axes only (x,y,z,...)
         self._loop_dims = scan_dims.copy()
-        if len(self._loop_dims) > y_idx:
-            self._loop_dims[y_idx] = int(self._loop_dims[y_idx] * self._linestep)
+        if len(self._loop_dims) > self._line_axis:
+            self._loop_dims[self._line_axis] = int(self._loop_dims[self._line_axis] * self._linestep)
 
         # Output dims for manager allocation: keep linestep as its own axis (for later stack/sum/max)
         # We append linestep as the LAST axis in output_image_dims (manager can reorder if desired)
@@ -1276,7 +1280,7 @@ class ScanWorker(Worker):
         if self._linestep <= 1:
             return
 
-        expandedLines = int(self._loop_dims[self._y_idx])
+        expandedLines = int(self._loop_dims[self._line_axis])
         exact2dPlan = None
         exact2dMargin = None
         if len(self._loop_dims) == 2:
