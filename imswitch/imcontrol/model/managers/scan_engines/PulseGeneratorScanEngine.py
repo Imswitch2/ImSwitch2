@@ -432,10 +432,11 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
         self._stopping = True
         self._generator.stop()
         running = self._thread is not None and self._thread.is_alive()
-        if self._safeState() and not running:
-            # During a run a refused write is expected (the board is still
-            # playing) and the run's own end tries again and reports; with no
-            # run, nothing else will.
+        # During a run a refused write is expected (the board is still
+        # playing): it is not recorded, the run's own end tries again and
+        # decides -- recording it could overwrite that end's result when the
+        # two cross. With no run, nothing else will try: it is recorded.
+        if self._safeState(record=not running) and not running:
             self.__logger.error(self._unknownReason())
         return self._generator.stop_granularity or 'unknown'
 
@@ -445,19 +446,19 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
         close tries again."""
         if self._thread is not None and self._thread.is_alive():
             self.abort()
-        running = self._thread is not None and self._thread.is_alive()
-        if running:
+        if self._thread is not None and self._thread.is_alive():
             self.__logger.error(f'{self.name} is still running at close; its run ends at '
                                 'the next step boundary.')
+            return False
         if self._safeState():
             self.__logger.error(self._unknownReason())
             return False
-        return not running
+        return True
 
-    def _safeState(self) -> Dict[int, str]:
+    def _safeState(self, record=True) -> Dict[int, str]:
         """Every owned line to its off level, each one tried. Returns the
-        lines the generator did not take, ``{channel: error}``, and keeps them
-        as the lines whose state is unknown."""
+        lines the generator did not take, ``{channel: error}``, and with
+        ``record`` keeps them as the lines whose state is unknown."""
         off = self._off_mask()
         unknown = {}
         for channel in self._lines.values():
@@ -465,7 +466,8 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
                 self._generator.setDigital(channel, bool(off >> channel & 1))
             except Exception as error:
                 unknown[channel] = str(error) or type(error).__name__
-        self._unknownLines = unknown
+        if record:
+            self._unknownLines = unknown
         return unknown
 
     def unknownLines(self) -> Dict[int, str]:

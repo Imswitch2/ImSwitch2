@@ -455,33 +455,39 @@ def test_a_line_left_on_that_does_not_turn_off_fails_the_run(qtbot):
 
 def test_a_stop_refused_while_the_board_plays_is_tried_again_at_the_runs_end(qtbot):
     """A stop's own off writes may be refused while the board still plays:
-    that is deferred, not a failure -- the run's end sets the lines, and the
-    run ends stopped."""
+    that is deferred, not recorded -- the run's end sets the lines and
+    decides -- and the run ends stopped. The board here plays until the test
+    lets it finish, so the order is fixed, not timed."""
     engine = _engine()
     program = ScanProgram(
-        loops=(Loop('frame', 'time', 200),), drives=(), step_s=10e-3,
+        loops=(Loop('frame', 'time', 2),), drives=(), step_s=10e-3,
         timeline=(TimelineEvent('L405', 'ttl', 0.0, 10e-3, during='any'),),
         timing_policy='strict-v1')
     engine.prepare(engine.compile(program, CHANNELS))
     driver = engine._generator.driver
-    applied = driver._set_pin
-    driver._set_pin = lambda ch, wanted, source='seq': (
-        None if source == 'stop' else applied(ch, wanted, source=source))
-    driver.simulated_step_delay_s = 1e-3
+    playing, finished = threading.Event(), threading.Event()
+
+    def plays(**_kwargs):
+        driver._set_pin(LINES['L405'], True, source='seq')   # what it leaves on
+        playing.set()
+        assert finished.wait(5.0)
+    engine._generator.run = plays
     setDigital = engine._generator.setDigital
 
     def refusedWhilePlaying(channel, value):
-        thread = engine._thread
-        if (thread is not None and thread.is_alive()
-                and threading.current_thread() is not thread):
+        if playing.is_set() and not finished.is_set():
             raise RuntimeError('a sequence is running')
         return setDigital(channel, value)
     engine._generator.setDigital = refusedWhilePlaying
     ends = _ends(engine)
     engine.run(blocking=False)
+    assert playing.wait(5.0)
     engine.abort()
+    assert engine.unknownLines() == {}              # deferred to the run's end
+    finished.set()
     assert engine.join(5.0)
-    qtbot.waitUntil(lambda: 'done' in ends, timeout=2000)
+    qtbot.waitUntil(lambda: 'done' in ends or any(isinstance(e, tuple) for e in ends),
+                    timeout=5000)
     assert ends == ['stopped', 'done']
     assert not any(driver.pin_states.values())
     assert engine.unknownLines() == {}
