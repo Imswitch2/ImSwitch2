@@ -65,8 +65,8 @@ and the Teensy wire protocol summary (the firmware repository owns it).
 Commits on `chore/cleanup-docs`: `bfd7ba00c` (Hamamatsu), `c10425bf7`
 (TriggerScope quirks, three unused screenshots), `ee9dad154` (state
 persistence page), `53bc80d08` (acquisition layout), `bd1eb88ae` (changelog),
-`29b5d37cc` (current state), `e9909fa01` (`conf.py` version). The five
-markdown notes and the two layout rig notes are deleted
+`29b5d37cc` (current state), `e9909fa01` (`conf.py` version). The three
+markdown notes and the three acquisition-layout plan files are deleted
 (`git log -- <path>` recovers them).
 
 Deliberately left:
