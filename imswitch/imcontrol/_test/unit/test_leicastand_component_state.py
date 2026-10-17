@@ -1,19 +1,15 @@
 """
-Unit tests for LeicaStandController unified state persistence (Phase 5b).
+Unit tests for LeicaStandController unified state persistence.
 
-Tests the StatefulComponentMixin implementation on LeicaStandController:
-- getComponentState returns {'mode': ...}
-- SETUP_MODE_APPLY to 'FLUO' calls setFLUO then setILshutter(1); to 'CS' calls setCS
-- STARTUP_RESTORE does NOT actuate (warns on a state diff)
-- A manager whose setFLUO/setCS raises yields a returned warning (failure surfaced)
-- getComponentStateHazards returns [] for both modes
-- disconnected / None manager yields a warning
-- LeicaStand is discovered by SetupModeController._getModeAwareControllers
-  when the controller is a registered component
+The setup-mode path must use the same high-level Leica FLUO/CS transitions as
+normal widget interaction while preserving startup non-actuation and backwards
+compatibility with older mode-only snapshots.
 """
 
-import pytest
+from types import MethodType, SimpleNamespace
 from unittest.mock import Mock
+
+import pytest
 
 from imswitch.imcontrol.controller.controllers.LeicaStandController import (
     LeicaStandController,
@@ -29,84 +25,266 @@ pytestmark = pytest.mark.nohardware
 
 @pytest.fixture
 def mock_manager():
-    """Mock Leica stand _subManager with the 3 raw mock methods + isConnected."""
     manager = Mock()
     manager.isConnected = Mock(return_value=True)
-    manager.setFLUO = Mock()
+    manager.setFLUO = Mock()  # raw setup-mode path must no longer use this
     manager.setCS = Mock()
+    manager.setCube = Mock()
+    manager.setILFieldDiaphragm = Mock()
+    manager.setCameraPort = Mock()
+    manager.setMagnScan = Mock()
+    manager.setMagn1 = Mock()
     manager.setILshutter = Mock()
     return manager
 
 
 @pytest.fixture
 def mock_widget():
-    """Mock LeicaStandWidget."""
     widget = Mock()
     widget.setConnected = Mock()
     widget.setMode = Mock()
+    widget.setCurrentCube = Mock()
+    widget.setCurrentPortSide = Mock()
     return widget
 
 
 @pytest.fixture
 def controller(mock_manager, mock_widget):
-    """Lightweight LeicaStandController bound to the component-state methods.
+    """Lightweight controller using the real LeicaStandController methods."""
+    ctrl = SimpleNamespace(
+        _manager=mock_manager,
+        _widget=mock_widget,
+        _current_mode="FLUO",
+        _current_port_side="Left",
+        _last_selected_fluo_cube_name="FITC",
+        _cube_slot_to_name={1: "DAPI", 2: "FITC", 6: "EMP_BF"},
+        _cube_name_to_slot={"DAPI": 1, "FITC": 2, "EMP_BF": 6},
+        _LeicaStandController__logger=Mock(),
+        FLUO_SHUTTER_DELAY_MS=LeicaStandController.FLUO_SHUTTER_DELAY_MS,
+    )
 
-    Mirrors the FlipMirror test harness: build a Mock(spec=...) and bind the
-    real unbound methods so we exercise the actual logic without running
-    ImConWidgetController.__init__.
-    """
-    ctrl = Mock(spec=LeicaStandController)
-    ctrl._manager = mock_manager
-    ctrl._widget = mock_widget
-    ctrl._current_mode = "FLUO"
-    ctrl.FLUO_SETTLE_SECONDS = 0.0  # don't actually sleep in tests
-    ctrl._LeicaStandController__logger = Mock()
+    method_names = (
+        "getComponentState",
+        "applyComponentState",
+        "describeComponentState",
+        "getComponentStateHazards",
+        "_safe_call",
+        "_get_selected_fluo_cube_name",
+        "_performFluoModeTransition",
+        "setFluoMode",
+        "_finishSetFluoMode",
+        "_performCSModeTransition",
+        "setCSMode",
+        "setCubeByName",
+        "setPortSideByName",
+    )
+    for name in method_names:
+        setattr(ctrl, name, MethodType(getattr(LeicaStandController, name), ctrl))
 
-    # No-op the Qt-pumping settle so tests don't spin the event loop.
+    # Setup-mode FLUO waits for the same 800 ms shutter delay. Tests only need
+    # the sequencing, so avoid sleeping/spinning the Qt event loop.
     ctrl._sleepPumpingEvents = lambda seconds: None
-
-    ctrl.getComponentState = lambda: LeicaStandController.getComponentState(ctrl)
-    ctrl.applyComponentState = lambda state, applyMode: LeicaStandController.applyComponentState(
-        ctrl, state, applyMode=applyMode
-    )
-    ctrl.describeComponentState = lambda state: LeicaStandController.describeComponentState(
-        ctrl, state
-    )
-    ctrl.getComponentStateHazards = lambda state, applyMode, context=None: LeicaStandController.getComponentStateHazards(
-        ctrl, state, applyMode=applyMode, context=context
-    )
-
-    ctrl.componentName = 'LeicaStand'
-    ctrl.stateSchemaVersion = 1
-    ctrl.legacyStateNames = ()
-
     return ctrl
 
 
+def _hardware_events(manager):
+    events = []
+    manager.setCS.side_effect = lambda: events.append(("setCS",))
+    manager.setCube.side_effect = lambda slot: events.append(("setCube", slot))
+    manager.setILFieldDiaphragm.side_effect = (
+        lambda value: events.append(("setILFieldDiaphragm", value))
+    )
+    manager.setCameraPort.side_effect = lambda: events.append(("setCameraPort",))
+    manager.setMagnScan.side_effect = lambda: events.append(("setMagnScan",))
+    manager.setMagn1.side_effect = lambda: events.append(("setMagn1",))
+    manager.setILshutter.side_effect = (
+        lambda value: events.append(("setILshutter", value))
+    )
+    return events
+
+
 def test_leicastand_implements_stateful_component_mixin(controller):
-    """LeicaStandController implements StatefulComponentMixin with correct attrs."""
-    assert LeicaStandController.componentName == 'LeicaStand'
+    assert LeicaStandController.componentName == "LeicaStand"
     assert LeicaStandController.stateSchemaVersion == 1
     assert LeicaStandController.legacyStateNames == ()
     assert issubclass(LeicaStandController, StatefulComponentMixin)
 
-    assert hasattr(controller, 'getComponentState')
-    assert hasattr(controller, 'applyComponentState')
-    assert hasattr(controller, 'describeComponentState')
-    assert hasattr(controller, 'getComponentStateHazards')
+    assert hasattr(controller, "getComponentState")
+    assert hasattr(controller, "applyComponentState")
+    assert hasattr(controller, "describeComponentState")
+    assert hasattr(controller, "getComponentStateHazards")
 
 
-def test_get_component_state_returns_mode(controller):
-    """getComponentState returns {'mode': self._current_mode}."""
+def test_get_component_state_includes_mode_cube_and_port(controller):
     controller._current_mode = "CS"
-    assert controller.getComponentState() == {"mode": "CS"}
+    controller._last_selected_fluo_cube_name = "DAPI"
+    controller._current_port_side = "Right"
 
+    assert controller.getComponentState() == {
+        "mode": "CS",
+        "lastSelectedFluoCubeName": "DAPI",
+        "portSide": "Right",
+    }
+
+
+def test_setup_mode_fluo_uses_same_hardware_sequence_as_widget(
+    controller, mock_manager, monkeypatch
+):
+    """Setup-mode FLUO and widget FLUO drive the same high-level stand calls."""
+    import importlib
+
+    leica_module = importlib.import_module(
+        "imswitch.imcontrol.controller.controllers.LeicaStandController"
+    )
+    monkeypatch.setattr(
+        leica_module.QtCore,
+        "QTimer",
+        SimpleNamespace(singleShot=lambda _delay, callback: callback()),
+    )
+
+    widget_events = _hardware_events(mock_manager)
+    controller.setFluoMode()
+    widget_events = list(widget_events)
+
+    mock_manager.reset_mock()
+    setup_events = _hardware_events(mock_manager)
+    controller._current_mode = "CS"
+    warnings = controller.applyComponentState(
+        {"mode": "FLUO"},
+        applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
+    )
+
+    assert warnings == []
+    assert setup_events == widget_events == [
+        ("setCS",),
+        ("setCube", 2),
+        ("setILFieldDiaphragm", 12),
+        ("setCameraPort",),
+        ("setILshutter", 1),
+    ]
+    mock_manager.setFLUO.assert_not_called()
+    assert controller._current_mode == "FLUO"
+
+
+def test_setup_mode_cs_uses_same_hardware_sequence_as_widget(
+    controller, mock_manager
+):
+    widget_events = _hardware_events(mock_manager)
+    controller.setCSMode()
+    widget_events = list(widget_events)
+
+    mock_manager.reset_mock()
+    setup_events = _hardware_events(mock_manager)
     controller._current_mode = "FLUO"
-    assert controller.getComponentState() == {"mode": "FLUO"}
+    warnings = controller.applyComponentState(
+        {"mode": "CS"},
+        applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
+    )
+
+    assert warnings == []
+    assert setup_events == widget_events == [
+        ("setCS",),
+        ("setCube", 6),
+        ("setCameraPort",),
+        ("setMagnScan",),
+    ]
+    mock_manager.setFLUO.assert_not_called()
+    assert controller._current_mode == "CS"
+    assert controller._current_port_side == "Left"
 
 
-def test_apply_setup_mode_fluo_calls_fluo_then_shutter(controller, mock_manager):
-    """SETUP_MODE_APPLY to FLUO calls setFLUO() then setILshutter(1)."""
+def test_setup_mode_restores_saved_fluo_cube(controller, mock_manager):
+    controller._last_selected_fluo_cube_name = "FITC"
+
+    warnings = controller.applyComponentState(
+        {
+            "mode": "FLUO",
+            "lastSelectedFluoCubeName": "DAPI",
+        },
+        applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
+    )
+
+    assert warnings == []
+    assert controller._last_selected_fluo_cube_name == "DAPI"
+    controller._widget.setCurrentCube.assert_called_with("DAPI")
+    mock_manager.setCube.assert_called_once_with(1)
+
+
+def test_setup_mode_restores_port_after_cs_normalizes_left(controller, mock_manager):
+    warnings = controller.applyComponentState(
+        {
+            "mode": "CS",
+            "portSide": "Right",
+        },
+        applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
+    )
+
+    assert warnings == []
+    # CS's normal transition first selects the scan/Left magnification, then the
+    # saved independent port selection is restored.
+    assert mock_manager.setMagnScan.call_count == 1
+    mock_manager.setMagn1.assert_called_once_with()
+    assert controller._current_port_side == "Right"
+    controller._widget.setCurrentPortSide.assert_called_with("Right")
+
+
+def test_old_mode_only_snapshot_still_loads(controller, mock_manager):
+    controller._last_selected_fluo_cube_name = "FITC"
+    controller._current_port_side = "Right"
+
+    warnings = controller.applyComponentState(
+        {"mode": "FLUO"},
+        applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
+    )
+
+    assert warnings == []
+    mock_manager.setCube.assert_called_once_with(2)
+    # Missing portSide means no extra port restore is imposed on old snapshots.
+    mock_manager.setMagn1.assert_not_called()
+    mock_manager.setMagnScan.assert_not_called()
+
+
+def test_startup_restore_updates_metadata_without_actuation(controller, mock_manager):
+    controller._current_mode = "FLUO"
+
+    warnings = controller.applyComponentState(
+        {
+            "mode": "CS",
+            "lastSelectedFluoCubeName": "DAPI",
+            "portSide": "Right",
+        },
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
+
+    assert controller._current_mode == "FLUO"
+    assert controller._last_selected_fluo_cube_name == "DAPI"
+    assert controller._current_port_side == "Right"
+    controller._widget.setCurrentCube.assert_called_with("DAPI")
+    controller._widget.setCurrentPortSide.assert_called_with("Right")
+
+    mock_manager.setCS.assert_not_called()
+    mock_manager.setCube.assert_not_called()
+    mock_manager.setMagn1.assert_not_called()
+    mock_manager.setILshutter.assert_not_called()
+
+    assert len(warnings) == 1
+    assert "not switched at startup" in warnings[0]
+
+
+def test_startup_restore_no_warning_when_modes_match(controller, mock_manager):
+    warnings = controller.applyComponentState(
+        {"mode": "FLUO"},
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
+
+    mock_manager.setCS.assert_not_called()
+    assert warnings == []
+
+
+def test_setup_mode_surfaces_transition_failure_without_advancing_mode(
+    controller, mock_manager
+):
+    mock_manager.setCameraPort.side_effect = RuntimeError("comm error")
     controller._current_mode = "CS"
 
     warnings = controller.applyComponentState(
@@ -114,16 +292,17 @@ def test_apply_setup_mode_fluo_calls_fluo_then_shutter(controller, mock_manager)
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
-    mock_manager.setFLUO.assert_called_once_with()
-    mock_manager.setILshutter.assert_called_once_with(1)
-    mock_manager.setCS.assert_not_called()
-    assert warnings == []
-    assert controller._current_mode == "FLUO"
-    controller._widget.setMode.assert_called_with("FLUO")
+    assert len(warnings) == 1
+    assert "Failed to switch Leica stand to FLUO" in warnings[0]
+    assert "comm error" in warnings[0]
+    assert controller._current_mode == "CS"
+    mock_manager.setILshutter.assert_not_called()
 
 
-def test_apply_setup_mode_cs_calls_cs(controller, mock_manager):
-    """SETUP_MODE_APPLY to CS calls setCS() and not the FLUO sequence."""
+def test_setup_mode_surfaces_cs_failure_without_advancing_mode(
+    controller, mock_manager
+):
+    mock_manager.setCube.side_effect = RuntimeError("stand stuck")
     controller._current_mode = "FLUO"
 
     warnings = controller.applyComponentState(
@@ -131,98 +310,55 @@ def test_apply_setup_mode_cs_calls_cs(controller, mock_manager):
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
-    mock_manager.setCS.assert_called_once_with()
-    mock_manager.setFLUO.assert_not_called()
-    mock_manager.setILshutter.assert_not_called()
-    assert warnings == []
-    assert controller._current_mode == "CS"
-    controller._widget.setMode.assert_called_with("CS")
-
-
-def test_apply_startup_restore_does_not_actuate(controller, mock_manager):
-    """STARTUP_RESTORE does NOT call any actuation, and warns on a state diff."""
-    controller._current_mode = "FLUO"
-
-    warnings = controller.applyComponentState(
-        {"mode": "CS"},  # differs from current FLUO
-        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
-    )
-
-    mock_manager.setFLUO.assert_not_called()
-    mock_manager.setCS.assert_not_called()
-    mock_manager.setILshutter.assert_not_called()
-
-    # current mode unchanged (no actuation)
+    assert len(warnings) == 1
+    assert "Failed to switch Leica stand to CS" in warnings[0]
+    assert "stand stuck" in warnings[0]
     assert controller._current_mode == "FLUO"
 
-    # warns about not switching
-    assert len(warnings) == 1
-    assert 'not switched at startup' in warnings[0]
-    assert 'CS' in warnings[0]
 
-
-def test_apply_startup_restore_no_warning_when_modes_match(controller, mock_manager):
-    """STARTUP_RESTORE with a matching mode actuates nothing and warns nothing."""
-    controller._current_mode = "FLUO"
-
+def test_invalid_saved_cube_warns_but_uses_current_valid_selection(
+    controller, mock_manager
+):
     warnings = controller.applyComponentState(
-        {"mode": "FLUO"},
-        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
-    )
-
-    mock_manager.setFLUO.assert_not_called()
-    mock_manager.setCS.assert_not_called()
-    assert warnings == []
-
-
-def test_apply_setup_mode_surfaces_failure_for_fluo(controller, mock_manager):
-    """A setFLUO that raises yields a returned warning (failure surfaced)."""
-    mock_manager.setFLUO.side_effect = RuntimeError("comm error")
-    controller._current_mode = "CS"
-
-    warnings = controller.applyComponentState(
-        {"mode": "FLUO"},
+        {
+            "mode": "FLUO",
+            "lastSelectedFluoCubeName": "MISSING",
+        },
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
     assert len(warnings) == 1
-    assert 'Failed to switch Leica stand to FLUO' in warnings[0]
-    assert 'comm error' in warnings[0]
-    # mode is NOT advanced on failure
-    assert controller._current_mode == "CS"
+    assert "is not available" in warnings[0]
+    mock_manager.setCube.assert_called_once_with(2)
 
 
-def test_apply_setup_mode_surfaces_failure_for_cs(controller, mock_manager):
-    """A setCS that raises yields a returned warning (not swallowed)."""
-    mock_manager.setCS.side_effect = RuntimeError("stand stuck")
-    controller._current_mode = "FLUO"
-
+def test_invalid_saved_port_warns_without_extra_port_actuation(
+    controller, mock_manager
+):
     warnings = controller.applyComponentState(
-        {"mode": "CS"},
+        {"mode": "FLUO", "portSide": "Top"},
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
     assert len(warnings) == 1
-    assert 'Failed to switch Leica stand to CS' in warnings[0]
-    assert 'stand stuck' in warnings[0]
-    assert controller._current_mode == "FLUO"
+    assert "Unknown Leica stand port side" in warnings[0]
+    mock_manager.setMagn1.assert_not_called()
+    mock_manager.setMagnScan.assert_not_called()
 
 
-def test_apply_unknown_mode_warns_no_actuation(controller, mock_manager):
-    """An unknown saved mode warns and actuates nothing."""
+def test_unknown_mode_warns_no_actuation(controller, mock_manager):
     warnings = controller.applyComponentState(
         {"mode": "BOGUS"},
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
-    mock_manager.setFLUO.assert_not_called()
     mock_manager.setCS.assert_not_called()
+    mock_manager.setCube.assert_not_called()
     assert len(warnings) == 1
-    assert 'Unknown Leica stand mode' in warnings[0]
+    assert "Unknown Leica stand mode" in warnings[0]
 
 
-def test_apply_none_manager_yields_warning(controller, mock_manager):
-    """A None manager yields a 'not available' warning, no raise."""
+def test_none_manager_yields_warning(controller):
     controller._manager = None
 
     warnings = controller.applyComponentState(
@@ -230,12 +366,10 @@ def test_apply_none_manager_yields_warning(controller, mock_manager):
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
-    assert len(warnings) == 1
-    assert 'not available' in warnings[0]
+    assert warnings == ["Leica stand is not available."]
 
 
-def test_apply_disconnected_manager_yields_warning(controller, mock_manager):
-    """A disconnected manager yields a 'not connected' warning, no actuation."""
+def test_disconnected_manager_yields_warning(controller, mock_manager):
     mock_manager.isConnected.return_value = False
 
     warnings = controller.applyComponentState(
@@ -243,20 +377,23 @@ def test_apply_disconnected_manager_yields_warning(controller, mock_manager):
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
-    mock_manager.setFLUO.assert_not_called()
-    assert len(warnings) == 1
-    assert 'not connected' in warnings[0]
+    mock_manager.setCS.assert_not_called()
+    assert warnings == ["Leica stand is not connected."]
 
 
 def test_describe_component_state(controller):
-    """describeComponentState returns a readable summary."""
     assert controller.describeComponentState({"mode": "FLUO"}) == ["Stand: FLUO"]
-    assert controller.describeComponentState({"mode": "CS"}) == ["Stand: CS"]
+    assert controller.describeComponentState(
+        {
+            "mode": "CS",
+            "lastSelectedFluoCubeName": "DAPI",
+            "portSide": "Right",
+        }
+    ) == ["Stand: CS", "Fluorescence cube: DAPI", "Port: Right"]
     assert controller.describeComponentState({}) == ["Stand: unknown"]
 
 
 def test_get_component_state_hazards_empty_for_both_modes(controller):
-    """getComponentStateHazards returns [] for both modes."""
     state = {"mode": "FLUO"}
 
     assert controller.getComponentStateHazards(
@@ -268,20 +405,25 @@ def test_get_component_state_hazards_empty_for_both_modes(controller):
 
 
 def test_round_trip_state(controller, mock_manager):
-    """Round-trip: snapshot CS, switch back to FLUO via SETUP_MODE_APPLY."""
     controller._current_mode = "CS"
+    controller._last_selected_fluo_cube_name = "DAPI"
+    controller._current_port_side = "Right"
     saved = controller.getComponentState()
-    assert saved == {"mode": "CS"}
 
     controller._current_mode = "FLUO"
+    controller._last_selected_fluo_cube_name = "FITC"
+    controller._current_port_side = "Left"
+
     warnings = controller.applyComponentState(
-        saved, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+        saved,
+        applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY,
     )
 
     assert warnings == []
-    mock_manager.setCS.assert_called_once_with()
     assert controller._current_mode == "CS"
-
+    assert controller._last_selected_fluo_cube_name == "DAPI"
+    assert controller._current_port_side == "Right"
+    mock_manager.setMagn1.assert_called_once_with()
 
 def test_registration_in_init_only_with_usable_manager():
     """__init__ registers LeicaStand only on the usable-manager path."""
@@ -292,8 +434,8 @@ def test_registration_in_init_only_with_usable_manager():
     # Registration call is present.
     assert "getWidgetStatePersistence().register('LeicaStand', self)" in source
 
-    # It comes after all three early-return guards (stand_manager None, mocker,
-    # _subManager None), so it is skipped on the mock/disconnected paths.
+    # It comes after the early-return guards, so it is skipped when no usable
+    # real stand manager is available.
     lines = source.split('\n')
     register_idx = next(
         i for i, ln in enumerate(lines)

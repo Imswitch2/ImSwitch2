@@ -14,16 +14,10 @@ from imswitch.imcontrol.controller.basecontrollers import (
 class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
     """Click-driven controller for LeicaStandWidget.
 
-    This controller is also a setup-mode component (``LeicaStand``) carrying the
-    FLUO/CS stand mode as state. The component-apply path (``applyComponentState``
-    with ``SETUP_MODE_APPLY``) intentionally uses the *raw* FLUO/CS sequence —
-    ``setFLUO()``/``setCS()``/``setILshutter()`` — to exactly mirror EtMonalisa's
-    event-time stand switching (see ``EtMonalisaController._switchStandToFastMode``/
-    ``_switchStandToSlowMode``). This is deliberately distinct from the richer UI
-    methods ``setFluoMode``/``setCSMode``, which also drive cube/port/diaphragm.
-    Snapshot scope is FLUO/CS mode only; the raw path is the only stand sequence
-    that is virtual-testable against the in-repo mock and must stay
-    behavior-preserving because no hardware validation is available.
+    Setup-mode application intentionally reuses the same high-level stand
+    transitions as normal widget interaction.  A saved FLUO/CS state therefore
+    restores the same cube, port, diaphragm and shutter behavior instead of
+    using a second setup-mode-only hardware sequence.
     """
 
     # StatefulComponentMixin attributes
@@ -36,11 +30,6 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
 
     FLUO_SHUTTER_DELAY_MS = 800
 
-    # Blocking settle after setFLUO() before opening the IL shutter, replicating
-    # EtMonalisa's _sleepPumpingEvents(1.0) so the component-apply path matches
-    # the event-time stand sequence byte-for-byte.
-    FLUO_SETTLE_SECONDS = 1.0
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.__logger = initLogger(self, tryInheritParent=True)
@@ -48,6 +37,7 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
         self._manager = None
         self._last_selected_fluo_cube_name = None
         self._current_mode = "FLUO"
+        self._current_port_side = "Left"
 
         stand_manager = getattr(self._master, "standManager", None)
 
@@ -79,8 +69,12 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
     # ── Setup-mode component interface ──────────────────────────────────── #
 
     def getComponentState(self) -> dict:
-        """Snapshot the current stand mode (FLUO/CS only)."""
-        return {"mode": self._current_mode}
+        """Snapshot the stand state needed to reproduce normal widget behavior."""
+        return {
+            "mode": self._current_mode,
+            "lastSelectedFluoCubeName": self._last_selected_fluo_cube_name,
+            "portSide": self._current_port_side,
+        }
 
     def applyComponentState(
         self,
@@ -88,39 +82,64 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
         *,
         applyMode: ComponentStateApplyMode,
     ) -> list[str]:
-        """Restore the stand mode from a snapshot.
+        """Restore stand state from a snapshot.
 
         STARTUP_RESTORE:
-        - Does NOT actuate the stand. If the saved mode differs from the current
-          tracked mode, append a warning noting it was not switched at startup.
+        - Does NOT actuate the stand.
+        - Restores harmless remembered cube/port selections.
+        - Warns if the saved physical mode differs from the tracked mode.
 
         SETUP_MODE_APPLY:
-        - Switches to ``state['mode']`` using the *raw* FLUO/CS sequence that
-          mirrors EtMonalisa's event-time hooks (setFLUO -> blocking settle ->
-          setILshutter(1) for FLUO; setCS for CS). Manager calls are wrapped so a
-          failure surfaces as a returned warning rather than being swallowed —
-          making stand failures visible is the point of this component.
+        - Restores saved FLUO cube and port selections when present.
+        - Uses the same high-level FLUO/CS transition implementation as widget
+          interaction, with fail-fast manager calls so hardware errors are
+          surfaced as setup-mode warnings.
 
         Returns:
             List of warning strings (empty if fully successful).
         """
-        if self._manager is None:
-            return ["Leica stand is not available."]
-
-        if not self._manager.isConnected():
-            self._widget.setConnected(False)
-            return ["Leica stand is not connected."]
-
         if not isinstance(state, dict):
             return ["Saved Leica stand state is not a dictionary."]
 
+        warnings = []
         mode = state.get("mode")
+        cube_name = state.get("lastSelectedFluoCubeName")
+        port_side = state.get("portSide")
+
+        valid_cube = None
+        if cube_name is not None:
+            cube_name_to_slot = getattr(self, "_cube_name_to_slot", {})
+            if cube_name not in cube_name_to_slot:
+                warnings.append(
+                    f'Leica fluorescence cube "{cube_name}" is not available.'
+                )
+            else:
+                valid_cube = cube_name
+
+        valid_port = None
+        if port_side is not None:
+            if port_side not in ("Left", "Right"):
+                warnings.append(
+                    f'Unknown Leica stand port side "{port_side}".'
+                )
+            else:
+                valid_port = port_side
 
         if mode not in ("FLUO", "CS"):
-            return [f'Unknown Leica stand mode "{mode}"; stand not switched.']
+            warnings.append(
+                f'Unknown Leica stand mode "{mode}"; stand not switched.'
+            )
+            return warnings
 
         if applyMode == ComponentStateApplyMode.STARTUP_RESTORE:
-            warnings = []
+            if valid_cube is not None:
+                self._last_selected_fluo_cube_name = valid_cube
+                self._widget.setCurrentCube(valid_cube)
+
+            if valid_port is not None:
+                self._current_port_side = valid_port
+                self._widget.setCurrentPortSide(valid_port)
+
             if mode != self._current_mode:
                 warnings.append(
                     f'Leica stand not switched at startup: '
@@ -128,31 +147,56 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
                 )
             return warnings
 
-        # SETUP_MODE_APPLY: raw FLUO/CS sequence mirroring EtMonalisa's hooks.
+        if self._manager is None:
+            return warnings + ["Leica stand is not available."]
+
+        if not self._manager.isConnected():
+            self._widget.setConnected(False)
+            return warnings + ["Leica stand is not connected."]
+
+        # Restore the selected FLUO cube before the mode transition because the
+        # FLUO transition itself consumes this selection.
+        if valid_cube is not None:
+            self._last_selected_fluo_cube_name = valid_cube
+            self._widget.setCurrentCube(valid_cube)
+
         try:
             if mode == "FLUO":
-                self._manager.setFLUO()
-                self._sleepPumpingEvents(self.FLUO_SETTLE_SECONDS)
-                self._manager.setILshutter(1)
+                self._performFluoModeTransition(
+                    raiseOnError=True,
+                    waitForShutter=True,
+                )
             else:  # mode == "CS"
-                self._manager.setCS()
+                self._performCSModeTransition(raiseOnError=True)
+
+            # Port side is an independent saved selection.  Apply it after the
+            # mode transition because CS mode itself normalizes the port to Left.
+            if valid_port is not None:
+                self.setPortSideByName(valid_port, raiseOnError=True)
         except Exception as e:
             self.__logger.error(f"Failed to switch Leica stand to {mode}: {e}")
             self._widget.setConnected(self._manager.isConnected())
-            return [f"Failed to switch Leica stand to {mode}: {e}"]
+            warnings.append(f"Failed to switch Leica stand to {mode}: {e}")
+            return warnings
 
-        self._current_mode = mode
-        self._widget.setMode(self._current_mode)
         self._widget.setConnected(self._manager.isConnected())
-        return []
+        return warnings
 
     def describeComponentState(self, state: dict) -> list[str]:
-        """Human-readable summary of a saved stand mode."""
+        """Human-readable summary of a saved stand state."""
         state = state or {}
         mode = state.get("mode")
-        if mode in ("FLUO", "CS"):
-            return [f"Stand: {mode}"]
-        return ["Stand: unknown"]
+        lines = [f"Stand: {mode}" if mode in ("FLUO", "CS") else "Stand: unknown"]
+
+        cube_name = state.get("lastSelectedFluoCubeName")
+        if cube_name:
+            lines.append(f"Fluorescence cube: {cube_name}")
+
+        port_side = state.get("portSide")
+        if port_side:
+            lines.append(f"Port: {port_side}")
+
+        return lines
 
     def getComponentStateHazards(
         self,
@@ -166,11 +210,7 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
 
     @staticmethod
     def _sleepPumpingEvents(seconds: float) -> None:
-        """Block for ``seconds`` while keeping the Qt event loop responsive.
-
-        Mirrors ``EtMonalisaController._sleepPumpingEvents`` so the FLUO settle
-        in the component-apply path matches the event-time stand sequence.
-        """
+        """Block briefly while keeping the Qt event loop responsive."""
         deadline = time.monotonic() + max(0.0, seconds)
         while True:
             remaining = deadline - time.monotonic()
@@ -211,16 +251,19 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
             self._widget.setCurrentCube(self._last_selected_fluo_cube_name)
 
         self._widget.setCurrentPortSide("Left")
+        self._current_port_side = "Left"
         self._widget.setMode(self._current_mode)
         self._widget.setConnected(self._manager.isConnected())
 
-    def _safe_call(self, func, *args):
+    def _safe_call(self, func, *args, raiseOnError=False):
         try:
             result = func(*args)
             self._widget.setConnected(self._manager.isConnected())
             return result
         except Exception:
             self._widget.setConnected(self._manager.isConnected())
+            if raiseOnError:
+                raise
             return None
 
     def setMode(self, mode):
@@ -239,55 +282,101 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
 
         return None
 
-    def setFluoMode(self):
+    def _performFluoModeTransition(
+        self,
+        *,
+        raiseOnError=False,
+        waitForShutter=False,
+    ):
+        """Run the normal widget FLUO transition.
+
+        ``waitForShutter`` is used by setup-mode application so the delayed
+        shutter operation completes before the apply is reported successful.
+        Interactive use keeps the existing non-blocking QTimer behavior.
+        """
         if not self._manager.isConnected():
             self._widget.setConnected(False)
+            if raiseOnError:
+                raise RuntimeError("Leica stand is not connected")
             return
 
-        self._safe_call(self._manager.setCS)
+        self._safe_call(self._manager.setCS, raiseOnError=raiseOnError)
 
         cube_name = self._get_selected_fluo_cube_name()
         if cube_name:
             slot = self._cube_name_to_slot.get(cube_name)
             if slot:
-                self._safe_call(self._manager.setCube, slot)
+                self._safe_call(
+                    self._manager.setCube,
+                    slot,
+                    raiseOnError=raiseOnError,
+                )
 
-        self._safe_call(self._manager.setILFieldDiaphragm, 12)
-        self._safe_call(self._manager.setCameraPort)
-
-        QtCore.QTimer.singleShot(
-            self.FLUO_SHUTTER_DELAY_MS, self._finishSetFluoMode
+        self._safe_call(
+            self._manager.setILFieldDiaphragm,
+            12,
+            raiseOnError=raiseOnError,
         )
+        self._safe_call(self._manager.setCameraPort, raiseOnError=raiseOnError)
+
+        if waitForShutter:
+            self._sleepPumpingEvents(self.FLUO_SHUTTER_DELAY_MS / 1000.0)
+            self._finishSetFluoMode(raiseOnError=raiseOnError)
+        else:
+            QtCore.QTimer.singleShot(
+                self.FLUO_SHUTTER_DELAY_MS,
+                self._finishSetFluoMode,
+            )
 
         self._current_mode = "FLUO"
         self._widget.setMode(self._current_mode)
 
-    def _finishSetFluoMode(self):
+    def setFluoMode(self):
+        return self._performFluoModeTransition()
+
+    def _finishSetFluoMode(self, *, raiseOnError=False):
         if not self._manager.isConnected():
             self._widget.setConnected(False)
+            if raiseOnError:
+                raise RuntimeError(
+                    "Leica stand disconnected before opening illumination shutter"
+                )
             return
 
-        self._safe_call(self._manager.setILshutter, 1)
+        self._safe_call(
+            self._manager.setILshutter,
+            1,
+            raiseOnError=raiseOnError,
+        )
 
-    def setCSMode(self):
+    def _performCSModeTransition(self, *, raiseOnError=False):
+        """Run the normal widget CS transition."""
         if not self._manager.isConnected():
             self._widget.setConnected(False)
+            if raiseOnError:
+                raise RuntimeError("Leica stand is not connected")
             return
 
-        self._safe_call(self._manager.setCS)
+        self._safe_call(self._manager.setCS, raiseOnError=raiseOnError)
 
         if "EMP_BF" in self._cube_name_to_slot:
             self._safe_call(
-                self._manager.setCube, self._cube_name_to_slot["EMP_BF"]
+                self._manager.setCube,
+                self._cube_name_to_slot["EMP_BF"],
+                raiseOnError=raiseOnError,
             )
 
-        self._safe_call(self._manager.setCameraPort)
-        self._safe_call(self._manager.setMagnScan)
+        self._safe_call(self._manager.setCameraPort, raiseOnError=raiseOnError)
+        self._safe_call(self._manager.setMagnScan, raiseOnError=raiseOnError)
 
         self._widget.setCurrentPortSide("Left")
+        self._current_port_side = "Left"
 
         self._current_mode = "CS"
         self._widget.setMode(self._current_mode)
+
+    def setCSMode(self):
+        return self._performCSModeTransition()
 
     def setCubeByName(self, cube_name):
         if cube_name not in self._cube_name_to_slot:
@@ -299,12 +388,25 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
             slot = self._cube_name_to_slot[cube_name]
             self._safe_call(self._manager.setCube, slot)
 
-    def setPortSideByName(self, value):
+    def setPortSideByName(self, value, *, raiseOnError=False):
         if not self._manager.isConnected():
             self._widget.setConnected(False)
+            if raiseOnError:
+                raise RuntimeError("Leica stand is not connected")
             return
 
         if value == "Left":
-            self._safe_call(self._manager.setMagnScan)
+            self._safe_call(
+                self._manager.setMagnScan,
+                raiseOnError=raiseOnError,
+            )
         elif value == "Right":
-            self._safe_call(self._manager.setMagn1)
+            self._safe_call(
+                self._manager.setMagn1,
+                raiseOnError=raiseOnError,
+            )
+        else:
+            return
+
+        self._current_port_side = value
+        self._widget.setCurrentPortSide(value)
