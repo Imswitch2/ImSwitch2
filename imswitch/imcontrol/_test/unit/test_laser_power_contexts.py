@@ -160,6 +160,14 @@ def test_laser_power_mode_resolves_from_category_settings():
     assert laserPowerModeFromSetup(setup) is LaserPowerMode.SEPARATED
 
 
+def test_misspelled_laser_power_mode_in_setup_falls_back_to_coupled(caplog):
+    setup = ViewSetupInfo(deviceCategorySettings={
+        "lasers": {"powerMode": "seperated"}
+    })
+    assert laserPowerModeFromSetup(setup) is LaserPowerMode.COUPLED
+    assert "seperated" in caplog.text
+
+
 def test_context_api_uses_explicit_setting_names():
     # get/setLaserPower were introduced only by the Live/Scan work and are
     # intentionally not retained as ambiguous public aliases.
