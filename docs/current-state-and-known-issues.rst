@@ -30,8 +30,9 @@ Where the Project Is
 ImSwitch2 runs the microscopes it was built for.  The real-world setup
 validation planned during the migration from ImSwitch — the etSTED,
 MoNaLISA 1 and 2, WidefieldSTARSS and SNOUTY rigs — has been carried out
-successfully, and pull requests that touch hardware are tested on a real rig
-before they merge.  The main open workstream is the scanning engine work
+successfully.  Every pull request is reviewed by at least one person besides
+its author, and that reviewer is a maintainer who tests it on their own
+microscope before it merges.  The main open workstream is the scanning engine work
 (scan engines and the expert scan, on their own branch) and the remaining
 galvo/DAQ items below.
 
@@ -43,8 +44,9 @@ Hardware validation
 
 The no-hardware tests in CI do not exercise physical timing, laser emission,
 stage movement or DAQ output, so anything that times lasers, scans, triggers
-or stage moves is tested on a rig before it merges, and its pull request says
-which.  The rig runs themselves are not yet written up in the documentation.
+or stage moves is covered by the maintainer review on a real microscope
+described above.  Those rig runs are not yet written up in the
+documentation.
 
 Scanning and galvo modernization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
