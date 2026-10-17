@@ -60,38 +60,38 @@ deleted (`git log -- <path>` recovers them). Not carried over: the
 per-device manager and widget inventories, the controller-to-manager matrix
 and the Teensy wire protocol summary (the firmware repository owns it).
 
-## WP-2 Docs folds, changelog, current state
+## WP-2 Docs folds, changelog, current state -- DONE
 
-1. Fold into rst and delete the md:
-   - `docs/HAMAMATSU_ADVANCED_PROPERTIES.md` → `gui.rst` Settings section
-     (Advanced Properties tab, safety rules) + one line on the Hamamatsu
-     card in `devices/detectors.rst`.
-   - `docs/triggerscope_firmware_quirks.md` → a *Firmware quirks* subsection
-     on the TriggerScope cards (`devices/positioners.rst`); items 1, 3, 5
-     are still live, re-verify 2 and 4.
-   - `docs/state_persistence_contract_spec.md` → new
-     `docs/state-persistence.rst` under *Extending ImSwitch2* (the
-     `StatefulComponentMixin` contract, hardware-active exclusions).
-   - The contract tables of `docs/design/plans/acquisition-layout-contract.md`
-     → `scan-lifecycle.rst` or `Hdf5datafile.rst` (layout metadata keys
-     readers rely on); then delete the plan once the rig pass of
-     `acquisition-layout-rig-validation.md` is done.
-2. `changelog.rst`: everything since v0.1.0 sits under *Unreleased*. Split it
-   at the `v0.2.0` and `v0.3.0` tags (`git log v0.2.0..v0.3.0`). Label the
-   ImSwitch 1.x section "Upstream history".
-3. `current-state-and-known-issues.rst` now carries the roadmap's open items
-   (*Open work*). Re-verify each known issue there against the code, and
-   settle two **DECISION**s left from the roadmap: keep or drop the long-range
-   scanning items (feedback-based pixel binning, sinusoidal fast axis,
-   automatic lag calibration). Per-rig setup validation is DONE (all rigs,
-   2026; every recent hardware PR was rig-tested) but undocumented — a short
-   write-up page is welcome if the evidence exists, never invented.
-4. Screenshots: add `.. image::` for `auto/SLMsWidget.png`,
-   `auto/TriggerScopeRasterWidget.png`,
-   `auto/TriggerScopePLSRMulticolorWidget.png` in `gui.rst`.
-5. `docs/microscope-kb/` is ScopeAId tooling data, not docs: move it next to
-   `utility_scripts/scopeaid_seed_from_config.py` (update its path at ~l.620).
-6. `docs/conf.py`: read `version`/`release` from `imswitch.__version__`.
+Commits on `chore/cleanup-docs`: `bfd7ba00c` (Hamamatsu), `c10425bf7`
+(TriggerScope quirks, three unused screenshots), `ee9dad154` (state
+persistence page), `53bc80d08` (acquisition layout), `bd1eb88ae` (changelog),
+`29b5d37cc` (current state), `e9909fa01` (`conf.py` version). The five
+markdown notes and the two layout rig notes are deleted
+(`git log -- <path>` recovers them).
+
+Deliberately left:
+
+- The Hamamatsu note is in `gui.rst` (Settings widget) with a pointer from
+  `devices/detectors.rst`. The TriggerScope quirks are a *Firmware quirks*
+  subsection of the TriggerScope panels in `gui.rst`, not on
+  `devices/positioners.rst`, which has no TriggerScope card. The firmware is
+  not in this repository, so quirks 1, 3 and 5 rest on the old note and the
+  panel docs; quirk 2 (a "not a bug" remark) was dropped, quirk 4 is verified
+  against `trimRasterLengthForFirmwareBoundary`.
+- The acquisition layout section in `Hdf5datafile.rst` carries the schema, the
+  stored keys, validation, completeness markers and the resolver precedence.
+  The plan's delivery sequence, test matrix, producer and reconstructor
+  preflight sections, and the 2026 audit history were not carried over.
+- `current-state-and-known-issues.rst`: every known issue still holds, except
+  that the event-triggered signals are named instead of counted. The
+  `test_snouty.py` CI ignore is still in `ci.yml` (the file passes locally on
+  macOS; the CI failure was not reproduced). Left for the maintainer: the two
+  **DECISION**s on the long-range scanning items (feedback-based pixel binning,
+  sinusoidal fast axis, automatic lag calibration), and the per-rig validation
+  write-up (no evidence is in the repository).
+- `changelog.rst` is split at the tags by the commit that first added each
+  bullet (all bullets placed; the two "A fresh install loads ImProcess..."
+  bullets differ in wording and were both kept). `docs/microscope-kb/` is WP-7.
 
 ## WP-3 Retire the PointScan scan widget
 
@@ -246,7 +246,7 @@ work with an owner or go. Current status (2026-10-17):
 
 | Plan | Remaining |
 |---|---|
-| `acquisition-layout-contract.md`, `acquisition-layout-rig-*.md` | rig pass only (fold tables per WP-2) |
+| `acquisition-layout-contract.md`, `acquisition-layout-rig-*.md` | deleted by WP-2 (contract now in `Hdf5datafile.rst`) |
 | `acquisition-metadata-channel-retirement.md` | P3 (stop writing category-A `ScanStage:*`/`ScanTTL:*` behind a switch), P4 |
 | `config-editor-discovery-and-schema.md` | Phase 4 CLI, Phase 5 partial, Phase 6 — re-verify, lots landed since |
 | `detector-acquisition-selection.md` | Phase 5 behind a hardware smoke gate; 17 code citations |
