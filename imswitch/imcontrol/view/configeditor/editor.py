@@ -287,6 +287,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "channel-split",
     "colocalization",
     "convert-type",
+    "deconvolve-rl",
     "denoise",
     "drift-correct",
     "filter",
