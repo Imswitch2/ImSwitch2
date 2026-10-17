@@ -42,6 +42,7 @@ from typing import Dict, List, Optional, Tuple
 from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface
+from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.managers.pulsegen.PulseGeneratorManager import PulseStep
 from imswitch.imcontrol.model.managers.pulsegen.loader import pulse_generator_named
 from imswitch.imcontrol.model.scan_program.engine import (
@@ -119,6 +120,7 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
         super().__init__()
         props = dict(getattr(engineInfo, 'managerProperties', None) or {})
         self.name = name
+        self.__logger = initLogger(self, instanceName=name)
         key = props.get('pulseGenerator')
         self._generator, available = pulse_generator_named(lowLevelManagers, key)
         if self._generator is None:
@@ -138,6 +140,10 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
         self._prepared: Optional[CompiledSequence] = None
         self._stopping = False
         self._failure: Optional[str] = None
+        #: ``{channel: error}``: lines whose off level the generator did not
+        #: take, so their state is unknown; tried again at the next stop, run
+        #: or close until it takes.
+        self._unknownLines: Dict[int, str] = {}
         self._thread: Optional[threading.Thread] = None
         # The engine plays the sequence in its own thread with the generator
         # blocking, and decides there how it ended; the generator's failure
@@ -300,16 +306,20 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
                                  for w in program.waits) else 'none'
         return CompiledSequence(program, schedule, steps, repeats, trigger, report, lines)
 
-    def _off_mask(self) -> int:
-        """Every owned line at its off level: high for an active-low device."""
-        mask = 0
+    def _line_owners(self) -> Dict[int, str]:
+        """``{channel: device}`` for the owned lines a laser or detector is on."""
         owners = {}
         for section in ('lasers', 'detectors'):
             for name, info in (getattr(self._setupInfo, section, None) or {}).items():
                 line = getattr(info, 'digitalLine', None)
                 if line is not None and self.owns(str(line)):
                     owners[self._lines[str(line)]] = name
-        for channel, device in owners.items():
+        return owners
+
+    def _off_mask(self) -> int:
+        """Every owned line at its off level: high for an active-low device."""
+        mask = 0
+        for channel, device in self._line_owners().items():
             if self._active_low(device):
                 mask |= 1 << channel
         return mask
@@ -374,6 +384,10 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
             raise RuntimeError(f'{self.name}: nothing prepared to run.')
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError(f'{self.name} is running.')
+        if self._unknownLines and self._safeState():
+            # The last run's end, or a stop, could not turn them off; a new
+            # run would start from outputs nobody knows.
+            raise RuntimeError(f'{self._unknownReason()} Not starting a run.')
         self._stopping = False
         self._failure = None
         if blocking:
@@ -391,8 +405,12 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
             self._generator.run(n_reps=compiled.n_reps, blocking=True, **kwargs)
         except Exception as error:
             self._failure = str(error)
-        # The board leaves its last step's state on the wire when it is done.
-        self._safeState()
+        # The board leaves its last step's state on the wire when it is done;
+        # a line that does not take its off level fails the run: it may still
+        # be on (a laser emitting), and saying "done" would hide that.
+        if self._safeState():
+            unknown = self._unknownReason()
+            self._failure = unknown if self._failure is None else f'{self._failure}; {unknown}'
         # The run's end, as every engine signals it (ScanEngine).
         if self._failure is not None:
             self.sigScanFailed.emit(self._failure)
@@ -413,16 +431,54 @@ class PulseGeneratorScanEngine(SignalInterface, ScanEngine):
     def abort(self) -> str:
         self._stopping = True
         self._generator.stop()
-        self._safeState()
+        running = self._thread is not None and self._thread.is_alive()
+        if self._safeState() and not running:
+            # During a run a refused write is expected (the board is still
+            # playing) and the run's own end tries again and reports; with no
+            # run, nothing else will.
+            self.__logger.error(self._unknownReason())
         return self._generator.stop_granularity or 'unknown'
 
-    def _safeState(self):
+    def finalize(self):
+        """At close: stop a run and put every line at its off level. False
+        while a run is still going or a line's state is unknown, so that the
+        close tries again."""
+        if self._thread is not None and self._thread.is_alive():
+            self.abort()
+        running = self._thread is not None and self._thread.is_alive()
+        if running:
+            self.__logger.error(f'{self.name} is still running at close; its run ends at '
+                                'the next step boundary.')
+        if self._safeState():
+            self.__logger.error(self._unknownReason())
+            return False
+        return not running
+
+    def _safeState(self) -> Dict[int, str]:
+        """Every owned line to its off level, each one tried. Returns the
+        lines the generator did not take, ``{channel: error}``, and keeps them
+        as the lines whose state is unknown."""
         off = self._off_mask()
+        unknown = {}
         for channel in self._lines.values():
             try:
                 self._generator.setDigital(channel, bool(off >> channel & 1))
-            except Exception:   # still running; the run's own end sets it
-                pass
+            except Exception as error:
+                unknown[channel] = str(error) or type(error).__name__
+        self._unknownLines = unknown
+        return unknown
+
+    def unknownLines(self) -> Dict[int, str]:
+        """The lines whose state is unknown since a refused off-level write."""
+        return dict(self._unknownLines)
+
+    def _unknownReason(self) -> str:
+        owners = self._line_owners()
+        lines = ', '.join(
+            f'line {channel}' + (f' ({owners[channel]})' if channel in owners else '')
+            + f': {error}' for channel, error in sorted(self._unknownLines.items()))
+        return (f'{self.name} did not take the off level of {lines}; their state is '
+                'unknown (a laser may still be on).')
 
     def _recordFailure(self, reason):
         self._failure = str(reason)

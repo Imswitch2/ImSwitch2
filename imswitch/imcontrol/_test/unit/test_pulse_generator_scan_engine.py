@@ -8,6 +8,7 @@ the program means. Every refusal the plan lists is checked, with the
 capacity edge (256 steps fit, 257 do not).
 """
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -400,6 +401,90 @@ def test_a_stop_leaves_every_line_off(qtbot):
     assert engine.join(5.0)
     assert not any(driver.pin_states.values())
     qtbot.waitUntil(lambda: stopped == [True], timeout=2000)   # sent from the run thread
+
+
+def _ends(engine):
+    ends = []
+    engine.sigScanStopped.connect(lambda: ends.append('stopped'))
+    engine.sigScanDone.connect(lambda: ends.append('done'))
+    engine.sigScanFailed.connect(lambda reason: ends.append(('failed', reason)))
+    return ends
+
+
+def _refusing(engine, channels):
+    """The generator refuses to set ``channels`` (a serial write failing)."""
+    setDigital = engine._generator.setDigital
+
+    def setDigitalOr(channel, value):
+        if channel in channels:
+            raise OSError('serial write failed')
+        return setDigital(channel, value)
+    engine._generator.setDigital = setDigitalOr
+
+
+def test_a_line_left_on_that_does_not_turn_off_fails_the_run(qtbot):
+    """Both lasers are on through the last step; L405's off write fails. The
+    run fails naming it, L488 is still turned off, the line stays unknown,
+    no new run starts on it, and the close reports it until it turns off
+    (review 2026-10-17, P1)."""
+    engine = _engine()
+    program = ScanProgram(
+        loops=(Loop('frame', 'time', 1),), drives=(), step_s=1e-3,
+        timeline=(TimelineEvent('L405', 'ttl', 0.0, 1e-3, during='any'),
+                  TimelineEvent('L488', 'ttl', 0.0, 1e-3, during='any')),
+        timing_policy='strict-v1')
+    engine.prepare(engine.compile(program, CHANNELS))
+    ends = _ends(engine)
+    refused = {LINES['L405']}
+    _refusing(engine, refused)
+    engine.run(blocking=True)
+    assert len(ends) == 1 and ends[0][0] == 'failed'
+    assert 'line 0 (L405)' in ends[0][1] and 'unknown' in ends[0][1]
+    pins = engine._generator.driver.pin_states
+    assert pins[LINES['L405']] is True              # as the board left it
+    assert pins[LINES['L488']] is False             # every line is tried
+    assert engine.unknownLines() == {LINES['L405']: 'serial write failed'}
+    with pytest.raises(RuntimeError, match='Not starting a run'):
+        engine.run()
+    assert engine.finalize() is False
+    refused.clear()
+    assert engine.finalize() is True
+    assert engine.unknownLines() == {}
+    assert pins[LINES['L405']] is False
+
+
+def test_a_stop_refused_while_the_board_plays_is_tried_again_at_the_runs_end(qtbot):
+    """A stop's own off writes may be refused while the board still plays:
+    that is deferred, not a failure -- the run's end sets the lines, and the
+    run ends stopped."""
+    engine = _engine()
+    program = ScanProgram(
+        loops=(Loop('frame', 'time', 200),), drives=(), step_s=10e-3,
+        timeline=(TimelineEvent('L405', 'ttl', 0.0, 10e-3, during='any'),),
+        timing_policy='strict-v1')
+    engine.prepare(engine.compile(program, CHANNELS))
+    driver = engine._generator.driver
+    applied = driver._set_pin
+    driver._set_pin = lambda ch, wanted, source='seq': (
+        None if source == 'stop' else applied(ch, wanted, source=source))
+    driver.simulated_step_delay_s = 1e-3
+    setDigital = engine._generator.setDigital
+
+    def refusedWhilePlaying(channel, value):
+        thread = engine._thread
+        if (thread is not None and thread.is_alive()
+                and threading.current_thread() is not thread):
+            raise RuntimeError('a sequence is running')
+        return setDigital(channel, value)
+    engine._generator.setDigital = refusedWhilePlaying
+    ends = _ends(engine)
+    engine.run(blocking=False)
+    engine.abort()
+    assert engine.join(5.0)
+    qtbot.waitUntil(lambda: 'done' in ends, timeout=2000)
+    assert ends == ['stopped', 'done']
+    assert not any(driver.pin_states.values())
+    assert engine.unknownLines() == {}
 
 
 def test_the_teensy_declares_what_the_engine_needs():
