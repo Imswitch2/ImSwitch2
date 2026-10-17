@@ -826,12 +826,13 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Six widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
-``Advanced``, ``SimplePointScan`` and ``Expert`` — selected by
-``scan.scanWidgetType`` in the setup JSON; see :doc:`setupinfo-reference`.
-``Expert`` edits a whole scan program (dimensions, positioners, what happens
-within one step, pauses and triggers, recording) and runs it on the scan
-engine its devices are on; see :doc:`expert-scanning`. ``SimplePointScan`` is a
+Five scan widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
+``Advanced`` and ``Expert`` — selected by ``scan.scanWidgetType``. An optional
+``scan.cloak`` selects a compatible simplified frontend; see
+:doc:`setupinfo-reference`. ``Expert`` edits a whole scan program (dimensions,
+positioners, what happens within one step, pauses and triggers, recording) and
+runs it on the scan engine its devices are on; see :doc:`expert-scanning`.
+``SimplePointScan`` is a
 beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
 its header switches between the two, on the same scan.
 
@@ -857,6 +858,36 @@ its header switches between the two, on the same scan.
 ``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware; its
 simulated APDs image a synthetic sample, so the region drawn on the overview
 is visibly the region acquired.
+
+``SimpleMoNaLISA`` is the profile-driven MoNaLISA cloak over Advanced. Its
+profile selector chooses an ordered illumination recipe while the mode selector
+enables a subset of that recipe (for example RESOLFT versus Confocal). Sequence
+steps have ON/OFF/READOUT/CUSTOM roles, but roles may repeat and a step may
+drive several TTL devices synchronously. A mode may also enable only selected
+devices inside one enabled step, which supports alignment pulses where several
+lasers share one timing window. The ``…`` menu beside Profile creates,
+duplicates, edits, renames and deletes profiles in the active setup. Profile
+editing changes setup configuration, whereas normal duration/geometry edits
+change only the current acquisition. Advanced edits that no longer match the
+explicitly selected profile/mode return Simple to **Advanced / custom** rather
+than silently selecting another profile. With separated Live/Scan laser powers,
+the top Live role row lets ON/OFF/Readout roles participate independently.
+Those checkboxes change only laser enable state; power stays editable in the
+Laser widget. **Live**, **Stop** and **Acquire** stay together in the top action
+row. Live keeps the existing camera acquisition running but switches the Readout
+camera to internal trigger, Stop switches off only the screening lasers, and
+Acquire uses external frame trigger plus the normal scan powers. The Live action
+is disabled for coupled laser-power setups. **Setup…** opens persistent setup
+editing, including detector-derived FOV/readout policies and slider ranges.
+Camera-derived FOV/readout track the current detector ROI/timings; camera
+readout is shown read-only in Simple and Auto/Manual editing stays in Setup.
+uLens period is either fixed by
+setup or owned by the selected profile (never by a mode), while a profile may
+independently choose one-uLens or manual lateral scan extent. The sequence view
+is role-first and wavelength-coloured for ON/OFF/READOUT steps. CUSTOM steps
+show their active non-detector device names directly, one badge per device,
+while a separate red acquisition marker appears automatically on any step that
+drives a detector.
 
 Controls shared by the variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

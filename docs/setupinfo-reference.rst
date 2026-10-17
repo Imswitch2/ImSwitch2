@@ -345,14 +345,19 @@ Required if you want to use the ``Scan`` widget.
 
 Key fields:
 
-* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``,
-  ``"MoNaLISA"``, ``"Advanced"``, ``"SimplePointScan"``, ``"Expert"`` or
+* ``scanWidgetType``: Real scan backend/widget — one of ``"Base"``,
+  ``"PointScan"``, ``"MoNaLISA"``, ``"Advanced"``, ``"Expert"`` or
   ``"TriggerScope"``. ``"Expert"`` edits scan programs and compiles them on
   the scan engine (:doc:`expert-scanning`); it uses no signal designers, so
   ``scanDesigner`` and ``TTLCycleDesigner`` can be ``null``.
   ``"TriggerScope"`` runs scans on the TriggerScope board (see `triggerScope`_)
   from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
-  ``SimplePointScan`` is a beginner's point-scan panel (overview and acquisition modes) that runs on the Advanced scan path; pair it with ``GalvoScanDesigner`` and ``AdvancedScanTTLCycleDesigner``.
+* ``cloak``: Optional simplified frontend over that backend. ``"SimplePointScan"``
+  and ``"SimpleMoNaLISA"`` are registered for ``"Advanced"``. PointScan has
+  overview and acquisition scan modes; SimpleMoNaLISA keeps one acquisition scan
+  plan and adds a non-scan Live screening workflow.
+  Old setups that used ``scanWidgetType: "SimplePointScan"`` are still accepted
+  while they migrate.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer.
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and
@@ -406,7 +411,71 @@ Key fields:
   * ``minSamplesPerPixel``: the shortest dwell in samples (default 2);
   * ``maxDwellMs``: the dwell slider's longest value (default 10 ms).
 
-  Other scan panels ignore the block.
+  Other scan panels ignore the ``simplePointScan`` block.
+
+* ``simpleMoNaLISA``: Setup facts and profile definitions for the
+  ``SimpleMoNaLISA`` cloak. FOV has an explicit source: ``fovSource`` is
+  ``"detector"`` (default) or ``"manual"``; detector mode derives FOV from the
+  active profile camera ROI while ``fovUm`` remains the persisted fallback.
+
+  Camera readout timing is inherited rather than continuously automatic.
+  ``defaultCameraReadoutTimeMs`` is the setup default and a profile may define
+  ``cameraReadoutTimeMs`` to override it. The active camera's reported Readout
+  time is diagnostic only: the Simple panel compares the effective profile
+  timing against ``detector readout + cameraReadoutSafetyMarginMs`` (default
+  0.1 ms). Differences smaller than ``cameraReadoutToleranceMs`` (default
+  0.1 ms) are ignored; a safe value is only flagged as slower than needed when
+  it exceeds the recommendation by more than
+  ``cameraReadoutUnoptimizedThresholdMs`` (default 0.3 ms). **Auto** explicitly
+  writes the current safe recommendation into the active profile; it is not a
+  persistent automatic mode. Older ``cameraReadoutTimeMs`` setup values are
+  accepted as compatibility fallbacks for ``defaultCameraReadoutTimeMs``.
+  **Setup…** edits these defaults/margins and saves them into the active setup
+  file. Inter-pulse delay is likewise setup-only and is not exposed as a run
+  control.
+  ``readoutPulseTimeMs`` is also setup-owned: it sets the duration of every
+  semantic ``READOUT`` illumination step, is clamped to a minimum of 1 ms, and
+  is edited from **Setup…** rather than from the profile or run controls.
+
+  ``ulensPeriodPolicy`` is ``"fixed"`` or ``"per_profile"``. Fixed setups use
+  the setup-level ``ulensPeriodUm``. Per-profile setups require each usable
+  profile to define ``ulensPeriodUm``. Modes never redefine the period. Lateral
+  scan extent is a separate profile property: ``scanExtentSource: "ulens"``
+  keeps the normal one-period acquisition, while ``"manual"`` uses
+  ``scanExtentUm`` as the profile default and permits the live scan length to be
+  edited (for example for alignment acquisitions).
+
+  ``sliderRanges`` optionally configures the visual slider endpoints without
+  restricting exact spin-box entry. Supported keys are ``pixelSizeNm``,
+  ``lateralScanLengthUm``, ``zStepNm``, ``zScanLengthUm`` and
+  ``stepDurationMs``. They are editable from **Setup…**.
+
+  ``profiles`` is a map of named MoNaLISA profiles and ``defaultProfile`` selects
+  the startup one. Each profile contains an ordered ``steps`` list. Every step
+  has a required ``role`` (``on``, ``off``, ``readout`` or ``custom``), one or
+  more synchronized ``ttlDevices``, ``defaultDurationMs`` and
+  ``durationEditable``. For ``readout`` steps the setup-level
+  ``readoutPulseTimeMs`` overrides the profile duration fields. Roles may repeat.
+  ``modes`` select subsets of those steps
+  while keeping profile order; optional ``enabledDevices`` can select only some
+  devices inside an enabled step. There is no implicit/legacy profile mapping:
+  if ``profiles`` is omitted or empty, SimpleMoNaLISA remains restricted until
+  the user creates a profile.
+
+  Profiles can be created, duplicated, edited, renamed and deleted live and are
+  persisted into the active setup. Normal run edits (pixel size, manual scan
+  length, Z range/step and editable sequence durations) remain transient
+  acquisition state. Advanced edits are parsed only against the selected
+  profile/mode; incompatible edits return Simple to ``Advanced / custom`` rather
+  than silently choosing another profile.
+
+  With ``laserPowerMode: "separated"``, Live screening uses role checkboxes to
+  enable profile laser paths at their existing Live powers. **Live** keeps the
+  existing camera acquisition running but switches the Readout camera to
+  internal trigger, **Stop** darkens only Simple-owned screening lasers, and
+  **Acquire** uses external frame trigger plus normal Scan powers before
+  restoring the preceding trigger state. Coupled power mode disables this Live
+  action.
 
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:
@@ -414,8 +483,10 @@ hands its designers a fixed set of parameters.  The shipped setups use:
 * ``"Base"`` and ``"MoNaLISA"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
 * ``"PointScan"``: ``GalvoScanDesigner`` + ``PointScanTTLCycleDesigner``
   (``example_sted.json``)
-* ``"Advanced"``: ``GalvoScanDesigner`` + ``AdvancedScanTTLCycleDesigner``
-  (``galvo_apd_mock_scan_setup.json``)
+* ``"Advanced"``: normally ``GalvoScanDesigner`` +
+  ``AdvancedScanTTLCycleDesigner`` (``galvo_apd_mock_scan_setup.json``); the
+  ``SimpleMoNaLISA`` cloak uses the same Advanced frontend/backend with
+  ``BetaScanDesigner`` + ``AdvancedScanTTLCycleDesigner``.
 
 **Example** (Base scan, from ``example_no_hardware.json``):
 

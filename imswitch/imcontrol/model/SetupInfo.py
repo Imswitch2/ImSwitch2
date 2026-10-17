@@ -505,6 +505,10 @@ class ScanInfo:
     100 MHz timebase divided down, within what the driver reports for each
     task, and must divide ``nidaq.detectionRateHz``. """
 
+    cloak: Optional[str] = None
+    """ Optional simplified frontend over ``scanWidgetType``. The cloak must
+    declare that it supports the selected scan widget type. """
+
     maxScanTimeMin: Optional[int] = None
     """ Max scan time allowed, in min. ``null``/omitted = no limit. """
 
@@ -533,6 +537,25 @@ class ScanInfo:
     ``overviewFieldUm``, ``overviewMinFieldUm``, ``overviewMinPixels``,
     ``overviewMaxPixels``, ``overviewFrameTimeS``, ``minSamplesPerPixel``,
     ``maxDwellMs``. Other scan panels ignore it. """
+
+    simpleMoNaLISA: Optional[Dict[str, Any]] = None
+    """ Options for the ``SimpleMoNaLISA`` cloak. FOV can use
+    ``fovSource`` = ``"detector"`` (with ``fovUm`` as a persisted fallback) or
+    ``"manual"``. Camera readout timing uses ``defaultCameraReadoutTimeMs`` as
+    the setup default; profiles may override it with ``cameraReadoutTimeMs``.
+    The detector-reported readout is diagnostic only and can be copied into a
+    profile explicitly with Auto. ``ulensPeriodPolicy`` is ``"fixed"`` or
+    ``"per_profile"``;
+    fixed setups use the setup-level ``ulensPeriodUm``, while per-profile setups
+    require ``ulensPeriodUm`` in every usable profile. Profiles may also choose
+    ``scanExtentSource`` = ``"ulens"`` or ``"manual"`` (with ``scanExtentUm``),
+    so lateral scan length is not intrinsically the uLens period. ``profiles``
+    define ordered MoNaLISA sequence steps and modes selecting step/device
+    subsets; modes never own uLens geometry. Profiles and these setup options are
+    editable from SimpleMoNaLISA and persist back into the active setup file.
+    An empty or omitted ``profiles`` mapping is valid and starts in a restricted
+    state until the user creates one. Run defaults include ``defaultScanType``,
+    ``defaultLateralStepUm``, ``defaultZScanLengthUm`` and ``defaultZStepUm``. """
 
 
 

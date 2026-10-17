@@ -30,7 +30,7 @@ import time
 
 from qtpy import QtCore
 
-from imswitch.imcontrol.model.scan_cloak import PlanNotRepresentable
+from imswitch.imcontrol.model.scan_cloak import PlanNotRepresentable, resolve_scan_info
 from imswitch.imcontrol.view.widgets.ScanCloakPanel import ADVANCED, SIMPLE
 
 
@@ -109,8 +109,12 @@ class ScanCloakController:
 
         analog, digital = self._readBackendWidget()
         try:
-            plan = self._cloak.from_backend(analog, digital, self.cloakLimits())
+            plan = self.parseBackendPlan(analog, digital, referencePlan=self.acquisitionPlan())
         except PlanNotRepresentable as reason:
+            if self.handleBackendIncompatibility(analog, digital, reason):
+                self._enterPage(SIMPLE)
+                self._panel.showPage(SIMPLE)
+                return True
             if not (discardAdvanced or self._panel.confirmDiscardAdvanced(str(reason))):
                 self._panel.showPage(ADVANCED)
                 return False
@@ -142,7 +146,7 @@ class ScanCloakController:
     def getParameters(self):
         """On the simple page: the cloak's scan -- the one the next run
         executes, or the acquisition while it is mirrored or saved."""
-        if not self._onSimplePage():
+        if not self._onSimplePage() or not self.cloakOwnsBackend():
             return super().getParameters()
         if getattr(self, 'settingParameters', False):
             return
@@ -168,7 +172,8 @@ class ScanCloakController:
 
     def attrChanged(self, key, value):
         # A shared-attribute write edits the acquisition, not the overview.
-        if self._onSimplePage() and not self.settingAttr and len(key) == 2:
+        if (self._onSimplePage() and self.cloakOwnsBackend()
+                and not self.settingAttr and len(key) == 2):
             analog, digital = self._cloak.to_backend(self.acquisitionPlan(), self.cloakLimits())
             self._analogParameterDict = analog
             self._digitalParameterDict = digital
@@ -199,7 +204,7 @@ class ScanCloakController:
         timer = self.__dict__.get('_mirrorTimer')
         if timer is not None:
             timer.stop()
-        if not self._onSimplePage():
+        if not self._onSimplePage() or not self.cloakOwnsBackend():
             return
         plan = self.acquisitionPlan()
         analog, digital = self._cloak.to_backend(plan, self.cloakLimits())
@@ -213,6 +218,14 @@ class ScanCloakController:
             self._digitalParameterDict = copy.deepcopy(digital)
             self._positionersScan = self._cloak.scanned_positioners(analog)
             super().setParameters()
+            # ``setParameters`` mirrors the scan into the hidden backend UI but
+            # does not rebuild/publish semantic laser participation (that
+            # normally happens in Advanced ``getParameters``).  Publish while
+            # the mirrored dictionaries are installed so LaserController stays
+            # in sync with Simple profile/mode changes immediately.
+            publish_laser_state = getattr(self, '_publishLaserScanState', None)
+            if callable(publish_laser_state):
+                publish_laser_state()
         finally:
             self.__dict__['_mirroring'] = False
             self.__dict__['_servingAcquisition'] = False
@@ -229,7 +242,10 @@ class ScanCloakController:
         if mirrored is None:
             return False
         limits = self.cloakLimits()
-        return plan == self._cloak.from_backend(*self._cloak.to_backend(mirrored, limits), limits)
+        analog, digital = self._cloak.to_backend(mirrored, limits)
+        return plan == self.parseBackendPlan(
+            analog, digital, referencePlan=mirrored
+        )
 
     def _onBackendWidgetEdited(self, *_):
         if (self._onSimplePage() and not self.__dict__.get('_mirroring')
@@ -245,8 +261,12 @@ class ScanCloakController:
         Advanced page, with the reason, when the cloak cannot show it."""
         analog, digital = self._readBackendWidget()
         try:
-            plan = self._cloak.from_backend(analog, digital, self.cloakLimits())
+            plan = self.parseBackendPlan(
+                analog, digital, referencePlan=self.acquisitionPlan()
+            )
         except PlanNotRepresentable as refusal:
+            if self.handleBackendIncompatibility(analog, digital, refusal):
+                return True
             note = f'{refusal} It is shown on the Advanced page.'
             self._enterPage(ADVANCED)
             self.__dict__['_cloakNote'] = note
@@ -267,6 +287,11 @@ class ScanCloakController:
         backend's Repeat box); otherwise one scan."""
         if not self._onSimplePage():
             return super().runScan()
+        if not self.cloakOwnsBackend():
+            self._view.showMessage(
+                'Select a simple profile before acquiring.', error=True
+            )
+            return
         live = self.cloakWantsLive()
         if live:
             self._view.setLive(True)
@@ -364,7 +389,7 @@ class ScanCloakController:
         finally:
             self.__dict__['_servingAcquisition'] = False
         state['cloak'] = {
-            'type': getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None),
+            'type': resolve_scan_info(self._setupInfo.scan).cloak_type,
             'page': self.scanPage(),
             **self.cloakStateExtras(),
         }
@@ -412,12 +437,39 @@ class ScanCloakController:
         raise NotImplementedError
 
     def runPlan(self):
-        """The plan the next run from the simple page executes."""
-        raise NotImplementedError
+        """The plan the next run from the simple page executes.
+
+        Most cloaks simply run their acquisition.  A cloak with an overview
+        can override this to supply a different temporary run plan, as
+        SimplePointScan does.
+        """
+        return self.acquisitionPlan()
 
     def adoptPlan(self, plan):
         """Make ``plan``, read from the backend, the cloak's acquisition."""
         raise NotImplementedError
+
+    def parseBackendPlan(self, analog, digital, *, referencePlan=None):
+        """Parse backend dictionaries using the cloak's current interpretation.
+
+        The default delegates to :class:`ScanCloak`.  A cloak whose parsing
+        depends on explicit user state (for example a selected profile/mode)
+        can override this without duplicating the page-switch machinery.
+        """
+        return self._cloak.from_backend(analog, digital, self.cloakLimits())
+
+    def handleBackendIncompatibility(self, analog, digital, reason) -> bool:
+        """Handle a backend scan that ``parseBackendPlan`` cannot represent.
+
+        Return ``True`` when the cloak intentionally keeps the Simple page in
+        a custom/unbound state.  The default preserves the historical cloak
+        behavior: the caller opens/refuses the Advanced page instead.
+        """
+        return False
+
+    def cloakOwnsBackend(self) -> bool:
+        """Whether Simple currently owns/mirrors the backend scan."""
+        return True
 
     def cloakWantsLive(self) -> bool:
         """Whether Start runs until Stop."""
@@ -435,9 +487,21 @@ class ScanCloakController:
         return {}
 
     def cloakExtrasFromState(self, state):
-        """The cloak's settings in a saved state, or None."""
+        """This cloak's settings in a saved state, or ``None``.
+
+        Backend scan dictionaries are intentionally portable between cloaks;
+        private extras are not.  A state written by another cloak is therefore
+        allowed through the backend path but its cloak-specific fields are
+        ignored here.
+        """
         cloak = state.get('cloak') if isinstance(state, dict) else None
-        return cloak if isinstance(cloak, dict) else None
+        if not isinstance(cloak, dict):
+            return None
+        savedType = cloak.get('type')
+        currentType = resolve_scan_info(self._setupInfo.scan).cloak_type
+        if savedType and currentType and savedType != currentType:
+            return None
+        return cloak
 
     def applyCloakStateExtras(self, extras):
         """Restore what :meth:`cloakStateExtras` saved."""

@@ -1,4 +1,4 @@
-from typing import List, Union, Dict, Any
+from typing import List, Union, Dict, Any, Tuple
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcommon.framework import Signal
@@ -1685,6 +1685,31 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         """ Returns the device names of all lasers. These device names can be
         passed to other laser-related functions. """
         return self._master.lasersManager.getAllDeviceNames()
+
+    def resolveLiveIlluminationLasers(self, deviceNames) -> Tuple[str, ...]:
+        """Resolve profile/scan laser devices to the Live controls to toggle.
+
+        A MoNaLISA profile names the device that owns the scan gate. Some
+        setups split that gate from a separate ``powerDevice`` (for example an
+        AOTF channel that holds the Live/Scan setpoint). Screening is continuous
+        illumination rather than a TTL waveform, so both entries must be ON.
+
+        This deliberately resolves only configured lasers and never changes a
+        power value. It is the controller-level counterpart to the scan arming
+        code's gate -> powerDevice expansion.
+        """
+        resolved = []
+        configured = set(self._setupInfo.lasers)
+        for name in deviceNames or ():
+            name = str(name)
+            if name not in configured:
+                continue
+            if name not in resolved:
+                resolved.append(name)
+            powerDevice = self._powerDeviceFor(name)
+            if powerDevice is not None and powerDevice not in resolved:
+                resolved.append(powerDevice)
+        return tuple(resolved)
 
     @APIExport(runOnUIThread=True)
     def getLaserActive(self, laserName: str) -> bool:

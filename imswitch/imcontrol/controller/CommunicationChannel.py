@@ -4,7 +4,10 @@ import numpy as np
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import pythontools, APIExport, SharedAttributes
 from imswitch.imcommon.model import initLogger
-from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService
+from .WorkflowServices import (
+    BeadRecWorkflowService, LiveScreeningWorkflowService, RecordingWorkflowService,
+    ScanWorkflowService,
+)
 
 if TYPE_CHECKING:
     from .controllers._beadrec_scan_source import BeadRecScanSource
@@ -87,6 +90,7 @@ class CommunicationChannel(SignalInterface):
     sigAcquisitionStopped = Signal()
     sigAdjustFrame = Signal(object)  # (shape)
     sigDetectorSwitched = Signal(str, str)  # (newDetectorName, oldDetectorName)
+    sigDetectorParametersChanged = Signal(str)  # (detectorName)
     sigNewFrame = Signal()
 
     # View-layer overlay and viewer item events.
@@ -205,6 +209,8 @@ class CommunicationChannel(SignalInterface):
         self._focusLock = None
         self._create_event_groups()
         self.scanWorkflow = ScanWorkflowService(self)
+        self.liveScreeningWorkflow = LiveScreeningWorkflowService(self)
+        self.recordingWorkflow = RecordingWorkflowService(self)
         self.beadRecWorkflow = BeadRecWorkflowService(self)
         self.__main._moduleCommChannel.sigExecutionFinished.connect(self.executionFinished)
 
@@ -216,6 +222,7 @@ class CommunicationChannel(SignalInterface):
             'acquisitionStopped': self.sigAcquisitionStopped,
             'adjustFrame': self.sigAdjustFrame,
             'detectorSwitched': self.sigDetectorSwitched,
+            'detectorParametersChanged': self.sigDetectorParametersChanged,
             'newFrame': self.sigNewFrame,
         })
         self.viewEvents = pythontools.dictToROClass({
