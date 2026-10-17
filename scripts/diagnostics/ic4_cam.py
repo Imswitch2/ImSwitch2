@@ -2,8 +2,8 @@
 
 Verifies, OUTSIDE ImSwitch, that the camera can deliver exactly one distinct
 frame per trigger via a push-based QueueSink -- the capability the legacy
-pyicic/poll-based path cannot provide. See
-docs/design/plans/tis-camera-ic4-migration.md.
+pyicic/poll-based path cannot provide. See the retired
+tis-camera-ic4-migration.md plan (retired; see git history).
 
 Usage (from the Imswitch2 conda env):
 

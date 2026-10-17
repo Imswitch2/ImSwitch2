@@ -1,4 +1,4 @@
-"""P-T: the viewer tool broker (see docs/design/plans/improcess-roi-manager-2-0.md).
+"""P-T: the viewer tool broker (ROI manager 2.0 design retired; see git history of docs/design/plans/improcess-roi-manager-2-0.md).
 
 Covers D-04 (duplicate "Viewer Tools" layers), D-14 (panels erasing each
 other's scratch shapes) and D-15 (viewer callbacks that outlive their panel).

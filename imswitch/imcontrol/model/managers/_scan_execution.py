@@ -19,7 +19,7 @@ Two levels, deliberately distinct (see the design plan, R7-2/R7-4):
 Completion runs **exactly once** per iteration across all five terminations:
 busy refusal, build failure, arm exception, normal completion and abort.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import threading

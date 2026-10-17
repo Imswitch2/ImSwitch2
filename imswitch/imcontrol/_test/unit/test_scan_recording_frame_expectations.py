@@ -10,7 +10,7 @@ camera answer applied to everything:
   scan into ONE assembled image, so N is wrong by a factor of N and the
   recording waits for frames that are never produced.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 from imswitch.imcontrol.model.managers.RecordingManager import (

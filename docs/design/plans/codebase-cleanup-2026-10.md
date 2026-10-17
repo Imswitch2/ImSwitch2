@@ -237,32 +237,38 @@ importing from `imcommon.algorithms`, and delete `tests/`.
 
 ## WP-8 Open plans triage
 
-After WP-1..7, each file left in `docs/design/plans/` must either have open
-work with an owner or go. Current status (2026-10-17):
+**DONE (2026-10-17).** Maintainer ground truth: main is rig-validated, so a plan
+whose code is merged and whose only remaining item is a rig check is finished.
+Each plan was checked against the tree.
 
-| Plan | Remaining |
+Deleted (implemented; git history keeps them): `acquisition-layout-contract.md`
+and `acquisition-layout-rig-*.md` (WP-2), `detector-acquisition-selection.md`
+(Phases 1-5 are in code - `setDetectorSelected`, GUI selection, participant gate;
+the 17 code citations now point to `docs/scan-lifecycle.rst`),
+`improcess-ome-read-compatibility.md` (only a conditional live-source `data`
+name remains, relevant if the Zarr array is ever renamed `0`),
+`improcess-workflow-editor.md` (Phase 4 was optional), `imscripting-workflow-hangs.md`,
+`manager-audit-todo.md` (stale: the PulseStreamer stdout redirect is restored in
+a `finally`, LeicaDMIManager is gone, the rest landed), `time-resolved-detector-workflows.md`,
+`tis-camera-ic4-migration.md`, `ws-integration.md` (it never had the v4 wire
+protocol section two code comments cited).
+
+Surviving plans (all rewritten with a `Status (2026-10-17)` paragraph):
+
+| Plan | Remains |
 |---|---|
-| `acquisition-layout-contract.md`, `acquisition-layout-rig-*.md` | deleted by WP-2 (contract now in `Hdf5datafile.rst`) |
-| `acquisition-metadata-channel-retirement.md` | P3 (stop writing category-A `ScanStage:*`/`ScanTTL:*` behind a switch), P4 |
-| `config-editor-discovery-and-schema.md` | Phase 4 CLI, Phase 5 partial, Phase 6 — re-verify, lots landed since |
-| `detector-acquisition-selection.md` | Phase 5 behind a hardware smoke gate; 17 code citations |
-| `dynamic-layer-lifecycle.md` | not implemented |
-| `improcess-roi-manager-2-0.md` | P-F2, Tracks C/D; 2755 lines — trim to the open tracks |
-| `improcess-workflow-editor.md` | Phase 4 |
-| `improcess-lazy-virtual-image-source.md` | Phase 2 partial, Phase 3 |
-| `improcess-ome-read-compatibility.md` | lapse/live sources hard-code the `data` array name |
-| `imscripting-workflow-hangs.md` | rig P-8 only |
-| `manager-audit-todo.md` | mostly stale; PulseStreamer global `sys.stdout` redirect still open |
-| `pointscan-confocal-sted-performance.md` | O1–O3, rig-gated |
-| `recording-dataflow.md` | Phases 1.5/2/3 deferred |
-| `scan-acquisition-order-spec.md` | Draft 4, nothing implemented — **DECISION** adopt or reject |
-| `scanner-calibration-widget.md` | P-0 not implemented |
-| `tiled-target-timelapse-smart-events.md` | T5 |
-| `tiling-multidetector.md` | the per-tile session: `TilingController.py:~1543` reads `self._commChannel.__dict__.get('_main')`, but the channel stores a name-mangled `__main`, so it is always `None` and tiling always falls back to snapshots. Use `controllerRegistry()` **together with** explicit session ownership, as the plan says (the lookup alone stalls the run). `test_tile_layout_partition.py:~185` masks it with `SimpleNamespace(_main=...)`. |
-| `time-resolved-detector-workflows.md` | Swabian rig, >3D output, second backend |
-| `tis-camera-ic4-migration.md` | external-TTL Phase 0, rig |
-| `ws-integration.md` | hardware verification |
-| `ci-improvement.md` | B3 (UI lane), Tier C |
+| `acquisition-metadata-channel-retirement.md` | P3 `writeLegacyScanMetadata` flag, P4 default-off/delete; release-gated - **DECISION** |
+| `config-editor-discovery-and-schema.md` | CLI `validate-setup` passes no `ValidationContext` (weaker than the editor); resources/`TemplateStore` still in the view package; `x-imswitch-*` UI annotations; Phase 6 UX |
+| `ci-improvement.md` | B1 marker completion, B3 UI lane, Snouty ignore, Tier C shared setup |
+| `dynamic-layer-lifecycle.md` | not implemented (UX) - **DECISION** adopt or drop |
+| `improcess-lazy-virtual-image-source.md` | rest of phase 2, phases 3-4 |
+| `improcess-roi-manager-2-0.md` | now 111 lines: P-F2 container ids and the processing footprint (both need a central save path), Fiji fixture corpus |
+| `pointscan-confocal-sted-performance.md` | O1-O5 unimplemented, need rig numbers |
+| `recording-dataflow.md` | `SaveMode.RAM` hard cap, scan source abort, Phases 1.5-3 (`ChunkBroker`) - **DECISION** whether wanted |
+| `scan-acquisition-order-spec.md` | Draft 4, nothing implemented - **DECISION** adopt or reject |
+| `scanner-calibration-widget.md` | not implemented (P-0 first); section 10 decisions open |
+| `tiled-target-timelapse-smart-events.md` | T5 UI and controller adapters (model layer exists, unused) |
+| `tiling-multidetector.md` | Phase 1b session entry: `TilingController.py:~1543` reads `self._commChannel.__dict__.get('_main')`, but the channel stores a name-mangled `__main`, so it is always `None` and tiling always falls back to snapshots. Use `controllerRegistry()` **together with** explicit session ownership (the lookup alone stalls the run); `test_tile_layout_partition.py:~185` masks it with `SimpleNamespace(_main=...)`. Phase 3 (3D) deferred |
 
 Also flagged (not in a plan): EtSTED/EtMonalisa design their slow scan with
 `scanManager.makeFullScan` directly (`EtSTEDTriggeredScanRunner.py:~54`),

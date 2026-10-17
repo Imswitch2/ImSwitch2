@@ -8,7 +8,7 @@ and stalled waiting for frames that could not arrive.
 
 Delivery is now driven by ``frameStreamMembership = LIVE_VIEW | EVENT_STREAM``.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import sys

@@ -7,7 +7,7 @@ for detectors whose teardown failed. It is framework-free (no Qt): the
 DetectorsManager supplies hardware start/stop callbacks and reacts to the
 returned transitions (live-view poll thread, global signals).
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import threading

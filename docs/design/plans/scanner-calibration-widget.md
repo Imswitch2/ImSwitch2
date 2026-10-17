@@ -4,20 +4,17 @@ A new `imcontrol` widget for **driving scanner DACs by hand** and, later, for
 **measuring the calibration constants** that the scan path currently takes on
 faith from the setup file.
 
-> **2026-10:** `WellPlateController` was removed in the codebase cleanup, so
-> the rows and steps below that add a reservation guard to it no longer apply.
-
-Status: Proposed — **revision 3**, ready for a second review round. **P-0 is the
-agreed first deliverable** (manual per-axis voltage entry). P-1..P-3 are
-roadmap.
-
-Revision 2 changed the safety model after review: session-scoped restore
-snapshot, "Zero all" removed, a real actuator reservation instead of only
-dodging scans, `offsetVolt` withdrawn. Revision 3 is a self-audit of that
-revision against the code, and found three defects **in revision 2's own new
-material** — the focus-lock integration would have introduced a bug, and the
-reservation's stated coverage was wrong in both directions. §10 logs
-everything; §11 lists the decisions this review round should rule on.
+**Status (2026-10-17):** NOT IMPLEMENTED (verified: no `ScannerCalib` widget and
+no `AnalogScannerMixin` in `imswitch/`). Revision 3, reviewed twice; **P-0 (manual
+per-axis voltage entry) is the agreed first deliverable**, split P-0a (model
+mixin, keyed focus-lock suspension owners, actuator reservation,
+`sigPositionerPositionChanged`) and P-0b (widget, session lifecycle,
+registration, docs, tests). P-1..P-3 (camera-probe gain, affine, phase delay) are
+roadmap and need a rig. The review log (revisions 1-3) was removed; its outcomes
+are folded into the sections below. Note: `WellPlateController` was removed in
+the 2026-10 cleanup, so the steps below that add a reservation guard to it no
+longer apply, and open decision 2 in section 10 is moot. Open decisions in
+section 10 still await the maintainer.
 
 Cut and recorded in §8 rather than deleted: parked point-detector reading,
 field-nonlinearity correction, and `offsetVolt`.
@@ -251,7 +248,7 @@ the current pair is the one-owner case — and the depth==1 reasoning becomes
 per-owner instead of global.
 
 This is a focused refactor of another controller's internals, which is why
-§9 gives it its own phase and §11 asks for a ruling on its scope.
+§9 gives it its own phase and §10 asks for a ruling on its scope.
 
 ### Scan-side guard, corrected
 
@@ -623,40 +620,7 @@ is the part that wants review on its own, independent of any GUI.
 
 ---
 
-## 10. Review log
-
-### Revision 1 → 2 (external review)
-
-| # | Finding | Resolution |
-|---|---|---|
-| 1 | Restore snapshot goes stale; conflicts with `resetOnClose` | §5 — session-scoped snapshot, per-axis write tracking, skip externally-moved axes, no restore at app shutdown |
-| 2 | "Zero all" unsafe on unipolar axes | §5 — removed; `safeVoltage`/midpoint park, per-axis zero warns |
-| 3 | Scan interlocks are not exclusive ownership | §4 — `physicalActuator`-keyed reservation reusing the focus lock's conflict predicate; scan start refuses while held; local `sigScanStarting`→`sigScanEnded` tracking; residual limits stated |
-| 4 | Fitted offset not identifiable | §6 — routine 1 is gain-only, intercept discarded; §8 records what admitting an offset would require |
-| 5 | `offsetVolt` not propagated through scan paths | §8 — withdrawn, with the full list of producers that would need atomic update |
-| 6 | Write-back creates a live split state | §6 — deep-copy `SetupInfo`, save the copy, live object untouched until restart |
-| 7 | Camera contract wrong and incomplete | §6 — check `cameraPixelSizeUm` is *configured* (not its value; real default 0.15); apply binning per `TilingController`; settle/flush/timeout/`finally` specified |
-| 8 | `DetectorTransform` is the wrong schema | §6 — P-2 is diagnostic-only; a dedicated scanner↔camera record is defined before any persistence |
-| 9 | Routine 3 cannot use the ordinary image | §6 — P-3 starts with a feasibility phase; `line_samples` truncation cited |
-| 10 | Positioner widget will not self-update | §3 — new `sigPositionerPositionChanged`, consumed by `PositionerController.updatePosition` |
-| 11 | `StatefulComponentMixin` does not auto-register | §5 — explicit `getWidgetStatePersistence().register('ScannerCalib', self)` |
-| 12 | `configOwnedParameters` is detector-specific | §5 — removed, replaced with a plain "read from `setupInfo`, never persist" rule |
-| 13 | Missing from `setupinfo-reference.rst` | §2 — added to the file table |
-
-### Revision 2 → 3 (self-audit)
-
-Revision 2's own new material was audited against the code the same way. Three
-defects, all in the parts revision 2 added rather than in what it inherited:
-
-| # | Defect in revision 2 | Resolution |
-|---|---|---|
-| 14 | "Connect the reservation to the focus lock's existing scan-suspend path" would have introduced a bug: `_scanSuspendDepth` is one counter with one companion flag, and `scanActuatorsResolved`'s `depth == 1` early-release cannot distinguish a scan from a reservation — so a scan's harmless-resolve could release a reservation-owned suspension, re-engaging the lock while the widget drives the axis. `scanUnlockFocus` also gates on the scan-only `scanBlockEnabled()` opt-out. | §4 — keyed suspension owners, per-owner release, `scanBlockEnabled()` gating only `'scan'`. New test asserts the cross-release does not happen. |
-| 15 | Reservation coverage was wrong in **both** directions: it claimed `APIExport` setters were unguarded (they delegate to `move`/`setPos`, so guarding those covers them), and implied everything else was guarded (`WellPlateController` writes to managers directly and was not). | §4 — full enumeration of every direct writer in `imcontrol/controller` with what covers each; `WellPlateController` added to the file table. |
-| 16 | §3 proposed a new position-changed signal without saying why the existing shared-attribute channel is not the answer — a reviewer would reasonably propose it. It is in fact *unsafe*: `attrChanged` reacts to a position key by calling `setPos` → `manager.setPosition`, so a cross-controller write would re-command the DAC, and the `settingAttr` guard does not cover foreign writes. | §3 — rationale added, including why `updatePosition`'s own internal `setSharedAttr` is safe. |
-
----
-
-## 11. Decisions for this review round
+## 10. Decisions for this review round
 
 Four points where I chose conservatively and a reviewer may reasonably rule
 otherwise. None blocks drafting P-0a; all change its shape.

@@ -14,8 +14,8 @@ Two layers are described here, and they answer different questions:
   *may this scan start*, *which detectors belong to it*, and *when may it be
   released* — the detector-acquisition-lease model.
 
-Design records for the lease work live in
-``docs/design/plans/detector-acquisition-selection.md``.
+The lease design record (review rounds, acceptance gate) is retired; see git
+history for ``detector-acquisition-selection.md``.
 
 
 Why this exists

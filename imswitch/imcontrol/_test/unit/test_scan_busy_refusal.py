@@ -11,7 +11,7 @@ It now raises ``ScanBusyError``, which callers unwind like any other arm
 failure. This is the fifth exactly-once completion case in the plan: *scan
 never started, no failure signal*.
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 import pytest

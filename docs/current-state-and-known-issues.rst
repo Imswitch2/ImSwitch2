@@ -104,7 +104,30 @@ commitment.
   display-frame path and a configurable TimeTagger preview cadence; all
   rig-gated (``docs/design/plans/pointscan-confocal-sted-performance.md``).
 * **Recording.** A hard RAM cap for ``SaveMode.RAM`` and an in-memory Zarr
-  store; producer-driven acquisition (``ChunkBroker``) is parked.
+  store; producer-driven acquisition (``ChunkBroker``) is parked; a
+  scan-source abort for scan-driven detectors (``NidaqManager`` has no
+  ``abortScan``).
+* **Tiling.** The per-tile recording session is never opened: the session
+  lookup reads a name-mangled attribute and always yields ``None``, so tiling
+  falls back to snapshots (``TilingController``; fix the lookup together with
+  explicit session ownership).
+* **Scan metadata.** ImControl still writes the legacy ``ScanStage:*`` /
+  ``ScanTTL:*`` attributes beside the acquisition layout; stopping that behind
+  a setup flag is open and needs a maintainer decision.  The unimplemented
+  acquisition-order specification likewise awaits adopt-or-reject.
+* **Config editor.** The ``validate-setup`` command does not pass the widget and
+  ImProcess-id context the editor uses, so it reports less than the editor.
+* **ImProcess.** Container-persisted result identity and a processing step
+  list in result metadata (both need one central save path); lazy results
+  (Dask-backed ``ProcessingResult``).
+* **Target timelapse.** Operator UI and controller adapters for the existing
+  target-list / event-probe workflow models.
+* **Scanner calibration.** A widget for driving scanner DACs by hand
+  (not started).
+* **CI.** Marker-based selection, a UI-test lane and removing the Snouty
+  ignore.
+* **Napari layers.** Create live-view layers lazily per detector instead of
+  one per ``forAcquisition`` detector at startup.
 * **Device plugins.** Publish the plugin packages under ``examples/plugins``
   to PyPI, then remove the in-tree copies.
 * **SMLM.** 3D (astigmatic) fitting and throughput-oriented localization.
