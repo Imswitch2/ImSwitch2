@@ -1794,37 +1794,23 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             }
             
             module = self._widget.laserModules.get(lName)
-            if lManager.isModulated and module is not None:
-                modState = {}
-                if hasattr(module, 'getFrequency'):
-                    modState['frequency'] = module.getFrequency()
-                if hasattr(module, 'getDutyCycle'):
-                    modState['dutyCycle'] = module.getDutyCycle()
-                if modState:
-                    state['modulation'][lName] = modState
+            if self._laserModuleSupportsModulation(module):
+                state['modulation'][lName] = {
+                    'enabled': self._laserModuleModulationEnabled(module),
+                    'frequency': module.getFrequency(),
+                    'dutyCycle': module.getDutyCycle(),
+                }
         
         return state
     
     def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
         """Restore laser state from a snapshot.
-        
-        ALWAYS (both modes):
-        - Set non-binary laser power values
-        - Set modulation frequency/duty cycle
-        - Restore selected-preset label in UI (does not apply it)
-        
-        ONLY in SETUP_MODE_APPLY:
-        - Enable/disable lasers per saved 'enabled' state
-        
-        NEVER in STARTUP_RESTORE:
-        - Enable lasers or emit light (append warning if saved state has enabled=True)
-        
-        Args:
-            state: Dict returned by getComponentState()
-            applyMode: ComponentStateApplyMode.STARTUP_RESTORE or SETUP_MODE_APPLY
-        
-        Returns:
-            List of warning strings (empty if fully successful)
+
+        Power and modulation values are restored in both persistence modes.
+        Setup-mode application additionally restores ON/OFF state, with OFF
+        targets made dark before any power write and ON targets enabled only
+        after their power/modulation state has been restored. Startup restore
+        never enables lasers.
         """
         self._requireLaserEditsAllowed()
         warnings = []
@@ -1845,60 +1831,110 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                     f'Scan power references binary laser "{lName}"; skipped.'
                 )
                 continue
-            restoredScanPowers[lName] = value
+            # Zero is an explicit Scan override and must not be treated as absent.
+            if value is not None:
+                restoredScanPowers[lName] = value
         self._scanPowerValues = restoredScanPowers
 
-        # Always restore Live power values and modulation for non-binary lasers
         for lName, laserState in lasers.items():
             if lName not in known_lasers:
                 warnings.append(f'Laser "{lName}" not present in current setup; skipped.')
                 continue
-            
+
             lManager = self._master.lasersManager[lName]
-            
-            # Set power value for non-binary lasers
-            if not laserState.get('isBinary', False):
-                value = laserState.get('value')
-                if value is not None:
-                    try:
-                        self.setLaserValue(lName, value)
-                    except Exception as e:
-                        warnings.append(f'Failed to restore value for laser "{lName}": {e}')
-            
-            # Restore modulation settings
+            savedBinary = bool(laserState.get('isBinary', lManager.isBinary))
+            targetEnabled = bool(laserState.get('enabled', False))
+            value = laserState.get('value')
+
+            # A non-binary zero-power target is effectively OFF even if an old
+            # snapshot says enabled=True. Keep zero as a real value to restore.
+            if targetEnabled and not savedBinary:
+                numericValue = self._asFloat(value)
+                if numericValue is not None and numericValue <= 0:
+                    targetEnabled = False
+
+            restoreFailed = False
+
+            # Setup-mode application always makes the affected laser dark
+            # before changing its Live setpoint or modulation state. This makes
+            # OFF targets safe and gives ON targets a real "enable last"
+            # ordering rather than assuming the laser happened to be off.
+            if applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY:
+                try:
+                    self.setLaserActive(lName, False)
+                except Exception as e:
+                    warnings.append(f'Failed to disable laser "{lName}" before restore: {e}')
+                    # Do not write a new setpoint if darkness could not be
+                    # established first.
+                    continue
+
+            if not savedBinary and value is not None:
+                try:
+                    self.setLaserValue(lName, value)
+                except Exception as e:
+                    restoreFailed = True
+                    warnings.append(f'Failed to restore value for laser "{lName}": {e}')
+
             modulation = state.get('modulation', {}).get(lName, {})
             if modulation:
-                freq = modulation.get('frequency')
-                if freq is not None:
-                    try:
-                        self.frequencyChanged(lName, freq)
-                    except Exception as e:
-                        warnings.append(f'Failed to restore modulation frequency for laser "{lName}": {e}')
-                
-                dc = modulation.get('dutyCycle')
-                if dc is not None:
-                    try:
-                        self.dutyCycleChanged(lName, dc)
-                    except Exception as e:
-                        warnings.append(f'Failed to restore modulation duty cycle for laser "{lName}": {e}')
-        
-        # Enable/disable lasers ONLY in SETUP_MODE_APPLY
-        if applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY:
-            for lName, laserState in lasers.items():
-                if lName not in known_lasers:
-                    continue
-                enabled = laserState.get('enabled', False)
-                if enabled and not laserState.get('isBinary', False):
-                    value = self._asFloat(laserState.get('value'))
-                    if value is not None and value <= 0:
-                        enabled = False
+                module = self._widget.laserModules.get(lName)
+                if not self._laserModuleSupportsModulation(module):
+                    restoreFailed = True
+                    warnings.append(
+                        f'Laser "{lName}" has no modulation controls; modulation state was not applied.'
+                    )
+                else:
+                    freq = modulation.get('frequency')
+                    if freq is not None:
+                        try:
+                            self.frequencyChanged(lName, freq)
+                        except Exception as e:
+                            restoreFailed = True
+                            warnings.append(
+                                f'Failed to restore modulation frequency for laser "{lName}": {e}'
+                            )
+
+                    dc = modulation.get('dutyCycle')
+                    if dc is not None:
+                        try:
+                            self.dutyCycleChanged(lName, dc)
+                        except Exception as e:
+                            restoreFailed = True
+                            warnings.append(
+                                f'Failed to restore modulation duty cycle for laser "{lName}": {e}'
+                            )
+
+                    if 'enabled' in modulation:
+                        try:
+                            modEnabled = bool(modulation.get('enabled'))
+                            self.toggleModulation(lName, modEnabled)
+                            self._widget.setModulationEnabled(
+                                lName, modEnabled, emitSignal=False
+                            )
+                        except Exception as e:
+                            restoreFailed = True
+                            warnings.append(
+                                f'Failed to restore modulation enable state for laser "{lName}": {e}'
+                            )
+
+            # ON is the final action and only happens after a complete restore.
+            # If a value/modulation step failed, the laser stays fail-closed.
+            if (
+                applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY
+                and targetEnabled
+                and not restoreFailed
+            ):
                 try:
-                    self.setLaserActive(lName, enabled)
+                    self.setLaserActive(lName, True)
                 except Exception as e:
-                    warnings.append(f'Failed to set enable state for laser "{lName}": {e}')
-        elif any(laserState.get('enabled', False) for laserState in lasers.values()):
+                    warnings.append(f'Failed to enable laser "{lName}" after restore: {e}')
+
+        if (
+            applyMode == ComponentStateApplyMode.STARTUP_RESTORE
+            and any(laserState.get('enabled', False) for laserState in lasers.values())
+        ):
             warnings.append('Laser enable states not restored in startup mode.')
-        
+
         # Restore preset selections without applying their powers. Selection
         # identities are independent so changing the configured laser power mode
         # does not lose the dormant separated selections.
@@ -1936,42 +1972,55 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._refreshPresetControls()
         self._refreshAllLaserRows()
         return warnings
-    
+
     def describeComponentState(self, state: dict) -> list[str]:
-        """Generate human-readable summary of a saved laser state.
-        
-        Lifted from SetupModesController._summarizeSavedLaserState,
-        _savedLaserItemsInDisplayOrder, _currentLaserDisplayOrder.
-        
-        Args:
-            state: Dict returned by getComponentState()
-        
-        Returns:
-            List of formatted strings suitable for setup-mode inspector
-        """
+        """Generate a human-readable Live/Scan summary of saved laser state."""
         state = state or {}
         summaries = []
-        
-        if state.get("currentPreset") is not None:
-            summaries.append(f"  preset: {self._fmt(state.get('currentPreset'))}")
 
-        lasers = state.get("lasers") or {}
+        if state.get('currentPreset') is not None:
+            summaries.append(f"  preset: {self._fmt(state.get('currentPreset'))}")
+        if state.get('livePreset') is not None:
+            summaries.append(f"  Live preset: {self._fmt(state.get('livePreset'))}")
+        if state.get('scanPreset') is not None:
+            summaries.append(f"  Scan preset: {self._fmt(state.get('scanPreset'))}")
+
+        lasers = state.get('lasers') or {}
         if lasers:
-            summaries.append("  states:")
-        
-        for laserName, laserState in self._savedLaserItemsInDisplayOrder(lasers, state):
-            enabled = self._onOff(laserState.get("enabled"))
-            if laserState.get("isBinary"):
+            summaries.append('  Live:')
+
+        orderedLasers = self._savedLaserItemsInDisplayOrder(lasers, state)
+        for laserName, laserState in orderedLasers:
+            enabled = self._onOff(laserState.get('enabled'))
+            if laserState.get('isBinary'):
                 summaries.append(f"    {laserName}: {enabled}")
             else:
-                units = laserState.get("valueUnits") or ""
-                unitText = f" {units}" if units else ""
+                units = laserState.get('valueUnits') or ''
+                unitText = f' {units}' if units else ''
                 summaries.append(
                     f"    {laserName}: {enabled}, {self._fmt(laserState.get('value'))}{unitText}"
                 )
-        
-        return summaries or ["  no laser state"]
-    
+
+        # Current-format Scan values are explicit overrides only. Show both
+        # explicit values (including zero) and the absence of an override so
+        # setup-mode inspection does not hide that a laser follows Live.
+        if 'scanPowers' in state:
+            scanPowers = state.get('scanPowers') or {}
+            summaries.append('  Scan:')
+            for laserName, laserState in orderedLasers:
+                if laserState.get('isBinary'):
+                    continue
+                if laserName in scanPowers and scanPowers[laserName] is not None:
+                    units = laserState.get('valueUnits') or ''
+                    unitText = f' {units}' if units else ''
+                    summaries.append(
+                        f"    {laserName}: {self._fmt(scanPowers[laserName])}{unitText} (override)"
+                    )
+                else:
+                    summaries.append(f'    {laserName}: follows Live')
+
+        return summaries or ['  no laser state']
+
     def getComponentStateHazards(
         self,
         state: dict,
@@ -2038,6 +2087,32 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         return hazards
     
     # Helper methods (lifted from SetupModesController)
+
+    def _laserModuleSupportsModulation(self, module) -> bool:
+        """Return whether a laser row has usable frequency-modulation controls."""
+        if module is None:
+            return False
+
+        supports = getattr(module, 'supportsModulation', None)
+        if isinstance(supports, bool):
+            return supports
+
+        # Compatibility/defensive fallback for older widgets and lightweight
+        # test doubles: require the actual controls used by persistence.
+        return all(
+            hasattr(module, attr)
+            for attr in (
+                'modulationEnable',
+                'modulationFrequencyEdit',
+                'modulationDutyCycleEdit',
+            )
+        )
+
+    def _laserModuleModulationEnabled(self, module) -> bool:
+        getter = getattr(module, 'isModulationEnabled', None)
+        if callable(getter):
+            return bool(getter())
+        return bool(module.modulationEnable.isChecked())
     
     def _savedLaserItemsInDisplayOrder(self, lasers, state):
         """Order saved laser entries by saved order, current order, then keys."""

@@ -232,7 +232,7 @@ class LaserWidget(Widget):
             lambda value: self.sigValueChanged.emit(laserName, value)
         )
 
-        if all(num > 0 for num in frequencyRange):
+        if control.supportsModulation:
             control.sigModEnabledChanged.connect(
                 lambda enabled: self.sigModEnabledChanged.emit(laserName, enabled)
             )
@@ -340,6 +340,11 @@ class LaserWidget(Widget):
             text, emphasized=emphasized, muted=muted, tooltip=tooltip, badge=badge
         )
 
+    def setModulationEnabled(self, laserName, enabled, emitSignal=True):
+        self.laserModules[laserName].setModulationEnabled(
+            enabled, emitSignal=emitSignal
+        )
+
     def setModulationFrequency(self, laserName, value):
         self.laserModules[laserName].setModulationFrequency(value)
 
@@ -422,7 +427,9 @@ class LaserModule(QtWidgets.QWidget):
         self.valueDecimals = valueDecimals
         self.valueUnits = valueUnits
         self.isBinary = valueRange is None
-        self.isModulated = all(num > 0 for num in frequencyRange)
+        self.isModulated = all(
+            num is not None and num > 0 for num in frequencyRange
+        )
         self._context = 'live'
 
         isBinary = self.isBinary
@@ -613,6 +620,20 @@ class LaserModule(QtWidgets.QWidget):
         uses. """
         return float(self.setPointEdit.text())
     
+    @property
+    def supportsModulation(self):
+        """Whether this row has usable frequency-modulation controls.
+
+        Keep setup-mode persistence tied to the controls that actually exist,
+        rather than to manager metadata that may describe a zero/disabled
+        frequency range.
+        """
+        return bool(self.isModulated and self.modulationGroup is not None)
+
+    def isModulationEnabled(self):
+        """Return the current modulation-enable UI state."""
+        return bool(self.supportsModulation and self.modulationEnable.isChecked())
+
     def getFrequency(self):
         """ Returns the selected frequency of the laser.
         """
@@ -622,6 +643,20 @@ class LaserModule(QtWidgets.QWidget):
         """ Returns the selected duty cycle of the laser.
         """
         return int(self.modulationDutyCycleEdit.text())
+
+    def setModulationEnabled(self, enabled, emitSignal=True):
+        """Set modulation enabled state when modulation controls exist."""
+        if not self.supportsModulation:
+            return
+        if emitSignal:
+            self.modulationEnable.setChecked(bool(enabled))
+            return
+
+        self.modulationEnable.blockSignals(True)
+        try:
+            self.modulationEnable.setChecked(bool(enabled))
+        finally:
+            self.modulationEnable.blockSignals(False)
 
     def setActive(self, active, emitSignal=True):
         """ Sets whether the laser is powered on.

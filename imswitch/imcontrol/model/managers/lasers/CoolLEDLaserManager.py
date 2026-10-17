@@ -32,10 +32,16 @@ class CoolLEDLaserManager(LaserManager):
             self.__channel_index = laserInfo.managerProperties.get('channel_index', 'A')
             self.__digital_mod = False
 
-        isModulated = (True if laserInfo.freqRangeMin is not None and 
-                                laserInfo.freqRangeMax is not None and
-                                laserInfo.freqRangeInit is not None 
-                            else False)
+        frequencyRange = (
+            laserInfo.freqRangeMin,
+            laserInfo.freqRangeMax,
+            laserInfo.freqRangeInit,
+        )
+        # Keep manager capability aligned with LaserModule: a zero/disabled
+        # range must not advertise frequency-modulation controls.
+        isModulated = all(
+            value is not None and value > 0 for value in frequencyRange
+        )
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0, isModulated=isModulated)
 

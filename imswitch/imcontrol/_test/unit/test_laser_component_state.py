@@ -87,6 +87,7 @@ def mock_widget():
     widget.getValue = Mock(side_effect=lambda name: 50.0 if name == '488nm' else 0)
     widget.setValue = Mock()
     widget.setLaserActive = Mock()
+    widget.setModulationEnabled = Mock()
     widget.setModulationFrequency = Mock()
     widget.setModulationDutyCycle = Mock()
     widget.addLaser = Mock()
@@ -95,6 +96,8 @@ def mock_widget():
     
     # Mock laser modules with modulation controls
     module_488 = Mock()
+    module_488.supportsModulation = True
+    module_488.isModulationEnabled = Mock(return_value=True)
     module_488.getFrequency = Mock(return_value=2000)
     module_488.getDutyCycle = Mock(return_value=50)
     widget.laserModules = {'488nm': module_488, 'UV': None}
@@ -180,6 +183,12 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._onOff = lambda value: LaserController._onOff(controller, value)
     controller._asFloat = lambda value: LaserController._asFloat(controller, value)
     controller._isMilliwattUnit = lambda units: LaserController._isMilliwattUnit(controller, units)
+    controller._laserModuleSupportsModulation = lambda module: LaserController._laserModuleSupportsModulation(
+        controller, module
+    )
+    controller._laserModuleModulationEnabled = lambda module: LaserController._laserModuleModulationEnabled(
+        controller, module
+    )
     controller._isSeparatedPowerMode = lambda: True
     controller._presetContext = lambda name: LaserController._presetContext(controller, name)
     controller._presetDefinition = lambda name: LaserController._presetDefinition(controller, name)
@@ -194,6 +203,7 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     # Mock action methods
     controller.setLaserValue = Mock()
     controller.setLaserActive = Mock()
+    controller.toggleModulation = Mock()
     controller.frequencyChanged = Mock()
     controller.dutyCycleChanged = Mock()
     
@@ -235,8 +245,20 @@ def test_get_component_state(laser_controller, mock_widget):
     
     # Check modulation
     assert '488nm' in state['modulation']
+    assert state['modulation']['488nm']['enabled'] is True
     assert state['modulation']['488nm']['frequency'] == 2000
     assert state['modulation']['488nm']['dutyCycle'] == 50
+
+
+def test_get_component_state_skips_missing_modulation_controls(
+    laser_controller, mock_widget
+):
+    """Manager metadata must not make absent modulation widgets snapshot."""
+    mock_widget.laserModules['488nm'] = SimpleNamespace(supportsModulation=False)
+
+    state = laser_controller.getComponentState()
+
+    assert '488nm' not in state['modulation']
 
 
 def test_set_laser_value_zero_forces_non_binary_laser_off():
@@ -353,13 +375,116 @@ def test_apply_component_state_setup_mode_does_enable(laser_controller, mock_wid
     
     warnings = laser_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
     
-    # Should set both power value and enable state
+    # Setup-mode restore goes dark first, then re-enables only the saved ON laser.
     laser_controller.setLaserValue.assert_called()
-    assert laser_controller.setLaserActive.call_count == 2
-    laser_controller.setLaserActive.assert_any_call('488nm', True)
-    laser_controller.setLaserActive.assert_any_call('UV', False)
+    assert laser_controller.setLaserActive.call_args_list == [
+        call('488nm', False),
+        call('488nm', True),
+        call('UV', False),
+    ]
     
     # No warnings expected for valid state
+    assert warnings == []
+
+
+def test_apply_component_state_off_target_disables_before_power_write(laser_controller):
+    events = []
+    laser_controller.setLaserActive.side_effect = (
+        lambda name, enabled: events.append(('active', name, enabled))
+    )
+    laser_controller.setLaserValue.side_effect = (
+        lambda name, value: events.append(('value', name, value))
+    )
+    state = {
+        'lasers': {
+            '488nm': {
+                'enabled': False, 'value': 150.0, 'isBinary': False, 'valueUnits': 'mW'
+            }
+        },
+        'modulation': {},
+    }
+
+    warnings = laser_controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+    )
+
+    assert events[:2] == [
+        ('active', '488nm', False),
+        ('value', '488nm', 150.0),
+    ]
+    assert warnings == []
+
+
+def test_apply_component_state_skips_power_if_disable_fails(laser_controller):
+    laser_controller.setLaserActive.side_effect = RuntimeError('cannot disable')
+    state = {
+        'lasers': {
+            '488nm': {
+                'enabled': False, 'value': 150.0, 'isBinary': False, 'valueUnits': 'mW'
+            }
+        },
+        'modulation': {},
+    }
+
+    warnings = laser_controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+    )
+
+    laser_controller.setLaserValue.assert_not_called()
+    assert any('disable' in warning.lower() for warning in warnings)
+
+
+def test_apply_component_state_on_target_enables_after_power_write(laser_controller):
+    events = []
+    laser_controller.setLaserActive.side_effect = (
+        lambda name, enabled: events.append(('active', name, enabled))
+    )
+    laser_controller.setLaserValue.side_effect = (
+        lambda name, value: events.append(('value', name, value))
+    )
+    state = {
+        'lasers': {
+            '488nm': {
+                'enabled': True, 'value': 75.0, 'isBinary': False, 'valueUnits': 'mW'
+            }
+        },
+        'modulation': {},
+    }
+
+    warnings = laser_controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+    )
+
+    assert events == [
+        ('active', '488nm', False),
+        ('value', '488nm', 75.0),
+        ('active', '488nm', True),
+    ]
+    assert warnings == []
+
+
+def test_apply_component_state_restores_modulation_enabled(laser_controller, mock_widget):
+    state = {
+        'lasers': {
+            '488nm': {
+                'enabled': False, 'value': 20.0, 'isBinary': False, 'valueUnits': 'mW'
+            }
+        },
+        'modulation': {
+            '488nm': {'enabled': True, 'frequency': 3000, 'dutyCycle': 60}
+        },
+    }
+
+    warnings = laser_controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+    )
+
+    laser_controller.frequencyChanged.assert_called_once_with('488nm', 3000)
+    laser_controller.dutyCycleChanged.assert_called_once_with('488nm', 60)
+    laser_controller.toggleModulation.assert_called_once_with('488nm', True)
+    mock_widget.setModulationEnabled.assert_called_once_with(
+        '488nm', True, emitSignal=False
+    )
     assert warnings == []
 
 
@@ -449,6 +574,7 @@ def test_describe_component_state(laser_controller):
         },
         'laserOrder': ['488nm', 'UV'],
         'currentPreset': 'Default',
+        'scanPowers': {'488nm': 0.0},
         'modulation': {}
     }
     
@@ -460,12 +586,14 @@ def test_describe_component_state(laser_controller):
     # Should include preset line
     assert any('preset: Default' in line for line in summary)
     
-    # Should include states header
-    assert any('states:' in line for line in summary)
-    
+    # Should distinguish Live and Scan state.
+    assert any('Live:' in line for line in summary)
+    assert any('Scan:' in line for line in summary)
+
     # Should include laser states
     assert any('488nm' in line and 'ON' in line and '100' in line and 'mW' in line for line in summary)
     assert any('UV' in line and 'OFF' in line for line in summary)
+    assert any('488nm' in line and '0' in line and '(override)' in line for line in summary)
 
 
 def test_get_component_state_hazards_high_power(laser_controller):
@@ -591,7 +719,7 @@ def test_round_trip_state_persistence(laser_controller, mock_widget):
     assert '488nm' in state['lasers']
     assert state['lasers']['488nm']['value'] == 80.0
     assert state['lasers']['488nm']['enabled'] is True
-    assert state['currentPreset'] == 'TestPreset'
+    assert state['livePreset'] == 'TestPreset'
     
     # Apply state in STARTUP_RESTORE mode should succeed without errors
     warnings = laser_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
