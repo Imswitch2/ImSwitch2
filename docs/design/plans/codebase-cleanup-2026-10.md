@@ -113,9 +113,9 @@ file links `ARCHITECTURE.md` or `DEVICE_PLUGINS.md`.
    (*Open work*). Re-verify each known issue there against the code, and
    settle two **DECISION**s left from the roadmap: keep or drop the long-range
    scanning items (feedback-based pixel binning, sinusoidal fast axis,
-   automatic lag calibration), and whether per-rig setup validation (etSTED,
-   MoNaLISA 1/2, WidefieldSTARSS, SNOUTY) gets a checklist page
-   (`docs/setup-validation.rst`) or stays a one-line item.
+   automatic lag calibration). Per-rig setup validation is DONE (all rigs,
+   2026; every recent hardware PR was rig-tested) but undocumented — a short
+   write-up page is welcome if the evidence exists, never invented.
 4. Screenshots: add `.. image::` for `auto/SLMsWidget.png`,
    `auto/TriggerScopeRasterWidget.png`,
    `auto/TriggerScopePLSRMulticolorWidget.png` in `gui.rst`.
@@ -127,9 +127,9 @@ file links `ARCHITECTURE.md` or `DEVICE_PLUGINS.md`.
 
 Nothing shipped uses `scanWidgetType: "PointScan"`; Advanced covers it except:
 
-- **DECISION:** the `TTL_sequence` / `TTL_sequence_axis` feature
-  (`PointScanTTLCycleDesigner.py:73-200`, alternate TTL per pixel/line/
-  frame/d4). Drop it, or port it into the Advanced TTL designer first.
+- **DECIDED (Lenny, 2026-10-17): drop** the `TTL_sequence` /
+  `TTL_sequence_axis` feature (`PointScanTTLCycleDesigner.py:73-200`). The
+  expert scan (feat/scan-engines, not yet on main) covers it in principle.
 - Port the `changed3StepDelayPar` API wrapper to `ScanControllerAdvanced`
   (the field exists; documented in `api/api.imcontrol.rst:75`, `gui.rst`).
 
@@ -159,9 +159,9 @@ Not the ImProcess MoNaLISA reconstruction — that stays (including
 panel: `ScanControllerMoNaLISA.py`, `ScanWidgetMoNaLISA.py`,
 `ScanManagerMoNaLISA.py` (a duplicate of `ScanManagerBase`).
 
-- **DECISION:** auto-axial XZ/YZ follow-up scans with bead-centre search
-  (`ScanControllerMoNaLISA.py:197-366`). Port to Advanced, or drop. If
-  dropped, also remove the plumbing that only it uses: BeadRec
+- **DECIDED (Lenny, 2026-10-17): drop** auto-axial XZ/YZ follow-up scans with
+  bead-centre search (`ScanControllerMoNaLISA.py:197-366`); the expert scan
+  covers it in principle. Also remove the plumbing that only it uses: BeadRec
   `autoAxial`/`axialListBuffer`/`getNextAxial`, `WorkflowServices.py:~777-811`,
   channel `sigAutoAxialToggled`/`sigNewAxialListBuffer`/`getNextAxial`.
 - *Cont. Laser Pulses* and TTL start/end in ms exist on Base, which stays.

@@ -27,11 +27,13 @@ workflow.
 Where the Project Is
 --------------------
 
-The main open workstream is the scanning, galvo and DAQ modernization (see
-*Scanning and galvo modernization* below).  Real-world setup validation —
-the per-setup checklists that sign ImSwitch2 off on each lab's microscope —
-has not started, and much of what is on ``main`` has only been tested
-against mocks.
+ImSwitch2 runs the microscopes it was built for.  The real-world setup
+validation planned during the migration from ImSwitch — the etSTED,
+MoNaLISA 1 and 2, WidefieldSTARSS and SNOUTY rigs — has been carried out
+successfully, and pull requests that touch hardware are tested on a real rig
+before they merge.  The main open workstream is the scanning engine work
+(scan engines and the expert scan, on their own branch) and the remaining
+galvo/DAQ items below.
 
 Known Issues and Limitations
 ----------------------------
@@ -39,10 +41,10 @@ Known Issues and Limitations
 Hardware validation
 ~~~~~~~~~~~~~~~~~~~
 
-Features developed against the mock devices and simulated DAQ still need to
-be confirmed on the rigs they are meant for, especially anything that times
-lasers, scans, triggers or stage moves.  Treat a feature as unvalidated on
-hardware unless its pull request says otherwise.
+The no-hardware tests in CI do not exercise physical timing, laser emission,
+stage movement or DAQ output, so anything that times lasers, scans, triggers
+or stage moves is tested on a rig before it merges, and its pull request says
+which.  The rig runs themselves are not yet written up in the documentation.
 
 Scanning and galvo modernization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -68,10 +70,10 @@ only with the scripting docs.
 Event-triggered workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-EtSTED and EtMonalisa share the core event-triggered implementation. The
-no-hardware contract is strong, but hardware-facing behavior still requires
-physical review because these workflows involve lasers, scans, microscope stand
-state, and DAQ-triggered acquisition.
+EtSTED and EtMonalisa share the core event-triggered implementation, which is
+covered by no-hardware contract tests and runs on the etSTED and MoNaLISA
+rigs.  Changes to it still need a rig run before they merge: these workflows
+involve lasers, scans, microscope stand state and DAQ-triggered acquisition.
 
 Widget layout
 ~~~~~~~~~~~~~
@@ -103,8 +105,8 @@ commitment.
 * **Device plugins.** Publish the plugin packages under ``examples/plugins``
   to PyPI, then remove the in-tree copies.
 * **SMLM.** 3D (astigmatic) fitting and throughput-oriented localization.
-* **Setup validation.** Per-rig sign-off on the etSTED, MoNaLISA 1 and 2,
-  WidefieldSTARSS and SNOUTY microscopes.
+* **Setup validation write-up.** The per-rig validation is done; recording
+  it (what was run, on which commit) in the documentation is not.
 
 The design notes for work in progress are in ``docs/design/plans/`` in the
 repository; they are working notes, not part of this documentation.
