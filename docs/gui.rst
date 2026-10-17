@@ -34,6 +34,65 @@ the corresponding ``DetectorManager``.
    :align: center
    :width: 399px
 
+.. _advanced-properties-tab:
+
+Advanced Properties tab
+-----------------------
+
+A detector whose manager offers ``getAdvancedPropertyInfo`` (the
+:ref:`Hamamatsu <hamamatsu-manager>` camera does) gets a second tab,
+**Advanced**, next to its parameter tree.  It lists every property the
+camera driver exposes in a six-column table:
+
+.. list-table::
+   :widths: 22 78
+   :header-rows: 1
+
+   * - Column
+     - Content
+   * - Property
+     - The driver property name, e.g. ``exposure_time`` or ``trigger_mode``.
+   * - Current Value
+     - The value read from the camera at the last refresh.
+   * - New Value
+     - The edit control (see below), or a dash for a read-only property.
+   * - Apply
+     - Sends this one row's new value to the camera.
+   * - Range/Options
+     - The numeric range, or the first three text options of a mode
+       property.
+   * - Access
+     - ``R``, ``W`` or ``RW``; writable rows are shown in bold green.
+
+**Refresh Properties** re-reads the table.  Editing is deliberately
+restricted:
+
+* A numeric property with a reported range gets a spin box limited to that
+  range (integer spin box for integer values, otherwise a decimal one).
+* A mode property with text options gets a drop-down of those options.
+* A writable property with neither is shown as *(manual edit unsafe)* and
+  cannot be edited here.  A property whose query failed is greyed out with the
+  error as its tooltip.
+* Nothing is sent until you press **Apply** on that row.
+
+On Apply the manager (``HamamatsuManager.setAdvancedProperty``) writes the
+property once; if the driver refuses while the camera is running, it stops
+acquisition, writes again and restarts acquisition if the camera was in use.
+A write the driver rejects, or any exception, is logged as an error and the
+table is left unchanged; a success is logged and the table refreshed.  The
+manager keeps its own state in step for the properties that also have
+dedicated controls (exposure, trigger source and mode, binning, the
+``subarray_*`` ROI), and remembers all other successful writes so that they
+are replayed if the camera backend is replaced (device reconnection).
+
+.. warning::
+
+   Many properties change hardware timing, and some cannot be changed while
+   the camera is acquiring.  Invalid combinations are rejected by the driver.
+   Do not change them in the middle of an experiment; try a change on a test
+   setup first.  The available properties depend on the camera model and the
+   DCAM driver version.
+
 
 Recording and data storage
 ==========================
