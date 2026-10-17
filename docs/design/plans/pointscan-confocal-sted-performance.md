@@ -1,80 +1,17 @@
-# Point-scan confocal / STED performance
+# Point-scan confocal / STED performance (open tail)
 
-Branch: `perf/pointscan-confocal-sted` (off `main`).
+**Status (2026-10-17):** F1 (Repeat crash: re-arm now deferred via
+`SuperScanController._armRepeatScan`, `QTimer.singleShot(0)`) and F2 (live-preview
+redraw throttled by wall-clock, `test_live_display_throttle.py`,
+`test_scan_repeat_rearm.py`) are fixed on main. The opportunities below are
+**unimplemented** (verified: `d2Step` still emits per scan line from
+`APDManager`/`PMTManager`; `_TTFlimWorker.LIVE_PREVIEW_S = 1.0` is a class
+constant; `getLatestFrame` default unchanged). They are performance work that
+needs a rig to judge, so each wants hardware numbers before and after.
 
-Scope: the galvo point-scan path — `ScanControllerAdvanced` +
-`GalvoScanDesigner` + `AdvancedScanTTLCycleDesigner`, with `APDManager` /
-`PMTManager` (and `SwabianTimeTaggerManager` for FLIM/STED) as detectors,
-driven through `NidaqManager`.
-
-Reported symptoms:
-1. The whole GUI gets laggy during/after scanning.
-2. It **crashes** when the *Repeat* checkbox is used.
-3. Live image updating is not fluent (choppy / lagging behind acquisition).
-
----
-
-## Root-cause findings
-
-### F1 — Repeat re-arms the scan re-entrantly (the crash) — FIXED
-
-`NidaqManager.scanDone()` emits `sigScanDone` from the just-finished scan's
-task-completion slot (`taskDone` → `scanDone`, same thread). Every scan
-controller's `scanDone()` is wired to that signal, and in the *Repeat* branch
-it called the next frame **synchronously**:
-
-```python
-def scanDone(self):
-    self.isRunning = False
-    if not self._widget.repeatEnabled():
-        ...                       # terminal path
-    else:
-        self.runScanAdvanced(sigScanStartingEmitted=True)   # re-enters runScan
-```
-
-`runScanAdvanced` → `nidaqManager.runScan()` then recreates the NI-DAQ tasks
-and **reassigns `self.aoTaskWaiter` / `self.doTaskWaiter` / `self.timerTaskWaiter`**
-(`NidaqManager.runScan`, ~line 416) while the *previous* `WaitThread`s are still
-finishing their `run()`/`close()`. Dropping the last reference to a `QThread`
-that is still running triggers *"QThread: Destroyed while thread is still
-running"* → abort/segfault. The per-detector `ScanWorker` QThreads
-(`APDManager`/`PMTManager.initiateScan`) are likewise torn down and recreated in
-the same re-entrant window, and the old worker's queued
-`stopAcquisitionLocal` can land on the *new* thread. With *Repeat* this happens
-every frame, so it crashes quickly. (In NI-DAQ **simulation** mode the
-`WaitThread`s are never created, which is why it only bites on real hardware.)
-
-**Fix:** `SuperScanController._armRepeatScan()` defers the re-arm with
-`QtCore.QTimer.singleShot(0, ...)` so the current signal chain unwinds and the
-finished scan releases its tasks/threads before the next frame arms.
-`_repeatPending` is cleared by `abortScan`/`scanFailed`, and `_fireRepeatScan`
-re-checks `_shouldContinueRepeat()` so aborting or un-checking *Repeat* in the
-gap cancels cleanly. Applied to `ScanControllerAdvanced`,
-`ScanControllerPointScan`, `ScanControllerBase` and `ScanControllerMoNaLISA`
-(the NI-DAQ-backed controllers; the last two override `_shouldContinueRepeat`
-to keep looping in continuous-laser mode).
-
-### F2 — Live-preview redraws gated on image *shape* with a random draw — FIXED
-
-`APDManager.updateImage` / `PMTManager.updateImage` run once **per scan line**
-(cross-thread `d2Step` → GUI thread) and pushed the whole in-progress image to
-napari on a random subset of lines:
-
-```python
-if np.random.rand() < min(500 / sum(self._image.shape), 0.05):
-    self.sigImageUpdated.emit(self._image, True, self.scale)
-```
-
-The gate depends on the array shape, not on wall-clock time, so the redraw rate
-is uncontrolled and non-deterministic: a fast/small scan floods the GUI with
-full-image redraws (lag), a slow/large scan barely refreshes (choppy). It also
-competes with the periodic `LVWorker` timer that *already* refreshes the view.
-
-**Fix:** `LiveDisplayThrottle` (`detectors/_live_display.py`) — a deterministic
-wall-clock limiter. Redraws are capped at a fixed rate (default 50 ms / 20 Hz,
-tunable per rig via the `liveUpdateIntervalMs` manager property) and reset at
-the start of each scan so the first line always paints. Bounds napari redraws
-regardless of line rate or image size.
+Scope: the galvo point-scan path (`ScanControllerAdvanced`, `GalvoScanDesigner`,
+`AdvancedScanTTLCycleDesigner`, `APDManager`/`PMTManager`, Swabian TimeTagger for
+FLIM/STED, via `NidaqManager`).
 
 ---
 

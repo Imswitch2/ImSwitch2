@@ -6,7 +6,7 @@ using (and vice versa). It now holds a WORKFLOW lease when it is given the
 DetectorsManager, and keeps the legacy raw calls when it is not (the facade
 is also constructed directly around a bare detector in tests and scripts).
 
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Design reference: docs/scan-lifecycle.rst (detector acquisition leases).
 """
 
 from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose

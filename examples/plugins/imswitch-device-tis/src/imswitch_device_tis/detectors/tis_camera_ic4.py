@@ -25,7 +25,7 @@ class TISCameraIC4Manager(DetectorManager):
 
     Replaces the in-tree ``TISManager``, which drives the same hardware through
     the legacy ``pyicic``/IC3 wrapper and cannot capture one distinct frame per
-    hardware trigger. See ``docs/design/plans/tis-camera-ic4-migration.md``.
+    hardware trigger. The retired migration plan is in git history (``tis-camera-ic4-migration.md``).
 
     This manager deliberately does **not** claim the ``TISManager`` name. The
     registry resolves plugin contributions ahead of in-tree managers, so an alias

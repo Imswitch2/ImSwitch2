@@ -1,6 +1,16 @@
 # ImProcess Lazy / Virtual Image Source Design
 
-Status: phase 1 implemented; first low-risk phase 2 consumer implemented
+Status (2026-10-17): **phase 1 is on main** (`model/virtual_image.py`,
+`DataObj.data_handle`/`data_source`/`checkAndOpenData()`, source-shape `numFrames`;
+`DataEditController` and `DataFrameController` already read through the handle)
+and `getMeanData()` is chunked. **Open:** the rest of phase 2 (lazy dataset
+picker / metadata-only inspection, Dask-backed view-only previews for Zarr and
+TIFF, 2-D-plane projection/segmentation widgets), phase 3 (lazy
+`ProcessingResult.data` behind `DisplayLayerSpec`, viewer code without
+unconditional `np.asarray`) and phase 4 (stream chunks of closed files into
+`StreamingReconstructor`). Phases 3-4 need an owner for the HDF5 handle lifetime
+first (see Risks); MoNaLISA/SNOUTY stay materializing. The phase-1 test
+matrix and acceptance list were removed (satisfied).
 
 ## Problem
 
@@ -288,33 +298,6 @@ closed files:
 - `StreamingReconstructor` sessions consume those chunks.
 - Plain reconstructors still get a materialized NumPy array through the legacy
   batch path.
-
-## Test matrix
-
-Add focused tests for each backend:
-
-- HDF5 plain dataset: lazy shape/dtype/slice, then materialized equality.
-- HDF5 structured detector group: metadata flattening and lazy data access.
-- Zarr plain array: lazy shape/dtype/slice, then materialized equality.
-- OME-Zarr root multiscale: metadata, full-resolution selection, lazy slice.
-- OME-TIFF single series: axes/scales metadata and lazy slice through
-  `aszarr()`.
-- OME-TIFF multi-series: named series selection and materialization equality.
-- Fallback TIFF path: still materializes correctly if lazy bridge is unavailable.
-- `checkAndUnloadData()` invalidates the lazy source and closes resources.
-- Existing `DataObj.data` tests remain unchanged.
-
-## Acceptance criteria for phase 1
-
-- All current `improcess` tests that do not hit unrelated known failures still
-  pass.
-- Existing `DataObj.data` callers observe a NumPy array with unchanged values.
-- New `data_handle` tests prove HDF5/Zarr/TIFF shape and slices are accessible
-  without filling `_data`.
-- `DataObj.numFrames` no longer materializes the full array once the source is
-  open.
-- `checkAndUnloadData()` releases file handles and clears both lazy and eager
-  caches.
 
 ## Risks
 
