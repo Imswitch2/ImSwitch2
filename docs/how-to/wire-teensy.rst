@@ -224,5 +224,5 @@ See also
 
 - :doc:`add-pulse-generator-backend` — write a new backend for a different timing device.
 - :doc:`/adding-device-support` — generic guide for adding any device manager.
-- `Pulse generator subsystem <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/ARCHITECTURE.md#pulse-generator-subsystem>`_
-  in the repository's architecture note — design, including the v4 wire protocol.
+- :ref:`Pulse generator subsystem <pulse-generator-subsystem>`
+  in the architecture page — the abstraction the Teensy backend implements.

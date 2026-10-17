@@ -145,7 +145,7 @@ The full documentation lives under [`docs/`](docs/) and is rendered with [Sphinx
 | [`docs/scripting.rst`](docs/scripting.rst) | Scripting / API reference |
 | [`docs/devices/`](docs/devices/) | **Per-device JSON config reference** — every manager, every field, with defaults |
 | [`docs/how-to/`](docs/how-to/) | **Task-oriented guides** — wire a Teensy, add a backend, port a driver, auto-screenshot widgets |
-| [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) | Full architecture map (managers, controllers, signal flow, startup) |
+| [`docs/architecture.rst`](docs/architecture.rst) | Architecture map (package layout, startup, managers, signal buses, recording path) |
 | [`docs/design/plans/`](docs/design/plans/) | Integration plans (active + historical) |
 
 ### Build the docs locally
@@ -300,7 +300,7 @@ Imswitch2/
 └── .github/workflows/              # CI pipeline
 ```
 
-Deep dive: [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md).
+Deep dive: [`docs/architecture.rst`](docs/architecture.rst).
 
 ---
 
