@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "noiseW": {
+      "description": "RMS noise per reading.  Default 2e-7.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "powerW": {
+      "description": "Simulated optical power at the sensor.  Default 0.001.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "serial": {
+      "description": "Reported serial number.  Default ``\"MOCK-PM\"``.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "MockPowerMeterManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "MockPowerMeterManager",
+    "InstrumentManager"
+  ]
+}

@@ -1000,6 +1000,22 @@ class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
         """ Close/cleanup detector. """
         pass
 
+    def _lifecycleReinitialise(self) -> None:
+        """ After the camera backend was replaced (device-reconnect-2.0 R-3):
+        put every ImSwitch-owned parameter back on the new camera. The
+        acquisition stays stopped; the first parameter that cannot be
+        re-applied fails the reconnect with its name. """
+        errors = []
+        for name, parameter in list(self.parameters.items()):
+            if not getattr(parameter, 'editable', True):
+                continue
+            try:
+                self.setParameter(name, parameter.value)
+            except Exception as exc:
+                errors.append(f'{name}: {exc}')
+        if errors:
+            raise RuntimeError('parameters not re-applied: ' + '; '.join(errors))
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
