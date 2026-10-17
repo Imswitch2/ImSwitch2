@@ -134,14 +134,39 @@ class SetupModeController:
         return self._loadModeByName(name)
 
     @APIExport()
-    def snapshotSetupModeState(self, componentNames=None):
+    def getSetupModeCaptureOptions(self, componentName, previousState=None):
+        """Return optional component-owned capture options for Save/Update UI."""
+        controller = self._getModeAwareControllers().get(componentName)
+        if controller is None:
+            return None
+        try:
+            return controller.getSetupModeCaptureOptions(previousState)
+        except Exception:
+            self._logger.error(
+                f'Failed to get setup-mode capture options for "{componentName}"'
+            )
+            self._logger.error(traceback.format_exc())
+            return None
+
+    @APIExport()
+    def snapshotSetupModeState(
+        self, componentNames=None, captureOptions=None, previousStateByComponent=None
+    ):
         """Snapshot selected setup-mode components without saving them."""
         modeAwareControllers = self._getModeAwareControllers()
         componentNames = self._normalizeComponentNames(componentNames, modeAwareControllers)
-        return self._snapshotComponents(componentNames, modeAwareControllers)
+        return self._snapshotComponents(
+            componentNames,
+            modeAwareControllers,
+            captureOptions=captureOptions,
+            previousStateByComponent=previousStateByComponent,
+        )
 
     @APIExport()
-    def saveSetupMode(self, name, componentNames=None, description=None, shortcut=None):
+    def saveSetupMode(
+        self, name, componentNames=None, description=None, shortcut=None,
+        captureOptions=None,
+    ):
         """Snapshot selected setup-mode components and save them as name.
 
         Args:
@@ -162,7 +187,6 @@ class SetupModeController:
         modeName = self._validateModeName(name)
         modeAwareControllers = self._getModeAwareControllers()
         componentNames = self._normalizeComponentNames(componentNames, modeAwareControllers)
-        snapshot = self._snapshotComponents(componentNames, modeAwareControllers)
 
         now = self._nowIso()
         createdAt = now
@@ -172,6 +196,14 @@ class SetupModeController:
             createdAt = existingMode.get('createdAt', now)
         except FileNotFoundError:
             pass
+
+        previousStateByComponent = (existingMode or {}).get('state') or {}
+        snapshot = self._snapshotComponents(
+            componentNames,
+            modeAwareControllers,
+            captureOptions=captureOptions,
+            previousStateByComponent=previousStateByComponent,
+        )
 
         if description is None and existingMode is not None:
             description = existingMode.get('description', '')
@@ -358,6 +390,38 @@ class SetupModeController:
         return self.applySetupMode(name, componentNames).warnings
 
     @APIExport()
+    def getSetupModeComponentStates(self, componentName):
+        """Return saved states for one component without interpreting their schema."""
+        results = []
+        for modeName in self.listSetupModes():
+            try:
+                mode = self._loadModeByName(modeName)
+            except Exception:
+                self._logger.error(f'Failed to inspect setup mode "{modeName}"')
+                self._logger.error(traceback.format_exc())
+                continue
+            state = (mode.get('state') or {}).get(componentName)
+            if state is not None:
+                results.append({'modeName': modeName, 'state': state})
+        return results
+
+    @APIExport()
+    def replaceSetupModeComponentState(self, modeName, componentName, componentState):
+        """Atomically replace one component payload in an existing setup mode."""
+        mode = self._loadModeByName(modeName)
+        state = dict(mode.get('state') or {})
+        state[componentName] = componentState
+        mode['state'] = state
+        included = list(mode.get('includedComponents') or [])
+        if componentName not in included:
+            included.append(componentName)
+        mode['includedComponents'] = included
+        mode['updatedAt'] = self._nowIso()
+        self._assertJSONSerializable(componentState, componentName)
+        self._writeMode(mode)
+        return mode
+
+    @APIExport()
     def deleteSetupMode(self, name):
         """Delete a saved setup mode. Returns True if a file was removed."""
         path = self._modePathForName(name)
@@ -498,12 +562,18 @@ class SetupModeController:
 
         return modeAwareControllers
 
-    def _snapshotComponents(self, componentNames, modeAwareControllers):
+    def _snapshotComponents(
+        self, componentNames, modeAwareControllers, *, captureOptions=None,
+        previousStateByComponent=None,
+    ):
         warnings = []
         includedComponents = []
         state = {}
-        
-        # Use unified registry for snapshot
+        captureOptions = captureOptions or {}
+        previousStateByComponent = previousStateByComponent or {}
+
+        # Use unified registry for canonical runtime snapshot, then let the
+        # component adapt that full state to named setup-mode semantics.
         registry = getWidgetStatePersistence()
 
         for componentName in componentNames:
@@ -522,8 +592,15 @@ class SetupModeController:
                 if componentState is None:
                     warnings.append(f'Failed to snapshot "{componentName}"')
                     continue
-                
-                # Registry already asserts JSON-serializable, but double-check for safety
+
+                componentState = controller.prepareSetupModeState(
+                    componentState,
+                    captureOptions=captureOptions.get(componentName),
+                    previousState=previousStateByComponent.get(componentName),
+                )
+
+                # Registry already asserts the canonical snapshot; setup-mode
+                # adaptation is component-owned, so validate the adapted payload too.
                 self._assertJSONSerializable(componentState, componentName)
             except Exception as e:
                 self._logger.error(f'Failed to snapshot setup mode component: {componentName}')

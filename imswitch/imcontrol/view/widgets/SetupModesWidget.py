@@ -358,7 +358,7 @@ class SetupModesWidget(Widget):
 
     def showSaveModeDialog(
             self, defaultName, defaultDescription, defaultShortcut,
-            components, selectedComponents):
+            components, selectedComponents, componentCaptureOptions=None):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Save setup mode")
 
@@ -384,18 +384,103 @@ class SetupModesWidget(Widget):
         layout.addLayout(form)
 
         includeGroup = QtWidgets.QGroupBox("Include in snapshot")
-        includeLayout = QtWidgets.QGridLayout(includeGroup)
+        includeLayout = QtWidgets.QVBoxLayout(includeGroup)
         includeLayout.setContentsMargins(6, 6, 6, 6)
-        includeLayout.setHorizontalSpacing(10)
-        includeLayout.setVerticalSpacing(3)
+        includeLayout.setSpacing(4)
 
         selectedComponents = set(selectedComponents or [])
+        componentCaptureOptions = componentCaptureOptions or {}
         componentChecks = {}
-        for index, component in enumerate(components):
+        captureControls = {}
+
+        for component in components:
+            componentWidget = QtWidgets.QWidget()
+            componentLayout = QtWidgets.QVBoxLayout(componentWidget)
+            componentLayout.setContentsMargins(0, 0, 0, 0)
+            componentLayout.setSpacing(2)
+
             check = QtWidgets.QCheckBox(component)
             check.setChecked(component in selectedComponents)
             componentChecks[component] = check
-            includeLayout.addWidget(check, index // 2, index % 2)
+            componentLayout.addWidget(check)
+
+            options = componentCaptureOptions.get(component) or {}
+            if options.get('kind') == 'power_bindings':
+                optionsWidget = QtWidgets.QWidget()
+                optionsLayout = QtWidgets.QVBoxLayout(optionsWidget)
+                optionsLayout.setContentsMargins(22, 0, 0, 4)
+                optionsLayout.setSpacing(3)
+                sectionControls = {}
+
+                for section in options.get('sections', []):
+                    sectionId = section.get('id')
+                    if not sectionId:
+                        continue
+                    sectionCheck = None
+                    if section.get('checkable'):
+                        sectionCheck = QtWidgets.QCheckBox(section.get('label') or sectionId)
+                        sectionCheck.setChecked(bool(section.get('included', True)))
+                        optionsLayout.addWidget(sectionCheck)
+
+                    sourceRow = QtWidgets.QWidget()
+                    sourceLayout = QtWidgets.QHBoxLayout(sourceRow)
+                    sourceLayout.setContentsMargins(
+                        18 if sectionCheck is not None else 0, 0, 0, 0
+                    )
+                    sourceLayout.setSpacing(5)
+                    sourceLayout.addWidget(QtWidgets.QLabel(
+                        'Source:' if sectionCheck is not None else 'Power source:'
+                    ))
+                    sourceCombo = QtWidgets.QComboBox()
+                    sourceCombo.addItem('Snapshot current powers', 'snapshot')
+                    sourceCombo.addItem('Follow preset', 'preset')
+                    requestedKind = section.get('bindingKind', 'snapshot')
+                    sourceIndex = sourceCombo.findData(requestedKind)
+                    sourceCombo.setCurrentIndex(max(0, sourceIndex))
+                    sourceLayout.addWidget(sourceCombo)
+
+                    presetCombo = QtWidgets.QComboBox()
+                    presetCombo.addItem('', None)
+                    for name in section.get('presetNames') or []:
+                        presetCombo.addItem(str(name), str(name))
+                    requestedPreset = section.get('presetName')
+                    if requestedPreset:
+                        presetIndex = presetCombo.findData(requestedPreset)
+                        if presetIndex < 0:
+                            presetCombo.addItem(str(requestedPreset), str(requestedPreset))
+                            presetIndex = presetCombo.count() - 1
+                        presetCombo.setCurrentIndex(presetIndex)
+                    sourceLayout.addWidget(presetCombo, 1)
+                    optionsLayout.addWidget(sourceRow)
+
+                    def updatePresetVisibility(
+                        _index=None, *, source=sourceCombo, preset=presetCombo,
+                        sectionCheck=sectionCheck, row=sourceRow
+                    ):
+                        included = sectionCheck is None or sectionCheck.isChecked()
+                        row.setEnabled(included)
+                        preset.setVisible(source.currentData() == 'preset')
+
+                    sourceCombo.currentIndexChanged.connect(updatePresetVisibility)
+                    if sectionCheck is not None:
+                        sectionCheck.toggled.connect(updatePresetVisibility)
+                    updatePresetVisibility()
+
+                    sectionControls[sectionId] = {
+                        'check': sectionCheck,
+                        'source': sourceCombo,
+                        'preset': presetCombo,
+                    }
+
+                optionsWidget.setEnabled(check.isChecked())
+                check.toggled.connect(optionsWidget.setEnabled)
+                componentLayout.addWidget(optionsWidget)
+                captureControls[component] = {
+                    'metadata': options,
+                    'sections': sectionControls,
+                }
+
+            includeLayout.addWidget(componentWidget)
 
         layout.addWidget(includeGroup)
 
@@ -403,6 +488,52 @@ class SetupModesWidget(Widget):
             QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
         )
         layout.addWidget(buttonBox)
+
+        def collectCaptureOptions(validate=False):
+            collected = {}
+            for component, controls in captureControls.items():
+                if not componentChecks[component].isChecked():
+                    continue
+                metadata = controls['metadata']
+                sections = []
+                anyIncluded = False
+                for sectionMeta in metadata.get('sections', []):
+                    sectionId = sectionMeta.get('id')
+                    control = controls['sections'].get(sectionId)
+                    if control is None:
+                        continue
+                    included = (
+                        control['check'] is None or control['check'].isChecked()
+                    )
+                    anyIncluded = anyIncluded or included
+                    bindingKind = control['source'].currentData()
+                    presetName = control['preset'].currentData()
+                    if validate and included and bindingKind == 'preset' and not presetName:
+                        QtWidgets.QMessageBox.warning(
+                            dialog, 'Save setup mode',
+                            f'Select a preset for {component}'
+                            + (f' / {sectionMeta.get("label")}' if sectionMeta.get('label') else '')
+                            + '.'
+                        )
+                        return None
+                    sections.append({
+                        'id': sectionId,
+                        'included': included,
+                        'bindingKind': bindingKind,
+                        'presetName': presetName,
+                    })
+                if validate and metadata.get('powerMode') == 'separated' and not anyIncluded:
+                    QtWidgets.QMessageBox.warning(
+                        dialog, 'Save setup mode',
+                        f'Select Live, Scan, or both for {component}.'
+                    )
+                    return None
+                collected[component] = {
+                    'kind': metadata.get('kind'),
+                    'powerMode': metadata.get('powerMode'),
+                    'sections': sections,
+                }
+            return collected
 
         def acceptIfValid():
             if not nameEdit.text().strip():
@@ -418,7 +549,8 @@ class SetupModesWidget(Widget):
                     dialog, "Save setup mode", "Select at least one component."
                 )
                 return
-
+            if collectCaptureOptions(validate=True) is None:
+                return
             dialog.accept()
 
         buttonBox.accepted.connect(acceptIfValid)
@@ -435,6 +567,7 @@ class SetupModesWidget(Widget):
                 component for component, check in componentChecks.items()
                 if check.isChecked()
             ],
+            "captureOptions": collectCaptureOptions(validate=False),
         }
 
     def showUpdateModeDialog(self, modeName, summaries, warnings):

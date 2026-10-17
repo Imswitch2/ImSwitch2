@@ -15,6 +15,7 @@ from imswitch.imcontrol.model import (
     laserPowerModeFromSetup,
     normalizeLaserScanState,
 )
+from copy import deepcopy
 from imswitch.imcontrol.view import guitools
 from ..basecontrollers import (
     ComponentStateApplyMode,
@@ -63,6 +64,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             LaserPowerContext.SCAN: None,
         }
         self._selectedCoupledPreset = None
+        self._setupModeController = None
         # Lasers this scan armed, so teardown touches exactly those and no
         # others (see scanDevicesResolved / _disarmScanLasers).
         self._scanArmedLasers = []
@@ -171,6 +173,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         # Register for unified state persistence (canonical name)
         getWidgetStatePersistence().register('Laser', self)
+
+    def setSetupModeController(self, setupModeController):
+        """Inject setup-mode storage services without coupling Laser to files."""
+        self._setupModeController = setupModeController
 
     def closeEvent(self):
         self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
@@ -458,9 +464,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         oldName = self._selectedPresetName(self._currentPowerContext)
         if not oldName:
             return
-        newName = guitools.askForTextInput(
-            self._widget, 'Rename laser preset', f'Enter a new name for "{oldName}":'
-        )
+        references = self._setupModePresetReferences(oldName)
+        dialog = getattr(self._widget, 'showPresetRenameDialog', None)
+        if callable(dialog):
+            result = dialog(oldName, references)
+            if result is None:
+                return
+            newName = result.get('name')
+            updateReferences = bool(result.get('updateSetupModeReferences', True))
+        else:
+            newName = guitools.askForTextInput(
+                self._widget, 'Rename laser preset', f'Enter a new name for "{oldName}":'
+            )
+            updateReferences = True
         if not newName or newName == oldName:
             return
         if newName in getattr(self._setupInfo, 'laserPresets', {}):
@@ -471,18 +487,26 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             )
             if not overwrite:
                 return
-        self.renameLaserPreset(oldName, newName, self._currentPowerContext)
+        self.renameLaserPreset(
+            oldName, newName, self._currentPowerContext,
+            updateSetupModeReferences=updateReferences,
+        )
 
     def deletePreset(self):
         self._requireLaserEditsAllowed()
         presetToDelete = self._selectedPresetName(self._currentPowerContext)
         if not presetToDelete:
             return
-        confirmationResult = guitools.askYesNoQuestion(
-            self._widget,
-            'Delete laser preset?',
-            f'Are you sure you want to delete the preset "{presetToDelete}"?'
-        )
+        references = self._setupModePresetReferences(presetToDelete)
+        confirm = getattr(self._widget, 'confirmPresetDelete', None)
+        if callable(confirm):
+            confirmationResult = confirm(presetToDelete, references)
+        else:
+            confirmationResult = guitools.askYesNoQuestion(
+                self._widget,
+                'Delete laser preset?',
+                f'Are you sure you want to delete the preset "{presetToDelete}"?'
+            )
         if confirmationResult:
             self.deleteLaserPreset(presetToDelete, self._currentPowerContext)
 
@@ -561,7 +585,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         return True
 
     @APIExport(runOnUIThread=True)
-    def renameLaserPreset(self, oldName: str, newName: str, context=LaserPowerContext.LIVE.value) -> bool:
+    def renameLaserPreset(
+        self, oldName: str, newName: str, context=LaserPowerContext.LIVE.value,
+        updateSetupModeReferences: bool = True,
+    ) -> bool:
         self._requireLaserEditsAllowed()
         presets = getattr(self._setupInfo, 'laserPresets', {})
         if oldName not in presets or not newName:
@@ -575,6 +602,8 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         for presetContext in (LaserPowerContext.LIVE, LaserPowerContext.SCAN):
             if self._selectedPresetByContext.get(presetContext) == oldName:
                 self._selectedPresetByContext[presetContext] = newName
+        if updateSetupModeReferences and newName != oldName:
+            self._rewriteSetupModePresetReferences(oldName, newName)
         configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
         self._emitLaserPresetListChanged(context)
         self._refreshPresetControls()
@@ -1751,6 +1780,606 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         return returnmessage
     
+    # Setup-mode-specific Laser capture/apply contract (v2)
+
+    laserSetupModeStateVersion = 2
+
+    def getSetupModeCaptureOptions(self, previousState: dict | None = None):
+        """Describe Laser-specific capture choices for the generic Save dialog."""
+        previous = self._normalizeSetupModeState(previousState, warnAmbiguous=False)[0] if previousState else None
+        if previous is not None:
+            powerMode = normalizeLaserPowerMode(previous.get('capturedPowerMode'))
+        else:
+            powerMode = normalizeLaserPowerMode(
+                getattr(self, '_powerMode', LaserPowerMode.COUPLED)
+            )
+
+        def binding_defaults(section, context):
+            binding = (section or {}).get('powerBinding') or {}
+            kind = binding.get('kind') if binding.get('kind') in ('snapshot', 'preset') else 'snapshot'
+            presetName = binding.get('presetName') if kind == 'preset' else None
+            names = list(self._visiblePresetNames(context))
+            if presetName and presetName not in names:
+                names.append(presetName)
+            return kind, presetName, names
+
+        if powerMode is LaserPowerMode.COUPLED:
+            section = (previous or {}).get('coupled') if (previous or {}).get('capturedPowerMode') == 'coupled' else None
+            kind, presetName, _names = binding_defaults(section, LaserPowerContext.LIVE)
+            names = list(getattr(self._setupInfo, 'laserPresets', {}).keys())
+            if presetName and presetName not in names:
+                names.append(presetName)
+            return {
+                'kind': 'power_bindings',
+                'powerMode': 'coupled',
+                'sections': [{
+                    'id': 'coupled',
+                    'label': None,
+                    'checkable': False,
+                    'included': True,
+                    'bindingKind': kind,
+                    'presetName': presetName,
+                    'presetNames': names,
+                }],
+            }
+
+        liveSection = None
+        scanSection = None
+        if (previous or {}).get('capturedPowerMode') == 'separated':
+            liveSection = (previous or {}).get('live') or {}
+            scanSection = (previous or {}).get('scan') or {}
+        liveKind, livePreset, liveNames = binding_defaults(liveSection, LaserPowerContext.LIVE)
+        scanKind, scanPreset, scanNames = binding_defaults(scanSection, LaserPowerContext.SCAN)
+        return {
+            'kind': 'power_bindings',
+            'powerMode': 'separated',
+            'sections': [
+                {
+                    'id': 'live',
+                    'label': 'Live',
+                    'checkable': True,
+                    'included': bool(liveSection.get('included', True)) if liveSection is not None else True,
+                    'bindingKind': liveKind,
+                    'presetName': livePreset,
+                    'presetNames': liveNames,
+                },
+                {
+                    'id': 'scan',
+                    'label': 'Scan',
+                    'checkable': True,
+                    'included': bool(scanSection.get('included', True)) if scanSection is not None else True,
+                    'bindingKind': scanKind,
+                    'presetName': scanPreset,
+                    'presetNames': scanNames,
+                },
+            ],
+        }
+
+    def prepareSetupModeState(
+        self, fullState: dict, *, captureOptions: dict | None = None,
+        previousState: dict | None = None,
+    ) -> dict:
+        """Convert canonical Laser runtime state into the setup-mode v2 payload."""
+        if captureOptions is None:
+            captureOptions = self.getSetupModeCaptureOptions(previousState)
+        captureOptions = captureOptions or {}
+        powerMode = normalizeLaserPowerMode(
+            captureOptions.get('powerMode', getattr(self, '_powerMode', LaserPowerMode.COUPLED))
+        )
+        sectionOptions = {
+            section.get('id'): section
+            for section in captureOptions.get('sections', [])
+            if isinstance(section, dict) and section.get('id')
+        }
+
+        lasers = deepcopy(fullState.get('lasers') or {})
+        modulation = deepcopy(fullState.get('modulation') or {})
+        laserOrder = list(fullState.get('laserOrder') or lasers.keys())
+        livePowers = {
+            name: state.get('value')
+            for name, state in lasers.items()
+            if isinstance(state, dict) and not state.get('isBinary') and state.get('value') is not None
+        }
+        scanPowers = self._effectiveSetupModePowers(LaserPowerContext.SCAN)
+        currentPowerMode = normalizeLaserPowerMode(
+            getattr(self, '_powerMode', LaserPowerMode.COUPLED)
+        )
+        previousNormalized = (
+            self._normalizeSetupModeState(previousState, warnAmbiguous=False)[0]
+            if previousState else None
+        )
+
+        payload = {
+            'laserSetupModeStateVersion': self.laserSetupModeStateVersion,
+            'capturedPowerMode': powerMode.value,
+            'laserOrder': laserOrder,
+        }
+
+        if powerMode is LaserPowerMode.COUPLED:
+            options = sectionOptions.get('coupled') or {}
+            coupledPowers = livePowers
+            coupledLasers = lasers
+            coupledModulation = modulation
+            if currentPowerMode is LaserPowerMode.SEPARATED:
+                # Cross-mode Update keeps the saved coupled emission metadata but
+                # refreshes its acquisition-like power from current Scan state.
+                coupledPowers = scanPowers
+                previousCoupled = (previousNormalized or {}).get('coupled') or {}
+                if previousCoupled:
+                    coupledLasers = deepcopy(previousCoupled.get('lasers') or lasers)
+                    coupledModulation = deepcopy(
+                        previousCoupled.get('modulation') or modulation
+                    )
+            payload['coupled'] = {
+                'powerBinding': self._makeSetupModePowerBinding(
+                    options, coupledPowers, LaserPowerContext.SCAN
+                    if currentPowerMode is LaserPowerMode.SEPARATED
+                    else LaserPowerContext.LIVE
+                ),
+                'lasers': coupledLasers,
+                'modulation': coupledModulation,
+            }
+            return payload
+
+        liveOptions = sectionOptions.get('live') or {'included': True, 'bindingKind': 'snapshot'}
+        scanOptions = sectionOptions.get('scan') or {'included': True, 'bindingKind': 'snapshot'}
+        liveLasers = lasers
+        liveModulation = modulation
+        if currentPowerMode is LaserPowerMode.COUPLED and previousNormalized is not None:
+            # Coupled runtime power maps to separated Scan, not Live. Preserve
+            # the previously saved Live subsection while an old separated mode
+            # is being updated before Pass 4 exposes selective update controls.
+            previousLive = previousNormalized.get('live') or {}
+            liveLasers = deepcopy(previousLive.get('lasers') or {})
+            liveModulation = deepcopy(previousLive.get('modulation') or {})
+            previousBinding = previousLive.get('powerBinding') or {}
+            livePowers = dict(
+                previousBinding.get('fallbackPowers')
+                if previousBinding.get('kind') == 'preset'
+                else previousBinding.get('powers')
+                or {}
+            )
+            scanPowers = dict({
+                name: item.get('value')
+                for name, item in lasers.items()
+                if isinstance(item, dict) and not item.get('isBinary')
+                and item.get('value') is not None
+            })
+
+        payload['live'] = {'included': bool(liveOptions.get('included', True))}
+        if payload['live']['included']:
+            payload['live'].update({
+                'powerBinding': self._makeSetupModePowerBinding(
+                    liveOptions, livePowers, LaserPowerContext.LIVE
+                ),
+                'lasers': liveLasers,
+                'modulation': liveModulation,
+            })
+
+        payload['scan'] = {'included': bool(scanOptions.get('included', True))}
+        if payload['scan']['included']:
+            payload['scan']['powerBinding'] = self._makeSetupModePowerBinding(
+                scanOptions, scanPowers, LaserPowerContext.SCAN
+            )
+        return payload
+
+    def _effectiveSetupModePowers(self, context):
+        context = normalizeLaserPowerContext(context)
+        powers = {}
+        for laserName, manager in self._master.lasersManager:
+            if manager.isBinary:
+                continue
+            powers[laserName] = self.getLaserPowerSetting(laserName, context)
+        return powers
+
+    def _makeSetupModePowerBinding(self, options, currentPowers, context):
+        kind = str((options or {}).get('bindingKind') or 'snapshot').lower()
+        currentPowers = dict(currentPowers or {})
+        if kind != 'preset':
+            return {'kind': 'snapshot', 'powers': currentPowers}
+
+        presetName = (options or {}).get('presetName')
+        if not presetName:
+            # UI validation should prevent this, but stay deterministic for API users.
+            return {'kind': 'snapshot', 'powers': currentPowers}
+
+        presetContext, preset = self._presetDefinition(presetName)
+        fallback = dict(currentPowers)
+        if preset is not None:
+            for laserName, info in preset.items():
+                value = info.value if hasattr(info, 'value') else None
+                if value is not None:
+                    fallback[laserName] = value
+        return {
+            'kind': 'preset',
+            'presetName': str(presetName),
+            'presetContextAtCapture': (
+                presetContext.value if isinstance(presetContext, LaserPowerContext)
+                else normalizeLaserPowerContext(context).value
+            ),
+            'fallbackPowers': fallback,
+        }
+
+    def _resolveSetupModePowerBinding(self, binding):
+        binding = binding or {}
+        kind = binding.get('kind', 'snapshot')
+        if kind != 'preset':
+            return dict(binding.get('powers') or {}), []
+
+        presetName = binding.get('presetName')
+        fallback = dict(binding.get('fallbackPowers') or {})
+        _presetContext, preset = self._presetDefinition(presetName) if presetName else (None, None)
+        if preset is None:
+            return fallback, [
+                f'Laser preset "{presetName}" is unavailable; using saved fallback powers.'
+            ]
+
+        resolved = dict(fallback)
+        missing = []
+        presetValues = {}
+        for laserName, info in preset.items():
+            value = info.value if hasattr(info, 'value') else None
+            if value is not None:
+                presetValues[laserName] = value
+                resolved[laserName] = value
+        for laserName in fallback:
+            if laserName not in presetValues:
+                missing.append(laserName)
+        warnings = []
+        if missing:
+            warnings.append(
+                f'Laser preset "{presetName}" has no value for {", ".join(missing)}; '
+                'using saved fallback powers for those lasers.'
+            )
+        return resolved, warnings
+
+    def _normalizeSetupModeState(self, state, *, warnAmbiguous=True):
+        """Normalize v2 and historical Laser setup-mode payloads."""
+        state = state or {}
+        if state.get('laserSetupModeStateVersion') == self.laserSetupModeStateVersion:
+            return deepcopy(state), []
+
+        warnings = []
+        lasers = deepcopy(state.get('lasers') or {})
+        modulation = deepcopy(state.get('modulation') or {})
+        livePowers = {
+            name: item.get('value')
+            for name, item in lasers.items()
+            if isinstance(item, dict) and not item.get('isBinary') and item.get('value') is not None
+        }
+        scanPowers = dict(state.get('scanPowers') or {})
+        scanPreset = state.get('scanDefaultPreset') or state.get('scanPreset')
+        meaningfulScan = bool(scanPowers) or bool(scanPreset)
+
+        if meaningfulScan:
+            normalized = {
+                'laserSetupModeStateVersion': self.laserSetupModeStateVersion,
+                'capturedPowerMode': 'separated',
+                'laserOrder': list(state.get('laserOrder') or lasers.keys()),
+                'live': {
+                    'included': True,
+                    'powerBinding': {'kind': 'snapshot', 'powers': livePowers},
+                    'lasers': lasers,
+                    'modulation': modulation,
+                },
+                'scan': {'included': True},
+            }
+            if scanPreset:
+                fallback = dict(livePowers)
+                fallback.update(scanPowers)
+                normalized['scan']['powerBinding'] = {
+                    'kind': 'preset',
+                    'presetName': scanPreset,
+                    'presetContextAtCapture': 'scan',
+                    'fallbackPowers': fallback,
+                }
+            else:
+                effective = dict(livePowers)
+                effective.update(scanPowers)
+                normalized['scan']['powerBinding'] = {
+                    'kind': 'snapshot', 'powers': effective
+                }
+            return normalized, warnings
+
+        if warnAmbiguous and any(
+            key in state for key in ('livePreset', 'scanPreset', 'scanPowers')
+        ):
+            warnings.append(
+                'Historical Laser setup-mode state did not record its power policy; '
+                'it was interpreted as coupled because no explicit Scan state was saved.'
+            )
+        normalized = {
+            'laserSetupModeStateVersion': self.laserSetupModeStateVersion,
+            'capturedPowerMode': 'coupled',
+            'laserOrder': list(state.get('laserOrder') or lasers.keys()),
+            'coupled': {
+                'powerBinding': {'kind': 'snapshot', 'powers': livePowers},
+                'lasers': lasers,
+                'modulation': modulation,
+            },
+        }
+        return normalized, warnings
+
+    def _setupModeApplyPlan(self, state):
+        """Compute cross-mode semantics before any hardware is touched."""
+        normalized, warnings = self._normalizeSetupModeState(state)
+        captured = normalizeLaserPowerMode(normalized.get('capturedPowerMode'))
+        current = normalizeLaserPowerMode(getattr(self, '_powerMode', LaserPowerMode.COUPLED))
+        plan = {
+            'state': normalized,
+            'captured': captured,
+            'current': current,
+            'applyLive': False,
+            'applyScan': False,
+            'applyCoupled': False,
+            'coupledMustRemainOff': False,
+            'warnings': list(warnings),
+        }
+
+        if captured is current:
+            if current is LaserPowerMode.COUPLED:
+                plan['applyCoupled'] = True
+            else:
+                plan['applyLive'] = bool((normalized.get('live') or {}).get('included'))
+                plan['applyScan'] = bool((normalized.get('scan') or {}).get('included'))
+            return plan
+
+        if captured is LaserPowerMode.COUPLED and current is LaserPowerMode.SEPARATED:
+            plan['applyScan'] = True
+            plan['warnings'].append(
+                'Laser setup mode was saved with coupled power; its power was applied '
+                'to Scan only and current Live illumination was left unchanged.'
+            )
+            return plan
+
+        # Separated saved -> coupled current: Scan wins; Live is never promoted.
+        scanIncluded = bool((normalized.get('scan') or {}).get('included'))
+        liveIncluded = bool((normalized.get('live') or {}).get('included'))
+        if scanIncluded:
+            plan['applyCoupled'] = True
+            plan['coupledMustRemainOff'] = True
+            if liveIncluded:
+                plan['warnings'].append(
+                    'Laser setup mode was saved with separated power. Scan power was '
+                    'applied to the coupled setpoint while lasers were kept OFF; '
+                    'saved Live state was not applied.'
+                )
+            else:
+                plan['warnings'].append(
+                    'Separated Scan power was applied to the coupled setpoint while '
+                    'lasers were kept OFF.'
+                )
+        else:
+            plan['warnings'].append(
+                'This setup mode contains only separated Live laser state, but the '
+                'current setup uses coupled laser power. Laser state was not applied.'
+            )
+        return plan
+
+    def _applySetupModeLiveSection(self, section, powers, *, forceOff=False):
+        warnings = []
+        knownLasers = {name for name, _ in self._master.lasersManager}
+        lasers = section.get('lasers') or {}
+        modulationByLaser = section.get('modulation') or {}
+
+        # Include power-only entries (for example Scan -> coupled conversion)
+        # even when the saved section intentionally has no Live metadata.
+        names = list(lasers.keys())
+        for name in powers:
+            if name not in names:
+                names.append(name)
+
+        for laserName in names:
+            if laserName not in knownLasers:
+                warnings.append(f'Laser "{laserName}" not present in current setup; skipped.')
+                continue
+            manager = self._master.lasersManager[laserName]
+            laserState = lasers.get(laserName) or {}
+            savedBinary = bool(laserState.get('isBinary', manager.isBinary))
+            targetEnabled = bool(laserState.get('enabled', False)) and not forceOff
+            value = powers.get(laserName)
+            if targetEnabled and not savedBinary:
+                numericValue = self._asFloat(value)
+                if numericValue is not None and numericValue <= 0:
+                    targetEnabled = False
+
+            restoreFailed = False
+            try:
+                self.setLaserActive(laserName, False)
+            except Exception as e:
+                warnings.append(f'Failed to disable laser "{laserName}" before restore: {e}')
+                continue
+
+            if not savedBinary and value is not None:
+                try:
+                    self.setLaserValue(laserName, value)
+                except Exception as e:
+                    restoreFailed = True
+                    warnings.append(f'Failed to restore value for laser "{laserName}": {e}')
+
+            modulation = modulationByLaser.get(laserName) or {}
+            if modulation and not forceOff:
+                module = self._widget.laserModules.get(laserName)
+                if not self._laserModuleSupportsModulation(module):
+                    restoreFailed = True
+                    warnings.append(
+                        f'Laser "{laserName}" has no modulation controls; modulation state was not applied.'
+                    )
+                else:
+                    freq = modulation.get('frequency')
+                    if freq is not None:
+                        try:
+                            self.frequencyChanged(laserName, freq)
+                        except Exception as e:
+                            restoreFailed = True
+                            warnings.append(
+                                f'Failed to restore modulation frequency for laser "{laserName}": {e}'
+                            )
+                    duty = modulation.get('dutyCycle')
+                    if duty is not None:
+                        try:
+                            self.dutyCycleChanged(laserName, duty)
+                        except Exception as e:
+                            restoreFailed = True
+                            warnings.append(
+                                f'Failed to restore modulation duty cycle for laser "{laserName}": {e}'
+                            )
+                    if 'enabled' in modulation:
+                        try:
+                            enabled = bool(modulation.get('enabled'))
+                            self.toggleModulation(laserName, enabled)
+                            self._widget.setModulationEnabled(
+                                laserName, enabled, emitSignal=False
+                            )
+                        except Exception as e:
+                            restoreFailed = True
+                            warnings.append(
+                                f'Failed to restore modulation enable state for laser "{laserName}": {e}'
+                            )
+
+            if targetEnabled and not restoreFailed:
+                try:
+                    self.setLaserActive(laserName, True)
+                except Exception as e:
+                    warnings.append(f'Failed to enable laser "{laserName}" after restore: {e}')
+        return warnings
+
+    def _applySetupModeScanPowers(self, powers):
+        warnings = []
+        knownLasers = {name for name, _ in self._master.lasersManager}
+        for laserName, value in dict(powers or {}).items():
+            if laserName not in knownLasers:
+                warnings.append(
+                    f'Scan power references laser "{laserName}" not present in current setup; skipped.'
+                )
+                continue
+            if self._master.lasersManager[laserName].isBinary:
+                warnings.append(f'Scan power references binary laser "{laserName}"; skipped.')
+                continue
+            try:
+                self._setScanPowerValue(laserName, value)
+            except Exception as e:
+                warnings.append(f'Failed to restore Scan power for laser "{laserName}": {e}')
+        return warnings
+
+    def _applySetupModeStateV2(self, state):
+        plan = self._setupModeApplyPlan(state)
+        normalized = plan['state']
+        warnings = list(plan['warnings'])
+        captured = plan['captured']
+
+        if plan['applyLive']:
+            section = normalized.get('live') or {}
+            powers, bindingWarnings = self._resolveSetupModePowerBinding(
+                section.get('powerBinding')
+            )
+            warnings.extend(bindingWarnings)
+            warnings.extend(self._applySetupModeLiveSection(section, powers))
+            self._setSetupModePresetSelection(LaserPowerContext.LIVE, section.get('powerBinding'))
+
+        if plan['applyScan']:
+            section = (
+                normalized.get('scan') or {}
+                if captured is LaserPowerMode.SEPARATED
+                else normalized.get('coupled') or {}
+            )
+            powers, bindingWarnings = self._resolveSetupModePowerBinding(
+                section.get('powerBinding')
+            )
+            warnings.extend(bindingWarnings)
+            warnings.extend(self._applySetupModeScanPowers(powers))
+            self._setSetupModePresetSelection(LaserPowerContext.SCAN, section.get('powerBinding'))
+
+        if plan['applyCoupled']:
+            if captured is LaserPowerMode.COUPLED:
+                section = normalized.get('coupled') or {}
+            else:
+                section = normalized.get('scan') or {}
+            powers, bindingWarnings = self._resolveSetupModePowerBinding(
+                section.get('powerBinding')
+            )
+            warnings.extend(bindingWarnings)
+            if plan['coupledMustRemainOff']:
+                warnings.extend(self._applySetupModeLiveSection({}, powers, forceOff=True))
+            else:
+                warnings.extend(self._applySetupModeLiveSection(section, powers))
+            self._setSetupModePresetSelection(LaserPowerContext.LIVE, section.get('powerBinding'))
+
+        self._refreshPresetControls()
+        self._refreshAllLaserRows()
+        return warnings
+
+    def _setSetupModePresetSelection(self, context, binding):
+        binding = binding or {}
+        presetName = binding.get('presetName') if binding.get('kind') == 'preset' else None
+        if self._isSeparatedPowerMode():
+            self._setSelectedPresetName(context, presetName)
+        else:
+            self._selectedCoupledPreset = presetName
+
+    def _setupModeHazardState(self, state):
+        """Return (laser metadata, resolved powers) only when apply can emit."""
+        plan = self._setupModeApplyPlan(state)
+        normalized = plan['state']
+        if plan['current'] is LaserPowerMode.COUPLED:
+            if not plan['applyCoupled'] or plan['coupledMustRemainOff']:
+                return {}, {}, []
+            section = normalized.get('coupled') or {}
+        else:
+            if not plan['applyLive']:
+                return {}, {}, []
+            section = normalized.get('live') or {}
+        powers, warnings = self._resolveSetupModePowerBinding(section.get('powerBinding'))
+        return section.get('lasers') or {}, powers, warnings
+
+    def _setupModePresetReferences(self, presetName):
+        backend = getattr(self, '_setupModeController', None)
+        if backend is None:
+            return []
+        references = []
+        for record in backend.getSetupModeComponentStates(self.componentName):
+            if self._stateReferencesPreset(record.get('state'), presetName):
+                references.append(record.get('modeName'))
+        return references
+
+    def _stateReferencesPreset(self, state, presetName):
+        state = state or {}
+        if state.get('laserSetupModeStateVersion') == self.laserSetupModeStateVersion:
+            for sectionName in ('coupled', 'live', 'scan'):
+                binding = (state.get(sectionName) or {}).get('powerBinding') or {}
+                if binding.get('kind') == 'preset' and binding.get('presetName') == presetName:
+                    return True
+            return False
+        return any(
+            state.get(key) == presetName
+            for key in ('scanDefaultPreset', 'currentPreset', 'livePreset', 'scanPreset')
+        )
+
+    def _rewriteSetupModePresetReferences(self, oldName, newName):
+        backend = getattr(self, '_setupModeController', None)
+        if backend is None:
+            return []
+        updated = []
+        for record in backend.getSetupModeComponentStates(self.componentName):
+            modeName = record.get('modeName')
+            state = deepcopy(record.get('state') or {})
+            changed = False
+            if state.get('laserSetupModeStateVersion') == self.laserSetupModeStateVersion:
+                for sectionName in ('coupled', 'live', 'scan'):
+                    binding = (state.get(sectionName) or {}).get('powerBinding') or {}
+                    if binding.get('kind') == 'preset' and binding.get('presetName') == oldName:
+                        binding['presetName'] = newName
+                        changed = True
+            else:
+                for key in ('scanDefaultPreset', 'currentPreset', 'livePreset', 'scanPreset'):
+                    if state.get(key) == oldName:
+                        state[key] = newName
+                        changed = True
+            if changed:
+                backend.replaceSetupModeComponentState(modeName, self.componentName, state)
+                updated.append(modeName)
+        return updated
+
     # Unified State Persistence Interface (StatefulComponentMixin)
     
     def getComponentState(self) -> dict:
@@ -1813,6 +2442,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         never enables lasers.
         """
         self._requireLaserEditsAllowed()
+        if applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY:
+            return self._applySetupModeStateV2(state)
+
         warnings = []
         known_lasers = {name for name, _ in self._master.lasersManager}
         lasers = state.get('lasers', {})
@@ -1973,9 +2605,72 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._refreshAllLaserRows()
         return warnings
 
+    def _describeSetupModeStateV2(self, state):
+        summaries = []
+        mode = state.get('capturedPowerMode', 'coupled')
+
+        def binding_text(binding):
+            binding = binding or {}
+            if binding.get('kind') == 'preset':
+                return f'Follow preset "{binding.get("presetName")}"'
+            return 'Snapshot current powers'
+
+        def append_powers(prefix, binding, laserMeta=None):
+            binding = binding or {}
+            powers = (
+                binding.get('fallbackPowers')
+                if binding.get('kind') == 'preset'
+                else binding.get('powers')
+            ) or {}
+            summaries.append(f'{prefix} source: {binding_text(binding)}')
+            for laserName in state.get('laserOrder') or powers.keys():
+                if laserName not in powers:
+                    continue
+                units = ''
+                if laserMeta and isinstance(laserMeta.get(laserName), dict):
+                    units = laserMeta[laserName].get('valueUnits') or ''
+                unitText = f' {units}' if units else ''
+                summaries.append(
+                    f'  {laserName}: {self._fmt(powers[laserName])}{unitText}'
+                )
+
+        if mode == 'coupled':
+            section = state.get('coupled') or {}
+            append_powers('Power', section.get('powerBinding'), section.get('lasers') or {})
+            for laserName, laserState in self._savedLaserItemsInDisplayOrder(
+                section.get('lasers') or {}, state
+            ):
+                summaries.append(
+                    f'  {laserName}: {self._onOff(laserState.get("enabled"))}'
+                )
+            return summaries or ['no laser state']
+
+        live = state.get('live') or {}
+        scan = state.get('scan') or {}
+        if live.get('included'):
+            summaries.append('Live:')
+            append_powers('  Power', live.get('powerBinding'), live.get('lasers') or {})
+            for laserName, laserState in self._savedLaserItemsInDisplayOrder(
+                live.get('lasers') or {}, state
+            ):
+                summaries.append(
+                    f'  {laserName}: {self._onOff(laserState.get("enabled"))}'
+                )
+        else:
+            summaries.append('Live: not saved')
+
+        if scan.get('included'):
+            summaries.append('Scan:')
+            append_powers('  Power', scan.get('powerBinding'))
+        else:
+            summaries.append('Scan: not saved')
+        return summaries or ['no laser state']
+
     def describeComponentState(self, state: dict) -> list[str]:
         """Generate a human-readable Live/Scan summary of saved laser state."""
         state = state or {}
+        if state.get('laserSetupModeStateVersion') == self.laserSetupModeStateVersion:
+            return self._describeSetupModeStateV2(state)
         summaries = []
 
         if state.get('currentPreset') is not None:
@@ -2028,34 +2723,15 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         applyMode: ComponentStateApplyMode,
         context: dict | None = None
     ) -> list[dict]:
-        """Identify high-power laser hazards in a saved state.
-        
-        Lifted from SetupModesController._getHighPowerLaserEntries,
-        _isMilliwattUnit, _laserPowerThresholdMw.
-        
-        Only reports hazards relevant to SETUP_MODE_APPLY (enabling lasers).
-        For STARTUP_RESTORE, returns empty list (no enable happens).
-        
-        Args:
-            state: Dict returned by getComponentState()
-            applyMode: The mode in which the state would be applied
-            context: Optional dict with 'laserPowerThresholdMw' (default 50.0)
-        
-        Returns:
-            List of hazard records per spec §5.3
-        """
-        # No hazards for STARTUP_RESTORE since we don't enable lasers
+        """Identify high-power hazards for the state that can actually emit."""
         if applyMode != ComponentStateApplyMode.SETUP_MODE_APPLY:
             return []
-        
+
         context = context or {}
         thresholdMw = context.get('laserPowerThresholdMw', 50.0)
-        
-        lasers = state.get('lasers', {})
-        if not isinstance(lasers, dict):
-            return []
-        
+        lasers, powers, _warnings = self._setupModeHazardState(state)
         hazards = []
+
         for laserName, savedState in lasers.items():
             if not isinstance(savedState, dict):
                 continue
@@ -2063,29 +2739,29 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 continue
             if savedState.get('isBinary', False):
                 continue
-            
-            value = self._asFloat(savedState.get('value'))
+
+            value = self._asFloat(powers.get(laserName))
             if value is None or value <= thresholdMw:
                 continue
-            
             units = savedState.get('valueUnits')
             if not self._isMilliwattUnit(units):
                 continue
-            
+
             hazards.append({
                 'kind': 'high_laser_power',
                 'severity': 'warning',
-                'message': f'Laser {laserName}: {value} mW exceeds {thresholdMw} mW threshold',
+                'message': (
+                    f'Laser {laserName}: {value} mW exceeds {thresholdMw} mW threshold'
+                ),
                 'details': {
                     'laserName': laserName,
                     'value': value,
                     'units': units or 'mW',
-                    'threshold': thresholdMw
-                }
+                    'threshold': thresholdMw,
+                },
             })
-        
         return hazards
-    
+
     # Helper methods (lifted from SetupModesController)
 
     def _laserModuleSupportsModulation(self, module) -> bool:

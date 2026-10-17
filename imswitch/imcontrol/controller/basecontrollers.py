@@ -229,6 +229,30 @@ class StatefulComponentMixin:
         """
         raise NotImplementedError
 
+    def getSetupModeCaptureOptions(self, previousState: dict | None = None):
+        """Return optional component-specific setup-mode capture metadata.
+
+        The default component contract has no extra capture choices. Components
+        such as Laser may override this to expose a small, component-owned
+        option schema to the setup-mode Save/Update UI.
+        """
+        return None
+
+    def prepareSetupModeState(
+        self,
+        fullState: dict,
+        *,
+        captureOptions: dict | None = None,
+        previousState: dict | None = None,
+    ) -> dict:
+        """Convert canonical runtime state into setup-mode state.
+
+        Startup persistence continues to use :meth:`getComponentState` directly.
+        This hook exists only for named setup modes so component-specific capture
+        semantics do not leak into generic runtime persistence.
+        """
+        return fullState
+
 
 class LiveUpdatedController(ImConWidgetController):
     """ Superclass for those controllers that will update the widgets with an

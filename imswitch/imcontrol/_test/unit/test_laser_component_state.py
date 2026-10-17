@@ -155,7 +155,7 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._logger = Mock()
     controller._livePowerValues = {}
     controller._scanPowerValues = {}
-    controller._powerMode = LaserPowerMode.SEPARATED
+    controller._powerMode = LaserPowerMode.COUPLED
     controller._currentPowerContext = LaserPowerContext.LIVE
     controller._scanLaserState = {}
     controller._selectedPresetByContext = {
@@ -189,7 +189,31 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._laserModuleModulationEnabled = lambda module: LaserController._laserModuleModulationEnabled(
         controller, module
     )
-    controller._isSeparatedPowerMode = lambda: True
+    controller._normalizeSetupModeState = lambda state, warnAmbiguous=True: LaserController._normalizeSetupModeState(
+        controller, state, warnAmbiguous=warnAmbiguous
+    )
+    controller._setupModeApplyPlan = lambda state: LaserController._setupModeApplyPlan(
+        controller, state
+    )
+    controller._resolveSetupModePowerBinding = lambda binding: LaserController._resolveSetupModePowerBinding(
+        controller, binding
+    )
+    controller._applySetupModeLiveSection = lambda section, powers, forceOff=False: LaserController._applySetupModeLiveSection(
+        controller, section, powers, forceOff=forceOff
+    )
+    controller._applySetupModeScanPowers = lambda powers: LaserController._applySetupModeScanPowers(
+        controller, powers
+    )
+    controller._applySetupModeStateV2 = lambda state: LaserController._applySetupModeStateV2(
+        controller, state
+    )
+    controller._setSetupModePresetSelection = lambda context, binding: LaserController._setSetupModePresetSelection(
+        controller, context, binding
+    )
+    controller._setupModeHazardState = lambda state: LaserController._setupModeHazardState(
+        controller, state
+    )
+    controller._isSeparatedPowerMode = lambda: False
     controller._presetContext = lambda name: LaserController._presetContext(controller, name)
     controller._presetDefinition = lambda name: LaserController._presetDefinition(controller, name)
     controller._normalizePresetPowers = lambda raw: LaserController._normalizePresetPowers(controller, raw)

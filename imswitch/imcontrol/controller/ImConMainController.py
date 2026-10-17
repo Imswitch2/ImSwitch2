@@ -125,8 +125,10 @@ class ImConMainController(MainController):
             )
 
         self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
-        if 'SetupModes' in self.controllers:
-            self.controllers['SetupModes'].setSetupModeController(self.setupModeController)
+        for controller in self.controllers.values():
+            setter = getattr(controller, 'setSetupModeController', None)
+            if callable(setter):
+                setter(self.setupModeController)
 
         # Smart microscopy mode-switching service. Event controllers receive the
         # handle here; Phase 3 decides when they start using it for transitions.

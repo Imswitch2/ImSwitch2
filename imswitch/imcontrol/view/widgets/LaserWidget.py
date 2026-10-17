@@ -183,6 +183,80 @@ class LaserWidget(Widget):
         self.setPowerContext('live', emitSignal=False)
         self.setPresetNames([], selected=None)
 
+    def showPresetRenameDialog(self, oldName, referencedModeNames=None):
+        """Rename a preset and optionally keep setup-mode references linked."""
+        referencedModeNames = list(referencedModeNames or [])
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Rename laser preset')
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        form = QtWidgets.QFormLayout()
+        oldLabel = QtWidgets.QLabel(str(oldName))
+        nameEdit = QtWidgets.QLineEdit(str(oldName))
+        nameEdit.selectAll()
+        form.addRow('Current name:', oldLabel)
+        form.addRow('New name:', nameEdit)
+        layout.addLayout(form)
+
+        updateReferencesCheck = None
+        if referencedModeNames:
+            warning = QtWidgets.QLabel(
+                f'This preset is referenced by {len(referencedModeNames)} setup mode'
+                f'{"s" if len(referencedModeNames) != 1 else ""}: '
+                + ', '.join(referencedModeNames)
+            )
+            warning.setWordWrap(True)
+            layout.addWidget(warning)
+            updateReferencesCheck = QtWidgets.QCheckBox(
+                'Update preset references in setup modes'
+            )
+            updateReferencesCheck.setChecked(True)
+            updateReferencesCheck.setToolTip(
+                'Uncheck to intentionally decouple existing setup modes. They will '
+                'keep the old preset name and use their saved fallback powers.'
+            )
+            layout.addWidget(updateReferencesCheck)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        newName = nameEdit.text().strip()
+        if not newName:
+            return None
+        return {
+            'name': newName,
+            'updateSetupModeReferences': (
+                updateReferencesCheck.isChecked()
+                if updateReferencesCheck is not None else True
+            ),
+        }
+
+    def confirmPresetDelete(self, presetName, referencedModeNames=None):
+        referencedModeNames = list(referencedModeNames or [])
+        if referencedModeNames:
+            text = (
+                f'The preset "{presetName}" is referenced by {len(referencedModeNames)} '
+                f'setup mode{"s" if len(referencedModeNames) != 1 else ""}: '
+                + ', '.join(referencedModeNames)
+                + '.\n\nIf it is deleted, those setup modes will use their saved '
+                  'fallback powers. Delete it?'
+            )
+        else:
+            text = f'Are you sure you want to delete the preset "{presetName}"?'
+        return (
+            QtWidgets.QMessageBox.question(
+                self, 'Delete laser preset?', text,
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            ) == QtWidgets.QMessageBox.Yes
+        )
+
     def _contextClicked(self, context):
         if context == self._powerContext:
             return

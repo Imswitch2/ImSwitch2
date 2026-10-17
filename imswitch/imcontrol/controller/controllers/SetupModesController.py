@@ -162,13 +162,22 @@ class SetupModesController(ImConWidgetController):
         selectedName = self._widget.getSelectedModeName()
         selectedMode = self._getMode(selectedName) if selectedName else {}
         selectedComponents = selectedMode.get("includedComponents") or components
+        selectedState = selectedMode.get("state") or {}
+        componentCaptureOptions = {}
+        for componentName in components:
+            options = self._setupModeController.getSetupModeCaptureOptions(
+                componentName, selectedState.get(componentName)
+            )
+            if options:
+                componentCaptureOptions[componentName] = options
 
         result = self._widget.showSaveModeDialog(
             selectedName or "",
             selectedMode.get("description", ""),
             selectedMode.get("shortcut", ""),
             components,
-            selectedComponents
+            selectedComponents,
+            componentCaptureOptions=componentCaptureOptions,
         )
         if result is None:
             return
@@ -186,7 +195,8 @@ class SetupModesController(ImConWidgetController):
                 modeName,
                 componentNames=result["components"],
                 description=result.get("description", ""),
-                shortcut=shortcut or ""
+                shortcut=shortcut or "",
+                captureOptions=result.get("captureOptions"),
             )
         except Exception as e:
             self._logger.error(f'Failed to save setup mode "{modeName}"')
@@ -220,7 +230,10 @@ class SetupModesController(ImConWidgetController):
             return
 
         try:
-            snapshot = self._setupModeController.snapshotSetupModeState(componentNames)
+            snapshot = self._setupModeController.snapshotSetupModeState(
+                componentNames,
+                previousStateByComponent=savedMode.get("state") or {},
+            )
         except Exception as e:
             self._logger.error(f'Failed to snapshot setup mode update "{modeName}"')
             self._logger.error(traceback.format_exc())
