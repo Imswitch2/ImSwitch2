@@ -81,8 +81,11 @@ def _moNaLISARepresentableEdit(rig):
 
 
 def _moNaLISAUnrepresentableEdit(rig):
-    device = rig.limits().axis_device('X')
-    rig.panel.backend.setScanSize(device, rig.limits().ulens_period_um(rig.scan.acquisitionPlan().profile_id) + 0.1)
+    # X and Y together: one lateral axis alone is refused first by the coupled
+    # geometry ("X and Y must use the same scan length"), not by the period.
+    period = rig.limits().ulens_period_um(rig.scan.acquisitionPlan().profile_id)
+    for axis in ('X', 'Y'):
+        rig.panel.backend.setScanSize(rig.limits().axis_device(axis), period + 0.1)
     return 'scan length must stay'
 
 
