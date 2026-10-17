@@ -94,6 +94,27 @@ starts with the scan.
 | D4 | A program with the NI-DAQ's galvo and the Teensy's laser | Refused, naming which device is on which engine (they cannot run one program together yet) |
 | D5 | If the Teensy's trigger input is wired: a program that waits for a start trigger | Starts on the trigger |
 
+## P1 -- what the 2026-10-17 review's fixes promise
+
+An external review found six software defects (fixed on the branch, each
+with a test that fails without its fix). A success message alone is no
+evidence for these rows: record what the scope, the camera and the
+positioner widget show, against the commit you run.
+
+| # | Rig | Do | Passes if |
+|---|---|---|---|
+| R1 | Teensy (or any pulse generator) with a laser line | A program that ends with the laser on; let it finish; Stop another mid-run; pull the USB cable before a run's end | After a finish and after a Stop every line is at its off level on the scope. With the cable pulled the run **fails** naming the line and saying its state is unknown, a new run is refused until the line takes its off level, and closing ImSwitch reports the shutdown as incomplete |
+| R2 | MoNaLISA, separated laser power | Live with two lasers where one cannot be switched (unplug it, or leave its serial port closed) | The other is switched off again, or -- if that fails too -- it stays listed, screening stays active and the message names it; Stop (or close) switches it off |
+| R3 | MoNaLISA camera rig | Live, then Acquire; while it acquires click **Advanced**; let it finish; then close ImSwitch | The click is refused ("Stop the scan before switching panels") and the camera stays on its external frame trigger for the whole acquisition, with the frame count the plan says; the trigger changes only when the acquisition ends and when Simple hands the camera back |
+| R4 | Galvo + APD (and PMT, if fitted) | An Expert raster with **fast Y** and two conditions (and three), then the same with fast X; singleton axes; on an asymmetric sample | Every phase and pixel is where the sample is (not just the file's shape or total counts); fast X and fast Y show the same sample turned by 90° |
+| R5 | Snouty or any stage | An Expert run that fails (pull the AO cable or provoke a driver error) or is stopped; then move the positioner by hand; then a captured-origin program | After the failure the positioner widget keeps its old value and the next program that starts from Z's position is refused, saying the failed run left it unknown; after a move by hand it runs from there. Compare with an independent position reading |
+| R6 | MoNaLISA | Advanced: set an X (then Y, Z) centre offset; switch to Simple | Simple shows *Advanced / custom* with the reason; the scan keeps the offset and acquires there |
+| R7 | MoNaLISA | The Simple MoNaLISA panel itself (Guillaume's cloak, not covered by any row above): a profile, Live screening, Acquire with Save, save and load the scan file | As Guillaume specifies; his branch's own tests have 14 open failures to settle first (profiles the tests expect but no committed setup has, a saved scan that does not reload exactly) |
+
+Then repeat the T rows' timing gates (10/15/20 µs dwell, a non-grid D2,
+line-step power and gates, first-line and plane settling, camera pulse
+separation, recording and reconstruction counts) before the faster clock.
+
 ## P3 -- event-started runs
 
 | # | Do | Passes if |
