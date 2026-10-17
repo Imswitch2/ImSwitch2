@@ -4,7 +4,7 @@ import numpy as np
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import pythontools, APIExport, SharedAttributes
 from imswitch.imcommon.model import initLogger
-from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService
+from .WorkflowServices import ScanWorkflowService
 
 if TYPE_CHECKING:
     from .controllers._beadrec_scan_source import BeadRecScanSource
@@ -47,6 +47,39 @@ def _recordingScanSourceMatches(controllers):
     return _scanSourceMatches(controllers, RECORDING_SCAN_SOURCE_METHODS)
 
 
+def _scanSourceKeys(main, methods):
+    controllers = getattr(main, 'controllers', None) or {}
+    return [key for key, _controller in _scanSourceMatches(controllers, methods)]
+
+
+def _pickScanSource(main, methods, preferredKey, unavailableMessage):
+    """Pick one controller exposing ``methods``.
+
+    An explicit choice wins (raising ``unavailableMessage`` when it no longer
+    qualifies), then the canonical ``Scan`` controller, then a lone capable
+    controller. Returns ``(controller, None)``; when several or no controllers
+    qualify it returns ``(None, candidateKeys)`` so the caller can word the
+    refusal for its own purpose.
+    """
+    controllers = getattr(main, 'controllers', None) or {}
+    matches = _scanSourceMatches(controllers, methods)
+
+    if preferredKey:
+        for key, controller in matches:
+            if key == preferredKey:
+                return controller, None
+        raise RuntimeError(unavailableMessage)
+
+    for key, controller in matches:
+        if key == 'Scan':
+            return controller, None
+
+    if len(matches) == 1:
+        return matches[0][1], None
+
+    return None, [key for key, _controller in matches]
+
+
 class CommunicationChannel(SignalInterface):
     """
     Signal bus and narrow API helper for imcontrol controllers.
@@ -55,28 +88,6 @@ class CommunicationChannel(SignalInterface):
     should prefer scoped service objects instead of adding more unrelated
     signals here.
     """
-
-    DEPRECATED_SIGNALS = {
-        'sigGridToggled': 'No internal producer or consumer found in repository scan.',
-        'sigCrosshairToggled': 'No internal producer or consumer found in repository scan.',
-        'sigScanFrameFinished': 'No internal producer or consumer found in repository scan.',
-        'sigClockWidefield': 'No internal producer or consumer found in repository scan.',
-    }
-
-    EVENT_GROUP_NAMES = (
-        'acquisitionEvents',
-        'viewEvents',
-        'recordingEvents',
-        'scanEvents',
-        'snapshotEvents',
-        'slmEvents',
-        'focusEvents',
-        'rotationEvents',
-        'eventTriggeredEvents',
-        'beadRecEvents',
-        'useqEvents',
-        'scriptEvents',
-    )
 
     # Acquisition and image stream events. Producers are mainly the detector
     # managers, connected in MasterController.
@@ -90,9 +101,6 @@ class CommunicationChannel(SignalInterface):
     sigNewFrame = Signal()
 
     # View-layer overlay and viewer item events.
-    # Deprecated compatibility signals: sigGridToggled, sigCrosshairToggled.
-    sigGridToggled = Signal(bool)  # (enabled)
-    sigCrosshairToggled = Signal(bool)  # (enabled)
     sigAddItemToVb = Signal(object)  # (item)
     sigRemoveItemFromVb = Signal(object)  # (item)
     sigSetVisibleLayers = Signal(object)  # (detectorNameTuple) — Snouty setup switching
@@ -130,6 +138,9 @@ class CommunicationChannel(SignalInterface):
     # whether the suspension was actually necessary. Absence means "unknown",
     # never "nothing" — a consumer that never receives it must stay suspended.
     sigScanActuatorsResolved = Signal(object)
+    # Kept deliberately: a documented extension point (docs/scan-lifecycle.rst)
+    # that out-of-tree device plugins may observe. Nothing in this repository
+    # listens to it; in-tree consumers use nidaqManager.sigScanBuilt.
     sigScanBuilt = Signal(object)  # (deviceList)
     sigScanStarted = Signal()
     sigScanDone = Signal()
@@ -138,48 +149,17 @@ class CommunicationChannel(SignalInterface):
     # published (reason text). Emitted by every scan-controller family.
     sigScanRequestRejected = Signal(str)
     sigToggleBlockScanWidget = Signal(bool)
-    sigRequestScanParameters = Signal()
-    sigSendScanParameters = Signal(dict, dict, object)  # (analogParams, digitalParams, scannerList)
     sigSetAxisCenters = Signal(object, object)  # (axisDeviceList, axisCenterList)
-    sigRequestScanFreq = Signal()
-    sigSendScanFreq = Signal(float)  # (scanPeriod)
-    # Deprecated compatibility signal.
-    sigScanFrameFinished = Signal()  # TODO: emit this signal when a scanning frame finished, maybe in scanController if possible? Otherwise in APDManager for now, even if that is not general if you want to do camera-based experiments. Could also create a signal specifically for this from the scan curve generator perhaps, specifically for the rotation experiments, would that be smarter?
 
     # Snapshot and external recording trigger events.
     sigSnapImg = Signal()
     sigSnapImgPrev = Signal(str, np.ndarray, str)  # (detector, image, nameSuffix)
     sigStartRecordingExternal = Signal()
 
-    # SLM events.
-    sigSLMMaskUpdated = Signal(object)  # (mask)
-
     # Focus and rotation workflow events.
     sigSaveFocus = Signal()
     sigUpdateRotatorPosition = Signal(str)  # (rotatorName)
     sigSetSyncInMovementSettings = Signal(str, float, bool, bool)  # (rotatorName, position, relativeShift, enabled)
-
-    # Event-triggered workflow events.
-    sigInitiateEtMonalisa = Signal(bool)
-    sigInitiateEt = Signal(bool)
-    sigInitiateEtSnouty = Signal(bool)
-    # Deprecated compatibility signal.
-    sigClockWidefield = Signal()
-    sigRunScanTriggerScopePLSRMulticolor = Signal()
-
-    # Bead-recognition and MoNaLISA scan helper events.
-    sigQueryCenterCoord = Signal(str)  # (search mode)
-    sigCenterCoordPipelineFinished = Signal(object)  # (center coordinates or None)
-    sigUpdateBeadRecCenter = Signal(int, int)  # (y, x) coordinates
-    sigShowBeadRecCenterCross = Signal(bool)  # (state)
-    sigAutoAxialToggled = Signal(bool)  # (state)
-    sigNewAxialListBuffer = Signal(list)  # e.g. ["XZ", "YZ"]
-
-    # useq-schema related events.
-    sigSetXYPosition = Signal(float, float)
-    sigSetZPosition = Signal(float)
-    sigSetExposure = Signal(float)
-    sigSetSpeed = Signal(float)
 
     # Scripting events.
     sigScriptExecutionFinished = Signal()
@@ -194,92 +174,11 @@ class CommunicationChannel(SignalInterface):
         self.__sharedAttrs = SharedAttributes()
         self.__logger = initLogger(self)
         self._scriptExecution = False
+        self.output = []
         self._activeScanSource = None
         self._focusLock = None
-        self._create_event_groups()
         self.scanWorkflow = ScanWorkflowService(self)
-        self.beadRecWorkflow = BeadRecWorkflowService(self)
         self.__main._moduleCommChannel.sigExecutionFinished.connect(self.executionFinished)
-
-    def _create_event_groups(self):
-        """Create domain aliases while preserving legacy ``sigX`` attributes."""
-        self.acquisitionEvents = pythontools.dictToROClass({
-            'updateImage': self.sigUpdateImage,
-            'acquisitionStarted': self.sigAcquisitionStarted,
-            'acquisitionStopped': self.sigAcquisitionStopped,
-            'adjustFrame': self.sigAdjustFrame,
-            'detectorSwitched': self.sigDetectorSwitched,
-            'newFrame': self.sigNewFrame,
-        })
-        self.viewEvents = pythontools.dictToROClass({
-            'gridToggled': self.sigGridToggled,
-            'crosshairToggled': self.sigCrosshairToggled,
-            'addItemToVb': self.sigAddItemToVb,
-            'removeItemFromVb': self.sigRemoveItemFromVb,
-        })
-        self.recordingEvents = pythontools.dictToROClass({
-            'recordingStarted': self.sigRecordingStarted,
-            'recordingEnded': self.sigRecordingEnded,
-            'recordingFailed': self.sigRecordingFailed,
-            'updateRecFrameNum': self.sigUpdateRecFrameNum,
-            'updateRecTime': self.sigUpdateRecTime,
-            'memorySnapAvailable': self.sigMemorySnapAvailable,
-        })
-        self.scanEvents = pythontools.dictToROClass({
-            'runScan': self.sigRunScan,
-            'abortScan': self.sigAbortScan,
-            'scanStarting': self.sigScanStarting,
-            'scanDevicesResolved': self.sigScanDevicesResolved,
-            'scanActuatorsResolved': self.sigScanActuatorsResolved,
-            'scanBuilt': self.sigScanBuilt,
-            'scanStarted': self.sigScanStarted,
-            'scanDone': self.sigScanDone,
-            'scanEnded': self.sigScanEnded,
-            'toggleBlockScanWidget': self.sigToggleBlockScanWidget,
-            'requestScanParameters': self.sigRequestScanParameters,
-            'sendScanParameters': self.sigSendScanParameters,
-            'setAxisCenters': self.sigSetAxisCenters,
-            'requestScanFreq': self.sigRequestScanFreq,
-            'sendScanFreq': self.sigSendScanFreq,
-            'scanFrameFinished': self.sigScanFrameFinished,
-        })
-        self.snapshotEvents = pythontools.dictToROClass({
-            'snapImg': self.sigSnapImg,
-            'snapImgPrev': self.sigSnapImgPrev,
-            'startRecordingExternal': self.sigStartRecordingExternal,
-        })
-        self.slmEvents = pythontools.dictToROClass({
-            'slmMaskUpdated': self.sigSLMMaskUpdated,
-        })
-        self.focusEvents = pythontools.dictToROClass({
-            'saveFocus': self.sigSaveFocus,
-        })
-        self.rotationEvents = pythontools.dictToROClass({
-            'updateRotatorPosition': self.sigUpdateRotatorPosition,
-            'setSyncInMovementSettings': self.sigSetSyncInMovementSettings,
-        })
-        self.eventTriggeredEvents = pythontools.dictToROClass({
-            'initiateEtMonalisa': self.sigInitiateEtMonalisa,
-            'initiateEt': self.sigInitiateEt,
-            'clockWidefield': self.sigClockWidefield,
-        })
-        self.beadRecEvents = pythontools.dictToROClass({
-            'queryCenterCoord': self.sigQueryCenterCoord,
-            'centerCoordPipelineFinished': self.sigCenterCoordPipelineFinished,
-            'updateBeadRecCenter': self.sigUpdateBeadRecCenter,
-            'showBeadRecCenterCross': self.sigShowBeadRecCenterCross,
-            'autoAxialToggled': self.sigAutoAxialToggled,
-            'newAxialListBuffer': self.sigNewAxialListBuffer,
-        })
-        self.useqEvents = pythontools.dictToROClass({
-            'setXYPosition': self.sigSetXYPosition,
-            'setZPosition': self.sigSetZPosition,
-            'setExposure': self.sigSetExposure,
-            'setSpeed': self.sigSetSpeed,
-        })
-        self.scriptEvents = pythontools.dictToROClass({
-            'scriptExecutionFinished': self.sigScriptExecutionFinished,
-        })
 
     def controllerRegistry(self) -> Mapping:
         """The live widget-key -> controller mapping (empty before setup)."""
@@ -363,11 +262,7 @@ class CommunicationChannel(SignalInterface):
         The Recording widget offers these when more than one exists; a rig with
         a single scanner needs no choice and is never asked to make one.
         """
-        controllers = getattr(self.__main, 'controllers', None) or {}
-        return [
-            key
-            for key, _controller in _recordingScanSourceMatches(controllers)
-        ]
+        return _scanSourceKeys(self.__main, RECORDING_SCAN_SOURCE_METHODS)
 
     def getRecordingFolder(self):
         """The output folder the Recording widget is currently pointed at.
@@ -417,13 +312,7 @@ class CommunicationChannel(SignalInterface):
         Wider than :meth:`getRecordingScanSourceNames` — it does not require
         the scan-geometry accessors a recording needs.
         """
-        controllers = getattr(self.__main, 'controllers', None) or {}
-        return [
-            key
-            for key, _controller in _scanSourceMatches(
-                controllers, SCAN_SOURCE_METHODS
-            )
-        ]
+        return _scanSourceKeys(self.__main, SCAN_SOURCE_METHODS)
 
     def getScanSource(self, preferredKey=None):
         """Resolve one controller to run a single scan on.
@@ -434,27 +323,16 @@ class CommunicationChannel(SignalInterface):
         because broadcasting to all of them would command hardware on
         scanners the operator did not select.
         """
-        controllers = getattr(self.__main, 'controllers', None) or {}
-        matches = _scanSourceMatches(controllers, SCAN_SOURCE_METHODS)
-
-        if preferredKey:
-            for key, controller in matches:
-                if key == preferredKey:
-                    return controller
-            raise RuntimeError(
-                f'The selected scan source "{preferredKey}" is not available '
-                'or no longer exposes runScanExternal. Pick another scan '
-                'source.'
-            )
-
-        for key, controller in matches:
-            if key == 'Scan':
-                return controller
-
-        if len(matches) == 1:
-            return matches[0][1]
-
-        candidates = [key for key, _controller in matches]
+        controller, candidates = _pickScanSource(
+            self.__main,
+            SCAN_SOURCE_METHODS,
+            preferredKey,
+            f'The selected scan source "{preferredKey}" is not available '
+            'or no longer exposes runScanExternal. Pick another scan '
+            'source.',
+        )
+        if controller is not None:
+            return controller
         if candidates:
             raise RuntimeError(
                 'Several scan controllers are registered '
@@ -476,26 +354,16 @@ class CommunicationChannel(SignalInterface):
         ambiguity, not a default — guessing there is what binds a recording to
         the wrong scanner's geometry.
         """
-        controllers = getattr(self.__main, 'controllers', None) or {}
-        matches = _recordingScanSourceMatches(controllers)
-        if preferredKey:
-            for key, controller in matches:
-                if key == preferredKey:
-                    return controller
-            raise RuntimeError(
-                f'The selected scan source "{preferredKey}" is not available '
-                'or no longer exposes the recording accessors. Pick another '
-                'scan source in the Recording widget.'
-            )
-
-        for key, controller in matches:
-            if key == 'Scan':
-                return controller
-
-        if len(matches) == 1:
-            return matches[0][1]
-
-        candidates = [key for key, _controller in matches]
+        controller, candidates = _pickScanSource(
+            self.__main,
+            RECORDING_SCAN_SOURCE_METHODS,
+            preferredKey,
+            f'The selected scan source "{preferredKey}" is not available '
+            'or no longer exposes the recording accessors. Pick another '
+            'scan source in the Recording widget.',
+        )
+        if controller is not None:
+            return controller
         if candidates:
             detail = f'multiple capable controllers are registered: {candidates}'
         else:
@@ -636,26 +504,6 @@ class CommunicationChannel(SignalInterface):
             return getter()
         raise RuntimeError('No scan controller available to provide getScanStepSizes')
 
-    def getNumLineSteps(self):
-        """Return the number of linesteps from the scan controller. Returns 1
-        if no scan controller is available or it does not expose the value
-        (e.g. MoNaLISA/PointScan controllers without linestep support)."""
-        source = self._activeBeadRecScanSource()
-        if source is not None:
-            return source.getNumLineSteps()
-        try:
-            controller = self._get_required_controller('Scan', 'scan')
-        except RuntimeError:
-            source = self.getBeadRecScanSource()
-            if source is not None:
-                return source.getNumLineSteps()
-            return 1
-        source = self._asBeadRecScanSource(controller)
-        if source is not None:
-            return source.getNumLineSteps()
-        getter = getattr(controller, 'getNumLineSteps', None)
-        return getter() if getter is not None else 1
-
     def getFramesPerScanPixel(self):
         """Return the number of detector frames produced per physical scan
         pixel (e.g. the count of camera-enabled linesteps in advanced scans).
@@ -682,16 +530,18 @@ class CommunicationChannel(SignalInterface):
             raise RuntimeError('No scan controller available to provide getNumScanPositions')
         return getter()
 
-    def getNextAxial(self):
-        return self._get_required_controller('Scan', 'scan').getNextAxial()
-
     def get_image(self, detectorName=None):
         return self._get_required_controller('View', 'view').get_image(detectorName)
 
     @APIExport(runOnUIThread=True)
     def acquireImage(self) -> None:
         image = self.get_image()
-        self.output.append(image)
+        if self._scriptExecution:
+            self.output.append(image)
+        else:
+            # Outside a script nothing clears the list, so keep only the latest
+            # image instead of accumulating every call.
+            self.output = [image]
 
     def runScript(self, text):
         self.output = []
@@ -701,9 +551,6 @@ class CommunicationChannel(SignalInterface):
     def executionFinished(self):
         self.sigScriptExecutionFinished.emit()
         self._scriptExecution = False
-
-    def isExecuting(self):
-        return self._scriptExecution
 
     @APIExport(runOnUIThread=True)
     def setSessionNote(self, note: str) -> None:

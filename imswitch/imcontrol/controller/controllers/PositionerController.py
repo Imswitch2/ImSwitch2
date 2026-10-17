@@ -84,7 +84,6 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 self._commChannel.sigRecordingEnded.connect(
                     lambda pName=pName: self.setJoystickStatusAfterRec(pName)
                 )
-                # self._commChannel.sigInitiateEtMonalisa.connect(lambda state, pName=pName: self.setJoystickStatus(not state, pName))
 
                 if hasattr(pManager, "sigJoystickStatusChanged"):
                     pManager.sigJoystickStatusChanged.connect(
@@ -107,7 +106,6 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
         # Connect CommunicationChannel signals
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
-        self._commChannel.sigSetSpeed.connect(lambda speed: self.setSpeedGUI(speed))
 
 
         # Connect PositionerWidget signals

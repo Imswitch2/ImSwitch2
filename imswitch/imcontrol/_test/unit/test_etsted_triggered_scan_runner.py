@@ -14,7 +14,6 @@ class _Signal:
 
 class _CommChannel:
     def __init__(self) -> None:
-        self.sigRequestScanFreq = _Signal()
         self.sigSetAxisCenters = _Signal()
         self.sigStartRecordingExternal = _Signal()
 
@@ -25,8 +24,9 @@ class _ScanWorkflow:
         self.axis_centers = []
         self.start_external_recording_calls = 0
 
-    def request_scan_frequency(self) -> None:
+    def request_scan_frequency(self):
         self.request_scan_frequency_calls += 1
+        return 4.0
 
     def set_axis_centers(self, devices, centers) -> None:
         self.axis_centers.append((devices, centers))
@@ -123,7 +123,8 @@ def test_prepare_recording_widget_requests_frequency_and_updates_centers():
     )
 
     assert result.success
-    assert comm_channel.sigRequestScanFreq.emitted == [()]
+    # A bare comm channel has no Recording controller to ask.
+    assert result.scan_freq is None
     assert comm_channel.sigSetAxisCenters.emitted == [
         (['StageY', 'StageX', 'None', 'PiezoZ'], [2.0, 3.0, 0.0, 1.0])
     ]
@@ -145,6 +146,7 @@ def test_prepare_recording_widget_can_use_scan_workflow_service():
 
     assert result.success
     assert scan_workflow.request_scan_frequency_calls == 1
+    assert result.scan_freq == 4.0
     assert scan_workflow.axis_centers == [
         (['StageY', 'StageX', 'None', 'PiezoZ'], [2.0, 3.0, 0.0, 1.0])
     ]

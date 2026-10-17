@@ -73,7 +73,7 @@ Doc-Only Task Template
    - Inspect nearby docs for style and cross-link conventions
    - Add the new documentation page or update the existing one
    - Link it from docs/index.rst only if it is user/developer facing
-   - Update ROADMAP.md if the task completes a roadmap item
+   - Update docs/current-state-and-known-issues.rst if the task closes an open item
 
    Do NOTs
    - Do not change source code
@@ -87,7 +87,7 @@ Doc-Only Task Template
    4. Use Markdown only for internal design docs that are not in the Sphinx toctree.
 
    Sanity checks
-   - git diff --check -- docs/path.rst docs/index.rst ROADMAP.md
+   - git diff --check -- docs/path.rst docs/index.rst
    - python -m sphinx -b html -W docs /tmp/imswitch-docs-build (Read the Docs fails on any warning)
 
    Commit instructions

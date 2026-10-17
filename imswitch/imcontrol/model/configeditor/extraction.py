@@ -9,7 +9,7 @@ every manager reads ``managerProperties["key"]`` or ``.get("key", default)``.
 This module lifts it out with :mod:`ast`. Nothing here imports a manager --
 managers import vendor SDKs and touch hardware-adjacent modules, which is why
 the discovery plan rejected runtime introspection -- and nothing here needs Qt.
-See ``docs/design/plans/config-editor-schema-extraction.md`` for the rules the
+See ``docs/design/plans/config-editor-schema-extraction.md`` (retired; see git history) for the rules the
 code below implements; the tests pin them idiom by idiom.
 
 Three ideas run through everything:

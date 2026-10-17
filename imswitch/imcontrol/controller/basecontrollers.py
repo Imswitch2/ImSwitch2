@@ -27,12 +27,12 @@ from imswitch.imcontrol.model.managers._scan_execution import (
 from imswitch.imcontrol.controller.WorkflowServices import (
     ScanRequestCompletion,
 )
-from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
+from imswitch.imcommon.model.state_contracts import ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 
-# ``ComponentStateApplyMode`` is re-exported above (defined in model.state_contracts)
-# so existing ``from ..basecontrollers import ComponentStateApplyMode`` imports keep
-# working while the canonical definition lives in the model layer.
+# ``ComponentStateApplyMode`` is re-exported above (defined in
+# imcommon.model.state_contracts) so ``from ..basecontrollers import
+# ComponentStateApplyMode`` imports keep working.
 
 
 class ImConWidgetControllerFactory(WidgetControllerFactory):
@@ -414,8 +414,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # See _armRepeatScan for why the re-arm is deferred.
         self._repeatPending = False
         # Run-level ownership deliberately outlives each NI-DAQ iteration. It
-        # spans repeat gaps, non-final sequence parts and MoNaLISA axial
-        # follow-ups, and is released exactly once with sigScanEnded.
+        # spans repeat gaps and non-final sequence parts
+        # and is released exactly once with sigScanEnded.
         self._scanRunToken = None
         self._scanRunStartingPublished = False
         self._scanStopRequested = False
@@ -484,7 +484,6 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._commChannel.sigAbortScan.connect(self.abortScan)
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
         self._commChannel.sigToggleBlockScanWidget.connect(lambda block: self.toggleBlockWidget(block))
-        self._commChannel.sigRequestScanParameters.connect(self.sendScanParameters)
         self._commChannel.sigSetAxisCenters.connect(lambda devices, centers: self.setCenterParameters(devices, centers))
 
         # Connect ScanWidget signals
@@ -985,9 +984,6 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self._logger.error(f'Could not open or parse scan file {filePath!r}:\n{traceback.format_exc()}')
             return None
 
-    def getNextAxial(self):
-        return None
-
     @staticmethod
     def _countRisingEdges(ttl):
         count = 0
@@ -1071,7 +1067,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 )
             return
         # A run retained between iterations -- repeat gap, non-final sequence
-        # part, MoNaLISA axial follow-up -- or a request still arming has no
+        # part -- or a request still arming has no
         # NI-DAQ completion left to end it, so terminalize it here.
         self.scanFailed()
 
@@ -2004,9 +2000,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             return
         self.runScanAdvanced(sigScanStartingEmitted=False)
         
-    def sendScanParameters(self):
+    def getScanParametersSnapshot(self):
+        """The loaded ``(analogParams, digitalParams, positionersScan)``."""
         self.getParameters()
-        self._commChannel.sigSendScanParameters.emit(self._analogParameterDict, self._digitalParameterDict, self._positionersScan)
+        return self._analogParameterDict, self._digitalParameterDict, self._positionersScan
 
     def _getPositionerManagerProperties(self, positionerName):
         positionerInfo = self._setupInfo.positioners.get(positionerName)

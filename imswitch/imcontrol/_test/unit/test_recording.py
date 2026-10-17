@@ -868,7 +868,7 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     RecordingManager, with no real QThread/WriterThread involved. Prior
     attempts at a full RecordingManager+WriterThread two-cycle regression
     reproduced standalone but reliably aborted under pytest during writer
-    thread teardown (see docs/mock_scanning_mocker_improvement_plan.md) - a
+    thread teardown (see docs/mock_scanning_mocker_improvement_plan.md (retired; see git history)) - a
     Qt/pytest-harness lifecycle issue, not a cycling-logic bug. That deeper
     issue remains open and undiagnosed; this test locks down the logic that
     previously only had single-cycle coverage.
@@ -3184,8 +3184,7 @@ def test_recording_dtype_preservation(qtbot):
 
     Note: this asserts the *invariant* (dtype derived from frames, never the
     hardcoded 'i2'). Verifying a specific bit depth (e.g. uint8 stays uint8)
-    would require a mock camera whose output dtype is configurable — see the
-    recording-manager milestone in ROADMAP.md.
+    would require a mock camera whose output dtype is configurable.
     """
     detectorInfos = detectorInfosBasic
     detectorName = next(iter(detectorInfos))
@@ -3580,7 +3579,7 @@ def test_zarr_streaming_frames_committed_barrier(tmp_path) -> None:
     Zarr resizes the array BEFORE writing frame data, so a live reader that
     trusts array.shape reads uninitialised chunks. frames_committed is updated
     AFTER each batch write so readers that honour it never run ahead of the
-    data on disk (docs/live_reconstruction_audit.md).
+    data on disk (docs/live_reconstruction_audit.md (retired; see git history)).
     """
     detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
     detectorName = list(detectorInfosBasic.keys())[0]

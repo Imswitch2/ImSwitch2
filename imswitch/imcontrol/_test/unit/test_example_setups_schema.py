@@ -27,7 +27,7 @@ def _get_registered_widgets():
     """Return the set of registered widget keys from the lazy export map."""
     from imswitch.imcontrol.view import widgets
     # Widget keys in the export map have 'Widget' suffix; strip it for comparison
-    # Special case: ScanWidget variants (ScanWidgetPointScan, etc.) all map to key 'Scan'
+    # Special case: ScanWidget variants (ScanWidgetAdvanced, etc.) all map to key 'Scan'
     keys = set()
     for key in widgets._WIDGET_MODULES.keys():
         if key == 'WidgetFactory':
@@ -43,7 +43,7 @@ def _get_registered_controllers():
     """Return the set of registered controller keys from the lazy export map."""
     from imswitch.imcontrol.controller import controllers
     # Controller keys in the export map have 'Controller' suffix; strip it for comparison
-    # Special case: ScanController variants (ScanControllerPointScan, etc.) all map to key 'Scan'
+    # Special case: ScanController variants (ScanControllerAdvanced, etc.) all map to key 'Scan'
     keys = set()
     for key in controllers._CONTROLLER_MODULES.keys():
         if key.startswith('ScanController'):

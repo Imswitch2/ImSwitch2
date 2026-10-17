@@ -1,6 +1,6 @@
 """The recording queues under stall: the four acquisition shapes.
 
-``docs/design/plans/memory-budgets.md``, *Acceptance*: any change to queue
+``docs/design/plans/memory-budgets.md`` (retired; see git history), *Acceptance*: any change to queue
 behaviour is gated on this suite. It drives actual arrival schedules against
 the real broker (``DetectorManager``) and the real ``WriterThread`` with a
 storer whose disk the test stalls at will, and asserts on per-queue

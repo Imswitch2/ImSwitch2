@@ -119,7 +119,7 @@ The command should print the full path to ``tisgrabber_x64.dll``. If it prints `
 ``where.exe tisgrabber_x64.dll`` cannot find the DLL, add the ``bin\x64`` folder to the user or
 system ``PATH`` and restart the terminal before starting ImSwitch2.
 
-From a source checkout, ``python utility_scripts/diagnose_tis_camera.py``
+From a source checkout, ``python scripts/diagnostics/diagnose_tis_camera.py``
 runs the same DLL lookup outside ImSwitch2 and then initialises the library
 and lists the connected cameras, which separates a driver or USB problem
 from an ImSwitch2 one.

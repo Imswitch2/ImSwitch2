@@ -20,7 +20,6 @@ _CONTROLLER_MODULES = {
     "EtMonalisaController": "EtMonalisaController",
     "EtSTEDController": "EtSTEDController",
     "EtSnoutyController": "EtSnoutyController",
-    # "EtController": "EtController",  # Prototype on old Monalisa machine.
     "FFTController": "FFTController",
     "FLIMHistController": "FLIMHistController",
     "FlipMirrorController": "FlipMirrorController",
@@ -38,12 +37,9 @@ _CONTROLLER_MODULES = {
     "RotatorController": "RotatorController",
     "ScanControllerAdvanced": "ScanControllerAdvanced",
     "ScanControllerBase": "ScanControllerBase",
-    "ScanControllerMoNaLISA": "ScanControllerMoNaLISA",
-    "ScanControllerPointScan": "ScanControllerPointScan",
     "SettingsController": "SettingsController",
     "SetupStatusController": "SetupStatusController",
     "SetupModesController": "SetupModesController",
-    "SLMController": "SLMController",
     "SLMsController": "SLMsController",
     "TilingController": "TilingController",
     "TriggerScopeRasterController": "TriggerScopeRasterController",
@@ -56,7 +52,6 @@ _CONTROLLER_MODULES = {
     "ViewController": "ViewController",
     "ViewerToolsController": "ViewerToolsController",
     "WatcherController": "WatcherController",
-    "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",
 }
 

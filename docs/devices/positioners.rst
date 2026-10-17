@@ -156,7 +156,7 @@ repeated moves self-correct.  A forward jog is assumed to increase the encoder
 way on your rig, list it in ``invertJogAxes``.
 
 * ``invertJogAxes`` — axis labels whose jog direction should be flipped
-  (default ``[]``).  Use ``utility_scripts/bsc203_diag.py calibrate`` to confirm
+  (default ``[]``).  Use ``scripts/diagnostics/bsc203_diag.py calibrate`` to confirm
   direction empirically.
 
 **PositionerInfo fields used**

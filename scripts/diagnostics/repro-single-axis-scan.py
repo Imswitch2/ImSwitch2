@@ -1,4 +1,4 @@
-"""Repro/demonstrator for docs/galvo-designer-single-axis-findings.md.
+"""Repro/demonstrator for docs/galvo-designer-single-axis-findings.md (retired; see git history).
 
 Originally the crash reproduction; since the branch's fixes EVERY case below
 generates. With the real example_sted setup (ND-GalvoX conv 17.44, ND-GalvoY

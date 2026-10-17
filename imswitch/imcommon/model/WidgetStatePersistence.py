@@ -51,7 +51,6 @@ class WidgetStatePersistence:
         'Settings': ('SettingsController',),
         'Scan': ('ScanController', 'ScanControllerAdvanced', 'ScanControllerMoNaLISA', 'ScanControllerPointScan'),
         'FlipMirror': tuple(),  # No widget-persistence alias; only setup-mode
-        'SLM': tuple(),
         'SLMs': tuple(),
         'LeicaStand': tuple(),
         'Positioner': ('PositionerController',),

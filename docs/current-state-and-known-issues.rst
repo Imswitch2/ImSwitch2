@@ -1,10 +1,11 @@
 Current State and Known Issues
 ==============================
 
-This page summarizes where ImSwitch2 stands as of 25 September 2026. It is a
+This page summarizes where ImSwitch2 stands as of 17 October 2026. It is a
 quick orientation for maintainers, contributors and coding agents before
-starting new work; ``ROADMAP.md`` in the repository has the milestones in
-full.
+starting new work.  It replaces the milestone roadmap of the migration from
+ImSwitch, whose milestones are done or were dropped; the items still open are
+listed under *Open work* below.
 
 Validation Baseline
 -------------------
@@ -26,11 +27,14 @@ workflow.
 Where the Project Is
 --------------------
 
-The main open workstream is the scanning, galvo and DAQ modernization (see
-*Scanning and galvo modernization* below).  Real-world setup validation —
-the per-setup checklists that sign ImSwitch2 off on each lab's microscope —
-has not started, and much of what is on ``main`` has only been tested
-against mocks.  ``ROADMAP.md`` tracks the rest.
+ImSwitch2 runs the microscopes it was built for.  The real-world setup
+validation planned during the migration from ImSwitch — the etSTED,
+MoNaLISA 1 and 2, WidefieldSTARSS and SNOUTY rigs — has been carried out
+successfully.  Every pull request is reviewed by at least one person besides
+its author, and that reviewer is a maintainer who tests it on their own
+microscope before it merges.  The main open workstream is the scanning engine work
+(scan engines and the expert scan, on their own branch) and the remaining
+galvo/DAQ items below.
 
 Known Issues and Limitations
 ----------------------------
@@ -38,10 +42,11 @@ Known Issues and Limitations
 Hardware validation
 ~~~~~~~~~~~~~~~~~~~
 
-Features developed against the mock devices and simulated DAQ still need to
-be confirmed on the rigs they are meant for, especially anything that times
-lasers, scans, triggers or stage moves.  Treat a feature as unvalidated on
-hardware unless its pull request says otherwise.
+The no-hardware tests in CI do not exercise physical timing, laser emission,
+stage movement or DAQ output, so anything that times lasers, scans, triggers
+or stage moves is covered by the maintainer review on a real microscope
+described above.  Those rig runs are not yet written up in the
+documentation.
 
 Scanning and galvo modernization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -56,18 +61,23 @@ verification before enabling behavior changes.
 Communication backbone
 ~~~~~~~~~~~~~~~~~~~~~~
 
-``CommunicationChannel`` still carries legacy compatibility signals
-(``DEPRECATED_SIGNALS``) and broad cross-controller coordination. Deprecated
-signals should not be removed until public API compatibility and
-representative no-hardware startup/widget-set tests are in place.
+The signals nothing emitted or listened to, the unused domain alias groups,
+the request/response signal pairs for scan parameters and scan frequency (now
+``ScanWorkflowService`` calls that return the data), the event-triggered
+initiate flags and EtSnouty's private clock tick were removed in October 2026.
+``CommunicationChannel`` still carries coordination that belongs in services:
+the scan-source, BeadRec accessor and focus-lock registries. Signals exposed
+through ``signals()`` are public API and change only with the scripting docs;
+``sigSaveFocus`` is one of them although nothing emits it yet (a maintainer
+decision: emit it from the focus lock or drop it from ``signals()``).
 
 Event-triggered workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-EtSTED and EtMonalisa share the core event-triggered implementation. The
-no-hardware contract is strong, but hardware-facing behavior still requires
-physical review because these workflows involve lasers, scans, microscope stand
-state, and DAQ-triggered acquisition.
+EtSTED and EtMonalisa share the core event-triggered implementation, which is
+covered by no-hardware contract tests and runs on the etSTED and MoNaLISA
+rigs.  Changes to it still need a rig run before they merge: these workflows
+involve lasers, scans, microscope stand state and DAQ-triggered acquisition.
 
 Widget layout
 ~~~~~~~~~~~~~
@@ -77,6 +87,56 @@ heights, and dense grid layouts. Broader layout modernization should be done
 widget-by-widget with screenshots or constrained-viewport smoke tests.  The
 BeadRec widget still starts and stops with a *Run* checkbox rather than
 Start/Stop buttons.
+
+Open work
+~~~~~~~~~
+
+Carried over from the migration roadmap; each is a candidate, not a
+commitment.
+
+* **Scanning.** Detector sync and the linestep ``line_clock`` count (above);
+  a jerk-limited raster in place of the fixed acceleration points
+  (``test_galvo_jerk_limit.py`` is skipped: it was written against an API
+  that does not exist); galvo position-feedback pixel binning, a sinusoidal
+  fast axis and an automatic lag calibration; a DAQ safety layer (voltage
+  limits enforced, scan parameters validated in ``SetupInfo``, recovery from
+  DAQ failures).
+* **Point-scan performance.** Per-line ``d2Step`` event batching, the
+  display-frame path and a configurable TimeTagger preview cadence; all
+  rig-gated (``docs/design/plans/pointscan-confocal-sted-performance.md``).
+* **Recording.** A hard RAM cap for ``SaveMode.RAM`` and an in-memory Zarr
+  store; producer-driven acquisition (``ChunkBroker``) is parked; a
+  scan-source abort for scan-driven detectors (``NidaqManager`` has no
+  ``abortScan``).
+* **Tiling.** The per-tile recording session is never opened: the session
+  lookup reads a name-mangled attribute and always yields ``None``, so tiling
+  falls back to snapshots (``TilingController``; fix the lookup together with
+  explicit session ownership).
+* **Scan metadata.** ImControl still writes the legacy ``ScanStage:*`` /
+  ``ScanTTL:*`` attributes beside the acquisition layout; stopping that behind
+  a setup flag is open and needs a maintainer decision.  The unimplemented
+  acquisition-order specification likewise awaits adopt-or-reject.
+* **Config editor.** The ``validate-setup`` command does not pass the widget and
+  ImProcess-id context the editor uses, so it reports less than the editor.
+* **ImProcess.** Container-persisted result identity and a processing step
+  list in result metadata (both need one central save path); lazy results
+  (Dask-backed ``ProcessingResult``).
+* **Target timelapse.** Operator UI and controller adapters for the existing
+  target-list / event-probe workflow models.
+* **Scanner calibration.** A widget for driving scanner DACs by hand
+  (not started).
+* **CI.** Marker-based selection, a UI-test lane and removing the Snouty
+  ignore.
+* **Napari layers.** Create live-view layers lazily per detector instead of
+  one per ``forAcquisition`` detector at startup.
+* **Device plugins.** Publish the plugin packages under ``examples/plugins``
+  to PyPI, then remove the in-tree copies.
+* **SMLM.** 3D (astigmatic) fitting and throughput-oriented localization.
+* **Setup validation write-up.** The per-rig validation is done; recording
+  it (what was run, on which commit) in the documentation is not.
+
+The design notes for work in progress are in ``docs/design/plans/`` in the
+repository; they are working notes, not part of this documentation.
 
 Rules for New Work
 ------------------

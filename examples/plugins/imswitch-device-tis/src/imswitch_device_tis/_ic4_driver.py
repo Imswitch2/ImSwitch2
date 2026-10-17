@@ -1,8 +1,9 @@
 """The Imaging Source camera driver built on IC Imaging Control 4 (IC4).
 
 Replaces the legacy ``pyicic`` ctypes wrapper around the IC3 ``tisgrabber`` DLL.
-See ``docs/design/plans/tis-camera-ic4-migration.md`` in the ImSwitch repository
-for why, and for the rig-validation gate this code is still waiting on.
+The migration rationale (a single overwritten buffer with no queue behind it
+lost frames; IC4's ``QueueSink`` keeps every delivered frame) lives in the
+retired ``tis-camera-ic4-migration.md`` plan (retired; see git history).
 
 The API shape here follows The Imaging Source's own published example
 (``ic4-examples/python/image-acquisition/save-bmp-on-trigger``) rather than the

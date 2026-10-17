@@ -74,7 +74,7 @@ api.imcontrol
 
    .. method:: changed3StepDelayPar(d3StepDelay)
 
-      Needs the *Scan* widget (PointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced) in ``availableWidgets``.
 
    .. method:: changeRotationParameters(rotationPars)
 
@@ -82,7 +82,7 @@ api.imcontrol
 
    .. method:: changeScanCenterPos(positionerName, positionerScanCenterPos)
 
-      Needs the *Scan* widget (Advanced, PointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced) in ``availableWidgets``.
 
    .. method:: changeScanPower(laserName: str, laserValue: Union[int, float]) -> None
 
@@ -94,7 +94,7 @@ api.imcontrol
 
    .. method:: changeScanSize(positioner: str, size: float)
 
-      Needs the *Scan* widget (Advanced, PointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced) in ``availableWidgets``.
 
    .. method:: deleteSetupMode(name)
 
@@ -168,13 +168,13 @@ api.imcontrol
       Returns the device names of all positioners. These device names can
       be passed to other positioner-related functions.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: getPositionerPositions() -> Dict[str, Dict[str, float]]
 
       Returns the positions of all positioners.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: getRecFileFormat() -> str
 
@@ -272,15 +272,11 @@ api.imcontrol
 
       Needs *RotationScan* in ``availableWidgets``.
 
-   .. method:: loadParams()
-
-      Needs *SLM* in ``availableWidgets``.
-
    .. method:: loadScanParamsFromFile(filePath: str) -> None
 
       Loads scanning parameters from the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base) in ``availableWidgets``.
 
    .. method:: loadSetupMode(name, componentNames=None)
 
@@ -313,7 +309,7 @@ api.imcontrol
       Moves the specified positioner axis by the specified number of
       micrometers.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: post_json(path: str, payload: dict) -> str
 
@@ -376,7 +372,7 @@ api.imcontrol
 
       Saves the set scanning parameters to the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base) in ``availableWidgets``.
 
    .. method:: saveSetupMode(name, componentNames=None, description=None, shortcut=None)
 
@@ -476,10 +472,6 @@ api.imcontrol
 
       Needs *View* in ``availableWidgets``.
 
-   .. method:: setMask(maskMode)
-
-      Needs *SLM* in ``availableWidgets``.
-
    .. method:: setMotorsEnabled(positionerName: str, is_enabled: int) -> None
 
       Moves the specified positioner axis to the specified position.
@@ -490,7 +482,7 @@ api.imcontrol
 
       Moves the specified positioner axis to the specified position.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: setPositionerSpeed(positionerName: str, speed: float) -> None
 
@@ -503,7 +495,7 @@ api.imcontrol
       Sets the step size of the specified positioner to the specified
       number of micrometers.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: setRecFileFormat(fileFormat: str) -> None
 
@@ -638,14 +630,14 @@ api.imcontrol
       Moves the specified positioner axis in negative direction by its
       set step size.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: stepPositionerUp(positionerName: str, axis: str) -> None
 
       Moves the specified positioner axis in positive direction by its
       set step size.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: stopRecording() -> bool
 
@@ -659,10 +651,6 @@ api.imcontrol
    .. method:: stopTiling() -> None
 
       Needs *Tiling* in ``availableWidgets``.
-
-   .. method:: toggleSLMDisplay(enabled)
-
-      Needs *SLM* in ``availableWidgets``.
 
    .. method:: updateSetupModeMetadata(name, description=None, shortcut=None)
 

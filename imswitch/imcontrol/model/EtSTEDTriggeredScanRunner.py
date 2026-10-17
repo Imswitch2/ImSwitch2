@@ -13,6 +13,7 @@ class EtSTEDTriggeredScanResult:
     signal_dict: dict | None = None
     scan_info_dict: dict | None = None
     scan_token: object | None = None
+    scan_freq: float | None = None
 
 
 class EtSTEDTriggeredScanRunner:
@@ -66,9 +67,9 @@ class EtSTEDTriggeredScanRunner:
             scan_workflow = self._resolve_scan_workflow(scan_workflow, comm_channel)
             if scan_workflow is None:
                 return EtSTEDTriggeredScanResult(False, 'RecordingWidget initiation requires a scan workflow.')
-            scan_workflow.request_scan_frequency()
+            scan_freq = scan_workflow.request_scan_frequency()
             self.set_centers_scan_widget(analog_params, scan_workflow=scan_workflow)
-            return EtSTEDTriggeredScanResult(True)
+            return EtSTEDTriggeredScanResult(True, scan_freq=scan_freq)
 
         return EtSTEDTriggeredScanResult(False, f'Unknown scan initiation mode: {scan_initiation_mode}')
 
@@ -222,8 +223,9 @@ class _LegacyScanWorkflow:
     def __init__(self, comm_channel) -> None:
         self._comm_channel = comm_channel
 
-    def request_scan_frequency(self) -> None:
-        self._comm_channel.sigRequestScanFreq.emit()
+    def request_scan_frequency(self):
+        # A bare comm channel has no Recording controller to ask.
+        return None
 
     def set_axis_centers(self, devices, centers) -> None:
         self._comm_channel.sigSetAxisCenters.emit(devices, centers)

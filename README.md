@@ -145,7 +145,7 @@ The full documentation lives under [`docs/`](docs/) and is rendered with [Sphinx
 | [`docs/scripting.rst`](docs/scripting.rst) | Scripting / API reference |
 | [`docs/devices/`](docs/devices/) | **Per-device JSON config reference** — every manager, every field, with defaults |
 | [`docs/how-to/`](docs/how-to/) | **Task-oriented guides** — wire a Teensy, add a backend, port a driver, auto-screenshot widgets |
-| [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) | Full architecture map (managers, controllers, signal flow, startup) |
+| [`docs/architecture.rst`](docs/architecture.rst) | Architecture map (package layout, startup, managers, signal buses, recording path) |
 | [`docs/design/plans/`](docs/design/plans/) | Integration plans (active + historical) |
 
 ### Build the docs locally
@@ -236,7 +236,7 @@ Open it from a running ImSwitch under **Tools > Edit hardware configuration...**
 or standalone without starting the microscope:
 
 ```bash
-python utility_scripts/imswitch_config_editor.py
+python scripts/utilities/imswitch_config_editor.py
 ```
 
 <!-- TODO: config editor screenshot, docs/images/auto/config-editor.png.  Suggested 1000×600 px.
@@ -294,16 +294,17 @@ Imswitch2/
 │   ├── imcommon/                   # Shared framework (Qt layer, signals, logging)
 │   ├── improcess/                  # Post-acquisition processing module (was: imreconstruct)
 │   └── imscripting/                # Scripting console module
-├── utility_scripts/                # Config editor GUI + device templates
-├── tools/                          # Maintenance scripts (screenshots, codegen, …)
+├── scripts/
+│   ├── diagnostics/                # Hardware probes (BSC203, TIS camera, NI-DAQ, …)
+│   └── utilities/                  # Operator tools (config editor launcher, AOTF calibration, ScopeAId KB)
+├── tools/                          # Developer generators (screenshots, codegen, …)
+├── examples/                       # Device plugin packages, ImProcess plugins and workflow examples
+├── release/                        # Installer / bundle build files (PyInstaller, macOS, Windows)
 ├── docs/                           # Sphinx site (architecture, how-tos, device ref)
 └── .github/workflows/              # CI pipeline
 ```
 
-Deep dive: [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md).
-
-<!-- TODO: architecture diagram.  Suggested 1100×600 px, docs/images/architecture.svg.
-     Source: docs/imswitch_architecture_map.svg (export to PNG for README). -->
+Deep dive: [`docs/architecture.rst`](docs/architecture.rst).
 
 ---
 
@@ -320,7 +321,7 @@ GitHub Issue → Agent plans → Isolated branch/worktree → Tests → PR → H
 - Agents work in isolated branches or worktrees; parallel agents don't share state.
 - Every claim in the docs is grounded in source code — agents are explicitly forbidden from inventing fields, defaults, or vendor library calls.
 
-See [`AGENTS.md`](AGENTS.md) for the full rules and templates.
+See [developer onboarding](docs/developer-onboarding.rst) and [agent task templates](docs/agent-task-templates.rst) for the full rules and templates.
 
 ---
 

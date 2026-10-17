@@ -1,64 +1,15 @@
 # Scan acquisition order — specification, draft 4
 
-**Status:** Draft 4 for review — design only, nothing implemented
+**Status (2026-10-17):** Draft 4 - design only, **nothing implemented** (no code in
+`imswitch/` refers to it). **Needs a maintainer decision: adopt or reject.** If
+adopted, settle the section 14 open questions first (serialization host, naming,
+feature-name registry governance) and note that section 15 describes the shipped
+v1 layout (`imswitch.acquisition-layout/1`, see `docs/Hdf5datafile.rst`) as a
+strict special case, so v1 files never need rewriting. If rejected, delete this
+file. The reviewer-response log "Changes since draft 3" was removed.
 **Date:** 2026-08-12
 **Intent:** A portable description of *how a scan was performed*, complementing
 OME rather than replacing it
-
----
-
-## Changes since draft 3 (resolving review #2)
-
-All eight findings accepted. Decisions rather than clarifications are marked ⚖.
-
-1. **(F1) Order moved to the producer domain** — §5.1: explicit order is
-   `(P, n_scan_axes)` over **producer** event ordinals, exactly what selection
-   composes into; draft 3's `(N, …)` could not resolve a selected ordinal at
-   all. ⚖ Consequence embraced: the order array is owned by the partition and
-   **shared by all its detectors**; selection, timing, and ragged data remain
-   per detector. Every companion role now declares its domain (§7).
-2. **(F2) Interim coordinate tables un-regressed** — §7: shape
-   `(*input_axis_extents, n_output_axes)` with ordered named input scan axes
-   and named output physical axes — the jittered grid is `(Ny, Nx, 2)`, and
-   the contract is the one RFC-5 `coordinates` expects. Evaluated at integer
-   index tuples; interpolation is inherited from the RFC-5 transform on
-   migration, not defined here.
-3. **(F3) Payload placement completed** — §4.1: payload axes carry declared
-   **extents**, and the storage binding is normative: a fixed-shape stream is
-   stored measurement-major as `(N, *payload_extents)`. §4.2/§7: ragged
-   **records** are their own companion role with a declared ordered field
-   schema; offsets alone were only half the contract.
-4. **(F4) Compact-form obligation made testable** — §3.3: ⚖ compact is
-   mandatory **iff the writer generated the acquisition from a compact plan**;
-   a merely *recorded* order may be emitted explicitly, and recognising latent
-   affine structure is permitted but never required. Two writers of the same
-   physical scan may therefore legitimately differ in form; `same_order`
-   bridges them. Unbounded recognition obligations are gone.
-5. **(F5) Injectivity validation made honest** — §2.1/§12: sampling language
-   deleted. Compact injectivity is exactly decidable (kernel-in-difference-box
-   test; reference algorithm ships with the conformance suite). ⚖ A reader
-   either validates **exactly** or treats injectivity as a writer assertion
-   and **must not claim** it was validated. Explicit forms are always
-   validated exactly.
-6. **(F6) Closure premises corrected** — §8: new premise (d): each payload is
-   an **atomic contribution at one index tuple** — a fly-scan exposure
-   integrating along a trajectory is one event at one logical index, and
-   sub-event structure requires finer events. The intra-exposure exclusion now
-   lives *in* the boundary, not after it. "Compactly when periodic" replaced
-   by "compactly when admitted by §3.1" — bit-reversed sweeps are periodic and
-   deterministic yet not affine + serpentine, and are now an explicit-form
-   example (§9).
-7. **(F7) `SPAN_LIMIT` demoted** — §5.2: ⚖ from a canonicality constant to a
-   **recommended representation cutover** (SHOULD), with a carrier-profile
-   note for formats that cannot hold companion arrays. Semantic equality was
-   already carried by the equivalence predicates, so a syntactic cliff at
-   64/65 bought nothing; boundary fixtures at 64/65 join the conformance
-   suite. One rule stays normative: never emit both forms of one role.
-8. **(F8) The two equivalences separated** — §3.3: `same_order` (placement
-   equality: induced mapping + axis names/extents) versus `same_description`
-   (placement **and** annotations: kinds, devices, labels). Deduplication on
-   `same_order` alone must not drop annotations; each comparison context names
-   its predicate.
 
 ---
 
@@ -611,12 +562,10 @@ injectivity validation (F5, §2.1/R5); closure premises and compact scope
 
 ## 15. Relationship to the current implementation
 
-The layout contract on `codex/acquisition-layout-schema` implements the
-compact form with identity weights only, plus selection spans and partitions
-— a strict special case of this model. Its concepts survive; its schema need
-not, because the branch is unmerged and no recording outside tests has ever
-carried it. There is no legacy generation to support, which is why the
-schema can still change freely — and why it should be settled before merge.
+The layout contract (merged; `docs/Hdf5datafile.rst`, *Acquisition layout*)
+implements the compact form with identity weights only, plus selection spans
+and partitions — a strict special case of this model. Recordings now carry it,
+so a v2 must keep reading v1 (additive fields, `UNKNOWN_LAYOUT_FIELD` warnings).
 
 Its span-canonicalization algorithm becomes the normative one of §5.2, its
 loop-targeted traversal is exactly §3.1, and its producer-lattice-plus-spans

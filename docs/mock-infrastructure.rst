@@ -74,10 +74,9 @@ Detectors
      - ``MockThorTSICamera``
      - Automatic when ``cameraSerial`` starts with ``MOCK_``, or when the
        real SDK/serial fails to open.
-     - Partial — the repository note
-       ``docs/advanced_scan_triggered_recording_audit.md`` (not part of the
-       published documentation) audits this manager's mock/real
-       triggered-recording paths.
+     - Partial — the mock does not reproduce the real camera's triggered
+       chunk shapes; ``test_thorcam_tsi_recording_contract.py`` pins the
+       triggered-recording contract instead.
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic
        scan-shaped samples in place.
@@ -229,8 +228,8 @@ Ready-to-use hardware-free setup files, all under
 * ``example_no_hardware.json`` — the baseline profile for
   :doc:`no-hardware-validation`; no lasers, simulated NI-DAQ, all physical
   I/O channels ``null``.
-* ``mock_scan_setup.json`` — pure software MoNaLISA/live-reconstruction
-  setup: mock camera, mock positioners, no physical AO/DO channels,
+* ``mock_scan_setup.json`` — pure software live-reconstruction
+  setup on the Base scan panel: mock camera, mock positioners, no physical AO/DO channels,
   ``nidaq.simulation: true``.
 * ``hamamatsu_mock_scan_setup.json`` — scan setup with a trigger-aware
   ``HamamatsuManager`` mock camera in external frame-trigger mode; the

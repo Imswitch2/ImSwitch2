@@ -84,14 +84,11 @@ class TriggerScopePLSRMulticolorController(
         self._widget.sigRunScanClicked.connect(self.runScan)
         self._widget.sigParameterChanged.connect(self.updateScanParDict)
 
-        self._commChannel.sigRequestScanParameters.connect(self.sendScanParameters)
-        self._commChannel.sigRunScanTriggerScopePLSRMulticolor.connect(self.runScan)
-
         getWidgetStatePersistence().register('TriggerScopePLSRMulticolor', self)
 
-    def sendScanParameters(self):
-        triggerscopeParameters = self.getTriggerscopeParameters()
-        self._commChannel.sigSendScanParameters.emit(triggerscopeParameters)
+    def runScanPLSRMulticolorExternal(self) -> None:
+        """External entry point (EtSnouty) for a pLS-RESOLFT multicolor scan."""
+        self.runScan()
 
     def saveScan(self):
         fileName = guitools.askForFilePath(self._widget, 'Save scan', self.scanDir, isSaving=True)
@@ -485,4 +482,3 @@ class TriggerScopePLSRMulticolorController(
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
-_attrCategoryDevices = 'MS-RESOLFT_Dev'

@@ -329,8 +329,9 @@ Required if you want to use the ``Scan`` widget.
 
 Key fields:
 
-* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``,
-  ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.  ``"TriggerScope"``
+* ``scanWidgetType``: Widget variant — one of ``"Base"``,
+  ``"Advanced"`` or ``"TriggerScope"`` (the retired ``"PointScan"`` and
+  ``"MoNaLISA"`` stop the setup with a message naming the replacement).  ``"TriggerScope"``
   runs scans on the TriggerScope board (see `triggerScope`_) from the
   ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
@@ -342,7 +343,7 @@ Key fields:
   ``phase_delay`` and ``d3step_delay`` (µs) and ``dwell_ms``, the dwell they
   open with when their own default does not suit the rig (the Advanced panel
   opens at 0.02 ms, made for galvos; a stepped stage needs more).
-* ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
+* ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"BetaTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
 * ``sampleRate``: DAQ sample rate in Hz
@@ -355,9 +356,7 @@ Key fields:
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:
 
-* ``"Base"`` and ``"MoNaLISA"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
-* ``"PointScan"``: ``GalvoScanDesigner`` + ``PointScanTTLCycleDesigner``
-  (``example_sted.json``)
+* ``"Base"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
 * ``"Advanced"``: ``GalvoScanDesigner`` + ``AdvancedScanTTLCycleDesigner``
   (``galvo_apd_mock_scan_setup.json``)
 
@@ -513,7 +512,7 @@ Available widget names (case-sensitive):
   ``FlipMirror``, ``BSC203``, ``SLMs``
 * Stand integration (need `microscopeStand`_): ``LeicaStand``, ``MotCorr``
   (Leica motorized correction collar)
-* Scanning and acquisition: ``Scan``, ``Tiling``, ``WellPlate``,
+* Scanning and acquisition: ``Scan``, ``Tiling``,
   ``LightSheetMulticolor``, and the TriggerScope panels
   ``TriggerScopeRaster``, ``TriggerScopePLSR``, ``TriggerScopeGalvoDetection``,
   ``TriggerScopePLSRMulticolor``, ``TriggerScopeScan``, ``TriggerScopeLSXYR``
@@ -598,7 +597,7 @@ documented below with full field lists and examples:
 
 **Legacy / deprecated sections**:
 
-* `slm (singular)`_ — superseded by ``slms``; only used by old ``SLMController``
+* `slm (singular)`_ — removed; no longer read
 * `pulseStreamer`_ — dormant; ``PulseStreamerManager`` no longer constructed at runtime
 
 
@@ -1196,14 +1195,13 @@ slm (singular)
 --------------
 
 .. deprecated:: ImSwitch2
-   Use ``slms`` (plural) for new setups.  The ``slm`` field is only read by
-   the legacy ``SLMController`` and is superseded by the multi-SLM ``slms``
-   map.
+   Removed.  The single-SLM panel (``SLM`` in ``availableWidgets``) and its
+   ``slm`` section no longer exist; an ``slm`` key in an old setup file is
+   ignored (``validate-setup`` notes it) and dropped the next time ImSwitch2
+   rewrites the file.  Configure the device in ``slms`` and use the ``SLMs``
+   panel.
 
-Optional :class:`SLMInfo` object.  Prefer
-``slms`` for all new configurations.
-
-**See also**: :class:`SLMInfo`, `slms`_
+**See also**: `slms`_
 
 
 pulseStreamer
@@ -1306,7 +1304,7 @@ See the bundled example configurations in
 
 Hardware-free scan setups (simulated NI-DAQ, see :doc:`mock-infrastructure`):
 
-* ``mock_scan_setup.json`` — mock camera, MoNaLISA scan, for the
+* ``mock_scan_setup.json`` — mock camera, Base scan panel, for the
   record-and-reconstruct loop
 * ``galvo_apd_mock_scan_setup.json`` — APD with an Advanced galvo scan
 * ``hamamatsu_mock_scan_setup.json`` — mock Hamamatsu camera triggered by a
@@ -1326,7 +1324,7 @@ run it from a source checkout with:
 
 .. code-block:: bash
 
-   python utility_scripts/imswitch_config_editor.py
+   python scripts/utilities/imswitch_config_editor.py
 
 or, from an installed copy:
 

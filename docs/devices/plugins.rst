@@ -226,10 +226,8 @@ set of values, a numeric range), put a hand-written
 ``schemas/overrides/<id>.json`` beside the generated files; it is merged
 last and never overwritten. The format is described in
 ``imswitch/imcontrol/model/configeditor/schemas/overrides/README.md`` in the
-repository. The extraction rules, and what they can and cannot see, are in
-the design note ``docs/design/plans/config-editor-schema-extraction.md``,
-which is a working note in the repository rather than part of this
-documentation. In short: a dict handed whole to a vendor driver is an open
+repository. The extraction rules are documented in the module docstring of
+``imswitch/imcontrol/model/configeditor/extraction.py``. In short: a dict handed whole to a vendor driver is an open
 pass-through, and a key computed at runtime is reported as an unresolved read
 rather than guessed.
 
@@ -346,6 +344,49 @@ Compatibility
 * Built-in legacy ``managerName`` class names remain valid until a documented
   removal release.
 
-The design notes behind the plugin system are kept in the repository at
-``docs/design/DEVICE_PLUGINS.md``; they are working notes, not part of this
-documentation.
+
+Design notes
+============
+
+Why plugins.  Device support in the core repository costs maintenance: every
+new device needs a change to it, optional vendor SDKs and platform-specific
+imports complicate core CI, and device work can destabilise the main branch.
+The aim is a core that holds the stable contracts, orchestration,
+safety-critical infrastructure, mock/reference devices and documentation,
+while device families live in their own repositories, either in the ImSwitch2
+organisation or maintained by third parties and vendors.  Existing setup files
+keep working because ``managerName`` is still the only field a setup uses: a
+namespaced plugin id such as ``acme.supercam`` and a legacy class name such as
+``AVManager`` are both valid values.
+
+Licensing.  ImSwitch2 is GPL-3.0-or-later and the plugin system adds no
+exception for proprietary plugins.  A plugin that imports the ImSwitch2 manager
+base classes and runs in the ImSwitch2 process is expected to be
+GPL-compatible.  A vendor SDK can still be an optional runtime dependency where
+its own licence allows it.  A vendor that cannot release GPL-compatible code
+would need an out-of-process driver or service behind a documented protocol;
+no such bridge exists.
+
+Discovery.  Plugins are found through the ``imswitch.manifest`` entry point
+group.  ImSwitch2 parses the entry point value itself and never calls
+``entry_point.load()``, which is why the value is a ``<package>:<resource>``
+pair.  Manifests are plain JSON read with the standard library, so the core
+gains no dependency.  Errors are collected per plugin: a broken manifest is
+logged as a warning and the other plugins still load.  Discovery runs once per
+process, when the registry is first used by ``imcontrol``, not when the
+``imswitch`` process starts.
+
+Validation.  ``managerProperties`` schemas are checked on demand, by
+``validate-setup`` and by the config editor, not at startup, so a setup with
+loose property dictionaries still starts.
+
+Safety.  A plugin is arbitrary Python running in the ImSwitch2 process; the
+system is not a sandbox.  Plugin managers follow the same constructor and
+cleanup contracts as in-tree managers.  Import vendor SDKs lazily and fail with
+an actionable message, give lasers, DAQs, scanners and stages a safe
+``finalize()``, and never start emission, motion or acquisition while the
+module is imported or the manifest is read.
+
+Plugins for ImProcess reconstructors and processors are a separate, lighter
+mechanism (a single dropped-in ``.py`` file); see :doc:`../improcess-napari-plugins`
+and :doc:`../architecture`.

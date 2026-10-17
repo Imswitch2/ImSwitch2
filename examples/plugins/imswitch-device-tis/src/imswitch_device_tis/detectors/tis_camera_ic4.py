@@ -25,7 +25,7 @@ class TISCameraIC4Manager(DetectorManager):
 
     Replaces the in-tree ``TISManager``, which drives the same hardware through
     the legacy ``pyicic``/IC3 wrapper and cannot capture one distinct frame per
-    hardware trigger. See ``docs/design/plans/tis-camera-ic4-migration.md``.
+    hardware trigger. The retired migration plan is in git history (``tis-camera-ic4-migration.md``).
 
     This manager deliberately does **not** claim the ``TISManager`` name. The
     registry resolves plugin contributions ahead of in-tree managers, so an alias
@@ -156,7 +156,7 @@ class TISCameraIC4Manager(DetectorManager):
         """Drain every frame retained since the last call, as ``(N, H, W)``.
 
         Two invariants, both learned the hard way on the sibling ThorCam TSI
-        manager (see ``docs/advanced_scan_triggered_recording_audit.md``):
+        manager (see ``docs/advanced_scan_triggered_recording_audit.md`` (retired; see git history)):
 
         1. **Never fabricate.** An empty ``(0, H, W)`` is returned when no
            trigger has fired. ``getLatestFrame`` may synthesize a frame for live

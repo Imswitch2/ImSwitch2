@@ -1,4 +1,4 @@
-"""Run-level scan ownership across controllers and MoNaLISA follow-ups."""
+"""Run-level scan ownership across controllers."""
 
 import threading
 from types import SimpleNamespace
@@ -17,12 +17,6 @@ from imswitch.imcontrol.controller.controllers.ScanControllerBase import (
 )
 from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
     ScanControllerAdvanced,
-)
-from imswitch.imcontrol.controller.controllers.ScanControllerMoNaLISA import (
-    ScanControllerMoNaLISA,
-)
-from imswitch.imcontrol.controller.controllers.ScanControllerPointScan import (
-    ScanControllerPointScan,
 )
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT,
@@ -1031,9 +1025,9 @@ def test_non_final_decision_is_frozen_across_done_signal_reentry():
     assert finished == []
 
 
-def test_point_scan_reset_failure_still_publishes_terminal():
+def test_advanced_scan_reset_failure_still_publishes_terminal():
     class Stub:
-        scanDone = ScanControllerPointScan.scanDone
+        scanDone = ScanControllerAdvanced.scanDone
 
     published = []
     ctrl = Stub()
@@ -1066,7 +1060,6 @@ def test_point_scan_reset_failure_still_publishes_terminal():
     'scanDone',
     (
         ScanControllerBase.scanDone,
-        ScanControllerPointScan.scanDone,
         ScanControllerAdvanced.scanDone,
     ),
 )
@@ -1101,7 +1094,6 @@ def test_scan_done_widget_failure_still_publishes_terminal(scanDone):
     'scanDone',
     (
         ScanControllerBase.scanDone,
-        ScanControllerPointScan.scanDone,
         ScanControllerAdvanced.scanDone,
     ),
 )
@@ -1850,167 +1842,3 @@ def test_stale_queued_completion_cannot_finish_new_run():
     SuperScanController._SuperScanController__deliverScanDone(ctrl, oldRun)
 
     assert completions == []
-
-
-def test_monalisa_axial_followup_does_not_end_the_run():
-    ctrl = ScanControllerMoNaLISA.__new__(ScanControllerMoNaLISA)
-    endedSignal = object()
-    emitted = []
-    followUps = []
-    ctrl._commChannel = SimpleNamespace(
-        sigScanEnded=endedSignal,
-        setActiveScanSource=lambda source: None,
-        clearActiveScanSource=lambda source: None,
-    )
-    ctrl.isRunning = True
-    ctrl.autoAxial = True
-    ctrl.axialListBuffer = [3.0]
-    ctrl.centerCoord = (4.0, 5.0)
-    ctrl.resetPositioners = lambda: None
-    ctrl.emitScanSignal = lambda signal, *args: emitted.append(signal)
-    ctrl.runNextAxialScan = lambda: followUps.append(True)
-
-    ScanControllerMoNaLISA.scanDone(ctrl)
-
-    assert ctrl.nextAxial == 3.0
-    assert followUps == [True]
-    assert endedSignal not in emitted
-
-
-def test_monalisa_followup_reuses_the_run_level_start_signal():
-    ctrl = ScanControllerMoNaLISA.__new__(ScanControllerMoNaLISA)
-    calls = []
-    ctrl.doingNonFinalPartOfSequence = False
-    ctrl.updateScanParamForAxial = lambda: None
-    ctrl.runScanAdvanced = lambda **kwargs: calls.append(kwargs)
-
-    ScanControllerMoNaLISA.runNextAxialScan(ctrl)
-
-    assert calls == [{
-        'isNonFinalPartOfSequence': False,
-        'sigScanStartingEmitted': True,
-        'axialFollowUp': True,
-    }]
-
-
-def test_monalisa_followup_preserves_non_final_sequence_part():
-    ctrl = ScanControllerMoNaLISA.__new__(ScanControllerMoNaLISA)
-    calls = []
-    ctrl.doingNonFinalPartOfSequence = True
-    ctrl.updateScanParamForAxial = lambda: None
-    ctrl.runScanAdvanced = lambda **kwargs: calls.append(kwargs)
-
-    ScanControllerMoNaLISA.runNextAxialScan(ctrl)
-
-    assert calls == [{
-        'isNonFinalPartOfSequence': True,
-        'sigScanStartingEmitted': True,
-        'axialFollowUp': True,
-    }]
-
-
-def test_monalisa_duplicate_start_does_not_mutate_axial_state():
-    ctrl = ScanControllerMoNaLISA.__new__(ScanControllerMoNaLISA)
-    calls = []
-    ctrl._widget = SimpleNamespace(
-        setScanButtonChecked=lambda checked: calls.append(
-            ('button', checked)
-        )
-    )
-    ctrl._commChannel = SimpleNamespace(
-        setActiveScanSource=lambda _source: None,
-        clearActiveScanSource=lambda _source: None,
-    )
-    ctrl._beginScanRun = lambda **_kwargs: None
-    ctrl.checkAxialAutoScan = lambda: calls.append(('check-axial',))
-    ctrl.setupAxial = lambda: calls.append(('setup-axial',))
-    ctrl.scanFailed = lambda: calls.append(('failed',))
-    ctrl._logger = _Logger()
-
-    ScanControllerMoNaLISA.runScanAdvanced(
-        ctrl,
-        sigScanStartingEmitted=False,
-    )
-
-    assert ('check-axial',) not in calls
-    assert ('setup-axial',) not in calls
-
-
-def test_monalisa_stale_pipeline_callback_cannot_restart_released_run():
-    ctrl = ScanControllerMoNaLISA.__new__(ScanControllerMoNaLISA)
-    oldToken = object()
-    newToken = object()
-    followUps = []
-    ctrl.awaitingPipeline = True
-    ctrl._pipelineRunToken = oldToken
-    ctrl._scanRunToken = newToken
-    ctrl._scanCoordinator = SimpleNamespace(
-        runForOwner=lambda _owner: newToken
-    )
-    ctrl.pipelineTimeoutTimer = SimpleNamespace(stop=lambda: None)
-    ctrl.runNextAxialScan = lambda: followUps.append(True)
-
-    ScanControllerMoNaLISA.centerCoordPipelineFinished(ctrl, (1, 2))
-
-    assert followUps == []
-    assert ctrl.awaitingPipeline is True
-
-
-def test_monalisa_pipeline_callback_failure_terminalizes_retained_run():
-    runToken = object()
-    failures = []
-    ctrl = ScanControllerMoNaLISA.__new__(ScanControllerMoNaLISA)
-    ctrl.awaitingPipeline = True
-    ctrl._pipelineRunToken = runToken
-    ctrl._scanRunToken = runToken
-    ctrl._scanCoordinator = SimpleNamespace(
-        runForOwner=lambda _owner: runToken
-    )
-    ctrl.pipelineTimeoutTimer = SimpleNamespace(stop=lambda: None)
-    ctrl._widget = SimpleNamespace(
-        yCenterEdit=SimpleNamespace(
-            setText=lambda _text: (_ for _ in ()).throw(
-                RuntimeError('widget was disposed')
-            )
-        ),
-        xCenterEdit=SimpleNamespace(setText=lambda _text: None),
-    )
-    ctrl._logger = _Logger()
-    ctrl.scanFailed = lambda: failures.append(True)
-
-    ScanControllerMoNaLISA.centerCoordPipelineFinished(ctrl, (1, 2))
-
-    assert failures == [True]
-    assert ctrl.awaitingPipeline is False
-    assert ctrl._pipelineRunToken is None
-
-
-def test_monalisa_widget_cleanup_failure_preserves_success_terminal():
-    published = []
-    failures = []
-
-    def failWidgetCleanup(_checked):
-        raise RuntimeError('widget was disposed')
-
-    ctrl = SimpleNamespace(
-        isRunning=True,
-        autoAxial=False,
-        axialListBuffer=[],
-        doingNonFinalPartOfSequence=False,
-        resetPositioners=lambda: None,
-        _widget=SimpleNamespace(
-            isContLaserMode=lambda: False,
-            repeatEnabled=lambda: False,
-            setScanButtonChecked=failWidgetCleanup,
-        ),
-        _logger=_Logger(),
-        _publishScanDone=lambda *, isFinalPart: published.append(
-            isFinalPart
-        ),
-        scanFailed=lambda: failures.append(True),
-    )
-
-    ScanControllerMoNaLISA.scanDone(ctrl)
-
-    assert published == [True]
-    assert failures == []

@@ -117,8 +117,9 @@ The parts
     name a manager that ships as a separate pip install.  ImProcess keeps
     its own, separate registry for reconstructors and processors.
 
-For the full dependency map — every manager, controller and signal —
-see ``docs/design/ARCHITECTURE.md`` in the repository.
+For how the code base is organised and how the parts find each other —
+start-up, managers, signal buses, the recording path — see
+:doc:`architecture`.
 
 .. toctree::
     :hidden:
@@ -161,6 +162,8 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     :hidden:
     :caption: Extending ImSwitch2
 
+    architecture
+    state-persistence
     adding-device-support
     scan-lifecycle
     mock-infrastructure

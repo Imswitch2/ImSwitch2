@@ -1,8 +1,8 @@
 """A scan design the scan manager refuses ends the request with its reason.
 
 ``makeFullScan`` used to log why it refused a design ("Scan would take 20.8
-min, above the 1 min cap (scan.maxScanTimeMin).") and return None. The Base,
-PointScan and MoNaLISA controllers unpacked that None: the refusal surfaced as
+min, above the 1 min cap (scan.maxScanTimeMin).") and return None. The Base
+controllers unpacked that None: the refusal surfaced as
 ``TypeError: cannot unpack non-iterable NoneType object`` with a traceback,
 after the run had been reserved and published, and a script calling
 ``runScanAndWait`` saw only "Scan controller failed before the requested run
@@ -38,12 +38,6 @@ from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
 from imswitch.imcontrol.controller.controllers.ScanControllerBase import (
     ScanControllerBase,
 )
-from imswitch.imcontrol.controller.controllers.ScanControllerMoNaLISA import (
-    ScanControllerMoNaLISA,
-)
-from imswitch.imcontrol.controller.controllers.ScanControllerPointScan import (
-    ScanControllerPointScan,
-)
 from imswitch.imcontrol.controller.controllers.WorkflowFacadeController import (
     WorkflowFacadeController,
 )
@@ -52,12 +46,6 @@ from imswitch.imcontrol.controller.controllers._acquisition_layout_source import
 )
 from imswitch.imcontrol.model.errors import ScanDesignRefusedError
 from imswitch.imcontrol.model.managers.ScanManagerBase import ScanManagerBase
-from imswitch.imcontrol.model.managers.ScanManagerMoNaLISA import (
-    ScanManagerMoNaLISA,
-)
-from imswitch.imcontrol.model.managers.ScanManagerPointScan import (
-    ScanManagerPointScan,
-)
 from imswitch.imcontrol.model.managers._scan_execution import (
     ScanExecutionCoordinator,
 )
@@ -140,15 +128,9 @@ def test_a_designer_that_only_answers_yes_or_no_still_gives_a_reason():
     assert 'Signal too long' in YesNoDesigner().signalLengthRefusal({}, None)
 
 
-@pytest.mark.parametrize(
-    'managerClass',
-    [ScanManagerBase, ScanManagerMoNaLISA, ScanManagerPointScan],
-)
-def test_every_scan_manager_raises_the_reason_instead_of_returning_none(
-    managerClass,
-):
+def test_every_scan_manager_raises_the_reason_instead_of_returning_none():
     analog, digital = _defaultWidgetScan()
-    manager = managerClass(_cappedSetup())
+    manager = ScanManagerBase(_cappedSetup())
 
     with pytest.raises(ScanDesignRefusedError) as refused:
         manager.makeFullScan(analog, digital)
@@ -267,15 +249,13 @@ class _Logger:
 def _scanController(controllerClass, channel):
     """A scan controller whose parameters are the refused default design.
 
-    Base, PointScan and MoNaLISA design through the real scan manager of
-    their family; Advanced through its own designer instances. Either way
+    Base designs through the real scan manager of
+    its family; Advanced through its own designer instances. Either way
     the real Beta designer refuses, capped at 1 min.
     """
     setup = _cappedSetup()
     managerClass = {
         ScanControllerBase: ScanManagerBase,
-        ScanControllerPointScan: ScanManagerPointScan,
-        ScanControllerMoNaLISA: ScanManagerMoNaLISA,
         ScanControllerAdvanced: ScanManagerBase,
     }[controllerClass]
     analog, digital = _defaultWidgetScan()
@@ -327,8 +307,6 @@ def _names(lifecycle):
 
 CONTROLLERS = [
     ScanControllerBase,
-    ScanControllerPointScan,
-    ScanControllerMoNaLISA,
     ScanControllerAdvanced,
 ]
 

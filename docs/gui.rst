@@ -34,6 +34,65 @@ the corresponding ``DetectorManager``.
    :align: center
    :width: 399px
 
+.. _advanced-properties-tab:
+
+Advanced Properties tab
+-----------------------
+
+A detector whose manager offers ``getAdvancedPropertyInfo`` (the
+:ref:`Hamamatsu <hamamatsu-manager>` camera does) gets a second tab,
+**Advanced**, next to its parameter tree.  It lists every property the
+camera driver exposes in a six-column table:
+
+.. list-table::
+   :widths: 22 78
+   :header-rows: 1
+
+   * - Column
+     - Content
+   * - Property
+     - The driver property name, e.g. ``exposure_time`` or ``trigger_mode``.
+   * - Current Value
+     - The value read from the camera at the last refresh.
+   * - New Value
+     - The edit control (see below), or a dash for a read-only property.
+   * - Apply
+     - Sends this one row's new value to the camera.
+   * - Range/Options
+     - The numeric range, or the first three text options of a mode
+       property.
+   * - Access
+     - ``R``, ``W`` or ``RW``; writable rows are shown in bold green.
+
+**Refresh Properties** re-reads the table.  Editing is deliberately
+restricted:
+
+* A numeric property with a reported range gets a spin box limited to that
+  range (integer spin box for integer values, otherwise a decimal one).
+* A mode property with text options gets a drop-down of those options.
+* A writable property with neither is shown as *(manual edit unsafe)* and
+  cannot be edited here.  A property whose query failed is greyed out with the
+  error as its tooltip.
+* Nothing is sent until you press **Apply** on that row.
+
+On Apply the manager (``HamamatsuManager.setAdvancedProperty``) writes the
+property once; if the driver refuses while the camera is running, it stops
+acquisition, writes again and restarts acquisition if the camera was in use.
+A write the driver rejects, or any exception, is logged as an error and the
+table is left unchanged; a success is logged and the table refreshed.  The
+manager keeps its own state in step for the properties that also have
+dedicated controls (exposure, trigger source and mode, binning, the
+``subarray_*`` ROI), and remembers all other successful writes so that they
+are replayed if the camera backend is replaced (device reconnection).
+
+.. warning::
+
+   Many properties change hardware timing, and some cannot be changed while
+   the camera is acquiring.  Invalid combinations are rejected by the driver.
+   Do not change them in the middle of an experiment; try a change on a test
+   setup first.  The available properties depend on the camera model and the
+   DCAM driver version.
+
 
 Recording and data storage
 ==========================
@@ -343,7 +402,7 @@ Hardware control
 
 These widgets drive the physical hardware.  The main ones are the
 laser widget, scanning widget, tiling widget, positioner widget,
-focus-lock widget, and SLM widget.  Which widgets appear is controlled by the
+focus-lock widget, and SLMs widget.  Which widgets appear is controlled by the
 ``availableWidgets`` list in your setup JSON — see
 :doc:`imcontrol-setups`.
 
@@ -379,49 +438,15 @@ do not.
    :width: 561px
 
 
-SLM widget
-----------
-
-The SLM widget controls the phase masks applied to the laser line
-incident on a spatial light modulator.  It is configured to control
-two simultaneous phase masks per beam (e.g. to shape a STED beam into
-overlaid donut + tophat for 3D-STED) but can be re-programmed for
-other beam-shaping schemes.  You can pick a mask type per side
-(donut, tophat, gaussian, half/quad/hex/split alignment patterns),
-adjust mask position, and tune Zernike-polynomial aberration-correction
-coefficients (tip/tilt, defocus, spherical, vertical/horizontal coma,
-vertical/oblique astigmatism — more can be added).  Parameters are saved
-to and loaded from JSON files in the ``imcontrol_slm`` folder of the user
-directory (``ImSwitchConfig``, see :doc:`imcontrol-setups`), one per objective (``info_oil.json``, ``info_glyc.json``); pick
-the objective first, as saving and loading refuse *No objective*.
-
-The SLM panel only appears if the setup's ``widgetLayout`` places ``"SLM"``:
-without a ``widgetLayout``, listing it in ``availableWidgets`` creates no
-panel.
-
-.. warning::
-
-   The SLM widget cannot load at the moment.  Its controller drives the
-   single-SLM manager, which ImControl no longer creates (it builds the
-   manager of the ``slms`` section instead), so a setup whose layout places
-   ``"SLM"`` stops ImControl from loading.  Use the Multi-SLM widget below.
-
-.. image:: ./images/auto/SLMWidget.png
-   :align: center
-   :width: 600px
-
-
-Multi-SLM widget
-----------------
+SLMs widget
+-----------
 
 Drives any number of spatial light modulators, one tab each, from the setup
-file's ``slms`` section.  It supersedes the SLM widget, which reads the
-singular ``slm`` section and drives a single SLM with fixed left and right
-masks and per-objective JSON parameter files.  This widget instead splits each
+file's ``slms`` section.  It splits each
 SLM into ``nSections`` section tabs (or one *Full SLM* tab), builds patterns
 from a pattern library, adds computer-generated holograms, and keeps named
-HDF5 configurations per SLM.  Unlike ``SLM``, ``SLMs`` in ``availableWidgets``
-gets a panel without a ``widgetLayout``.  This widget needs each SLM's
+HDF5 configurations per SLM.  ``SLMs`` in ``availableWidgets`` gets a panel
+without a ``widgetLayout``.  This widget needs each SLM's
 ``serial_number`` and a ``widgetOptions.patterns`` list (see
 :doc:`setupinfo-reference`): without either, the panel fails to build and
 ImControl does not load.
@@ -456,6 +481,10 @@ rename it) has:
 Edits reach the SLM 0.8 s after the last change.  A setup mode that includes
 the SLMs loads the configuration it names.  The widget has no scripting
 functions.
+
+.. image:: ./images/auto/SLMsWidget.png
+   :align: center
+   :width: 600px
 
 
 Focus lock widget
@@ -744,7 +773,7 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
+Three widget variants exist — ``Base``, ``MoNaLISA`` and
 ``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
 :doc:`setupinfo-reference`.
 
@@ -772,62 +801,32 @@ selected again.
 Scripts can do the same with ``api.imcontrol.runScan()``,
 ``saveScanParamsToFile(...)`` and ``loadScanParamsFromFile(...)``.
 
-Point-scan variant
-~~~~~~~~~~~~~~~~~~
+Retired point-scan variant
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``"scanWidgetType": "PointScan"``, paired with ``GalvoScanDesigner`` and
-``PointScanTTLCycleDesigner``, is the older panel for galvo point scanning with
-point detectors, as in confocal and STED; its features have moved to the
-``Advanced`` panel, which ``example_sted.json`` now uses.  It differs
-from ``Base`` in three ways:
-
-* **Dwell time (ms)** starts at 0.02 ms rather than 10 ms, and two rig delays
-  sit below it, both in microseconds: **Phase delay (µs)**, the galvo's
-  response lag by which the detector readout is shifted, and **D3 step delay
-  (µs)**, the settling time before each slice of a 3-D scan.  Both start from
-  ``phase_delay`` and ``d3step_delay`` in ``scan.scanDesignerParams`` when the
-  setup file sets them; the panel's saved state takes precedence.
-* The Start/End times are replaced by **Line steps**: for each TTL device a row
-  of checkboxes, as many as **#Line steps**, and an **Axis** selector.  With
-  **Axis** at *None* the device is on for the whole scan if its first box is
-  ticked and off otherwise.  With **Axis** set to a scanned positioner, the
-  on/off pattern of the boxes repeats along that positioner's axis — pixel by
-  pixel on the first dimension, line by line on the second, slice by slice on
-  the third.  Two lasers with opposite two-step patterns on the line axis
-  therefore take alternate lines.  Each line is still scanned once; to scan the
-  same line repeatedly with different devices, use the ``Advanced`` variant.
-* There is no **Cont. Laser Pulses** mode.
+The older ``"scanWidgetType": "PointScan"`` panel has been removed; its
+features live in the ``Advanced`` panel (see below), which also carries the
+**Dwell time**, **Phase delay (µs)** and **D3 step delay (µs)** fields, seeded
+from ``phase_delay`` and ``d3step_delay`` in ``scan.scanDesignerParams``.  A
+setup that still names ``PointScan`` fails to start with a message saying so:
+change ``scanWidgetType`` to ``"Advanced"`` and ``TTLCycleDesigner`` to
+``"AdvancedScanTTLCycleDesigner"``.  The per-device **Line steps** / **Axis**
+pattern (``TTL_sequence``) of the old panel has no equivalent.
 
 Scripts can set the geometry with ``api.imcontrol.changeScanSize(...)``,
 ``changeScanCenterPos(...)`` and ``changed3StepDelayPar(...)``.
 
-.. image:: ./images/auto/ScanWidgetPointScan.png
-   :align: center
-   :width: 432px
+Retired MoNaLISA variant
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-MoNaLISA variant
-~~~~~~~~~~~~~~~~
-
-``"scanWidgetType": "MoNaLISA"`` (``BetaScanDesigner`` with
-``BetaTTLCycleDesigner``, like ``Base``) keeps everything the ``Base`` panel has,
-including the Start/End pulse table and **Cont. Laser Pulses**, and adds:
-
-* A plot beside the pulse table showing one dwell period of the pulse
-  programme, each laser in the colour of its wavelength.
-* **Axial Scan**: ticking **XZ** and/or **YZ** makes a 2-D XY scan continue
-  with an XZ and/or a YZ section through one point of it.  A **Z** row appears
-  for the axial **Size**, **Step size** and **Center**, and **Center
-  localization** picks the point: *Manual* uses the pixel coordinates typed
-  under **Center Coordinates**; *Maxima* fits a Gaussian and *Minima* a donut
-  to the image in the Bead reconstruction tool and fills those coordinates in.
-  **Show** marks the point on that image.  If no centre is found, or none
-  arrives within 3 s, the axial sections are skipped.  The axial scan needs
-  positioners named ``X``, ``Y`` and ``Z``, and *Maxima* / *Minima* need the
-  ``BeadRec`` widget.
-
-.. image:: ./images/auto/ScanWidgetMoNaLISA.png
-   :align: center
-   :width: 432px
+``"scanWidgetType": "MoNaLISA"`` is gone: a setup that still names it fails to
+start with a message saying so.  Change it to ``"Base"``, which has the same
+designers (``BetaScanDesigner`` with ``BetaTTLCycleDesigner``), the Start/End
+pulse table in ms and **Cont. Laser Pulses**, or to ``"Advanced"`` (with
+``"AdvancedScanTTLCycleDesigner"``).  The old panel's *Axial Scan* option (an
+XZ and/or YZ section that followed a 2-D XY scan, through a bead centre found
+in the Bead reconstruction tool) has no replacement: run the axial scan as a
+scan of its own.  Saved widget states from a MoNaLISA-panel session still load.
 
 
 Advanced scanning: line steps
@@ -976,6 +975,10 @@ A scan recording expects one frame per pixel of the first two axes from each
 detector that has a Start/End row.  Scripts can use
 ``api.imcontrol.saveScanParamsToFile(...)`` and ``loadScanParamsFromFile(...)``.
 
+.. image:: ./images/auto/TriggerScopeRasterWidget.png
+   :align: center
+   :width: 600px
+
 pLS-RESOLFT scan
 ~~~~~~~~~~~~~~~~
 
@@ -1055,6 +1058,10 @@ detection** offers only detectors that have a ``digitalLine``, and that line
 must be a ``Triggerscope/TTL<n>`` for the scan to run.  The EtSnouty widget
 starts this panel for its event-triggered acquisitions.
 
+.. image:: ./images/auto/TriggerScopePLSRMulticolorWidget.png
+   :align: center
+   :width: 600px
+
 Light-sheet multicolour scan
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1095,22 +1102,39 @@ line.
    :align: center
    :width: 600px
 
-Well plate widget
------------------
+Firmware quirks
+~~~~~~~~~~~~~~~
 
-A map of a 96-well plate (rows A–H, columns 1–12), intended for moving the
-stage from well to well.  ``WellPlate`` in ``availableWidgets`` loads it
-(*Well Plate*); the plate is drawn when the setup has a positioner with
-``forPositioning`` set (see :doc:`devices/positioners`).  Clicking a well does
-not move the stage yet: it only writes the well's name to the debug log.
+Behaviour of the TriggerScope firmware that the panels above work around or
+that a user can run into.  The firmware is not part of this repository.
 
-.. warning::
-
-   Do not enable this panel on a working microscope yet.  When ImSwitch2
-   closes, it moves every axis of every positioner to 0.  Its script methods
-   (``movePositioner``, ``getPositionerNames`` and five more) also have the
-   same names as the Positioner widget's, so a setup that lists both
-   ``WellPlate`` and ``Positioner`` fails to load ImControl.
+* **Raster pulses are merged.**  In a plain raster scan the firmware pulses
+  TTL lines 0 to 3 together in one window, taken from the earliest Start/End
+  row, and ignores the per-device TTL rows.  Which lasers fire is therefore
+  decided by which are armed, not by the TTL table, and every armed laser
+  fires in the same window as the camera trigger.  The RESOLFT programmes are
+  separate routines that sequence their pulses one after another and are not
+  affected.  Independently timed per-device pulses would need a firmware
+  change, and the firmware stores pulse start and end times in 16 bits (about
+  65 ms at most), so longer pulses would wrap.
+* **The camera trigger is its own line.**  The camera is gated by the line
+  given in its ``digitalLine`` (a level trigger: exposure follows the high
+  window), not slaved to a laser.  In the raster scan it sits inside the merged
+  window; in the basic RESOLFT programme it is high only during the read-out
+  pulse; in the multicolour programmes it is held high across the read-out and
+  both further laser pulses, so one exposure integrates all colours.  A
+  detector without a ``digitalLine`` is never triggered by the board.
+* **The raster loop includes its end point.**  The firmware visits
+  ``length / step + 1`` positions when the length is an exact multiple of the
+  step, one more than the step count the rest of ImSwitch2 expects.  The raster
+  panel shortens the length it sends by half a step
+  (``trimRasterLengthForFirmwareBoundary`` in
+  ``TriggerScopeRasterController.py``), so the frame count matches without a
+  firmware change.
+* **A zero step on the innermost axis ends the scan silently.**  If the
+  innermost dimension (the X-mapped axis) has a step size of 0, for example in
+  a raster that only scans along Y, the firmware runs no pixel cycles at all.
+  Keep a non-zero step on that axis.
 
 Setup modes widget
 ------------------

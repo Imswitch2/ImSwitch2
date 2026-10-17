@@ -10,8 +10,7 @@ The contract is small enough to fit in your head; most of the work is
 choosing the right driver shape and writing a mock that lets the
 manager be tested without hardware.
 
-Before you start, skim the `Pulse Generator Subsystem
-<https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/ARCHITECTURE.md#pulse-generator-subsystem>`_ section of the repository's architecture note so the
+Before you start, skim the :ref:`Pulse generator subsystem <pulse-generator-subsystem>` section of the :doc:`/architecture` page so the
 abstraction-level decisions already made are clear.
 
 
@@ -265,4 +264,4 @@ Cross-references
 
 - :doc:`wire-teensy` — concrete recipe for the existing Teensy backend.
 - :doc:`/adding-device-support` — generic guide for adding any device manager.
-- `Pulse Generator Subsystem <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/ARCHITECTURE.md#pulse-generator-subsystem>`_ in the repository's architecture note — full subsystem context.
+- :ref:`Pulse generator subsystem <pulse-generator-subsystem>` in the architecture page — full subsystem context.

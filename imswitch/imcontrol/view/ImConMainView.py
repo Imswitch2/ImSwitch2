@@ -10,6 +10,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
 from imswitch.imcommon.view.LogWidget import LogWidget
 from . import widgets
+from imswitch.imcontrol.model.SetupInfo import retiredScanWidgetTypeError
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
@@ -664,11 +665,24 @@ class ImConMainView(QtWidgets.QMainWindow):
         prevDock = None
         prevDockYPosition = -1
         for widgetKey, dockInfo in dockInfoDict.items():
-            self.widgets[widgetKey] = self.factory.createWidget(
-                getattr(widgets, f'{widgetKey}Widget')
-                if widgetKey != 'Scan' else
-                getattr(widgets, f'{widgetKey}Widget{self.viewSetupInfo.scan.scanWidgetType}')
-            )
+            if widgetKey == 'Scan':
+                retired = retiredScanWidgetTypeError(self.viewSetupInfo.scan.scanWidgetType)
+                if retired is not None:
+                    raise retired
+            if widgetKey == 'Scan':
+                widgetClass = getattr(
+                    widgets, f'{widgetKey}Widget{self.viewSetupInfo.scan.scanWidgetType}')
+            else:
+                widgetClass = getattr(widgets, f'{widgetKey}Widget', None)
+                if widgetClass is None:
+                    # Same rule as availableWidgets, which ignores unknown keys:
+                    # a layout naming a panel that no longer exists (e.g. the
+                    # retired single-SLM "SLM", now "SLMs") must not stop ImControl.
+                    self.__logger.warning(
+                        f'widgetLayout names "{widgetKey}", which is not a known'
+                        f' widget; skipping it.')
+                    continue
+            self.widgets[widgetKey] = self.factory.createWidget(widgetClass)
             self.docks[widgetKey] = Dock(dockInfo.name, size=(1, 1))
             self.docks[widgetKey].addWidget(self.widgets[widgetKey])
             if prevDock is None:
@@ -735,7 +749,6 @@ _DOCK_DISPLAY_NAMES = {
     'Rotator': 'Rotator',
     'MotCorr': 'Motorized Correction Collar',
     'SLMs': 'SLMs',
-    'SLM': 'SLM',
     'Scan': 'Scan',
     'RotationScan': 'RotationScan',
     'BeadRec': 'Bead Rec',
@@ -750,7 +763,6 @@ _DOCK_DISPLAY_NAMES = {
     'Tiling': 'Tiling',
     'BFTimelapse': 'BFTimelapse',
     'LightSheetMulticolor': 'Light-Sheet Multicolor',
-    'WellPlate': 'Well Plate',
     'EtSnouty': 'EtSnouty',
     'SetupStatus': 'Setup Status',
     'SetupModes': 'Setup Modes',
@@ -796,7 +808,6 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'Watcher':               _DockInfo(name='File Watcher',           yPosition=3),
     'Tiling':               _DockInfo(name='Tiling',                 yPosition=3),
     'LightSheetMulticolor': _DockInfo(name='Light-Sheet Multicolor', yPosition=3),
-    'WellPlate':            _DockInfo(name='Well Plate',             yPosition=3),
     'EtSnouty':                    _DockInfo(name='EtSnouty',                              yPosition=0),
     'SetupStatus':                 _DockInfo(name='Setup Status',                          yPosition=0),
     'SetupModes':                  _DockInfo(name='Setup Modes',                           yPosition=0),

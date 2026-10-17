@@ -7,7 +7,7 @@ here. Keeping the column contract in one module
 means the phases can evolve independently without re-deriving field names or
 units in five places.
 
-Design decisions (see docs/design/plans/smlm-localization-port.md, section 7):
+Design decisions (see docs/design/plans/smlm-localization-port.md (retired; see git history), section 7):
 
 * **Units are nanometres internally.** Positions and sigmas are stored in nm;
   the acquisition pixel size lives in the owning

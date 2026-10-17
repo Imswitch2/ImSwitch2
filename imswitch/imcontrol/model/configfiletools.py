@@ -8,7 +8,10 @@ from imswitch.imcommon.model import dirtools
 from .Options import Options
 
 
-_LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan'}
+# Keys of removed SetupInfo fields: still accepted when a file is loaded (they land
+# in ``_catchAll``), dropped when a file is written back. ``slm`` configured the
+# single-SLM panel, replaced by the ``slms`` section.
+_LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan', 'slm'}
 
 
 def getSetupList():

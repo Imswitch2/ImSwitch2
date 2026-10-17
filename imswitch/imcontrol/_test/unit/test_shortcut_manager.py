@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch
 from qtpy import QtWidgets, QtCore
 
-from imswitch.imcontrol.controller.ShortcutManager import ShortcutManager
+from imswitch.imcommon.controller.ShortcutManager import ShortcutManager
 from imswitch.imcommon.model.shortcut import ShortcutAction, ShortcutScope
 
 
