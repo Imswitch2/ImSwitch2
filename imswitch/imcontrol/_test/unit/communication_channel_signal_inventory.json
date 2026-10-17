@@ -159,32 +159,10 @@
     ]
   },
   {
-    "name": "sigRequestScanParameters",
-    "args": []
-  },
-  {
-    "name": "sigSendScanParameters",
-    "args": [
-      "dict",
-      "dict",
-      "object"
-    ]
-  },
-  {
     "name": "sigSetAxisCenters",
     "args": [
       "object",
       "object"
-    ]
-  },
-  {
-    "name": "sigRequestScanFreq",
-    "args": []
-  },
-  {
-    "name": "sigSendScanFreq",
-    "args": [
-      "float"
     ]
   },
   {
@@ -227,26 +205,6 @@
       "bool",
       "bool"
     ]
-  },
-  {
-    "name": "sigInitiateEtMonalisa",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigInitiateEtSnouty",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigClockWidefield",
-    "args": []
-  },
-  {
-    "name": "sigRunScanTriggerScopePLSRMulticolor",
-    "args": []
   },
   {
     "name": "sigScriptExecutionFinished",

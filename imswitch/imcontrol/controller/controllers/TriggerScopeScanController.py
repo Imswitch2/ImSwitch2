@@ -18,7 +18,6 @@ from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
-_attrCategoryDevices = 'MS-RESOLFT_Dev'
 
 
 class _ScanModeAdapter:
@@ -393,13 +392,6 @@ class TriggerScopeScanController(
         self._widget.sigParameterChanged.connect(self.updateScanParDict)
         self._widget.sigModeChanged.connect(self.updateScanParDict)
 
-        # External pLS-RESOLFT multicolor API (e.g. EtSnouty event-triggered
-        # acquisition). Always answered by the PLSR adapter, regardless of which
-        # mode is currently visible.
-        self._commChannel.sigRequestScanParameters.connect(self.sendScanParameters)
-        self._commChannel.sigRunScanTriggerScopePLSRMulticolor.connect(
-            self.runScanPLSRMulticolorExternal)
-
         getWidgetStatePersistence().register('TriggerScopeScan', self)
 
     # ------------------------------------------------------------------
@@ -515,18 +507,6 @@ class TriggerScopeScanController(
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)
-
-    # ------------------------------------------------------------------
-    # External pLS-RESOLFT multicolor parameter API
-    # ------------------------------------------------------------------
-
-    def sendScanParameters(self):
-        # Always report the pLS-RESOLFT multicolor parameters, independent of the
-        # visible mode, so EtSnouty event-triggered acquisition is unaffected by
-        # the GUI selection.
-        triggerscopeParameters = self._adapters[
-            self._widget.MODE_PLSR].getTriggerScopeParameters()
-        self._commChannel.sigSendScanParameters.emit(triggerscopeParameters)
 
     # ------------------------------------------------------------------
     # Shared attributes

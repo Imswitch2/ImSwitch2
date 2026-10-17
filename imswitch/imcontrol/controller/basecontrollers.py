@@ -484,7 +484,6 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._commChannel.sigAbortScan.connect(self.abortScan)
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
         self._commChannel.sigToggleBlockScanWidget.connect(lambda block: self.toggleBlockWidget(block))
-        self._commChannel.sigRequestScanParameters.connect(self.sendScanParameters)
         self._commChannel.sigSetAxisCenters.connect(lambda devices, centers: self.setCenterParameters(devices, centers))
 
         # Connect ScanWidget signals
@@ -2001,9 +2000,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             return
         self.runScanAdvanced(sigScanStartingEmitted=False)
         
-    def sendScanParameters(self):
+    def getScanParametersSnapshot(self):
+        """The loaded ``(analogParams, digitalParams, positionersScan)``."""
         self.getParameters()
-        self._commChannel.sigSendScanParameters.emit(self._analogParameterDict, self._digitalParameterDict, self._positionersScan)
+        return self._analogParameterDict, self._digitalParameterDict, self._positionersScan
 
     def _getPositionerManagerProperties(self, positionerName):
         positionerInfo = self._setupInfo.positioners.get(positionerName)

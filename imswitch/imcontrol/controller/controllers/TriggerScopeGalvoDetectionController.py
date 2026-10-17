@@ -457,4 +457,3 @@ class TriggerScopeGalvoDetectionController(
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
-_attrCategoryDevices = 'MS-RESOLFT_Dev'

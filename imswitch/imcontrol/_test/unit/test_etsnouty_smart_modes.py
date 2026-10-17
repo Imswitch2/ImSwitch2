@@ -126,6 +126,14 @@ class _FakeSmartModeService:
         )
 
 
+class _FakeScanWorkflow:
+    def __init__(self):
+        self.plsr_runs = 0
+
+    def run_plsr_multicolor_scan(self):
+        self.plsr_runs += 1
+
+
 def _make_controller(enabled=True, roles=None, results=None, preflightResult=None, endless=False):
     controller = EtSnoutyController.__new__(EtSnoutyController)
     controller._setupInfo = SimpleNamespace(
@@ -139,12 +147,10 @@ def _make_controller(enabled=True, roles=None, results=None, preflightResult=Non
     controller._commChannel = SimpleNamespace(
         sigSetConfig=_Signal(),
         sigSetVisibleLayers=_Signal(),
-        sigRunScanTriggerScopePLSRMulticolor=_Signal(),
+        scanWorkflow=_FakeScanWorkflow(),
         sigToggleBlockScanWidget=_Signal(),
         sigScanEnded=_Signal(),
-        sigClockWidefield=_Signal(),
         sigUpdateImage=_Signal(),
-        sigInitiateEtSnouty=_Signal(),
         sigRemoveItemFromVb=_Signal(),
         sigAddItemToVb=_Signal(),
     )
@@ -279,7 +285,7 @@ def test_run_slow_scan_applies_event_once_before_triggering_scan():
     assert controller.runSlowScan() is True
 
     assert controller._smartModeService.applyCalls == [('EtSnouty', 'event')]
-    assert controller._commChannel.sigRunScanTriggerScopePLSRMulticolor.emitted == [()]
+    assert controller._commChannel.scanWorkflow.plsr_runs == 1
     assert controller._master.lasersManager.laser.enabled == [False, True]
 
 
@@ -301,7 +307,7 @@ def test_run_slow_scan_does_not_trigger_scan_when_event_mode_fails():
     assert controller.runSlowScan() is False
 
     assert controller._smartModeService.applyCalls == [('EtSnouty', 'event')]
-    assert controller._commChannel.sigRunScanTriggerScopePLSRMulticolor.emitted == []
+    assert controller._commChannel.scanWorkflow.plsr_runs == 0
     assert controller._master.lasersManager.laser.enabled == [False, False]
 
 
@@ -331,7 +337,7 @@ def test_run_slow_scan_recovers_to_idle_when_event_mode_fails():
         ('EtSnouty', 'event'),
         ('EtSnouty', 'idle'),
     ]
-    assert controller._commChannel.sigRunScanTriggerScopePLSRMulticolor.emitted == []
+    assert controller._commChannel.scanWorkflow.plsr_runs == 0
     assert controller._master.lasersManager.laser.enabled == [False, False]
 
 
@@ -361,10 +367,9 @@ def test_run_slow_scan_stops_instead_of_resuming_when_event_mode_fails_in_endles
         ('EtSnouty', 'event'),
         ('EtSnouty', 'idle'),
     ]
-    assert controller._commChannel.sigRunScanTriggerScopePLSRMulticolor.emitted == []
+    assert controller._commChannel.scanWorkflow.plsr_runs == 0
     assert controller._commChannel.sigUpdateImage.connected == []
     assert controller._commChannel.sigToggleBlockScanWidget.emitted == [(True,)]
-    assert controller._commChannel.sigInitiateEtSnouty.emitted == [(False,)]
     assert controller._widget.initiateButton.texts == ['Initiate']
     assert controller._EtSnoutyController__running is False
     assert controller._master.lasersManager.laser.enabled == [False, False]

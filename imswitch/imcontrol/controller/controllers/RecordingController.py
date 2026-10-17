@@ -162,7 +162,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._commChannel.sigStartRecordingExternal.connect(self.startRecording)
         self._commChannel.sigStartRecording.connect(self.startRecording)
         self._commChannel.sigStopRecording.connect(self.stopRecording)
-        self._commChannel.sigRequestScanFreq.connect(self.sendScanFreq)
         queuedConnection = getattr(
             QtCore.Qt, 'ConnectionType', QtCore.Qt
         ).QueuedConnection
@@ -3057,10 +3056,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             elif self.recMode == RecMode.ScanLapse:
                 self.setSharedAttr(_lapseTimeAttr, self._widget.getTimelapseTime())
                 self.setSharedAttr(_freqAttr, self._widget.getTimelapseFreq())
-
-    def sendScanFreq(self):
-        freq = self.getTimelapseFreq()
-        self._commChannel.sigSendScanFreq.emit(freq)
 
     def getTimelapseFreq(self):
         return self._widget.getTimelapseFreq()

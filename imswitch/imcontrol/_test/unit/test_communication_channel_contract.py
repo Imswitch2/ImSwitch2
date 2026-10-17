@@ -86,7 +86,23 @@ def test_communication_channel_has_no_unused_legacy_surface():
     # Removed in the 2026-10 cleanup: no producer and no consumer anywhere.
     for removed in ('sigGridToggled', 'sigCrosshairToggled',
                     'sigScanFrameFinished', 'sigInitiateEt', 'sigSetXYPosition',
-                    'sigSetZPosition', 'sigSetExposure', 'sigSetSpeed'):
+                    'sigSetZPosition', 'sigSetExposure', 'sigSetSpeed',
+                    # Request/response pairs became ScanWorkflowService calls;
+                    # the rest had no listener or became controller-private.
+                    'sigRequestScanParameters', 'sigSendScanParameters',
+                    'sigRequestScanFreq', 'sigSendScanFreq',
+                    'sigInitiateEtMonalisa', 'sigInitiateEtSnouty',
+                    'sigClockWidefield',
+                    'sigRunScanTriggerScopePLSRMulticolor'):
         assert removed not in names
     assert 'DEPRECATED_SIGNALS' not in source
     assert '_create_event_groups' not in source
+
+
+def test_communication_channel_has_no_test_only_helpers():
+    methods = {
+        node.name for node in _channel_class().body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert 'isExecuting' not in methods
+    assert 'getNumLineSteps' not in methods
