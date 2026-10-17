@@ -458,6 +458,8 @@ and the catalogs behind the typed fields.  The setup validator
 schemas.
 
 
+.. _widget-state-persistence:
+
 Widget state persistence
 ========================
 
@@ -491,4 +493,5 @@ exist and, after asking, saves it on close; menu actions ("Save Widget
 States" and "Load Widget States") export and import all states as one file.  ``SetupModeController`` uses the same
 component contract to apply named setup modes.  Settings that the setup file
 owns (for example ``cameraPixelSizeUm``) are not restored over the file's
-value.
+value.  The full contract -- apply modes, which components activate hardware
+only in a setup mode, file formats, aliases -- is on :doc:`state-persistence`.

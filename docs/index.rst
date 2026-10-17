@@ -163,6 +163,7 @@ start-up, managers, signal buses, the recording path — see
     :caption: Extending ImSwitch2
 
     architecture
+    state-persistence
     adding-device-support
     scan-lifecycle
     mock-infrastructure
