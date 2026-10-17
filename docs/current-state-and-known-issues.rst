@@ -64,8 +64,9 @@ Communication backbone
 The signals nothing emitted or listened to, and the unused domain alias
 groups, were removed in October 2026. ``CommunicationChannel`` still carries
 broad cross-controller coordination that belongs in services: the
-request/response signal pairs for scan parameters and scan frequency, three
-event-triggered on/off flags, and the scan-source and BeadRec accessor
+request/response signal pairs for scan parameters and scan frequency, the
+event-triggered initiate signals (``sigInitiateEtMonalisa``,
+``sigInitiateEtSnouty``), and the scan-source and BeadRec accessor
 registries. Signals exposed through ``signals()`` are public API and change
 only with the scripting docs.
 
