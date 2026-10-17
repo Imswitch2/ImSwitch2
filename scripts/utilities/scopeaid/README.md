@@ -33,7 +33,7 @@ The KB follows the **ScopeAId schema** (MIT license, © ScopeAId contributors). 
 mkdir -p ~/microscope-kb/my-system
 
 # Copy all templates
-cp /path/to/imswitch2/docs/microscope-kb/templates/*.yaml ~/microscope-kb/my-system/
+cp /path/to/imswitch2/scripts/utilities/scopeaid/templates/*.yaml ~/microscope-kb/my-system/
 ```
 
 ### 2. Choose Your Generation Strategy
@@ -47,8 +47,8 @@ cp /path/to/imswitch2/docs/microscope-kb/templates/*.yaml ~/microscope-kb/my-sys
 - Fill templates directly using `schemas.md` as reference
 - Good for simple single-modality systems
 
-**Option C: Seed from ImSwitch config (future)**
-- Utility script `utility_scripts/scopeaid_seed_from_config.py` (planned)
+**Option C: Seed from ImSwitch config (`scripts/utilities/scopeaid_seed_from_config.py`)**
+- Utility script `scripts/utilities/scopeaid_seed_from_config.py` 
 - Auto-populates hardware.yaml, software_config.yaml, imswitch_defaults.yaml from your ImSwitch setup JSON
 
 ### 3. Fill the KB (AI-assisted)
@@ -109,8 +109,8 @@ All templates are in `templates/`:
 | `hardware.yaml` | Physical components + optical layout | Wave 2 (Hardware Inventory) |
 | `concepts.yaml` | Modality explanations | Wave 3 (Modality Concepts) |
 | `calibrations.yaml` | Power curves, position calibrations | Wave 4 (Calibrations) |
-| `software_config.yaml` | ImSwitch/MicroManager config | Wave 4 (auto-seed planned) |
-| `imswitch_defaults.yaml` | ImSwitch-specific defaults | Wave 4 (auto-seed planned) |
+| `software_config.yaml` | ImSwitch/MicroManager config | Wave 4 (auto-seeded) |
+| `imswitch_defaults.yaml` | ImSwitch-specific defaults | Wave 4 (auto-seeded) |
 | `procedures.yaml` | Startup, shutdown, alignment | Wave 5 (Procedures & Safety) |
 | `safety.yaml` | Laser safety, PPE, emergency procedures | Wave 5 (Procedures & Safety) |
 | `troubleshooting.yaml` | Symptom → cause → fix trees | Wave 6 (Troubleshooting) |
@@ -200,7 +200,7 @@ git commit -m "Initial KB for Zeiss LSM 980 confocal + STED"
 
 ## Integration with ImSwitch Agents
 
-The ImSwitch `imcontrol` agent (planned) will use your KB to:
+The ImSwitch `imcontrol` agent  will use your KB to:
 
 - **Answer hardware questions**: "What's the max power of the 488 nm laser?"
 - **Validate acquisition parameters**: "Is 100 µs dwell time within spec?"

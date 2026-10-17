@@ -1,6 +1,15 @@
-# Utility Scripts
+# Operator utilities
 
-This directory contains standalone utility scripts for ImSwitch maintenance and development.
+Standalone tools for people running a microscope. Run them from the repository
+root. Hardware probes live in `scripts/diagnostics/`, developer generators in
+`tools/`.
+
+| Script / folder | Purpose |
+|---|---|
+| `aa_aotf_calibration.py` | Interactive AA Opto-Electronic AOTF frequency and power calibration (below). |
+| `imswitch_config_editor.py` | Standalone launcher for the Config Studio setup-file editor (also reachable from a running ImSwitch). |
+| `scopeaid_seed_from_config.py` | Converts a setup JSON into ScopeAId knowledge-base seed files (below). |
+| `scopeaid/` | The ScopeAId KB templates, schemas and prompts the seeding script belongs to. |
 
 ## aa_aotf_calibration.py
 
@@ -10,7 +19,7 @@ Opto-Electronic AOTF declared in an ImSwitch setup.
 Close ImSwitch first so the utility can own the serial ports, then run:
 
 ```bash
-python utility_scripts/aa_aotf_calibration.py /path/to/setup.json
+python scripts/utilities/aa_aotf_calibration.py /path/to/setup.json
 ```
 
 The window can connect all distinct AA AOTF serial devices from the setup,
@@ -32,7 +41,7 @@ the utility switches the channel off after a sweep or failure.
 
 **Usage:**
 ```bash
-python scopeaid_seed_from_config.py <input_json> -o <output_dir>
+python scripts/utilities/scopeaid_seed_from_config.py <input_json> -o <output_dir>
 ```
 
 **What it does:**
@@ -52,9 +61,9 @@ python scopeaid_seed_from_config.py <input_json> -o <output_dir>
 
 **Example:**
 ```bash
-python utility_scripts/scopeaid_seed_from_config.py \
+python scripts/utilities/scopeaid_seed_from_config.py \
     imswitch/_data/user_defaults/imcontrol_setups/example_sted.json \
     -o ~/microscope_kb/sted_system
 ```
 
-See `docs/microscope-kb/` for full ScopeAId KB schema documentation.
+See `scripts/utilities/scopeaid/` for full ScopeAId KB schema documentation.

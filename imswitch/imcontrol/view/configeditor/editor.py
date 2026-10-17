@@ -5,7 +5,7 @@ Visual editor for ImSwitch JSON configuration files.
 
 Two ways in:
 
-* standalone --- ``python utility_scripts/imswitch_config_editor.py
+* standalone --- ``python scripts/utilities/imswitch_config_editor.py
   [/path/to/config/dir]``, which owns its own QApplication and dark theme;
 * embedded --- ``Hardware > Edit hardware configuration...`` in imcontrol, which
   opens :class:`MainWindow` as a window of the running application and leaves

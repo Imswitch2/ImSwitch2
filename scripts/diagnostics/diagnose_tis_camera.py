@@ -5,7 +5,7 @@ Run this standalone (outside of ImSwitch2) to isolate whether the issue is
 system-level (driver/USB/process lock) or ImSwitch code-level.
 
 Usage:
-    python utility_scripts/diagnose_tis_camera.py
+    python scripts/diagnostics/diagnose_tis_camera.py
 """
 
 import sys

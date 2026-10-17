@@ -12,11 +12,11 @@ is printed.
 
 USAGE (run on the rig, in the Imswitch2 conda env):
 
-    python utility_scripts/bsc203_diag.py status                 # dump status of all bays
-    python utility_scripts/bsc203_diag.py monitor --seconds 10   # live-print positions
-    python utility_scripts/bsc203_diag.py home                   # home all, wait, report
-    python utility_scripts/bsc203_diag.py calibrate X --um 200   # MEASURE steps/mm + direction
-    python utility_scripts/bsc203_diag.py moveabs X --um 1000    # absolute move (clamped)
+    python scripts/diagnostics/bsc203_diag.py status                 # dump status of all bays
+    python scripts/diagnostics/bsc203_diag.py monitor --seconds 10   # live-print positions
+    python scripts/diagnostics/bsc203_diag.py home                   # home all, wait, report
+    python scripts/diagnostics/bsc203_diag.py calibrate X --um 200   # MEASURE steps/mm + direction
+    python scripts/diagnostics/bsc203_diag.py moveabs X --um 1000    # absolute move (clamped)
 
 SAFETY: moves are small by default, clamped to >= 0 encoder steps, and printed
 before they are sent. Keep a hand near the controller power switch the first

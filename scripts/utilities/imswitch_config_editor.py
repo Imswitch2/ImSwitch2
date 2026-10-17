@@ -6,7 +6,7 @@ that it ships with every install and imcontrol can open it in-process from
 ``Tools > Edit hardware configuration...``. This file stays behind because the
 documented way to edit a setup file without starting the microscope is still::
 
-    python utility_scripts/imswitch_config_editor.py [/path/to/setup/dir]
+    python scripts/utilities/imswitch_config_editor.py [/path/to/setup/dir]
 """
 
 import sys

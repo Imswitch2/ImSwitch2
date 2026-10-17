@@ -1325,7 +1325,7 @@ run it from a source checkout with:
 
 .. code-block:: bash
 
-   python utility_scripts/imswitch_config_editor.py
+   python scripts/utilities/imswitch_config_editor.py
 
 or, from an installed copy:
 

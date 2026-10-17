@@ -206,34 +206,14 @@ importing from `imcommon.algorithms`, and delete `tests/`.
 
 ## WP-7 Packaging, CI and scripts
 
-1. CI lane for `examples/plugins/*/tests` (8 test files, three plugins users
-   are told to `pip install`). Consider moving `examples/plugins/` to a
-   top-level `plugins/` — they are real packages, not examples
-   (`imcontrol/model/plugins/external.py` hard-codes the `source=` paths).
-2. `imswitch/_data/libs/*.dll` (~66 MB, Windows-only MoNaLISA GPU path) ship
-   in every wheel and sdist on every platform. **DECISION:** exclude from
-   non-Windows wheels / make a separate download.
-3. `imcontrol/model/interfaces/hpkSLMdaLV_cdecl_64bit/`: the `.lib`, `.h`,
-   LabVIEW `.aliases`/`.ini` are not needed at runtime.
-4. `ci.yml`: drop the `python -m build --no-isolation 2>/dev/null || ...`
-   fallback that hides errors; `imswitch-test.yml` runs `apt install` without
-   `apt update`.
-5. `pyproject.toml`: the ruff `exclude` names three `scripts/diagnostics`
-   files by bare name and CI only lints `imswitch/` — drop them.
-6. One home per kind of script: `tools/` (dev generators, keep),
-   `scripts/diagnostics/` (hardware probes: move `utility_scripts/bsc203_diag.py`
-   and `diagnose_tis_camera.py` there; update `docs/devices/positioners.rst`,
-   `docs/TISCamera.rst`, the comment in `BSC203StageManager.py`), and
-   `utility_scripts/` → `scripts/utilities/` for operator tools (keep the
-   `conftest.py` path for `aa_aotf_calibration.py` working). Fix both
-   READMEs (each lists a subset). Note the config editor's legacy-template
-   migration reads `utility_scripts/templates`; keep that path string.
-7. README project tree: add `scripts/`, `examples/`, `release/`, `tests/`
-   (or what remains after WP-6).
-8. `imswitch/improcess/README.md` links `IMPROCESS_REVIEW.md` and
-   `controller/WatcherFrameController.py`, neither exists.
-9. `imswitch.spec` docstring recommends `pip install -e .`; CI says an
-   editable install breaks the bundle. Align.
+**DONE (2026-10-17).** Plugin test lane in `ci.yml` (all three plugins pass),
+build fallback and missing `apt-get update` fixed, ruff `exclude` trimmed,
+scripts consolidated (`scripts/diagnostics/`, `scripts/utilities/`,
+`scripts/utilities/scopeaid/` replacing `docs/microscope-kb/`), README tree,
+improcess README and `imswitch.spec` docstring corrected, Hamamatsu SLM
+`.lib/.h/.aliases/.ini` removed. `examples/plugins/` was not moved (hard-coded
+paths in `external.py`). **Still open (maintainer decision):** exclude
+`imswitch/_data/libs/*.dll` (~66 MB) from non-Windows wheels/sdists.
 
 ## WP-8 Open plans triage
 
