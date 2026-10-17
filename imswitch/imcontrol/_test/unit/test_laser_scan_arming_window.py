@@ -1035,7 +1035,7 @@ def test_nidaq_prearm_boundary_enforces_laser_preparation_veto():
         if source.startswith('_raiseIfLaserScanPreparationFailed()', pos)
     ]
     publish = source.index('sigScanDevicesResolved')
-    arm = source.index('_scanCoordinator.arm(')
+    arm = source.index('_scanCoordinator.armWithStarter(')
     assert len(checks) >= 2
     assert checks[0] < publish < checks[-1] < arm
 
@@ -1061,7 +1061,7 @@ def test_nidaq_membership_resolution_failure_is_mode_dependent_before_arm():
     coupled_log = source.index(
         'membership consumers are not being notified'
     )
-    arm = source.index('_scanCoordinator.arm(')
+    arm = source.index('_scanCoordinator.armWithStarter(')
     assert 'separatedLaserPower' in source
     assert resolve < refusal < coupled_log < arm
     # Separated raises; coupled logs and falls through to normal arming.
