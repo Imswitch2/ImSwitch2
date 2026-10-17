@@ -348,7 +348,6 @@ Large arrays (images) are passed via POSIX shared memory through `SerNDArray` to
 | `ViewWidget` | Additional viewer controls |
 | `AlignmentLineWidget` | Line alignment overlay |
 | `SetupModesWidget`, `SetupStatusWidget` | Smart microscopy mode switching, setup status |
-| `WellPlateWidget` | Multi-well plate scanning |
 | `FlipMirrorWidget` | Flip mirror control |
 | `BSC203Widget` | Thorlabs BSC203 servo controller |
 | `SegmentationParamsWidget` | Segmentation parameter tuning |

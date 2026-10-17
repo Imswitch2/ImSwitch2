@@ -1,4 +1,3 @@
-# ScanControllerLineStepPointScan.py
 import copy
 import json
 import time

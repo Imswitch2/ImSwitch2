@@ -20,7 +20,6 @@ _CONTROLLER_MODULES = {
     "EtMonalisaController": "EtMonalisaController",
     "EtSTEDController": "EtSTEDController",
     "EtSnoutyController": "EtSnoutyController",
-    # "EtController": "EtController",  # Prototype on old Monalisa machine.
     "FFTController": "FFTController",
     "FLIMHistController": "FLIMHistController",
     "FlipMirrorController": "FlipMirrorController",
@@ -56,7 +55,6 @@ _CONTROLLER_MODULES = {
     "ViewController": "ViewController",
     "ViewerToolsController": "ViewerToolsController",
     "WatcherController": "WatcherController",
-    "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",
 }
 

@@ -1095,23 +1095,6 @@ line.
    :align: center
    :width: 600px
 
-Well plate widget
------------------
-
-A map of a 96-well plate (rows A–H, columns 1–12), intended for moving the
-stage from well to well.  ``WellPlate`` in ``availableWidgets`` loads it
-(*Well Plate*); the plate is drawn when the setup has a positioner with
-``forPositioning`` set (see :doc:`devices/positioners`).  Clicking a well does
-not move the stage yet: it only writes the well's name to the debug log.
-
-.. warning::
-
-   Do not enable this panel on a working microscope yet.  When ImSwitch2
-   closes, it moves every axis of every positioner to 0.  Its script methods
-   (``movePositioner``, ``getPositionerNames`` and five more) also have the
-   same names as the Positioner widget's, so a setup that lists both
-   ``WellPlate`` and ``Positioner`` fails to load ImControl.
-
 Setup modes widget
 ------------------
 

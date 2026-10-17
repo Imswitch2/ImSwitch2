@@ -115,7 +115,7 @@ populator (below) fills them in.  The script applies the application's
 dark style sheet (the one ``prepareApp`` installs), so the captures look
 like the running program; ``--light`` leaves it off.  A widget that comes
 out smaller than 32 pixels in either direction — an empty frame whose
-content only its controller adds, such as ``WellPlateWidget`` — is skipped
+content only its controller adds — is skipped
 rather than written.
 
 **Mock-setup (``--mock-setup``).**  Builds the full ImControl main window

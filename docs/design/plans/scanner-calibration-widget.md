@@ -4,6 +4,9 @@ A new `imcontrol` widget for **driving scanner DACs by hand** and, later, for
 **measuring the calibration constants** that the scan path currently takes on
 faith from the setup file.
 
+> **2026-10:** `WellPlateController` was removed in the codebase cleanup, so
+> the rows and steps below that add a reservation guard to it no longer apply.
+
 Status: Proposed — **revision 3**, ready for a second review round. **P-0 is the
 agreed first deliverable** (manual per-axis voltage entry). P-1..P-3 are
 roadmap.

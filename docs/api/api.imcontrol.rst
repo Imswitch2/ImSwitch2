@@ -168,13 +168,13 @@ api.imcontrol
       Returns the device names of all positioners. These device names can
       be passed to other positioner-related functions.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: getPositionerPositions() -> Dict[str, Dict[str, float]]
 
       Returns the positions of all positioners.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: getRecFileFormat() -> str
 
@@ -313,7 +313,7 @@ api.imcontrol
       Moves the specified positioner axis by the specified number of
       micrometers.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: post_json(path: str, payload: dict) -> str
 
@@ -490,7 +490,7 @@ api.imcontrol
 
       Moves the specified positioner axis to the specified position.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: setPositionerSpeed(positionerName: str, speed: float) -> None
 
@@ -503,7 +503,7 @@ api.imcontrol
       Sets the step size of the specified positioner to the specified
       number of micrometers.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: setRecFileFormat(fileFormat: str) -> None
 
@@ -638,14 +638,14 @@ api.imcontrol
       Moves the specified positioner axis in negative direction by its
       set step size.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: stepPositionerUp(positionerName: str, axis: str) -> None
 
       Moves the specified positioner axis in positive direction by its
       set step size.
 
-      Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+      Needs *Positioner* in ``availableWidgets``.
 
    .. method:: stopRecording() -> bool
 

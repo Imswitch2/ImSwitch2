@@ -19,7 +19,6 @@ _WIDGET_MODULES = {
     "EtMonalisaWidget": "EtMonalisaWidget",
     "EtSTEDWidget": "EtSTEDWidget",
     "EtSnoutyWidget": "EtSnoutyWidget",
-    # "EtWidget": "EtWidget",  # Prototype on old Monalisa machine.
     "FFTWidget": "FFTWidget",
     "FLIMHistWidget": "FLIMHistWidget",
     "FlipMirrorWidget": "FlipMirrorWidget",
@@ -55,7 +54,6 @@ _WIDGET_MODULES = {
     "ViewWidget": "ViewWidget",
     "ViewerToolsWidget": "ViewerToolsWidget",
     "WatcherWidget": "WatcherWidget",
-    "WellPlateWidget": "WellPlateWidget",
     "WidgetFactory": "basewidgets",
 }
 

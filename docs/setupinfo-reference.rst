@@ -513,7 +513,7 @@ Available widget names (case-sensitive):
   ``FlipMirror``, ``BSC203``, ``SLMs``
 * Stand integration (need `microscopeStand`_): ``LeicaStand``, ``MotCorr``
   (Leica motorized correction collar)
-* Scanning and acquisition: ``Scan``, ``Tiling``, ``WellPlate``,
+* Scanning and acquisition: ``Scan``, ``Tiling``,
   ``LightSheetMulticolor``, and the TriggerScope panels
   ``TriggerScopeRaster``, ``TriggerScopePLSR``, ``TriggerScopeGalvoDetection``,
   ``TriggerScopePLSRMulticolor``, ``TriggerScopeScan``, ``TriggerScopeLSXYR``

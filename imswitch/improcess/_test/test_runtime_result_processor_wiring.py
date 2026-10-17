@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from imswitch.improcess.controller.ImProcessMainController import ImProcessMainController
-from imswitch.improcess.controller.runtime_result_processors import (
+from imswitch.improcess.model.runtime_tools import (
     runtime_result_processor_ids,
 )
 
