@@ -211,7 +211,7 @@ build fallback and missing `apt-get update` fixed, ruff `exclude` trimmed,
 scripts consolidated (`scripts/diagnostics/`, `scripts/utilities/`,
 `scripts/utilities/scopeaid/` replacing `docs/microscope-kb/`), README tree,
 improcess README and `imswitch.spec` docstring corrected, Hamamatsu SLM
-`.lib/.h/.aliases/.ini` removed. `examples/plugins/` was not moved (hard-coded
+`.lib/.h` removed (the LabVIEW `.ini`/`.aliases` stay: the LabVIEW runtime reads them next to the DLL). `examples/plugins/` was not moved (hard-coded
 paths in `external.py`). **Still open (maintainer decision):** exclude
 `imswitch/_data/libs/*.dll` (~66 MB) from non-Windows wheels/sdists.
 
