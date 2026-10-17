@@ -13,6 +13,7 @@ from .CommunicationChannel import CommunicationChannel
 from .GraphController import GraphController
 from .ImageToolbarController import ImageToolbarController
 from .ImProcessMainViewController import ImProcessMainViewController
+from .PythonConsoleController import PythonConsoleController
 from .ResultProcessorController import ResultProcessorController
 from .basecontrollers import ImProcessWidgetControllerFactory
 
@@ -63,6 +64,7 @@ class ImProcessMainController(MainController):
 
         # Bridge live results to imcontrol if enabled
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
+        self.__commChannel.sigResultReplaced.connect(self._onResultReplaced)
         self.__commChannel.sigLiveResultUpdated.connect(self._onLiveResultUpdated)
 
         # List of Controllers for the GUI Widgets
@@ -112,6 +114,7 @@ class ImProcessMainController(MainController):
         except Exception:
             self.__logger.exception("Could not set up workflow export/run")
         self._resultProcessorControllers = {}
+        self._consoleController = None
         # Runtime panels that publish their own results (multi-action producers
         # like Multicolor) expose sigResultProduced; we forward it to the comm
         # channel once. Tracks which panels have had that bridge connected.
@@ -674,6 +677,20 @@ class ImProcessMainController(MainController):
             # seed it so the graph is populated the moment it appears.
             self._seed_graph_controller()
             return
+        if processor_id == "console":
+            if self._consoleController is None or self._consoleController._widget is not widget:
+                self._consoleController = self.__factory.createController(
+                    PythonConsoleController, widget
+                )
+                widget.sigSendToPythonStep.connect(self._sendCodeToPythonStep)
+            # Like Graph: usually opened after a result is chosen, and the
+            # controller only hears future changes, so say which one is current.
+            try:
+                current = self.mainViewController.reconstructionController.getActiveResult()
+            except Exception:
+                current = None
+            self._consoleController.seed(current)
+            return
         if processor_id == "metadata":
             if self.mainViewController.metadataController is None:
                 from .MetadataController import MetadataController
@@ -708,6 +725,24 @@ class ImProcessMainController(MainController):
         # — and they read their pixels from the viewer, which switching
         # reconstruction silently changes underneath them.
         self._wire_result_follower(widget)
+
+    def _sendCodeToPythonStep(self, code: str) -> None:
+        """Open the Python step's panel with ``code`` in its editor (the console's button).
+
+        Nothing runs: the step is the recorded, replayable form of the code, and
+        the person sending it chooses the inputs and the output ports.
+        """
+        self._load_runtime_processor("python")
+        panel = self.__mainView.getRuntimeAnalysisWidget("python")
+        setter = getattr(panel, "setParameterValues", None)
+        if not callable(setter) or not setter({"code": code}):
+            self._show_status_message("Could not open the Python step.")
+            return
+        note = "Sent from the console; nothing has run yet."
+        if "publish(" in code:
+            note += " A step returns its results in outputs = {...} instead of publish(...)."
+        panel.setStatusText(note)
+        self._show_status_message("Code sent to the Python step.")
 
     def _wire_roi_manager_panel(self, widget) -> None:
         """Undo/redo shortcuts and crash-recovery autosave for the ROI panel.
@@ -880,6 +915,10 @@ class ImProcessMainController(MainController):
         self._routeResultToAnalysisPanels(result)
         self._bridgeResultToImcontrol(result, name)
 
+    def _onResultReplaced(self, _old, new, name):
+        """A result refined in place is, to the panels, a produced one."""
+        self._onResultProduced(new, name)
+
     def _routeResultToAnalysisPanels(self, result) -> None:
         """Show non-image results in the panels that can actually render them.
 
@@ -903,7 +942,13 @@ class ImProcessMainController(MainController):
             self._appendResultTableRecords(result)
         if kind == "curve" and self._resultHasPlotPayloads(result):
             try:
-                self.__mainView.raiseDockByTitle('Graph')
+                if not self.__mainView.raiseDockByTitle('Graph'):
+                    # The Graph is a runtime panel and is not there until it is
+                    # opened (``graphPanel`` is off by default): a curve made
+                    # before that would be drawn nowhere. Ask for the panel the
+                    # way a pushed plot does, then bring it forward.
+                    self.__mainView.sigLoadProcessorRequested.emit('graph')
+                    self.__mainView.raiseDockByTitle('Graph')
             except Exception:
                 self.__logger.debug(
                     "Could not reveal the Graph dock", exc_info=True

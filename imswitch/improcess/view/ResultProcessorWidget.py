@@ -5,6 +5,7 @@ import weakref
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.view.ResultInputList import ResultInputListWidget
+from imswitch.improcess.view.runstate import RunState
 
 #: "Apply to" scopes offered for single-input processors.
 SCOPE_CURRENT = "current"
@@ -31,6 +32,9 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     on. A list is always emitted, even for one result, so the controller has a
     single code path; it still accepts a bare result from custom panels."""
 
+    sigCancelRequested = QtCore.Signal()
+    """**Cancel** was pressed while a run was going."""
+
     def __init__(self, processor, parent=None):
         super().__init__(parent)
         self.processor = processor
@@ -44,7 +48,9 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         self.statusLabel = QtWidgets.QLabel("No result selected.")
         self.statusLabel.setWordWrap(True)
-        self.runButton = QtWidgets.QPushButton(f"Run {processor.name}")
+        self.runButton = QtWidgets.QPushButton(
+            getattr(processor, "run_label", None) or f"Run {processor.name}"
+        )
         self.runButton.setEnabled(False)
 
         self.paramWidget = processor.make_param_widget(self)
@@ -123,10 +129,33 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         layout.addWidget(self.statusLabel)
         layout.addWidget(self.runButton)
+        self._runState = RunState(self.runButton, layout, self.sigCancelRequested.emit)
+        self.cancelButton = self._runState.cancelButton
         layout.addStretch()
         self.setLayout(layout)
 
         self.runButton.clicked.connect(self._run)
+
+        # A parameter widget whose readiness, or whose idea of what Run does,
+        # can change on its own (an optional package found on "Check again";
+        # a count made that turns "Estimate" into "Run") asks for Run to be
+        # re-decided. Opt-in, like its other hooks.
+        self.runButton.setText(self._runLabel())
+        runStateChanged = getattr(self.paramWidget, "sigRunStateChanged", None)
+        if callable(getattr(runStateChanged, "connect", None)):
+            runStateChanged.connect(self.refreshRunState)
+
+    def _runLabel(self) -> str:
+        """What the Run button says: the widget's word for it, else the processor's."""
+        hook = getattr(self.paramWidget, "run_label", None)
+        if callable(hook):
+            try:
+                label = hook()
+            except Exception:
+                label = None
+            if label:
+                return str(label)
+        return getattr(self.processor, "run_label", None) or f"Run {self.processor.name}"
 
     # -- arity ------------------------------------------------------------
 
@@ -148,7 +177,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         if result is None or not hasattr(result, "processor_input_choices"):
             self.statusLabel.setText("No compatible result selected.")
-            self.runButton.setEnabled(False)
+            self._setRunEnabled(False)
             self.inputCombo.blockSignals(False)
             return
 
@@ -225,6 +254,19 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         if self.scopeCombo is None:
             return SCOPE_CURRENT
         return str(self.scopeCombo.currentData() or SCOPE_CURRENT)
+
+    def setParameterValues(self, values: dict) -> bool:
+        """Put ``values`` in the parameter widget, if it lets them be set.
+
+        Opt-in, like ``setResult``: a widget that declares ``set_values(dict)``
+        takes the keys it is given and leaves the rest (the console uses it to
+        hand code to the Python step). Returns whether the widget took them.
+        """
+        setter = getattr(self.paramWidget, "set_values", None)
+        if not callable(setter):
+            return False
+        setter(dict(values))
+        return True
 
     def parameterValues(self) -> dict:
         getter = getattr(self.paramWidget, "get_values", None)
@@ -341,6 +383,31 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     def setStatusText(self, text: str) -> None:
         self.statusLabel.setText(text)
 
+    # -- a run in progress --------------------------------------------------------
+
+    def isRunning(self) -> bool:
+        return self._runState.running
+
+    def setRunning(self, running: bool) -> None:
+        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        self._runState.setRunning(running)
+
+    def _setRunEnabled(self, allowed: bool) -> None:
+        self._runState.setRunEnabled(allowed)
+
+    def refreshRunState(self) -> None:
+        """Re-decide whether Run may be pressed, and say why not.
+
+        The inputs and the processor's own gate (``check_inputs``) are asked
+        again; the parameter widget calls this through ``sigRunStateChanged``
+        when something it knows about has changed.
+        """
+        self.runButton.setText(self._runLabel())
+        if self.isMultiInput():
+            self._refreshMultiInput()
+        else:
+            self._refreshSingleInput(self.inputCombo.count() > 0)
+
     # -- internals --------------------------------------------------------
 
     def _scopeChanged(self, _index: int) -> None:
@@ -350,11 +417,16 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
     def _refreshSingleInput(self, has_choices: bool) -> None:
         inputs = self.selectedInputs()
-        self.runButton.setEnabled(bool(inputs))
+        ok, reason = _check_each(self.processor, inputs)
+        self._setRunEnabled(ok)
         if not has_choices and not inputs:
             self.statusLabel.setText(
                 f"{self.processor.name} does not apply to the current result."
             )
+        elif inputs and not ok:
+            # The processor's own reason, shown where the user looks for it,
+            # rather than a Run button that is simply off.
+            self.statusLabel.setText(reason)
         elif self.scope() == SCOPE_CURRENT:
             self.statusLabel.setText("Choose a result input and run the processor.")
         else:
@@ -364,22 +436,26 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     def _refreshMultiInput(self) -> None:
         inputs = self.inputWidget.checked_results()
         ok, reason = _check_inputs(self.processor, inputs)
-        self.runButton.setEnabled(ok)
+        self._setRunEnabled(ok)
         if ok:
             self.statusLabel.setText(f"Will run on {len(inputs)} results.")
         else:
             self.statusLabel.setText(reason)
 
     def _run(self) -> None:
+        if self._runState.running:
+            return
         inputs = self.selectedInputs()
         if not inputs:
             self.setStatusText("No processor input selected.")
             return
         if self.isMultiInput():
             ok, reason = _check_inputs(self.processor, inputs)
-            if not ok:
-                self.setStatusText(reason)
-                return
+        else:
+            ok, reason = _check_each(self.processor, inputs)
+        if not ok:
+            self.setStatusText(reason)
+            return
         self.sigRunRequested.emit(inputs, self.parameterValues())
 
 
@@ -409,3 +485,19 @@ def _check_inputs(processor, results) -> tuple[bool, str]:
         return checker(results)
     except Exception as exc:  # a processor's own gate must not break the panel
         return False, str(exc)
+
+
+def _check_each(processor, results) -> tuple[bool, str]:
+    """A single-input processor's gate over a batch: one result per run.
+
+    The "Apply to" scopes run such a processor once per result, so the
+    inputs are not one run's worth and are checked one at a time; the first
+    refusal is the reason shown.
+    """
+    if not results:
+        return False, ""
+    for result in results:
+        ok, reason = _check_inputs(processor, [result])
+        if not ok:
+            return False, reason
+    return True, ""

@@ -18,6 +18,10 @@ e.g. the global ``getWaitForSignal`` scripting function.
 Step-by-step tutorials ship with the scripting module; see
 :ref:`scripting-tutorials` below.
 
+This module drives the microscope.  To script what you do to *results* in
+ImProcess (a one-off transformation, a recipe for a folder of recordings, a
+console over the results list) see :ref:`improcess-python-step`.
+
 Threading model and waiting for events
 ======================================
 
@@ -105,7 +109,7 @@ other. Each is written for a *simulated setup*: a setup file, shipped with
 ImSwitch2, whose cameras, stages, scanners and lasers are all mock devices,
 so the tutorials run without a microscope. The header of every tutorial
 says what it teaches, which setup file to load (``Mock setup:``; choose it
-with **Tools > Pick hardware setup…** in the Hardware Control tab), what
+with **Hardware > Pick hardware setup…** in the Hardware Control tab), what
 that setup simulates (``It simulates:``), and what your own microscope
 needs for the script (``Your own microscope:``). ``tutorial/README.md``
 explains how to load a setup and asks you to read each script, predict

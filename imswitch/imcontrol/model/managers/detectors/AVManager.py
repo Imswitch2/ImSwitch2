@@ -171,10 +171,18 @@ class AVManager(DetectorManager):
         self._camera.openPropertiesGUI()
 
     def _getAVObj(self, cameraId):
+        if str(cameraId).lower() == 'mock':
+            # Asked for by name (cameraListIndex "mock"): no real camera to try,
+            # and nothing to warn about.
+            from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
+            camera = MockCameraTIS()
+            self.__logger.info(f'Initialized mock camera, model: {camera.model}')
+            return camera
         try:
             from imswitch.imcontrol.model.interfaces.avcamera import CameraAV
             self.__logger.debug(f'Trying to initialize Allied Vision camera {cameraId}')
             camera = CameraAV(cameraId)
+            self._setConnected("Allied Vision camera initialized")
         except Exception as e:
             self.__logger.warning(
                 f'Failed to initialize AV camera {cameraId}, loading TIS mocker: {e}',
@@ -182,6 +190,14 @@ class AVManager(DetectorManager):
             )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
+            if str(cameraId).strip().lower().startswith("mock"):
+                self._setMockActive("Mock camera configured")
+            else:
+                self._setConnectionError(
+                    e,
+                    summary="Allied Vision camera initialization failed; mock fallback active",
+                    mock_active=True,
+                )
         
         self.__logger.info(f'Initialized camera, model: {camera.model}')
         return camera

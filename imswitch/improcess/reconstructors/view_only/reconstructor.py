@@ -20,6 +20,7 @@ from qtpy import QtWidgets
 from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
 
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import StreamingReconstructor
 from imswitch.improcess.model.result_io import save_image_result
 
@@ -93,6 +94,10 @@ class ViewOnlyReconstructor(StreamingReconstructor):
     @classmethod
     def default_params(cls) -> dict:
         return {}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return ()
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return _NoParamsWidget(parent)

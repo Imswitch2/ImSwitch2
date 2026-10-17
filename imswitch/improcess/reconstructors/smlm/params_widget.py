@@ -50,6 +50,13 @@ class SmlmParamsWidget(QtWidgets.QWidget):
                  "tip": "Used when 'Pixel size' is set to 'Enter below'; "
                         "localizations are stored in nm"},
             ]},
+            {"name": "Rendering", "type": "group", "children": [
+                {"name": "Preview pixel size", "type": "float", "value": 10.0,
+                 "limits": (1.0, 1e6), "suffix": "nm",
+                 "tip": "Bin size of the histogram the localizations are first "
+                        "shown as. Finer bins show more and cost memory: the "
+                        "preview holds one float per bin over the whole field."},
+            ]},
         ]
 
         self.p = Parameter.create(name="params", type="group", children=params)
@@ -97,6 +104,7 @@ class SmlmParamsWidget(QtWidgets.QWidget):
         detection = self.p.param("Detection")
         fitting = self.p.param("Fitting")
         calibration = self.p.param("Calibration")
+        rendering = self.p.param("Rendering")
         manual = str(calibration.param("Pixel size").value()) == "Enter below"
         return {
             "threshold": float(detection.param("Net-gradient threshold").value()),
@@ -108,6 +116,9 @@ class SmlmParamsWidget(QtWidgets.QWidget):
             "pixel_size_nm": (
                 float(calibration.param("Pixel size (nm)").value())
                 if manual else None
+            ),
+            "preview_pixel_size_nm": float(
+                rendering.param("Preview pixel size").value()
             ),
         }
 

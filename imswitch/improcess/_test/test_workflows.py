@@ -72,6 +72,54 @@ def test_a_workflow_round_trips_through_yaml_and_json(tmp_path):
     assert json.loads(wf.to_json())["steps"][2]["params"] == {"axis": "C", "mode": "max"}
 
 
+def _code_workflow(code):
+    return Workflow("py", [
+        Source("raw", path="scan.h5"),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("split", "python", {"code": code, "ports": "a, b"}, inputs=["rec"]),
+    ])
+
+
+def test_multi_line_code_is_written_in_block_style_and_loads_back_equal():
+    import yaml
+
+    code = 'ax = 0\ngroup = (np.arange(data.shape[ax]) // 3) % 2\noutputs = {"a": data, "b": data}\n'
+    wf = _code_workflow(code)
+    text = wf.to_yaml()
+    assert "code: |\n" in text and "\\n" not in text
+    lines = text.splitlines()
+    assert any(line.strip() == "ax = 0" for line in lines)            # one line per line of code
+    assert any(line.strip() == 'outputs = {"a": data, "b": data}' for line in lines)
+    assert "ports: a, b" in text                                      # one-line strings stay plain
+    again = Workflow.from_yaml(text)
+    assert again.to_dict() == wf.to_dict()
+    assert again.step("split").params["code"] == code
+    assert yaml.safe_load(text)["steps"][2]["params"]["code"] == code   # any YAML reader agrees
+
+
+@pytest.mark.parametrize("code", [
+    "no trailing newline\nsecond",                   # strip chomping: "|-"
+    "keeps\n\n\nblank lines\n\n",
+    "  indented first line\nsecond\n",
+    "trailing spaces   \nsecond\n",                  # PyYAML cannot write this as a block
+    "tab\tinside\n\tand a leading one\n",
+    "colons: and # hashes\n- dashes\n'quotes' \"both\"\n",
+    "unicode \u00b5m \u2192 \u00e9\n",
+    "windows\r\nline endings\r\n",
+])
+def test_code_of_any_shape_survives_the_yaml_round_trip(code):
+    wf = _code_workflow(code)
+    assert Workflow.from_yaml(wf.to_yaml()).step("split").params["code"] == code
+
+
+def test_block_style_does_not_change_yaml_dumping_elsewhere():
+    import yaml
+
+    assert "|" not in yaml.safe_dump({"k": "a\nb"})
+    _code_workflow("a\nb\n").to_yaml()
+    assert "|" not in yaml.safe_dump({"k": "a\nb"})                   # still the stock style after a dump
+
+
 def test_duplicate_or_bad_ids_and_bad_refs_are_refused():
     with pytest.raises(WorkflowError, match="duplicate"):
         Workflow("x", [Source("a"), Source("a")])

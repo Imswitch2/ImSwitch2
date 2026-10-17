@@ -3,6 +3,8 @@ import json
 from abc import ABC, abstractmethod
 from typing import Union
 
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
+
 
 def normalise_ports(value) -> list:
     """Return *value* as a list of port strings.
@@ -39,7 +41,7 @@ def normalise_ports(value) -> list:
     return [p.strip() for p in s.split(',') if p.strip()]
 
 
-class LaserManager(ABC):
+class LaserManager(DeviceManagerStatusMixin, ABC):
     """ Abstract base class for managers that control lasers. Each type of
     laser corresponds to a manager derived from this class. """
 

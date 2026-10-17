@@ -9,9 +9,29 @@ from .SetupInfo import (
     SetupInfo,
 )
 from .WidgetStatePersistence import WidgetStatePersistence, getWidgetStatePersistence
+from .laser_power import (
+    LaserAcquisitionState,
+    LaserPowerContext,
+    LaserPowerMode,
+    LaserScanPowerControl,
+    LaserScanState,
+    normalizeLaserPowerContext,
+    normalizeLaserPowerMode,
+    laserPowerModeFromSetup,
+    normalizeLaserScanState,
+)
 from .errors import *
 from .managers import *
 from .signaldesigners import SignalDesignerFactory
 import sys
 
 #sys.modules['visa'] = 'pyvisa'
+from .devices import (
+    DeviceConnectionState,
+    DeviceFailureKind,
+    DeviceId,
+    DeviceRuntimeMode,
+    DeviceStatus,
+    DeviceStatusProvider,
+    DeviceSupervisor,
+)

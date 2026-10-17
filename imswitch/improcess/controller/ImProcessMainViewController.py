@@ -75,8 +75,10 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.sigSaveReconstructionAll.connect(lambda: self.fileIOController.saveAll('reconstruction'))
         self._widget.sigSaveCoeffs.connect(lambda: self.fileIOController.saveCurrent('coefficients'))
         self._widget.sigSaveCoeffsAll.connect(lambda: self.fileIOController.saveAll('coefficients'))
-        self._widget.sigSetDataFolder.connect(self.fileIOController.setDataFolder)
-        self._widget.sigSetSaveFolder.connect(self.fileIOController.setSaveFolder)
+        self._widget.sigOpenFolderPreferences.connect(self.fileIOController.openFolderPreferences)
+        self._widget.folderPreferencesDialog.sigSaveRequested.connect(
+            self.fileIOController.saveFolderPreferences
+        )
 
         self._widget.sigReconstuctCurrent.connect(self.reconstructorManager.reconstructCurrent)
         self._widget.sigCancelReconstruction.connect(

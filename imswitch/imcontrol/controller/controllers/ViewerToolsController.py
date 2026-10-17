@@ -22,27 +22,64 @@ from ..basecontrollers import ImConWidgetController
 class ViewerToolsController(ImConWidgetController):
     """Linked to ViewerToolsWidget.
 
-    All five tools (pan/rectangle/line/crosshair/grid) share the single
-    ViewerToolManager Shapes layer.  Switching tools clears the previous
-    shapes automatically.
+    All tools share the single ViewerToolManager Shapes layer.  Switching
+    tools clears the previous shapes automatically.
+
+    Line, rectangle and ROI intensity-vs-time are drawn *for* the Line Profile
+    panel, which has the same modes on buttons of its own.  When that panel
+    exists these buttons simply select its mode, and its mode changes are
+    mirrored back here, so the two rows of buttons are one tool rather than
+    two drawing on the same layer.
     """
 
-    def __init__(self, *args, imageWidget=None, **kwargs):
+    #: The Viewer Tools button that stands for each Line Profile mode.
+    _PROFILE_MODE_TOOLS = {
+        'pan': 'pan',
+        'line': 'line',
+        'rectangle': 'rectangle',
+        'timetrace': 'timetrace',
+        # Drawn with the rectangle tool; there is no button of its own here.
+        'zprofile': 'rectangle',
+    }
+
+    def __init__(self, *args, imageWidget=None, lineProfileWidget=None, **kwargs):
         super().__init__(*args, **kwargs)
 
         self._toolManager = imageWidget.toolManager if imageWidget else None
         self._viewer = imageWidget.napariViewer if imageWidget else None
+        # None when the setup has no Line Profile panel, or it could not load.
+        self._profile = getattr(lineProfileWidget, 'profile', None)
+        self._drivingProfile = False
 
         self._crosshair_click_cb = None
+
+        self._widget.setIntensityTraceAvailable(
+            self._profile is not None and 'timetrace' in self._profile.modes()
+        )
 
         if imageWidget is None:
             return
 
         self._widget.sigToolSelected.connect(self._on_tool_selected)
+        if self._profile is not None:
+            self._profile.sigModeChanged.connect(self._on_profile_mode_changed)
 
     # ------------------------------------------------------------------
     def _on_tool_selected(self, tool):
         self._deactivate_crosshair_click()
+
+        if self._profile is not None:
+            # The profile panel draws its own shapes; for crosshair and grid it
+            # stops drawing first, so its tool does not stay armed underneath.
+            self._drivingProfile = True
+            try:
+                self._profile.selectMode(
+                    tool if tool in self._profile.modes() else 'pan'
+                )
+            finally:
+                self._drivingProfile = False
+            if tool in self._profile.modes():
+                return
 
         if not self._toolManager:
             return
@@ -63,6 +100,15 @@ class ViewerToolsController(ImConWidgetController):
 
         elif tool == 'pan':
             self._toolManager.set_mode('pan')
+
+    def _on_profile_mode_changed(self, mode):
+        """The Line Profile panel's own buttons picked a mode: follow it."""
+        if self._drivingProfile:
+            return  # our own request coming back; the button is already right
+        # A crosshair left armed would place itself on every click meant to
+        # draw the profile's shape, wiping it.
+        self._deactivate_crosshair_click()
+        self._widget.setActiveTool(self._PROFILE_MODE_TOOLS.get(mode, 'pan'))
 
     # ------------------------------------------------------------------
     def _largest_image_extent_world(self):

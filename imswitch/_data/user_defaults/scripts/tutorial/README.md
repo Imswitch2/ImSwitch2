@@ -25,7 +25,7 @@ To choose a setup file:
 * **The first time ImSwitch starts**, it asks which setup to use. Pick the
   one named in the tutorial you want to run.
 * **Afterwards**, go to the Hardware Control tab and choose
-  **Tools > Pick hardware setup…**, pick the file and confirm "The software
+  **Hardware > Pick hardware setup…**, pick the file and confirm "The software
   will restart". ImSwitch restarts with the new setup.
 
 The tutorials are ordered so you only switch when a new block begins:

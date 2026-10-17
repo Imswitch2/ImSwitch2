@@ -338,7 +338,10 @@ Key fields:
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and
   ``move_time`` / ``settle_time`` (the fast-axis ramp and rest inside each
   pixel dwell, 2 ms each by default); a dwell not longer than
-  ``move_time + settle_time`` is refused.
+  ``move_time + settle_time`` is refused. The scan panels also read
+  ``phase_delay`` and ``d3step_delay`` (µs) and ``dwell_ms``, the dwell they
+  open with when their own default does not suit the rig (the Advanced panel
+  opens at 0.02 ms, made for galvos; a stepped stage needs more).
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
@@ -1130,9 +1133,15 @@ Key fields (per ROI):
 laserPresets
 ------------
 
-Optional laser power preset system.
+Optional Live/Scan laser power preset system.  All presets share one name
+space under ``laserPresets``; each entry has one of two shapes:
 
-* ``laserPresets`` (dict): Map of preset names to ``{laserName: LaserPresetInfo}`` nested dicts
+* **Historical** ``{laserName: LaserPresetInfo}`` -- context-unspecified.
+  Files written before Live/Scan contexts load unchanged and are saved back
+  unchanged.
+* **Contextual** ``{"context": "live" | "scan", "powers": {laserName:
+  LaserPresetInfo}}``.  Scan presets store acquisition power only; loading one
+  does not itself emit light or change Live ON/OFF state.
 
 **LaserPresetInfo fields** (per laser, per preset):
 
@@ -1143,25 +1152,44 @@ Optional laser power preset system.
 .. code-block:: json
 
    "laserPresets": {
-       "HighPower": {
-           "Laser405": {
-               "value": 200.0
-           },
-           "Laser488": {
-               "value": 150.0
-           }
+       "Screening": {
+           "Laser405": {"value": 200.0},
+           "Laser488": {"value": 150.0}
        },
-       "LowPower": {
-           "Laser405": {
-               "value": 50.0
-           },
-           "Laser488": {
-               "value": 30.0
+       "Acquisition": {
+           "context": "scan",
+           "powers": {
+               "Laser405": {"value": 50.0},
+               "Laser488": {"value": 30.0}
            }
        }
    }
 
 **See also**: :class:`LaserPresetInfo`
+
+
+deviceCategorySettings
+----------------------
+
+Optional settings that apply to a whole device category rather than to one
+device, keyed by category name (``lasers``, ``positioners``, ...).  The config
+editor edits them with the **Settings** button in each category header.
+
+* ``lasers.powerMode`` (``"coupled"`` | ``"separated"``, default
+  ``"coupled"``): ``coupled`` uses the current Live power during scans;
+  ``separated`` keeps independent Live and Scan power settings.
+
+Any other key is kept as written: the editor's **Add property** button adds
+freeform keys (JSON values), and the Custom tab lists, edits and removes them.
+ImSwitch itself reads only the keys documented here.
+
+**Example**:
+
+.. code-block:: json
+
+   "deviceCategorySettings": {
+       "lasers": {"powerMode": "separated"}
+   }
 
 
 slm (singular)
@@ -1266,9 +1294,12 @@ See the bundled example configurations in
 * ``example_no_hardware.json`` — mock devices, no physical hardware
 * ``example_mock.json`` — minimal mock camera + positioner
 * ``example_monalisa.json`` — MoNaLISA (parallelized RESOLFT) microscope:
-  two Hamamatsu cameras, stage scanning with ``BetaScanDesigner``
-* ``example_sted.json`` — STED microscope with galvo scanning
-* ``example_coolLED.json`` — CoolLED illumination system
+  two Hamamatsu cameras, stage scanning with ``BetaScanDesigner`` on the
+  ``Advanced`` panel
+* ``example_sted.json`` — STED microscope with galvo scanning on the
+  ``Advanced`` panel
+* ``example_coolLED.json`` — CoolLED illumination system, LEDs gated by the
+  NI-DAQ during stepped scans on the ``Advanced`` panel
 * ``example_kiralux_teensy.json`` — Thorlabs Kiralux camera + Teensy pulse generator
 * ``example_snouty_smart_modes.json`` — mock flip-mirror beam path with setup
   modes and `smartMicroscopyModes`_; no hardware
@@ -1290,7 +1321,7 @@ ImProcess-only presets, with no hardware: ``fiji_processor.json``,
 
 Or use the **visual config editor** (Config Studio), which shows typed fields
 for every manager's ``managerProperties``.  In a running ImSwitch2 it is
-**Tools → Edit hardware configuration…**.  Without starting the microscope,
+**Hardware → Edit hardware configuration…**.  Without starting the microscope,
 run it from a source checkout with:
 
 .. code-block:: bash

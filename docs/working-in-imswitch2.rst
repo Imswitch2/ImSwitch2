@@ -106,21 +106,28 @@ Two menus belong to the window rather than to a module:
   widget states and preferences live.
 * **Help** — *Documentation*, *Check for updates…* and *About*.
 
-ImControl adds its own:
+ImControl adds its own menus, each holding one kind of thing:
 
-* **File** — load the parameters stored in a saved HDF5 file or Zarr store
-  back into the widgets, and *Save Widget States…* / *Load Widget
-  States…* (see below).
-* **Tools** — *Pick hardware setup…* (:doc:`imcontrol-setups`), *Session
-  notes…* (:ref:`session-notes`), *Edit hardware configuration…* (the
-  config editor, :doc:`imcontrol-setups`), *Memory limits…*
-  (:ref:`improcess-memory-limits`) and *Reset panel layout*, which puts
-  every panel back where the hardware setup places it, at the sizes its
-  contents ask for.
+* **File** — what goes into saved files and what comes back out of them:
+  *Session notes…* (:ref:`session-notes`), loading the parameters stored in
+  a saved HDF5 file or Zarr store back into the widgets, and *Save Widget
+  States…* / *Load Widget States…* (see below).
+* **Hardware** — which microscope this is: *Pick hardware setup…*
+  (:doc:`imcontrol-setups`) and *Edit hardware configuration…* (the config
+  editor, :doc:`imcontrol-setups`).
+* **View** — *Reset panel layout*, which puts every panel back where the
+  hardware setup places it, at the sizes its contents ask for.
 * **Shortcuts** — *Configure Shortcuts…* and the current bindings.
+* **Preferences** — settings of this computer, stored in
+  ``imcontrol_options.json`` and applied as soon as they are saved:
+  *Recordings folder…*, where recordings and snapshots go by default (see
+  :doc:`gui`), and *Memory limits…* (:ref:`improcess-memory-limits`).  The
+  window's own *Preferences* entries follow them.
 
 ImProcess has its own File, Image, Operations, Tools, Plugins, Shortcuts
-and View menus, described in :doc:`improcess`.
+and View menus, described in :doc:`improcess`.  Its **Preferences** menu
+starts with *Default folders…*, where its open and save dialogs start, kept
+between sessions.
 
 
 Keyboard shortcuts
@@ -219,7 +226,11 @@ as "save/restore the whole setup's UI state".
 * *File → Save Widget States* (``Ctrl+Shift+S``) writes a snapshot to a file;
   *Load Widget States* (``Ctrl+Shift+L``) restores one. On exit ImSwitch2 asks
   whether to save the current state as the default for the next launch, and
-  restores that default when it starts.
+  restores that default when it starts. If nobody answers within 30 seconds the
+  question answers *No*; the warning shown at startup when a saved setting did
+  not reach the hardware closes by itself the same way, with the details left
+  in the log. The countdown is shown on the button and restarts on any
+  activity inside the box.
 * **Passive by design:** restoring widget state never activates hardware — it
   sets saved *parameters* (laser power values, ROI/binning, scan parameters, SLM
   config selection, …) but does **not** turn lasers on, start acquisition or

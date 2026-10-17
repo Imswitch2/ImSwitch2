@@ -36,6 +36,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     select_loops,
 )
 from imswitch.improcess.model.array_result import ArrayProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import (
     AcquisitionRequirements,
     Reconstructor,
@@ -276,6 +277,24 @@ class BeadRecReconstructor(Reconstructor):
         'step_x': 1.0,
         'step_y': 1.0,
         'fit_model': 'none'}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('scan_x', 'int', 0, label='Scan X pixels (0=auto)', min=0, max=100000),
+            ParamField('scan_y', 'int', 0, label='Scan Y pixels (0=auto)', min=0, max=100000),
+            ParamField(
+                'roi', 'json', None, label='ROI',
+                help='[x0, y0, x1, y1] in pixels to reconstruct; empty for the full frame',
+                nullable=True,
+            ),
+            ParamField('step_x', 'float', 1.0, label='Step X', min=0, max=1000000, decimals=2),
+            ParamField('step_y', 'float', 1.0, label='Step Y', min=0, max=1000000, decimals=2),
+            ParamField(
+                'fit_model', 'select', 'none', label='Fit model',
+                options=('none', 'gaussian2d', 'donut_r2_gaussian', 'exponential2d', 'sine1d', 'sine2d'),
+            ),
+        )
 
     def make_param_widget(self, parent):
         return _BeadRecParamWidget(parent)

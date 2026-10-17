@@ -15,19 +15,22 @@ class CommunicationChannel(SignalInterface):
     """
 
     sigDataFolderChanged = Signal(object)
-    """The data (input) folder selection changed. Payload: ``(dataFolderPath,)``.
+    """The default data (input) folder changed. Payload: ``(dataFolderPath,)``,
+    None for no default.
 
-    Emitted when the user picks a new folder to browse raw recordings from.
+    Emitted at startup with the folder saved in ``improcess_options.json``,
+    and when it is changed under Preferences > Default folders….
     ``MultiDataFrameController`` uses it as the default location for its
     add-data dialog; ``ImProcessMainViewController`` forwards it back to
-    ``FileIOController.dataFolderChanged`` to persist the choice.
+    ``FileIOController.dataFolderChanged`` for the open dialogs.
 
     Emitters: FileIOController
     Listeners: ImProcessMainViewController, MultiDataFrameController
     """
 
     sigSaveFolderChanged = Signal(object)
-    """The save (output) folder selection changed. Payload: ``(saveFolderPath,)``.
+    """The default save (output) folder changed. Payload: ``(saveFolderPath,)``,
+    None for no default (the save dialogs then start in the data folder).
 
     Counterpart to :attr:`sigDataFolderChanged` for the destination folder.
     ``ImProcessMainViewController`` forwards it to
@@ -157,7 +160,7 @@ class CommunicationChannel(SignalInterface):
         ReconstructionViewController, ReconstructorManagerController,
         ResultProcessorController
     Listeners: GraphController, ImProcessMainController, ImageToolbarController,
-        ResultProcessorController, SmlmRenderController
+        PythonConsoleController, ResultProcessorController, SmlmRenderController
     """
 
     sigResultProduced = Signal(object, str)
@@ -176,8 +179,23 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: ImProcessMainController, ImageToolbarController,
         LiveReconstructionController, MemoryLiveController, MoNaLISAController,
-        NapariEndpointController, ReconstructorManagerController,
-        ResultProcessorController, WorkflowController
+        NapariEndpointController, PythonConsoleController,
+        ReconstructorManagerController, ResultProcessorController,
+        WorkflowController
+    Listeners: ImProcessMainController, ReconstructionViewController
+    """
+
+    sigResultReplaced = Signal(object, object, str)
+    """A loaded result was superseded in place. Payload: ``(old, new, displayName)``.
+
+    What a processor run emits instead of :attr:`sigResultProduced` when its
+    panel asked for the input to be replaced rather than copied (the SMLM
+    filter's *Copy* box, off): ``new`` takes ``old``'s entry in the
+    reconstruction list under ``displayName``, so refining a table step by
+    step does not leave one entry per step behind. A listener that does not
+    find ``old`` treats ``new`` as produced.
+
+    Emitters: ResultProcessorController
     Listeners: ImProcessMainController, ReconstructionViewController
     """
 
@@ -250,7 +268,8 @@ class CommunicationChannel(SignalInterface):
     removed, or ctrl-clicked into the selection.
 
     Emitters: ReconstructionViewController
-    Listeners: ImProcessMainController, ResultProcessorController
+    Listeners: ImProcessMainController, PythonConsoleController,
+        ResultProcessorController
     """
 
     sigSmlmRenderSettingsChanged = Signal(object, object, object)

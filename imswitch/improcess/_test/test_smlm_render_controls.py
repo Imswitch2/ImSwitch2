@@ -210,9 +210,17 @@ def test_the_chosen_fixed_width_reaches_the_plan(display):
     display.show(result)
     display.apply_settings(result, {"mode": 0, "fixed_sigma_xy_nm": 30.0})
 
-    # sigmas are normalized to the largest, and size is 5x it: a fixed 30 nm
-    # sigma must therefore set the billboard edge deterministically.
-    assert display._renderer.request.size == pytest.approx(150.0, rel=1e-3)
+    # napari-storm >= 3.1 hands the widths on in nanometres and makes the
+    # billboard edge SIGMA_TO_SIZE_FACTOR of the widest (6; it was 5 with
+    # normalized widths before 3.1).  A fixed 30 nm lateral sigma must reach
+    # the plan as itself and set the edge deterministically.
+    from napari_storm.core.render_planner import SIGMA_TO_SIZE_FACTOR
+
+    request = display._renderer.request
+    assert request.sigmas[:, 1:] == pytest.approx(30.0, rel=1e-3)
+    assert request.size == pytest.approx(
+        SIGMA_TO_SIZE_FACTOR * float(request.sigmas.max()), rel=1e-3
+    )
 
 
 def test_variable_mode_is_refused_when_the_data_cannot_support_it(display):

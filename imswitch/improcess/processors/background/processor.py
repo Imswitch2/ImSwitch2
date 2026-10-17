@@ -20,6 +20,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor, ProcessorOutput
 
 
@@ -41,6 +42,17 @@ class SubtractBackgroundProcessor(Processor):
     @classmethod
     def default_params(cls) -> dict:
         return {'radius': 50.0, 'output_background': False}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'radius', 'float', 50.0, label='Ball radius',
+                help='Rolling-ball radius in pixels; should exceed the largest foreground feature',
+                min=1, max=10000, decimals=1,
+            ),
+            ParamField('output_background', 'bool', False, label='Also output the background'),
+        )
 
     def output_spec(self, params: dict | None = None, input_specs=None):
         from imswitch.improcess.processors.base import OutputSpec

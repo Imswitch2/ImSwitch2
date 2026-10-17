@@ -1,17 +1,156 @@
 from qtpy import QtCore, QtWidgets
 
 
-def askYesNoQuestion(widget, title, question):
-    """ Asks the user a yes/no question and returns whether "yes" was clicked. """
-    result = QtWidgets.QMessageBox.question(widget, title, question,
-                                            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-    return result == QtWidgets.QMessageBox.Yes
+class TimedMessageBox(QtWidgets.QMessageBox):
+    """A message box that answers itself when nobody attends to it.
+
+    A modal box that waits forever is right when the person is at the
+    microscope, and wrong when they are not: an application started by a
+    script, or closed from a remote desktop someone walked away from, hangs on
+    a question nobody answers. The box presses ``unattendedButton`` once
+    ``unattendedAfterS`` seconds have passed with no key or mouse activity
+    inside it. The countdown is shown in that button's label, so it is clear
+    which answer will be taken, and it restarts on any activity -- a person
+    reading the text, or reaching for the other button, never has it decided
+    for them.
+
+    The keyboard default (Enter) stays whatever the caller sets; the
+    unattended answer is a separate choice, so a shutdown prompt can default
+    to *Yes* for the operator at the keyboard and to *No* for an empty room.
+    """
+
+    _ACTIVITY_EVENTS = (
+        QtCore.QEvent.KeyPress,
+        QtCore.QEvent.MouseButtonPress,
+        QtCore.QEvent.MouseButtonDblClick,
+        QtCore.QEvent.MouseMove,
+        QtCore.QEvent.Wheel,
+        QtCore.QEvent.TouchBegin,
+    )
+
+    def __init__(self, icon, title, text, buttons, parent=None, *,
+                 defaultButton=QtWidgets.QMessageBox.NoButton,
+                 unattendedButton, unattendedAfterS):
+        super().__init__(icon, title, text, buttons, parent)
+        if defaultButton != QtWidgets.QMessageBox.NoButton:
+            self.setDefaultButton(defaultButton)
+
+        self._unattendedButton = self.button(unattendedButton)
+        if self._unattendedButton is None:
+            raise ValueError('unattendedButton must be one of the box\'s buttons')
+        self._unattendedLabel = self._unattendedButton.text()
+        self._unattendedAfterS = max(1, int(round(unattendedAfterS)))
+        self._remainingS = self._unattendedAfterS
+
+        self._countdown = QtCore.QTimer(self)
+        self._countdown.setInterval(1000)
+        self._countdown.timeout.connect(self._tick)
+        self._updateUnattendedLabel()
+
+    # -- Qt lifecycle -------------------------------------------------------
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._restartCountdown()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            # Key and mouse events go to the focused child (a button), not to
+            # the box, so a filter on the box alone would miss them.
+            app.installEventFilter(self)
+        self._countdown.start()
+
+    def hideEvent(self, event):
+        self._countdown.stop()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        super().hideEvent(event)
+
+    def eventFilter(self, obj, event):
+        if (event.type() in self._ACTIVITY_EVENTS
+                and isinstance(obj, QtWidgets.QWidget)
+                and (obj is self or self.isAncestorOf(obj))):
+            self._restartCountdown()
+        return super().eventFilter(obj, event)
+
+    # -- countdown ----------------------------------------------------------
+
+    def remainingSeconds(self):
+        """Seconds left before the unattended answer is taken."""
+        return self._remainingS
+
+    def _restartCountdown(self):
+        self._remainingS = self._unattendedAfterS
+        self._updateUnattendedLabel()
+        if self._countdown.isActive():
+            self._countdown.start()  # restart the 1 s interval from now
+
+    def _tick(self):
+        self._remainingS -= 1
+        if self._remainingS <= 0:
+            self._countdown.stop()
+            self._remainingS = 0
+            self._updateUnattendedLabel()
+            self._unattendedButton.click()
+            return
+        self._updateUnattendedLabel()
+
+    def _updateUnattendedLabel(self):
+        self._unattendedButton.setText(
+            f'{self._unattendedLabel} ({self._remainingS} s)'
+        )
+
+    # -- result -------------------------------------------------------------
+
+    def clickedStandardButton(self):
+        """The standard button that closed the box; NoButton if none did."""
+        clicked = self.clickedButton()
+        if clicked is None:
+            return QtWidgets.QMessageBox.NoButton
+        return self.standardButton(clicked)
 
 
-def showWarning(widget, title, message):
+def askYesNoQuestion(widget, title, question, *,
+                     unattendedAnswer=None, unattendedAfterS=30):
+    """ Asks the user a yes/no question and returns whether "yes" was clicked.
+
+    With ``unattendedAnswer`` given (True for *Yes*, False for *No*), the box
+    takes that answer by itself after ``unattendedAfterS`` seconds with no
+    activity inside it; see :class:`TimedMessageBox`. """
+    buttons = QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+    if unattendedAnswer is None:
+        result = QtWidgets.QMessageBox.question(widget, title, question, buttons)
+        return result == QtWidgets.QMessageBox.Yes
+
+    box = TimedMessageBox(
+        QtWidgets.QMessageBox.Question, title, question, buttons, widget,
+        defaultButton=QtWidgets.QMessageBox.Yes,
+        unattendedButton=(QtWidgets.QMessageBox.Yes if unattendedAnswer
+                          else QtWidgets.QMessageBox.No),
+        unattendedAfterS=unattendedAfterS,
+    )
+    box.exec_()
+    return box.clickedStandardButton() == QtWidgets.QMessageBox.Yes
+
+
+def showWarning(widget, title, message, *, unattendedAfterS=None):
     """ Tells the user about something that went wrong but was recovered from,
-    e.g. hardware refusing a setting the GUI had already accepted. """
-    QtWidgets.QMessageBox.warning(widget, title, message)
+    e.g. hardware refusing a setting the GUI had already accepted.
+
+    With ``unattendedAfterS`` given, the box closes by itself after that many
+    seconds with no activity inside it; see :class:`TimedMessageBox`. """
+    if unattendedAfterS is None:
+        QtWidgets.QMessageBox.warning(widget, title, message)
+        return
+
+    box = TimedMessageBox(
+        QtWidgets.QMessageBox.Warning, title, message, QtWidgets.QMessageBox.Ok,
+        widget,
+        defaultButton=QtWidgets.QMessageBox.Ok,
+        unattendedButton=QtWidgets.QMessageBox.Ok,
+        unattendedAfterS=unattendedAfterS,
+    )
+    box.exec_()
 
 
 def askForTextInput(widget, title, label, suggested=None):

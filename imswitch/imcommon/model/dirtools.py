@@ -2,12 +2,23 @@ import glob
 import hashlib
 import json
 import os
+import sys
 from abc import ABC
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import copy2
 
 import imswitch
+
+
+def isBundle():
+    """ Whether ImSwitch2 is running from a frozen PyInstaller bundle.
+
+    ``IMSWITCH_IS_BUNDLE`` is set by the bundle entry point; ``sys.frozen`` is
+    PyInstaller's own marker and covers anyone who freezes ImSwitch2 without
+    going through ``release/pyinstaller/imswitch_bundle_entry.py``. """
+
+    return os.environ.get('IMSWITCH_IS_BUNDLE') == '1' or getattr(sys, 'frozen', False)
 
 
 def getSystemUserDir():
@@ -28,6 +39,27 @@ def getSystemUserDir():
             pass
         #TOOD: How can we ensure that configuration files are updated automatically.. 
     return os.path.expanduser('~')  # Non-Windows system, return home directory
+
+
+def checkedFolderPath(text, *, allowEmpty=False):
+    """ A folder path a user typed or picked, ready to be saved as a setting.
+
+    ``~`` is expanded and the path normalised; the folder need not exist yet.
+    Raises ValueError with a reason the user can act on: no path at all
+    (unless ``allowEmpty``, which returns ''), a relative path -- it would be
+    resolved against whichever folder ImSwitch happened to be started from --
+    or the path of an existing file. """
+    folder = os.path.expanduser(str(text or '').strip())
+    if not folder:
+        if allowEmpty:
+            return ''
+        raise ValueError('Enter a folder.')
+    if not os.path.isabs(folder):
+        raise ValueError(f'Enter a full path: "{folder}" would be resolved against '
+                         f'whichever folder ImSwitch happened to be started from.')
+    if os.path.exists(folder) and not os.path.isdir(folder):
+        raise ValueError(f'"{folder}" is a file, not a folder.')
+    return os.path.normpath(folder)
 
 
 _baseDataFilesDir = os.path.join(os.path.dirname(os.path.realpath(imswitch.__file__)), '_data')

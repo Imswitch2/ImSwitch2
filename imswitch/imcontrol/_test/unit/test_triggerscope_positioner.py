@@ -1,4 +1,6 @@
 import pytest
+import json
+import os
 
 from imswitch.imcommon.model import dirtools
 from imswitch.imcontrol.model.SetupInfo import PositionerInfo
@@ -25,7 +27,7 @@ def _isolated_persistence(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _make_info(minVolt=0.0, maxVolt=10.0, conversionFactor=2.0):
+def _make_info(minVolt=0.0, maxVolt=10.0, conversionFactor=2.0, defaultReferenceVoltage=None):
     return PositionerInfo(
         analogChannel=None,
         digitalLine=None,
@@ -34,6 +36,10 @@ def _make_info(minVolt=0.0, maxVolt=10.0, conversionFactor=2.0):
             'conversionFactor': conversionFactor,
             'minVolt': minVolt,
             'maxVolt': maxVolt,
+            **(
+                {'defaultReferenceVoltage': defaultReferenceVoltage}
+                if defaultReferenceVoltage is not None else {}
+            ),
         },
         axes=['Z'],
         forScanning=True,
@@ -107,6 +113,30 @@ def test_position_persists_across_restart_without_moving():
     mgr2, ts2 = _make_manager(conversionFactor=2.0)  # "restart"
     assert mgr2.position['Z'] == 6.0      # focus survived the restart
     assert ts2.calls == []                # ...and nothing moved
+    assert mgr2.isPositionRestored('Z') is True
+
+
+@pytest.mark.nohardware
+def test_legacy_triggerscope_persistence_is_migrated_without_moving(_isolated_persistence):
+    legacyPath = os.path.join(
+        str(_isolated_persistence), 'triggerscope_positions.json'
+    )
+    with open(legacyPath, 'w') as file:
+        json.dump({'TSZ': {'Z': 6.0}}, file)
+
+    mgr, ts = _make_manager(conversionFactor=2.0)
+
+    assert ts.calls == []
+    assert mgr.position['Z'] == 6.0
+    assert mgr.isPositionRestored('Z') is True
+
+    # The migrated value is now available through the generic store even if
+    # the old TriggerScope-only file disappears.
+    os.remove(legacyPath)
+    mgr2, ts2 = _make_manager(conversionFactor=2.0)
+    assert ts2.calls == []
+    assert mgr2.position['Z'] == 6.0
+    assert mgr2.isPositionRestored('Z') is True
 
 
 @pytest.mark.nohardware
@@ -164,3 +194,72 @@ def test_multi_axis_construction_raises_runtime_error():
     )
     with pytest.raises(RuntimeError, match='only supports one axis'):
         TriggerScopePositionerManager(info, 'TSXYZ', triggerScopeManager=ts)
+
+@pytest.mark.nohardware
+def test_trigger_scope_starts_unreferenced_even_with_persisted_position():
+    mgr, _ = _make_manager(conversionFactor=2.0, defaultReferenceVoltage=0.0)
+    mgr.setPosition(6.0, 'Z')
+
+    mgr2, ts2 = _make_manager(conversionFactor=2.0, defaultReferenceVoltage=0.0)
+
+    assert ts2.calls == []
+    assert mgr2.position['Z'] == 6.0
+    assert mgr2.isAxisReferenced('Z') is False
+
+
+@pytest.mark.nohardware
+def test_trigger_scope_reference_uses_configured_default_voltage():
+    mgr, ts = _make_manager(
+        conversionFactor=10.0,
+        minVolt=0.0,
+        maxVolt=10.0,
+        defaultReferenceVoltage=5.0,
+    )
+
+    mgr.reference('Z')
+
+    assert ts.calls == [('TSZ', 5.0)]
+    assert mgr.position['Z'] == 50.0
+    assert mgr.isAxisReferenced('Z') is True
+
+
+@pytest.mark.nohardware
+def test_trigger_scope_reference_accepts_explicit_position():
+    mgr, ts = _make_manager(
+        conversionFactor=10.0,
+        defaultReferenceVoltage=5.0,
+    )
+
+    mgr.reference('Z', position=47.0)
+
+    assert ts.calls == [('TSZ', 4.7)]
+    assert mgr.position['Z'] == 47.0
+    assert mgr.isAxisReferenced('Z') is True
+
+
+@pytest.mark.nohardware
+def test_trigger_scope_reference_without_default_is_rejected_without_motion():
+    mgr, ts = _make_manager()
+
+    with pytest.raises(ValueError, match='No defaultReferenceVoltage'):
+        mgr.reference('Z')
+
+    assert ts.calls == []
+    assert mgr.isAxisReferenced('Z') is False
+
+
+@pytest.mark.nohardware
+def test_trigger_scope_reference_outside_range_is_not_silently_clamped():
+    mgr, ts = _make_manager(
+        conversionFactor=10.0,
+        minVolt=0.0,
+        maxVolt=10.0,
+        defaultReferenceVoltage=5.0,
+    )
+
+    with pytest.raises(ValueError, match='outside'):
+        mgr.reference('Z', position=-1.0)
+
+    assert ts.calls == []
+    assert mgr.isAxisReferenced('Z') is False
+

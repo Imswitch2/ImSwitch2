@@ -285,7 +285,13 @@ def _scanController(controllerClass, channel):
     ctrl.__dict__.update(
         _commChannel=channel,
         _setupInfo=setup,
-        _master=SimpleNamespace(scanManager=managerClass(setup)),
+        _master=SimpleNamespace(
+            scanManager=managerClass(setup),
+            positionersManager={
+                axis: SimpleNamespace(axes=[axis], position={axis: 0.0})
+                for axis in ('X', 'Y', 'Z')
+            },
+        ),
         _widget=_Widget(),
         _logger=_Logger(),
         _scanCoordinator=ScanExecutionCoordinator(None, None),
@@ -293,10 +299,11 @@ def _scanController(controllerClass, channel):
         _scanRunStartingPublished=False,
         _analogParameterDict=analog,
         _digitalParameterDict=digital,
-        _lastBuiltParams=None,
+        _designCache=None,
         signalDict=None,
         scanInfoDict=None,
         TTLDevices={},
+        _suppressUnreferencedScanWarning=True,
     )
     # The parameters above are what the widget would hand over.
     ctrl.getParameters = lambda: None

@@ -13,6 +13,7 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import DenoisedResult
@@ -42,6 +43,27 @@ class DenoiseProcessor(Processor):
         'crop_size': 800,
         'pad': True,
         'clip_neg': True}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'model_name', 'text', 'Vimentin_UNet_RCAN_lowSNR', label='Model name',
+                help='Name of the trained model directory under the denoising_models folder. Must contain config_train.json and model_best_state_dict.pt.',
+            ),
+            ParamField(
+                'model_type', 'select', 'Auto', label='Model type',
+                help="Auto picks UNetRCAN when the model name contains 'RCAN', otherwise UNet.",
+                options=('Auto', 'UNet', 'UNetRCAN'),
+            ),
+            ParamField(
+                'crop_size', 'int', 800, label='Crop size (px)',
+                help='Center-crop side length in pixels. Rounded down to a multiple of 16.',
+                min=16, max=100000, step=16,
+            ),
+            ParamField('pad', 'bool', True, label='Zero-pad to input size'),
+            ParamField('clip_neg', 'bool', True, label='Clip negative input to zero'),
+        )
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

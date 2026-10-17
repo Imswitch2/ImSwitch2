@@ -49,6 +49,14 @@ _NON_PROCESSOR_TOOL_SPECS = {
         processor_id=None,
         category="Exploration",
     ),
+    "console": RuntimeAnalysisToolSpec(
+        id="console",
+        title="Console",
+        attribute="consoleWidget",
+        widget_kind="console",
+        processor_id=None,
+        category="Scripting",
+    ),
     "profile": RuntimeAnalysisToolSpec(
         id="profile",
         title="Profile",
