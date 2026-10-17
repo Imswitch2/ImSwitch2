@@ -1163,7 +1163,9 @@ class DeviceCanvas(QScrollArea):
 
         category_schema = CATEGORY_SCHEMAS.get(cat)
         if category_schema:
-            category_values = (data.get("deviceCategorySettings") or {}).get(cat, {})
+            category_values = (data.get("deviceCategorySettings") or {}).get(cat)
+            if not isinstance(category_values, dict):
+                category_values = {}
             summary_parts = []
             for field_def in category_schema.get("fields", []):
                 if not field_def.get("show_in_header"):
@@ -1171,6 +1173,12 @@ class DeviceCanvas(QScrollArea):
                 value = category_values.get(field_def["key"], _field_default(field_def))
                 display_value = _field_option_label(field_def, value)
                 summary_parts.append(f"{field_def.get('label', field_def['key'])}: {display_value}")
+            known_keys = {field_def["key"] for field_def in category_schema.get("fields", [])}
+            custom_keys = [k for k in category_values if k not in known_keys]
+            if custom_keys:
+                summary_parts.append(
+                    f"{len(custom_keys)} custom propert{'y' if len(custom_keys) == 1 else 'ies'}"
+                )
             if summary_parts:
                 summary_lbl = QLabel(
                     "<span style='color:#888;font-size:8pt;'>"
@@ -1362,6 +1370,21 @@ def _field_option_label(field_def: dict, option) -> str:
     """Return an optional schema-supplied display label for a select value."""
     labels = field_def.get("option_labels") or {}
     return str(labels.get(str(option), _option_label(option)))
+
+
+def _parse_freeform_value(text: str):
+    """Parse the value typed for a freeform field: JSON, then a Python
+    literal, else the text itself as a string. Empty text is ``None``."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        try:
+            return ast.literal_eval(stripped)
+        except Exception:
+            return stripped
 
 
 # =============================================================================
@@ -2185,13 +2208,7 @@ class PropertyEditor(QWidget):
         )
         if not ok2:
             return
-        try:
-            value = json.loads(val_str.strip()) if val_str.strip() else None
-        except json.JSONDecodeError:
-            try:
-                value = ast.literal_eval(val_str.strip())
-            except Exception:
-                value = val_str.strip()
+        value = _parse_freeform_value(val_str)
 
         if where == "top":
             self._device[key.strip()] = value
@@ -2918,14 +2935,22 @@ class SectionEditorDialog(QDialog):
     Reuses :class:`FieldWidget` so its inputs match the device editor.
     Ref-type fields are populated from the live config data dict so that
     e.g. ``focusLock.camera`` is a dropdown of existing detector names.
+
+    With ``allow_custom_fields`` the dialog also lists the keys of
+    ``current`` that the schema does not define, in a "Custom" tab, and
+    offers "Add property" to add more; Apply writes them back with the
+    schema fields instead of dropping them.
     """
 
-    def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *, title_prefix="Edit section"):
+    def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *,
+                 title_prefix="Edit section", allow_custom_fields=False):
         super().__init__(parent)
         self._key = key
         self._schema = schema
         self._data = data  # reference, used to populate ref combos
         self._result: dict = {}
+        self._allow_custom = allow_custom_fields
+        self._custom_widgets: dict = {}  # key → QLineEdit
 
         legacy = schema.get("legacy")
         title = f"{title_prefix}: {schema.get('display', key)}"
@@ -3006,6 +3031,40 @@ class SectionEditorDialog(QDialog):
             scroll.setWidget(inner)
             tabs.addTab(scroll, grp)
 
+        # ── Custom tab: keys the schema does not define ──
+        if self._allow_custom:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            inner = QWidget()
+            self._custom_form = QFormLayout(inner)
+            self._custom_form.setContentsMargins(8, 8, 8, 8)
+            self._custom_form.setSpacing(4)
+            self._custom_empty_lbl = QLabel(
+                "<span style='color:#888;font-size:8pt;'>No custom properties. "
+                "Use ⊕ Add property to add one.</span>"
+            )
+            self._custom_empty_lbl.setTextFormat(Qt.RichText)
+            self._custom_form.addRow(self._custom_empty_lbl)
+            known = {f["key"] for f in schema.get("fields", [])}
+            for k, v in (current or {}).items():
+                if k not in known:
+                    self._add_custom_row(k, v)
+            scroll.setWidget(inner)
+            self._custom_tab = scroll
+            tabs.addTab(scroll, "Custom")
+            self._tabs = tabs
+
+            add_row = QHBoxLayout()
+            add_prop_btn = QPushButton("⊕ Add property")
+            add_prop_btn.setFixedHeight(22)
+            add_prop_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
+            add_prop_btn.setToolTip("Add an arbitrary key to these settings")
+            add_prop_btn.clicked.connect(self._prompt_custom_field)
+            add_row.addWidget(add_prop_btn)
+            add_row.addStretch()
+            lay.addLayout(add_row)
+
         # ── Validation label ──
         self._err_lbl = QLabel()
         self._err_lbl.setStyleSheet("color:#C04000; font-size:8pt;")
@@ -3044,8 +3103,64 @@ class SectionEditorDialog(QDialog):
                 "Missing required: " + ", ".join(missing)
             )
             return
+        for k, le in self._custom_widgets.items():
+            original = le.property("originalValue")
+            if _coercion_module is not None:
+                out[k] = _coercion_module.raw_text_to_json(le.text(), original)
+            else:
+                out[k] = _parse_freeform_value(le.text())
         self._result = out
         self.accept()
+
+    def add_custom_field(self, key: str, value) -> str:
+        """Add a custom key; returns an error message, or "" on success."""
+        if not self._allow_custom:
+            return "These settings take no custom properties."
+        key = key.strip()
+        if not key:
+            return "Key name is empty."
+        if key in self._field_widgets or key in self._custom_widgets:
+            return f"'{key}' already exists in these settings."
+        self._add_custom_row(key, value)
+        self._tabs.setCurrentWidget(self._custom_tab)
+        return ""
+
+    def _prompt_custom_field(self):
+        key, ok = QInputDialog.getText(self, "Add Property", "Key name:")
+        if not ok or not key.strip():
+            return
+        val_str, ok2 = QInputDialog.getText(
+            self, "Add Property",
+            'Value  (JSON: 42, true, "text", null, [1,2], {...}):',
+            text="null",
+        )
+        if not ok2:
+            return
+        self._err_lbl.setText(self.add_custom_field(key, _parse_freeform_value(val_str)))
+
+    def _add_custom_row(self, key: str, value):
+        le = QLineEdit(json.dumps(value) if not isinstance(value, str) else value)
+        # Bare text cannot say whether "5" was a string or a number; the
+        # read-back asks the original rather than guessing.
+        le.setProperty("originalValue", value)
+        row = QWidget()
+        row_lay = QHBoxLayout(row)
+        row_lay.setContentsMargins(0, 0, 0, 0)
+        row_lay.setSpacing(2)
+        row_lay.addWidget(le, 1)
+        del_btn = QPushButton("×")
+        del_btn.setFixedSize(20, 20)
+        del_btn.setToolTip(f"Remove '{key}'")
+        del_btn.clicked.connect(lambda _, k=key, r=row: self._remove_custom_row(k, r))
+        row_lay.addWidget(del_btn)
+        self._custom_form.addRow(QLabel(key), row)
+        self._custom_widgets[key] = le
+        self._custom_empty_lbl.setVisible(False)
+
+    def _remove_custom_row(self, key: str, row: QWidget):
+        self._custom_widgets.pop(key, None)
+        self._custom_form.removeRow(row)
+        self._custom_empty_lbl.setVisible(not self._custom_widgets)
 
     @property
     def result_data(self) -> dict:
@@ -4087,6 +4202,7 @@ class MainWindow(QMainWindow):
         dlg = SectionEditorDialog(
             cat, schema, current, self._data, self,
             title_prefix="Edit category settings",
+            allow_custom_fields=True,
         )
         if dlg.exec_() != QDialog.Accepted:
             return

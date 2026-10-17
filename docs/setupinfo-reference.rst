@@ -1133,13 +1133,15 @@ Key fields (per ROI):
 laserPresets
 ------------
 
-Optional Live/Scan laser power preset system.
+Optional Live/Scan laser power preset system.  All presets share one name
+space under ``laserPresets``; each entry has one of two shapes:
 
-* ``laserPresets`` (dict): Live preset names mapped to ``{laserName: LaserPresetInfo}``.
-  This historical key remains the Live namespace for backward compatibility.
-* ``laserScanPresets`` (dict): Scan preset names mapped to the same structure.
-  Scan presets store acquisition power only; loading one does not itself emit
-  light or change Live ON/OFF state.
+* **Historical** ``{laserName: LaserPresetInfo}`` -- context-unspecified.
+  Files written before Live/Scan contexts load unchanged and are saved back
+  unchanged.
+* **Contextual** ``{"context": "live" | "scan", "powers": {laserName:
+  LaserPresetInfo}}``.  Scan presets store acquisition power only; loading one
+  does not itself emit light or change Live ON/OFF state.
 
 **LaserPresetInfo fields** (per laser, per preset):
 
@@ -1151,26 +1153,43 @@ Optional Live/Scan laser power preset system.
 
    "laserPresets": {
        "Screening": {
-           "Laser405": {
-               "value": 200.0
-           },
-           "Laser488": {
-               "value": 150.0
-           }
-       }
-   },
-   "laserScanPresets": {
+           "Laser405": {"value": 200.0},
+           "Laser488": {"value": 150.0}
+       },
        "Acquisition": {
-           "Laser405": {
-               "value": 50.0
-           },
-           "Laser488": {
-               "value": 30.0
+           "context": "scan",
+           "powers": {
+               "Laser405": {"value": 50.0},
+               "Laser488": {"value": 30.0}
            }
        }
    }
 
 **See also**: :class:`LaserPresetInfo`
+
+
+deviceCategorySettings
+----------------------
+
+Optional settings that apply to a whole device category rather than to one
+device, keyed by category name (``lasers``, ``positioners``, ...).  The config
+editor edits them with the **Settings** button in each category header.
+
+* ``lasers.powerMode`` (``"coupled"`` | ``"separated"``, default
+  ``"coupled"``): ``coupled`` uses the current Live power during scans;
+  ``separated`` keeps independent Live and Scan power settings.
+
+Any other key is kept as written: the editor's **Add property** button adds
+freeform keys (JSON values), and the Custom tab lists, edits and removes them.
+ImSwitch itself reads only the keys documented here.
+
+**Example**:
+
+.. code-block:: json
+
+   "deviceCategorySettings": {
+       "lasers": {"powerMode": "separated"}
+   }
 
 
 slm (singular)
@@ -1261,10 +1280,6 @@ references, and what fails silently if references are missing or incorrect.
      - ``timerCounterChannel`` references counter channel
      - Silent failure if simulation disabled + no hardware
    * - ``laserPresets``
-     - Lasers in setup
-     - Laser names in preset map
-     - Preset silently skips unknown lasers
-   * - ``laserScanPresets``
      - Lasers in setup
      - Laser names in preset map
      - Preset silently skips unknown lasers
