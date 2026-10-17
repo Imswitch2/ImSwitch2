@@ -1,7 +1,7 @@
 """Install hints for device managers that live in external plugin packages.
 
 This is the Phase 8 safety net for gradual extraction (see
-``docs/design/DEVICE_PLUGINS.md``). When a setup file names a manager that
+``docs/devices/plugins.rst``). When a setup file names a manager that
 ImSwitch cannot resolve — neither a registered plugin contribution nor an
 in-tree legacy module — these hints let ImSwitch tell the user exactly which
 package provides it, instead of an opaque ``ImportError``.

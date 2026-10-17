@@ -61,11 +61,12 @@ Before making changes, familiarize yourself with the architecture:
 * **Architecture overview:** start with :ref:`architecture-at-a-glance` on
   the home page, which maps ImControl, ImProcess, ImScripting, ImCommon and
   PluginAPI onto the model-view-presenter layers.  Then read
-  ``docs/design/ARCHITECTURE.md`` for the full dependency detail:
+  :doc:`architecture` for the detail:
 
-  * Manager inventory (hardware abstraction layer)
-  * Controller→Manager matrix (which controllers use which hardware)
-  * Startup flow (initialization sequence)
+  * Package layout and startup flow (initialization sequence)
+  * Managers, controllers and widgets in ImControl, and how
+    ``MasterController`` builds the managers
+  * The two signal buses, the recording path and widget-state persistence
 
 * **Red-zone rules:** :ref:`red-zone-work` below
 
@@ -380,7 +381,7 @@ Getting Help
   * :doc:`installation` — Setup and dependencies
   * :doc:`contributing` — General contribution guidelines
   * :doc:`adding-device-support` — Hardware integration
-  * ``docs/design/ARCHITECTURE.md`` — System architecture (in the repository)
+  * :doc:`architecture` — System architecture
   * :doc:`no-hardware-validation` — Testing guide
 
 * **Check existing issues:**
@@ -402,7 +403,7 @@ Resources
 * :doc:`contributing` — How to contribute
 * :doc:`adding-device-support` — Adding new hardware
 * :doc:`no-hardware-validation` — Testing without hardware
-* ``docs/design/ARCHITECTURE.md`` — Architecture overview (in the repository)
+* :doc:`architecture` — Architecture overview
 * :doc:`current-state-and-known-issues` — Where the project stands and what is open
 
 **External:**

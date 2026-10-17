@@ -51,44 +51,14 @@ HOME=$(mktemp -d) PYTHONPATH=$PWD QT_QPA_PLATFORM=offscreen python -m pytest -p 
 
 ---
 
-## WP-1 Architecture page (docs)
+## WP-1 Architecture page (docs) -- done
 
-`docs/design/ARCHITECTURE.md` is the old architecture/overview run. It is not
-rendered (Sphinx has no Markdown parser) and is five months stale. Turn it
-into `docs/architecture.rst`, in the *Developer* toctree, and delete the md.
-
-Known mismatches to fix while porting (verify each against the code):
-
-1. Module table omits `imswitch.pluginapi`.
-2. Widget-state persistence: lives in `imswitch/imcommon/model/`, and the
-   `getWidgetState`/`register` API it describes is replaced by
-   `StatefulComponentMixin` (`imcontrol/controller/basecontrollers.py`).
-3. Widget/controller counts (52 widgets, 55 controllers); the
-   controller→manager matrix covers ~18 controllers — either complete it or
-   drop it in favour of a short description of the pattern (recommended:
-   drop; it rots).
-4. ImProcess reconstructors (10, not 6) and processors (list is ~14 short).
-   Recommended: describe the registry and point at
-   `python -m imswitch.improcess.workflows list`, not a hand list.
-5. Undocumented subpackages: `improcess/workflows`, `improcess/plugins`,
-   `improcess/analysis`, `imcommon/algorithms`,
-   `imcontrol/model/configeditor`; imscripting's runner and
-   `ModuleCommunicationChannel`.
-6. "Legacy SLMController removed" is wrong (it is the current one).
-7. Recording: OME standardization is done, not "in progress".
-8. The CommunicationChannel section must match the channel after the first
-   pass (no alias groups, no `DEPRECATED_SIGNALS`).
-9. Drop the dated "Subsystems added during ImSwitch2 work" and "Resolved
-   issues" sections — that is changelog material.
-
-Also: fold the remaining rationale of `docs/design/DEVICE_PLUGINS.md` into
-`docs/devices/plugins.rst` and delete the md (update the citation in
-`imcontrol/model/plugins/external.py`). Update links in `index.rst`,
-`developer-onboarding.rst`, `how-to/*`, README ("Deep dive").
-Use `docs/images/architecture-overview.svg` if it is still accurate.
-
-**Done when** `python -m sphinx -b html -W docs OUT` builds clean and no
-file links `ARCHITECTURE.md` or `DEVICE_PLUGINS.md`.
+The old architecture note became `docs/architecture.rst` (Extending
+ImSwitch2 toctree) and the device plugin design rationale was folded into
+`docs/devices/plugins.rst` ("Design notes"); both markdown files are
+deleted (`git log -- <path>` recovers them). Not carried over: the
+per-device manager and widget inventories, the controller-to-manager matrix
+and the Teensy wire protocol summary (the firmware repository owns it).
 
 ## WP-2 Docs folds, changelog, current state
 
