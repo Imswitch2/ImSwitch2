@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import traceback
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import List
 from urllib.parse import quote
@@ -149,14 +150,56 @@ class SetupModeController:
             return None
 
     @APIExport()
+    def getSetupModeUpdateCaptureOptions(self, componentName, previousState=None):
+        """Return component-owned capture options for an Update operation."""
+        controller = self._getModeAwareControllers().get(componentName)
+        if controller is None:
+            return None
+        try:
+            return controller.getSetupModeUpdateCaptureOptions(previousState)
+        except Exception:
+            self._logger.error(
+                f'Failed to get setup-mode update options for "{componentName}"'
+            )
+            self._logger.error(traceback.format_exc())
+            return None
+
+    @APIExport()
+    def snapshotSetupModeRuntimeState(self, componentNames=None):
+        """Capture canonical component state exactly once without adapting it.
+
+        Update dialogs use this immutable runtime snapshot for both preview and
+        final merge, so accepting an Update never re-reads hardware.
+        """
+        modeAwareControllers = self._getModeAwareControllers()
+        componentNames = self._normalizeComponentNames(componentNames, modeAwareControllers)
+        return self._snapshotRuntimeComponents(componentNames, modeAwareControllers)
+
+    @APIExport()
+    def prepareSetupModeStateSnapshot(
+        self, runtimeSnapshot, *, captureOptions=None, previousStateByComponent=None
+    ):
+        """Adapt an already-captured runtime snapshot to setup-mode payloads."""
+        modeAwareControllers = self._getModeAwareControllers()
+        return self._prepareRuntimeSnapshot(
+            runtimeSnapshot,
+            modeAwareControllers,
+            captureOptions=captureOptions,
+            previousStateByComponent=previousStateByComponent,
+        )
+
+    @APIExport()
     def snapshotSetupModeState(
         self, componentNames=None, captureOptions=None, previousStateByComponent=None
     ):
         """Snapshot selected setup-mode components without saving them."""
         modeAwareControllers = self._getModeAwareControllers()
         componentNames = self._normalizeComponentNames(componentNames, modeAwareControllers)
-        return self._snapshotComponents(
-            componentNames,
+        runtimeSnapshot = self._snapshotRuntimeComponents(
+            componentNames, modeAwareControllers
+        )
+        return self._prepareRuntimeSnapshot(
+            runtimeSnapshot,
             modeAwareControllers,
             captureOptions=captureOptions,
             previousStateByComponent=previousStateByComponent,
@@ -223,6 +266,56 @@ class SetupModeController:
 
         self._writeMode(mode)
         return {'mode': mode, 'warnings': snapshot['warnings']}
+
+    @APIExport()
+    def saveSetupModeFromState(
+        self, name, stateByComponent, *, includedComponents=None,
+        description=None, shortcut=None,
+    ):
+        """Save an already-captured/merged setup-mode state without hardware I/O."""
+        modeName = self._validateModeName(name)
+        stateByComponent = stateByComponent or {}
+        if includedComponents is None:
+            includedComponents = list(stateByComponent.keys())
+        else:
+            includedComponents = list(includedComponents)
+
+        now = self._nowIso()
+        createdAt = now
+        existingMode = None
+        try:
+            existingMode = self._loadModeByName(modeName)
+            createdAt = existingMode.get('createdAt', now)
+        except FileNotFoundError:
+            pass
+
+        if description is None and existingMode is not None:
+            description = existingMode.get('description', '')
+        if shortcut is None and existingMode is not None:
+            shortcut = existingMode.get('shortcut')
+
+        savedState = {}
+        savedComponents = []
+        for componentName in includedComponents:
+            if componentName not in stateByComponent:
+                continue
+            componentState = deepcopy(stateByComponent[componentName])
+            self._assertJSONSerializable(componentState, componentName)
+            savedState[componentName] = componentState
+            savedComponents.append(componentName)
+
+        mode = {
+            'schemaVersion': self.schemaVersion,
+            'name': modeName,
+            'description': description or '',
+            'shortcut': self._normalizeShortcut(shortcut),
+            'createdAt': createdAt,
+            'updatedAt': now,
+            'includedComponents': savedComponents,
+            'state': savedState,
+        }
+        self._writeMode(mode)
+        return {'mode': mode, 'warnings': []}
 
     @APIExport()
     def updateSetupModeMetadata(self, name, description=None, shortcut=None):
@@ -493,54 +586,66 @@ class SetupModeController:
 
         return hazards
 
-    def diffModeComponents(self, oldStateByComponent, newStateByComponent):
-        """Compute per-component textual diffs between two mode states.
-
-        Args:
-            oldStateByComponent: dict mapping component names to old state dicts.
-            newStateByComponent: dict mapping component names to new state dicts.
-
-        Returns:
-            dict: {componentName: list[str]} where each list contains changed lines.
-        """
-        registry = getWidgetStatePersistence()
+    def diffModeComponentsStructured(self, oldStateByComponent, newStateByComponent):
+        """Return ordered component-owned Update previews."""
+        modeAwareControllers = self._getModeAwareControllers()
+        oldStateByComponent = oldStateByComponent or {}
+        newStateByComponent = newStateByComponent or {}
+        orderedNames = list(oldStateByComponent.keys())
+        orderedNames.extend(
+            name for name in newStateByComponent.keys() if name not in oldStateByComponent
+        )
         diffs = {}
-
-        allComponents = set(oldStateByComponent.keys()) | set(newStateByComponent.keys())
-
-        for componentName in allComponents:
+        for componentName in orderedNames:
             oldState = oldStateByComponent.get(componentName)
             newState = newStateByComponent.get(componentName)
-
-            if oldState == newState:
+            controller = modeAwareControllers.get(componentName)
+            if controller is None:
+                diffs[componentName] = {
+                    'changed': oldState != newState,
+                    'lines': ['(component not registered, cannot diff)'],
+                    'sections': [],
+                    'notice': None,
+                }
                 continue
-
-            if registry is None or not registry.isRegistered(componentName):
-                # Fallback for unregistered components
-                diffs[componentName] = ["(component not registered, cannot diff)"]
-                continue
-
             try:
-                oldLines = set(registry.describeComponentState(componentName, oldState)) if oldState else set()
-                newLines = set(registry.describeComponentState(componentName, newState)) if newState else set()
-
-                removed = oldLines - newLines
-                added = newLines - oldLines
-
-                changes = []
-                for line in sorted(removed):
-                    changes.append(f"- {line}")
-                for line in sorted(added):
-                    changes.append(f"+ {line}")
-
-                if changes:
-                    diffs[componentName] = changes
+                diffs[componentName] = controller.describeSetupModeUpdate(
+                    oldState, newState
+                )
             except Exception as e:
-                self._logger.error(f'Failed to diff component "{componentName}": {e}')
+                self._logger.error(
+                    f'Failed to diff component "{componentName}": {e}'
+                )
                 self._logger.error(traceback.format_exc())
-                diffs[componentName] = [f"(error diffing: {e})"]
-
+                diffs[componentName] = {
+                    'changed': oldState != newState,
+                    'lines': [f'(error diffing: {e})'],
+                    'sections': [],
+                    'notice': None,
+                }
         return diffs
+
+    def diffModeComponents(self, oldStateByComponent, newStateByComponent):
+        """Compatibility textual diff API backed by the structured contract."""
+        structured = self.diffModeComponentsStructured(
+            oldStateByComponent, newStateByComponent
+        )
+        return {
+            componentName: list(diff.get('lines') or [])
+            for componentName, diff in structured.items()
+            if diff.get('changed') and diff.get('lines')
+        }
+
+    def mergeSetupModeComponentState(
+        self, componentName, oldState, candidateState, selectedParts=None
+    ):
+        """Delegate partial Update merging to the owning component."""
+        controller = self._getModeAwareControllers().get(componentName)
+        if controller is None:
+            return candidateState
+        return controller.mergeSetupModeState(
+            oldState, candidateState, selectedParts=selectedParts
+        )
 
     def _getModeAwareControllers(self):
         """Discover the controllers that support setup modes.
@@ -562,18 +667,10 @@ class SetupModeController:
 
         return modeAwareControllers
 
-    def _snapshotComponents(
-        self, componentNames, modeAwareControllers, *, captureOptions=None,
-        previousStateByComponent=None,
-    ):
+    def _snapshotRuntimeComponents(self, componentNames, modeAwareControllers):
         warnings = []
         includedComponents = []
         state = {}
-        captureOptions = captureOptions or {}
-        previousStateByComponent = previousStateByComponent or {}
-
-        # Use unified registry for canonical runtime snapshot, then let the
-        # component adapt that full state to named setup-mode semantics.
         registry = getWidgetStatePersistence()
 
         for componentName in componentNames:
@@ -581,33 +678,22 @@ class SetupModeController:
             if controller is None:
                 warnings.append(f'Setup mode component "{componentName}" is not available.')
                 continue
-
             try:
-                # Snapshot via unified registry
                 if registry is not None and registry.isRegistered(componentName):
                     componentState = registry.snapshotComponent(componentName)
                 else:
                     componentState = None
-                
                 if componentState is None:
                     warnings.append(f'Failed to snapshot "{componentName}"')
                     continue
-
-                componentState = controller.prepareSetupModeState(
-                    componentState,
-                    captureOptions=captureOptions.get(componentName),
-                    previousState=previousStateByComponent.get(componentName),
-                )
-
-                # Registry already asserts the canonical snapshot; setup-mode
-                # adaptation is component-owned, so validate the adapted payload too.
                 self._assertJSONSerializable(componentState, componentName)
             except Exception as e:
-                self._logger.error(f'Failed to snapshot setup mode component: {componentName}')
+                self._logger.error(
+                    f'Failed to snapshot setup mode component: {componentName}'
+                )
                 self._logger.error(traceback.format_exc())
                 warnings.append(f'Failed to snapshot "{componentName}": {e}')
                 continue
-
             state[componentName] = componentState
             includedComponents.append(componentName)
 
@@ -616,6 +702,61 @@ class SetupModeController:
             'state': state,
             'warnings': warnings,
         }
+
+    def _prepareRuntimeSnapshot(
+        self, runtimeSnapshot, modeAwareControllers, *, captureOptions=None,
+        previousStateByComponent=None,
+    ):
+        captureOptions = captureOptions or {}
+        previousStateByComponent = previousStateByComponent or {}
+        runtimeSnapshot = runtimeSnapshot or {}
+        warnings = list(runtimeSnapshot.get('warnings') or [])
+        state = {}
+        includedComponents = []
+
+        for componentName in runtimeSnapshot.get('includedComponents') or []:
+            controller = modeAwareControllers.get(componentName)
+            if controller is None:
+                warnings.append(f'Setup mode component "{componentName}" is not available.')
+                continue
+            if componentName not in (runtimeSnapshot.get('state') or {}):
+                continue
+            try:
+                componentState = controller.prepareSetupModeState(
+                    deepcopy(runtimeSnapshot['state'][componentName]),
+                    captureOptions=captureOptions.get(componentName),
+                    previousState=previousStateByComponent.get(componentName),
+                )
+                self._assertJSONSerializable(componentState, componentName)
+            except Exception as e:
+                self._logger.error(
+                    f'Failed to prepare setup mode component: {componentName}'
+                )
+                self._logger.error(traceback.format_exc())
+                warnings.append(f'Failed to prepare "{componentName}": {e}')
+                continue
+            state[componentName] = componentState
+            includedComponents.append(componentName)
+
+        return {
+            'includedComponents': includedComponents,
+            'state': state,
+            'warnings': warnings,
+        }
+
+    def _snapshotComponents(
+        self, componentNames, modeAwareControllers, *, captureOptions=None,
+        previousStateByComponent=None,
+    ):
+        runtimeSnapshot = self._snapshotRuntimeComponents(
+            componentNames, modeAwareControllers
+        )
+        return self._prepareRuntimeSnapshot(
+            runtimeSnapshot,
+            modeAwareControllers,
+            captureOptions=captureOptions,
+            previousStateByComponent=previousStateByComponent,
+        )
 
     def _normalizeComponentNames(self, componentNames, modeAwareControllers):
         if componentNames is None:

@@ -253,6 +253,56 @@ class StatefulComponentMixin:
         """
         return fullState
 
+    def getSetupModeUpdateCaptureOptions(self, previousState: dict | None = None):
+        """Return component-owned capture options for the Update workflow.
+
+        By default Update uses the same options as Save. Components whose
+        capture semantics depend on the *current* configuration (notably Laser)
+        can override this without teaching the generic setup-mode layer about
+        their state schema.
+        """
+        return self.getSetupModeCaptureOptions(previousState)
+
+    def describeSetupModeUpdate(
+        self, oldState: dict | None, candidateState: dict | None
+    ) -> dict:
+        """Return an ordered, optionally-sectioned Update preview.
+
+        The default contract is deliberately flat. Components may override it
+        to expose meaningful subsections while the setup-mode controller stays
+        schema-agnostic.
+        """
+        oldLines = list(self.describeComponentState(oldState or {})) if oldState else []
+        newLines = (
+            list(self.describeComponentState(candidateState or {}))
+            if candidateState is not None else []
+        )
+
+        removed = [line for line in oldLines if line not in newLines]
+        added = [line for line in newLines if line not in oldLines]
+        lines = [*(f"- {line}" for line in removed), *(f"+ {line}" for line in added)]
+        return {
+            'changed': oldState != candidateState,
+            'lines': lines,
+            'sections': [],
+            'notice': None,
+        }
+
+    def mergeSetupModeState(
+        self,
+        oldState: dict | None,
+        candidateState: dict,
+        *,
+        selectedParts=None,
+    ) -> dict:
+        """Merge an Update candidate with an existing saved payload.
+
+        Generic setup-mode components are indivisible: selecting the component
+        replaces it with the candidate. Components with meaningful partial
+        state may override this hook.
+        """
+        return candidateState
+
 
 class LiveUpdatedController(ImConWidgetController):
     """ Superclass for those controllers that will update the widgets with an

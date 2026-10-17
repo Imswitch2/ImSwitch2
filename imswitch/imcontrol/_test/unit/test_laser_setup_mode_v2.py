@@ -114,7 +114,7 @@ def _controller(power_mode=LaserPowerMode.SEPARATED):
     return controller
 
 
-def _full_state(*, enabled=False, p405=1.0, p488=2.0):
+def _full_state(*, enabled=False, p405=1.0, p488=2.0, scan_powers=None):
     return {
         'lasers': {
             '405': {'enabled': enabled, 'value': p405, 'isBinary': False, 'valueUnits': 'mW'},
@@ -122,7 +122,9 @@ def _full_state(*, enabled=False, p405=1.0, p488=2.0):
         },
         'laserOrder': ['405', '488'],
         'modulation': {},
-        'scanPowers': {},
+        # Canonical runtime snapshots carry explicit Scan overrides. 405 has
+        # none and therefore follows its captured Live value.
+        'scanPowers': {'488': 20.0} if scan_powers is None else dict(scan_powers),
     }
 
 
@@ -456,3 +458,88 @@ def test_scan_only_cross_mode_application_has_no_high_power_hazard():
     )
 
     assert hazards == []
+
+
+def test_update_live_only_preserves_old_scan_payload_exactly():
+    controller = _controller(LaserPowerMode.SEPARATED)
+    old = _separated_state(live=True, scan=True)
+    old['scan']['futureField'] = {'keep': True}
+    candidate = controller.prepareSetupModeState(
+        _full_state(p405=3.0, p488=4.0, scan_powers={'405': 30.0, '488': 40.0}),
+        captureOptions=controller.getSetupModeUpdateCaptureOptions(old),
+        previousState=old,
+    )
+
+    merged = controller.mergeSetupModeState(old, candidate, selectedParts=['live'])
+
+    assert merged['scan'] == old['scan']
+    assert merged['live'] != old['live']
+
+
+def test_update_scan_only_preserves_old_live_payload_exactly():
+    controller = _controller(LaserPowerMode.SEPARATED)
+    old = _separated_state(live=True, scan=True)
+    old['live']['futureField'] = {'keep': True}
+    candidate = controller.prepareSetupModeState(
+        _full_state(p405=3.0, p488=4.0, scan_powers={'405': 30.0, '488': 40.0}),
+        captureOptions=controller.getSetupModeUpdateCaptureOptions(old),
+        previousState=old,
+    )
+
+    merged = controller.mergeSetupModeState(old, candidate, selectedParts=['scan'])
+
+    assert merged['live'] == old['live']
+    assert merged['scan'] != old['scan']
+
+
+def test_coupled_update_options_remain_visually_flat():
+    controller = _controller(LaserPowerMode.COUPLED)
+    options = controller.getSetupModeUpdateCaptureOptions(None)
+
+    assert options['powerMode'] == 'coupled'
+    assert len(options['sections']) == 1
+    assert options['sections'][0]['id'] == 'coupled'
+    assert options['sections'][0]['label'] is None
+    assert options['sections'][0]['checkable'] is False
+
+
+def test_changed_power_mode_update_uses_current_separated_semantics():
+    controller = _controller(LaserPowerMode.SEPARATED)
+    old = {
+        'laserSetupModeStateVersion': 2,
+        'capturedPowerMode': 'coupled',
+        'laserOrder': ['405', '488'],
+        'coupled': {
+            'powerBinding': {
+                'kind': 'preset',
+                'presetName': '3D',
+                'fallbackPowers': {'405': 10.0, '488': 20.0},
+            },
+            'lasers': {},
+            'modulation': {},
+        },
+    }
+
+    options = controller.getSetupModeUpdateCaptureOptions(old)
+    scan = next(section for section in options['sections'] if section['id'] == 'scan')
+
+    assert options['powerMode'] == 'separated'
+    assert options['notice']
+    assert scan['bindingKind'] == 'preset'
+    assert scan['presetName'] == '3D'
+    assert scan['fallbackPowers'] == {'405': 10.0, '488': 20.0}
+
+
+def test_missing_followed_preset_keeps_existing_fallback_during_update():
+    controller = _controller(LaserPowerMode.SEPARATED)
+    options = {
+        'bindingKind': 'preset',
+        'presetName': 'deleted',
+        'fallbackPowers': {'405': 10.0, '488': 20.0},
+    }
+
+    binding = controller._makeSetupModePowerBinding(
+        options, {'405': 99.0, '488': 99.0}, LaserPowerContext.SCAN
+    )
+
+    assert binding['fallbackPowers'] == {'405': 10.0, '488': 20.0}

@@ -521,6 +521,7 @@ class SetupModesWidget(Widget):
                         'included': included,
                         'bindingKind': bindingKind,
                         'presetName': presetName,
+                        'fallbackPowers': sectionMeta.get('fallbackPowers') or {},
                     })
                 if validate and metadata.get('powerMode') == 'separated' and not anyIncluded:
                     QtWidgets.QMessageBox.warning(
@@ -571,32 +572,285 @@ class SetupModesWidget(Widget):
         }
 
     def showUpdateModeDialog(self, modeName, summaries, warnings):
+        """Show a structured, selective setup-mode Update dialog.
+
+        Returns ``None`` on cancel or a dict containing selected components,
+        component subsection selections, and component capture options.
+        """
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Update setup mode")
+        dialog.resize(680, 520)
 
         layout = QtWidgets.QVBoxLayout(dialog)
-        layout.addWidget(QtWidgets.QLabel(f'Update "{modeName}" with current hardware state?'))
+        intro = QtWidgets.QLabel(
+            f'Choose what to update in "{modeName}". Unchecked state is kept unchanged.'
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
 
-        summaryList = QtWidgets.QListWidget()
-        summaryList.setMinimumWidth(420)
-        summaryList.setMaximumHeight(220)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QtWidgets.QWidget()
+        contentLayout = QtWidgets.QVBoxLayout(content)
+        contentLayout.setContentsMargins(6, 6, 6, 6)
+        contentLayout.setSpacing(8)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+
+        componentChecks = {}
+        partChecks = {}
+        captureControls = {}
+
+        def addDiffLines(parentLayout, lines, changed):
+            if not lines:
+                text = (
+                    "(state changed; no detailed difference available)"
+                    if changed else "(no changes)"
+                )
+                label = QtWidgets.QLabel(text)
+                label.setEnabled(False)
+                parentLayout.addWidget(label)
+                return
+            for line in lines:
+                label = QtWidgets.QLabel(str(line))
+                label.setWordWrap(True)
+                if not changed:
+                    label.setEnabled(False)
+                parentLayout.addWidget(label)
+
         for summary in summaries:
-            summaryList.addItem(summary)
-        layout.addWidget(summaryList)
+            componentName = summary.get('name')
+            if not componentName:
+                continue
+            available = bool(summary.get('available', True))
+            diff = summary.get('diff') or {}
+            options = summary.get('captureOptions') or {}
+
+            frame = QtWidgets.QFrame()
+            frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+            frameLayout = QtWidgets.QVBoxLayout(frame)
+            frameLayout.setContentsMargins(8, 6, 8, 6)
+            frameLayout.setSpacing(4)
+
+            check = QtWidgets.QCheckBox(summary.get('label') or componentName)
+            check.setChecked(bool(summary.get('selected', True)) and available)
+            check.setEnabled(available)
+            font = check.font()
+            font.setBold(True)
+            check.setFont(font)
+            componentChecks[componentName] = check
+            frameLayout.addWidget(check)
+
+            body = QtWidgets.QWidget()
+            bodyLayout = QtWidgets.QVBoxLayout(body)
+            bodyLayout.setContentsMargins(22, 0, 0, 2)
+            bodyLayout.setSpacing(3)
+            body.setEnabled(check.isChecked() and available)
+            check.toggled.connect(lambda checked, body=body: body.setEnabled(checked))
+
+            notice = diff.get('notice') or options.get('notice')
+            if notice:
+                noticeLabel = QtWidgets.QLabel(str(notice))
+                noticeLabel.setWordWrap(True)
+                bodyLayout.addWidget(noticeLabel)
+
+            if options.get('kind') == 'power_bindings':
+                powerMode = options.get('powerMode')
+                sectionDiffs = {
+                    section.get('id'): section
+                    for section in diff.get('sections') or []
+                    if isinstance(section, dict) and section.get('id')
+                }
+                sectionControls = {}
+                partChecks[componentName] = {}
+
+                for section in options.get('sections') or []:
+                    sectionId = section.get('id')
+                    if not sectionId:
+                        continue
+                    separated = powerMode == 'separated'
+                    sectionCheck = None
+                    sectionContainer = QtWidgets.QWidget()
+                    sectionLayout = QtWidgets.QVBoxLayout(sectionContainer)
+                    sectionLayout.setContentsMargins(0, 0, 0, 3)
+                    sectionLayout.setSpacing(2)
+
+                    if separated:
+                        sectionCheck = QtWidgets.QCheckBox(section.get('label') or sectionId)
+                        sectionCheck.setChecked(bool(section.get('updateSelected', True)))
+                        sectionLayout.addWidget(sectionCheck)
+                        partChecks[componentName][sectionId] = sectionCheck
+
+                    sectionDiff = sectionDiffs.get(sectionId) or {}
+                    diffHolder = QtWidgets.QWidget()
+                    diffLayout = QtWidgets.QVBoxLayout(diffHolder)
+                    diffLayout.setContentsMargins(18 if separated else 0, 0, 0, 0)
+                    diffLayout.setSpacing(1)
+                    addDiffLines(
+                        diffLayout,
+                        sectionDiff.get('lines') if separated else diff.get('lines'),
+                        bool(sectionDiff.get('changed') if separated else diff.get('changed')),
+                    )
+                    sectionLayout.addWidget(diffHolder)
+
+                    sourceRow = QtWidgets.QWidget()
+                    sourceLayout = QtWidgets.QHBoxLayout(sourceRow)
+                    sourceLayout.setContentsMargins(18 if separated else 0, 0, 0, 0)
+                    sourceLayout.setSpacing(5)
+                    sourceLayout.addWidget(QtWidgets.QLabel(
+                        'Source:' if separated else 'Power source:'
+                    ))
+                    sourceCombo = QtWidgets.QComboBox()
+                    sourceCombo.addItem('Snapshot current powers', 'snapshot')
+                    sourceCombo.addItem('Follow preset', 'preset')
+                    requestedKind = section.get('bindingKind', 'snapshot')
+                    sourceIndex = sourceCombo.findData(requestedKind)
+                    sourceCombo.setCurrentIndex(max(0, sourceIndex))
+                    sourceLayout.addWidget(sourceCombo)
+
+                    presetCombo = QtWidgets.QComboBox()
+                    presetCombo.addItem('', None)
+                    for name in section.get('presetNames') or []:
+                        presetCombo.addItem(str(name), str(name))
+                    requestedPreset = section.get('presetName')
+                    if requestedPreset:
+                        presetIndex = presetCombo.findData(requestedPreset)
+                        if presetIndex < 0:
+                            presetCombo.addItem(str(requestedPreset), str(requestedPreset))
+                            presetIndex = presetCombo.count() - 1
+                        presetCombo.setCurrentIndex(presetIndex)
+                    sourceLayout.addWidget(presetCombo, 1)
+                    sectionLayout.addWidget(sourceRow)
+
+                    def updateSourceState(
+                        _value=None, *, source=sourceCombo, preset=presetCombo,
+                        row=sourceRow, sectionCheck=sectionCheck
+                    ):
+                        selected = sectionCheck is None or sectionCheck.isChecked()
+                        row.setEnabled(selected)
+                        preset.setVisible(source.currentData() == 'preset')
+
+                    sourceCombo.currentIndexChanged.connect(updateSourceState)
+                    if sectionCheck is not None:
+                        sectionCheck.toggled.connect(updateSourceState)
+                    updateSourceState()
+
+                    sectionControls[sectionId] = {
+                        'check': sectionCheck,
+                        'source': sourceCombo,
+                        'preset': presetCombo,
+                    }
+                    bodyLayout.addWidget(sectionContainer)
+
+                captureControls[componentName] = {
+                    'metadata': options,
+                    'sections': sectionControls,
+                }
+            else:
+                addDiffLines(
+                    bodyLayout, diff.get('lines') or [], bool(diff.get('changed'))
+                )
+
+            frameLayout.addWidget(body)
+            contentLayout.addWidget(frame)
+
+        contentLayout.addStretch(1)
 
         if warnings:
-            warningLabel = QtWidgets.QLabel("Snapshot warnings:\n" + "\n".join(warnings))
+            warningLabel = QtWidgets.QLabel(
+                "Snapshot warnings:\n" + "\n".join(str(w) for w in warnings)
+            )
             warningLabel.setWordWrap(True)
             layout.addWidget(warningLabel)
 
         buttonBox = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
         )
+        saveButton = buttonBox.button(QtWidgets.QDialogButtonBox.Save)
+        if saveButton is not None:
+            saveButton.setText("Update selected")
         layout.addWidget(buttonBox)
-        buttonBox.accepted.connect(dialog.accept)
+
+        def collectResult(validate=False):
+            selectedComponents = [
+                name for name, check in componentChecks.items() if check.isChecked()
+            ]
+            if validate and not selectedComponents:
+                QtWidgets.QMessageBox.warning(
+                    dialog, "Update setup mode", "Select at least one component to update."
+                )
+                return None
+
+            selectedParts = {}
+            captureOptions = {}
+            for componentName, controls in captureControls.items():
+                if componentName not in selectedComponents:
+                    continue
+                metadata = controls['metadata']
+                sections = []
+                selectedSectionIds = []
+                for sectionMeta in metadata.get('sections') or []:
+                    sectionId = sectionMeta.get('id')
+                    control = controls['sections'].get(sectionId)
+                    if control is None:
+                        continue
+                    selected = control['check'] is None or control['check'].isChecked()
+                    if selected:
+                        selectedSectionIds.append(sectionId)
+                    bindingKind = control['source'].currentData()
+                    presetName = control['preset'].currentData()
+                    if validate and selected and bindingKind == 'preset' and not presetName:
+                        QtWidgets.QMessageBox.warning(
+                            dialog, "Update setup mode",
+                            f'Select a preset for {componentName}'
+                            + (f' / {sectionMeta.get("label")}' if sectionMeta.get('label') else '')
+                            + '.'
+                        )
+                        return None
+                    sections.append({
+                        'id': sectionId,
+                        # Update candidates contain the current subsection; the
+                        # merge hook decides whether an unchecked subsection is
+                        # kept from the old payload.
+                        'included': True,
+                        'bindingKind': bindingKind,
+                        'presetName': presetName,
+                        'fallbackPowers': sectionMeta.get('fallbackPowers') or {},
+                    })
+
+                if metadata.get('powerMode') == 'separated':
+                    if validate and not selectedSectionIds:
+                        QtWidgets.QMessageBox.warning(
+                            dialog, "Update setup mode",
+                            f'Select Live, Scan, or both for {componentName}, '
+                            'or uncheck this component.'
+                        )
+                        return None
+                    selectedParts[componentName] = selectedSectionIds
+
+                captureOptions[componentName] = {
+                    'kind': metadata.get('kind'),
+                    'powerMode': metadata.get('powerMode'),
+                    'sections': sections,
+                }
+
+            return {
+                'components': selectedComponents,
+                'selectedParts': selectedParts,
+                'captureOptions': captureOptions,
+            }
+
+        def acceptIfValid():
+            if collectResult(validate=True) is None:
+                return
+            dialog.accept()
+
+        buttonBox.accepted.connect(acceptIfValid)
         buttonBox.rejected.connect(dialog.reject)
 
-        return self._execDialog(dialog) == QtWidgets.QDialog.Accepted
+        if self._execDialog(dialog) != QtWidgets.QDialog.Accepted:
+            return None
+        return collectResult(validate=False)
 
     def showShortcutDialog(self, modeName, currentShortcut):
         dialog = QtWidgets.QDialog(self)

@@ -179,7 +179,36 @@ def load_setup_mode_module(monkeypatch):
         SETUP_MODE_APPLY = "setup_mode_apply"
 
     class StatefulComponentMixin:
-        pass
+        def getSetupModeCaptureOptions(self, previousState=None):
+            return None
+
+        def getSetupModeUpdateCaptureOptions(self, previousState=None):
+            return self.getSetupModeCaptureOptions(previousState)
+
+        def prepareSetupModeState(
+            self, fullState, *, captureOptions=None, previousState=None
+        ):
+            return fullState
+
+        def describeSetupModeUpdate(self, oldState, candidateState):
+            oldLines = self.describeComponentState(oldState or {}) if oldState else []
+            newLines = (
+                self.describeComponentState(candidateState or {})
+                if candidateState is not None else []
+            )
+            lines = [f'- {line}' for line in oldLines if line not in newLines]
+            lines += [f'+ {line}' for line in newLines if line not in oldLines]
+            return {
+                'changed': oldState != candidateState,
+                'lines': lines,
+                'sections': [],
+                'notice': None,
+            }
+
+        def mergeSetupModeState(
+            self, oldState, candidateState, *, selectedParts=None
+        ):
+            return candidateState
 
     class SetupModeApplyPriority:
         DETECTOR_SETTINGS = 100
@@ -617,3 +646,71 @@ def test_apply_setup_mode_records_warning_components_and_does_not_mark_active(tm
     assert outcome.warningComponents == ["FlipMirror"]
     assert any('FlipMirror: Failed to move flip mirror' in w for w in outcome.warnings)
     assert setup_modes.getLastAppliedModeName() is None
+
+
+def test_update_runtime_snapshot_is_reused_without_second_registry_read(tmp_path, monkeypatch):
+    calls = []
+    component = DummySetupModeController("Laser", {"power": 10}, calls)
+    registry = DummyWidgetStatePersistence()
+    snapshot_calls = {"count": 0}
+    original_snapshot = registry.snapshotComponent
+
+    def counting_snapshot(name):
+        snapshot_calls["count"] += 1
+        return original_snapshot(name)
+
+    registry.snapshotComponent = counting_snapshot
+    setup_modes = make_controller(
+        tmp_path, monkeypatch, {"Laser": component}, state_registry=registry
+    )
+
+    runtime = setup_modes.snapshotSetupModeRuntimeState(["Laser"])
+    first = setup_modes.prepareSetupModeStateSnapshot(runtime)
+    second = setup_modes.prepareSetupModeStateSnapshot(runtime)
+
+    assert snapshot_calls["count"] == 1
+    assert first["state"] == second["state"] == {"Laser": {"power": 10}}
+
+
+def test_save_setup_mode_from_state_does_not_snapshot_hardware(tmp_path, monkeypatch):
+    calls = []
+    component = DummySetupModeController("Laser", {"power": 10}, calls)
+    registry = DummyWidgetStatePersistence()
+    snapshot_calls = {"count": 0}
+    original_snapshot = registry.snapshotComponent
+
+    def counting_snapshot(name):
+        snapshot_calls["count"] += 1
+        return original_snapshot(name)
+
+    registry.snapshotComponent = counting_snapshot
+    setup_modes = make_controller(
+        tmp_path, monkeypatch, {"Laser": component}, state_registry=registry
+    )
+    setup_modes.saveSetupMode("mode", componentNames=["Laser"], description="keep", shortcut="F3")
+    assert snapshot_calls["count"] == 1
+
+    result = setup_modes.saveSetupModeFromState(
+        "mode", {"Laser": {"power": 25}}, includedComponents=["Laser"]
+    )
+
+    assert snapshot_calls["count"] == 1
+    assert result["mode"]["state"]["Laser"] == {"power": 25}
+    assert result["mode"]["description"] == "keep"
+    assert result["mode"]["shortcut"] == "F3"
+
+
+def test_structured_diff_preserves_component_description_order(tmp_path, monkeypatch):
+    calls = []
+    component = DummySetupModeController("Laser", {"power": 10}, calls)
+    setup_modes = make_controller(tmp_path, monkeypatch, {"Laser": component})
+
+    diff = setup_modes.diffModeComponentsStructured(
+        {"Laser": {"power": 10}}, {"Laser": {"power": 20}}
+    )["Laser"]
+
+    assert diff["changed"] is True
+    assert diff["lines"] == [
+        "- Laser: {'power': 10}",
+        "+ Laser: {'power': 20}",
+    ]

@@ -219,9 +219,8 @@ class SetupModesController(ImConWidgetController):
         if not savedMode:
             return
 
-        componentNames = savedMode.get("includedComponents") or list(
-            (savedMode.get("state") or {}).keys()
-        )
+        savedState = savedMode.get("state") or {}
+        componentNames = savedMode.get("includedComponents") or list(savedState.keys())
         if not componentNames:
             self._widget.showWarnings(
                 "Update setup mode",
@@ -229,40 +228,92 @@ class SetupModesController(ImConWidgetController):
             )
             return
 
+        # Capture canonical runtime state exactly once. Everything shown in the
+        # dialog and eventually written is derived from this immutable snapshot.
         try:
-            snapshot = self._setupModeController.snapshotSetupModeState(
-                componentNames,
-                previousStateByComponent=savedMode.get("state") or {},
+            runtimeSnapshot = self._setupModeController.snapshotSetupModeRuntimeState(
+                componentNames
+            )
+            captureOptions = {
+                componentName: self._setupModeController.getSetupModeUpdateCaptureOptions(
+                    componentName, savedState.get(componentName)
+                )
+                for componentName in componentNames
+            }
+            candidateSnapshot = self._setupModeController.prepareSetupModeStateSnapshot(
+                runtimeSnapshot,
+                captureOptions=captureOptions,
+                previousStateByComponent=savedState,
             )
         except Exception as e:
             self._logger.error(f'Failed to snapshot setup mode update "{modeName}"')
             self._logger.error(traceback.format_exc())
-            self._widget.showError("Update setup mode", f"Could not snapshot current state: {e}")
+            self._widget.showError(
+                "Update setup mode", f"Could not snapshot current state: {e}"
+            )
             return
 
-        summaries = self._buildUpdateSummaries(savedMode, snapshot)
-        warnings = snapshot.get("warnings") or []
-        if not self._widget.showUpdateModeDialog(modeName, summaries, warnings):
+        summaries = self._buildUpdateSummaries(
+            savedMode, candidateSnapshot, captureOptions
+        )
+        warnings = candidateSnapshot.get("warnings") or []
+        result = self._widget.showUpdateModeDialog(modeName, summaries, warnings)
+        if result is None:
             return
+
+        selectedComponents = set(result.get('components') or [])
+        selectedParts = result.get('selectedParts') or {}
+        finalCaptureOptions = dict(captureOptions)
+        finalCaptureOptions.update(result.get('captureOptions') or {})
 
         try:
-            saveResult = self._setupModeController.saveSetupMode(
+            # Re-adapt the *same* canonical snapshot if the user changed a
+            # binding policy in the dialog. This performs no hardware I/O.
+            finalCandidate = self._setupModeController.prepareSetupModeStateSnapshot(
+                runtimeSnapshot,
+                captureOptions=finalCaptureOptions,
+                previousStateByComponent=savedState,
+            )
+            finalState = dict(savedState)
+            candidateState = finalCandidate.get('state') or {}
+            for componentName in componentNames:
+                if componentName not in selectedComponents:
+                    continue
+                if componentName not in candidateState:
+                    continue
+                finalState[componentName] = (
+                    self._setupModeController.mergeSetupModeComponentState(
+                        componentName,
+                        savedState.get(componentName),
+                        candidateState[componentName],
+                        selectedParts.get(componentName),
+                    )
+                )
+
+            saveResult = self._setupModeController.saveSetupModeFromState(
                 modeName,
-                componentNames=componentNames,
+                finalState,
+                includedComponents=componentNames,
                 description=None,
                 shortcut=None,
             )
         except Exception as e:
             self._logger.error(f'Failed to update setup mode "{modeName}"')
             self._logger.error(traceback.format_exc())
-            self._widget.showError("Update setup mode", f"Could not update setup mode: {e}")
+            self._widget.showError(
+                "Update setup mode", f"Could not update setup mode: {e}"
+            )
             return
 
         self._activeModeName = modeName
         self.refreshModes(modeName)
-        saveWarnings = saveResult.get("warnings") or []
+        saveWarnings = list(finalCandidate.get('warnings') or [])
+        saveWarnings.extend(saveResult.get('warnings') or [])
         if saveWarnings:
-            self._showWarnings("Setup mode updated with warnings", saveWarnings)
+            # Keep ordering while avoiding duplicate snapshot/preparation warnings.
+            self._showWarnings(
+                "Setup mode updated with warnings", list(dict.fromkeys(saveWarnings))
+            )
 
     def renameMode(self):
         modeName = self._widget.getSelectedModeName()
@@ -615,33 +666,38 @@ class SetupModesController(ImConWidgetController):
             summaries.pop()
         return summaries
 
-    def _buildUpdateSummaries(self, savedMode, snapshot):
-        """Build diff via diffModeComponents delegator."""
+    def _buildUpdateSummaries(self, savedMode, snapshot, captureOptions):
+        """Build structured per-component data for the selective Update dialog."""
         savedState = savedMode.get("state") or {}
         currentState = snapshot.get("state") or {}
         componentNames = (
             savedMode.get("includedComponents")
-            or snapshot.get("includedComponents")
-            or sorted(set(savedState.keys()) | set(currentState.keys()))
+            or list(savedState.keys())
         )
-
-        # Delegate to backend (registry's describeComponentState for diff)
-        diffs = self._setupModeController.diffModeComponents(savedState, currentState)
+        structuredDiff = self._setupModeController.diffModeComponentsStructured(
+            savedState, currentState
+        )
 
         summaries = []
         for componentName in componentNames:
-            label = self._componentLabel(componentName)
-
-            if componentName not in currentState:
-                summaries.append(f"{label}: unavailable in current setup")
-                continue
-
-            if componentName in diffs:
-                changes = diffs[componentName]
-                # Format the diff lines
-                changeText = "; ".join(changes)
-                summaries.append(f"{label}: {changeText}")
-
+            available = componentName in currentState
+            diff = structuredDiff.get(componentName) or {
+                'changed': False,
+                'lines': [],
+                'sections': [],
+                'notice': None,
+            }
+            if not available:
+                diff = dict(diff)
+                diff['notice'] = 'Unavailable in the current setup; saved state will be preserved.'
+            summaries.append({
+                'name': componentName,
+                'label': self._componentLabel(componentName),
+                'available': available,
+                'selected': available,
+                'diff': diff,
+                'captureOptions': captureOptions.get(componentName),
+            })
         return summaries
 
     def _componentLabel(self, componentName):
