@@ -3102,7 +3102,7 @@ class SectionEditorDialog(QDialog):
             )
             self._custom_empty_lbl.setTextFormat(Qt.RichText)
             self._custom_form.addRow(self._custom_empty_lbl)
-            known = {f["key"] for f in schema.get("fields", [])}
+            known = self._schema_keys()
             for k, v in (current or {}).items():
                 if k not in known:
                     self._add_custom_row(k, v)
@@ -3199,6 +3199,13 @@ class SectionEditorDialog(QDialog):
         self._result = out
         self.accept()
 
+    def _schema_keys(self) -> set:
+        """The keys the form itself edits: its fields and its nested
+        containers. ``_field_widgets`` is keyed by ``(section, key)``, so a
+        name is looked up here; a custom property may not take one."""
+        return ({f["key"] for f in self._schema.get("fields", [])}
+                | set(self._schema.get("nested", {})))
+
     def add_custom_field(self, key: str, value) -> str:
         """Add a custom key; returns an error message, or "" on success."""
         if not self._allow_custom:
@@ -3206,7 +3213,7 @@ class SectionEditorDialog(QDialog):
         key = key.strip()
         if not key:
             return "Key name is empty."
-        if key in self._field_widgets or key in self._custom_widgets:
+        if key in self._schema_keys() or key in self._custom_widgets:
             return f"'{key}' already exists in these settings."
         self._add_custom_row(key, value)
         self._tabs.setCurrentWidget(self._custom_tab)
