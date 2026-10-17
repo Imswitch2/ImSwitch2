@@ -373,7 +373,6 @@ POPULATORS = {
     "PositionerWidget": _populate_positioner,
     "ScanWidgetBase": _populate_scan,
     "ScanWidgetAdvanced": _populate_scan,
-    "ScanWidgetMoNaLISA": _populate_scan,
     "RecordingWidget": _populate_recording,
     "SettingsWidget": _populate_settings,
     "FocusLockWidget": _populate_focuslock,

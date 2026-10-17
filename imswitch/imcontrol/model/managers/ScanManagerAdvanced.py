@@ -11,7 +11,7 @@ class ScanManagerAdvanced(ScanManagerBase):
     Purpose:
       - makes it explicit in the config that this scan mode is used
       - exposes optional UI helpers (preview boundaries) cleanly
-      - keeps Base/MoNaLISA behavior via ScanManagerBase implementation
+      - keeps Base behavior via ScanManagerBase implementation
     """
 
     def __init__(self, *args, **kwargs):

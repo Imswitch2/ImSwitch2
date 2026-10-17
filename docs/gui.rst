@@ -787,29 +787,17 @@ pattern (``TTL_sequence``) of the old panel has no equivalent.
 Scripts can set the geometry with ``api.imcontrol.changeScanSize(...)``,
 ``changeScanCenterPos(...)`` and ``changed3StepDelayPar(...)``.
 
-MoNaLISA variant
-~~~~~~~~~~~~~~~~
+Retired MoNaLISA variant
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-``"scanWidgetType": "MoNaLISA"`` (``BetaScanDesigner`` with
-``BetaTTLCycleDesigner``, like ``Base``) keeps everything the ``Base`` panel has,
-including the Start/End pulse table and **Cont. Laser Pulses**, and adds:
-
-* A plot beside the pulse table showing one dwell period of the pulse
-  programme, each laser in the colour of its wavelength.
-* **Axial Scan**: ticking **XZ** and/or **YZ** makes a 2-D XY scan continue
-  with an XZ and/or a YZ section through one point of it.  A **Z** row appears
-  for the axial **Size**, **Step size** and **Center**, and **Center
-  localization** picks the point: *Manual* uses the pixel coordinates typed
-  under **Center Coordinates**; *Maxima* fits a Gaussian and *Minima* a donut
-  to the image in the Bead reconstruction tool and fills those coordinates in.
-  **Show** marks the point on that image.  If no centre is found, or none
-  arrives within 3 s, the axial sections are skipped.  The axial scan needs
-  positioners named ``X``, ``Y`` and ``Z``, and *Maxima* / *Minima* need the
-  ``BeadRec`` widget.
-
-.. image:: ./images/auto/ScanWidgetMoNaLISA.png
-   :align: center
-   :width: 432px
+``"scanWidgetType": "MoNaLISA"`` is gone: a setup that still names it fails to
+start with a message saying so.  Change it to ``"Base"``, which has the same
+designers (``BetaScanDesigner`` with ``BetaTTLCycleDesigner``), the Start/End
+pulse table in ms and **Cont. Laser Pulses**, or to ``"Advanced"`` (with
+``"AdvancedScanTTLCycleDesigner"``).  The old panel's *Axial Scan* option (an
+XZ and/or YZ section that followed a 2-D XY scan, through a bead centre found
+in the Bead reconstruction tool) has no replacement: run the axial scan as a
+scan of its own.  Saved widget states from a MoNaLISA-panel session still load.
 
 
 Advanced scanning: line steps

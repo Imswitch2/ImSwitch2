@@ -160,7 +160,6 @@ def test_known_scan_controllers_are_covered_by_the_audit():
         'SuperScanController',
         'ScanControllerBase',
         'ScanControllerAdvanced',
-        'ScanControllerMoNaLISA',
         'TriggerScopeRasterController',
         'TriggerScopeScanController',
         'TriggerScopePLSRController',

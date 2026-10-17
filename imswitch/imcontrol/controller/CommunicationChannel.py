@@ -4,7 +4,7 @@ import numpy as np
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import pythontools, APIExport, SharedAttributes
 from imswitch.imcommon.model import initLogger
-from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService
+from .WorkflowServices import ScanWorkflowService
 
 if TYPE_CHECKING:
     from .controllers._beadrec_scan_source import BeadRecScanSource
@@ -139,14 +139,6 @@ class CommunicationChannel(SignalInterface):
     sigClockWidefield = Signal()
     sigRunScanTriggerScopePLSRMulticolor = Signal()
 
-    # Bead-recognition and MoNaLISA scan helper events.
-    sigQueryCenterCoord = Signal(str)  # (search mode)
-    sigCenterCoordPipelineFinished = Signal(object)  # (center coordinates or None)
-    sigUpdateBeadRecCenter = Signal(int, int)  # (y, x) coordinates
-    sigShowBeadRecCenterCross = Signal(bool)  # (state)
-    sigAutoAxialToggled = Signal(bool)  # (state)
-    sigNewAxialListBuffer = Signal(list)  # e.g. ["XZ", "YZ"]
-
     # Scripting events.
     sigScriptExecutionFinished = Signal()
 
@@ -163,7 +155,6 @@ class CommunicationChannel(SignalInterface):
         self._activeScanSource = None
         self._focusLock = None
         self.scanWorkflow = ScanWorkflowService(self)
-        self.beadRecWorkflow = BeadRecWorkflowService(self)
         self.__main._moduleCommChannel.sigExecutionFinished.connect(self.executionFinished)
 
     def controllerRegistry(self) -> Mapping:
@@ -524,7 +515,7 @@ class CommunicationChannel(SignalInterface):
     def getNumLineSteps(self):
         """Return the number of linesteps from the scan controller. Returns 1
         if no scan controller is available or it does not expose the value
-        (e.g. MoNaLISA controllers without linestep support)."""
+        (e.g. a controller without linestep support)."""
         source = self._activeBeadRecScanSource()
         if source is not None:
             return source.getNumLineSteps()
@@ -566,9 +557,6 @@ class CommunicationChannel(SignalInterface):
         if getter is None:
             raise RuntimeError('No scan controller available to provide getNumScanPositions')
         return getter()
-
-    def getNextAxial(self):
-        return self._get_required_controller('Scan', 'scan').getNextAxial()
 
     def get_image(self, detectorName=None):
         return self._get_required_controller('View', 'view').get_image(detectorName)

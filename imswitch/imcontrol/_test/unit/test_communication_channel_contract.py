@@ -45,9 +45,8 @@ def test_communication_channel_signal_inventory_matches_snapshot():
 def test_communication_channel_exposes_scan_workflow_service():
     source = CHANNEL_PATH.read_text()
 
-    assert 'from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService' in source
+    assert 'from .WorkflowServices import ScanWorkflowService' in source
     assert 'self.scanWorkflow = ScanWorkflowService(self)' in source
-    assert 'self.beadRecWorkflow = BeadRecWorkflowService(self)' in source
     assert 'def run_scan(self, recalculate_signals: bool,' in (
         (ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'WorkflowServices.py').read_text()
     )

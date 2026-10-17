@@ -414,8 +414,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # See _armRepeatScan for why the re-arm is deferred.
         self._repeatPending = False
         # Run-level ownership deliberately outlives each NI-DAQ iteration. It
-        # spans repeat gaps, non-final sequence parts and MoNaLISA axial
-        # follow-ups, and is released exactly once with sigScanEnded.
+        # spans repeat gaps and non-final sequence parts
+        # and is released exactly once with sigScanEnded.
         self._scanRunToken = None
         self._scanRunStartingPublished = False
         self._scanStopRequested = False
@@ -985,9 +985,6 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self._logger.error(f'Could not open or parse scan file {filePath!r}:\n{traceback.format_exc()}')
             return None
 
-    def getNextAxial(self):
-        return None
-
     @staticmethod
     def _countRisingEdges(ttl):
         count = 0
@@ -1071,7 +1068,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 )
             return
         # A run retained between iterations -- repeat gap, non-final sequence
-        # part, MoNaLISA axial follow-up -- or a request still arming has no
+        # part -- or a request still arming has no
         # NI-DAQ completion left to end it, so terminalize it here.
         self.scanFailed()
 

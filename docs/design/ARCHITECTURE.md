@@ -88,7 +88,7 @@ AbstractBaseManager(ABC)  ←  ConcreteDeviceManager (per hardware)
 | `recordingManager` | `RecordingManager` | Yes |
 | `slmsManager` | `SLMsManager` | Yes |
 | `standManager` | `StandManager` | Conditional (if `setupInfo.microscopeStand`) |
-| `scanManager` | `ScanManagerBase/MoNaLISA/Advanced` | Conditional (by `scan.scanWidgetType`) |
+| `scanManager` | `ScanManagerBase/Advanced` | Conditional (by `scan.scanWidgetType`) |
 
 Singleton "low-level" managers (NI-DAQ, RS232s, PulseGenerator) are injected into per-device managers via the `lowLevelManagers` keyword-argument dict. Per-device managers look up the dependency by key:
 
@@ -177,7 +177,7 @@ Continuous-motion support is added per-backend via `jog_start(axis, sign)` / `jo
 | `NidaqManager` | Direct NI-DAQ interface (`nidaqmx`) — scan signal output, counter/analog input |
 | `RecordingManager` | Data recording to HDF5/TIFF/Zarr (`h5py`, `tifffile`, `zarr`) |
 | `SLMManager` | Single SLM pattern generation (NumPy/PIL/SciPy) |
-| `ScanManagerBase/Advanced/MoNaLISA` | Scan waveform orchestration via `SignalDesignerFactory` |
+| `ScanManagerBase/Advanced` | Scan waveform orchestration via `SignalDesignerFactory` |
 
 ### Pulse Generator Subsystem
 
@@ -259,7 +259,7 @@ Loaded dynamically by `SignalDesignerFactory` using class name strings from JSON
 WidgetController (imcommon)
   └─ ImConWidgetController
        ├─ LiveUpdatedController (frame-driven: AlignAverage, AlignXY, FFT, Image, View)
-       └─ SuperScanController (scan-driven: ScanControllerBase/MoNaLISA/Advanced)
+       └─ SuperScanController (scan-driven: ScanControllerBase/Advanced)
 ```
 
 ### Controller → Manager Dependency Matrix
@@ -301,8 +301,6 @@ channel:
 
 - `scanWorkflow`: scan parameter requests, scan-start notifications,
   recording-triggered scan coordination, axis-center updates.
-- `beadRecWorkflow`: MoNaLISA/bead-recognition center-query and axial-list
-  coordination.
 - Read-only event groups such as `scanEvents`, `recordingEvents`,
   `eventTriggeredEvents`, and `beadRecEvents` provide domain aliases for the
   legacy `sigX` attributes.

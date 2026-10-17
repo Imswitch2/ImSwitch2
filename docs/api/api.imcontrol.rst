@@ -280,7 +280,7 @@ api.imcontrol
 
       Loads scanning parameters from the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base) in ``availableWidgets``.
 
    .. method:: loadSetupMode(name, componentNames=None)
 
@@ -376,7 +376,7 @@ api.imcontrol
 
       Saves the set scanning parameters to the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base) in ``availableWidgets``.
 
    .. method:: saveSetupMode(name, componentNames=None, description=None, shortcut=None)
 

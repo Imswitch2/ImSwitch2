@@ -330,7 +330,8 @@ Required if you want to use the ``Scan`` widget.
 Key fields:
 
 * ``scanWidgetType``: Widget variant — one of ``"Base"``,
-  ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.  ``"TriggerScope"``
+  ``"Advanced"`` or ``"TriggerScope"`` (the retired ``"PointScan"`` and
+  ``"MoNaLISA"`` stop the setup with a message naming the replacement).  ``"TriggerScope"``
   runs scans on the TriggerScope board (see `triggerScope`_) from the
   ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
@@ -355,7 +356,7 @@ Key fields:
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:
 
-* ``"Base"`` and ``"MoNaLISA"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
+* ``"Base"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
 * ``"Advanced"``: ``GalvoScanDesigner`` + ``AdvancedScanTTLCycleDesigner``
   (``galvo_apd_mock_scan_setup.json``)
 
@@ -1304,7 +1305,7 @@ See the bundled example configurations in
 
 Hardware-free scan setups (simulated NI-DAQ, see :doc:`mock-infrastructure`):
 
-* ``mock_scan_setup.json`` — mock camera, MoNaLISA scan, for the
+* ``mock_scan_setup.json`` — mock camera, Base scan panel, for the
   record-and-reconstruct loop
 * ``galvo_apd_mock_scan_setup.json`` — APD with an Advanced galvo scan
 * ``hamamatsu_mock_scan_setup.json`` — mock Hamamatsu camera triggered by a

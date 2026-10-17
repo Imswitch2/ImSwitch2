@@ -1,7 +1,7 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
     DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
-    ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
+    ScanManagerBase, ScanManagerTriggerScope, StandManager,
     RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
 from imswitch.imcontrol.model.SetupInfo import retiredScanWidgetTypeError
@@ -94,8 +94,6 @@ class MasterController:
                 raise retired
             if self.__setupInfo.scan.scanWidgetType == "Base":
                 self.scanManager = ScanManagerBase(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "MoNaLISA":
-                self.scanManager = ScanManagerMoNaLISA(self.__setupInfo)
             elif self.__setupInfo.scan.scanWidgetType == "Advanced":
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
             elif self.__setupInfo.scan.scanWidgetType == "TriggerScope":
@@ -104,7 +102,7 @@ class MasterController:
             else:
                 self.__logger.error(
                     'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the following:'
-                    ' ["Base", "MoNaLISA", "Advanced", "TriggerScope"].'
+                    ' ["Base", "Advanced", "TriggerScope"].'
                 )
                 return
 

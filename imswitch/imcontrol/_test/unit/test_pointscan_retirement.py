@@ -11,7 +11,7 @@ from imswitch.imcontrol.model.SetupInfo import retiredScanWidgetTypeError
 from imswitch.imcontrol.view.ImConMainView import ImConMainView
 
 
-@pytest.mark.parametrize('current', ['Base', 'Advanced', 'MoNaLISA', 'TriggerScope'])
+@pytest.mark.parametrize('current', ['Base', 'Advanced', 'TriggerScope'])
 def test_current_scan_widget_types_are_not_retired(current):
     assert retiredScanWidgetTypeError(current) is None
 

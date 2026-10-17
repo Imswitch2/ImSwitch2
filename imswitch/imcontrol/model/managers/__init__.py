@@ -10,7 +10,6 @@ from .RecordingManager import RecordingManager, RecMode, SaveMode, SaveFormat
 from .SLMManager import SLMManager
 from .SLMsManager import SLMsManager
 from .ScanManagerBase import ScanManagerBase
-from .ScanManagerMoNaLISA import ScanManagerMoNaLISA
 from .ScanManagerAdvanced import ScanManagerAdvanced
 from .ScanManagerTriggerScope import ScanManagerTriggerScope
 from .StandManager import StandManager
@@ -29,7 +28,6 @@ __all__ = [
     'SLMManager',
     'SLMsManager',
     'ScanManagerBase',
-    'ScanManagerMoNaLISA',
     'ScanManagerAdvanced',
     'ScanManagerTriggerScope',
     'StandManager',

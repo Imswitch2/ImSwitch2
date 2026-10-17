@@ -7,7 +7,7 @@ on a setup with a scan widget therefore ended in
 ``ERROR [ScanControllerBase] Scan failed`` for a scan that never ran.
 
 The idle branch still has a job: a run retained between iterations (repeat
-gap, non-final sequence part, MoNaLISA axial follow-up) has no NI-DAQ
+gap, non-final sequence part) has no NI-DAQ
 completion left to end it, so an abort there must still fail and release it.
 
 The controller is built through the real ``SuperScanController.__init__`` so

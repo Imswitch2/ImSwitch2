@@ -152,29 +152,25 @@ Advanced where Advanced has it.
 a setup still naming PointScan should fail with a message pointing at
 Advanced (add that in `MasterController`/`ImConMainController`).
 
-## WP-4 Retire the MoNaLISA scan widget
+## WP-4 Retire the MoNaLISA scan widget -- DONE (commit see git log, "Retire the MoNaLISA scan panel")
 
-Not the ImProcess MoNaLISA reconstruction — that stays (including
-`reconstructors/monalisa/legacy.py`, which is live). Only the imcontrol scan
-panel: `ScanControllerMoNaLISA.py`, `ScanWidgetMoNaLISA.py`,
-`ScanManagerMoNaLISA.py` (a duplicate of `ScanManagerBase`).
+Deleted `ScanControllerMoNaLISA`, `ScanWidgetMoNaLISA`, `ScanManagerMoNaLISA`
+and the screenshot; `scanWidgetType: "MoNaLISA"` now stops with an error
+pointing at `Base`/`Advanced` (`retiredScanWidgetTypeError`). Auto-axial XZ/YZ
+scans with bead-centre search are dropped. Also removed with it: the
+`CommunicationChannel` signals `sigQueryCenterCoord`,
+`sigCenterCoordPipelineFinished`, `sigUpdateBeadRecCenter`,
+`sigShowBeadRecCenterCross`, `sigAutoAxialToggled`, `sigNewAxialListBuffer`,
+`getNextAxial` (channel and `SuperScanController`), the whole
+`BeadRecWorkflowService`/`beadRecWorkflow`, BeadRec's `autoAxial` and
+centre-query/cross handlers and `BeadRecWidget.displayCenterCoord`. The two
+mock setups moved to `Base` (they use the Beta designers). Legacy
+`ScanControllerMoNaLISA` state-name aliases are kept.
 
-- **DECIDED (Lenny, 2026-10-17): drop** auto-axial XZ/YZ follow-up scans with
-  bead-centre search (`ScanControllerMoNaLISA.py:197-366`); the expert scan
-  covers it in principle. Also remove the plumbing that only it uses: BeadRec
-  `autoAxial`/`axialListBuffer`/`getNextAxial`, `WorkflowServices.py:~777-811`,
-  channel `sigAutoAxialToggled`/`sigNewAxialListBuffer`/`getNextAxial`.
-- *Cont. Laser Pulses* and TTL start/end in ms exist on Base, which stays.
-- Repoint `mock_scan_setup.json` and `mock_scan_monalisa_live.json` to
-  Advanced (or Base), update `_data/user_defaults_history.json`
-  (`tools/update_user_defaults_history.py`; `test_user_defaults_sync` checks
-  it; its `__comment__` also still cites the retired
-  `live-reconstruction-port.md`), and port the tests listed in the audit (`test_scan_run_ownership`,
-  `test_scan_design_refusal`, `test_scan_position_reference`,
-  `test_scan_component_state`, `test_scan_lifecycle`, ...).
-- Same alias/compat rule as WP-3.
-
-Do WP-3 before WP-4: they touch the same registries and tests.
+Left on purpose: `BeadRecController._isAxialImage`/`axial_name` on result
+records (still read from saved BeadRec state and covered by
+`test_beadrec_ome_save`), and `find_bead_center` in the bead-recognition model
+(tested, now without a caller).
 
 ## WP-5 CommunicationChannel, second pass
 

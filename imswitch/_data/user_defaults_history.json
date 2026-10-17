@@ -96,11 +96,13 @@
   ],
   "imcontrol_setups/mock_scan_monalisa_live.json": [
    "1b6365a2a9296eed5d1fe20e9dd29a67b5a5dea1e447e4f2c9610ef3d6832516",
+   "baf635ae465c30ed7d84e48a1ce7fc35ac2eb84895413cb5e0ca4b3ff2bfc6a2",
    "bd62a73d62cb636e38fd894959dd2cc391037b64cfef881c998b2b58eef45da8"
   ],
   "imcontrol_setups/mock_scan_setup.json": [
    "89d279b13fe6cde4beaf0f547194e111bfc9b97aadaa57553197f9256e9a7241",
-   "bdacbca888e84613129cfc5938e14f532f9dfe44f7df0a930501798ee249ff01"
+   "bdacbca888e84613129cfc5938e14f532f9dfe44f7df0a930501798ee249ff01",
+   "cb6a5bc987afd39a36e10b0c6d42c8b6d2fb8961764e0303fe851d8b101b88ce"
   ],
   "imcontrol_setups/monalisa_processor.json": [
    "a9eb39ca69fe6f15f1e47e9beb65613f863cd9dc17067b3eca806287223e8842",

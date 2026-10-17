@@ -249,43 +249,6 @@
     "args": []
   },
   {
-    "name": "sigQueryCenterCoord",
-    "args": [
-      "str"
-    ]
-  },
-  {
-    "name": "sigCenterCoordPipelineFinished",
-    "args": [
-      "object"
-    ]
-  },
-  {
-    "name": "sigUpdateBeadRecCenter",
-    "args": [
-      "int",
-      "int"
-    ]
-  },
-  {
-    "name": "sigShowBeadRecCenterCross",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigAutoAxialToggled",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigNewAxialListBuffer",
-    "args": [
-      "list"
-    ]
-  },
-  {
     "name": "sigScriptExecutionFinished",
     "args": []
   }

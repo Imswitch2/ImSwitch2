@@ -298,7 +298,7 @@ The unified registry MUST resolve legacy aliases to canonical names so that exis
 |----------------|-----------------------------------|----------------------|------------------------|----------------|
 | **Laser** | `LaserController` | `Laser` | `getWidgetState`/`setWidgetState` only | `LaserController.py` (register + setup-mode priority) |
 | **Settings** | `SettingsController` | `Settings` | `getWidgetState`/`setWidgetState` only | `SettingsController.py` (register + setup-mode priority) |
-| **Scan** | `ScanController` (from `ScanControllerBase`), `ScanControllerAdvanced`, `ScanControllerMoNaLISA`, `ScanControllerPointScan` | `Scan` | Both: `getWidgetState`/`setWidgetState` AND `getSetupModeState`/`applySetupModeState` (via `SuperScanController`) | `basecontrollers.py` (SuperScanController + setup-mode priority) |
+| **Scan** | `ScanController` (from `ScanControllerBase`), `ScanControllerAdvanced`, `ScanControllerMoNaLISA` (retired), `ScanControllerPointScan` (retired) | `Scan` | Both: `getWidgetState`/`setWidgetState` AND `getSetupModeState`/`applySetupModeState` (via `SuperScanController`) | `basecontrollers.py` (SuperScanController + setup-mode priority) |
 | **SLM** | *(not currently registered)* | `SLM` | *(not currently implemented)* | `SLMController.py` (setup-mode priority), `SetupModesController.py` (summarizer exists) |
 | **SLMs** | *(not currently registered)* | `SLMs` | *(not currently implemented)* | `SLMsController.py` (setup-mode priority), `SetupModesController.py` (summarizer exists) |
 | **FlipMirror** | *(not currently registered for WidgetStatePersistence)* | `FlipMirror` | `getSetupModeState`/`applySetupModeState` only | `FlipMirrorController.py` (component + setup-mode priority) |
@@ -634,7 +634,6 @@ All canonical names, legacy keys, and apply order entries in Section 3.2 are gro
 - `SettingsController.py:97`: `getWidgetStatePersistence().register('SettingsController', self)`
 - `ScanControllerBase.py:30`: `getWidgetStatePersistence().register('ScanController', self)`
 - `ScanControllerAdvanced.py:83`: `getWidgetStatePersistence().register('ScanControllerAdvanced', self)`
-- `ScanControllerMoNaLISA.py:55`: `getWidgetStatePersistence().register('ScanControllerMoNaLISA', self)`
 - `ScanControllerPointScan.py:24`: `getWidgetStatePersistence().register('ScanControllerPointScan', self)`
 - `PositionerController.py:81`: `getWidgetStatePersistence().register('PositionerController', self)`
 - `RotatorController.py:36`: `getWidgetStatePersistence().register('RotatorController', self)`
