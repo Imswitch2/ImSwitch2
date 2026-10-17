@@ -247,10 +247,14 @@ is the only camera this manager can construct.
 `AVManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/AVManager.py>`_
 
 
+.. _hamamatsu-manager:
+
 HamamatsuManager
 ================
 
-Hamamatsu sCMOS cameras driven through the DCAM API.
+Hamamatsu sCMOS cameras driven through the DCAM API.  The Settings widget
+gets an **Advanced** tab with editable DCAM properties, described under
+:ref:`Advanced Properties tab <advanced-properties-tab>`.
 
 **Setup JSON**
 

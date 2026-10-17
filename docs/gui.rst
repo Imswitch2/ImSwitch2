@@ -34,6 +34,65 @@ the corresponding ``DetectorManager``.
    :align: center
    :width: 399px
 
+.. _advanced-properties-tab:
+
+Advanced Properties tab
+-----------------------
+
+A detector whose manager offers ``getAdvancedPropertyInfo`` (the
+:ref:`Hamamatsu <hamamatsu-manager>` camera does) gets a second tab,
+**Advanced**, next to its parameter tree.  It lists every property the
+camera driver exposes in a six-column table:
+
+.. list-table::
+   :widths: 22 78
+   :header-rows: 1
+
+   * - Column
+     - Content
+   * - Property
+     - The driver property name, e.g. ``exposure_time`` or ``trigger_mode``.
+   * - Current Value
+     - The value read from the camera at the last refresh.
+   * - New Value
+     - The edit control (see below), or a dash for a read-only property.
+   * - Apply
+     - Sends this one row's new value to the camera.
+   * - Range/Options
+     - The numeric range, or the first three text options of a mode
+       property.
+   * - Access
+     - ``R``, ``W`` or ``RW``; writable rows are shown in bold green.
+
+**Refresh Properties** re-reads the table.  Editing is deliberately
+restricted:
+
+* A numeric property with a reported range gets a spin box limited to that
+  range (integer spin box for integer values, otherwise a decimal one).
+* A mode property with text options gets a drop-down of those options.
+* A writable property with neither is shown as *(manual edit unsafe)* and
+  cannot be edited here.  A property whose query failed is greyed out with the
+  error as its tooltip.
+* Nothing is sent until you press **Apply** on that row.
+
+On Apply the manager (``HamamatsuManager.setAdvancedProperty``) writes the
+property once; if the driver refuses while the camera is running, it stops
+acquisition, writes again and restarts acquisition if the camera was in use.
+A write the driver rejects, or any exception, is logged as an error and the
+table is left unchanged; a success is logged and the table refreshed.  The
+manager keeps its own state in step for the properties that also have
+dedicated controls (exposure, trigger source and mode, binning, the
+``subarray_*`` ROI), and remembers all other successful writes so that they
+are replayed if the camera backend is replaced (device reconnection).
+
+.. warning::
+
+   Many properties change hardware timing, and some cannot be changed while
+   the camera is acquiring.  Invalid combinations are rejected by the driver.
+   Do not change them in the middle of an experiment; try a change on a test
+   setup first.  The available properties depend on the camera model and the
+   DCAM driver version.
+
 
 Recording and data storage
 ==========================
@@ -456,6 +515,10 @@ rename it) has:
 Edits reach the SLM 0.8 s after the last change.  A setup mode that includes
 the SLMs loads the configuration it names.  The widget has no scripting
 functions.
+
+.. image:: ./images/auto/SLMsWidget.png
+   :align: center
+   :width: 600px
 
 
 Focus lock widget
@@ -976,6 +1039,10 @@ A scan recording expects one frame per pixel of the first two axes from each
 detector that has a Start/End row.  Scripts can use
 ``api.imcontrol.saveScanParamsToFile(...)`` and ``loadScanParamsFromFile(...)``.
 
+.. image:: ./images/auto/TriggerScopeRasterWidget.png
+   :align: center
+   :width: 600px
+
 pLS-RESOLFT scan
 ~~~~~~~~~~~~~~~~
 
@@ -1055,6 +1122,10 @@ detection** offers only detectors that have a ``digitalLine``, and that line
 must be a ``Triggerscope/TTL<n>`` for the scan to run.  The EtSnouty widget
 starts this panel for its event-triggered acquisitions.
 
+.. image:: ./images/auto/TriggerScopePLSRMulticolorWidget.png
+   :align: center
+   :width: 600px
+
 Light-sheet multicolour scan
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1094,6 +1165,40 @@ line.
 .. image:: ./images/auto/TriggerScopeScanWidget.png
    :align: center
    :width: 600px
+
+Firmware quirks
+~~~~~~~~~~~~~~~
+
+Behaviour of the TriggerScope firmware that the panels above work around or
+that a user can run into.  The firmware is not part of this repository.
+
+* **Raster pulses are merged.**  In a plain raster scan the firmware pulses
+  TTL lines 0 to 3 together in one window, taken from the earliest Start/End
+  row, and ignores the per-device TTL rows.  Which lasers fire is therefore
+  decided by which are armed, not by the TTL table, and every armed laser
+  fires in the same window as the camera trigger.  The RESOLFT programmes are
+  separate routines that sequence their pulses one after another and are not
+  affected.  Independently timed per-device pulses would need a firmware
+  change, and the firmware stores pulse start and end times in 16 bits (about
+  65 ms at most), so longer pulses would wrap.
+* **The camera trigger is its own line.**  The camera is gated by the line
+  given in its ``digitalLine`` (a level trigger: exposure follows the high
+  window), not slaved to a laser.  In the raster scan it sits inside the merged
+  window; in the basic RESOLFT programme it is high only during the read-out
+  pulse; in the multicolour programmes it is held high across the read-out and
+  both further laser pulses, so one exposure integrates all colours.  A
+  detector without a ``digitalLine`` is never triggered by the board.
+* **The raster loop includes its end point.**  The firmware visits
+  ``length / step + 1`` positions when the length is an exact multiple of the
+  step, one more than the step count the rest of ImSwitch2 expects.  The raster
+  panel shortens the length it sends by half a step
+  (``trimRasterLengthForFirmwareBoundary`` in
+  ``TriggerScopeRasterController.py``), so the frame count matches without a
+  firmware change.
+* **A zero step on the innermost axis ends the scan silently.**  If the
+  innermost dimension (the X-mapped axis) has a step size of 0, for example in
+  a raster that only scans along Y, the firmware runs no pixel cycles at all.
+  Keep a non-zero step on that axis.
 
 Setup modes widget
 ------------------
