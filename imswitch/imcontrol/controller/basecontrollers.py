@@ -473,8 +473,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self.TTLDevices = self._setupInfo.getTTLDevices()
 
         self.scanDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_scans')
-        if not os.path.exists(self.scanDir):
-            os.makedirs(self.scanDir)
+        os.makedirs(self.scanDir, exist_ok=True)
 
         # All NI-DAQ entry points share one global iteration owner. Ownership is
         # recorded on the token, so the broadcast completion signals are acted
