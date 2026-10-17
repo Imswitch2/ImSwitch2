@@ -9,7 +9,7 @@ lease and finish-barrier guarantees.
 Two levels, deliberately distinct (see the design plan, R7-2/R7-4):
 
 - A **scan run** is one user/API-initiated scan including all repeat
-  iterations, MoNaLISA ``autoAxial`` follow-ups and ``isNonFinalPartOfSequence``
+  iterations and ``isNonFinalPartOfSequence``
   parts. An owner-tagged reservation prevents another entry point from arming
   in the gaps between those iterations.
 - A **scan iteration** is one ``runScan`` -> ``scanDone`` cycle. The participant
@@ -224,8 +224,8 @@ class ScanExecutionCoordinator:
     def reserveRun(self, owner):
         """Reserve all scan iterations in one user-visible run for ``owner``.
 
-        Re-reserving by the same owner is idempotent; it is how repeat and
-        MoNaLISA follow-up iterations retain ownership during their no-iteration
+        Re-reserving by the same owner is idempotent; it is how repeat
+        iterations retain ownership during their no-iteration
         gaps. A different owner is refused even when the execution backend
         currently has no active iteration.
         """

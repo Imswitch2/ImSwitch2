@@ -457,10 +457,43 @@ class TilingInfo:
     The detector tiling aligns on needs no entry -- it is the reference. """
 
 
+def retiredScanWidgetTypeError(scanWidgetType):
+    """ The error to raise for a retired scan.scanWidgetType, or None.
+
+    "PointScan" was removed in favour of the Advanced panel. A setup that
+    still names it cannot be mapped silently: its TTL designer
+    (PointScanTTLCycleDesigner) is gone too and the Advanced panel needs
+    AdvancedScanTTLCycleDesigner, so the setup file has to be edited.
+
+    "MoNaLISA" was removed too. It was the Base panel plus automatic axial
+    (XZ/YZ) follow-up scans; the follow-ups are dropped, so "Base" (same
+    designers, same ms TTL timing, same Cont. Laser Pulses mode) is the
+    drop-in replacement. """
+    if scanWidgetType == "PointScan":
+        return ValueError(
+            'scan.scanWidgetType "PointScan" has been removed. Use "Advanced" '
+            'instead and set scan.TTLCycleDesigner to "AdvancedScanTTLCycleDesigner" '
+            '(keep "GalvoScanDesigner" as scan.scanDesigner for galvo scans). '
+            'The PointScan-only TTL_sequence feature has no replacement in the '
+            'Advanced panel. See docs/advanced-scanning.rst.'
+        )
+    if scanWidgetType == "MoNaLISA":
+        return ValueError(
+            'scan.scanWidgetType "MoNaLISA" has been removed. Use "Base" '
+            '(keeps BetaScanDesigner + BetaTTLCycleDesigner, the TTL start/end '
+            'in ms and the Cont. Laser Pulses mode) or "Advanced" (with '
+            '"AdvancedScanTTLCycleDesigner"). The automatic axial XZ/YZ '
+            'follow-up scans with bead-centre search have no replacement; '
+            'record the axial scan as a separate scan. See '
+            'docs/advanced-scanning.rst.'
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class ScanInfo:
     scanWidgetType: str
-    """ Type of scan widget to generate: PointScan/MoNaLISA/Base/etc."""
+    """ Type of scan widget to generate: Base/Advanced/TriggerScope. (The retired "PointScan" and "MoNaLISA" are refused with a pointer to the replacement.)"""
 
     scanDesigner: str
     """ Name of the scan designer class to use. """

@@ -202,7 +202,7 @@ def _populate_scan(w) -> None:
     try:
         w.initControls(positioners, ttl_devices, "ms")
     except TypeError:
-        # ScanWidgetPointScan.initControls(positionerNames, TTLDeviceNames)
+        # older panels: initControls(positionerNames, TTLDeviceNames)
         w.initControls(positioners, ttl_devices)
 
 
@@ -373,8 +373,6 @@ POPULATORS = {
     "PositionerWidget": _populate_positioner,
     "ScanWidgetBase": _populate_scan,
     "ScanWidgetAdvanced": _populate_scan,
-    "ScanWidgetMoNaLISA": _populate_scan,
-    "ScanWidgetPointScan": _populate_scan,
     "RecordingWidget": _populate_recording,
     "SettingsWidget": _populate_settings,
     "FocusLockWidget": _populate_focuslock,

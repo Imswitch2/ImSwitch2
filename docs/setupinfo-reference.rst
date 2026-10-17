@@ -329,8 +329,9 @@ Required if you want to use the ``Scan`` widget.
 
 Key fields:
 
-* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``,
-  ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.  ``"TriggerScope"``
+* ``scanWidgetType``: Widget variant — one of ``"Base"``,
+  ``"Advanced"`` or ``"TriggerScope"`` (the retired ``"PointScan"`` and
+  ``"MoNaLISA"`` stop the setup with a message naming the replacement).  ``"TriggerScope"``
   runs scans on the TriggerScope board (see `triggerScope`_) from the
   ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
@@ -342,7 +343,7 @@ Key fields:
   ``phase_delay`` and ``d3step_delay`` (µs) and ``dwell_ms``, the dwell they
   open with when their own default does not suit the rig (the Advanced panel
   opens at 0.02 ms, made for galvos; a stepped stage needs more).
-* ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
+* ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"BetaTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters merged into the TTL designer's
   input; the shipped setups leave it ``{}``
 * ``sampleRate``: DAQ sample rate in Hz
@@ -355,9 +356,7 @@ Key fields:
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:
 
-* ``"Base"`` and ``"MoNaLISA"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
-* ``"PointScan"``: ``GalvoScanDesigner`` + ``PointScanTTLCycleDesigner``
-  (``example_sted.json``)
+* ``"Base"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
 * ``"Advanced"``: ``GalvoScanDesigner`` + ``AdvancedScanTTLCycleDesigner``
   (``galvo_apd_mock_scan_setup.json``)
 
@@ -1306,7 +1305,7 @@ See the bundled example configurations in
 
 Hardware-free scan setups (simulated NI-DAQ, see :doc:`mock-infrastructure`):
 
-* ``mock_scan_setup.json`` — mock camera, MoNaLISA scan, for the
+* ``mock_scan_setup.json`` — mock camera, Base scan panel, for the
   record-and-reconstruct loop
 * ``galvo_apd_mock_scan_setup.json`` — APD with an Advanced galvo scan
 * ``hamamatsu_mock_scan_setup.json`` — mock Hamamatsu camera triggered by a

@@ -807,7 +807,7 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
+Three widget variants exist — ``Base``, ``MoNaLISA`` and
 ``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
 :doc:`setupinfo-reference`.
 
@@ -835,62 +835,32 @@ selected again.
 Scripts can do the same with ``api.imcontrol.runScan()``,
 ``saveScanParamsToFile(...)`` and ``loadScanParamsFromFile(...)``.
 
-Point-scan variant
-~~~~~~~~~~~~~~~~~~
+Retired point-scan variant
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``"scanWidgetType": "PointScan"``, paired with ``GalvoScanDesigner`` and
-``PointScanTTLCycleDesigner``, is the older panel for galvo point scanning with
-point detectors, as in confocal and STED; its features have moved to the
-``Advanced`` panel, which ``example_sted.json`` now uses.  It differs
-from ``Base`` in three ways:
-
-* **Dwell time (ms)** starts at 0.02 ms rather than 10 ms, and two rig delays
-  sit below it, both in microseconds: **Phase delay (µs)**, the galvo's
-  response lag by which the detector readout is shifted, and **D3 step delay
-  (µs)**, the settling time before each slice of a 3-D scan.  Both start from
-  ``phase_delay`` and ``d3step_delay`` in ``scan.scanDesignerParams`` when the
-  setup file sets them; the panel's saved state takes precedence.
-* The Start/End times are replaced by **Line steps**: for each TTL device a row
-  of checkboxes, as many as **#Line steps**, and an **Axis** selector.  With
-  **Axis** at *None* the device is on for the whole scan if its first box is
-  ticked and off otherwise.  With **Axis** set to a scanned positioner, the
-  on/off pattern of the boxes repeats along that positioner's axis — pixel by
-  pixel on the first dimension, line by line on the second, slice by slice on
-  the third.  Two lasers with opposite two-step patterns on the line axis
-  therefore take alternate lines.  Each line is still scanned once; to scan the
-  same line repeatedly with different devices, use the ``Advanced`` variant.
-* There is no **Cont. Laser Pulses** mode.
+The older ``"scanWidgetType": "PointScan"`` panel has been removed; its
+features live in the ``Advanced`` panel (see below), which also carries the
+**Dwell time**, **Phase delay (µs)** and **D3 step delay (µs)** fields, seeded
+from ``phase_delay`` and ``d3step_delay`` in ``scan.scanDesignerParams``.  A
+setup that still names ``PointScan`` fails to start with a message saying so:
+change ``scanWidgetType`` to ``"Advanced"`` and ``TTLCycleDesigner`` to
+``"AdvancedScanTTLCycleDesigner"``.  The per-device **Line steps** / **Axis**
+pattern (``TTL_sequence``) of the old panel has no equivalent.
 
 Scripts can set the geometry with ``api.imcontrol.changeScanSize(...)``,
 ``changeScanCenterPos(...)`` and ``changed3StepDelayPar(...)``.
 
-.. image:: ./images/auto/ScanWidgetPointScan.png
-   :align: center
-   :width: 432px
+Retired MoNaLISA variant
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-MoNaLISA variant
-~~~~~~~~~~~~~~~~
-
-``"scanWidgetType": "MoNaLISA"`` (``BetaScanDesigner`` with
-``BetaTTLCycleDesigner``, like ``Base``) keeps everything the ``Base`` panel has,
-including the Start/End pulse table and **Cont. Laser Pulses**, and adds:
-
-* A plot beside the pulse table showing one dwell period of the pulse
-  programme, each laser in the colour of its wavelength.
-* **Axial Scan**: ticking **XZ** and/or **YZ** makes a 2-D XY scan continue
-  with an XZ and/or a YZ section through one point of it.  A **Z** row appears
-  for the axial **Size**, **Step size** and **Center**, and **Center
-  localization** picks the point: *Manual* uses the pixel coordinates typed
-  under **Center Coordinates**; *Maxima* fits a Gaussian and *Minima* a donut
-  to the image in the Bead reconstruction tool and fills those coordinates in.
-  **Show** marks the point on that image.  If no centre is found, or none
-  arrives within 3 s, the axial sections are skipped.  The axial scan needs
-  positioners named ``X``, ``Y`` and ``Z``, and *Maxima* / *Minima* need the
-  ``BeadRec`` widget.
-
-.. image:: ./images/auto/ScanWidgetMoNaLISA.png
-   :align: center
-   :width: 432px
+``"scanWidgetType": "MoNaLISA"`` is gone: a setup that still names it fails to
+start with a message saying so.  Change it to ``"Base"``, which has the same
+designers (``BetaScanDesigner`` with ``BetaTTLCycleDesigner``), the Start/End
+pulse table in ms and **Cont. Laser Pulses**, or to ``"Advanced"`` (with
+``"AdvancedScanTTLCycleDesigner"``).  The old panel's *Axial Scan* option (an
+XZ and/or YZ section that followed a 2-D XY scan, through a bead centre found
+in the Bead reconstruction tool) has no replacement: run the axial scan as a
+scan of its own.  Saved widget states from a MoNaLISA-panel session still load.
 
 
 Advanced scanning: line steps

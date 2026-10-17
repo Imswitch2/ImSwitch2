@@ -114,7 +114,7 @@ For adding a *new* manager class (i.e. implementing one yourself), see
 
 **Signal designers** — used when you build a scan — are similar.  In a
 point-scanning setup, for example, you might select
-``PointScanTTLCycleDesigner`` to generate the TTL signals for your
+``AdvancedScanTTLCycleDesigner`` to generate the TTL signals for your
 scan.  They are documented :ref:`below <signal-designers>`.
 
 Minimal example: a single Cobolt 06-01 laser on COM11:
@@ -265,7 +265,5 @@ TTL cycle designers
 -------------------
 
 .. autoclassconheader:: imswitch.imcontrol.model.signaldesigners.BetaTTLCycleDesigner.BetaTTLCycleDesigner
-
-.. autoclassconheader:: imswitch.imcontrol.model.signaldesigners.PointScanTTLCycleDesigner.PointScanTTLCycleDesigner
 
 .. autoclassconheader:: imswitch.imcontrol.model.signaldesigners.AdvancedScanTTLCycleDesigner.AdvancedScanTTLCycleDesigner

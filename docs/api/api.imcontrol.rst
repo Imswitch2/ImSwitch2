@@ -74,7 +74,7 @@ api.imcontrol
 
    .. method:: changed3StepDelayPar(d3StepDelay)
 
-      Needs the *Scan* widget (PointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced) in ``availableWidgets``.
 
    .. method:: changeRotationParameters(rotationPars)
 
@@ -82,7 +82,7 @@ api.imcontrol
 
    .. method:: changeScanCenterPos(positionerName, positionerScanCenterPos)
 
-      Needs the *Scan* widget (Advanced, PointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced) in ``availableWidgets``.
 
    .. method:: changeScanPower(laserName: str, laserValue: Union[int, float]) -> None
 
@@ -94,7 +94,7 @@ api.imcontrol
 
    .. method:: changeScanSize(positioner: str, size: float)
 
-      Needs the *Scan* widget (Advanced, PointScan) in ``availableWidgets``.
+      Needs the *Scan* widget (Advanced) in ``availableWidgets``.
 
    .. method:: deleteSetupMode(name)
 
@@ -280,7 +280,7 @@ api.imcontrol
 
       Loads scanning parameters from the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base) in ``availableWidgets``.
 
    .. method:: loadSetupMode(name, componentNames=None)
 
@@ -376,7 +376,7 @@ api.imcontrol
 
       Saves the set scanning parameters to the specified file.
 
-      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base, MoNaLISA, PointScan) in ``availableWidgets``.
+      Needs *TriggerScopeRaster* or the *Scan* widget (Advanced, Base) in ``availableWidgets``.
 
    .. method:: saveSetupMode(name, componentNames=None, description=None, shortcut=None)
 

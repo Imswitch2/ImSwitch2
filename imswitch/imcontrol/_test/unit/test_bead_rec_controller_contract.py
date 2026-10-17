@@ -29,7 +29,6 @@ def test_bead_rec_controller_uses_pure_reconstruction_helpers():
     assert 'BeadRecResultRecord,' in source
     assert 'BeadWorkerUpdate,' in source
     assert 'create_reconstruction_buffer(self._config.scan_dims)' in source
-    assert 'find_bead_center,' in source
     assert 'reconstruction_image(self.recIm, self.dims)' in source
     assert 'rescale_reconstruction_to_pixel_size(im, self.stepSizes)' in source
     assert 'normalize_roi_bounds(self._getRoiBounds(), keptFrames[0].shape)' in source
@@ -46,12 +45,11 @@ def test_bead_rec_controller_no_longer_uses_raw_resize_or_direct_roi_mean():
     assert 'from scipy.signal import find_peaks' not in source
 
 
-def test_bead_rec_center_query_and_donut_plotting_use_model_analysis():
+def test_bead_rec_donut_plotting_uses_model_analysis():
     source = BEAD_REC_CONTROLLER_PATH.read_text()
 
-    # Center query tries model fits first and falls back to the legacy search
-    assert 'result = fit_bead(self.imDisplay, model_key, params=self._widget.analysisPrm)' in source
-    assert 'result = find_bead_center(self.imDisplay, mode, self._widget.analysisPrm)' in source
+    # The MoNaLISA-panel centre query is gone with the panel
+    assert 'centerCoordQuery' not in source
     # Donut analysis goes through the pure model function, no inline analysis
     assert 'result = analyze_donut(self.imDisplay, self._widget.analysisPrm)' in source
     assert 'measure.label' not in source

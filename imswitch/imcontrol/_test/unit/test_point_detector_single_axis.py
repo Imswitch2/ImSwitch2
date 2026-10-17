@@ -27,8 +27,8 @@ from imswitch.imcontrol.model.managers.detectors.PMTManager import PMTManager
 from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
     GalvoScanDesigner,
 )
-from imswitch.imcontrol.model.signaldesigners.PointScanTTLCycleDesigner import (
-    PointScanTTLCycleDesigner,
+from imswitch.imcontrol.model.signaldesigners.AdvancedScanTTLCycleDesigner import (
+    AdvancedScanTTLCycleDesigner,
 )
 
 from .test_galvo_signal_goldens import _params, _setup_sted_like
@@ -151,14 +151,17 @@ def test_pmt_single_line_buffers_and_pixels():
 
 
 def test_ttl_designer_accepts_single_axis_scan_info():
-    """PointScanTTLCycleDesigner must build its cycle from a 1-axis
+    """AdvancedScanTTLCycleDesigner must build its cycle from a 1-axis
     scanInfo (scan_samples = [per_pixel, per_line], one line)."""
     scanInfo = _z_only_scan_info()
     ttlparams = {'target_device': ['640'],
-                 'TTL_sequence': ['h1'],
-                 'TTL_sequence_axis': ['None'],
-                 'sequence_time': 2e-05}
-    sig = PointScanTTLCycleDesigner().make_signal(
+                 'n_linesteps': 1,
+                 'linestep_enable': {'640': [True]},
+                 'pulse_starts_s': {'640': [[]]},
+                 'pulse_ends_s': {'640': [[]]},
+                 'sequence_time': 2e-05, 'move_time': 0, 'settle_time': 0,
+                 'advanced_mode': False}
+    sig, _info = AdvancedScanTTLCycleDesigner().make_signal(
         ttlparams, _setup_sted_like(), scanInfo)
     assert '640' in sig
     assert len(sig['640']) == scanInfo['scan_samples_total']

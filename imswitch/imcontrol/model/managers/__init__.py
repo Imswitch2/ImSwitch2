@@ -9,9 +9,7 @@ from .RS232sManager import RS232sManager
 from .RecordingManager import RecordingManager, RecMode, SaveMode, SaveFormat
 from .SLMManager import SLMManager
 from .SLMsManager import SLMsManager
-from .ScanManagerPointScan import ScanManagerPointScan
 from .ScanManagerBase import ScanManagerBase
-from .ScanManagerMoNaLISA import ScanManagerMoNaLISA
 from .ScanManagerAdvanced import ScanManagerAdvanced
 from .ScanManagerTriggerScope import ScanManagerTriggerScope
 from .StandManager import StandManager
@@ -29,9 +27,7 @@ __all__ = [
     'RecordingManager', 'RecMode', 'SaveMode', 'SaveFormat',
     'SLMManager',
     'SLMsManager',
-    'ScanManagerPointScan',
     'ScanManagerBase',
-    'ScanManagerMoNaLISA',
     'ScanManagerAdvanced',
     'ScanManagerTriggerScope',
     'StandManager',

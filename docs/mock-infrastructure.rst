@@ -228,8 +228,8 @@ Ready-to-use hardware-free setup files, all under
 * ``example_no_hardware.json`` — the baseline profile for
   :doc:`no-hardware-validation`; no lasers, simulated NI-DAQ, all physical
   I/O channels ``null``.
-* ``mock_scan_setup.json`` — pure software MoNaLISA/live-reconstruction
-  setup: mock camera, mock positioners, no physical AO/DO channels,
+* ``mock_scan_setup.json`` — pure software live-reconstruction
+  setup on the Base scan panel: mock camera, mock positioners, no physical AO/DO channels,
   ``nidaq.simulation: true``.
 * ``hamamatsu_mock_scan_setup.json`` — scan setup with a trigger-aware
   ``HamamatsuManager`` mock camera in external frame-trigger mode; the

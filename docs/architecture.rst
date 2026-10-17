@@ -162,8 +162,9 @@ Then it creates one *group manager* per device family -- ``DetectorsManager``,
 ``LasersManager``, ``PositionersManager``, ``RotatorsManager``,
 ``FlipMirrorsManager``, ``SLMsManager`` -- plus ``RecordingManager``, the stand
 manager when ``microscopeStand`` is set, and one scan manager chosen by
-``scan.scanWidgetType`` (``Base``, ``PointScan``, ``MoNaLISA``, ``Advanced`` or
-``TriggerScope``).  Finally it forwards manager signals onto the
+``scan.scanWidgetType`` (``Base``, ``Advanced`` or ``TriggerScope``; the
+retired ``PointScan`` and ``MoNaLISA`` types stop startup with a pointer to
+their replacement).  Finally it forwards manager signals onto the
 ``CommunicationChannel`` (for example ``detectorsManager.sigImageUpdated`` to
 ``sigUpdateImage``) and builds the device status supervisor.  ``closeEvent``
 finalizes the managers in a fixed order.

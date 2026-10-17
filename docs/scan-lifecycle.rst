@@ -126,8 +126,7 @@ order:
    (see ``controllers/_beadrec_scan_source.py``) and reports
    ``isBeadRecCompatible() == True``.
 2. **The** ``'Scan'`` **widget key** — legacy path; covers
-   ``ScanControllerAdvanced`` / ``ScanControllerMoNaLISA`` /
-   ``ScanControllerPointScan``, which expose the legacy accessors but not the
+   ``ScanControllerAdvanced``, which exposes the legacy accessors but not the
    protocol.
 3. **First-compatible iteration** (``getBeadRecScanSource``) — idle fallback
    only, e.g. when the user presses BeadRec *Run* before starting a scan.
@@ -142,8 +141,7 @@ only ever serves idle reads.
 scan source first, then the ``'Scan'`` controller, then — while idle on a
 setup without a ``'Scan'`` widget — the one registered controller that exposes
 the accessor.  If several expose it, the lookup logs a warning and resolves
-nothing rather than guess.  Only ``getNextAxial()`` (the MoNaLISA axial
-workflow) stays on the ``'Scan'`` key.
+nothing rather than guess.
 
 
 The scan-execution coordinator
@@ -175,7 +173,7 @@ Two deliberately distinct levels:
      - Spans
    * - **Scan run**
      - ``ScanRunToken`` (``reserveRun`` / ``releaseRun``)
-     - One user-initiated scan *including* every repeat iteration, MoNaLISA ``autoAxial`` follow-up and ``isNonFinalPartOfSequence`` part.
+     - One user-initiated scan *including* every repeat iteration and ``isNonFinalPartOfSequence`` part.
    * - **Scan iteration**
      - ``ScanIterationToken`` (``arm`` / ``resolve``)
      - One ``runScan`` → ``scanDone`` cycle, i.e. one frame.
@@ -399,15 +397,9 @@ bases), registered under widget key ``'Scan'`` as
    * - ``ScanControllerBase``
      - ``Base``
      - protocol (``BeadRecScanSourceMixin``)
-   * - ``ScanControllerPointScan``
-     - ``PointScan``
-     - legacy accessors via ``'Scan'`` key
    * - ``ScanControllerAdvanced``
      - ``Advanced``
      - legacy accessors via ``'Scan'`` key
-   * - ``ScanControllerMoNaLISA``
-     - ``MoNaLISA``
-     - legacy accessors + axial workflow
 
 **TriggerScope family and standalone** — inherit
 ``TriggerScopeScanLifecycleMixin`` alongside ``ImConWidgetController``,

@@ -8,8 +8,8 @@ from imswitch.imcontrol.controller.basecontrollers import SuperScanController
 from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
     ScanControllerAdvanced,
 )
-from imswitch.imcontrol.controller.controllers.ScanControllerMoNaLISA import (
-    ScanControllerMoNaLISA,
+from imswitch.imcontrol.controller.controllers.ScanControllerBase import (
+    ScanControllerBase,
 )
 from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
     build_controller_point_scan_layouts,
@@ -93,8 +93,8 @@ def test_common_build_forgets_runtime_position_snapshot_when_design_raises():
     assert 'axis_position_before_scan' not in ctrl._analogParameterDict
 
 
-def test_monalisa_build_forgets_runtime_position_snapshot():
-    ctrl = ScanControllerMoNaLISA.__new__(ScanControllerMoNaLISA)
+def test_base_build_forgets_runtime_position_snapshot():
+    ctrl = ScanControllerBase.__new__(ScanControllerBase)
     ctrl._analogParameterDict = {'target_device': ['Stage']}
     ctrl._digitalParameterDict = {}
     ctrl.getParameters = MagicMock()
@@ -106,7 +106,7 @@ def test_monalisa_build_forgets_runtime_position_snapshot():
         scanManager=SimpleNamespace(makeFullScan=lambda *_args, **_kwargs: ({}, {}))
     )
 
-    ScanControllerMoNaLISA._buildScanSignals(ctrl)
+    ScanControllerBase._buildScanSignals(ctrl)
 
     assert 'axis_position_before_scan' not in ctrl._analogParameterDict
 

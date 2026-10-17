@@ -10,6 +10,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
 from imswitch.imcommon.view.LogWidget import LogWidget
 from . import widgets
+from imswitch.imcontrol.model.SetupInfo import retiredScanWidgetTypeError
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
@@ -664,6 +665,10 @@ class ImConMainView(QtWidgets.QMainWindow):
         prevDock = None
         prevDockYPosition = -1
         for widgetKey, dockInfo in dockInfoDict.items():
+            if widgetKey == 'Scan':
+                retired = retiredScanWidgetTypeError(self.viewSetupInfo.scan.scanWidgetType)
+                if retired is not None:
+                    raise retired
             self.widgets[widgetKey] = self.factory.createWidget(
                 getattr(widgets, f'{widgetKey}Widget')
                 if widgetKey != 'Scan' else

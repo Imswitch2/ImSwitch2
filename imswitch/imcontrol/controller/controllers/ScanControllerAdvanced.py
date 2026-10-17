@@ -81,7 +81,7 @@ def scan_progress(elapsed_s, duration_s, frame, show_frame):
 
 class ScanControllerAdvanced(SuperScanController):
     """
-    Controller for a PointScan-like scan widget with:
+    Controller for a point-scan widget with:
       - line-step laser combinations (repeat same line multiple times with different device enables)
       - optional advanced intra-pixel pulse timing per device per linestep
       - TTL preview graph (stationary TTL generation, no scanInfo required)
@@ -111,7 +111,7 @@ class ScanControllerAdvanced(SuperScanController):
         self._scanParams = AdvancedScanParameterSerializer()
 
         # ---- widget init ----
-        # Keep PointScan signature (pos, TTL devices)
+        # Keep the Base signature (pos, TTL devices)
         self._widget.initControls(
             self.positioners.keys(),
             self.TTLDevices.keys(),
@@ -199,7 +199,7 @@ class ScanControllerAdvanced(SuperScanController):
         stage_param["n_linesteps"] = int(TTLParameters.get("n_linesteps", 1))
         self._copy_positioner_line_program_to_stage_params(stage_param, TTLParameters)
 
-        # optional guard (like PointScan)
+        # optional guard (like Base)
         if hasattr(scan_des, "signalLengthRefusal"):
             refusal = scan_des.signalLengthRefusal(scanParameters, self._setupInfo)
             if refusal:
@@ -207,7 +207,7 @@ class ScanControllerAdvanced(SuperScanController):
 
         scanSignalsDict, positions, scanInfoDict = scan_des.make_signal(stage_param, self._setupInfo)
 
-        # Voltage compliance, like PointScan's makeFullScan: refuse waveforms
+        # Voltage compliance, like the Base makeFullScan: refuse waveforms
         # outside a scanner's configured minVolt/maxVolt. Without this the
         # only remaining bound is the NI-DAQ task's generic +-10 V range, so
         # e.g. a Z scan centered at 0 um on a 0..10 V piezo would reach the
@@ -732,7 +732,7 @@ class ScanControllerAdvanced(SuperScanController):
         self._publishLaserScanState()
 
     def _buildAnalogParameterDict(self):
-        """Serialize PointScan-compatible analog scan parameters from the widget."""
+        """Serialize point-scan-compatible analog scan parameters from the widget."""
         return self._scanParams.build_analog(self._widget, self.positioners)
 
     def _pixelsForScanDevice(self, analogParameterDict, deviceName: str) -> int:
@@ -1126,6 +1126,11 @@ class ScanControllerAdvanced(SuperScanController):
     # ---------------------------------------------------------------------
     # Save / Load
     # ---------------------------------------------------------------------
+
+    @APIExport(runOnUIThread=True)
+    def changed3StepDelayPar(self, d3StepDelay):
+        """Set the D3 (frame-step) delay field, in microseconds."""
+        self._widget.setd3StepDelayPar(d3StepDelay)
 
     @APIExport(runOnUIThread=True)
     def changeScanCenterPos(self, positionerName, positionerScanCenterPos):
