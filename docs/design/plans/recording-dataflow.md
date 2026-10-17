@@ -2,7 +2,7 @@
 
 Status: **Phase 1 implemented and merged to main (2026-06-15).** Dtype contract,
 silent-cast removal, off-thread writer, and recording sink-abort are done; see
-the per-section status below and the ROADMAP (Milestone 10). Phases 1.5 / 2 / 3
+the per-section status below. Phases 1.5 / 2 / 3
 and scan source-abort remain designed-but-deferred. Scope is the
 acquisition → recording → disk/RAM path.
 
@@ -331,7 +331,7 @@ Risks / why it is hardware-gated:
   voltage; a safe abort needs a return-to-center ramp, not a hard stop.
 - **stop-vs-wait race:** stopping/closing tasks while a `WaitThread` is in
   `wait_until_done` is racy in nidaqmx (may raise/hang).
-- **No CI validation** possible (per `docs/no-hardware-validation.md`) — must be
+- **No CI validation** possible (per `docs/no-hardware-validation.md` (retired; see git history)) — must be
   tested on the rig before it can be trusted.
 - **TriggerScope is a separate effort** (firmware stop command).
 

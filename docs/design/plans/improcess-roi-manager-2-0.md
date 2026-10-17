@@ -5,7 +5,7 @@
 | **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13) · **P-7 ✅** (§15.14) · **P-R ✅** (§15.15). Branch reviewed end to end (§15.16). Only P-F2 remains. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
-| **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
+| **Supersedes** | Phase 2 of improcess-analysis-widgets.md (retired; see git history) |
 | **Primary scope** | `imswitch/improcess/analysis/`, `imswitch/improcess/view/ROIManagerWidget.py`, `imswitch/imcommon/algorithms/roi*.py`, `imswitch/imcommon/view/guitools/naparitools.py` |
 | **Secondary scope** | Segmentation / PSF / Colocalization / Profile / ROI-stats panels, `ProcessingResult` + `DisplayLayerSpec` contracts, `ImProcessMainController` wiring, CI napari lane, `docs/improcess.rst` |
 | **Committed scope** | **Tracks A + B ≈ 35 d** (Q-13a). Tracks C + D + P-F2 ≈ 25 d are approved roadmap, not a delivery commitment. See §6.0. |

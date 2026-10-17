@@ -1,7 +1,7 @@
 # State Persistence Contract Specification
 
 **Status:** Phase 0 deliverable  
-**Reference:** [state_persistence_unification_plan.md](state_persistence_unification_plan.md)  
+**Reference:** state_persistence_unification_plan.md (retired; see git history)  
 **Purpose:** Normative contract for Phase 1 implementation and Phase 2 component migrations
 
 ---

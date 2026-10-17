@@ -403,7 +403,7 @@ Resources
 * :doc:`adding-device-support` — Adding new hardware
 * :doc:`no-hardware-validation` — Testing without hardware
 * ``docs/design/ARCHITECTURE.md`` — Architecture overview (in the repository)
-* ``ROADMAP.md`` — Project roadmap and milestones (in the repository)
+* :doc:`current-state-and-known-issues` — Where the project stands and what is open
 
 **External:**
 

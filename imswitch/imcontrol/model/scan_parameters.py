@@ -71,7 +71,7 @@ def scan_axis_provenance(positioners_scan, positioners_info,
 
     Deliberately not consumed anywhere in ImSwitch (no ImProcess reader): it
     exists for the person or tool opening the file. See
-    ``docs/galvo-designer-single-axis-findings.md``, phase C.
+    ``docs/galvo-designer-single-axis-findings.md`` (retired; see git history), phase C.
     """
     devices = []
     for i, dev in enumerate(positioners_scan):

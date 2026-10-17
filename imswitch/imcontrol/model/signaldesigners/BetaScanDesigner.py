@@ -135,7 +135,7 @@ class BetaScanDesigner(ScanDesigner):
         # silently applied another device's factor when scan dims were
         # reordered (e.g. a Z piezo on dim 0 under a galvo-first setup got the
         # galvo's factor: 17x range shrink under example_sted). See
-        # docs/galvo-designer-single-axis-findings.md, defect 4.
+        # docs/galvo-designer-single-axis-findings.md (retired; see git history), defect 4.
         scanningProps = {
             name: positioner.managerProperties
             for name, positioner in setupInfo.positioners.items()

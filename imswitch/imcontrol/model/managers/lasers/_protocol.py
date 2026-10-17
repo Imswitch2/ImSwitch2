@@ -18,7 +18,7 @@ that matters for laser control:
   alternative must never be tried, because the first command may have taken
   effect and a second one would double-apply it.
 
-See ``docs/design/device-protocol-profile-refactor-plan.md``.
+See ``docs/design/device-protocol-profile-refactor-plan.md`` (retired; see git history).
 """
 
 from dataclasses import dataclass

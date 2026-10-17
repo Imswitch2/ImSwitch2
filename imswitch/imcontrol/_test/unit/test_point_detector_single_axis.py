@@ -1,6 +1,6 @@
 """Single-axis scans through the APD/PMT consumer chain.
 
-Phase C of docs/galvo-designer-single-axis-findings.md. The contract under
+Phase C of docs/galvo-designer-single-axis-findings.md (retired; see git history). The contract under
 test (review-specified): a 1-axis scan normalizes to ONE line of N pixels —
 logical loop dims ``[N, 1]``, spatial buffers ``(1, N)``, chunks
 ``(frames, 1, N)``, a two-dimensional display scale — and the pixels are

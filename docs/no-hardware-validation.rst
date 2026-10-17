@@ -101,8 +101,6 @@ When adding new no-hardware tests:
 * isolate temporary files with ``tmp_path`` or monkeypatched state directories,
 * add explicit assertions that no physical channel or hardware action is used.
 
-The repository also keeps a longer working note,
-``docs/no-hardware-validation.md``, with agent-facing workflows and examples;
-it is not part of the published documentation. For an inventory of the mock
+For an inventory of the mock
 managers/classes themselves (what exists per device family, and their known
 limitations), see :doc:`mock-infrastructure`.

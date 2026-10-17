@@ -14,7 +14,7 @@ variant-resolution helper, identity reading, and the profile registry. Keeping
 reply classification here is what stops each profile from re-deciding "did this
 command work?" slightly differently.
 
-See ``docs/design/device-protocol-profile-refactor-plan.md``.
+See ``docs/design/device-protocol-profile-refactor-plan.md`` (retired; see git history).
 """
 
 from .._protocol import (

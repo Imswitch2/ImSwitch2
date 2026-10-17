@@ -2,7 +2,7 @@
 
 Branch: `perf/pointscan-confocal-sted` (shared with the point-scan live-preview
 performance fixes — see
-[docs/pointscan-confocal-sted-performance.md](../../pointscan-confocal-sted-performance.md)).
+[docs/design/plans/pointscan-confocal-sted-performance.md](../../pointscan-confocal-sted-performance.md)).
 
 Status: **v13 — the scoped Phase 1–4 ownership architecture remains
 implemented and sound after another adversarial boundary audit. The bounded

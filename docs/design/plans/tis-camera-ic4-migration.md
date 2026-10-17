@@ -96,7 +96,7 @@ which is precisely the multi-consumer contention described above.
 > 3-D via `grabFrame()[np.newaxis, :, :]`
 > ([TISManager.py:113](../../../imswitch/imcontrol/model/managers/detectors/TISManager.py:113)),
 > so it does *not* have the 2-D corruption bug that ThorCam TSI had (see
-> [advanced_scan_triggered_recording_audit.md](../../advanced_scan_triggered_recording_audit.md)).
+> advanced_scan_triggered_recording_audit.md (retired; see git history)).
 > Its chunks are correctly shaped — they are just duplicates.
 
 ### Secondary pain points with `pyicic`
@@ -437,7 +437,7 @@ Two hard rules, both learned from the ThorCam TSI audit:
 2. **`getChunk` must stay 3-D.** `readChunk` does `list.extend(...)`, which
    iterates axis 0 — a 2-D return silently decomposes one image into `H` row
    vectors. Full mechanism in
-   [advanced_scan_triggered_recording_audit.md](../../advanced_scan_triggered_recording_audit.md).
+   advanced_scan_triggered_recording_audit.md (retired; see git history).
 
 With a real queue behind it, `getChunk` returns **every** triggered frame, and
 `readChunk`'s existing distribution feeds BeadRec, recording and live view without
@@ -593,7 +593,7 @@ rewrites, so fix or delete them rather than porting them forward.
 - [morefigs/py-ic-imaging-control](https://github.com/morefigs/py-ic-imaging-control) — upstream of the vendored `pyicic` (MIT)
 
 **In-repo**
-- [advanced_scan_triggered_recording_audit.md](../../advanced_scan_triggered_recording_audit.md) — the same problem class on ThorCam TSI, with the `getChunk` shape mechanism traced end to end
+- advanced_scan_triggered_recording_audit.md (retired; see git history) — the same problem class on ThorCam TSI, with the `getChunk` shape mechanism traced end to end
 - [ThorCamTSIManager.py](../../../imswitch/imcontrol/model/managers/detectors/ThorCamTSIManager.py) — the drain-loop `getChunk` and trigger-mode parameter to mirror
 - [test_thorcam_tsi_recording_contract.py](../../../imswitch/imcontrol/_test/unit/test_thorcam_tsi_recording_contract.py) — the contract tests to mirror
 - [DetectorManager.readChunk](../../../imswitch/imcontrol/model/managers/detectors/DetectorManager.py:323) — multi-consumer distribution this plan depends on

@@ -3,7 +3,7 @@
 **Branch:** `codex/acquisition-layout-schema`
 **Status of the work:** software-verified only — the ImControl/ImCommon and
 ImProcess suites pass, the seven must-do conditions of the
-[direction audit](design/plans/acquisition-layout-direction-audit.md) are done
+direction audit (retired; see git history) are done
 (2026-09-04), and nothing has ever run against real hardware. The last
 software step was a seam test that records through every real stage under the
 simulated DAQ (`test_acquisition_layout_recording_seam.py`); what remains is
@@ -39,7 +39,7 @@ results that look valid and mean nothing.
 
 ## 0b. What the magic-number fixes will refuse on the rig
 
-The audit fixes (`docs/design/plans/magic-number-audit-fixes.md`) turned several
+The audit fixes (`docs/design/plans/magic-number-audit-fixes.md` (retired; see git history)) turned several
 silent substitutions into refusals. Check the rig's setup file against these
 before the session, or the first scan will stop with a message naming the field:
 

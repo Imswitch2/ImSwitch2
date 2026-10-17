@@ -14,7 +14,7 @@ while transport failures still propagate. Tightening that into real
 acknowledgement validation is a separate, evidence-backed change -- guessing at
 an acknowledgement contract would start rejecting controllers that are fine.
 
-See ``docs/design/device-protocol-profile-refactor-plan.md``.
+See ``docs/design/device-protocol-profile-refactor-plan.md`` (retired; see git history).
 """
 
 from .._protocol import CommandTimeout, TransportFailure

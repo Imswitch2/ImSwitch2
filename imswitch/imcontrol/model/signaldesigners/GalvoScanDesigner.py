@@ -380,7 +380,7 @@ class GalvoScanDesigner(ScanDesigner):
         # the missing start/end half-periods from ``period`` itself, so
         # n_d2 == 1 degenerates to exactly one full sweep instead of crashing
         # on np.min of an empty array (defect 1 in
-        # docs/galvo-designer-single-axis-findings.md).
+        # docs/galvo-designer-single-axis-findings.md (retired; see git history)).
         pos = np.tile(period, n_d2 - 1)
         # add missing start and end piece
         pos_ret = self.__add_start_end(pos, period, pos_fix, v_max, a_max)

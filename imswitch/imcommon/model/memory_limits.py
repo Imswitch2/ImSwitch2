@@ -23,7 +23,7 @@ drivers allocate their own ring buffers (the Hamamatsu interface about
 4 GiB), datasets are as large as the data, and chunk consumers register as
 they please. What the limits bound is what ImSwitch *chooses* to hold in its
 queues and spend on work nobody asked for; and every message that quotes
-one names the setting that moves it. Design: ``docs/design/plans/memory-budgets.md``.
+one names the setting that moves it. Design: ``docs/design/plans/memory-budgets.md`` (retired; see git history).
 """
 from __future__ import annotations
 

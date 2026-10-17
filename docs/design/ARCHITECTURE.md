@@ -382,7 +382,7 @@ Device support can live in external pip-installable packages (napari-style), so 
 
 ## Recording Data Path
 
-`RecordingManager` (`imcontrol/model/managers/RecordingManager.py`) owns the acquisition→disk pipeline. See [recording_dataflow_plan.md](../recording_dataflow_plan.md) for the full design.
+`RecordingManager` (`imcontrol/model/managers/RecordingManager.py`) owns the acquisition→disk pipeline. See [recording-dataflow.md](plans/recording-dataflow.md) for the full design.
 
 ```
 DetectorsManager frames
@@ -395,7 +395,7 @@ DetectorsManager frames
 
 - **Abort semantics:** `abortRecording()` stops the recording and discards the partial output (`Storer.abortStream` deletes the file/store).
 - **Live-consumer barrier:** streaming storers publish a `recording:frames_committed` attribute *after* each data flush, so mid-recording readers (the ImProcess live pipeline below) never read unwritten chunks; a stream-complete marker signals finalization.
-- **In progress:** OME standardization of all three formats (OME-TIFF, OME-NGFF 0.5, HDF5 + OME-XML) via a shared `OmeImageMeta` — see `docs/recording_ome_standardization_plan.md`.
+- **In progress:** OME standardization of all three formats (OME-TIFF, OME-NGFF 0.5, HDF5 + OME-XML) via a shared `OmeImageMeta` — see `docs/recording_ome_standardization_plan.md` (retired; see git history).
 
 ---
 

@@ -1,10 +1,11 @@
 Current State and Known Issues
 ==============================
 
-This page summarizes where ImSwitch2 stands as of 25 September 2026. It is a
+This page summarizes where ImSwitch2 stands as of 17 October 2026. It is a
 quick orientation for maintainers, contributors and coding agents before
-starting new work; ``ROADMAP.md`` in the repository has the milestones in
-full.
+starting new work.  It replaces the milestone roadmap of the migration from
+ImSwitch, whose milestones are done or were dropped; the items still open are
+listed under *Open work* below.
 
 Validation Baseline
 -------------------
@@ -30,7 +31,7 @@ The main open workstream is the scanning, galvo and DAQ modernization (see
 *Scanning and galvo modernization* below).  Real-world setup validation —
 the per-setup checklists that sign ImSwitch2 off on each lab's microscope —
 has not started, and much of what is on ``main`` has only been tested
-against mocks.  ``ROADMAP.md`` tracks the rest.
+against mocks.
 
 Known Issues and Limitations
 ----------------------------
@@ -80,6 +81,33 @@ heights, and dense grid layouts. Broader layout modernization should be done
 widget-by-widget with screenshots or constrained-viewport smoke tests.  The
 BeadRec widget still starts and stops with a *Run* checkbox rather than
 Start/Stop buttons.
+
+Open work
+~~~~~~~~~
+
+Carried over from the migration roadmap; each is a candidate, not a
+commitment.
+
+* **Scanning.** Detector sync and the linestep ``line_clock`` count (above);
+  a jerk-limited raster in place of the fixed acceleration points
+  (``test_galvo_jerk_limit.py`` is skipped: it was written against an API
+  that does not exist); galvo position-feedback pixel binning, a sinusoidal
+  fast axis and an automatic lag calibration; a DAQ safety layer (voltage
+  limits enforced, scan parameters validated in ``SetupInfo``, recovery from
+  DAQ failures).
+* **Point-scan performance.** Per-line ``d2Step`` event batching, the
+  display-frame path and a configurable TimeTagger preview cadence; all
+  rig-gated (``docs/design/plans/pointscan-confocal-sted-performance.md``).
+* **Recording.** A hard RAM cap for ``SaveMode.RAM`` and an in-memory Zarr
+  store; producer-driven acquisition (``ChunkBroker``) is parked.
+* **Device plugins.** Publish the plugin packages under ``examples/plugins``
+  to PyPI, then remove the in-tree copies.
+* **SMLM.** 3D (astigmatic) fitting and throughput-oriented localization.
+* **Setup validation.** Per-rig sign-off on the etSTED, MoNaLISA 1 and 2,
+  WidefieldSTARSS and SNOUTY microscopes.
+
+The design notes for work in progress are in ``docs/design/plans/`` in the
+repository; they are working notes, not part of this documentation.
 
 Rules for New Work
 ------------------

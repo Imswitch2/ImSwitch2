@@ -4,7 +4,7 @@ Hand-written devices whose *values* have shapes the editor once damaged.
 `test_configeditor_type_authority.py` opens every device in the form and
 applies without touching anything; the result must be type-strictly identical
 to the input (`configeditor_testing.assert_json_identical`). They are the
-third part of the corpus in `docs/design/plans/config-editor-schema-extraction.md`
+third part of the corpus in `docs/design/plans/config-editor-schema-extraction.md` (retired; see git history)
 (the other two: the shipped setups, and the generated `schemas/fixtures/`).
 
 Each file is `{"why": "...", "setup": {<section>: {<name>: <device>}}}`.

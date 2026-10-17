@@ -5,7 +5,7 @@ The source locator, shared image resolver, `DataObj` metadata bridge, view-only
 metadata propagation, batch OME-NGFF Zarr reading, and batch OME-TIFF
 series/metadata reading are implemented with focused regressions. Single-store
 `ZarrLiveSource` now reuses the shared resolver where live semantics allow it.
-Companion to the write-side work in `docs/recording_ome_standardization_plan.md`.
+Companion to the write-side work in `docs/recording_ome_standardization_plan.md` (retired; see git history).
 
 The audit findings below describe the baseline behavior observed before the
 implementation started. The implementation phase list tracks what has been

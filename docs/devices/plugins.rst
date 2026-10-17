@@ -226,10 +226,8 @@ set of values, a numeric range), put a hand-written
 ``schemas/overrides/<id>.json`` beside the generated files; it is merged
 last and never overwritten. The format is described in
 ``imswitch/imcontrol/model/configeditor/schemas/overrides/README.md`` in the
-repository. The extraction rules, and what they can and cannot see, are in
-the design note ``docs/design/plans/config-editor-schema-extraction.md``,
-which is a working note in the repository rather than part of this
-documentation. In short: a dict handed whole to a vendor driver is an open
+repository. The extraction rules are documented in the module docstring of
+``imswitch/imcontrol/model/configeditor/extraction.py``. In short: a dict handed whole to a vendor driver is an open
 pass-through, and a key computed at runtime is reported as an unresolved read
 rather than guessed.
 

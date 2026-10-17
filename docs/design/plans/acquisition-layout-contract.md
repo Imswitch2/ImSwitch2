@@ -4,7 +4,7 @@
 **Date:** 2026-08-11
 **Revision:** 8 — PR 7 landed; every reconstructor consumes the resolved layout (2026-08-12)
 **Scope:** Scan producers, recording, file readers, live sources, and ImProcess reconstructors
-**Related audits:** [ImProcess OME read compatibility](../../improcess_ome_read_compatibility_audit.md), [recording data flow](../../recording_dataflow_plan.md), [OME recording standardization](../../recording_ome_standardization_plan.md), [live reconstruction](../../live_reconstruction_audit.md)
+**Related audits:** [ImProcess OME read compatibility](improcess-ome-read-compatibility.md), [recording data flow](recording-dataflow.md), OME recording standardization (retired; see git history), live reconstruction (retired; see git history)
 
 ---
 
@@ -171,7 +171,7 @@ or its consumers is allowed to close them.
   the transform. The execution side (a scan source that accepts position
   arrays) is producer work the model does not constrain.
 
-See [acquisition-layout-direction-audit.md](acquisition-layout-direction-audit.md)
+See acquisition-layout-direction-audit.md (retired; see git history)
 for the conditions referenced.
 
 ### What is still not "clean"
@@ -1113,7 +1113,7 @@ calls the axis Condition rather than Time and records the projection.
 This section applies to
 `imswitch/improcess/reconstructors/beadrec/reconstructor.py`. The live ImControl
 BeadRec wrap/streaming behaviour remains coordinated through
-`beadrec-2.0.md`; shared coordinate helpers may be reused, but this plan does
+`beadrec-2.0.md` (retired; see git history); shared coordinate helpers may be reused, but this plan does
 not silently change its live buffer policy.
 
 1. Obtain raster dimensions and step sizes from the resolved layout.

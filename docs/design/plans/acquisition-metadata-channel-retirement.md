@@ -37,7 +37,7 @@ retire with A.
 
 **Incoming channels (coordination with the single-axis scan fix).** The 1-D
 scan plan on `fix/galvo-designer-single-axis-scan` (Phase C item 6 of
-`docs/galvo-designer-single-axis-findings.md`) adds `scan_axis_device` and
+`docs/galvo-designer-single-axis-findings.md` (retired; see git history)) adds `scan_axis_device` and
 `scan_axis_physical` attributes, written by all three storers, because the
 Galvo contract labels the first logical scan dimension `x` whatever the
 device and OME would otherwise lose that a Z-only scan was physically Z.

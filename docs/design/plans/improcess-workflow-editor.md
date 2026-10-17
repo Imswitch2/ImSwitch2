@@ -46,7 +46,7 @@ defaults) and gets richer forms as specs are declared.
 ## 1. The config editor, and what carries over
 
 The config editor is three layers (`docs/design/plans/config-editor-discovery-and-schema.md`,
-`config-editor-schema-extraction.md`):
+`config-editor-schema-extraction.md` (retired; see git history)):
 
 | Config editor | Workflow editor counterpart | Status |
 | --- | --- | --- |

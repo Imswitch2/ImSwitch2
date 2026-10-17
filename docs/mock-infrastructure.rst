@@ -74,10 +74,9 @@ Detectors
      - ``MockThorTSICamera``
      - Automatic when ``cameraSerial`` starts with ``MOCK_``, or when the
        real SDK/serial fails to open.
-     - Partial — the repository note
-       ``docs/advanced_scan_triggered_recording_audit.md`` (not part of the
-       published documentation) audits this manager's mock/real
-       triggered-recording paths.
+     - Partial — the mock does not reproduce the real camera's triggered
+       chunk shapes; ``test_thorcam_tsi_recording_contract.py`` pins the
+       triggered-recording contract instead.
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic
        scan-shaped samples in place.

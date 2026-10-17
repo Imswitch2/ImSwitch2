@@ -156,7 +156,7 @@ class TISCameraIC4Manager(DetectorManager):
         """Drain every frame retained since the last call, as ``(N, H, W)``.
 
         Two invariants, both learned the hard way on the sibling ThorCam TSI
-        manager (see ``docs/advanced_scan_triggered_recording_audit.md``):
+        manager (see ``docs/advanced_scan_triggered_recording_audit.md`` (retired; see git history)):
 
         1. **Never fabricate.** An empty ``(0, H, W)`` is returned when no
            trigger has fired. ``getLatestFrame`` may synthesize a frame for live

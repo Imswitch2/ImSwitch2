@@ -294,16 +294,13 @@ Imswitch2/
 │   ├── imcommon/                   # Shared framework (Qt layer, signals, logging)
 │   ├── improcess/                  # Post-acquisition processing module (was: imreconstruct)
 │   └── imscripting/                # Scripting console module
-├── utility_scripts/                # Config editor GUI + device templates
+├── utility_scripts/                # Standalone operator tools (config editor launcher, AOTF calibration, …)
 ├── tools/                          # Maintenance scripts (screenshots, codegen, …)
 ├── docs/                           # Sphinx site (architecture, how-tos, device ref)
 └── .github/workflows/              # CI pipeline
 ```
 
 Deep dive: [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md).
-
-<!-- TODO: architecture diagram.  Suggested 1100×600 px, docs/images/architecture.svg.
-     Source: docs/imswitch_architecture_map.svg (export to PNG for README). -->
 
 ---
 
