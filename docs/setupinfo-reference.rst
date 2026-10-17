@@ -1136,9 +1136,15 @@ Key fields (per ROI):
 laserPresets
 ------------
 
-Optional laser power preset system.
+Optional Live/Scan laser power preset system.  All presets share one name
+space under ``laserPresets``; each entry has one of two shapes:
 
-* ``laserPresets`` (dict): Map of preset names to ``{laserName: LaserPresetInfo}`` nested dicts
+* **Historical** ``{laserName: LaserPresetInfo}`` -- context-unspecified.
+  Files written before Live/Scan contexts load unchanged and are saved back
+  unchanged.
+* **Contextual** ``{"context": "live" | "scan", "powers": {laserName:
+  LaserPresetInfo}}``.  Scan presets store acquisition power only; loading one
+  does not itself emit light or change Live ON/OFF state.
 
 **LaserPresetInfo fields** (per laser, per preset):
 
@@ -1149,25 +1155,44 @@ Optional laser power preset system.
 .. code-block:: json
 
    "laserPresets": {
-       "HighPower": {
-           "Laser405": {
-               "value": 200.0
-           },
-           "Laser488": {
-               "value": 150.0
-           }
+       "Screening": {
+           "Laser405": {"value": 200.0},
+           "Laser488": {"value": 150.0}
        },
-       "LowPower": {
-           "Laser405": {
-               "value": 50.0
-           },
-           "Laser488": {
-               "value": 30.0
+       "Acquisition": {
+           "context": "scan",
+           "powers": {
+               "Laser405": {"value": 50.0},
+               "Laser488": {"value": 30.0}
            }
        }
    }
 
 **See also**: :class:`LaserPresetInfo`
+
+
+deviceCategorySettings
+----------------------
+
+Optional settings that apply to a whole device category rather than to one
+device, keyed by category name (``lasers``, ``positioners``, ...).  The config
+editor edits them with the **Settings** button in each category header.
+
+* ``lasers.powerMode`` (``"coupled"`` | ``"separated"``, default
+  ``"coupled"``): ``coupled`` uses the current Live power during scans;
+  ``separated`` keeps independent Live and Scan power settings.
+
+Any other key is kept as written: the editor's **Add property** button adds
+freeform keys (JSON values), and the Custom tab lists, edits and removes them.
+ImSwitch itself reads only the keys documented here.
+
+**Example**:
+
+.. code-block:: json
+
+   "deviceCategorySettings": {
+       "lasers": {"powerMode": "separated"}
+   }
 
 
 slm (singular)

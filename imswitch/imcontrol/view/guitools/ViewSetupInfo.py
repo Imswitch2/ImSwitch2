@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from imswitch.imcontrol.model import SetupInfo
 
@@ -67,9 +67,19 @@ class ViewSetupInfo(SetupInfo):
     rois: Dict[str, 'ROIInfo'] = field(default_factory=dict)
     """ Additional ROIs available to select in detector settings. """
 
-    laserPresets: Dict[str, Dict[str, 'LaserPresetInfo']] = field(default_factory=dict)
-    """ Laser presets available to select (map preset name -> laser name ->
-    LaserPresetInfo). """
+    deviceCategorySettings: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    """Optional settings that apply to a whole device category rather than to
+    one device. For lasers, ``deviceCategorySettings["lasers"]["powerMode"]``
+    controls whether acquisition power is coupled to Live power or kept in an
+    independent Scan context.
+    """
+
+    laserPresets: Dict[str, Any] = field(default_factory=dict)
+    """Laser presets in one global namespace. Historical entries remain
+    unchanged as ``{laser: {"value": ...}}`` and are context-unspecified.
+    New contextual entries may use
+    ``{"context": "live"|"scan", "powers": {...}}``.
+    """
 
     widgetLayout: Optional['WidgetLayoutInfo'] = field(default_factory=lambda: None)
     """ Optional dock layout override.  When ``null`` or absent, the built-in
@@ -128,9 +138,9 @@ class ViewSetupInfo(SetupInfo):
         except KeyError:
             pass
 
-    def setLaserPreset(self, name, laserPresetInfos):
+    def setLaserPreset(self, name, laserPresetInfo):
         """ :meta private: """
-        self.laserPresets[name] = laserPresetInfos
+        self.laserPresets[name] = laserPresetInfo
 
     def removeLaserPreset(self, name):
         """ :meta private: """

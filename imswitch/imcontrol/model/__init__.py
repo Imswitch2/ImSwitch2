@@ -9,6 +9,17 @@ from .SetupInfo import (
     SetupInfo,
 )
 from .WidgetStatePersistence import WidgetStatePersistence, getWidgetStatePersistence
+from .laser_power import (
+    LaserAcquisitionState,
+    LaserPowerContext,
+    LaserPowerMode,
+    LaserScanPowerControl,
+    LaserScanState,
+    normalizeLaserPowerContext,
+    normalizeLaserPowerMode,
+    laserPowerModeFromSetup,
+    normalizeLaserScanState,
+)
 from .errors import *
 from .managers import *
 from .signaldesigners import SignalDesignerFactory

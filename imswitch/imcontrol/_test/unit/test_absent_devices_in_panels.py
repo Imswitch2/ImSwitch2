@@ -65,6 +65,13 @@ def test_laser_widget_greys_an_absent_laser_with_the_reason(qtbot):
     widget.setLaserUsable('488', False, 'not connected: USB gone')
     module = widget.laserModules['488']
     assert not module.enableButton.isEnabled() and 'USB gone' in module.toolTip()
+    # Main's Live/Scan refresh can independently enable power and ON/OFF.
+    # Neither must override the reconnect branch's disconnected state.
+    widget.setLaserPowerEditable('488', True)
+    widget.setLaserEnableEditable('488', True)
+    assert not module.setPointEdit.isEnabled()
+    assert not module.slider.isEnabled()
+    assert not module.enableButton.isEnabled()
     widget.setLaserUsable('488', True)
     assert module.enableButton.isEnabled() and module.toolTip() == ''
 
@@ -99,6 +106,8 @@ def test_rotator_widget_greys_an_absent_rotator(qtbot):
 
 # -------------------------------------------------------------- controllers
 def _laser_controller(lasers):
+    from imswitch.imcontrol.model import LaserPowerMode
+
     from imswitch.imcontrol.controller.controllers.LaserController import LaserController
 
     calls = []
@@ -114,6 +123,9 @@ def _laser_controller(lasers):
         _commChannel=SimpleNamespace(sharedAttrs={}),
         _logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: calls.append(('warn',))),
         settingAttr=False,
+        is_scanning=False,
+        _powerMode=LaserPowerMode.COUPLED,
+        _resumableLiveEnabledSnapshot=None,
     )
     controller.__dict__['_invokeOnControllerThreadIfNeeded'] = lambda cb: cb()
     return controller, calls
@@ -199,3 +211,63 @@ def test_rotator_panel_greys_absent_rotators():
     with pytest.raises(DeviceNotConnectedError):
         controller.moveRel('HWP', 1)
     assert absent.calls == []
+
+
+@pytest.mark.parametrize('operation', ['toggle', 'power'])
+def test_absent_laser_edits_still_respect_separated_scan_ownership(operation):
+    from imswitch.imcontrol.model import LaserPowerMode
+
+    laser = _Device('775', connected=False)
+    controller, calls = _laser_controller(_Group({'775': laser}))
+    controller._powerMode = LaserPowerMode.SEPARATED
+    controller.is_scanning = True
+    controller._resumableLiveEnabledSnapshot = {'775': True}
+
+    with pytest.raises(RuntimeError, match='read-only while a scan is active'):
+        if operation == 'toggle':
+            controller.toggleLaser('775', True)
+        else:
+            controller._setLaserValue('775', 20)
+
+    assert laser.calls == []
+    assert calls == []
+    assert controller._resumableLiveEnabledSnapshot == {'775': True}
+    assert controller._commChannel.sharedAttrs == {}
+
+
+@pytest.mark.parametrize('context', ['live', 'scan'])
+def test_disconnected_power_write_does_not_publish_a_new_setpoint(context):
+    from imswitch.imcontrol.model import LaserPowerContext, LaserPowerMode
+
+    laser = _Device('775', connected=False)
+    controller, calls = _laser_controller(_Group({'775': laser}))
+    controller._powerMode = LaserPowerMode.SEPARATED
+    controller._currentPowerContext = LaserPowerContext(context)
+    controller._livePowerValues = {'775': 5}
+    controller._scanPowerValues = {'775': 10}
+    controller._commChannel.sharedAttrs[('Laser', '775', 'Value')] = 5
+
+    controller._setLaserValue('775', 20)
+
+    assert laser.calls == []
+    assert controller._livePowerValues == {'775': 5}
+    assert controller._scanPowerValues == {'775': 10}
+    assert controller._commChannel.sharedAttrs[('Laser', '775', 'Value')] == 5
+    assert ('value', '775', 20) not in calls
+    assert ('active', '775', False) in calls
+
+
+def test_disconnected_toggle_clears_pending_resume_and_stays_off():
+    from imswitch.imcontrol.model import LaserPowerMode
+
+    laser = _Device('775', connected=False)
+    controller, calls = _laser_controller(_Group({'775': laser}))
+    controller._powerMode = LaserPowerMode.SEPARATED
+    controller._resumableLiveEnabledSnapshot = {'775': True}
+
+    controller.toggleLaser('775', True)
+
+    assert controller._resumableLiveEnabledSnapshot is None
+    assert controller._commChannel.sharedAttrs[('Laser', '775', 'Enabled')] is False
+    assert laser.calls == []
+    assert ('active', '775', False) in calls
