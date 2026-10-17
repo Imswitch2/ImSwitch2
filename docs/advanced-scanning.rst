@@ -59,7 +59,10 @@ when its line-step checkbox is on.
 **Lock-Master** and **Lock-with** make devices share timing instead of requiring
 the same windows to be entered repeatedly. **Power Level (%)** applies only to
 lasers with an analog channel and is constant for the entire line step; TTL
-still gates when that level reaches the device.
+still gates when that level reaches the device. When this AO control is enabled
+for a laser, Advanced Scan is authoritative for acquisition power: the Laser
+widget shows ``AO`` in SCAN context and does not apply its direct SCAN-power
+setpoint for that laser.
 
 
 Sequence Builder

@@ -432,17 +432,29 @@ focus-lock widget, and SLM widget.  Which widgets appear is controlled by the
 Laser widget
 ------------
 
-There are two typical use modes: **offline** (driven only by the
-buttons and sliders in the widget) and **triggered** by an acquisition
-card controlled by the scanning widget.  In the latter case, set the powers
-here and tick the laser in the scan widget's TTL list: when the scan starts it
-hands every ticked laser's gate to the scan and locks its on/off button for
-the run.  The power stays editable during the scan.
+The laser widget separates **LIVE** and **SCAN** power contexts.  LIVE is the
+normal interactive illumination state: power edits are written to hardware
+immediately and the ON/OFF control determines physical emission.  SCAN stores
+the direct acquisition power to use when a scan owns that laser; editing a
+SCAN value does not itself write acquisition power to hardware or emit light.
 
-**Presets** store the current power of every laser under a name in the setup
-file: **Save as…** creates one, **Load selected** applies it, **Save to
-selected** overwrites it, and **More…** clears the selection or deletes the
-selected preset.
+LIVE and SCAN have separate preset namespaces. Selecting a preset loads it
+immediately in the visible context; **More…** contains update, save-as,
+save-to, rename, delete and clear-selection actions.
+
+Which lasers participate in an acquisition still comes from the scan
+configuration.  While a scan is running the entire LaserWidget is read-only.
+Scan-owned Live paths are suppressed before handoff, use their configured
+SCAN power (or Advanced Scan AO power), and finish OFF with their LIVE
+setpoints restored. Non-participating LIVE lasers are left untouched.
+
+If a scan-owned laser was LIVE-ON before handoff and teardown safely restored
+its LIVE setpoint, a temporary **Resume Live** action appears in the header.
+It is available from either LIVE or SCAN view. Clicking it explicitly restores
+the remembered LIVE ON states through the normal Live enable path and returns
+the widget to LIVE view. Starting another scan or manually changing a LIVE
+ON/OFF state clears the pending Resume action; power, preset and context edits
+do not.
 
 .. image:: ./images/auto/LaserWidget.png
    :align: center

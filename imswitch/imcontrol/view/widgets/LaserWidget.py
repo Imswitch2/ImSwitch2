@@ -6,40 +6,53 @@ from .basewidgets import Widget
 
 
 class LaserWidget(Widget):
-    """ Laser widget for setting laser powers etc. """
+    """Laser widget supporting coupled and separated laser-power policies."""
 
-    sigEnableChanged = QtCore.Signal(str, bool)  # (laserName, enabled)
-    sigValueChanged = QtCore.Signal(str, float)  # (laserName, value)
-    
-    sigModEnabledChanged = QtCore.Signal(str, bool) # (laserName, modulationEnabled)
-    sigFreqChanged = QtCore.Signal(str, int)        # (laserName, frequency)
-    sigDutyCycleChanged = QtCore.Signal(str, int)   # (laserName, dutyCycle)
+    _transparentToolButtonStyle = """
+        QToolButton {
+            border: none;
+            background: transparent;
+        }
+        QToolButton:hover {
+            background: transparent;
+        }
+        QToolButton:pressed {
+            background: transparent;
+        }
+    """
 
-    sigPresetSelected = QtCore.Signal(str)  # (presetName)
-    sigLoadPresetClicked = QtCore.Signal()
-    sigSavePresetClicked = QtCore.Signal()
+    sigEnableChanged = QtCore.Signal(str, bool)
+    sigValueChanged = QtCore.Signal(str, float)
+
+    sigModEnabledChanged = QtCore.Signal(str, bool)
+    sigFreqChanged = QtCore.Signal(str, int)
+    sigDutyCycleChanged = QtCore.Signal(str, int)
+
+    sigPowerContextChanged = QtCore.Signal(str)
+    # Selecting a combo entry is an immediate load request for the current
+    # context. Programmatic combo changes are deliberately silent.
+    sigPresetSelected = QtCore.Signal(str)
+    sigUpdatePresetClicked = QtCore.Signal()
     sigSavePresetAsClicked = QtCore.Signal()
+    sigSavePresetToClicked = QtCore.Signal(str)
+    sigRenamePresetClicked = QtCore.Signal()
     sigDeletePresetClicked = QtCore.Signal()
+    sigClearPresetClicked = QtCore.Signal()
+    sigResumeLiveClicked = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.laserModules = {}
+        self._powerContext = 'live'
+        self._powerMode = 'separated'
 
-        # No minimum height of its own: docks stack vertically and a
-        # splitter's minimum is the sum of its children's, so a panel that
-        # insists on 320 px makes the window that much taller to open --
-        # and a few of them together make it taller than the screen, at
-        # which point Qt keeps the window at its minimum and the bottom is
-        # cut off. The lasers grid below scrolls instead.
         self.setMinimumSize(0, 0)
-
         self.layout = QtWidgets.QGridLayout()
         self.setLayout(self.layout)
 
-        # Lasers grid
+        # Laser rows remain scrollable; the context/preset bar stays fixed at the top.
         self.lasersGrid = QtWidgets.QGridLayout()
         self.lasersGrid.setContentsMargins(4, 4, 4, 4)
-
         self.lasersGridContainer = QtWidgets.QWidget()
         self.lasersGridContainer.setLayout(self.lasersGrid)
 
@@ -52,49 +65,160 @@ class LaserWidget(Widget):
         self.scrollArea.setWidgetResizable(True)
         self.lasersGridContainer.installEventFilter(self)
 
-        self.layout.addWidget(self.scrollArea, 0, 0)
+        self.topBar = QtWidgets.QHBoxLayout()
 
-        # Presets box
-        self.presetsBox = QtWidgets.QHBoxLayout()
-        self.presetsLabel = QtWidgets.QLabel('Presets: ')
-        self.presetsList = QtWidgets.QComboBox()
-        self.presetsList.currentIndexChanged.connect(
-            lambda i: self.sigPresetSelected.emit(self.presetsList.itemData(i))
+        self.contextFrame = QtWidgets.QWidget()
+        contextLayout = QtWidgets.QHBoxLayout(self.contextFrame)
+        contextLayout.setContentsMargins(0, 0, 0, 0)
+        contextLayout.setSpacing(0)
+        self.liveModeButton = QtWidgets.QPushButton('LIVE')
+        self.scanModeButton = QtWidgets.QPushButton('SCAN')
+        for button in (self.liveModeButton, self.scanModeButton):
+            button.setCheckable(True)
+            button.setMinimumHeight(38)
+            button.setMinimumWidth(115)
+            font = button.font()
+            font.setBold(True)
+            if font.pointSizeF() > 0:
+                font.setPointSizeF(font.pointSizeF() + 1)
+            button.setFont(font)
+        self.contextButtonGroup = QtWidgets.QButtonGroup(self)
+        self.contextButtonGroup.setExclusive(True)
+        self.contextButtonGroup.addButton(self.liveModeButton)
+        self.contextButtonGroup.addButton(self.scanModeButton)
+        contextLayout.addWidget(self.liveModeButton)
+        contextLayout.addWidget(self.scanModeButton)
+        self.liveModeButton.clicked.connect(
+            lambda checked: checked and self._contextClicked('live')
         )
-        self.loadPresetButton = guitools.BetterPushButton('Load selected')
-        self.loadPresetButton.clicked.connect(self.sigLoadPresetClicked)
-        self.savePresetButton = guitools.BetterPushButton('Save to selected')
-        self.savePresetButton.clicked.connect(self.sigSavePresetClicked)
-        self.savePresetAsButton = guitools.BetterPushButton('Save as…')
-        self.savePresetAsButton.clicked.connect(self.sigSavePresetAsClicked)
+        self.scanModeButton.clicked.connect(
+            lambda checked: checked and self._contextClicked('scan')
+        )
+
+        self.scanEditingLabel = QtWidgets.QLabel('EDITING SCAN POWERS')
+        self.scanEditingLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.scanEditingLabel.setStyleSheet(
+            'font-weight: bold; padding: 5px 12px; '
+            'border: 1px solid #a8832f; border-radius: 4px; '
+            'background-color: #d6b15d; color: #2f2818;'
+        )
+        self.scanEditingLabel.setToolTip(
+            'Scan power values are being edited. Changes are stored for acquisition '
+            'and do not directly control Live illumination.'
+        )
+        self.scanEditingLabel.hide()
+
+        self.resumeLiveButton = QtWidgets.QPushButton('↶ Resume Live')
+        self.resumeLiveButton.setToolTip(
+            'Restore the Live illumination state from before the last scan.'
+        )
+        self.resumeLiveButton.clicked.connect(self.sigResumeLiveClicked)
+        self.resumeLiveButton.hide()
+
+        self.presetsLabel = QtWidgets.QLabel('Presets:')
+
+        self.presetsList = QtWidgets.QComboBox()
+        self.presetsList.setMinimumWidth(200)
+        self.presetsList.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
+        # ``activated`` is user-only: rebuilding the combo or switching context
+        # never accidentally loads a preset.
+        self.presetsList.activated.connect(self._presetActivated)
+
+        # Match the compact reload affordance used by the SLM config selector.
+        # Reload deliberately reuses the normal preset-load signal so there is
+        # only one controller path for applying a selected preset.
+        self.reloadPresetButton = QtWidgets.QToolButton()
+        self.reloadPresetButton.setIcon(
+            self.style().standardIcon(
+                getattr(
+                    QtWidgets.QStyle,
+                    'SP_BrowserReload',
+                    QtWidgets.QStyle.SP_ArrowRight,
+                )
+            )
+        )
+        self.reloadPresetButton.setAutoRaise(True)
+        self.reloadPresetButton.setFixedSize(22, 22)
+        self.reloadPresetButton.setToolTip('Reload selected preset')
+        self.reloadPresetButton.setStyleSheet(self._transparentToolButtonStyle)
+        self.reloadPresetButton.clicked.connect(self._reloadSelectedPreset)
+        self.reloadPresetButton.setEnabled(False)
+
         self.moreButton = QtWidgets.QToolButton()
         self.moreButton.setText('More…')
         self.moreButton.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.clearPresetAction = QtWidgets.QAction('Clear selection')
-        self.clearPresetAction.triggered.connect(lambda: self.setCurrentPreset(None))
-        self.deletePresetAction = QtWidgets.QAction('Delete selected')
+        self.moreMenu = QtWidgets.QMenu(self.moreButton)
+        self.moreButton.setMenu(self.moreMenu)
+
+        self.updatePresetAction = self.moreMenu.addAction('Update selected')
+        self.updatePresetAction.triggered.connect(self.sigUpdatePresetClicked)
+        self.savePresetAsAction = self.moreMenu.addAction('Save as…')
+        self.savePresetAsAction.triggered.connect(self.sigSavePresetAsClicked)
+        self.savePresetToMenu = self.moreMenu.addMenu('Save current values to…')
+        self.moreMenu.addSeparator()
+        self.renamePresetAction = self.moreMenu.addAction('Rename…')
+        self.renamePresetAction.triggered.connect(self.sigRenamePresetClicked)
+        self.deletePresetAction = self.moreMenu.addAction('Delete…')
         self.deletePresetAction.triggered.connect(self.sigDeletePresetClicked)
-        self.moreButton.addAction(self.clearPresetAction)
-        self.moreButton.addAction(self.deletePresetAction)
+        self.clearPresetAction = self.moreMenu.addAction('Clear selection')
+        self.clearPresetAction.triggered.connect(self.sigClearPresetClicked)
 
-        self.setCurrentPreset(None)
+        self.topBar.addWidget(self.contextFrame, 0)
+        # Keep the Scan-editing warning next to the context selector. This
+        # leaves the right side of the sticky bar available for a wider preset
+        # selector without weakening the warning's association with SCAN.
+        self.topBar.addWidget(self.scanEditingLabel, 0, QtCore.Qt.AlignVCenter)
+        self.topBar.addWidget(self.resumeLiveButton, 0)
+        self.topBar.addStretch(1)
+        self.topBar.addWidget(self.presetsLabel, 0, QtCore.Qt.AlignVCenter)
+        self.topBar.addWidget(self.presetsList, 0)
+        self.topBar.addWidget(self.reloadPresetButton, 0, QtCore.Qt.AlignVCenter)
+        self.topBar.addWidget(self.moreButton, 0)
+        self.layout.addLayout(self.topBar, 0, 0)
+        self.layout.addWidget(self.scrollArea, 1, 0)
 
-        self.presetsBox.addWidget(self.presetsLabel)
-        self.presetsBox.addWidget(self.presetsList, 1)
-        self.presetsBox.addWidget(self.loadPresetButton)
-        self.presetsBox.addWidget(self.savePresetButton)
-        self.presetsBox.addWidget(self.savePresetAsButton)
-        self.presetsBox.addWidget(self.moreButton)
+        self.setPowerContext('live', emitSignal=False)
+        self.setPresetNames([], selected=None)
 
-        self.layout.addLayout(self.presetsBox, 1, 0)
+    def _contextClicked(self, context):
+        if context == self._powerContext:
+            return
+        self._powerContext = context
+        for module in self.laserModules.values():
+            module.setContext(context)
+        self._updateContextAppearance()
+        self.sigPowerContextChanged.emit(context)
+
+    def _updateContextAppearance(self):
+        """Show the explicit Scan-editing banner for the active context."""
+        self.scanEditingLabel.setVisible(
+            self._powerMode == 'separated' and self._powerContext == 'scan'
+        )
+
+    def _presetActivated(self, index):
+        # Qt bindings normally emit the combo index here, but accepting the
+        # text overload as well keeps the widget robust across bindings.
+        if isinstance(index, int):
+            name = self.presetsList.itemData(index)
+        else:
+            text = str(index)
+            found = self.presetsList.findData(text)
+            if found < 0:
+                found = self.presetsList.findText(text)
+            name = self.presetsList.itemData(found) if found >= 0 else None
+        if name:
+            self.sigPresetSelected.emit(str(name))
+
+    def _reloadSelectedPreset(self):
+        name = self.getCurrentPreset()
+        if name:
+            self.sigPresetSelected.emit(str(name))
 
     def addLaser(self, laserName, valueUnits, valueDecimals, wavelength, valueRange=None,
                  valueRangeStep=1, frequencyRange=(0, 0, 0)):
-        """ Adds a laser module widget. valueRange is either a tuple
-        (min, max), or None (if the laser can only be turned on/off).
-        frequencyRange is either a tuple (min, max, initVal)
-        or (0, 0, 0) (if the laser is not modulated in frequency)"""
-
         control = LaserModule(
             valueUnits=valueUnits, valueDecimals=valueDecimals, valueRange=valueRange,
             tickInterval=5, singleStep=valueRangeStep,
@@ -129,98 +253,156 @@ class LaserWidget(Widget):
         self.lasersGrid.addWidget(nameLabel, len(self.laserModules), 0)
         self.lasersGrid.addWidget(control, len(self.laserModules), 1)
         self.laserModules[laserName] = control
+        control.setContext(self._powerContext)
+
+    def setPowerMode(self, mode):
+        """Configure coupled vs separated presentation without emitting edits."""
+        mode = str(getattr(mode, 'value', mode)).lower()
+        if mode not in ('coupled', 'separated'):
+            raise ValueError(f'Unknown laser power mode: {mode!r}')
+        self._powerMode = mode
+        separated = mode == 'separated'
+        self.contextFrame.setVisible(separated)
+        if not separated:
+            # Coupled has one hardware-backed power context. Keep LaserModule
+            # controls in their Live presentation, but do not emit a context
+            # change just because setup policy was configured.
+            self.setPowerContext('live', emitSignal=False)
+            self.scanEditingLabel.hide()
+            self.resumeLiveButton.hide()
+        else:
+            self._updateContextAppearance()
+
+    def getPowerMode(self):
+        return self._powerMode
+
+    def getPowerContext(self):
+        return self._powerContext
+
+    def setPowerContext(self, context, emitSignal=False):
+        context = str(getattr(context, 'value', context)).lower()
+        if context not in ('live', 'scan'):
+            raise ValueError(f'Unknown laser power context: {context!r}')
+        changed = context != self._powerContext
+        self._powerContext = context
+        self.liveModeButton.setChecked(context == 'live')
+        self.scanModeButton.setChecked(context == 'scan')
+        for module in self.laserModules.values():
+            module.setContext(context)
+        self._updateContextAppearance()
+        if emitSignal and changed:
+            self.sigPowerContextChanged.emit(context)
 
     def isLaserActive(self, laserName):
-        """ Returns whether the specified laser is powered on. """
         return self.laserModules[laserName].isActive()
 
     def getValue(self, laserName):
-        """ Returns the value of the specified laser, in the units that the
-        laser uses. """
+        """Return the value currently displayed in the primary power editor."""
         return self.laserModules[laserName].getValue()
 
     def setEditable(self, editable):
-        """ Sets whether the widget can be interacted with. """
         self.setEnabled(editable)
 
-    def setLaserActive(self, laserName, active, emitSignal=True):
-        """ Sets whether the specified laser is powered on.
+    def setResumeLiveAvailable(self, available):
+        """Show the one-shot post-scan Live restoration action."""
+        self.resumeLiveButton.setVisible(
+            self._powerMode == 'separated' and bool(available)
+        )
 
-        If emitSignal is False, the button state is updated silently without
-        emitting sigEnableChanged — used to sync the UI to a hardware state
-        without re-triggering laser-toggle logic. """
+    def setLaserActive(self, laserName, active, emitSignal=True):
         self.laserModules[laserName].setActive(active, emitSignal=emitSignal)
 
     def setLaserActivatable(self, laserName, activatable):
-        """ Sets whether the specified laser can be (de)activated by the user.
-        """
         self.laserModules[laserName].setActivatable(activatable)
 
     def setLaserEditable(self, laserName, editable):
-        """ Sets whether the specified laser's values can be edited by the
-        user. """
         self.laserModules[laserName].setEditable(editable)
 
+    def setLaserPowerEditable(self, laserName, editable):
+        self.laserModules[laserName].setPowerEditable(editable)
+
     def setLaserEnableEditable(self, laserName, editable):
-        """ Sets whether the specified laser's on/off button can be used,
-        leaving its power setpoint editable. """
         self.laserModules[laserName].setEnableEditable(editable)
 
     def setValue(self, laserName, value, emitSignal=True):
-        """ Sets the value of the specified laser, in the units that the laser
-        uses. """
         self.laserModules[laserName].setValue(value, emitSignal=emitSignal)
-    
+
+    def setLaserAOOwned(self, laserName, aoOwned, tooltip=''):
+        self.laserModules[laserName].setAOOwned(aoOwned, tooltip=tooltip)
+
+    def setLaserScanActive(self, laserName, active):
+        self.laserModules[laserName].setScanActive(bool(active))
+
+    def setLaserSecondaryStatus(
+        self, laserName, text, *, emphasized=False, muted=False, tooltip='', badge=False
+    ):
+        self.laserModules[laserName].setSecondaryStatus(
+            text, emphasized=emphasized, muted=muted, tooltip=tooltip, badge=badge
+        )
+
     def setModulationFrequency(self, laserName, value):
-        """ Sets the modulation frequency of the specified laser. """
         self.laserModules[laserName].setModulationFrequency(value)
 
     def setModulationDutyCycle(self, laserName, value):
-        """ Sets the modulation duty cycle of the specified laser. """
         self.laserModules[laserName].setModulationDutyCycle(value)
 
     def getCurrentPreset(self):
-        """ Returns the name of the currently selected preset. """
         return self.presetsList.currentData()
 
-    def setCurrentPreset(self, name):
-        """ Sets the selected preset in the preset list. Pass None to unselect
-        all presets. """
-        anyPresetSelected = False
+    def setCurrentPreset(self, name, emitSignal=False):
+        index = self.presetsList.findData(name) if name else -1
+        self.presetsList.setCurrentIndex(index)
+        selected = self.getCurrentPreset()
+        hasSelection = bool(selected)
+        self.updatePresetAction.setEnabled(hasSelection)
+        self.reloadPresetButton.setEnabled(hasSelection)
+        self.renamePresetAction.setEnabled(hasSelection)
+        self.deletePresetAction.setEnabled(hasSelection)
+        self.clearPresetAction.setEnabled(hasSelection)
+        self.updatePresetAction.setText(
+            f'Update "{selected}"' if selected else 'Update selected'
+        )
+        if emitSignal and selected:
+            self.sigPresetSelected.emit(str(selected))
 
-        if name:
-            nameIndex = self.presetsList.findData(name)
-            if nameIndex > -1:
-                self.presetsList.setCurrentIndex(nameIndex)
-                anyPresetSelected = True
-            else:
-                self.presetsList.setCurrentIndex(-1)
-        else:
-            self.presetsList.setCurrentIndex(-1)
+    def setPresetNames(self, names, selected=None):
+        names = sorted({str(name) for name in names})
+        self.presetsList.blockSignals(True)
+        try:
+            self.presetsList.clear()
+            for name in names:
+                self.presetsList.addItem(name, name)
+            self.setCurrentPreset(selected, emitSignal=False)
+        finally:
+            self.presetsList.blockSignals(False)
 
-        self.loadPresetButton.setEnabled(anyPresetSelected)
-        self.savePresetButton.setEnabled(anyPresetSelected)
-        self.clearPresetAction.setEnabled(anyPresetSelected)
-        self.deletePresetAction.setEnabled(anyPresetSelected)
+        self.savePresetToMenu.clear()
+        for name in names:
+            action = self.savePresetToMenu.addAction(name)
+            action.triggered.connect(
+                lambda _checked=False, target=name: self.sigSavePresetToClicked.emit(target)
+            )
+        self.savePresetToMenu.setEnabled(bool(names))
 
+    # Compatibility helpers retained for controller/tests that update one name.
     def addPreset(self, name):
-        """ Adds a preset to the preset list. """
-        self.presetsList.addItem(name, name)
-        self.presetsList.model().sort(0)
+        names = [self.presetsList.itemData(i) for i in range(self.presetsList.count())]
+        selected = self.getCurrentPreset()
+        if name not in names:
+            names.append(name)
+        self.setPresetNames(names, selected=selected)
 
     def removePreset(self, name):
-        """ Removes a preset from the preset list. """
-        wasSelected = self.getCurrentPreset() == name
-        nameIndex = self.presetsList.findData(name)
-        if nameIndex > -1:
-            self.presetsList.removeItem(nameIndex)
-        if wasSelected:
-            self.setCurrentPreset(None)
+        names = [
+            self.presetsList.itemData(i) for i in range(self.presetsList.count())
+            if self.presetsList.itemData(i) != name
+        ]
+        selected = self.getCurrentPreset()
+        self.setPresetNames(names, selected=None if selected == name else selected)
 
     def eventFilter(self, source, event):
         if source is self.lasersGridContainer and event.type() == QtCore.QEvent.Resize:
             self.scrollArea.updateGeometry()
-
         return False
 
 
@@ -238,9 +420,13 @@ class LaserModule(QtWidgets.QWidget):
                  initialPower, frequencyRange, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.valueDecimals = valueDecimals
+        self.valueUnits = valueUnits
+        self.isBinary = valueRange is None
+        self.isModulated = all(num > 0 for num in frequencyRange)
+        self._context = 'live'
 
-        isBinary = valueRange is None
-        isModulated = all(num > 0 for num in frequencyRange)
+        isBinary = self.isBinary
+        isModulated = self.isModulated
 
         # Graphical elements
         self.setPointLabel = QtWidgets.QLabel(f'Setpoint [{valueUnits}]')
@@ -270,17 +456,31 @@ class LaserModule(QtWidgets.QWidget):
             self.slider.setSingleStep(singleStep)
             self.slider.setValue(0)
 
-        powerFrame = QtWidgets.QFrame(self)
+        self.powerFrame = QtWidgets.QFrame(self)
         self.powerGrid = QtWidgets.QGridLayout()
-        powerFrame.setFrameStyle(QtWidgets.QFrame.Panel | QtWidgets.QFrame.Plain)
-        powerFrame.setLayout(self.powerGrid)
+        self.powerFrame.setFrameStyle(QtWidgets.QFrame.Panel | QtWidgets.QFrame.Plain)
+        self.powerFrame.setLayout(self.powerGrid)
+        powerFrame = self.powerFrame
 
         self.powerGrid.addWidget(self.setPointLabel, 0, 0, 2, 1)
         self.powerGrid.addWidget(self.setPointEdit, 0, 1, 2, 1)
         self.powerGrid.addWidget(self.minpower, 0, 2, 2, 1)
         self.powerGrid.addWidget(self.slider, 0, 3, 2, 1)
         self.powerGrid.addWidget(self.maxpower, 0, 4, 2, 1)
-        
+        self._powerWidgets = [
+            self.setPointLabel, self.setPointEdit, self.minpower, self.slider, self.maxpower
+        ]
+        self.aoIndicator = QtWidgets.QLabel('AO')
+        self.aoIndicator.setAlignment(QtCore.Qt.AlignCenter)
+        self.aoIndicator.setStyleSheet('font-weight: bold; padding: 6px;')
+        self.aoIndicator.hide()
+        self.powerGrid.addWidget(self.aoIndicator, 0, 0, 2, 5)
+
+        self._powerOpacity = QtWidgets.QGraphicsOpacityEffect(self.powerFrame)
+        self.powerFrame.setGraphicsEffect(self._powerOpacity)
+        self._powerOpacity.setOpacity(1.0)
+
+        self.modulationGroup = None
         if isModulated:
             freqRangeMin, freqRangeMax, initialFrequency = frequencyRange
             # laser modulation widgets
@@ -345,6 +545,34 @@ class LaserModule(QtWidgets.QWidget):
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.layout)
         self.layout.addWidget(powerFrame)
+
+        self.secondaryFrame = QtWidgets.QWidget()
+        # Alternate-context text used to live permanently beside every row.
+        # Keep the internal status widgets for compatibility/future compact
+        # indicators, but hide the container so it consumes no row width.
+        self.secondaryFrame.hide()
+        self.secondaryFrame.setMinimumWidth(0)
+        secondaryLayout = QtWidgets.QHBoxLayout(self.secondaryFrame)
+        secondaryLayout.setContentsMargins(0, 0, 0, 0)
+        secondaryLayout.setSpacing(4)
+
+        self.secondaryLabel = QtWidgets.QLabel()
+        self.secondaryLabel.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.secondaryLabel.setWordWrap(False)
+        secondaryLayout.addWidget(self.secondaryLabel)
+
+        self.secondaryAOIndicator = QtWidgets.QLabel('AO')
+        self.secondaryAOIndicator.setAlignment(QtCore.Qt.AlignCenter)
+        self.secondaryAOIndicator.setStyleSheet('font-weight: bold; padding: 2px 6px;')
+        self.secondaryAOIndicator.setFrameStyle(QtWidgets.QFrame.Box | QtWidgets.QFrame.Plain)
+        self.secondaryAOIndicator.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
+        )
+        self.secondaryAOIndicator.hide()
+        secondaryLayout.addWidget(self.secondaryAOIndicator)
+        secondaryLayout.addStretch(1)
+        # Intentionally not added to the row layout: alternate-context status is hidden.
+
         if isBinary:
             sizePolicy = powerFrame.sizePolicy()
             sizePolicy.setRetainSizeWhenHidden(True)
@@ -420,12 +648,11 @@ class LaserModule(QtWidgets.QWidget):
         self.enableButton.setEnabled(editable)
 
     def setEnableEditable(self, editable):
-        """ Sets whether the on/off button can be used, leaving the power
-        setpoint editable.
+        """Set whether the on/off button can be used independently.
 
-        A scan owns emission but not power: the scan's TTL gates the laser, so
-        the on/off button would fight it, while the setpoint stays useful for
-        tuning mid-scan. """
+        The full LaserWidget is read-only during an active scan; this narrower
+        helper remains for non-scan UI state and compatibility.
+        """
         self.enableButton.setEnabled(editable)
 
     def setValue(self, value, emitSignal=True):
@@ -441,7 +668,62 @@ class LaserModule(QtWidgets.QWidget):
             self.slider.setValue(value)
         finally:
             self.slider.blockSignals(False)
-    
+
+    def setContext(self, context):
+        self._context = str(getattr(context, 'value', context)).lower()
+        live = self._context == 'live'
+        self.enableButton.setVisible(live)
+        if self.modulationGroup is not None:
+            self.modulationGroup.setVisible(live)
+        if not self.isBinary:
+            self.powerFrame.setVisible(True)
+        self.setAOOwned(False)
+
+    def setPowerEditable(self, editable):
+        self.setPointEdit.setEnabled(bool(editable))
+        self.slider.setEnabled(bool(editable))
+
+    def setAOOwned(self, aoOwned, tooltip=''):
+        aoOwned = bool(aoOwned and self._context == 'scan' and not self.isBinary)
+        for widget in self._powerWidgets:
+            widget.setVisible(not aoOwned)
+        self.aoIndicator.setVisible(aoOwned)
+        self.aoIndicator.setToolTip(tooltip if aoOwned else '')
+        self.powerFrame.setToolTip(tooltip if aoOwned else '')
+        if aoOwned:
+            self.setPowerEditable(False)
+
+    def setScanActive(self, active):
+        # Muting is visual only; inactive direct Scan powers remain editable.
+        self._powerOpacity.setOpacity(1.0 if active or self._context == 'live' else 0.55)
+
+    def setSecondaryStatus(
+        self, text, *, emphasized=False, muted=False, tooltip='', badge=False
+    ):
+        tooltip = str(tooltip or '')
+        if badge:
+            self.secondaryLabel.hide()
+            self.secondaryAOIndicator.setText(str(text or 'AO'))
+            style = ['font-weight: bold', 'padding: 2px 6px']
+            if muted:
+                style.append('color: palette(mid)')
+            self.secondaryAOIndicator.setStyleSheet('; '.join(style))
+            self.secondaryAOIndicator.setToolTip(tooltip)
+            self.secondaryAOIndicator.show()
+            return
+
+        self.secondaryAOIndicator.hide()
+        self.secondaryAOIndicator.setToolTip('')
+        self.secondaryLabel.show()
+        self.secondaryLabel.setText(str(text or ''))
+        style = []
+        if emphasized:
+            style.append('font-weight: bold')
+        if muted:
+            style.append('color: palette(mid)')
+        self.secondaryLabel.setStyleSheet('; '.join(style))
+        self.secondaryLabel.setToolTip(tooltip)
+
     def setModulationFrequency(self, value):
         """ Sets the laser modulation frequency. """
         self.modulationFrequencyEdit.setText(f"{value}")
