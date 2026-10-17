@@ -1,8 +1,9 @@
+from imswitch.imcontrol.model import Options
 from imswitch.imcontrol.view.widgets.LaserWidget import LaserWidget
 
 
 def _widget(qtbot):
-    widget = LaserWidget()
+    widget = LaserWidget(options=Options(setupFileName='mock.json'))
     qtbot.addWidget(widget)
     widget.addLaser(
         '488', 'mW', 1, 488,
