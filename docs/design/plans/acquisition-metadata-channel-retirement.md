@@ -3,7 +3,7 @@
 **Status:** Active — P1 and P2 implemented; P3/P4 need a release gate
 **Date:** 2026-08-12
 **Scope:** The metadata channels crossing the ImControl/ImProcess boundary
-**Depends on:** [acquisition layout contract](acquisition-layout-contract.md) (PR 1–7 implemented)
+**Depends on:** acquisition layout contract (now the *Acquisition layout* section of `docs/Hdf5datafile.rst`) (PR 1–7 implemented)
 
 ---
 
