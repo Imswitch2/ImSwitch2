@@ -283,10 +283,11 @@ class AAAOTFLaserManager(LaserManager):
         )
 
     def setEnabled(self, enabled):
-        """Turn on (1) or off (0) laser emission"""
+        """Turn emission on/off and report whether the command succeeded."""
         self._apply_ttl_control_mode(before_command=True)
-        self._run('set_channel_enabled', bool(enabled))
+        succeeded = self._run('set_channel_enabled', bool(enabled))
         self._apply_ttl_control_mode(before_command=False)
+        return succeeded
 
     def setValue(self, power):
         """Handles output power.
@@ -294,10 +295,12 @@ class AAAOTFLaserManager(LaserManager):
         """
         amplitude = self._amplitude_for(power)
         if amplitude is None:
-            return
+            return False
         self._apply_ttl_control_mode(before_command=True)
-        self._run('set_channel_amplitude', amplitude)
+        succeeded = self._run('set_channel_amplitude', amplitude)
         self._apply_ttl_control_mode(before_command=False)
+        return succeeded
+        return True
 
     def _amplitude_for(self, power):
         """Convert an ImSwitch value to a raw AOTF amplitude.

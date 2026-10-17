@@ -38,8 +38,10 @@ class NidaqLaserManager(LaserManager):
     def setEnabled(self, enabled):
         try:
             self._nidaqManager.setDigital(self.name, enabled)
+            return True
         except Exception as e:
             self.__logger.error(f"Error trying to enable laser: {e}")
+            return False
 
     def setValue(self, val, enabled=True, for_scanning=False):
         if self.isBinary:
@@ -55,8 +57,10 @@ class NidaqLaserManager(LaserManager):
                 target=self.name, voltage=voltage,
                 min_val=self.valueRangeMin, max_val=self.valueRangeMax
             )
+            return True
         except Exception as e:
             self.__logger.error(f"Error trying to set value to laser: {e}")
+            return False
 
     def setScanModeActive(self, active):
         if active:
