@@ -23,7 +23,7 @@ def _stub_lifecycle(ctrl):
 def test_bead_rec_controller_uses_pure_reconstruction_helpers():
     source = BEAD_REC_CONTROLLER_PATH.read_text()
 
-    assert 'from imswitch.imcontrol.model.bead_recognition import (' in source
+    assert 'from imswitch.imcommon.algorithms.bead_recognition import (' in source
     assert 'analyze_donut,' in source
     assert 'BeadAcquisitionConfig,' in source
     assert 'BeadRecResultRecord,' in source

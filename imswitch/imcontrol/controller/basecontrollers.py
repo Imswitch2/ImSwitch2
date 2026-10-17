@@ -27,12 +27,12 @@ from imswitch.imcontrol.model.managers._scan_execution import (
 from imswitch.imcontrol.controller.WorkflowServices import (
     ScanRequestCompletion,
 )
-from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
+from imswitch.imcommon.model.state_contracts import ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 
-# ``ComponentStateApplyMode`` is re-exported above (defined in model.state_contracts)
-# so existing ``from ..basecontrollers import ComponentStateApplyMode`` imports keep
-# working while the canonical definition lives in the model layer.
+# ``ComponentStateApplyMode`` is re-exported above (defined in
+# imcommon.model.state_contracts) so ``from ..basecontrollers import
+# ComponentStateApplyMode`` imports keep working.
 
 
 class ImConWidgetControllerFactory(WidgetControllerFactory):

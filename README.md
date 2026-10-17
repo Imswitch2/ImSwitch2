@@ -300,7 +300,6 @@ Imswitch2/
 ├── tools/                          # Developer generators (screenshots, codegen, …)
 ├── examples/                       # Device plugin packages, ImProcess plugins and workflow examples
 ├── release/                        # Installer / bundle build files (PyInstaller, macOS, Windows)
-├── tests/                          # Stand-alone tests outside the package
 ├── docs/                           # Sphinx site (architecture, how-tos, device ref)
 └── .github/workflows/              # CI pipeline
 ```

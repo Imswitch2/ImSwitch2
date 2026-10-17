@@ -809,7 +809,7 @@ def _validate_cross_references(data: dict, context: ValidationContext | None) ->
         diagnostics.append(SetupDiagnostic(
             severity="note",
             code="legacy.slm-singular",
-            message="slm (singular) is deprecated — prefer slms (plural) for new setups.",
+            message="slm (singular) is no longer read: the single-SLM panel was removed. Configure the SLM in the slms section and use the SLMs panel.",
             path=("slm",),
         ))
     

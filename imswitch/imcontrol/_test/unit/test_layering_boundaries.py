@@ -171,13 +171,13 @@ def test_widget_state_persistence_lives_in_imcommon_without_imcontrol_dep():
     assert _imports_of(src, prefix="imswitch.imcontrol", top_level_only=False) == set()
 
 
-def test_imcontrol_persistence_shim_preserves_identity():
-    """The imcontrol re-export shim returns the same objects as imcommon, so the
-    ~25 existing controller call sites are unaffected by the move."""
+def test_imcontrol_model_reexports_persistence_from_imcommon():
+    """``imcontrol.model`` keeps exporting the service (about 25 controller call
+    sites) but the object is the imcommon one."""
     from imswitch.imcommon.model import WidgetStatePersistence as CommonWSP
     from imswitch.imcommon.model import getWidgetStatePersistence as common_get
-    from imswitch.imcontrol.model import WidgetStatePersistence as ShimWSP
-    from imswitch.imcontrol.model import getWidgetStatePersistence as shim_get
+    from imswitch.imcontrol.model import WidgetStatePersistence as ModelWSP
+    from imswitch.imcontrol.model import getWidgetStatePersistence as model_get
 
-    assert CommonWSP is ShimWSP
-    assert common_get() is shim_get()
+    assert CommonWSP is ModelWSP
+    assert common_get() is model_get()

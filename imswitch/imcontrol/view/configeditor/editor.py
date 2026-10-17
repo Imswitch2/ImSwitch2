@@ -221,7 +221,7 @@ def _discover_managers() -> dict:
     base_managers = {
         "DetectorManager", "LaserManager", "PositionerManager", "RotatorManager",
         "FlipMirrorManager", "PulseGeneratorManager", "StandManager",
-        "RS232Manager", "SLMManager"
+        "RS232Manager"
     }
 
     for cat, (_, dir_name) in _CATEGORY_REGISTRY.items():
@@ -2721,7 +2721,6 @@ def _load_widget_registry() -> dict:
         "BFTimelapse": "Analysis",
         # Advanced
         "SLMs": "Advanced",
-        "SLM": "Advanced",          # Docstring uses SLM (singular)
         "EtSTED": "Advanced",
         "EtMonalisa": "Advanced",
         "Tiling": "Advanced",
@@ -2763,7 +2762,6 @@ def _load_widget_registry() -> dict:
             ("BFTimelapse",    "Brightfield timelapse"),
         ],
         "Advanced": [
-            ("SLM",        "SLM control (single)"),
             ("SLMs",       "SLM control (multi)"),
             ("EtSTED",     "EtSTED widget"),
             ("EtMonalisa", "EtMonalisa widget"),

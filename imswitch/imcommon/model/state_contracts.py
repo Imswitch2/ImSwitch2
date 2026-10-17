@@ -1,12 +1,12 @@
 """Model-layer state-application contracts.
 
 These declarative types are shared by the model-side persistence registry
-(:mod:`imswitch.imcontrol.model.WidgetStatePersistence`) and by the controller
+(:mod:`imswitch.imcommon.model.WidgetStatePersistence`) and by the controller
 layer. They live in the model package so that model code does not have to import
 from the controller package (which previously forced lazy in-function imports to
 avoid a circular dependency). The controller package re-exports
-:class:`ComponentStateApplyMode` from ``controller.basecontrollers`` for
-backwards compatibility, so existing controller imports keep working unchanged.
+:class:`ComponentStateApplyMode` from ``controller.basecontrollers``, so existing
+controller imports keep working unchanged.
 """
 
 from enum import Enum

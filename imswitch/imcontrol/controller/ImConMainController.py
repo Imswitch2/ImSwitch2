@@ -24,7 +24,7 @@ from .MasterController import MasterController
 from .PickSetupController import PickSetupController
 from .SetupModeController import SetupModeController
 from .SmartMicroscopyModeService import SmartMicroscopyModeService
-from .ShortcutManager import ShortcutManager
+from imswitch.imcommon.controller.ShortcutManager import ShortcutManager
 from .basecontrollers import ImConWidgetControllerFactory
 
 
@@ -766,7 +766,7 @@ class ImConMainController(MainController):
         # Compute default jog key sequences via the shared, unit-tested pure
         # function (shortcutModifier alias expansion + legacy first-come).
         from imswitch.imcommon.model import ShortcutScope
-        from imswitch.imcontrol.controller.ShortcutManager import computePositionerJogDefaults
+        from imswitch.imcommon.controller.ShortcutManager import computePositionerJogDefaults
 
         visiblePositioners = {}
         for positionerName, positionerInfo in self.__setupInfo.positioners.items():

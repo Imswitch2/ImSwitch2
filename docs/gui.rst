@@ -402,7 +402,7 @@ Hardware control
 
 These widgets drive the physical hardware.  The main ones are the
 laser widget, scanning widget, tiling widget, positioner widget,
-focus-lock widget, and SLM widget.  Which widgets appear is controlled by the
+focus-lock widget, and SLMs widget.  Which widgets appear is controlled by the
 ``availableWidgets`` list in your setup JSON — see
 :doc:`imcontrol-setups`.
 
@@ -438,49 +438,15 @@ do not.
    :width: 561px
 
 
-SLM widget
-----------
-
-The SLM widget controls the phase masks applied to the laser line
-incident on a spatial light modulator.  It is configured to control
-two simultaneous phase masks per beam (e.g. to shape a STED beam into
-overlaid donut + tophat for 3D-STED) but can be re-programmed for
-other beam-shaping schemes.  You can pick a mask type per side
-(donut, tophat, gaussian, half/quad/hex/split alignment patterns),
-adjust mask position, and tune Zernike-polynomial aberration-correction
-coefficients (tip/tilt, defocus, spherical, vertical/horizontal coma,
-vertical/oblique astigmatism — more can be added).  Parameters are saved
-to and loaded from JSON files in the ``imcontrol_slm`` folder of the user
-directory (``ImSwitchConfig``, see :doc:`imcontrol-setups`), one per objective (``info_oil.json``, ``info_glyc.json``); pick
-the objective first, as saving and loading refuse *No objective*.
-
-The SLM panel only appears if the setup's ``widgetLayout`` places ``"SLM"``:
-without a ``widgetLayout``, listing it in ``availableWidgets`` creates no
-panel.
-
-.. warning::
-
-   The SLM widget cannot load at the moment.  Its controller drives the
-   single-SLM manager, which ImControl no longer creates (it builds the
-   manager of the ``slms`` section instead), so a setup whose layout places
-   ``"SLM"`` stops ImControl from loading.  Use the Multi-SLM widget below.
-
-.. image:: ./images/auto/SLMWidget.png
-   :align: center
-   :width: 600px
-
-
-Multi-SLM widget
-----------------
+SLMs widget
+-----------
 
 Drives any number of spatial light modulators, one tab each, from the setup
-file's ``slms`` section.  It supersedes the SLM widget, which reads the
-singular ``slm`` section and drives a single SLM with fixed left and right
-masks and per-objective JSON parameter files.  This widget instead splits each
+file's ``slms`` section.  It splits each
 SLM into ``nSections`` section tabs (or one *Full SLM* tab), builds patterns
 from a pattern library, adds computer-generated holograms, and keeps named
-HDF5 configurations per SLM.  Unlike ``SLM``, ``SLMs`` in ``availableWidgets``
-gets a panel without a ``widgetLayout``.  This widget needs each SLM's
+HDF5 configurations per SLM.  ``SLMs`` in ``availableWidgets`` gets a panel
+without a ``widgetLayout``.  This widget needs each SLM's
 ``serial_number`` and a ``widgetOptions.patterns`` list (see
 :doc:`setupinfo-reference`): without either, the panel fails to build and
 ImControl does not load.

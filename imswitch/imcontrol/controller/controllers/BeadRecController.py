@@ -21,7 +21,7 @@ from imswitch.imcontrol.model.bead_rec_io import (
 from imswitch.imcontrol.view import guitools
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.managers import LeasePurpose
-from imswitch.imcontrol.model.bead_recognition import (
+from imswitch.imcommon.algorithms.bead_recognition import (
     analyze_donut,
     BeadAcquisitionConfig,
     BeadAnalysisParameters,
@@ -724,7 +724,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             result = analyze_donut(self.imDisplay, self._widget.analysisPrm)
             self._display_legacy_donut_result(result)
         else:
-            from imswitch.imcontrol.model.bead_fits import FIT_MODELS
+            from imswitch.imcommon.algorithms.bead_fits import FIT_MODELS
             try:
                 result = fit_bead(self.imDisplay, modelKey, params=self._widget.analysisPrm)
             except ValueError as e:

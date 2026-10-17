@@ -272,10 +272,6 @@ api.imcontrol
 
       Needs *RotationScan* in ``availableWidgets``.
 
-   .. method:: loadParams()
-
-      Needs *SLM* in ``availableWidgets``.
-
    .. method:: loadScanParamsFromFile(filePath: str) -> None
 
       Loads scanning parameters from the specified file.
@@ -476,10 +472,6 @@ api.imcontrol
 
       Needs *View* in ``availableWidgets``.
 
-   .. method:: setMask(maskMode)
-
-      Needs *SLM* in ``availableWidgets``.
-
    .. method:: setMotorsEnabled(positionerName: str, is_enabled: int) -> None
 
       Moves the specified positioner axis to the specified position.
@@ -659,10 +651,6 @@ api.imcontrol
    .. method:: stopTiling() -> None
 
       Needs *Tiling* in ``availableWidgets``.
-
-   .. method:: toggleSLMDisplay(enabled)
-
-      Needs *SLM* in ``availableWidgets``.
 
    .. method:: updateSetupModeMetadata(name, description=None, shortcut=None)
 

@@ -669,11 +669,20 @@ class ImConMainView(QtWidgets.QMainWindow):
                 retired = retiredScanWidgetTypeError(self.viewSetupInfo.scan.scanWidgetType)
                 if retired is not None:
                     raise retired
-            self.widgets[widgetKey] = self.factory.createWidget(
-                getattr(widgets, f'{widgetKey}Widget')
-                if widgetKey != 'Scan' else
-                getattr(widgets, f'{widgetKey}Widget{self.viewSetupInfo.scan.scanWidgetType}')
-            )
+            if widgetKey == 'Scan':
+                widgetClass = getattr(
+                    widgets, f'{widgetKey}Widget{self.viewSetupInfo.scan.scanWidgetType}')
+            else:
+                widgetClass = getattr(widgets, f'{widgetKey}Widget', None)
+                if widgetClass is None:
+                    # Same rule as availableWidgets, which ignores unknown keys:
+                    # a layout naming a panel that no longer exists (e.g. the
+                    # retired single-SLM "SLM", now "SLMs") must not stop ImControl.
+                    self.__logger.warning(
+                        f'widgetLayout names "{widgetKey}", which is not a known'
+                        f' widget; skipping it.')
+                    continue
+            self.widgets[widgetKey] = self.factory.createWidget(widgetClass)
             self.docks[widgetKey] = Dock(dockInfo.name, size=(1, 1))
             self.docks[widgetKey].addWidget(self.widgets[widgetKey])
             if prevDock is None:
@@ -740,7 +749,6 @@ _DOCK_DISPLAY_NAMES = {
     'Rotator': 'Rotator',
     'MotCorr': 'Motorized Correction Collar',
     'SLMs': 'SLMs',
-    'SLM': 'SLM',
     'Scan': 'Scan',
     'RotationScan': 'RotationScan',
     'BeadRec': 'Bead Rec',

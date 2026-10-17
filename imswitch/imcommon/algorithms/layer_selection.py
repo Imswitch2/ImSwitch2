@@ -6,8 +6,7 @@ at". This module is the one place that encodes what counts as an image
 source, so the tools cannot drift apart again.
 
 It lives in the common layer because imcontrol's Line Profile panel is the
-same widget as ImProcess's Profile panel; ``imswitch.improcess.layer_selection``
-re-exports it unchanged.
+same widget as ImProcess's Profile panel.
 
 Kept dependency-light (numpy only) so widgets remain importable without the
 view package's matplotlib/napari import chain.

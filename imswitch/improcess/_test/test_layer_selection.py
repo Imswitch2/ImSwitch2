@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from imswitch.improcess.layer_selection import active_image_layer, is_image_layer
+from imswitch.imcommon.algorithms.layer_selection import active_image_layer, is_image_layer
 
 
 class _FakeLayer:

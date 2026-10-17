@@ -179,21 +179,23 @@ delivered; they are removed.
 
 ## WP-6 Compatibility shims and stray tests
 
-Repoint callers, then delete the shim:
-
-| Shim | Callers |
-|---|---|
-| `imcontrol/controller/ShortcutManager.py` | `ImConMainController.py`, 6 tests |
-| `imcontrol/model/bead_fits.py` | `BeadRecController.py:~750` |
-| `imcontrol/model/bead_recognition.py` | `BeadRecController.py:~24`, 3 tests |
-| `imcontrol/model/WidgetStatePersistence.py` | `imcontrol/model/__init__.py` |
-| `imcontrol/model/state_contracts.py` | `basecontrollers.py` |
-| `improcess/layer_selection.py` | ROIStats/ROIManager/Segmentation/Multicolor widgets, tests |
-
-Keep `imcontrol/model/workflows/recording.py` (user scripts import it).
-Move the tests of `tests/test_bead_fits.py` (never collected: outside
-`testpaths` and every CI lane) into `imswitch/imcommon/_test/test_bead_fits.py`
-importing from `imcommon.algorithms`, and delete `tests/`.
+**DONE (2026-10-17).** The six shims (`imcontrol/controller/ShortcutManager`,
+`imcontrol/model/{bead_fits,bead_recognition,WidgetStatePersistence,state_contracts}`,
+`improcess/layer_selection`) are deleted and every caller imports the real
+module; `imcontrol.model` still exports `WidgetStatePersistence` /
+`getWidgetStatePersistence` (about 25 controllers import them there), now from
+imcommon. Kept: `imcontrol/model/workflows/recording.py` (user scripts import
+it), `imcontrol/view/widgets/ShortcutEditorDialog.py` (a real wrapper that
+persists into the setup JSON), the `EtSTEDController` / `TeensyPulseManager`
+re-exports (read by plugins and out-of-tree code). `tests/test_bead_fits.py`
+moved into `imcommon/_test/test_bead_fits.py`; `tests/` is gone.
+The single-SLM stack was verified dead (`SLM` is in no default dock list, no
+code path builds `SLMManager`, `SLMController.__init__` dereferences
+`master.slmManager`) and removed: `SLMController`, `SLMWidget`, `SLMManager`,
+`SLMDisplay`, `SetupInfo.slm`/`SLMInfo`, `sigSLMMaskUpdated`, registry and
+config-editor entries, docs, the shipped `imcontrol_slm/info_*.json`. An `slm`
+key in an old setup still loads (it lands in `_catchAll`) and is dropped on
+rewrite.
 
 ## WP-7 Packaging, CI and scripts
 
