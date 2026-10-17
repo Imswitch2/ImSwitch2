@@ -142,49 +142,40 @@ records (still read from saved BeadRec state and covered by
 `test_beadrec_ome_save`), and `find_bead_center` in the bead-recognition model
 (tested, now without a caller).
 
-## WP-5 CommunicationChannel, second pass
+## WP-5 CommunicationChannel, second pass -- DONE (branch `chore/cleanup-code`)
 
-The first pass removed only what had zero producers and consumers. Left:
+Done: the scan-parameter and scan-frequency request/response pairs are
+`ScanWorkflowService.request_scan_parameters()` / `request_scan_frequency()`
+calls that return the data (the EtSTED runner hands the frequency back in its
+result); `sigInitiateEtMonalisa`/`sigInitiateEtSnouty` removed;
+`sigRunScanTriggerScopePLSRMulticolor` replaced by
+`run_plsr_multicolor_scan()` (same two entry points as before, found by name
+in the controller registry); `sigClockWidefield` is now a signal on EtSnouty
+itself; `getNumLineSteps` and `isExecuting` removed, the two scan-source
+resolver pairs share one helper; `acquireImage` works outside a script; the
+dead `_attrCategoryDevices` constants and `LightSheetMulticolorController.attrChanged`
+removed.
 
-1. Replace the request/response signal pairs with direct calls on
-   `ScanWorkflowService`: `sigRequestScanParameters`/`sigSendScanParameters`
-   and `sigRequestScanFreq`/`sigSendScanFreq` (EtSTED runner,
-   RecordingController, EventTriggeredBase).
-2. The three event-triggered flags: `sigInitiateEtMonalisa` and
-   `sigInitiateEtSnouty` are emitted and nobody listens. Delete them (and the
-   emits) unless a listener is wanted (**DECISION** only if someone wants the
-   joystick lock during ET runs that the commented connect hinted at).
-3. `sigRunScanTriggerScopePLSRMulticolor` duplicates `sigRunScan` for one
-   target: use `scanWorkflow.run_scan_from(...)`.
-4. `sigClockWidefield` is EtSnouty's private timer on the global bus: move it
-   onto the EtSnouty controller.
-5. `sigScanBuilt` on the channel: every real listener uses
-   `nidaqManager.sigScanBuilt`; only tests connect the channel one. Remove
-   the channel copy and its two emits, or document why it stays.
-6. Move the scan-source registry (`getScanSource`/`getRecordingScanSource`
-   are near-duplicates), the four copy-paste BeadRec accessors
-   (`getDimsScan`, `getScanStepSizes`, `getNumLineSteps`,
-   `getFramesPerScanPixel`) and the focus-lock registry out of the channel
-   into a resolver/service. Remove the unused `getNumLineSteps` and
-   `isExecuting`.
-7. Shorten the three-hop script relay (`runScript` → module
-   `sigRunScript` → imscripting `sigRunScript`, and back through
-   `sigExecutionFinished` → `sigScriptExecutionFinished`).
-8. Bugs found by the audit (each needs a test):
-   - `sigSLMMaskUpdated`: SLMController listens on the channel, but
-     `MasterController` never forwards `SLMManager.sigSLMMaskUpdated` — the
-     mask display is never driven through it.
-   - `acquireImage` (`@APIExport`) appends to `self.output`, which only
-     `runScript` creates → `AttributeError` outside a script.
-   - `sigSaveFocus` is in the public `signals()` API but nothing emits it, so
-     a script waiting on it blocks forever. **DECISION:** emit it from the
-     focus lock, or remove it from `signals()` (scripting docs change).
-9. sharedAttrs: `LSXYR_Scan:*` keys have no reader anywhere; the
-   `_attrCategoryDevices` constants in 6 TriggerScope/LightSheet controllers
-   are never written; `LightSheetMulticolorController.attrChanged` is never
-   connected.
+Skipped, and why:
 
-Keep `test_communication_channel_contract.py` and the inventory JSON in step.
+- `sigScanBuilt` stays on the channel. Nothing in the repository listens to it,
+  but `docs/scan-lifecycle.rst` lists it as part of the scan-controller
+  contract and the TriggerScope code publishes it explicitly as a
+  compatibility event for out-of-tree device plugins. Removal is a plugin API
+  change; it now carries a comment saying so.
+- `sigSLMMaskUpdated` forward: `SLMController` reads `self._master.slmManager`,
+  which `MasterController` does not have (only `slmsManager`, the multi-SLM
+  stack), so there is no manager to forward from. The legacy
+  `SLMController`/`SLMManager`/`setupInfo.slm` stack is dead code; remove it
+  (a separate item) rather than reviving it.
+- Not moved: the scan-source, BeadRec and focus-lock registries (too big for
+  this package), the script-relay shortening (item 7), `sigSaveFocus` and the
+  TilingController `_main` lookup (pending decisions).
+- sharedAttrs `LSXYR_Scan:*` keys left alone (they go into recording metadata).
+
+Found on the way: the TriggerScope `sendScanParameters` replies emitted one
+argument on the three-argument `sigSendScanParameters`, so they could never be
+delivered; they are removed.
 
 ## WP-6 Compatibility shims and stray tests
 

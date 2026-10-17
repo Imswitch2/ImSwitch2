@@ -498,7 +498,7 @@ watchdog fired.
 **Not scan sources** — they orchestrate around scans but never own the
 lifecycle, and are deliberately excluded: ``EtSnoutyController`` (an
 event-triggered workflow that *requests* scans via
-``sigRunScanTriggerScopePLSRMulticolor``) and ``RotationScanController``
+``ScanWorkflowService.run_plsr_multicolor_scan()``) and ``RotationScanController``
 (steps rotators between scans run by others).
 
 
