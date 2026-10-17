@@ -6,6 +6,7 @@ import numpy as np
 
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
 
 
 def _as_bool(value):
@@ -58,10 +59,9 @@ class MPBLaserManager(LaserManager):
             properties.get('useMockOnFailure', True)
         )
 
+        self._rs232Name = properties['rs232device']
         try:
-            self._rs232manager = kwargs['rs232sManager']._subManagers[
-                properties['rs232device']
-            ]
+            self._rs232manager = kwargs['rs232sManager']._subManagers[self._rs232Name]
             # Recovery comes before identity/diagnostic queries so a laser left
             # live by a crashed process spends the least possible time emitting.
             mode_reply = self._queryRequired('GETPOWERENABLE')
@@ -97,6 +97,7 @@ class MPBLaserManager(LaserManager):
             self.__logger.debug(f'MPB laser {name}, SN: {serial_number}')
 
             self.setTriggerSource(0)  # internal; not implemented by this driver
+            self._setConnected("MPB laser initialized")
 
         except Exception as exc:
             # Initialization is the recovery path after a crashed ImSwitch
@@ -116,6 +117,11 @@ class MPBLaserManager(LaserManager):
             if not self._use_mock_on_failure:
                 raise RuntimeError(message) from exc
             self._isMock = True
+            self._setConnectionError(
+                exc,
+                summary="MPB laser initialization failed; mock fallback active",
+                mock_active=True,
+            )
 
         super().__init__(
             laserInfo,
@@ -123,6 +129,12 @@ class MPBLaserManager(LaserManager):
             isBinary=False,
             valueUnits='mW',
             valueDecimals=0,
+        )
+
+    def getDeviceDescriptorSpec(self):
+        return rs232BackedPrimarySpec(
+            category='laser',
+            rs232_name=str(self._rs232Name),
         )
 
     @staticmethod

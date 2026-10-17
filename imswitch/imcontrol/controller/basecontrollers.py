@@ -16,7 +16,8 @@ from imswitch.imcommon.controller.basecontrollers import (
     WidgetControllerFactory,
 )
 from imswitch.imcontrol.model import (
-    InvalidChildClassError, ScanDesignRefusedError,
+    InvalidChildClassError, LaserPowerMode, ScanDesignRefusedError,
+    laserPowerModeFromSetup,
 )
 from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
 from imswitch.imcontrol.model.managers._scan_execution import (
@@ -267,6 +268,23 @@ class ScanLifecycleMixin:
     _isRunningFlag = False
     #: Why the last scan start request was refused (None when it was not).
     _lastScanStartRejection = None
+
+    def _laserScanPreparationError(self):
+        """Return a safety-critical laser preparation error, if published.
+
+        LaserController owns the actual preparation.  Scan controllers only
+        enforce its veto at the final synchronous pre-arm boundary.
+        """
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        getter = getattr(workflow, 'laser_scan_preparation_error', None)
+        return getter() if callable(getter) else None
+
+    def _raiseIfLaserScanPreparationFailed(self):
+        error = self._laserScanPreparationError()
+        if error:
+            raise RuntimeError(
+                f'Laser preparation failed; scan will not start: {error}'
+            )
 
     def _recordScanStartRejection(self, reason):
         """ Make a refused start observable (plan A-05).
@@ -1263,7 +1281,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 continue
             try:
                 position = self._analogParameterDict['axis_centerpos'][index]
-                self._master.positionersManager[positionerName].setPosition(position, 0)
+                manager = self._master.positionersManager[positionerName]
+                # Managers address axes by name ('Z'), not by index.
+                manager.setPosition(position, manager.axes[0])
             except Exception:
                 self._logger.warning(
                     'Failed to set %s to center before scan:\n%s',
@@ -1653,8 +1673,12 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         ``sigScanBuilt`` arrives and its write is refused. Publishing first
         gives those consumers a window while the DAQ is still free.
 
-        A failure to resolve the device list must not block the scan: the scan
-        itself does not depend on this, only the consumers do.
+        In separated laser-power mode, membership is part of the hardware
+        handoff: it decides which Live paths are suppressed and where Scan
+        power is applied, so resolution failure must abort before arming.
+        Coupled mode deliberately preserves the pre-work behavior: resolution
+        failure is logged and membership consumers are skipped, but laser
+        ownership alone does not make acquisition refusal fatal.
         """
         self._scanPositionersRestored = False
         # Published here rather than alongside sigScanStarting, which fires
@@ -1664,9 +1688,22 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # Consumers have already yielded on sigScanStarting and this only ever
         # releases them, so arriving later is safe -- arriving wrong is not.
         self._publishScanActuators()
+        laserPowerMode = laserPowerModeFromSetup(self._setupInfo)
+        separatedLaserPower = laserPowerMode is LaserPowerMode.SEPARATED
+        if separatedLaserPower:
+            self._raiseIfLaserScanPreparationFailed()
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
-        except Exception:
+        except Exception as error:
+            if separatedLaserPower:
+                self._logger.error(
+                    'Could not resolve the scan device list; refusing to arm '
+                    f'acquisition because laser ownership is undefined:\n'
+                    f'{traceback.format_exc()}'
+                )
+                raise RuntimeError(
+                    'Could not resolve scan laser/device membership before arming.'
+                ) from error
             self._logger.error(
                 'Could not resolve the scan device list; lasers and other '
                 f'membership consumers are not being notified:\n'
@@ -1676,6 +1713,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self.emitScanSignal(
                 self._commChannel.sigScanDevicesResolved, devices
             )
+        if separatedLaserPower:
+            self._raiseIfLaserScanPreparationFailed()
         recordingManager = getattr(self._master, 'recordingManager', None)
         markScanStarted = getattr(
             recordingManager, 'markScanStarted', None
@@ -2069,6 +2108,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             mode['scanMode'] = self._widget.isScanMode()
         if hasattr(self._widget, 'isContLaserMode'):
             mode['contLaserMode'] = self._widget.isContLaserMode()
+        if hasattr(self._widget, 'progressEnabled'):
+            mode['progressEnabled'] = self._widget.progressEnabled()
 
         scanInfo = getattr(self._setupInfo, 'scan', None)
 
@@ -2173,6 +2214,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
             if mode.get('repeatEnabled') is not None and hasattr(self._widget, 'setRepeatEnabled'):
                 self._widget.setRepeatEnabled(bool(mode['repeatEnabled']))
+            if mode.get('progressEnabled') is not None and hasattr(self._widget, 'setProgressEnabled'):
+                self._widget.setProgressEnabled(bool(mode['progressEnabled']))
 
             self.setParameters()
             self.signalDict = None
@@ -2290,9 +2333,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             "repeatEnabled": "repeat",
             "scanMode": "scan mode",
             "contLaserMode": "continuous laser mode",
+            "progressEnabled": "progress bar",
         }
         summaries = []
-        for key in ("repeatEnabled", "scanMode", "contLaserMode"):
+        for key in ("repeatEnabled", "scanMode", "contLaserMode", "progressEnabled"):
             value = mode.get(key)
             if value is not None:
                 summaries.append(f"    {labels[key]}: {self._fmt(value)}")

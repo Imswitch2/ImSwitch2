@@ -350,17 +350,29 @@ focus-lock widget, and SLM widget.  Which widgets appear is controlled by the
 Laser widget
 ------------
 
-There are two typical use modes: **offline** (driven only by the
-buttons and sliders in the widget) and **triggered** by an acquisition
-card controlled by the scanning widget.  In the latter case, set the powers
-here and tick the laser in the scan widget's TTL list: when the scan starts it
-hands every ticked laser's gate to the scan and locks its on/off button for
-the run.  The power stays editable during the scan.
+The laser widget separates **LIVE** and **SCAN** power contexts.  LIVE is the
+normal interactive illumination state: power edits are written to hardware
+immediately and the ON/OFF control determines physical emission.  SCAN stores
+the direct acquisition power to use when a scan owns that laser; editing a
+SCAN value does not itself write acquisition power to hardware or emit light.
 
-**Presets** store the current power of every laser under a name in the setup
-file: **Save as…** creates one, **Load selected** applies it, **Save to
-selected** overwrites it, and **More…** clears the selection or deletes the
-selected preset.
+LIVE and SCAN have separate preset namespaces. Selecting a preset loads it
+immediately in the visible context; **More…** contains update, save-as,
+save-to, rename, delete and clear-selection actions.
+
+Which lasers participate in an acquisition still comes from the scan
+configuration.  While a scan is running the entire LaserWidget is read-only.
+Scan-owned Live paths are suppressed before handoff, use their configured
+SCAN power (or Advanced Scan AO power), and finish OFF with their LIVE
+setpoints restored. Non-participating LIVE lasers are left untouched.
+
+If a scan-owned laser was LIVE-ON before handoff and teardown safely restored
+its LIVE setpoint, a temporary **Resume Live** action appears in the header.
+It is available from either LIVE or SCAN view. Clicking it explicitly restores
+the remembered LIVE ON states through the normal Live enable path and returns
+the widget to LIVE view. Starting another scan or manually changing a LIVE
+ON/OFF state clears the pending Resume action; power, preset and context edits
+do not.
 
 .. image:: ./images/auto/LaserWidget.png
    :align: center
@@ -764,8 +776,9 @@ Point-scan variant
 ~~~~~~~~~~~~~~~~~~
 
 ``"scanWidgetType": "PointScan"``, paired with ``GalvoScanDesigner`` and
-``PointScanTTLCycleDesigner`` (as in ``example_sted.json``), is the panel for
-galvo point scanning with point detectors, as in confocal and STED.  It differs
+``PointScanTTLCycleDesigner``, is the older panel for galvo point scanning with
+point detectors, as in confocal and STED; its features have moved to the
+``Advanced`` panel, which ``example_sted.json`` now uses.  It differs
 from ``Base`` in three ways:
 
 * **Dwell time (ms)** starts at 0.02 ms rather than 10 ms, and two rig delays
@@ -1478,6 +1491,48 @@ opens pyqtgraph's panel for inspecting exceptions and their stack traces.
 .. image:: ./images/auto/ConsoleWidget.png
    :align: center
    :width: 256px
+
+.. _log-panel:
+
+Log
+---
+
+Everything ImSwitch2 logs, in a panel.  Closed at startup and always available
+from **View > Log**; ``Log`` in ``availableWidgets`` opens it at startup instead.
+
+This is the only way to read the log in a standalone bundle: the Windows build
+keeps a console window behind the application, and the macOS ``.app`` has
+nowhere to print at all (see :doc:`packaging`).  From a terminal the same
+records also go to stderr, as they always have.
+
+Records are buffered **from the moment ImSwitch2 starts, at Debug level**,
+whatever the console shows.  Two things follow, both deliberate:
+
+* Opening the panel after something went wrong shows what already happened --
+  the records you want are usually minutes old by the time you think to look.
+* **Level** raises or lowers what the panel shows without restarting.  On a
+  microscope that matters: the run that misbehaved is often not one you can
+  repeat, and ``--debug`` is a decision you would otherwise have had to make
+  before it happened.
+
+New records appear within a fraction of a second: the panel polls the buffer on
+a timer it owns rather than being called from whichever thread logged, which
+keeps logging threads out of the GUI entirely.  It polls only while it is
+visible -- closing the panel stops it doing anything at all -- and reopening it
+catches up on everything logged in between, because the buffer kept it.
+
+**Filter** narrows to records containing a string, and applies to the history
+too, not only to new records.  **Follow** scrolls to the newest record as it
+arrives; untick it to read back without being dragged to the bottom.  **Copy**
+and **Save…** take what is currently shown -- filters included -- which is what
+to send when reporting a problem.
+
+The same log is also written to ``ImSwitchConfig/logs/imswitch.log``, rotating
+at 5 MB over four files, and **Log folder** opens the folder holding it.  That
+file is what survives a crash, or a startup that never reached a window, which
+no panel can help with.  The panel and ImProcess's own Log panel are two views
+of one log, so a recording in ImControl and ImProcess reacting to it appear in
+both.
 
 File watcher
 ------------

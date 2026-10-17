@@ -7,6 +7,7 @@
             "managerName": "HamamatsuManager",
             "managerProperties": {
                 "cameraListIndex": "mock",
+                "cameraPixelSizeUm": 0.15,
                 "hamamatsu": {
                     "exposure_time": 0.01,
                     "trigger_source": 2,

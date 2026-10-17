@@ -29,6 +29,7 @@ from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
 from .transform import TransformProcessor
 from .smlm_drift import SmlmDriftProcessor
+from .smlm_drift_comet import SmlmCometDriftProcessor
 from .smlm_filter import SmlmFilterProcessor
 from .smlm_group import SmlmGroupProcessor
 from .smlm_render import SmlmRenderProcessor
@@ -61,6 +62,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'subtract-background': SubtractBackgroundProcessor,
     'transform': TransformProcessor,
     'smlm-drift': SmlmDriftProcessor,
+    'smlm-drift-comet': SmlmCometDriftProcessor,
     'smlm-filter': SmlmFilterProcessor,
     'smlm-group': SmlmGroupProcessor,
     'smlm-render': SmlmRenderProcessor,

@@ -144,7 +144,7 @@ def template_managers(templates_dir: Path) -> dict[str, str]:
     """``name -> category`` for every built-in device template."""
     found: dict[str, str] = {}
     for path in sorted(Path(templates_dir).rglob("*.json")):
-        if path.parent.name == "sections" or path.stem.startswith("_"):
+        if path.parent.name in {"sections", "categories"} or path.stem.startswith("_"):
             continue
         found.setdefault(path.stem, path.parent.name)
     return found

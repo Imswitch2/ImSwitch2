@@ -121,6 +121,10 @@ def _makeController(*, scanBlock=True, locked=True, setPoint=10.0,
     ctrl = FocusLockController.__new__(FocusLockController)
     ctrl._shutdownComplete = False
     ctrl._focusCalibrationActive = False
+    # Historically Focus Lock always owned its camera. Tests built with
+    # __new__ must model the now-explicit default-ON acquisition state when
+    # exercising calibration.
+    ctrl._focusAcqHandle = object()
     ctrl._logger = _Logger()
     ctrl._widget = _Widget(scanBlock=scanBlock)
     ctrl._setupInfo = _SetupInfo(positioners)

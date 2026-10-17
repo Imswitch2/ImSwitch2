@@ -372,7 +372,39 @@ def test_localizer_params_widget_get_values(qapp):
     # an anisotropic one could not object, because the localizer could not
     # tell a default from a decision.
     assert values["pixel_size_nm"] is None
+    assert values["preview_pixel_size_nm"] == 10.0
     assert localizer.make_metadata_dialog(None) is None
+
+
+def test_the_preview_pixel_size_sets_the_results_histogram_bin():
+    frame = _synthetic_frame(emitters=[(16.0, 20.0), (40.0, 44.0)])
+    data_obj = _FakeDataObj(np.stack([frame] * 3))
+    params = {"threshold": 20.0, "roi": 9, "pixel_size_nm": 100.0}
+
+    fine = SmlmLocalizer().process(data_obj, {**params, "preview_pixel_size_nm": 20.0})
+    coarse = SmlmLocalizer().process(data_obj, {**params, "preview_pixel_size_nm": 200.0})
+    default = SmlmLocalizer().process(data_obj, params)
+
+    assert fine.preview_pixel_size_nm == pytest.approx(20.0)
+    assert coarse.preview_pixel_size_nm == pytest.approx(200.0)
+    assert default.preview_pixel_size_nm == pytest.approx(10.0)
+    assert fine.data.shape[0] > coarse.data.shape[0]
+    assert fine.axis_scales[0] == pytest.approx(20.0)
+
+
+def test_the_live_session_renders_its_preview_at_the_chosen_bin():
+    from imswitch.improcess.reconstructors.smlm.live_session import SmlmLiveSession
+
+    class _Init:
+        name = "live"
+        data = np.stack([_synthetic_frame(emitters=[(16.0, 20.0)])] * 2)
+        attrs = {}
+
+    session = SmlmLiveSession()
+    session.begin(_Init(), {"threshold": 20.0, "roi": 9, "pixel_size_nm": 100.0,
+                            "preview_pixel_size_nm": 25.0})
+    session.push(_Init.data, 0, 2)
+    assert session.result().preview_pixel_size_nm == pytest.approx(25.0)
 
 
 def test_localizer_params_widget_sends_a_chosen_pixel_size(qapp):

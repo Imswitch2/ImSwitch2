@@ -8,7 +8,7 @@ from imswitch.improcess.model.localization_schema import empty_localizations
 from imswitch.improcess.reconstructors.base import StreamingSession, StreamPlan
 from imswitch.improcess.model.result import ViewMode
 
-from .localizer import localize_stack
+from .localizer import DEFAULT_PREVIEW_PIXEL_SIZE_NM, localize_stack, preview_pixel_size_nm
 
 
 class SmlmLiveSession(StreamingSession):
@@ -26,6 +26,7 @@ class SmlmLiveSession(StreamingSession):
         self._source_name = ""
         self._source_shape = None
         self._pixel_size_nm = 1.0
+        self._preview_pixel_size_nm = DEFAULT_PREVIEW_PIXEL_SIZE_NM
         self._threshold = 500.0
         self._roi = 7
         self._sigma = 1.0
@@ -59,6 +60,7 @@ class SmlmLiveSession(StreamingSession):
         self._roi = int(params.get("roi", 7))
         self._sigma = float(params.get("sigma", 1.0))
         self._method = str(params.get("method", "gausslq"))
+        self._preview_pixel_size_nm = preview_pixel_size_nm(params)
 
         self._logger.info(
             f"Beginning live SMLM session for {self._result_name} "
@@ -151,6 +153,7 @@ class SmlmLiveSession(StreamingSession):
             dims="2D",
             source_name=self._source_name,
             source_shape=self._source_shape,
+            preview_pixel_size_nm=self._preview_pixel_size_nm,
             metadata={
                 "threshold": self._threshold,
                 "roi": self._roi,

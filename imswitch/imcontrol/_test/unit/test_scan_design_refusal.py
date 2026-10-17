@@ -299,7 +299,7 @@ def _scanController(controllerClass, channel):
         _scanRunStartingPublished=False,
         _analogParameterDict=analog,
         _digitalParameterDict=digital,
-        _lastBuiltParams=None,
+        _designCache=None,
         signalDict=None,
         scanInfoDict=None,
         TTLDevices={},

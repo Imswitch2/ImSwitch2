@@ -37,9 +37,11 @@ class BSC203StageManager(PositionerManager):
                 'Install with: pip install thorlabs_apt_device'
             )
             self.dev = None
+            self._setConnectionError(e, summary="BSC203 dependency unavailable")
         except Exception as e:
             self.__logger.debug(f'Could not initialize BSC203 motorized stage: {e}')
             self.dev = None
+            self._setConnectionError(e, summary="BSC203 stage initialization failed")
         if home:
             self.__logger.debug('Is homing')
             # The BSC constructor (home=True) already initiated homing; wait for
@@ -111,6 +113,7 @@ class BSC203StageManager(PositionerManager):
                     f'homed/moved).'
                 )
                 continue
+            self._setConnected("BSC203 controller responding")
             steps = status.get('position', 0)
             self._position[axis] = self.to_mm(steps) * 1000
             self.__logger.info(

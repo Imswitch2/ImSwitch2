@@ -31,6 +31,11 @@ class ESP32LEDLaserManager(LaserManager):
                 f'Failed to initialize ESP32LED hardware, running in mock mode: {e}'
             )
             self._rs232manager = None
+            self._setConnectionError(
+                e,
+                summary="ESP32 LED initialization failed; mock fallback active",
+                mock_active=True,
+            )
             self.__channel_index = laserInfo.managerProperties.get('channel_index', 0)
         
 

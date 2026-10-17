@@ -205,7 +205,7 @@ class _RecordingDispatcher:
             relative = Path(locator.path).relative_to(self._folder)
         except (ValueError, TypeError):
             return locator
-        return type(locator)(**{**locator.asdict(), 'path': str(relative)})
+        return type(locator)(**{**locator.asdict(), 'path': relative.as_posix()})
 
     def onPointFinished(self):
         """Writer drained *and* scan complete: the stage may move again."""

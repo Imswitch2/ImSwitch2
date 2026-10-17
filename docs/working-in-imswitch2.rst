@@ -226,7 +226,11 @@ as "save/restore the whole setup's UI state".
 * *File → Save Widget States* (``Ctrl+Shift+S``) writes a snapshot to a file;
   *Load Widget States* (``Ctrl+Shift+L``) restores one. On exit ImSwitch2 asks
   whether to save the current state as the default for the next launch, and
-  restores that default when it starts.
+  restores that default when it starts. If nobody answers within 30 seconds the
+  question answers *No*; the warning shown at startup when a saved setting did
+  not reach the hardware closes by itself the same way, with the details left
+  in the log. The countdown is shown on the button and restarts on any
+  activity inside the box.
 * **Passive by design:** restoring widget state never activates hardware — it
   sets saved *parameters* (laser power values, ROI/binning, scan parameters, SLM
   config selection, …) but does **not** turn lasers on, start acquisition or

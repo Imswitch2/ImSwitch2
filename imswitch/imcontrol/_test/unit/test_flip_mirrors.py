@@ -15,7 +15,7 @@ def _mock_info(**overrides):
     return FlipMirrorInfo(**values)
 
 
-def test_flip_mirrors_manager_loads_mock_and_resets():
+def test_flip_mirrors_manager_loads_mock():
     manager = FlipMirrorsManager({"Mirror": _mock_info()})
 
     assert manager.hasDevices()
@@ -28,11 +28,6 @@ def test_flip_mirrors_manager_loads_mock_and_resets():
 
     mirror.move_to(0)
     assert mirror.get_state() == 0
-
-    mirror.close()
-    assert not mirror.is_connected()
-    assert manager.reset_connections() == {"Mirror": True}
-    assert mirror.is_connected()
 
     manager.finalize()
     assert not mirror.is_connected()

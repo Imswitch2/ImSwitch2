@@ -27,16 +27,20 @@ class TriggerScopeLaserManager(LaserManager):
     def setEnabled(self, enabled):
         try:
             self._triggerScopeManager.setDigital(self.name, enabled)
+            return True
         except Exception as e:
             self.__logger.error(f'Error enabling laser "{self.name}": {e}')
+            return False
 
     def setValue(self, voltage):
         if self.isBinary:
             return
         try:
             self._triggerScopeManager.setAnalog(target=self.name, voltage=voltage)
+            return True
         except Exception as e:
             self.__logger.error(f'Error setting voltage for laser "{self.name}": {e}')
+            return False
 
     def setScanModeActive(self, active):
         if active:

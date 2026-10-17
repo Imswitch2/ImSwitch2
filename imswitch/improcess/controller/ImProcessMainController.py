@@ -64,6 +64,7 @@ class ImProcessMainController(MainController):
 
         # Bridge live results to imcontrol if enabled
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
+        self.__commChannel.sigResultReplaced.connect(self._onResultReplaced)
         self.__commChannel.sigLiveResultUpdated.connect(self._onLiveResultUpdated)
 
         # List of Controllers for the GUI Widgets
@@ -913,6 +914,10 @@ class ImProcessMainController(MainController):
         """Bridge processing result to imcontrol if display is enabled."""
         self._routeResultToAnalysisPanels(result)
         self._bridgeResultToImcontrol(result, name)
+
+    def _onResultReplaced(self, _old, new, name):
+        """A result refined in place is, to the panels, a produced one."""
+        self._onResultProduced(new, name)
 
     def _routeResultToAnalysisPanels(self, result) -> None:
         """Show non-image results in the panels that can actually render them.

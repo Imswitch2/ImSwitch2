@@ -27,7 +27,7 @@ TEMPLATES = Path(__file__).resolve().parents[4] / "imswitch" / "imcontrol" / "vi
 def _templates() -> list[tuple[str, str, dict]]:
     found = []
     for path in sorted(TEMPLATES.glob("*/*.json")):
-        if path.parent.name == "sections" or path.stem.startswith("_"):
+        if path.parent.name in {"sections", "categories"} or path.stem.startswith("_"):
             continue
         found.append((path.parent.name, path.stem, json.loads(path.read_text(encoding="utf-8"))))
     return found

@@ -30,6 +30,10 @@ from .basecontrollers import ImConWidgetControllerFactory
 
 _SERVER_THREAD_STOP_TIMEOUT_MS = 5000
 
+# Seconds a startup/shutdown message box waits for a person before it answers
+# itself; any key or mouse activity inside the box restarts the countdown.
+_UNATTENDED_DIALOG_TIMEOUT_S = 30
+
 
 def _activeSetupPath(options):
     """ Where this session's setup file lives, resolved, or None.
@@ -96,6 +100,9 @@ class ImConMainController(MainController):
         )
         self.pickDatasetsController = self.__factory.createController(
             PickDatasetsController, self.__mainView.pickDatasetsDialog
+        )
+        self.hardwareStatusController = self.__factory.createController(
+            controllers.HardwareStatusController, self.__mainView.hardwareStatusWidget
         )
 
         self.controllers = {}
@@ -535,12 +542,16 @@ class ImConMainController(MainController):
 
         self.__logger.warning(f'{title}: {critical}')
         warningText = '\n'.join(f'• {warning}' for warning in critical)
-        QtWidgets.QMessageBox.warning(
+        # The box closes by itself when nobody attends to it: the details are
+        # in the log either way, and a startup launched by a script or left
+        # running unattended must not stall on it.
+        guitools.showWarning(
             self.__mainView,
             title,
             'Some saved settings were not applied to the hardware. '
             'Check these details before acquiring data.\n\n'
             f'{warningText}',
+            unattendedAfterS=_UNATTENDED_DIALOG_TIMEOUT_S,
         )
         return True
 
@@ -848,6 +859,13 @@ class ImConMainController(MainController):
                     exc_info=True,
                 )
         
+        # No device reconnect may start once shutdown has begun (API, scripts
+        # and the Hardware status window alike); running ones are waited for
+        # by the HardwareStatusController's shutdown barrier.
+        lifecycleService = getattr(self.__masterController, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            lifecycleService.beginShutdown()
+
         controllersClosed = True
         if self.__factory is not None:
             controllersClosed = self.__factory.closeAllCreatedControllers(
@@ -892,14 +910,20 @@ class ImConMainController(MainController):
         return controllersClosed is not False
 
     def _shouldSaveWidgetStateOnClose(self):
-        result = QtWidgets.QMessageBox.question(
+        """Ask whether to keep the current widget state for the next startup.
+
+        Enter answers *Yes*, for the operator at the keyboard. Left alone the
+        box answers *No*: a state nobody chose to keep -- an application closed
+        by a script, or from a session someone walked away from -- should not
+        silently become tomorrow's defaults.
+        """
+        return guitools.askYesNoQuestion(
             self.__mainView,
             'Save Widget State',
             'Save the current widget state as the default for the next startup?',
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.Yes,
+            unattendedAnswer=False,
+            unattendedAfterS=_UNATTENDED_DIALOG_TIMEOUT_S,
         )
-        return result == QtWidgets.QMessageBox.Yes
 
 
 class _GuiLayoutStateAdapter:

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import itertools
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import numpy as np
@@ -155,6 +155,7 @@ class NapariStormDisplay:
             entry.table.set_records(result.locs, copy=False)
             self._limit_to_budget(entry.table)
             renderer.update(entry.dataset_id, self._plan(entry.table, result, entry.name))
+            self._apply_contrast_model(entry.dataset_id, result)
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("napari-storm update failed for %r: %s", entry.name, exc)
             return False
@@ -214,6 +215,7 @@ class NapariStormDisplay:
         dataset_id = next(self._ids)
         name = str(getattr(result, "name", None) or f"localizations {dataset_id}")
         self._renderer.open(dataset_id, self._plan(table, result, name))
+        self._apply_contrast_model(dataset_id, result)
 
         entry = _Dataset(dataset_id, weakref.ref(result), table, name)
         self._datasets[id(result)] = entry
@@ -234,6 +236,35 @@ class NapariStormDisplay:
         return core.RenderPlanner(on_repaired=self._on_repaired).plan(
             table, settings, traits, name=name,
         )
+
+    def _apply_contrast_model(self, dataset_id: int, result) -> None:
+        """Tell napari-storm what the planned values mean.
+
+        napari-storm windows the summed image of an additive footprint by
+        default, treating each localization's value as a weight to add up --
+        which the planner's values are, unless colour-by-depth made them
+        depths. Summed, depths would turn colour into density and leave the
+        shallowest localizations all but invisible, so depth colouring asks
+        for every localization to be windowed on its own, as the dock does.
+        Read from the settings actually planned with, which may have refused
+        the override. A napari-storm that predates the choice always windows
+        per localization, so there is nothing to tell it.
+        """
+        if not self._summed_contrast_supported():
+            return
+        settings = self._settings(self._traits(result))
+        self._renderer.set_appearance(
+            dataset_id,
+            self._core.LayerAppearance(
+                summed_contrast=not bool(settings.z_color_encoding)
+            ),
+        )
+
+    def _summed_contrast_supported(self) -> bool:
+        appearance = getattr(self._core, "LayerAppearance", None)
+        return appearance is not None and "summed_contrast" in {
+            field.name for field in fields(appearance)
+        }
 
     def _traits(self, result):
         """Declare what this table actually recorded, not what it could have.
@@ -318,6 +349,7 @@ class NapariStormDisplay:
             self._renderer.update(
                 entry.dataset_id, self._plan(entry.table, result, entry.name)
             )
+            self._apply_contrast_model(entry.dataset_id, result)
         except Exception as exc:  # noqa: BLE001 - a bad setting must not kill the view
             self._logger.warning("Could not apply render settings: %s", exc)
             return False

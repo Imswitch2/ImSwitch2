@@ -48,7 +48,9 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         self.statusLabel = QtWidgets.QLabel("No result selected.")
         self.statusLabel.setWordWrap(True)
-        self.runButton = QtWidgets.QPushButton(f"Run {processor.name}")
+        self.runButton = QtWidgets.QPushButton(
+            getattr(processor, "run_label", None) or f"Run {processor.name}"
+        )
         self.runButton.setEnabled(False)
 
         self.paramWidget = processor.make_param_widget(self)
@@ -133,6 +135,27 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         self.setLayout(layout)
 
         self.runButton.clicked.connect(self._run)
+
+        # A parameter widget whose readiness, or whose idea of what Run does,
+        # can change on its own (an optional package found on "Check again";
+        # a count made that turns "Estimate" into "Run") asks for Run to be
+        # re-decided. Opt-in, like its other hooks.
+        self.runButton.setText(self._runLabel())
+        runStateChanged = getattr(self.paramWidget, "sigRunStateChanged", None)
+        if callable(getattr(runStateChanged, "connect", None)):
+            runStateChanged.connect(self.refreshRunState)
+
+    def _runLabel(self) -> str:
+        """What the Run button says: the widget's word for it, else the processor's."""
+        hook = getattr(self.paramWidget, "run_label", None)
+        if callable(hook):
+            try:
+                label = hook()
+            except Exception:
+                label = None
+            if label:
+                return str(label)
+        return getattr(self.processor, "run_label", None) or f"Run {self.processor.name}"
 
     # -- arity ------------------------------------------------------------
 
@@ -372,6 +395,19 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     def _setRunEnabled(self, allowed: bool) -> None:
         self._runState.setRunEnabled(allowed)
 
+    def refreshRunState(self) -> None:
+        """Re-decide whether Run may be pressed, and say why not.
+
+        The inputs and the processor's own gate (``check_inputs``) are asked
+        again; the parameter widget calls this through ``sigRunStateChanged``
+        when something it knows about has changed.
+        """
+        self.runButton.setText(self._runLabel())
+        if self.isMultiInput():
+            self._refreshMultiInput()
+        else:
+            self._refreshSingleInput(self.inputCombo.count() > 0)
+
     # -- internals --------------------------------------------------------
 
     def _scopeChanged(self, _index: int) -> None:
@@ -381,11 +417,16 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
     def _refreshSingleInput(self, has_choices: bool) -> None:
         inputs = self.selectedInputs()
-        self._setRunEnabled(bool(inputs))
+        ok, reason = _check_each(self.processor, inputs)
+        self._setRunEnabled(ok)
         if not has_choices and not inputs:
             self.statusLabel.setText(
                 f"{self.processor.name} does not apply to the current result."
             )
+        elif inputs and not ok:
+            # The processor's own reason, shown where the user looks for it,
+            # rather than a Run button that is simply off.
+            self.statusLabel.setText(reason)
         elif self.scope() == SCOPE_CURRENT:
             self.statusLabel.setText("Choose a result input and run the processor.")
         else:
@@ -410,9 +451,11 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             return
         if self.isMultiInput():
             ok, reason = _check_inputs(self.processor, inputs)
-            if not ok:
-                self.setStatusText(reason)
-                return
+        else:
+            ok, reason = _check_each(self.processor, inputs)
+        if not ok:
+            self.setStatusText(reason)
+            return
         self.sigRunRequested.emit(inputs, self.parameterValues())
 
 
@@ -442,3 +485,19 @@ def _check_inputs(processor, results) -> tuple[bool, str]:
         return checker(results)
     except Exception as exc:  # a processor's own gate must not break the panel
         return False, str(exc)
+
+
+def _check_each(processor, results) -> tuple[bool, str]:
+    """A single-input processor's gate over a batch: one result per run.
+
+    The "Apply to" scopes run such a processor once per result, so the
+    inputs are not one run's worth and are checked one at a time; the first
+    refusal is the reason shown.
+    """
+    if not results:
+        return False, ""
+    for result in results:
+        ok, reason = _check_inputs(processor, [result])
+        if not ok:
+            return False, reason
+    return True, ""

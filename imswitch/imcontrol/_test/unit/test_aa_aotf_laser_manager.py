@@ -172,14 +172,14 @@ def test_zero_frequency_editor_default_preserves_legacy_trace():
 def test_set_enabled_true_command_sequence():
     m, rs232 = _build()
     rs232.cmds.clear()
-    m.setEnabled(True)
+    assert m.setEnabled(True) is True
     assert rs232.cmds == ['L1O1']
 
 
 def test_set_enabled_false_command_sequence():
     m, rs232 = _build()
     rs232.cmds.clear()
-    m.setEnabled(False)
+    assert m.setEnabled(False) is True
     assert rs232.cmds == ['L1O0']
 
 
@@ -201,21 +201,21 @@ def test_channel_index_is_used_in_every_command():
 def test_set_value_without_lut_rounds_to_nearest_amplitude():
     m, rs232 = _build()
     rs232.cmds.clear()
-    m.setValue(511.6)
+    assert m.setValue(511.6) is True
     assert rs232.cmds == ['L1P512']
 
 
 def test_set_value_negative_is_refused_rather_than_sent():
     m, rs232 = _build()
     rs232.cmds.clear()
-    m.setValue(-5)
+    assert m.setValue(-5) is False
     assert rs232.cmds == []
 
 
 def test_set_value_non_numeric_is_refused_rather_than_sent():
     m, rs232 = _build()
     rs232.cmds.clear()
-    m.setValue('not-a-number')
+    assert m.setValue('not-a-number') is False
     assert rs232.cmds == []
 
 

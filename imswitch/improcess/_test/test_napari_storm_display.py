@@ -9,6 +9,7 @@ calls are known to be ones the real interface accepts.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from types import SimpleNamespace
 
 import numpy as np
@@ -30,6 +31,7 @@ class _RecordingRenderer:
         self.calls: list[tuple] = []
         self.open_ids: list[int] = []
         self.closed_ids: list[int] = []
+        self.appearances: list[tuple] = []
 
     def open(self, dataset_id, request):
         self.calls.append(("open", dataset_id))
@@ -40,6 +42,16 @@ class _RecordingRenderer:
 
     def set_appearance(self, dataset_id, appearance):
         self.calls.append(("visible", dataset_id, appearance.visible))
+        self.appearances.append((dataset_id, appearance))
+
+    def summed_contrast(self, dataset_id):
+        """The last summed_contrast sent for ``dataset_id``, or None."""
+        sent = [
+            appearance.summed_contrast
+            for key, appearance in self.appearances
+            if key == dataset_id and appearance.summed_contrast is not None
+        ]
+        return sent[-1] if sent else None
 
     def close(self, dataset_id):
         self.calls.append(("close", dataset_id))
@@ -258,6 +270,40 @@ def test_a_missing_package_reports_itself_unavailable():
 
     assert adapter.importable is False
     assert adapter.show(_result()) is False
+
+
+# -- what the values mean --------------------------------------------------
+
+needs_summed_contrast = pytest.mark.skipif(
+    "summed_contrast" not in {f.name for f in fields(storm_core.LayerAppearance)},
+    reason="this napari-storm always windows each localization on its own",
+)
+
+
+@needs_summed_contrast
+def test_planned_weights_are_windowed_as_a_summed_image(display):
+    display.show(_result(with_z=True))
+    assert display.renderer.summed_contrast(1) is True
+
+
+@needs_summed_contrast
+def test_depth_colouring_windows_each_localization(display):
+    """Depths are colormap positions, not weights to add up."""
+    result = _result(with_z=True)
+    display._overrides = {"mode": 0, "z_color_encoding": True}
+    display.show(result)
+    assert display.renderer.summed_contrast(1) is False
+
+    display.apply_settings(result, {"mode": 0, "z_color_encoding": False})
+    assert display.renderer.summed_contrast(1) is True
+
+
+@needs_summed_contrast
+def test_a_refused_depth_colouring_still_sums(display):
+    """Without a z axis the override is dropped, and so is its contrast model."""
+    display._overrides = {"mode": 0, "z_color_encoding": True}
+    display.show(_result(with_z=False))
+    assert display.renderer.summed_contrast(1) is True
 
 
 # -- against the real interface ---------------------------------------------

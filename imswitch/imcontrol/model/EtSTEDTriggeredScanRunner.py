@@ -155,7 +155,9 @@ class EtSTEDTriggeredScanRunner:
         for index, positioner_name in enumerate(analog_params['target_device']):
             if positioner_name != 'None' and positioner_name not in positioners_scan:
                 positioner = positioners_manager[positioner_name]
-                positioner.setPosition(analog_params['axis_centerpos'][index], 0)
+                positioner.setPosition(
+                    analog_params['axis_centerpos'][index], positioner.axes[0]
+                )
 
     def set_centers_scan_widget(self, analog_params: dict, comm_channel=None, scan_workflow=None) -> None:
         """Emit updated scan centers to the scan widget."""

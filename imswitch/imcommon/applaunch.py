@@ -1,9 +1,10 @@
+import gc
 import logging
 import os
 import sys
 import traceback
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets, sip
 
 from .model import dirtools, ostools, pythontools, initLogger, shutdownState
 from .view.guitools import getBaseStyleSheet
@@ -127,8 +128,51 @@ def launchApp(app, mainView, moduleMainControllers):
         logging.shutdown()
         _restart(restartModule, logger)
 
+    disownQtObjects(app, logger)
+
     # Exit
     sys.exit(exitCode)
+
+
+def disownQtObjects(app, logger=None):
+    """ Hand every Python-owned QObject that is still alive over to C++ so that
+    nothing deletes it during interpreter finalization.
+
+    PyQt5 registers an atexit hook that walks every live wrapper and calls the
+    C++ destructor of each QObject Python still owns -- in hash order, i.e.
+    effectively at random. After ``shutdownModules`` the remaining objects
+    are the widget tree, pyqtgraph menus and graphics layouts, napari
+    delegates, controllers and timers. Destroying those in random order
+    segfaults the process (exit code 139) after an otherwise clean shutdown:
+    a pyqtgraph ViewBoxMenu is destroyed after the combo boxes its widget
+    actions re-parent, a QGraphicsScene is cleared after the layout items it
+    owns, and so on. Three different native stacks were seen on origin/main.
+
+    Transferring ownership to C++ (with no owner) makes PyQt5's hook, and
+    sip's own dealloc, leave the C++ instances alone. They are reclaimed by
+    the operating system when the process ends a moment later, which is
+    exactly what happens to every C++-owned Qt object anyway. Hardware was
+    already released by ``shutdownModules``; this only concerns Qt objects.
+    The QApplication itself is left to PyQt5. """
+    if logger is None:
+        logger = initLogger('launchApp')
+    try:
+        gc.collect()
+        count = 0
+        for obj in gc.get_objects():
+            if not isinstance(obj, QtCore.QObject) or obj is app:
+                continue
+            try:
+                if sip.isdeleted(obj) or not sip.ispyowned(obj):
+                    continue
+                sip.transferto(obj, None)
+            except Exception:
+                continue
+            count += 1
+        logger.debug(f'Left {count} Qt objects to the OS instead of destroying them at exit')
+    except Exception:
+        logger.error('Could not hand Qt objects over to C++ before exit')
+        logger.error(traceback.format_exc())
 
 
 def _restart(module, logger):

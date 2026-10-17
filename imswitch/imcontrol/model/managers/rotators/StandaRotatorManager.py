@@ -63,6 +63,8 @@ class StandaRotatorManager(RotatorManager):
             self.__logger.warning(f'Check if the lib_loc in the setupFileName json is available (network drive)') #eventually move this file to a local drive. Need to adjust all .json s
             from imswitch.imcontrol.model.interfaces.standamotor import MockStandaMotor
             motor = MockStandaMotor(lib_loc)
+            # A fallback, not a configured mock: status shows it as an error.
+            self._mock_fallback = True
         return motor
 
     def close(self):
