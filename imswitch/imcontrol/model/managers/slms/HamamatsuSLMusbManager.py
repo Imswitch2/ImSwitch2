@@ -5,6 +5,9 @@ from ctypes import c_int32, c_uint8, c_char_p, create_string_buffer
 
 from imswitch.imcommon.framework import SignalInterface
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import (
+    DeviceFailureKind, DeviceManagerStatusMixin,
+)
 
 
 # NOTE: dll is expected to be in "imswitch/imcontrol/model/interfaces" so we define the "_dll_base_directory" like this.
@@ -12,7 +15,7 @@ from imswitch.imcommon.model import initLogger
 cwd = os.getcwd()
 _dll_base_directory = os.path.join(cwd, "imswitch", "imcontrol", "model", "interfaces")
 
-class HamamatsuSLMusbManager(SignalInterface):
+class HamamatsuSLMusbManager(DeviceManagerStatusMixin, SignalInterface):
     """Manager for communication with Hamamatsu SLM with USB connection"""
 
     requires_device_connection: bool = True
@@ -42,7 +45,9 @@ class HamamatsuSLMusbManager(SignalInterface):
         if self.mockermode:
             self.__logger.info(f"SLM Manager {self.slmName} running in MOCKER MODE. No actual connection to SLM will be made.")
             self.dll = None
+            self._setMockActive("USB SLM mock mode configured")
         else:
+            self._setDisconnected("USB SLM not connected")
             try:
                 if slmInfo.managerProperties is not None and slmInfo.managerProperties.get("dll_base_directory") is not None:
                     baseDir = slmInfo.managerProperties.get("dll_base_directory")
@@ -60,6 +65,12 @@ class HamamatsuSLMusbManager(SignalInterface):
                 self.__logger.error(f"Could not load Hamamatsu SLM DLL: {e}. Using MockerMode")
                 self.mockermode = True
                 self.dll = None
+                self._setConnectionError(
+                    e,
+                    summary="Hamamatsu SLM DLL could not be loaded; mock fallback active",
+                    failure_kind=DeviceFailureKind.MISSING_DEPENDENCY,
+                    mock_active=True,
+                )
 
         if self.dll is not None:
             self.define_dll_prototypes()
@@ -78,6 +89,11 @@ class HamamatsuSLMusbManager(SignalInterface):
         
         if self.dll is None:
             self.__logger.warning("DLL not loaded, cannot connect to device.")
+            self._setConnectionError(
+                "DLL not loaded",
+                summary="Hamamatsu SLM DLL not available",
+                failure_kind=DeviceFailureKind.MISSING_DEPENDENCY,
+            )
             return False, None
         max_devices = 8
         self.bIDList = (c_uint8 * max_devices)()
@@ -86,6 +102,10 @@ class HamamatsuSLMusbManager(SignalInterface):
         if self.num_devices <= 0:
             self.__logger.warning("No SLM devices detected via USB.")
             self.connected = False
+            self._setDeviceNotFound(
+                "No Hamamatsu SLM devices detected via USB",
+                summary="No USB SLM detected",
+            )
             return False, None
 
         self.__logger.debug(f"{self.slmName} connection: detected {self.num_devices} SLM device(s)."
@@ -113,6 +133,7 @@ class HamamatsuSLMusbManager(SignalInterface):
 
         if found:
             self.connected = True
+            self._setConnected(f"Connected to USB SLM {serial}")
             self.__logger.info(f"{self.slmName}: successfully connected to target SLM device.")
             return True, serial
         else:
@@ -121,6 +142,10 @@ class HamamatsuSLMusbManager(SignalInterface):
             # Cleanly close all connections opened by Open_Dev
             self.dll.Close_Dev(self.bIDList, self.num_devices)
             self.connected = False
+            self._setDeviceNotFound(
+                f"No connected SLM matched serial {self.serial_number}",
+                summary="Configured USB SLM not found",
+            )
             return False, None
 
 
@@ -179,6 +204,7 @@ class HamamatsuSLMusbManager(SignalInterface):
                 self.bID = None
                 self.num_devices = 0
                 self.connected = False
+                self._setDisconnected("USB SLM connection closed")
                 self.__logger.info(f"{self.slmName} connection closed.")
                 success = True
                 msg = "Sucessfully disconnected"

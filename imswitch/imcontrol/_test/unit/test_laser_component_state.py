@@ -300,6 +300,11 @@ def test_set_laser_value_zero_forces_non_binary_laser_off():
     controller._widget = widget
     controller._commChannel = SimpleNamespace(sharedAttrs={})
     controller.settingAttr = False
+    controller.is_scanning = False
+    controller._powerMode = LaserPowerMode.COUPLED
+    controller._currentPowerContext = LaserPowerContext.LIVE
+    controller._livePowerValues = {}
+    controller._scanPowerValues = {}
 
     LaserController._setLaserValue(controller, '488nm', 0)
 
@@ -328,6 +333,11 @@ def test_set_laser_value_nonzero_does_not_force_laser_off():
     controller._widget = widget
     controller._commChannel = SimpleNamespace(sharedAttrs={})
     controller.settingAttr = False
+    controller.is_scanning = False
+    controller._powerMode = LaserPowerMode.COUPLED
+    controller._currentPowerContext = LaserPowerContext.LIVE
+    controller._livePowerValues = {}
+    controller._scanPowerValues = {}
 
     LaserController._setLaserValue(controller, '488nm', 1)
 
@@ -348,6 +358,10 @@ def test_toggle_laser_keeps_ui_off_when_manager_rejects_enable():
     controller._widget = widget
     controller._commChannel = SimpleNamespace(sharedAttrs={})
     controller.settingAttr = False
+    controller.is_scanning = False
+    controller._powerMode = LaserPowerMode.COUPLED
+    controller._currentPowerContext = LaserPowerContext.LIVE
+    controller._resumableLiveEnabledSnapshot = None
 
     LaserController.toggleLaser(controller, '488nm', True)
 
@@ -744,6 +758,7 @@ def test_round_trip_state_persistence(laser_controller, mock_widget):
     assert state['lasers']['488nm']['value'] == 80.0
     assert state['lasers']['488nm']['enabled'] is True
     assert state['livePreset'] == 'TestPreset'
+    assert state['livePreset'] is None
     
     # Apply state in STARTUP_RESTORE mode should succeed without errors
     warnings = laser_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)

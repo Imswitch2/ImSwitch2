@@ -67,6 +67,59 @@ def createLeicaDMIHardware(rs232Manager, *, managerProperties=None, logger=None)
         return hardware
 
 
+def reconnectLeicaDMIHardware(
+    rs232Manager, *, managerPropertiesSequence=None, logger=None
+):
+    """Revalidate or create the shared Leica interface after RS232 reconnect.
+
+    Existing hardware-interface identity is preserved when one was already
+    created. This matters for the stand and objective-Z managers, which share
+    the same object. When startup never produced an interface (for example
+    because RS232 fell back to mock), a new shared interface is created.
+    """
+    configurations = list(managerPropertiesSequence or [{}])
+    if not configurations:
+        configurations = [{}]
+
+    with _CACHE_LOCK:
+        hardware = _HARDWARE_CACHE.get(rs232Manager)
+
+        if hardware is None:
+            hardware = createLeicaDMIHardware(
+                rs232Manager,
+                managerProperties=configurations[0],
+                logger=logger,
+            )
+            remaining = configurations[1:]
+        else:
+            reconnect = getattr(hardware, "reconnect", None)
+            if callable(reconnect):
+                try:
+                    reconnect()
+                except Exception as exc:
+                    _log(
+                        logger,
+                        "error",
+                        f"Leica DMI reconnect probe failed: {exc}",
+                    )
+                    return None
+            elif not _isConnected(hardware):
+                _log(
+                    logger,
+                    "error",
+                    "Leica DMI reconnect unavailable: cached interface is disconnected.",
+                )
+                return None
+            remaining = configurations
+
+        if hardware is None or not _isConnected(hardware):
+            return None
+
+        for config in remaining:
+            _configureHardware(hardware, config, logger)
+        return hardware
+
+
 def _loadPrivateHardwareClass(logger):
     try:
         module = importlib.import_module(_PRIVATE_MODULE_NAME)

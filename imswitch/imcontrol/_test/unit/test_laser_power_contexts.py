@@ -121,6 +121,7 @@ def _controller(*, live=5.0, setup=None, mode='separated'):
     ctrl._commChannel = SimpleNamespace(sharedAttrs={})
     ctrl._logger = _Logger()
     ctrl.settingAttr = False
+    ctrl.is_scanning = False
     ctrl._livePowerValues = {"488": live}
     ctrl._scanPowerValues = {}
     ctrl._powerMode = LaserPowerMode(mode)

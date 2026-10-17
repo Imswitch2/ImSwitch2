@@ -25,6 +25,7 @@ _WIDGET_MODULES = {
     "FlipMirrorWidget": "FlipMirrorWidget",
     "FocusLockWidget": "FocusLockWidget",
     "ImageWidget": "ImageWidget",
+    "HardwareStatusWidget": "HardwareStatusWidget",
     "LaserWidget": "LaserWidget",
     "LightSheetMulticolorWidget": "LightSheetMulticolorWidget",
     "LeicaStandWidget": "LeicaStandWidget",

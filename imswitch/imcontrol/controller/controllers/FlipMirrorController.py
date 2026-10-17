@@ -52,7 +52,15 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
 
         self._widget.sigStateChanged.connect(self.move_flip)
         self._widget.sigLinkChanged.connect(self.set_link)
-        self._widget.sigResetConnectionsClicked.connect(self.reset_connections)
+
+        # Lifecycle callbacks run on the Hardware Status reconnect worker.
+        # Reconnect only restores connectivity and observes the actual mirror
+        # state; it never replays link/follower motion.
+        self._deviceLifecycleListener = None
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            self._deviceLifecycleListener = self._deviceLifecycleChanged
+            lifecycleService.addListener(self._deviceLifecycleListener)
 
         self._refresh_all_states()
         self._refresh_link_ui()
@@ -61,7 +69,34 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
         getWidgetStatePersistence().register('FlipMirror', self)
 
     def closeEvent(self):
-        pass
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        listener = getattr(self, '_deviceLifecycleListener', None)
+        if lifecycleService is not None and listener is not None:
+            lifecycleService.removeListener(listener)
+            self._deviceLifecycleListener = None
+
+    def _deviceLifecycleChanged(self, result):
+        affected = tuple(
+            device_id
+            for device_id in getattr(result, 'affected_device_ids', ())
+            if getattr(device_id, 'kind', None) == 'flip_mirror'
+        )
+        if not affected:
+            return
+        self._invokeOnControllerThreadIfNeeded(
+            lambda: self._refreshLifecycleAffectedFlipMirrors(affected)
+        )
+
+    def _refreshLifecycleAffectedFlipMirrors(self, device_ids):
+        known = set(self._names)
+        for device_id in device_ids:
+            if device_id.name not in known:
+                continue
+            manager = self._manager[device_id.name]
+            cached_state = getattr(manager, 'get_cached_state', lambda: None)()
+            if cached_state is not None and self._is_connected(device_id.name):
+                self._widget.setState(device_id.name, cached_state)
+        self._refresh_link_ui()
 
     def getComponentState(self) -> dict:
         """Snapshot the current flip mirror states and link configuration."""
@@ -431,31 +466,6 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
         master_state = self._safe_get_state(master_name)
         if master_state is not None:
             self._safe_move_one(follower_name, master_state)
-
-        self._refresh_link_ui()
-        return True
-
-    @APIExport(runOnUIThread=True)
-    def reset_connections(self):
-        """Close/reopen all flip mirror connections and re-sync followers."""
-        if self._manager is None:
-            return False
-
-        try:
-            self._manager.reset_connections()
-        except Exception as e:
-            self.__logger.error(f"Failed to reset flip mirror connections: {e}")
-
-        self._refresh_all_states()
-
-        # Re-sync followers after reconnection.
-        for follower, master in list(self._master_by_follower.items()):
-            if not self._is_connected(follower) or not self._is_connected(master):
-                continue
-
-            master_state = self._safe_get_state(master)
-            if master_state is not None:
-                self._safe_move_one(follower, master_state)
 
         self._refresh_link_ui()
         return True

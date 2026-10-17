@@ -47,7 +47,7 @@ from imswitch.imcontrol.controller.controllers.EventTriggeredBaseController impo
     EventTriggeredControllerBase,
 )
 from imswitch.imcontrol.model import (
-    LaserPowerMode, LaserScanPowerControl, LaserScanState,
+    LaserPowerContext, LaserPowerMode, LaserScanPowerControl, LaserScanState,
 )
 
 
@@ -114,6 +114,9 @@ class _Widget:
 
     def getValue(self, name):
         return self.values.get(name, 10.0)
+
+    def setValue(self, name, value, emitSignal=True):
+        self.values[name] = value
 
     def isLaserActive(self, name):
         return bool(self.active.get(name, False))
@@ -195,6 +198,7 @@ def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=(), mode='sep
     ctrl._scanEnabledLasers = []
     ctrl._scanLasersPaused = False
     ctrl._powerMode = LaserPowerMode(mode)
+    ctrl._currentPowerContext = LaserPowerContext.LIVE
     ctrl._selectedPresetByContext = {}
     ctrl._selectedCoupledPreset = None
     ctrl._setupInfo = _SetupInfo(
