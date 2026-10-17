@@ -221,13 +221,15 @@ There are two buses, at two levels.
 
 **CommunicationChannel** (``imcontrol/controller/CommunicationChannel.py``) is
 the signal bus *inside* ImControl.  It declares plain ``Signal`` attributes for
-the acquisition, recording, scan, SLM and event-triggered workflows
+the acquisition, recording, scan and SLM workflows
 (``sigUpdateImage``, ``sigAcquisitionStarted``, ``sigRecordingEnded``,
 ``sigScanStarting`` ... ``sigScanEnded``, ...) and is the only thing
 controllers use to reach each other.  It also carries small helpers that need
 the controller registry, such as the *active scan source* used by
-:doc:`scan-lifecycle`, and two service objects, ``scanWorkflow`` and
-``beadRecWorkflow``, that group the calls for those workflows.  Its class
+:doc:`scan-lifecycle`, and a service object, ``scanWorkflow``, that groups the
+calls for the scan workflows -- including the synchronous
+``request_scan_parameters()`` and ``request_scan_frequency()`` lookups that
+used to be request/response signal pairs.  Its class
 docstring is explicit that it is a compatibility surface: new cross-controller
 workflows should use scoped service objects rather than more signals.
 

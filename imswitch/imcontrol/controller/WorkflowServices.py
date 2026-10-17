@@ -204,8 +204,53 @@ class ScanWorkflowService(SignalInterface):
         self._laserScanPreparationError = None
         self.sigDispatchScanRequest.connect(self._execute_scan_dispatch)
 
-    def request_scan_parameters(self) -> None:
-        self._comm_channel.sigRequestScanParameters.emit()
+    def request_scan_parameters(self):
+        """Return the loaded scan parameters as ``(analog, digital, positioners)``.
+
+        Answered synchronously by one resolved scan controller (the active scan
+        source, else the canonical ``Scan`` controller, else a lone controller
+        exposing ``getScanParametersSnapshot``). Returns None when no
+        controller can answer, so callers decide what "nothing loaded" means.
+        """
+        controller = self._scan_parameter_source()
+        if controller is None:
+            return None
+        return controller.getScanParametersSnapshot()
+
+    def _scan_parameter_source(self):
+        def answers(controller):
+            return callable(getattr(controller, 'getScanParametersSnapshot', None))
+
+        active = self._comm_channel.getActiveScanSource()
+        if active is not None and answers(active):
+            return active
+        controllers = self._comm_channel.controllerRegistry()
+        canonical = controllers.get('Scan')
+        if canonical is not None and answers(canonical):
+            return canonical
+        capable = [c for c in controllers.values() if c is not None and answers(c)]
+        return capable[0] if len(capable) == 1 else None
+
+    def run_plsr_multicolor_scan(self) -> None:
+        """Start the pLS-RESOLFT multicolor scan on the TriggerScope controllers.
+
+        Targeted replacement for the former ``sigRunScanTriggerScopePLSRMulticolor``
+        broadcast: calls the same entry point on every registered controller
+        that exposes ``runScanPLSRMulticolorExternal``. Raises when there is
+        none, instead of silently starting nothing.
+        """
+        targets = [
+            controller
+            for controller in self._comm_channel.controllerRegistry().values()
+            if controller is not None
+            and callable(getattr(controller, 'runScanPLSRMulticolorExternal', None))
+        ]
+        if not targets:
+            raise RuntimeError(
+                'No pLS-RESOLFT multicolor scan controller is registered.'
+            )
+        for controller in targets:
+            controller.runScanPLSRMulticolorExternal()
 
     def publish_laser_scan_state(self, state_by_laser) -> None:
         """Publish semantic participation/power-ownership state per laser.
@@ -692,8 +737,14 @@ class ScanWorkflowService(SignalInterface):
         )
         return True
 
-    def request_scan_frequency(self) -> None:
-        self._comm_channel.sigRequestScanFreq.emit()
+    def request_scan_frequency(self):
+        """Return the Recording widget's timelapse frequency, or None.
+
+        None means there is no Recording controller to ask.
+        """
+        recording = self._comm_channel.controllerRegistry().get('Recording')
+        getter = getattr(recording, 'getTimelapseFreq', None)
+        return getter() if callable(getter) else None
 
     def set_axis_centers(self, devices, centers) -> None:
         self._comm_channel.sigSetAxisCenters.emit(devices, centers)

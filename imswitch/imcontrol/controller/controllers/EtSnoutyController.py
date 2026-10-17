@@ -20,6 +20,7 @@ from qtpy.QtCore import QObject, QTimer
 from qtpy.QtWidgets import QMessageBox
 
 from ..basecontrollers import ImConWidgetController
+from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.EtSnoutyPaths import getEtSnoutyPath
 from imswitch.imcontrol.model.managers import LeasePurpose
@@ -55,8 +56,27 @@ class PeriodicSignalEmitter(QObject):
         self.signal_to_emit.emit()
 
 
+class _WidefieldClock(SignalInterface):
+    """EtSnouty's private widefield clock tick (driven by PeriodicSignalEmitter).
+
+    Deliberately not on the shared CommunicationChannel: only this controller
+    emits and consumes it.
+    """
+
+    sigTick = Signal()
+
+
 class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
     """Linked to EtSnoutyWidget."""
+
+    @property
+    def _clockSignal(self):
+        """The widefield clock tick signal (created on first use)."""
+        clock = self.__dict__.get('_widefieldClock')
+        if clock is None:
+            clock = _WidefieldClock()
+            self._widefieldClock = clock
+        return clock.sigTick
 
     SMART_MODE_WORKFLOW = 'EtSnouty'
     SMART_MODE_REQUIRED_ROLES = ('scouting', 'event')
@@ -199,7 +219,6 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
             self.resetParamVals()
             self.resetRunParams()
 
-            self._commChannel.sigInitiateEtSnouty.emit(True)
 
             detectorFastIdx = self._widget.fastImgDetectorsPar.currentIndex()
             self.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
@@ -221,12 +240,10 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                 self.__runMode = RunMode.Experiment
 
             if not self._preflightSmartModeRolesForStart():
-                self._commChannel.sigInitiateEtSnouty.emit(False)
                 self.resetRunParams()
                 return
 
             if not self.setConfig(widefield=True):
-                self._commChannel.sigInitiateEtSnouty.emit(False)
                 self.resetRunParams()
                 return
 
@@ -248,7 +265,6 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                     f'Could not arm EtSnouty detector "{self.detectorFast}": {e}',
                     exc_info=True,
                 )
-                self._commChannel.sigInitiateEtSnouty.emit(False)
                 self._recoverSmartModeFailure()
                 self.resetRunParams()
                 return
@@ -257,7 +273,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                 self.launchHelpWidget()
 
             if self.ClockWidefield:
-                self._commChannel.sigClockWidefield.connect(self.clockWidefield_fct)
+                self._clockSignal.connect(self.clockWidefield_fct)
             else:
                 self._commChannel.sigUpdateImage.connect(self.runPipeline)
 
@@ -278,11 +294,10 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         else:
             self._stopRequested = True
             self._experimentActive = False
-            self._commChannel.sigInitiateEtSnouty.emit(False)
 
             if self.ClockWidefield:
                 self._safeDisconnect(
-                    self._commChannel.sigClockWidefield, self.clockWidefield_fct
+                    self._clockSignal, self.clockWidefield_fct
                 )
             else:
                 self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
@@ -356,10 +371,9 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
     def _stopAfterSmartModeFailure(self):
         self._stopRequested = True
         self._experimentActive = False
-        self._commChannel.sigInitiateEtSnouty.emit(False)
         if self.ClockWidefield:
             self._safeDisconnect(
-                self._commChannel.sigClockWidefield, self.clockWidefield_fct
+                self._clockSignal, self.clockWidefield_fct
             )
         else:
             self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
@@ -453,7 +467,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self._triggeredScanSource = None
         self._triggeredScanSourceObservedRunning = False
         try:
-            self._commChannel.sigRunScanTriggerScopePLSRMulticolor.emit()
+            self._commChannel.scanWorkflow.run_plsr_multicolor_scan()
         except Exception:
             self._resetTriggeredScanIdentity()
             self.__logger.error(
@@ -593,9 +607,6 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self.__pipeline_params = signature(self.pipeline).parameters
         self._widget.initParamFields(self.__pipeline_params)
 
-    def getScanParameters(self):
-        self._commChannel.sigRequestScanParameters.emit()
-
     def continueFastModality(self):
         if (
             self.__dict__.get('_closed', False)
@@ -614,7 +625,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
             self.updateScatter([], clear=True)
 
             if self.ClockWidefield:
-                self._commChannel.sigClockWidefield.connect(self.clockWidefield_fct)
+                self._clockSignal.connect(self.clockWidefield_fct)
             else:
                 self._commChannel.sigUpdateImage.connect(self.runPipeline)
 
@@ -907,7 +918,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self.ClockWidefield = True
         self.__updatePeriod = int(self._widget.update_period_edit.text())
         self.emitter = PeriodicSignalEmitter(
-            self._commChannel.sigClockWidefield, self.__updatePeriod
+            self._clockSignal, self.__updatePeriod
         )
         self.emitter.start()
 
@@ -946,7 +957,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         if commChannel is not None:
             if self.__dict__.get('ClockWidefield', False):
                 self._safeDisconnect(
-                    commChannel.sigClockWidefield, self.clockWidefield_fct
+                    self._clockSignal, self.clockWidefield_fct
                 )
             else:
                 self._safeDisconnect(commChannel.sigUpdateImage, self.runPipeline)
@@ -1033,7 +1044,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         if self.__running:
             if self.ClockWidefield:
                 self._safeDisconnect(
-                    self._commChannel.sigClockWidefield, self.clockWidefield_fct
+                    self._clockSignal, self.clockWidefield_fct
                 )
             else:
                 self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)

@@ -195,7 +195,7 @@ def test_communication_channel_resolves_scan_state_via_active_source():
 
     # Metadata accessors must consult the active source first
     for accessor in ('def getDimsScan', 'def getScanStepSizes',
-                     'def getNumLineSteps', 'def getFramesPerScanPixel'):
+                     'def getFramesPerScanPixel'):
         body = source[source.index(accessor):]
         body = body[:body.index('\n    def ')]
         assert '_activeBeadRecScanSource()' in body, (

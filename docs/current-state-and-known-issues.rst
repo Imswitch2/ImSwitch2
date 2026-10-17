@@ -61,14 +61,18 @@ verification before enabling behavior changes.
 Communication backbone
 ~~~~~~~~~~~~~~~~~~~~~~
 
-The signals nothing emitted or listened to, and the unused domain alias
-groups, were removed in October 2026. ``CommunicationChannel`` still carries
-broad cross-controller coordination that belongs in services: the
-request/response signal pairs for scan parameters and scan frequency, the
-event-triggered initiate signals (``sigInitiateEtMonalisa``,
-``sigInitiateEtSnouty``), and the scan-source and BeadRec accessor
-registries. Signals exposed through ``signals()`` are public API and change
-only with the scripting docs.
+The signals nothing emitted or listened to, the unused domain alias groups,
+the request/response signal pairs for scan parameters and scan frequency (now
+``ScanWorkflowService`` calls that return the data), the event-triggered
+initiate flags and EtSnouty's private clock tick were removed in October 2026.
+``CommunicationChannel`` still carries coordination that belongs in services:
+the scan-source, BeadRec accessor and focus-lock registries. Signals exposed
+through ``signals()`` are public API and change only with the scripting docs;
+``sigSaveFocus`` is one of them although nothing emits it yet (a maintainer
+decision: emit it from the focus lock or drop it from ``signals()``). The
+legacy ``SLMController`` still listens for ``sigSLMMaskUpdated``, but the
+``MasterController`` it needs (``slmManager``) no longer exists -- the
+multi-SLM ``slms`` stack superseded it -- so that controller is dead code.
 
 Event-triggered workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~
