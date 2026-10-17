@@ -164,12 +164,15 @@ def test_a_negative_line_delay_goes_on_the_card_for_both_clocks():
     assert card.patternOffsetPs("line_clock") == 10_500
 
 
-def test_linesteps_are_refused_until_the_clock_count_is_fixed():
+def test_linesteps_are_refused_until_the_image_has_a_linestep_axis():
+    """The line clock already fires once per line step (the TTL designer
+    emits Ny*S edges); what is missing is a line-step axis in the FLIM
+    image, and the refusal says so."""
     nidaq, card, det = _rig()
     _build(nidaq, det, linesteps=2)
     assert det._preparedScanGeneration is None
     stage, error = nidaq.scanBuildFailures[0]
-    assert "2 linesteps" in str(error) and "M9" in str(error)
+    assert "2 linesteps" in str(error) and "no line-step axis" in str(error)
     assert not card.scanHeld
 
 

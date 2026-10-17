@@ -38,9 +38,10 @@ roles, so re-cabling the card is one edit here:
        ``lineClockDeadtimePs``, ``pixelPatternOffsetPs``
      - the scan's ``scan.lineClockLine``; the pixel markers are generated
        from its edges, starting ``pixelPatternOffsetPs`` (default 10 ns)
-       after each so the frame edge leads pixel 0. ``lineClockDelayPs``
-       moves the markers against the beam: positive when the clock fires
-       *early* (a galvo lagging its command; the detector delays its
+       after each so the frame edge leads pixel 0. The NI-DAQ plays the
+       clocks the scan's phase delay (D2) later, following the beam;
+       ``lineClockDelayPs`` moves the markers by what remains: positive
+       when the clock still fires *early* (the detector delays its
        pattern), negative when it arrives *late* (a long cable; the card
        moves the timestamps earlier). Tutorial 09 measures it.
        ``lineClockDeadtimePs`` (the frame clock takes it too) swallows the

@@ -131,7 +131,8 @@ What a failure means
 A red step points at its tutorial, whose output names the setting; the
 symptom table in :doc:`debugging` covers the rest. Two failures are
 expected to need code rather than a setting: a linestep scan (``S > 1``)
-is refused until ROADMAP M9 carries one line edge per linestep, and a
+is refused until the FLIM image has a line-step axis (the line clock
+already fires once per line step), and a
 reverse-mode card that reorders filtered timestamps (the vendor documents
 this on some models) shows in step 5 as a decay that reads wrong and is
 the acceptance test the Lifetime 2.0 plan (section 3.2) keeps open.

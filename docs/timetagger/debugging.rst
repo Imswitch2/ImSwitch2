@@ -57,8 +57,10 @@ checklist: a red line names the tutorial below.
      - tutorial 05; ``filterSyncByPhotons: true``, or a dead time on the
        photon input
    * - The image is shifted along x against the APD image
-     - the line clock fires early for the galvo's position (the mirror lags
-       its command: the known ``phase_delay`` offset) or late (a long cable)
+     - the line clock reaches the card early or late against the beam: the
+       NI-DAQ plays it D2 later (the scan's phase delay), so the shift is a
+       long cable, or a ``lineClockDelayPs`` measured before the clocks
+       followed the beam (it then holds the galvo's lag a second time)
      - tutorial 09; ``lineClockDelayPs`` (positive for an early clock,
        negative for a late one)
    * - Tutorial 07 counts more line edges than lines (two or three per

@@ -717,8 +717,12 @@ class TimeTaggerInfo:
 
     lineClockDelayPs: int = 0
     """ Delay applied to the line clock (and the frame clock) in picoseconds,
-    to line the Time Tagger image up with the APD/PMT image. Positive when
-    the galvo lags the commanded position. """
+    to line the Time Tagger image up with the APD/PMT image. The NI-DAQ
+    already plays its clocks the scan's phase delay (D2) later, following
+    the beam, so this is what remains: positive for a clock still early,
+    negative for a late one (a long cable). A value measured before the
+    clocks followed the beam holds the galvo's lag: measure it again
+    (tutorial 09). """
 
     lineClockDeadtimePs: int = 0
     """ Dead time on the line clock (and the frame clock) inputs, in

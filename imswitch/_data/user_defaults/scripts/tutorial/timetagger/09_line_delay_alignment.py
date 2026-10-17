@@ -2,8 +2,10 @@
 
 You will learn
   * why the FLIM image can sit a few pixels off along x against the APD
-    image: the line clock marks the galvo's *command*, the mirror lags it,
-    so the pixel markers start early (or a long cable makes them late)
+    image: the NI-DAQ plays the line clock the scan's phase delay (D2)
+    later, so it follows the beam -- what is left is a long cable (the
+    markers start late) or a D2 that misses the galvo's lag (early or
+    late, and the APD image moves with it)
   * to measure the shift from the images (``helpers.imageShift``): the
     FLIM intensity against the truth -- the simulated sample here, the APD
     image on a rig -- and to turn pixels into picoseconds
@@ -48,9 +50,9 @@ backup, design = helpers.loadScanParams(PARAMS)
 flimWas = helpers.setFlimEnabled(DETECTOR, True)
 dwell_ps = design['dwell_s'] * 1e12
 delay0 = tt.channels()['line_clock'].delay_ps
-# On the mock: the line clock fires two pixels early (a galvo lagging its
-# command). On a real card this call does nothing and the rig's own skew is
-# what the first run measures.
+# On the mock: the line clock fires two pixels early (as a D2 short of the
+# galvo's lag would make it). On a real card this call does nothing and the
+# rig's own skew is what the first run measures.
 tt.set_mock_fault('line_delay_ps', -2 * dwell_ps)
 applied = False
 

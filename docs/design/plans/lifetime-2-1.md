@@ -44,8 +44,9 @@ every item below depends on. It becomes a plan once those numbers exist.
 - **ImProcess**: open products files (`load_products`), re-gate and re-fit
   offline with `timeresolved/` (`refit_cube`); a lifetime overlay processor.
 - `facade.time_tagger.raw`, "Open tutorial…" links from the widget.
-- **Linesteps** (`S > 1`): lift the detector's refusal once ROADMAP M9's TTL
-  designer emits one line edge per linestep.
+- **Linesteps** (`S > 1`): the TTL designer already emits one line edge per
+  linestep (checked 2026-10-17: 30 edges for 10 lines of 3 steps); what is
+  left is a line-step axis in the FLIM image, then the refusal goes.
 - **Reverse-mode acceptance** on a Time Tagger 20 / Ultra: step 5 of the
   campaign; if the card reorders filtered timestamps, the decision between a
   software sort and the vendor's own ordering guarantee.

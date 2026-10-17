@@ -54,6 +54,7 @@ starts with the scan.
 | T6 | Stage, Beta (MoNaLISA) | A scan you ran before; then the same at a 5.03 ms dwell | Same frames as before. At 5.03 ms the scan ends normally with one frame per pixel (a dwell whose sample count is float noise -- 503.00000000000006 -- now counted the same way by the stage and its TTL designer) |
 | T7 | Galvo + APD (any `nidaq.startTrigger`) | The same scan three times, at 100 kHz | No shift between the three images: the timer starts with the scan, and the analog output's first sample a fixed time after it (it was on the free-running 100 kHz timebase). A scope check settles it: `ao/StartTrigger` routed to a PFI pin against the first AO step, over ten scans |
 | T6b | Stage, Beta (Base or MoNaLISA panel) | A camera pulse from 0 to the full dwell | Refused, naming the camera: such a pulse never falls between pixels (one trigger per line). End it a sample earlier |
+| T7b | STED + Time Tagger (FLIM) | Tutorial 09 on the merged build, your usual D2 | The shift it measures is the cable's only, near 0: the NI-DAQ now delays the line clock by D2. Store that as `lineClockDelayPs`; a value from before holds the galvo's lag and doubles it. Then the FLIM and APD images of one scan line up |
 | T8 | Any | The first scan after starting | No refusal starting *Cannot verify the … task*. If one appears, note the task and the message: the driver does not report that property on this board, and the check is relaxed for that task (a one-line change) |
 
 ## P1 -- a faster clock on the PCIe-6363

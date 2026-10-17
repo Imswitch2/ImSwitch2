@@ -184,7 +184,7 @@ class SignalModel:
     faults: Dict[str, Any] = field(default_factory=dict)
     """ ``missing_line_clock``, ``line_delay_ps`` (how *late* the line clock
     reaches the card against the beam's position, in ps; negative = early,
-    as with a galvo lagging its command -- ``lineClockDelayPs`` cancels it
+    as with a D2 short of the galvo's lag -- ``lineClockDelayPs`` cancels it
     with the opposite sign), ``line_clock_bounce`` (the clock pulse's
     falling edge, ``LINE_PULSE_WIDTH_PS`` after each line edge, bounces
     back through the threshold this many times, a few us apart: each bounce
@@ -1048,8 +1048,8 @@ class Flim(_Measurement):
         # The line delay. A line clock reaching the card *late* against the
         # beam (the ``line_delay_ps`` fault, positive) starts the markers
         # late, so each pixel samples a later position and the image shifts
-        # left; an early clock (negative fault: a galvo lagging its command)
-        # the other way. A card input delay or a pattern offset moves the
+        # left; an early clock (negative fault: a D2 short of the galvo's
+        # lag) the other way. A card input delay or a pattern offset moves the
         # markers by its own sign, so ``lineClockDelayPs`` cancels the fault
         # with the opposite sign: positive (the pattern) for an early clock,
         # negative (the card) for a late one.

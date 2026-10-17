@@ -309,3 +309,27 @@ def test_the_test_signal_is_refused_while_a_scan_holds_the_card():
     tt.setTestSignal(["line_clock"], True)
     assert tt.tagger.getTestSignal(3)
     tt.setTestSignal(["line_clock"], False)
+
+
+def test_the_mock_card_sees_the_clocks_as_the_nidaq_plays_them():
+    """The NI-DAQ plays its digital lines, the line and frame clocks among
+    them, the scan's phase delay later than designed, so they follow the
+    beam (scan timing, S5). The real card sees them that much later; the
+    mock, which takes the designed clocks from the scan, shifts them by the
+    delay the NI-DAQ recorded it played (``scanInfo['lag']``)."""
+    import numpy as np
+    info = TimeTaggerInfo(simulation=True, frameClockChannel=4)
+    tt = TimeTaggerManager(info, SetupInfo(scan=SimpleNamespace(sampleRate=100_000)))
+    loaded = []
+    tt._tagger.load_scan_edges = lambda edges, duration_s: loaded.append((edges, duration_s))
+    line = np.zeros(100, dtype=bool)
+    line[[10, 40, 70]] = True
+    frame = np.zeros(100, dtype=bool)
+    frame[10] = True
+    signals = {'TTLCycleSignalsDict': {'line_clock': line, 'frame_start_clock': frame}}
+    tt._onScanBuilt({'lag': {'gate_delay_s': 30e-6}}, signals)
+    tt._onScanBuilt({}, signals)                               # no delay played
+    (delayed, _d), (plain, _p) = loaded
+    np.testing.assert_array_equal(plain[3], [100_000_000, 400_000_000, 700_000_000])
+    np.testing.assert_array_equal(delayed[3] - plain[3], [30_000_000] * 3)
+    np.testing.assert_array_equal(delayed[4] - plain[4], [30_000_000])

@@ -705,15 +705,16 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         Nx, Ny, S, outer_axes, outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
         self._validate_time_resolved_scan_shape(outer_axes, outer_dims)
         if S > 1:
-            # The TTL designer emits only Ny line-clock edges for a scan of
-            # Ny*S line periods (ROADMAP M9, "linestep line_clock count"),
-            # so there is no marker pattern that can be driven for S > 1:
-            # the image would be the first Ny periods and then nothing.
-            # Refused until the designer's clock count is fixed.
+            # The line clock fires once per line period -- Ny*S times for S
+            # line steps (the TTL designer does: ROADMAP M9's clock half) --
+            # but the FLIM image has no line-step axis: it would take each
+            # step as an image line. Refused until the detector splits the
+            # steps.
             raise RuntimeError(
                 f'{self.name}: the Time Tagger cannot image a scan with '
-                f'{S} linesteps: the line clock carries one edge per line, '
-                f'not per linestep (ROADMAP M9). Set n_linesteps to 1 for FLIM.'
+                f'{S} linesteps: the line clock fires {S} times per image line '
+                f'and the FLIM image has no line-step axis yet. Set n_linesteps '
+                f'to 1 for FLIM.'
             )
 
         self._newFrameReady = False

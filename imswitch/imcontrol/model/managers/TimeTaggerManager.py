@@ -289,6 +289,11 @@ class TimeTaggerManager(SignalInterface):
                 sampleRate = float((scanInfoDict or {}).get("sample_rate", 0) or 0)
             if sampleRate <= 0:
                 return
+            # The NI-DAQ plays its digital lines -- the line and frame clocks
+            # among them -- the scan's phase delay later than designed, so
+            # they follow the beam (scan timing, S5): the real card sees
+            # them that much later, and the mock with it.
+            played = float(((scanInfoDict or {}).get("lag") or {}).get("gate_delay_s", 0) or 0)
             edges = {}
             samplesTotal = 0
             for role, key in (("line_clock", "line_clock"),
@@ -301,7 +306,8 @@ class TimeTaggerManager(SignalInterface):
                 wave = np.asarray(wave).astype(np.int8, copy=False)
                 samplesTotal = max(samplesTotal, int(wave.size))
                 rising = np.flatnonzero(np.diff(wave, prepend=0) == 1)
-                edges[abs(self.channel(role))] = (rising / sampleRate * 1e12).astype(np.int64)
+                edges[abs(self.channel(role))] = (
+                    (rising / sampleRate + played) * 1e12).astype(np.int64)
             loader(edges, samplesTotal / sampleRate)
         except Exception:
             self.__logger.exception("Could not feed the scan's edges to the mock card")
