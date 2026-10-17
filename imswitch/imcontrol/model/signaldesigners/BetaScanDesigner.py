@@ -378,7 +378,7 @@ class BetaScanDesigner(ScanDesigner):
         # than the number of physical axes: [per_pixel, per_line, per_frame(,
         # per_stack)] (sequenceSamples=per_pixel, rampSamples=per_line,
         # colSamples=per_frame, sliceSamples=per_stack). Sample-stream consumers
-        # (APDManager/PMTManager) and PointScanTTLCycleDesigner index it per
+        # (APDManager/PMTManager) and AdvancedScanTTLCycleDesigner index it per
         # level, so the trailing per-frame/per-stack element MUST be present even
         # for a 2-axis scan -- omitting it (the old behavior) broke APD/PMT >=3D
         # scans (samples_d_scanstep[:-1] dropped a real axis).

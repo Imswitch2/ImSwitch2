@@ -21,9 +21,6 @@ from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
 from imswitch.imcontrol.controller.controllers.ScanControllerMoNaLISA import (
     ScanControllerMoNaLISA,
 )
-from imswitch.imcontrol.controller.controllers.ScanControllerPointScan import (
-    ScanControllerPointScan,
-)
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT,
     ScanBusyError,
@@ -1031,9 +1028,9 @@ def test_non_final_decision_is_frozen_across_done_signal_reentry():
     assert finished == []
 
 
-def test_point_scan_reset_failure_still_publishes_terminal():
+def test_advanced_scan_reset_failure_still_publishes_terminal():
     class Stub:
-        scanDone = ScanControllerPointScan.scanDone
+        scanDone = ScanControllerAdvanced.scanDone
 
     published = []
     ctrl = Stub()
@@ -1066,7 +1063,6 @@ def test_point_scan_reset_failure_still_publishes_terminal():
     'scanDone',
     (
         ScanControllerBase.scanDone,
-        ScanControllerPointScan.scanDone,
         ScanControllerAdvanced.scanDone,
     ),
 )
@@ -1101,7 +1097,6 @@ def test_scan_done_widget_failure_still_publishes_terminal(scanDone):
     'scanDone',
     (
         ScanControllerBase.scanDone,
-        ScanControllerPointScan.scanDone,
         ScanControllerAdvanced.scanDone,
     ),
 )

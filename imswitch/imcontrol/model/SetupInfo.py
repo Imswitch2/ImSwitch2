@@ -457,10 +457,28 @@ class TilingInfo:
     The detector tiling aligns on needs no entry -- it is the reference. """
 
 
+def retiredScanWidgetTypeError(scanWidgetType):
+    """ The error to raise for a retired scan.scanWidgetType, or None.
+
+    "PointScan" was removed in favour of the Advanced panel. A setup that
+    still names it cannot be mapped silently: its TTL designer
+    (PointScanTTLCycleDesigner) is gone too and the Advanced panel needs
+    AdvancedScanTTLCycleDesigner, so the setup file has to be edited. """
+    if scanWidgetType == "PointScan":
+        return ValueError(
+            'scan.scanWidgetType "PointScan" has been removed. Use "Advanced" '
+            'instead and set scan.TTLCycleDesigner to "AdvancedScanTTLCycleDesigner" '
+            '(keep "GalvoScanDesigner" as scan.scanDesigner for galvo scans). '
+            'The PointScan-only TTL_sequence feature has no replacement in the '
+            'Advanced panel. See docs/advanced-scanning.rst.'
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class ScanInfo:
     scanWidgetType: str
-    """ Type of scan widget to generate: PointScan/MoNaLISA/Base/etc."""
+    """ Type of scan widget to generate: Base/Advanced/MoNaLISA/TriggerScope. (The retired "PointScan" is refused with a pointer to Advanced.)"""
 
     scanDesigner: str
     """ Name of the scan designer class to use. """

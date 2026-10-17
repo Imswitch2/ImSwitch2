@@ -88,7 +88,7 @@ AbstractBaseManager(ABC)  ←  ConcreteDeviceManager (per hardware)
 | `recordingManager` | `RecordingManager` | Yes |
 | `slmsManager` | `SLMsManager` | Yes |
 | `standManager` | `StandManager` | Conditional (if `setupInfo.microscopeStand`) |
-| `scanManager` | `ScanManagerBase/PointScan/MoNaLISA/Advanced` | Conditional (by `scan.scanWidgetType`) |
+| `scanManager` | `ScanManagerBase/MoNaLISA/Advanced` | Conditional (by `scan.scanWidgetType`) |
 
 Singleton "low-level" managers (NI-DAQ, RS232s, PulseGenerator) are injected into per-device managers via the `lowLevelManagers` keyword-argument dict. Per-device managers look up the dependency by key:
 
@@ -177,7 +177,7 @@ Continuous-motion support is added per-backend via `jog_start(axis, sign)` / `jo
 | `NidaqManager` | Direct NI-DAQ interface (`nidaqmx`) — scan signal output, counter/analog input |
 | `RecordingManager` | Data recording to HDF5/TIFF/Zarr (`h5py`, `tifffile`, `zarr`) |
 | `SLMManager` | Single SLM pattern generation (NumPy/PIL/SciPy) |
-| `ScanManagerBase/Advanced/MoNaLISA/PointScan` | Scan waveform orchestration via `SignalDesignerFactory` |
+| `ScanManagerBase/Advanced/MoNaLISA` | Scan waveform orchestration via `SignalDesignerFactory` |
 
 ### Pulse Generator Subsystem
 
@@ -246,7 +246,6 @@ See [ws-integration.md](plans/ws-integration.md) for the integration plan and de
 | `BetaScanDesigner` | `ScanDesigner` | Physical stage step-scan waveforms |
 | `BetaTTLCycleDesigner` | `TTLCycleDesigner` | Simple frame-based TTL pulses |
 | `AdvancedScanTTLCycleDesigner` | `TTLCycleDesigner` | Per-pixel intra-pulse timing with linestep gating |
-| `PointScanTTLCycleDesigner` | `TTLCycleDesigner` | Line-based TTL sequences for point scanning |
 
 Loaded dynamically by `SignalDesignerFactory` using class name strings from JSON config.
 
@@ -260,7 +259,7 @@ Loaded dynamically by `SignalDesignerFactory` using class name strings from JSON
 WidgetController (imcommon)
   └─ ImConWidgetController
        ├─ LiveUpdatedController (frame-driven: AlignAverage, AlignXY, FFT, Image, View)
-       └─ SuperScanController (scan-driven: ScanControllerBase/PointScan/MoNaLISA/Advanced)
+       └─ SuperScanController (scan-driven: ScanControllerBase/MoNaLISA/Advanced)
 ```
 
 ### Controller → Manager Dependency Matrix

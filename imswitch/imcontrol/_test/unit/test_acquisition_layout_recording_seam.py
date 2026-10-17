@@ -134,7 +134,7 @@ def _galvo_setup(detectors_json):
                 for index, axis in enumerate(('X', 'Y', 'Z'))
             },
             'scan': {
-                'scanWidgetType': 'PointScan',
+                'scanWidgetType': 'Advanced',
                 'scanDesigner': 'GalvoScanDesigner',
                 'scanDesignerParams': {},
                 'TTLCycleDesigner': 'AdvancedScanTTLCycleDesigner',

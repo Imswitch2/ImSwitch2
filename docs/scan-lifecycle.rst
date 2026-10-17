@@ -126,8 +126,7 @@ order:
    (see ``controllers/_beadrec_scan_source.py``) and reports
    ``isBeadRecCompatible() == True``.
 2. **The** ``'Scan'`` **widget key** — legacy path; covers
-   ``ScanControllerAdvanced`` / ``ScanControllerMoNaLISA`` /
-   ``ScanControllerPointScan``, which expose the legacy accessors but not the
+   ``ScanControllerAdvanced`` / ``ScanControllerMoNaLISA``, which expose the legacy accessors but not the
    protocol.
 3. **First-compatible iteration** (``getBeadRecScanSource``) — idle fallback
    only, e.g. when the user presses BeadRec *Run* before starting a scan.
@@ -399,9 +398,6 @@ bases), registered under widget key ``'Scan'`` as
    * - ``ScanControllerBase``
      - ``Base``
      - protocol (``BeadRecScanSourceMixin``)
-   * - ``ScanControllerPointScan``
-     - ``PointScan``
-     - legacy accessors via ``'Scan'`` key
    * - ``ScanControllerAdvanced``
      - ``Advanced``
      - legacy accessors via ``'Scan'`` key

@@ -524,7 +524,7 @@ class CommunicationChannel(SignalInterface):
     def getNumLineSteps(self):
         """Return the number of linesteps from the scan controller. Returns 1
         if no scan controller is available or it does not expose the value
-        (e.g. MoNaLISA/PointScan controllers without linestep support)."""
+        (e.g. MoNaLISA controllers without linestep support)."""
         source = self._activeBeadRecScanSource()
         if source is not None:
             return source.getNumLineSteps()
