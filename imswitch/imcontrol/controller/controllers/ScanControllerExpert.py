@@ -92,16 +92,19 @@ def _run_parts(engine, compiled):
     return [getattr(engine, 'leader', engine)]
 
 
-def _run_outcomes(engine, compiled):
-    """``{engine: (kind, reason)}`` of the run that ended; an engine that
-    keeps no outcome (the NI-DAQ: its iteration always runs to its end) is
-    done."""
+def _run_outcomes(engine, compiled, failed=False):
+    """``{engine: (kind, reason)}`` of the run that ended. An engine that
+    keeps no outcome of its own (the NI-DAQ: its iteration runs to its end
+    unless it fails) ended as the run did: failed when the run failed
+    (``failed``, the panel's own terminal), else done."""
     if getattr(compiled, 'followers', None) and callable(getattr(engine, 'partsOutcome', None)):
         return dict(engine.partsOutcome() or {})
     out = {}
     for part in _run_parts(engine, compiled):
         outcome = getattr(part, 'outcome', None)
-        out[part.name] = outcome if outcome is not None else ('done', '')
+        if outcome is None:
+            outcome = ('failed', '') if failed else ('done', '')
+        out[part.name] = outcome
     return out
 
 
@@ -167,6 +170,10 @@ class ScanControllerExpert(SuperScanController):
         self._compiled = None
         self._compiledFor = None
         self._compiledEngine = None     # the engine the compile is for
+        # {device: (tracked µm, how the run ended)}: where a run that did not
+        # finish left a device is not known; until the device moves (its
+        # tracked value changes) no program starts from its position.
+        self._unknownPositions = {}
         # The program is authoritative; the tables are read back only after
         # an edit, so an opened file's request is never re-rounded by them.
         self._edited = False
@@ -389,13 +396,33 @@ class ScanControllerExpert(SuperScanController):
         return [d.device for d in program.drives]
 
     def _capturedPositions(self, program):
+        """Each moved device's tracked position, where it is known: a device
+        a run left at an unknown place is left out until it has moved, so a
+        program that starts from its position is refused and one that does
+        not approaches it with the whole move and settle."""
         captured = {}
+        unknown = self.__dict__.setdefault('_unknownPositions', {})
         for device in self._movedDevices(program):
             manager = self._master.positionersManager[device]
             info = self._setupInfo.positioners[device]
             axes = list(getattr(info, 'axes', None) or manager.axes)
-            captured[device] = float(manager.position[axes[0]])
+            value = float(manager.position[axes[0]])
+            if device in unknown:
+                if value == unknown[device][0]:
+                    continue
+                del unknown[device]          # moved since: tracked again
+            captured[device] = value
         return captured
+
+    def _unknownPositionNote(self, program) -> str:
+        unknown = self.__dict__.get('_unknownPositions') or {}
+        devices = [d for d in self._movedDevices(program) if d in unknown]
+        if not devices:
+            return ''
+        how = ' / '.join(sorted({unknown[d][1] for d in devices}))
+        return (f' Where the {how} run left {", ".join(devices)} is not known: move '
+                f'{"it" if len(devices) == 1 else "them"} before a program starts from '
+                'its position.')
 
     def _deviceFacts(self):
         has_engines = bool(getattr(self._setupInfo, 'scanEngines', None))
@@ -446,7 +473,8 @@ class ScanControllerExpert(SuperScanController):
                 f'{engine.name} cannot run this program:\n- '
                 + '\n- '.join(error.report.reasons())) from error
         except (ProgramError, AdvancedConversionError, ValueError) as error:
-            raise ScanDesignRefusedError(str(error)) from error
+            raise ScanDesignRefusedError(
+                str(error) + self._unknownPositionNote(self._program)) from error
         # What each detector records is its binding's, checked against its
         # line before anything runs (§2.5, §7.10).
         problems = binding_problems(
@@ -863,36 +891,45 @@ class ScanControllerExpert(SuperScanController):
             except Exception:
                 self._logger.error('The scan engine did not stop', exc_info=True)
 
-    def _trackRunEndPositions(self):
+    def _trackRunEndPositions(self, failed=False):
         """Tell each positioner the run moved where the run left it (§7.9):
         a finished run, where its program ends -- the restore position, or a
         trajectory's last sample; a stopped or failed one, a step board's
         last write (its log). The next run captures its origin there, and
-        a move by hand starts from there. Where it is not known, that is
-        said and the tracked position is left as it was."""
+        a move by hand starts from there. ``failed``: the run ended failed,
+        also where an engine keeps no outcome (the NI-DAQ), so its planned
+        end is not claimed. Where it is not known, that is said, the tracked
+        position is left as it was, and the device is held unknown
+        (_capturedPositions) until it moves."""
         compiled = self.__dict__.get('_runCompiled')
         self._runCompiled = None
         if compiled is None:
             return
         engine = self._engineForScans()
-        ended = _run_outcomes(engine, compiled)
+        ended = _run_outcomes(engine, compiled, failed)
         if all(kind == 'done' for kind, _ in ended.values()):
             positions, how = _end_positions(compiled.schedule), 'finished'
         else:
             positions = _logged_positions(_run_parts(engine, compiled))
             how = 'stopped' if all(kind != 'failed' for kind, _ in ended.values()) else 'failed'
+        unknown = self.__dict__.setdefault('_unknownPositions', {})
         for device in self._movedDevices(compiled.program):
-            if device not in positions:
-                self._logger.warning(f'Where the {how} run left {device} is not known; its '
-                                     'tracked position is left as it was.')
-                continue
             manager = self._master.positionersManager[device]
             info = self._setupInfo.positioners[device]
             axes = list(getattr(info, 'axes', None) or manager.axes)
+            if device not in positions:
+                tracked = float(manager.position[axes[0]])
+                unknown[device] = (tracked, how)
+                self._logger.warning(
+                    f'Where the {how} run left {device} is not known; its tracked position '
+                    f'({tracked:g} µm) is left as it was, and no program starts from it '
+                    'until it moves.')
+                continue
+            unknown.pop(device, None)
             manager.updateTrackedPosition({axes[0]: float(positions[device])})
 
     def scanFailed(self, **kwargs):
-        self._trackRunEndPositions()
+        self._trackRunEndPositions(failed=True)
         super().scanFailed(**kwargs)
 
     def scanDone(self):

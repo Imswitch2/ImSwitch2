@@ -969,3 +969,67 @@ def test_the_panel_stops_a_run_from_its_own_stop_button(rig, qtbot):
     assert rig.scan._scanStopRequested
     qtbot.waitUntil(lambda: bool(rig.ended), timeout=30_000)  # and no repeat after it
     assert not rig.widget.stopButton.isEnabled() and rig.widget.scanButton.isEnabled()
+
+
+def _with_motion(program, **motion):
+    return dataclasses.replace(program, drives=tuple(
+        dataclasses.replace(d, motion=dataclasses.replace(d.motion, **motion))
+        for d in program.drives))
+
+
+def _tracked_z(rig):
+    return float(rig.master.positionersManager['Z'].position['Z'])
+
+
+def _fail_nidaq_run(rig, qtbot, when):
+    """Run the program and fail the NI-DAQ run: right after it starts, or
+    as it tears down after its last sample (a task that does not close)."""
+    nidaq = rig.master.nidaqManager
+    if when == 'teardown':
+        simulator = nidaq._NidaqManager__scanSimulator
+        simulator.sigDone.disconnect(nidaq.scanDone)
+        simulator.sigDone.connect(
+            lambda *a: nidaq._terminalScanFailure(OSError('task close failed')))
+    rig.ended.clear()
+    rig.scan.runScanAdvanced()
+    assert rig.scan.__dict__.get('_runCompiled') is not None
+    if when == 'start':
+        nidaq._terminalScanFailure(OSError('injected output failure'))
+    qtbot.waitUntil(lambda: bool(rig.ended), timeout=30_000)
+    assert rig.scan._scanRunFailed
+
+
+@pytest.mark.parametrize('restore', ['hold', 'first'])
+@pytest.mark.parametrize('when', ['start', 'teardown'])
+def test_a_failed_nidaq_run_does_not_claim_where_it_would_have_ended(rig, qtbot, restore, when):
+    """Review 2026-10-17, P1: the NI-DAQ keeps no outcome of its own, so a
+    failed run counted as done and Z was told the program's planned end. A
+    failed run claims no end: Z keeps its tracked value, a program that
+    starts from Z's position is refused saying why, and once Z has moved
+    it is tracked again."""
+    from imswitch.imcontrol.controller.controllers.ScanControllerExpert import _end_positions
+    from imswitch.imcontrol.model.errors import ScanDesignRefusedError
+    rig.master.positionersManager['Z'].updateTrackedPosition({'Z': 3.0})
+    program = _with_motion(_ms_resolft(rig, timepoints=1), restore=restore)
+    rig.scan.setProgram(program)
+    planned = _end_positions(rig.scan._scheduleOf(rig.scan._compile()))['Z']
+    assert planned != 3.0
+    _fail_nidaq_run(rig, qtbot, when)
+    assert _tracked_z(rig) == 3.0
+    rig.scan.setProgram(_with_motion(program, origin='captured'))
+    with pytest.raises(ScanDesignRefusedError, match='Where the failed run left Z is not known'):
+        rig.scan._compile()
+    rig.scan.setProgram(program)          # absolute: runs, approaching Z from anywhere
+    rig.scan._compile()
+    rig.master.positionersManager['Z'].updateTrackedPosition({'Z': 4.0})
+    rig.scan.setProgram(_with_motion(program, origin='captured'))
+    rig.scan._compile()
+
+
+def test_a_finished_nidaq_run_still_tells_z_where_it_ended(rig, qtbot):
+    from imswitch.imcontrol.controller.controllers.ScanControllerExpert import _end_positions
+    rig.master.positionersManager['Z'].updateTrackedPosition({'Z': 3.0})
+    rig.scan.setProgram(_with_motion(_ms_resolft(rig, timepoints=1), restore='hold'))
+    planned = _end_positions(rig.scan._scheduleOf(rig.scan._compile()))['Z']
+    assert rig.run(timeoutS=30.0) and not rig.scan._scanRunFailed
+    assert _tracked_z(rig) == planned
