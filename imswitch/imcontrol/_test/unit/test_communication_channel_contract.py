@@ -36,76 +36,10 @@ def _signal_inventory():
     return inventory
 
 
-def _deprecated_signals():
-    for node in _channel_class().body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if node.targets[0].id == 'DEPRECATED_SIGNALS':
-            return ast.literal_eval(node.value)
-    return {}
-
-
-def _class_literal(name):
-    for node in _channel_class().body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if node.targets[0].id == name:
-            return ast.literal_eval(node.value)
-    return None
-
-
 def test_communication_channel_signal_inventory_matches_snapshot():
     expected = json.loads(INVENTORY_PATH.read_text())
 
     assert _signal_inventory() == expected
-
-
-def test_communication_channel_deprecated_signals_are_explicit_and_available():
-    deprecated = _deprecated_signals()
-    signal_names = {item['name'] for item in _signal_inventory()}
-
-    assert deprecated == {
-        'sigGridToggled': 'No internal producer or consumer found in repository scan.',
-        'sigCrosshairToggled': 'No internal producer or consumer found in repository scan.',
-        'sigScanFrameFinished': 'No internal producer or consumer found in repository scan.',
-        'sigClockWidefield': 'No internal producer or consumer found in repository scan.',
-    }
-    assert set(deprecated).issubset(signal_names)
-    assert 'sigSaveFocus' not in deprecated
-
-
-def test_communication_channel_declares_domain_event_groups():
-    assert _class_literal('EVENT_GROUP_NAMES') == (
-        'acquisitionEvents',
-        'viewEvents',
-        'recordingEvents',
-        'scanEvents',
-        'snapshotEvents',
-        'slmEvents',
-        'focusEvents',
-        'rotationEvents',
-        'eventTriggeredEvents',
-        'beadRecEvents',
-        'useqEvents',
-        'scriptEvents',
-    )
-
-
-def test_communication_channel_event_groups_alias_existing_signals():
-    source = CHANNEL_PATH.read_text()
-
-    assert "'updateImage': self.sigUpdateImage" in source
-    assert "'recordingEnded': self.sigRecordingEnded" in source
-    assert "'recordingFailed': self.sigRecordingFailed" in source
-    assert "'scanStarting': self.sigScanStarting" in source
-    assert "'scanEnded': self.sigScanEnded" in source
-    assert "'setAxisCenters': self.sigSetAxisCenters" in source
-    assert "'snapImgPrev': self.sigSnapImgPrev" in source
-    assert "'updateRotatorPosition': self.sigUpdateRotatorPosition" in source
-    assert "'initiateEtMonalisa': self.sigInitiateEtMonalisa" in source
-    assert "'queryCenterCoord': self.sigQueryCenterCoord" in source
-    assert "'setExposure': self.sigSetExposure" in source
-    assert "'scriptExecutionFinished': self.sigScriptExecutionFinished" in source
 
 
 def test_communication_channel_exposes_scan_workflow_service():
@@ -144,3 +78,16 @@ def test_communication_channel_keeps_public_api_signal_names():
     assert "'recordingFailed': self.sigRecordingFailed" in source
     assert "'scanEnded': self.sigScanEnded" in source
     assert "'saveFocus': self.sigSaveFocus" in source
+
+
+def test_communication_channel_has_no_unused_legacy_surface():
+    names = {item['name'] for item in _signal_inventory()}
+    source = CHANNEL_PATH.read_text()
+
+    # Removed in the 2026-10 cleanup: no producer and no consumer anywhere.
+    for removed in ('sigGridToggled', 'sigCrosshairToggled',
+                    'sigScanFrameFinished', 'sigInitiateEt', 'sigSetXYPosition',
+                    'sigSetZPosition', 'sigSetExposure', 'sigSetSpeed'):
+        assert removed not in names
+    assert 'DEPRECATED_SIGNALS' not in source
+    assert '_create_event_groups' not in source

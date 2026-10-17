@@ -56,28 +56,6 @@ class CommunicationChannel(SignalInterface):
     signals here.
     """
 
-    DEPRECATED_SIGNALS = {
-        'sigGridToggled': 'No internal producer or consumer found in repository scan.',
-        'sigCrosshairToggled': 'No internal producer or consumer found in repository scan.',
-        'sigScanFrameFinished': 'No internal producer or consumer found in repository scan.',
-        'sigClockWidefield': 'No internal producer or consumer found in repository scan.',
-    }
-
-    EVENT_GROUP_NAMES = (
-        'acquisitionEvents',
-        'viewEvents',
-        'recordingEvents',
-        'scanEvents',
-        'snapshotEvents',
-        'slmEvents',
-        'focusEvents',
-        'rotationEvents',
-        'eventTriggeredEvents',
-        'beadRecEvents',
-        'useqEvents',
-        'scriptEvents',
-    )
-
     # Acquisition and image stream events. Producers are mainly the detector
     # managers, connected in MasterController.
     sigUpdateImage = Signal(
@@ -90,9 +68,6 @@ class CommunicationChannel(SignalInterface):
     sigNewFrame = Signal()
 
     # View-layer overlay and viewer item events.
-    # Deprecated compatibility signals: sigGridToggled, sigCrosshairToggled.
-    sigGridToggled = Signal(bool)  # (enabled)
-    sigCrosshairToggled = Signal(bool)  # (enabled)
     sigAddItemToVb = Signal(object)  # (item)
     sigRemoveItemFromVb = Signal(object)  # (item)
     sigSetVisibleLayers = Signal(object)  # (detectorNameTuple) — Snouty setup switching
@@ -143,8 +118,6 @@ class CommunicationChannel(SignalInterface):
     sigSetAxisCenters = Signal(object, object)  # (axisDeviceList, axisCenterList)
     sigRequestScanFreq = Signal()
     sigSendScanFreq = Signal(float)  # (scanPeriod)
-    # Deprecated compatibility signal.
-    sigScanFrameFinished = Signal()  # TODO: emit this signal when a scanning frame finished, maybe in scanController if possible? Otherwise in APDManager for now, even if that is not general if you want to do camera-based experiments. Could also create a signal specifically for this from the scan curve generator perhaps, specifically for the rotation experiments, would that be smarter?
 
     # Snapshot and external recording trigger events.
     sigSnapImg = Signal()
@@ -161,9 +134,8 @@ class CommunicationChannel(SignalInterface):
 
     # Event-triggered workflow events.
     sigInitiateEtMonalisa = Signal(bool)
-    sigInitiateEt = Signal(bool)
     sigInitiateEtSnouty = Signal(bool)
-    # Deprecated compatibility signal.
+    # EtSnouty's widefield clock tick (PeriodicSignalEmitter).
     sigClockWidefield = Signal()
     sigRunScanTriggerScopePLSRMulticolor = Signal()
 
@@ -174,12 +146,6 @@ class CommunicationChannel(SignalInterface):
     sigShowBeadRecCenterCross = Signal(bool)  # (state)
     sigAutoAxialToggled = Signal(bool)  # (state)
     sigNewAxialListBuffer = Signal(list)  # e.g. ["XZ", "YZ"]
-
-    # useq-schema related events.
-    sigSetXYPosition = Signal(float, float)
-    sigSetZPosition = Signal(float)
-    sigSetExposure = Signal(float)
-    sigSetSpeed = Signal(float)
 
     # Scripting events.
     sigScriptExecutionFinished = Signal()
@@ -196,90 +162,9 @@ class CommunicationChannel(SignalInterface):
         self._scriptExecution = False
         self._activeScanSource = None
         self._focusLock = None
-        self._create_event_groups()
         self.scanWorkflow = ScanWorkflowService(self)
         self.beadRecWorkflow = BeadRecWorkflowService(self)
         self.__main._moduleCommChannel.sigExecutionFinished.connect(self.executionFinished)
-
-    def _create_event_groups(self):
-        """Create domain aliases while preserving legacy ``sigX`` attributes."""
-        self.acquisitionEvents = pythontools.dictToROClass({
-            'updateImage': self.sigUpdateImage,
-            'acquisitionStarted': self.sigAcquisitionStarted,
-            'acquisitionStopped': self.sigAcquisitionStopped,
-            'adjustFrame': self.sigAdjustFrame,
-            'detectorSwitched': self.sigDetectorSwitched,
-            'newFrame': self.sigNewFrame,
-        })
-        self.viewEvents = pythontools.dictToROClass({
-            'gridToggled': self.sigGridToggled,
-            'crosshairToggled': self.sigCrosshairToggled,
-            'addItemToVb': self.sigAddItemToVb,
-            'removeItemFromVb': self.sigRemoveItemFromVb,
-        })
-        self.recordingEvents = pythontools.dictToROClass({
-            'recordingStarted': self.sigRecordingStarted,
-            'recordingEnded': self.sigRecordingEnded,
-            'recordingFailed': self.sigRecordingFailed,
-            'updateRecFrameNum': self.sigUpdateRecFrameNum,
-            'updateRecTime': self.sigUpdateRecTime,
-            'memorySnapAvailable': self.sigMemorySnapAvailable,
-        })
-        self.scanEvents = pythontools.dictToROClass({
-            'runScan': self.sigRunScan,
-            'abortScan': self.sigAbortScan,
-            'scanStarting': self.sigScanStarting,
-            'scanDevicesResolved': self.sigScanDevicesResolved,
-            'scanActuatorsResolved': self.sigScanActuatorsResolved,
-            'scanBuilt': self.sigScanBuilt,
-            'scanStarted': self.sigScanStarted,
-            'scanDone': self.sigScanDone,
-            'scanEnded': self.sigScanEnded,
-            'toggleBlockScanWidget': self.sigToggleBlockScanWidget,
-            'requestScanParameters': self.sigRequestScanParameters,
-            'sendScanParameters': self.sigSendScanParameters,
-            'setAxisCenters': self.sigSetAxisCenters,
-            'requestScanFreq': self.sigRequestScanFreq,
-            'sendScanFreq': self.sigSendScanFreq,
-            'scanFrameFinished': self.sigScanFrameFinished,
-        })
-        self.snapshotEvents = pythontools.dictToROClass({
-            'snapImg': self.sigSnapImg,
-            'snapImgPrev': self.sigSnapImgPrev,
-            'startRecordingExternal': self.sigStartRecordingExternal,
-        })
-        self.slmEvents = pythontools.dictToROClass({
-            'slmMaskUpdated': self.sigSLMMaskUpdated,
-        })
-        self.focusEvents = pythontools.dictToROClass({
-            'saveFocus': self.sigSaveFocus,
-        })
-        self.rotationEvents = pythontools.dictToROClass({
-            'updateRotatorPosition': self.sigUpdateRotatorPosition,
-            'setSyncInMovementSettings': self.sigSetSyncInMovementSettings,
-        })
-        self.eventTriggeredEvents = pythontools.dictToROClass({
-            'initiateEtMonalisa': self.sigInitiateEtMonalisa,
-            'initiateEt': self.sigInitiateEt,
-            'clockWidefield': self.sigClockWidefield,
-        })
-        self.beadRecEvents = pythontools.dictToROClass({
-            'queryCenterCoord': self.sigQueryCenterCoord,
-            'centerCoordPipelineFinished': self.sigCenterCoordPipelineFinished,
-            'updateBeadRecCenter': self.sigUpdateBeadRecCenter,
-            'showBeadRecCenterCross': self.sigShowBeadRecCenterCross,
-            'autoAxialToggled': self.sigAutoAxialToggled,
-            'newAxialListBuffer': self.sigNewAxialListBuffer,
-        })
-        self.useqEvents = pythontools.dictToROClass({
-            'setXYPosition': self.sigSetXYPosition,
-            'setZPosition': self.sigSetZPosition,
-            'setExposure': self.sigSetExposure,
-            'setSpeed': self.sigSetSpeed,
-        })
-        self.scriptEvents = pythontools.dictToROClass({
-            'scriptExecutionFinished': self.sigScriptExecutionFinished,
-        })
 
     def controllerRegistry(self) -> Mapping:
         """The live widget-key -> controller mapping (empty before setup)."""

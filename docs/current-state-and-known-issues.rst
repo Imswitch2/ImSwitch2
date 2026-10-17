@@ -56,10 +56,13 @@ verification before enabling behavior changes.
 Communication backbone
 ~~~~~~~~~~~~~~~~~~~~~~
 
-``CommunicationChannel`` still carries legacy compatibility signals
-(``DEPRECATED_SIGNALS``) and broad cross-controller coordination. Deprecated
-signals should not be removed until public API compatibility and
-representative no-hardware startup/widget-set tests are in place.
+The signals nothing emitted or listened to, and the unused domain alias
+groups, were removed in October 2026. ``CommunicationChannel`` still carries
+broad cross-controller coordination that belongs in services: the
+request/response signal pairs for scan parameters and scan frequency, three
+event-triggered on/off flags, and the scan-source and BeadRec accessor
+registries. Signals exposed through ``signals()`` are public API and change
+only with the scripting docs.
 
 Event-triggered workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~

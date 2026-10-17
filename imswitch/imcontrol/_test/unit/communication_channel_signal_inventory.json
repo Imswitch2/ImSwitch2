@@ -35,18 +35,6 @@
     "args": []
   },
   {
-    "name": "sigGridToggled",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigCrosshairToggled",
-    "args": [
-      "bool"
-    ]
-  },
-  {
     "name": "sigAddItemToVb",
     "args": [
       "object"
@@ -200,10 +188,6 @@
     ]
   },
   {
-    "name": "sigScanFrameFinished",
-    "args": []
-  },
-  {
     "name": "sigSnapImg",
     "args": []
   },
@@ -246,12 +230,6 @@
   },
   {
     "name": "sigInitiateEtMonalisa",
-    "args": [
-      "bool"
-    ]
-  },
-  {
-    "name": "sigInitiateEt",
     "args": [
       "bool"
     ]
@@ -305,31 +283,6 @@
     "name": "sigNewAxialListBuffer",
     "args": [
       "list"
-    ]
-  },
-  {
-    "name": "sigSetXYPosition",
-    "args": [
-      "float",
-      "float"
-    ]
-  },
-  {
-    "name": "sigSetZPosition",
-    "args": [
-      "float"
-    ]
-  },
-  {
-    "name": "sigSetExposure",
-    "args": [
-      "float"
-    ]
-  },
-  {
-    "name": "sigSetSpeed",
-    "args": [
-      "float"
     ]
   },
   {
