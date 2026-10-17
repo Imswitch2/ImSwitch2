@@ -1,3 +1,4 @@
+include licenses/*
 graft imswitch/_data
 graft imswitch/imcontrol/view/configeditor/builtin_templates
 graft imswitch/imcontrol/model/configeditor/schemas

@@ -320,7 +320,7 @@ GitHub Issue → Agent plans → Isolated branch/worktree → Tests → PR → H
 - Agents work in isolated branches or worktrees; parallel agents don't share state.
 - Every claim in the docs is grounded in source code — agents are explicitly forbidden from inventing fields, defaults, or vendor library calls.
 
-See [`AGENTS.md`](AGENTS.md) for the full rules and templates.
+See [developer onboarding](docs/developer-onboarding.rst) and [agent task templates](docs/agent-task-templates.rst) for the full rules and templates.
 
 ---
 

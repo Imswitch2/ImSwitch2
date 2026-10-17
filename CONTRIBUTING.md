@@ -4,7 +4,7 @@ Thank you for considering contributing to ImSwitch2! This document outlines how 
 
 ## Important Safety Notice
 
-ImSwitch2 controls physical hardware including lasers, stages, detectors, and data acquisition systems. Incorrect changes can damage equipment or produce unsafe conditions. Please read `AGENTS.md` for red-zone file designations before making any changes.
+ImSwitch2 controls physical hardware including lasers, stages, detectors, and data acquisition systems. Incorrect changes can damage equipment or produce unsafe conditions. Please read `docs/developer-onboarding.rst` for red-zone file designations before making any changes.
 
 ## How to Contribute
 
@@ -43,7 +43,7 @@ ImSwitch2 controls physical hardware including lasers, stages, detectors, and da
 
 ## Review Process
 
-All pull requests require at least one human reviewer. Automated merges are never allowed. Changes touching red-zone files (see `AGENTS.md`) require additional scrutiny and explicit approval from a maintainer.
+All pull requests require at least one human reviewer. Automated merges are never allowed. Changes touching red-zone files (see `docs/developer-onboarding.rst`) require additional scrutiny and explicit approval from a maintainer.
 
 ## Code of Conduct
 
