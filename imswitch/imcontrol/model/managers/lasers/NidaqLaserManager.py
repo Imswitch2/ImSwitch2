@@ -13,6 +13,8 @@ class NidaqLaserManager(LaserManager):
     def __init__(self, laserInfo, name, **lowLevelManagers):
 
         self._nidaqManager = lowLevelManagers['nidaqManager']
+        if getattr(self._nidaqManager, 'isSimulated', False):
+            self._setMockActive("Simulated NI-DAQ laser backend")
         self.__logger = initLogger(self, tryInheritParent=True)
 
         self._lut = None

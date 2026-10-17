@@ -326,6 +326,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "resize",
     "segmentation",
     "smlm-drift",
+    "smlm-drift-comet",
     "smlm-filter",
     "smlm-group",
     "smlm-render",

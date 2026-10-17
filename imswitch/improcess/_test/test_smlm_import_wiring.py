@@ -133,6 +133,36 @@ def test_a_supplied_pixel_size_is_not_reported(controller, tmp_path):
     assert controller._recon.published[0][0].pixel_size_nm == pytest.approx(117.0)
 
 
+def test_an_imported_table_is_previewed_at_the_localizers_pixel_size(
+    controller, thunderstorm_csv, tmp_path
+):
+    """The panel's Rendering setting applies to tables opened from a file too."""
+    controller._widget = SimpleNamespace(
+        parTree=SimpleNamespace(get_values=lambda: {"preview_pixel_size_nm": 25.0})
+    )
+
+    controller._loadFromPath(str(thunderstorm_csv))
+    result, _name = controller._recon.published[0]
+    assert result.preview_pixel_size_nm == pytest.approx(25.0)
+
+    locs = localizations_from_columns({"x_nm": [10.0, 2000.0], "y_nm": [30.0, 40.0]})
+    source = LocalizationResult("p", locs, pixel_size_nm=100.0, dims="2D")
+    controller._loadFromPath(str(export_picasso_hdf5(source, tmp_path / "p.hdf5")))
+    assert controller._recon.published[1][0].preview_pixel_size_nm == pytest.approx(25.0)
+
+
+def test_an_imported_table_takes_the_localizers_default_preview_without_a_panel(
+    controller, thunderstorm_csv
+):
+    from imswitch.improcess.reconstructors.smlm.localizer import (
+        DEFAULT_PREVIEW_PIXEL_SIZE_NM,
+    )
+
+    controller._loadFromPath(str(thunderstorm_csv))
+    result, _name = controller._recon.published[0]
+    assert result.preview_pixel_size_nm == pytest.approx(DEFAULT_PREVIEW_PIXEL_SIZE_NM)
+
+
 def test_an_unreadable_localization_file_does_not_publish(controller, tmp_path):
     path = tmp_path / "broken.csv"
     path.write_text('"id","frame","x [px]","y [px]"\n1,1,10.0,20.0\n')
@@ -184,6 +214,8 @@ def test_a_generic_csv_asks_what_the_columns_mean(controller, tmp_path, monkeypa
     np.testing.assert_allclose(result.locs.x_nm, [1000.0, 3000.0], rtol=1e-5)
     np.testing.assert_array_equal(result.locs.frame, [0, 1])
     assert result.pixel_size_nm == pytest.approx(120.0)
+    # The mapped path goes through the same preview setting as the others.
+    assert result.preview_pixel_size_nm == pytest.approx(10.0)
 
 
 def test_cancelling_the_mapping_dialog_publishes_nothing(

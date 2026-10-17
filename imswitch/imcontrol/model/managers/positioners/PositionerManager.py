@@ -6,6 +6,7 @@ import threading
 from typing import Dict, List
 
 from imswitch.imcommon.model import dirtools, initLogger
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
 
 
 _POSITION_PERSISTENCE_FILENAME = 'positioner_positions.json'
@@ -13,7 +14,8 @@ _POSITION_PERSISTENCE_SCHEMA_VERSION = 1
 _POSITION_PERSISTENCE_LOCK = threading.RLock()
 
 
-class PositionerManager(ABC):
+
+class PositionerManager(DeviceManagerStatusMixin, ABC):
     """ Abstract base class for managers that control positioners. Each type of
     positioner corresponds to a manager derived from this class. """
 

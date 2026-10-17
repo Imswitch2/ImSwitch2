@@ -62,6 +62,15 @@ class PulseGeneratorLaserManager(LaserManager):
                 'None?).  PulseGeneratorLaserManager will accept calls '
                 'but no hardware will be driven.'
             )
+            self._setConnectionError(
+                "No pulseGeneratorManager wired",
+                summary="Pulse-generator backend unavailable; mock fallback active",
+                mock_active=True,
+            )
+        elif self._pulseGen.connected:
+            self._setConnected("Pulse-generator backend connected")
+        else:
+            self._setMockActive("Pulse-generator backend is hardware-free")
 
         # If the backend reports it doesn't support analog, treat this
         # laser as binary even if the user configured an analogChannel.
