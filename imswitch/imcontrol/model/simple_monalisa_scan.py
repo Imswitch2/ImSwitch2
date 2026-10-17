@@ -643,6 +643,15 @@ def _parse_geometry(
     lengths = list(analog.get('axis_length') or ())
     steps = list(analog.get('axis_step_size') or ())
     by_device = {name: i for i, name in enumerate(devices)}
+    # The plan has no centre: plan_to_dicts writes every axis at 0, and the
+    # Beta designer moves every axis by its centre, scanned or not. A centre
+    # the plan cannot hold is refused, so it stays in Advanced instead of
+    # being reset to 0 by the next mirror (review 2026-10-17).
+    for device, center in zip(devices, analog.get('axis_centerpos') or ()):
+        if not math.isclose(float(center), 0.0, abs_tol=1e-3):
+            raise PlanNotRepresentable(
+                f'{reverse_axes.get(device, device)} is centred at {float(center):g} µm; a '
+                'Simple MoNaLISA scan is centred at 0 µm, so the offset stays in Advanced.')
     lateral_lengths = {}
     lateral_steps = {}
     z_length = reference_plan.z_length_um

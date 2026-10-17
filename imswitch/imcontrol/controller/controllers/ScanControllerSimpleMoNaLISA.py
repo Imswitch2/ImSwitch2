@@ -1218,14 +1218,22 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 if not self._commChannel.liveScreeningWorkflow.get_laser_active(name):
                     raise RuntimeError(f'Laser "{name}" rejected the Live enable request.')
         except Exception:
+            uncertain = set()
             for name, wasActive in previous.items():
                 try:
                     self._commChannel.liveScreeningWorkflow.set_laser_active(name, wasActive)
+                    if self._commChannel.liveScreeningWorkflow.get_laser_active(name) != wasActive:
+                        raise RuntimeError('laser does not report its previous state')
                 except Exception:
+                    uncertain.add(name)
                     self._logger.error(
                         f'Failed to roll back Live state for laser "{name}".',
                         exc_info=True,
                     )
+            # What is back as it was stays screening; what the rollback could
+            # not restore may be on, and stays Simple's to switch off, so that
+            # Stop and close try it again (review 2026-10-17).
+            self.__dict__['_activeScreeningLasers'] = current | uncertain
             raise
         self.__dict__['_activeScreeningLasers'] = target
 
@@ -1263,6 +1271,16 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             # An existing Stop/Live session keeps its deliberate internal mode.
             if not hadTriggerOverride:
                 self._releaseScreeningTriggerOverride()
+            leftOn = sorted(self.__dict__.get('_activeScreeningLasers', set()))
+            if leftOn:
+                # A laser the rollback could not switch off: screening is not
+                # over, Stop (and close) must still switch it off.
+                self.__dict__['_screeningActive'] = True
+                self._view.setScreeningActive(True)
+                self._view.showMessage(
+                    f'Could not start Live screening: {error}. May still be on: '
+                    f'{", ".join(leftOn)} -- Stop switches it off.', error=True)
+                return
             self._view.showMessage(f'Could not start Live screening: {error}', error=True)
             return
         self.__dict__['_screeningActive'] = True
@@ -1499,6 +1517,15 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._refreshLiveControls()
             self._refreshEstimate()
             return True
+
+        # Refused before anything is touched, as the base refuses it: while an
+        # acquisition runs it owns the camera trigger, and releasing the
+        # screening override below restored the camera's pre-Live trigger
+        # under a frame-triggered acquisition (review 2026-10-17).
+        if page != self.scanPage() and self._isBusy():
+            self._panel.showPage(self.scanPage())
+            self._panel.showNote('Stop the scan before switching panels.')
+            return False
 
         # The Stop control disappears on Advanced, so do not carry Simple-owned
         # illumination or its persistent camera-trigger override across the
