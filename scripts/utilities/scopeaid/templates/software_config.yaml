@@ -8,7 +8,7 @@
 # Generation workflow: ../README.md
 
 # TODO: This file can be auto-seeded from ImSwitch setup JSON using
-#       utility_scripts/scopeaid_seed_from_config.py (planned)
+#       scripts/utilities/scopeaid_seed_from_config.py
 
 version: null
 last_updated: null  # YYYY-MM-DD

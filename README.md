@@ -236,7 +236,7 @@ Open it from a running ImSwitch under **Tools > Edit hardware configuration...**
 or standalone without starting the microscope:
 
 ```bash
-python utility_scripts/imswitch_config_editor.py
+python scripts/utilities/imswitch_config_editor.py
 ```
 
 <!-- TODO: config editor screenshot, docs/images/auto/config-editor.png.  Suggested 1000×600 px.
@@ -294,8 +294,13 @@ Imswitch2/
 │   ├── imcommon/                   # Shared framework (Qt layer, signals, logging)
 │   ├── improcess/                  # Post-acquisition processing module (was: imreconstruct)
 │   └── imscripting/                # Scripting console module
-├── utility_scripts/                # Standalone operator tools (config editor launcher, AOTF calibration, …)
-├── tools/                          # Maintenance scripts (screenshots, codegen, …)
+├── scripts/
+│   ├── diagnostics/                # Hardware probes (BSC203, TIS camera, NI-DAQ, …)
+│   └── utilities/                  # Operator tools (config editor launcher, AOTF calibration, ScopeAId KB)
+├── tools/                          # Developer generators (screenshots, codegen, …)
+├── examples/                       # Device plugin packages, ImProcess plugins and workflow examples
+├── release/                        # Installer / bundle build files (PyInstaller, macOS, Windows)
+├── tests/                          # Stand-alone tests outside the package
 ├── docs/                           # Sphinx site (architecture, how-tos, device ref)
 └── .github/workflows/              # CI pipeline
 ```

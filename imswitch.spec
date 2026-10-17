@@ -6,7 +6,9 @@ Build it through the wrapper scripts, which set up a clean environment first:
     release/windows/create_installer_windows.bat   -> dist/ImSwitch2/ + Setup .exe
     release/macos/create_macos_dmg.sh              -> dist/ImSwitch2.app + .dmg
 
-or directly, from a checkout with ImSwitch2 installed (``pip install -e .``):
+or directly, from an environment with ImSwitch2 installed as a built wheel
+(``python -m build`` then ``pip install dist/*.whl``; NOT ``pip install -e .``, an
+editable install breaks the bundle's distribution metadata):
 
     pyinstaller imswitch.spec --noconfirm
 

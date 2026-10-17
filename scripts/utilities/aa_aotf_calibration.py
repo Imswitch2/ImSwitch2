@@ -18,11 +18,11 @@ is committed atomically.
 
 Run from the repository root (in the ImSwitch environment):
 
-    python utility_scripts/aa_aotf_calibration.py
+    python scripts/utilities/aa_aotf_calibration.py
 
 or open a setup immediately:
 
-    python utility_scripts/aa_aotf_calibration.py /path/to/setup.json
+    python scripts/utilities/aa_aotf_calibration.py /path/to/setup.json
 
 Safety: connecting does not send an enable command.  Test and sweep operations
 are explicit, and the selected channel is switched off after every sweep,

@@ -1,21 +1,18 @@
-# Hardware Diagnostic Scripts
+# Hardware diagnostic scripts
 
-This directory contains one-off hardware diagnostic and exploration scripts that require physical hardware to run and are not part of the automated test suite.
+One-off probes that need physical hardware. They are not part of the automated
+test suite, have no assertions, and are run by hand on the rig, in the
+ImSwitch2 environment, from the repository root.
 
-## Scripts
+| Script | Purpose |
+|---|---|
+| `ai_nidaq_tests.py` | NI-DAQ analog input check: continuously reads voltage from `Dev1/ai1`. |
+| `bsc203_diag.py` | Talks to a Thorlabs BSC203 directly (no ImSwitch) to dump status, home, move, and measure true steps/mm and direction (`status`, `monitor`, `home`, `calibrate`, `moveabs`). |
+| `diagnose_tis_camera.py` | Checks The Imaging Source camera at system level (driver, USB, process lock) to tell hardware problems from ImSwitch problems. |
+| `ic4_cam.py` | Standalone IC4 probe: verifies one distinct frame per software or hardware trigger via a `QueueSink`. |
+| `measure_laser_rep_rate.py` | Measures the laser repetition rate on a Swabian Time Tagger channel; the result feeds `laser_rep_rate_mhz` for the FLIM phasor fit. |
+| `repro-single-axis-scan.py` | Demonstrator that single-axis and degenerate galvo/piezo scan designs generate (historical crash repro). |
+| `test_standa_motrot.py` | Standa motor/rotation stage serial test: queries the device serial number via `ASRL8::INSTR`. |
 
-- **`ai_nidaq_tests.py`** — NI-DAQ analog input diagnostic. Continuously reads voltage from Dev1/ai1. Requires NI-DAQ hardware.
-
-- **`test_standa_motrot.py`** — Standa motor/rotation stage serial communication test. Queries device serial number via ASRL8::INSTR. Requires Standa hardware.
-
-- **`measure_laser_rep_rate.py`** — Measures laser repetition rate on a Swabian Time Tagger channel using `TimeTagger.Countrate`. Output feeds the `laser_rep_rate_mhz` parameter used by the FLIM phasor fit.
-
-## Why Not in `_test/`?
-
-These scripts are not proper unit/integration tests because:
-1. They require specific physical hardware
-2. They have no assertions or test framework integration
-3. They run indefinitely or require manual inspection
-4. They were written for one-off debugging/exploration
-
-For automated tests that can run in CI, see `imswitch/imcontrol/_test/`.
+For automated tests that run in CI see `imswitch/imcontrol/_test/`. Operator
+tools live in `scripts/utilities/`; developer generators in `tools/`.

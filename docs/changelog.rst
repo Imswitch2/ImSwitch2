@@ -28,6 +28,11 @@ Unreleased
 - **Starting a large Advanced scan no longer freezes ImSwitch for seconds.** Designing the galvo waveforms found each axis's voltage range with Python's built-in ``min``/``max``, which walk a numpy array one element at a time: about 0.5 s per axis for a 10-million-sample scan (1000 × 1000 pixels at 100 µs), all on the GUI thread. It now uses numpy, and the design takes 0.1 s instead of 1.2 s. Starting a *recording* paid that cost twice, because the recording's request for the acquisition layouts built the scan again instead of sharing the build the run then uses. The two now share one build, so the recording also describes exactly the signals that run. Writing the waveforms to the NI-DAQ card still happens on the GUI thread; how long that takes on a rig is not measured yet.
 - The hardware-free example setups start without warnings about their cameras: every mock camera declares ``cameraPixelSizeUm`` (0.15 µm/px, what they already got as the undeclared placeholder), and a camera configured as ``"cameraListIndex": "mock"`` (``AVManager``, ``HamamatsuManager``) starts as the mock directly, instead of first trying a real camera and logging a warning with a traceback. ``example_no_hardware.json`` loses a ``posRangeUm`` its Kinesis stage never read.
 
+**Developer / Internal**
+
+- Scripts have one home per kind. ``utility_scripts/`` is now ``scripts/utilities/`` (operator tools: ``python scripts/utilities/imswitch_config_editor.py``, ``aa_aotf_calibration.py``, ``scopeaid_seed_from_config.py``); the hardware probes ``bsc203_diag.py`` and ``diagnose_tis_camera.py`` moved to ``scripts/diagnostics/``; the ScopeAId templates and schemas moved from ``docs/microscope-kb/`` to ``scripts/utilities/scopeaid/``. Anyone running these by their old path must update the command. CI gained a lane that runs the tests of the three device plugins in ``examples/plugins``, the package build no longer swallows its errors, and the unused LabVIEW/linker files of the Hamamatsu SLM library were removed (the DLLs stay).
+
+
 v0.3.0 (2026-10-04)
 ===================
 

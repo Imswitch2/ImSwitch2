@@ -617,7 +617,7 @@ def main():
     print(f"2. Run with --print-wave1-prompt to get the Wave 1 generation prompt")
     print(f"3. Paste the prompt + your source docs into Claude/ChatGPT")
     print(f"4. Review and save the completed hardware.yaml")
-    print(f"5. Use the Wave 2 prompt (see docs/microscope-kb/prompts/generation-prompt.md)")
+    print(f"5. Use the Wave 2 prompt (see scripts/utilities/scopeaid/prompts/generation-prompt.md)")
     
     # Print Wave 1 prompt if requested
     if args.print_wave1_prompt:

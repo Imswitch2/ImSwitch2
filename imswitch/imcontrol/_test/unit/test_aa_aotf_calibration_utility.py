@@ -6,7 +6,7 @@ import json
 import numpy as np
 import pytest
 
-from utility_scripts.aa_aotf_calibration import (
+from aa_aotf_calibration import (
     FREQUENCY_PROFILE,
     apply_calibration_to_setup,
     build_output_command,

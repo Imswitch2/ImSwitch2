@@ -46,7 +46,7 @@ equivalents:
 ## Where `imswitch_defaults.yaml` comes from
 
 This file is **auto-generated** from the ImSwitch setup JSON by
-`utility_scripts/scopeaid_seed_from_config.py` (in the ImSwitch repo).
+`scripts/utilities/scopeaid_seed_from_config.py` (in the ImSwitch repo).
 Re-run the extractor whenever the setup config changes; never edit
 `imswitch_defaults.yaml` by hand — your changes will be overwritten on
 the next extraction.
