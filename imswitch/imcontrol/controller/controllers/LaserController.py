@@ -208,15 +208,23 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def _applyLifecycleDeactivation(self, device_ids):
         knownLasers = {name for name, _ in self._master.lasersManager}
+        deactivatedAny = False
         for device_id in device_ids:
             laserName = device_id.name
             if laserName not in knownLasers:
                 continue
+            deactivatedAny = True
             # The lifecycle adapter already forced the physical output OFF.
             # Synchronize desired/UI state without issuing another hardware
             # command from the controller.
             self._widget.setLaserActive(laserName, False, emitSignal=False)
             self.setSharedAttr(laserName, _enabledAttr, False)
+
+        if deactivatedAny:
+            # A reconnect/deactivation establishes a fresh safe-OFF baseline.
+            # Do not let an old post-scan Resume snapshot re-enable a device
+            # after lifecycle handling deliberately forced it dark.
+            self._setResumableLiveEnabledSnapshot(None)
 
     def _isSeparatedPowerMode(self):
         return getattr(self, '_powerMode', LaserPowerMode.COUPLED) is LaserPowerMode.SEPARATED
