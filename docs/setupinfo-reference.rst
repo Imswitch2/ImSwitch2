@@ -597,7 +597,7 @@ documented below with full field lists and examples:
 
 **Legacy / deprecated sections**:
 
-* `slm (singular)`_ — superseded by ``slms``; only used by old ``SLMController``
+* `slm (singular)`_ — removed; no longer read
 * `pulseStreamer`_ — dormant; ``PulseStreamerManager`` no longer constructed at runtime
 
 
@@ -1195,14 +1195,13 @@ slm (singular)
 --------------
 
 .. deprecated:: ImSwitch2
-   Use ``slms`` (plural) for new setups.  The ``slm`` field is only read by
-   the legacy ``SLMController`` and is superseded by the multi-SLM ``slms``
-   map.
+   Removed.  The single-SLM panel (``SLM`` in ``availableWidgets``) and its
+   ``slm`` section no longer exist; an ``slm`` key in an old setup file is
+   ignored (``validate-setup`` notes it) and dropped the next time ImSwitch2
+   rewrites the file.  Configure the device in ``slms`` and use the ``SLMs``
+   panel.
 
-Optional :class:`SLMInfo` object.  Prefer
-``slms`` for all new configurations.
-
-**See also**: :class:`SLMInfo`, `slms`_
+**See also**: `slms`_
 
 
 pulseStreamer

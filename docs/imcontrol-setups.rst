@@ -180,10 +180,6 @@ pages linked above.
    :members:
    :inherited-members:
 
-.. autoclassconheader:: imswitch.imcontrol.model.SetupInfo.SLMInfo
-   :members:
-   :inherited-members:
-
 .. autoclassconheader:: imswitch.imcontrol.model.SetupInfo.FocusLockInfo
    :members:
    :inherited-members:

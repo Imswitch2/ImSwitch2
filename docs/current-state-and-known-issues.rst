@@ -69,10 +69,7 @@ initiate flags and EtSnouty's private clock tick were removed in October 2026.
 the scan-source, BeadRec accessor and focus-lock registries. Signals exposed
 through ``signals()`` are public API and change only with the scripting docs;
 ``sigSaveFocus`` is one of them although nothing emits it yet (a maintainer
-decision: emit it from the focus lock or drop it from ``signals()``). The
-legacy ``SLMController`` still listens for ``sigSLMMaskUpdated``, but the
-``MasterController`` it needs (``slmManager``) no longer exists -- the
-multi-SLM ``slms`` stack superseded it -- so that controller is dead code.
+decision: emit it from the focus lock or drop it from ``signals()``).
 
 Event-triggered workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~

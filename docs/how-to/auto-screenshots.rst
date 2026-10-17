@@ -204,7 +204,7 @@ lazily from the positioner list.
 
 Populators live in ``tools/screenshot_widgets.py`` next to a
 ``POPULATORS`` dict that maps widget class names to populator
-functions.  Widgets without an entry (``SLMWidget``, for example) are
+functions.  Widgets without an entry (``SLMsWidget``, for example) are
 captured with their bare layout.  A few of the populators:
 
 * ``_populate_laser`` — adds 405 / 488 / 561 (modulation-capable) /

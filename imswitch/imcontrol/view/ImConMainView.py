@@ -740,7 +740,6 @@ _DOCK_DISPLAY_NAMES = {
     'Rotator': 'Rotator',
     'MotCorr': 'Motorized Correction Collar',
     'SLMs': 'SLMs',
-    'SLM': 'SLM',
     'Scan': 'Scan',
     'RotationScan': 'RotationScan',
     'BeadRec': 'Bead Rec',

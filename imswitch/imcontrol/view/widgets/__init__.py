@@ -39,7 +39,6 @@ _WIDGET_MODULES = {
     "SettingsWidget": "SettingsWidget",
     "SetupStatusWidget": "SetupStatusWidget",
     "SetupModesWidget": "SetupModesWidget",
-    "SLMWidget": "SLMWidget",
     "SLMsWidget": "SLMsWidget",
     "TilingWidget": "TilingWidget",
     "TriggerScopeLSXYRWidget": "TriggerScopeLSXYRWidget",

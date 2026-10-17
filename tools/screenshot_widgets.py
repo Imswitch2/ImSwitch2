@@ -557,8 +557,8 @@ def _capture_one(name: str) -> int:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     _style_app(app)
     # In the application ImConMainView has imported this submodule before any
-    # widget is built, and SLMWidget relies on that (it uses pg.dockarea
-    # after importing only pyqtgraph); import it here to match.
+    # widget is built; import it here so a widget that uses pg.dockarea after
+    # importing only pyqtgraph works as it does in the application.
     import pyqtgraph.dockarea  # noqa: F401
 
     target = None

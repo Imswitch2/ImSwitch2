@@ -156,9 +156,6 @@ class CommunicationChannel(SignalInterface):
     sigSnapImgPrev = Signal(str, np.ndarray, str)  # (detector, image, nameSuffix)
     sigStartRecordingExternal = Signal()
 
-    # SLM events.
-    sigSLMMaskUpdated = Signal(object)  # (mask)
-
     # Focus and rotation workflow events.
     sigSaveFocus = Signal()
     sigUpdateRotatorPosition = Signal(str)  # (rotatorName)

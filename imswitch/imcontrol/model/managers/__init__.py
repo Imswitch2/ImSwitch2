@@ -7,7 +7,6 @@ from .NidaqManager import NidaqManager
 from .PositionersManager import PositionersManager
 from .RS232sManager import RS232sManager
 from .RecordingManager import RecordingManager, RecMode, SaveMode, SaveFormat
-from .SLMManager import SLMManager
 from .SLMsManager import SLMsManager
 from .ScanManagerBase import ScanManagerBase
 from .ScanManagerAdvanced import ScanManagerAdvanced
@@ -25,7 +24,6 @@ __all__ = [
     'PositionersManager',
     'RS232sManager',
     'RecordingManager', 'RecMode', 'SaveMode', 'SaveFormat',
-    'SLMManager',
     'SLMsManager',
     'ScanManagerBase',
     'ScanManagerAdvanced',

@@ -182,12 +182,6 @@
     "args": []
   },
   {
-    "name": "sigSLMMaskUpdated",
-    "args": [
-      "object"
-    ]
-  },
-  {
     "name": "sigSaveFocus",
     "args": []
   },

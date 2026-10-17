@@ -316,7 +316,6 @@ def _scan_legacy_managers(
         "FlipMirrorManager",
         "PulseGeneratorManager",
         "StandManager",
-        "SLMManager",
     }
     
     infos: list[ManagerInfo] = []
