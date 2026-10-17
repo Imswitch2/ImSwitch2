@@ -23,6 +23,9 @@ class _FakeNidaq:
 
 def _setup():
     setup = json.load(open('imswitch/_data/user_defaults/imcontrol_setups/example_sted.json'))
+    # simulated: the NI-DAQ's targets are read, nothing is played (and CI
+    # installs no nidaqmx)
+    setup.setdefault('nidaq', {})['simulation'] = True
     setup['lasers']['561']['digitalLine'] = 1                  # the NI-DAQ shorthand
     setup['lasers']['PG488'] = {
         'managerName': 'PulseGeneratorLaserManager', 'managerProperties': {},

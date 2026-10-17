@@ -116,7 +116,12 @@ def _timer(timebase=100e6, freq=1e6, delay=0.0, unreported=False):
                            commits=commits)
 
 
-def test_the_detectors_timer_is_verified_as_the_driver_made_it():
+def test_the_detectors_timer_is_verified_as_the_driver_made_it(monkeypatch):
+    # the commit mode nidaqmx names; CI installs no nidaqmx (it is the
+    # hardware extra), where the module has none to send
+    import importlib
+    module = importlib.import_module('imswitch.imcontrol.model.managers.NidaqManager')
+    monkeypatch.setattr(module, '_TASK_COMMIT', module._TASK_COMMIT or 'task_commit')
     manager = _manager(1_000_000)
     timer = _timer()
     assert manager._verifyTimerClock(timer, 1e6) == {
@@ -221,8 +226,10 @@ def test_a_refused_input_task_is_closed_not_leaked(monkeypatch):
     name, and the task it had made is closed -- a leaked task would hold the
     device's analog input until ImSwitch exits."""
     import importlib
-    import nidaqmx.constants
     module = importlib.import_module('imswitch.imcontrol.model.managers.NidaqManager')
+    # the module's own constants: nidaqmx's, or its stand-ins where CI has no
+    # nidaqmx installed
+    constants = module.nidaqmx.constants
     made = []
 
     class _AITask:
@@ -238,8 +245,7 @@ def test_a_refused_input_task_is_closed_not_leaked(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(module, 'nidaqmx', SimpleNamespace(Task=_AITask,
-                                                           constants=nidaqmx.constants))
+    monkeypatch.setattr(module, 'nidaqmx', SimpleNamespace(Task=_AITask, constants=constants))
     manager = _manager(1_000_000)
     manager._NidaqManager__simulating = False
     with pytest.raises(Exception, match='analog input Dev1/ai0 task cannot run at 1e\\+06 Hz: '
