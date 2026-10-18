@@ -299,6 +299,11 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._nidaqManager.sigScanBuilt.connect(self._onScanBuilt)
         self._nidaqManager.sigScanStarted.connect(self.startScan)
         self._nidaqManager.sigScanDone.connect(self._onScanDone)
+        scanStopped = getattr(self._nidaqManager, 'sigScanStopped', None)
+        if scanStopped is not None:
+            scanStopped.connect(self._onScanStopped)
+        # The run in progress was stopped (stopScan): its frame is unfinished.
+        self._scanStopped = False
 
         self._scanThread = None
         self._scanWorker = None
@@ -906,6 +911,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._preparedScanGeneration = generation
 
     def _onScanBuilt(self, scanInfoDict, signalDict, _devices):
+        self._scanStopped = False
         try:
             # It builds its image from line pulses in time order; placing
             # interleaved or serpentine visits is not implemented for it.
@@ -1014,13 +1020,24 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         if self._scanWorker is not None:
             self._scanWorker.stop()
 
+    def _onScanStopped(self):
+        """NidaqManager stopped the scan (stopScan; its sigScanDone follows):
+        the FLIM frame in progress is unfinished, so it is not read as the
+        final one -- the abort that ends the run tears the worker down and
+        drops it (plan scan-stop-now)."""
+        if self._scanParticipating:
+            self._scanStopped = True
+
     def _onScanDone(self):
         """Triggered by NidaqManager.sigScanDone — flips acquisition off and
         wakes the worker immediately so it reads the final completed frame.
+        Not after a stop: there is no completed frame to read.
         """
         if not self._scanParticipating:
             return
         self.acquisition = False
+        if self.__dict__.get('_scanStopped', False):
+            return
         if self._scanWorker is not None:
             try:
                 self._scanWorker.signal_done()
