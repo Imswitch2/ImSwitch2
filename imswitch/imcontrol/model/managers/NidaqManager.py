@@ -58,6 +58,7 @@ except ImportError:
     nidaqmx = _UnavailableNidaqmx()
 
 import contextlib
+import copy
 import math
 
 import numpy as np
@@ -66,6 +67,7 @@ from imswitch.imcontrol.model.scan_parameters import (
     GRID_RELATIVE_ERROR, lag_report, lag_samples_for,
 )
 from imswitch.imcontrol.model.scan_program.engine import is_pulse_generator_device
+from imswitch.imcontrol.model.scan_stop import axis_limits_volts, rest_to_rest_ramp
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
 from imswitch.imcommon.model import initLogger
@@ -75,6 +77,10 @@ from .mockscan import ScanSimulationCoordinator
 _TASK_WAITER_JOIN_TIMEOUT_MS = 2000
 _TASK_DRIVER_TEARDOWN_TIMEOUT_MS = 2000
 _ONE_SHOT_WAIT_TIMEOUT_S = 2.0
+#: The samples a one-shot level write plays: what setDigital and setAnalog
+#: have always written, one level held for that many clock periods.
+_ONE_SHOT_DIGITAL_SAMPLES = 100
+_ONE_SHOT_ANALOG_SAMPLES = 10
 
 
 #: The board's free-running 100 kHz timebase, and the rate every setup ran
@@ -256,6 +262,10 @@ class NidaqManager(SignalInterface):
 
     sigScanBuildFailed = Signal()
 
+    # A run ended by stopScan: sent before its sigScanDone (the run-end
+    # contract every engine follows for a stopped run, ScanEngine).
+    sigScanStopped = Signal()
+
     def __init__(self, setupInfo):
         super().__init__()
         self.__logger = initLogger(self)
@@ -320,6 +330,10 @@ class NidaqManager(SignalInterface):
         self._finalizeResult = None
         self.busy = False
         self.signalSent = False
+        # The last run was ended by stopScan (until the next run arms), and
+        # what that stop did (lastStop).
+        self._runStopped = False
+        self._lastStop = None
         self.__timerCounterChannel = setupInfo.nidaq.getTimerCounterChannel()
         self.__startTrigger = setupInfo.nidaq.startTrigger
         self.__scanSimulator = None
@@ -1411,7 +1425,8 @@ class NidaqManager(SignalInterface):
             ):
                 self.busy = False
 
-    def _runOneShotOutput(self, taskName, createTask, signal):
+    def _runOneShotOutput(self, taskName, createTask, signal,
+                          waitTimeoutS=_ONE_SHOT_WAIT_TIMEOUT_S):
         """Write one finite output and close it through bounded teardown."""
         task, generation = self._reserveOneShotTask(taskName, createTask)
         if task is None:
@@ -1424,7 +1439,7 @@ class NidaqManager(SignalInterface):
         teardownError = None
         try:
             task.write(signal, auto_start=True)
-            task.wait_until_done(timeout=_ONE_SHOT_WAIT_TIMEOUT_S)
+            task.wait_until_done(timeout=waitTimeoutS)
         except BaseException as error:
             operationError = error
         finally:
@@ -1473,7 +1488,7 @@ class NidaqManager(SignalInterface):
         enable = _ttl_level(device, enable)
 
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
-        tasklen = 100
+        tasklen = _ONE_SHOT_DIGITAL_SAMPLES
         try:
             return self._runOneShotOutput(
                 'setDigitalTask',
@@ -1516,7 +1531,7 @@ class NidaqManager(SignalInterface):
             raise NidaqManagerError('Target has no analog output assigned to it')
 
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
-        tasklen = 10
+        tasklen = _ONE_SHOT_ANALOG_SAMPLES
         try:
             self._runOneShotOutput(
                 'setAnalogTask',
@@ -1590,6 +1605,7 @@ class NidaqManager(SignalInterface):
             scanGeneration = self._scanGeneration
             self.busy = True
             self.signalSent = False
+            self._runStopped = False
             self._scanTransactionActive = True
             self._scanBuildFailure = None
             self._scanBuildFailureEmitted = False
@@ -1656,6 +1672,7 @@ class NidaqManager(SignalInterface):
                     'the beam.')
             self._lastDigitalWrite = (list(DOdevices), [np.asarray(s) for s in DOsignals],
                                       lagShift)
+            self._lastDigitalLines = list(DOlines)
             # A laser's analog power follows the beam as its gate does: the
             # per-line-step power is built on command time and masked by the
             # gate, so it is delayed by the same whole samples. Delaying only
@@ -1676,6 +1693,7 @@ class NidaqManager(SignalInterface):
                     AOsignals[i] = signal
             self._lastAnalogWrite = (list(AOdevices), [np.asarray(s) for s in AOsignals],
                                      lagShift)
+            self._lastAnalogChannels = list(AOchannels)
 
             hasOutputSignals = len(AOsignals) > 0 or len(DOsignals) > 0
             if not hasOutputSignals and not self.__simulating:
@@ -2133,6 +2151,179 @@ class NidaqManager(SignalInterface):
         if emitFailure:
             self.sigScanBuildFailed.emit()
         return True
+
+    @property
+    def runStopped(self) -> bool:
+        """Whether the last run was ended by stopScan (until the next one
+        arms): a detector whose read the stop interrupted ended with the
+        scan, it did not fail."""
+        return bool(self.__dict__.get('_runStopped', False))
+
+    def lastStop(self):
+        """What the last stopScan did: ``found`` and ``left`` (each analog
+        output's volts where the stop found it and where it left it),
+        ``held`` (left where it was, and why) and ``errors``; ``None``
+        before any stop."""
+        stop = self.__dict__.get('_lastStop')
+        return None if stop is None else copy.deepcopy(stop)
+
+    def stopScan(self) -> bool:
+        """Stop the run in progress now (plan scan-stop-now, Lenny 2026-10-18).
+
+        Every task of the run stops and closes -- the rollback a failed run
+        takes, the detectors' input tasks with it -- and then, once nothing
+        plays: every digital line of the run goes to its off level (the
+        lasers first), a laser's analog power to the level its waveform
+        started at, and each scanner ramps from where it stopped back to its
+        waveform's first sample -- where the scan started, and where a
+        finished scan ends -- no faster than its positioner's ``vel_max`` and
+        ``acc_max``. A scanner that declares no limits, or whose position the
+        driver does not report, stays where it is, and the log says so. The
+        run then ends stopped: ``sigScanStopped``, then ``sigScanDone``.
+        Returns whether there was a run to stop."""
+        with self._scanStateLock:
+            simulator = self.__scanSimulator
+            simulated = simulator is not None and simulator.isActive
+            if self.signalSent or not (self.tasks or simulated):
+                return False
+            self._runStopped = True
+            analog = self.__dict__.get('_lastAnalogWrite') or ((), (), 0)
+            channels = list(self.__dict__.get('_lastAnalogChannels') or ())
+            digital = self.__dict__.get('_lastDigitalWrite') or ((), (), 0)
+            lines = list(self.__dict__.get('_lastDigitalLines') or ())
+            aoTask = self.tasks.get('ao')
+        found = self._outputPositionsAtStop(aoTask, analog, simulator if simulated else None)
+        cleanupSucceeded = self._cleanupScanResources()
+        with self._scanStateLock:
+            self._scanTransactionActive = False
+            # Free for the safe-state writes below; a run whose tasks did not
+            # all close keeps the manager busy, and nothing more is written.
+            self.busy = not cleanupSucceeded
+        stop = {'found': dict(found), 'left': {}, 'held': {}, 'errors': []}
+        if cleanupSucceeded:
+            self._writeStoppedOutputs(digital, lines, analog, channels, found, stop)
+        else:
+            stop['errors'].append('the run\'s tasks did not all close; no output was written')
+        self._lastStop = stop
+        self._logStop(stop)
+        self.sigScanStopped.emit()
+        self.sigScanDone.emit()
+        return True
+
+    def _outputPositionsAtStop(self, aoTask, analog, simulator):
+        """Each analog output's volts where the run is now: the sample its
+        task has generated last (none yet: the first), or ``None`` when the
+        driver does not report the count. In simulation, the simulator's
+        progress through the run."""
+        devices, signals, _shift = analog
+        if not devices:
+            return {}
+        generated = None
+        try:
+            if aoTask is not None:
+                generated = int(aoTask.out_stream.total_samp_per_chan_generated)
+            elif simulator is not None:
+                length = int(np.asarray(signals[0]).size)
+                generated = int(round(float(simulator.progress) * length))
+        except Exception as error:
+            self.__logger.warning(
+                f'Where the stopped scan left its analog outputs is not known: the driver '
+                f'did not report the samples generated ({error}).')
+            generated = None
+        found = {}
+        for device, signal in zip(devices, signals):
+            signal = np.asarray(signal, dtype=float).reshape(-1)
+            if generated is None or not signal.size:
+                found[device] = None
+                continue
+            found[device] = float(signal[min(max(generated, 1), signal.size) - 1])
+        return found
+
+    def _writeStoppedOutputs(self, digital, lines, analog, channels, found, stop):
+        """The stopped run's outputs to rest, as one-shot writes (stopScan)."""
+        devices, _signals, _shift = digital
+        if devices and lines:
+            levels = idle_levels(devices, self.__setupInfo.getDevice)
+            signal = np.array([[bool(level)] * _ONE_SHOT_DIGITAL_SAMPLES for level in levels],
+                              dtype=bool).squeeze()
+            try:
+                self._runOneShotOutput(
+                    'stopLinesTask',
+                    lambda: self.__createLineDOTask(
+                        'stopLinesTask', lines, nidaqmx.constants.AcquisitionType.FINITE,
+                        SCAN_CLOCK_TERMINAL, SCAN_CLOCK_RATE_HZ,
+                        _ONE_SHOT_DIGITAL_SAMPLES, False),
+                    signal)
+            except Exception as error:
+                stop['errors'].append(f'the digital lines did not take their off level: {error}')
+                self.__logger.error(
+                    'The stopped scan\'s digital lines did not take their off level: a laser '
+                    f'may still be on ({error}).', exc_info=True)
+
+        aoDevices, aoSignals, _ = analog
+        lasers = getattr(self.__setupInfo, 'lasers', None) or {}
+        positioners = getattr(self.__setupInfo, 'positioners', None) or {}
+        written, waveforms = [], []
+        for device, channel, signal in zip(aoDevices, channels, aoSignals):
+            signal = np.asarray(signal, dtype=float).reshape(-1)
+            if not signal.size:
+                continue
+            first = float(signal[0])
+            if device in lasers:
+                # the level its power waveform starts the scan at: its off
+                written.append((device, channel))
+                waveforms.append(np.array([first]))
+                continue
+            here = found.get(device)
+            if here is None:
+                stop['held'][device] = 'its position at the stop is not known'
+                continue
+            info = positioners.get(device)
+            limits = axis_limits_volts(getattr(info, 'managerProperties', None))
+            if limits is None:
+                stop['held'][device] = 'it declares no vel_max, acc_max and conversionFactor'
+                stop['left'][device] = here
+                continue
+            ramp = rest_to_rest_ramp(here, first, limits[0], limits[1], SCAN_CLOCK_RATE_HZ)
+            written.append((device, channel))
+            waveforms.append(ramp if ramp.size else np.array([first]))
+        if not written:
+            return
+        length = max(_ONE_SHOT_ANALOG_SAMPLES, max(w.size for w in waveforms))
+        signal = np.array([np.concatenate((w, np.full(length - w.size, w[-1]))) for w in waveforms])
+        try:
+            self._runOneShotOutput(
+                'stopAnalogTask',
+                lambda: self.__createChanAOTask(
+                    'stopAnalogTask', [channel for _, channel in written],
+                    nidaqmx.constants.AcquisitionType.FINITE, SCAN_CLOCK_TERMINAL,
+                    SCAN_CLOCK_RATE_HZ, -10, 10, length, False),
+                signal.squeeze(),
+                # as a read is bounded: by its own clock, with the margin, never
+                # under nidaqmx's own default
+                waitTimeoutS=READ_TIMEOUT_MARGIN * length / SCAN_CLOCK_RATE_HZ
+                + READ_TIMEOUT_FLOOR_S)
+        except Exception as error:
+            stop['errors'].append(f'the analog outputs did not take their rest: {error}')
+            self.__logger.error(
+                f'The stopped scan\'s analog outputs did not return to rest ({error}).',
+                exc_info=True)
+            return
+        for (device, _channel), waveform in zip(written, waveforms):
+            stop['left'][device] = float(waveform[-1])
+
+    def _logStop(self, stop):
+        parts = []
+        if stop['left']:
+            parts.append('left ' + ', '.join(f'{device} at {volts:.4g} V'
+                                             for device, volts in sorted(stop['left'].items())))
+        if stop['held']:
+            parts.append('not ramped: ' + '; '.join(f'{device} ({why})'
+                                                    for device, why in sorted(stop['held'].items())))
+        self.__logger.info('Scan stopped: digital lines at their off level'
+                           + ('; ' + '; '.join(parts) if parts else '') + '.')
+        for error in stop['errors']:
+            self.__logger.error(f'Scan stopped, but {error}.')
 
     def scanDone(self):
         # Idempotent within a scan (signalSent is reset to False in runScan):

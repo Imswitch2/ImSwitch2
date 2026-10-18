@@ -173,13 +173,15 @@ class NidaqScanEngine(ScanEngine):
             transitions=frozenset({'jump', 'linear', 'smooth'}), intra_step_offsets=True,
             timing_grid_s=1.0 / self.rate_hz,
             waits=frozenset({'time'}), detector_inputs=frozenset({'counter', 'ai'}),
-            triggers_out=tuple(triggers), abort='none',
+            triggers_out=tuple(triggers), abort='immediate',
             sources={
                 'timing_grid_s': f'scan.sampleRate ({self.rate_hz:g} Hz): the NI-DAQ sample '
                                  'clock the waveforms are built and played at',
                 'digital': 'NidaqManager.runScan drives NI-DAQmx digital lines '
                            '(<device>/port<n>/line<m>, <device>/PFI<n>)',
-                'abort': 'NI-DAQ scans cannot be stopped mid-iteration today',
+                'abort': 'NidaqManager.stopScan: the run\'s tasks stop at once, its lines '
+                         'go to their off level and its scanners ramp back within their '
+                         'vel_max and acc_max',
             },
         )
 
@@ -439,8 +441,10 @@ class NidaqScanEngine(ScanEngine):
         return self._nidaq.resolveScanTTLDevices(signalDict)
 
     def abort(self) -> str:
-        # An NI-DAQ scan iteration runs to its end; the run stops after it.
-        return 'none'
+        # The run stops now: the NI-DAQ ends it, brings its outputs to rest
+        # and ends it stopped (plan scan-stop-now, Lenny 2026-10-18).
+        self._nidaq.stopScan()
+        return 'immediate'
 
 
 __all__ = ['CompiledWaveforms', 'NidaqScanEngine']

@@ -1487,10 +1487,14 @@ class ScanWorker(Worker):
             # An exception escaping a Qt worker slot can terminate the process.
             # Convert it into the same generation-tagged local completion path
             # used by a normal scan instead.
-            self.__logger.exception(
-                "[LineStepDiag][APD:%s] worker_failed generation=%s "
+            stopped = getattr(self._manager._nidaqManager, 'runStopped', False) is True
+            # A stopped scan (stopScan closed the input task under the read):
+            # the frame is dropped below, nothing failed -- no traceback.
+            (self.__logger.info if stopped else self.__logger.exception)(
+                "[LineStepDiag][APD:%s] worker_%s generation=%s "
                 "samples_read=%s/%s pos=%s pending_read=%s",
                 self._name,
+                'stopped' if stopped else 'failed',
                 self.scanGeneration,
                 self._samples_read,
                 self._samples_total,

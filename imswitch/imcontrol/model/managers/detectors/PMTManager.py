@@ -1211,7 +1211,12 @@ class ScanWorker(Worker):
             self._runAcquisition()
         except Exception:
             failed = True
-            self.__logger.exception('PMT scan worker crashed')
+            if getattr(self._manager._nidaqManager, 'runStopped', False) is True:
+                # the scan was stopped (stopScan closed the input task under
+                # the read): the frame is dropped, nothing failed
+                self.__logger.info('PMT scan worker ended with its stopped scan')
+            else:
+                self.__logger.exception('PMT scan worker crashed')
         finally:
             self.scanning = False
             if failed:

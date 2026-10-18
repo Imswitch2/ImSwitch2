@@ -114,7 +114,7 @@ def test_every_feature_is_the_verdict_the_engine_itself_gives():
     trigger = _entry(nidaq.features, 'trigger wait between steps')
     assert trigger.verdict == IMPOSSIBLE and 'cannot wait for an external trigger' in trigger.text
     stop = _entry(nidaq.features, 'stop mid-scan')
-    assert stop.verdict == IMPOSSIBLE and 'cannot be stopped mid-iteration' in stop.text
+    assert stop.verdict == NATIVE and 'stopScan' in stop.text      # plan scan-stop-now
 
 
 def test_a_pulse_generators_start_trigger_is_as_its_engine_says():
