@@ -346,14 +346,10 @@ def test_the_switch_waits_for_a_running_scan(rig):
         assert rig.panel.page() == 'simple' and rig.panel.simpleButton.isChecked()
         assert 'Stop the scan' in rig.panel.noteLabel.text()
     finally:
-        if rig.type == 'SimpleMoNaLISA':
-            # MoNaLISA Stop is deliberately screening-light OFF only and is
-            # disabled while Acquire owns the hardware. Abort explicitly in
-            # this generic cloak lifecycle test.
-            assert not rig.view.stopButton.isEnabled()
-            rig.scan.abortScan()
-        else:
-            rig.view.stopButton.click()
+        # Stop ends a running scan now in every cloak, MoNaLISA's Acquire too
+        # (plan scan-stop-now, Lenny 2026-10-18)
+        assert rig.view.stopButton.isEnabled()
+        rig.view.stopButton.click()
         assert rig.waitForEnd()
 
 

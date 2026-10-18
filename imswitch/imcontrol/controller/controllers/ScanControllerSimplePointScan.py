@@ -292,9 +292,6 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
     def cloakWantsLive(self) -> bool:
         return self._simple()['mode'] == OVERVIEW or self._view.liveEnabled()
 
-    def cloakFrameEstimateS(self):
-        return self._simple().get('frameEstimateS')
-
     def cloakStateExtras(self) -> dict:
         simple = self._simple()
         return {

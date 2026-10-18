@@ -509,7 +509,6 @@ class ScanWidgetExpert(SuperScanWidget):
     sigProgramEdited = QtCore.Signal()
     sigPresetRequested = QtCore.Signal(str)
     sigPlotClicked = QtCore.Signal()
-    sigStopClicked = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -596,13 +595,11 @@ class ScanWidgetExpert(SuperScanWidget):
         self.scanButton.setObjectName('expertRun')
         # Run is disabled while a run is in progress; Stop is its way out
         # (review 2026-10-16: the panel had none, only the Recording panel's).
-        self.stopButton = QtWidgets.QPushButton('Stop')
+        # the scan panels' own Stop (SuperScanWidget), as this panel words it
         self.stopButton.setObjectName('expertStop')
-        self.stopButton.setEnabled(False)
         self.stopButton.setToolTip(
-            'Stop the run: a step engine stops at its next step; on the NI-DAQ the pass '
-            'in progress finishes and nothing more starts.')
-        self.stopButton.clicked.connect(self.sigStopClicked)
+            'Stop the run: on the NI-DAQ now (the scanners return to where it started), '
+            'on a step engine at its next step.')
         self.loadScanBtn.setText('Open…')
         self.saveScanBtn.setText('Save…')
         self.scanProgressBar = QtWidgets.QProgressBar()
@@ -664,10 +661,6 @@ class ScanWidgetExpert(SuperScanWidget):
         self._refreshTimer.timeout.connect(self.refreshParts)
 
     # -- the panel ------------------------------------------------------------
-
-    def setScanButtonChecked(self, checked):
-        super().setScanButtonChecked(checked)
-        self.stopButton.setEnabled(bool(checked))
 
     def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits=None, *,
                      detectorNames=(), presets=(), policies=(), engine='', wavelengths=None,

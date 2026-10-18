@@ -334,9 +334,9 @@ class MoNaLISAView(ScanCloakView):
         self.runRow.addWidget(self.saveAcquireCheck)
         self.runRow.addWidget(self.startButton)
         self.stopButton.setToolTip(
-            'Switch off the lasers enabled by MoNaLISA Live screening and prepare '
-            'the acquisition camera for external frame trigger. Camera live view '
-            'remains running.'
+            'During Live screening: switch off its lasers and prepare the acquisition '
+            'camera for external frame trigger (camera live view keeps running). '
+            'During Acquire: stop the acquisition now; its unfinished frame is dropped.'
         )
         # MoNaLISA keeps the operational controls at the very top. The scan
         # estimate is shown once, inside the compact Scan summary instead of
@@ -1109,7 +1109,8 @@ class MoNaLISAView(ScanCloakView):
         editable = bound and not running and not screening
         self.startButton.setEnabled(bound and not running)
         self.saveAcquireCheck.setEnabled(bound and not running)
-        self.stopButton.setEnabled(screening and not running)
+        # Stop means now, also for Acquire (plan scan-stop-now)
+        self.stopButton.setEnabled(screening or running)
         self.screeningButton.setEnabled(
             bound and self._liveAvailable and not running and not screening
         )

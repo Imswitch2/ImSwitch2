@@ -97,7 +97,7 @@ def test_an_unknown_engine_manager_names_what_is_installed():
 def test_the_nidaq_declares_what_it_drives_and_where_that_came_from():
     engines = build_scan_engines(_setup(), nidaqManager=_FakeNidaq())
     caps = engines.engine.capabilities()
-    assert caps.streaming and caps.stepping == 'emulated' and caps.abort == 'none'
+    assert caps.streaming and caps.stepping == 'emulated' and caps.abort == 'immediate'
     assert caps.timing_grid_s == pytest.approx(1e-5)
     assert 'runScan drives NI-DAQmx digital lines' in caps.sources['digital']
     nidaq = engines.engine
@@ -255,8 +255,10 @@ def test_the_nidaq_engine_runs_a_scan_through_its_lifecycle_in_order(qtbot):
         rig.widget.startButton.click()
         assert rig.waitForEnd()
         assert seen == ['built', 'started', 'done']
-        # Stopping an NI-DAQ scan lets the running iteration finish.
-        assert engine.abort() == 'none'
+        # An NI-DAQ scan stops now (plan scan-stop-now); with no run there is
+        # nothing to stop, and nothing more is sent.
+        assert engine.abort() == 'immediate'
+        assert seen == ['built', 'started', 'done']
     finally:
         rig.close()
 

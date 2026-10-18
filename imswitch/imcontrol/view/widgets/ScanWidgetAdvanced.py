@@ -258,7 +258,13 @@ class ScanWidgetAdvanced(SuperScanWidget):
         # --- Top row: buttons ---
         # Run first (with its Repeat modifier), then the file actions, and the
         # plotting controls pushed to the far right.
-        self.grid.addWidget(self.scanButton, currentRow, 0)
+        # Run and its Stop share the first cell, so nothing after them moves.
+        runHost = QtWidgets.QWidget()
+        runLayout = QtWidgets.QHBoxLayout(runHost)
+        runLayout.setContentsMargins(0, 0, 0, 0)
+        runLayout.addWidget(self.scanButton)
+        runLayout.addWidget(self.stopButton)
+        self.grid.addWidget(runHost, currentRow, 0)
         self.grid.addWidget(self.repeatBox, currentRow, 1)
         self.grid.addWidget(self.loadScanBtn, currentRow, 2)
         self.grid.addWidget(self.saveScanBtn, currentRow, 3)

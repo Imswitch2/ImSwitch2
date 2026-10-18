@@ -50,6 +50,7 @@ class _StubController:
     )
     _publishScanDone = SuperScanController._publishScanDone
     abortScan = SuperScanController.abortScan
+    _stopEngineNow = SuperScanController._stopEngineNow
 
     def __init__(self, repeat=True):
         self._repeatPending = False
@@ -70,6 +71,9 @@ class _StubController:
 
     def emitScanSignal(self, signal):
         self.emitted.append(signal)
+
+    def _engineForScans(self):
+        return None             # no engine: an abort has nothing to stop now
 
     def _finishScanRun(self, onReleased=None, **_kwargs):
         self.finishRunCalls += 1

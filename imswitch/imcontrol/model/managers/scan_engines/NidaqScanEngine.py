@@ -446,6 +446,31 @@ class NidaqScanEngine(ScanEngine):
         self._nidaq.stopScan()
         return 'immediate'
 
+    @property
+    def outcome(self):
+        """How the last run ended where the NI-DAQ knows more than its
+        panel: ``('stopped', '')`` after a stop; otherwise ``None`` -- the
+        panel's own terminal says done or failed."""
+        nidaq = getattr(self, '_nidaq', None)
+        if getattr(nidaq, 'runStopped', False) is True:
+            return ('stopped', '')
+        return None
+
+    def stoppedPositionsUm(self):
+        """Where the last stop left each scanner, in µm (its volts times
+        its conversionFactor): the evidence a stopped run's positions are
+        taken from, as a step board's log is."""
+        nidaq = getattr(self, '_nidaq', None)
+        stop = nidaq.lastStop() if self.outcome is not None else None
+        positions = {}
+        for device, volts in ((stop or {}).get('left') or {}).items():
+            factor = self._positionerProps(device).get('conversionFactor')
+            try:
+                positions[device] = float(volts) * float(factor)
+            except (TypeError, ValueError):
+                continue
+        return positions
+
 
 __all__ = ['CompiledWaveforms', 'NidaqScanEngine']
 

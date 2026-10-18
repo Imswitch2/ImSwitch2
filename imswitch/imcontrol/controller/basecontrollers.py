@@ -505,6 +505,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._widget.sigSaveScanClicked.connect(self.saveScan)
         self._widget.sigLoadScanClicked.connect(self.loadScan)
         self._widget.sigRunScanClicked.connect(self.runScan)
+        stopClicked = getattr(self._widget, 'sigStopClicked', None)
+        if stopClicked is not None:
+            stopClicked.connect(self.abortScan)
         self._widget.sigSeqTimeParChanged.connect(self.updateScanTTLAttrs)
         self._widget.sigStageParChanged.connect(self.updatePixels)
         self._widget.sigStageParChanged.connect(self.updateScanStageAttrs)
@@ -725,9 +728,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def _completeExternalScanRequest(
         self, runToken, *, successful: bool, message: str = '',
-        completions=None,
+        completions=None, stopped: bool = False,
     ) -> bool:
-        """Resolve request terminals detached for this exact scan part."""
+        """Resolve request terminals detached for this exact scan part.
+        ``stopped``: it was stopped on request (ScanRequestCompletion)."""
         if runToken is None:
             return False
         if completions is None:
@@ -736,7 +740,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             )
         resolved = False
         for completion in tuple(completions):
-            if completion.resolve(runToken, successful, message):
+            if (completion.resolve(runToken, successful, message, stopped=True)
+                    if stopped else completion.resolve(runToken, successful, message)):
                 resolved = True
         return resolved
 
@@ -827,8 +832,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                         and not failed
                         and terminalError is None
                     ),
+                    stopped=aborted and not failed,
                     message=(
-                        'Scan was aborted.'
+                        'Scan was stopped.'
                         if aborted else
                         (
                             getattr(
@@ -1083,6 +1089,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._repeatPending = False  # Cancel any pending repeat re-arm
         self.doingNonFinalPartOfSequence = False  # So that sigScanEnded is emitted
         if self.isRunning:
+            # Stop now (plan scan-stop-now, Lenny 2026-10-18): the engine ends
+            # the iteration in progress; its end arrives as the engine's
+            # stopped-then-done and the run ends through its usual path --
+            # FINISH_ABORT drops the unfinished frame, no repeat follows.
+            self._stopEngineNow()
             return
         if idle:
             # Nothing to fail: the usual state at shutdown (closeEvent aborts
@@ -1102,6 +1113,25 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # part, MoNaLISA axial follow-up -- or a request still arming has no
         # NI-DAQ completion left to end it, so terminalize it here.
         self.scanFailed()
+
+    def runWasStopped(self) -> bool:
+        """Whether this controller's current or last run was stopped on
+        request -- Stop, a recording's stop, an API abort -- rather than
+        finished or failed: what it completed is good (plan scan-stop-now).
+        Reset when the next run starts."""
+        return bool(getattr(self, '_scanStopRequested', False))
+
+    def _stopEngineNow(self):
+        """Tell the streaming engine this controller runs on to stop its
+        iteration now. A step engine is stopped by the panel that runs it
+        (ScanControllerExpert), at its step boundary."""
+        try:
+            engine = self._engineForScans()
+            if getattr(engine, 'run_signals', None) is None:
+                return
+            engine.abort()
+        except Exception:
+            self._logger.error('The scan engine did not stop', exc_info=True)
 
     def _holdsScanRunBetweenIterations(self) -> bool:
         """Whether an abort outside an iteration still has a run to fail.
@@ -1780,9 +1810,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def _engineSignalSlots(self):
         """``(signal name, slot)``: what this controller hears from the engine
-        it runs on. The engine is authoritative: abortScan() does not stop a
-        running NI-DAQ scan, so ownership is released on sigScanDone rather
-        than at the user's abort click."""
+        it runs on. The engine is authoritative: abortScan() asks it to stop,
+        and the run's end still arrives as its signals, so ownership is
+        released on sigScanDone rather than at the user's abort click."""
         return (('sigScanBuilt', self._onEngineScanBuilt),
                 ('sigScanStarted', self._onEngineScanStarted),
                 ('sigScanDone', self.__onNidaqScanDone),

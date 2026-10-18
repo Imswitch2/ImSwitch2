@@ -144,6 +144,17 @@ def _preview_windows(schedule, program):
     return step, (start / rate, end / rate), None
 
 
+def _stopped_positions(parts):
+    """Where a stop left each device, in µm, from the engines that keep it
+    (the NI-DAQ: where its stop's ramp left each scanner)."""
+    positions = {}
+    for part in parts:
+        stopped = getattr(part, 'stoppedPositionsUm', None)
+        if callable(stopped):
+            positions.update(stopped())
+    return positions
+
+
 def _logged_positions(parts):
     """Each device's last write in the engines' logs, in µm (a step board's
     log comes back in the program's terms); an engine whose log cannot be
@@ -214,8 +225,6 @@ class ScanControllerExpert(SuperScanController):
         self._widget.sigProgramEdited.connect(self._onEdited)
         self._widget.sigPresetRequested.connect(self.makeFromPreset)
         self._widget.sigPlotClicked.connect(self.plotProgram)
-        if hasattr(self._widget, 'sigStopClicked'):
-            self._widget.sigStopClicked.connect(self.abortScan)
 
         # Progress while a run of this panel's lasts: a step engine counts its
         # steps (waits included), the rest by time against the duration.
@@ -910,7 +919,8 @@ class ScanControllerExpert(SuperScanController):
         if all(kind == 'done' for kind, _ in ended.values()):
             positions, how = _end_positions(compiled.schedule), 'finished'
         else:
-            positions = _logged_positions(_run_parts(engine, compiled))
+            parts = _run_parts(engine, compiled)
+            positions = {**_stopped_positions(parts), **_logged_positions(parts)}
             how = 'stopped' if all(kind != 'failed' for kind, _ in ended.values()) else 'failed'
         unknown = self.__dict__.setdefault('_unknownPositions', {})
         for device in self._movedDevices(compiled.program):
