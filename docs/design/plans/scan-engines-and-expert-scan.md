@@ -2121,8 +2121,8 @@ never approximated):
   clock or start-trigger sync is *Later* (§5.4);
 - a real step board: the TriggerScope firmware is the lab's, later; the
   conformance runner is ready for it;
-- stopping an NI-DAQ iteration midway (Stop is after the current
-  iteration), and streaming a long densified program in chunks;
+- streaming a long densified program in chunks (stopping an NI-DAQ
+  iteration midway is built since 2026-10-18: `scan-stop-now.md`);
 - point detectors on step boards, over an event's window, or per phase;
   orders on swept axes; two interleaved axes in one frame stream;
   trajectories on anything but a streaming engine, and from measured
@@ -2419,7 +2419,8 @@ a test that fails without the fix:
 1. **No Stop on the Expert panel.** Run is disabled while a run is in
    progress and nothing else reached `abortScan`. A **Stop** beside Run,
    enabled for the run: a step engine stops at its next step, the NI-DAQ
-   finishes the pass in progress and starts nothing more.
+   finishes the pass in progress and starts nothing more. (Superseded
+   2026-10-18: the NI-DAQ stops at once, `scan-stop-now.md`.)
 2. **An integer channel meant two things.** `setup_channels` kept the raw
    integer, the NI-DAQ and the Advanced panel read the `Dev1/port0/line<N>`
    shorthand: an NI-DAQ laser written `"digitalLine": 1` was owned by the

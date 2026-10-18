@@ -390,13 +390,18 @@ honour (a separation carries its own ``tolerance_s``).
 
 When a run ends, each positioner it moved is told where the run left it --
 the position the program restores it to, a trajectory's last sample; for a
-stopped or failed run on a step board, the board's last write -- so the
-next run's captured origin, and a move by hand, start from there. Where that
-is not known, the log says so and the tracked position is left as it was.
+stopped or failed run on a step board, the board's last write; for a stopped
+run on the NI-DAQ, where the stop's ramp left it -- so the next run's captured
+origin, and a move by hand, start from there. Where that is not known (a
+failed NI-DAQ run), the log says so, the tracked position is left as it was,
+and a program that starts from that position is refused until the device has
+moved.
 
 On a step engine the engine runs the compiled program itself, and **Stop**
 (beside **Run**, enabled while a run is in progress) stops it at its next
-step; on the NI-DAQ, the pass in progress finishes and nothing more starts. A program whose devices are on ``scan.engine``
+step; on the NI-DAQ it stops at once -- every line to its off level, the
+drives ramped back to the program's first position within their ``vel_max``
+and ``acc_max``. A program whose devices are on ``scan.engine``
 and the engines wired to follow it runs on all of them as one: ``scan.engine``
 leads, and every follower is stepped by its pulses
 (:doc:`devices/scan_engines`); devices on engines that do not run together

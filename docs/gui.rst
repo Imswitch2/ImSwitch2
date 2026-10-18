@@ -875,7 +875,8 @@ the top Live role row lets ON/OFF/Readout roles participate independently.
 Those checkboxes change only laser enable state; power stays editable in the
 Laser widget. **Live**, **Stop** and **Acquire** stay together in the top action
 row. Live keeps the existing camera acquisition running but switches the Readout
-camera to internal trigger, Stop switches off only the screening lasers, and
+camera to internal trigger, Stop switches off only the screening lasers (while
+Acquire runs, Stop ends the acquisition at once, as in every scan panel), and
 Acquire uses external frame trigger plus the normal scan powers. The Live action
 is disabled for coupled laser-power setups. **Setup…** opens persistent setup
 editing, including detector-derived FOV/readout policies and slider ranges.
@@ -898,7 +899,15 @@ The dimension selectors on the right set which positioner is the first (pixel),
 second (line) and third (slice) scan axis; a positioner not chosen for any
 dimension is moved to its **Center** before the scan starts.  **Run Scan**
 starts one scan and is greyed out while it runs; with **Repeat** ticked the scan
-starts again each time it ends, until **Repeat** is unticked.  **Save Scan** and
+starts again each time it ends, until **Repeat** is unticked.  **Stop** (beside
+**Run Scan**, enabled while a scan runs) ends it at once: every laser line goes
+to its off level, a laser's analog power to its off, and the scanners return to
+where the scan started, no faster than their positioners' ``vel_max`` and
+``acc_max`` allow (a positioner that declares neither stays where the stop
+found it, and the log says so).  The frame in progress is dropped; a recording
+keeps the frames completed before it and its file says it stopped early
+(``recording:completion_outcome``).  Unticking **Repeat** instead lets the scan
+in progress finish.  **Save Scan** and
 **Load Scan** write and read the panel's settings as a JSON file, by default in
 the ``imcontrol_scans`` folder of the user directory.
 

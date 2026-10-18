@@ -1,6 +1,8 @@
 # Stop a scan now, not after its frame
 
-Branch `feat/scan-engines` (one effort, one branch). Draft 1, 2026-10-18.
+Branch `feat/scan-engines` (one effort, one branch). Draft 1, 2026-10-18;
+built the same day (P1 the NI-DAQ, P2 the panels, P3 the recording, P4 the
+Time Tagger) -- see "As built".
 
 ## Decisions (Lenny, 2026-10-18)
 
@@ -100,6 +102,25 @@ stopped).
 ### The Time Tagger
 
 A stopped run's FLIM frame in progress is not published as the final frame.
+
+## As built (2026-10-18)
+
+Found while building:
+
+- **The Base, PointScan, MoNaLISA and Advanced panels had no Stop at all**
+  (Run is greyed out while a scan runs; only unticking Repeat or the Recording
+  panel's Stop ended one). `SuperScanWidget` now has the Stop button, beside
+  Run, enabled while a scan runs, wired to `abortScan` by
+  `SuperScanController`; the Expert panel's own button became this one.
+- **The Recording panel's Stop of a scan lapse aborted the writer**, deleting
+  the file (since the 2026-07 ownership hardening; Guillaume's 2026-03 soft
+  stop had kept it). It now ends the writer, keeping the complete timepoints.
+  Unticking REC *between* two lapse scans is still a cancellation (unchanged),
+  as are the failure and shutdown aborts.
+- **The TriggerScope** is unchanged: its firmware has no mid-iteration abort.
+- A scanner whose waveform starts with a jump approach (an Expert program)
+  returns to its first position -- the waveform's first sample -- not to where
+  it was before the run; the Expert panel tracks it there.
 
 ## Tests (software)
 

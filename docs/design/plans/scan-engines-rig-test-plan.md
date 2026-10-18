@@ -28,7 +28,7 @@ are in their plans.
 
 | # | Rig | Do | Passes if |
 |---|---|---|---|
-| A1 | Galvo point scan (STED) | An Advanced scan you ran before, same file, same sample | The image matches the old one; the timing note lists what plays differently; the progress bar moves; Stop ends after the current frame |
+| A1 | Galvo point scan (STED) | An Advanced scan you ran before, same file, same sample | The image matches the old one; the timing note lists what plays differently; the progress bar moves; Stop ends it at once (the S rows) |
 | A2 | Stepped camera scan (MoNaLISA, Beta) | An Advanced scan with line steps, recorded | Same frame count and layout as before; reconstruction unchanged. A camera that is off in some line steps now has a repeat axis sized by the steps it takes part in -- check the file opens and reconstructs |
 | A3 | Galvo + APD | SimplePointScan: Live overview, draw a region; then a **Scan-lapse** recording of T frames in the Recording panel | As before; the file holds T frames |
 | A4 | Any | Record any scan, open the file | `ScanStage:scan_program` (Expert) or the Advanced dicts, and `ScanStage:scan_schedule`: the policy, the grid and its source, what ran differently |
@@ -114,6 +114,21 @@ positioner widget show, against the commit you run.
 Then repeat the T rows' timing gates (10/15/20 µs dwell, a non-grid D2,
 line-step power and gates, first-line and plane settling, camera pulse
 separation, recording and reconstruction counts) before the faster clock.
+
+## P1 -- Stop means now (plan `scan-stop-now.md`, 2026-10-18)
+
+Before the S rows: lasers at minimum power, a scope on one laser TTL (an
+active-low one if the rig has it) and on a galvo's AO.
+
+| # | Rig | Do | Passes if |
+|---|---|---|---|
+| S1 | Galvo + APD | A long Advanced scan; press **Stop** mid-frame | The TTL goes to its off level at once (active-low: high); the galvo AO ramps back to its rest within milliseconds, without a jump; the Log says *Scan stopped* and where it left each scanner; **Run Scan** is enabled again |
+| S2 | Galvo + APD | A scan-lapse recording of 5 frames; Stop from the **Scan panel** during frame 3 | The recording ends (not failed); the file holds frames 1-2 and `recording:completion_outcome = stopped_early` |
+| S3 | Galvo + APD | The same, stopped from the **Recording panel** | The same: frames 1-2 kept (the file used to be deleted) |
+| S4 | MoNaLISA camera rig | SimpleMoNaLISA Acquire; **Stop** during it | The camera stops receiving triggers; the file holds the frames exposed before the stop; every laser off |
+| S5 | Snouty / any stage on the NI-DAQ | Stop an Expert MS-RESOLFT run; then a captured-origin program | Z returns to the program's first position; the positioner widget shows it there; the next run starts from there |
+| S6 | Any rig with a scanned positioner that declares no `vel_max` / `acc_max` | Stop a scan | The Log names it as not ramped; on the scope it stays where the stop found it |
+| S7 | Time Tagger (FLIM) | Stop mid-frame, recording | No partial FLIM frame in the file |
 
 ## P3 -- event-started runs
 
