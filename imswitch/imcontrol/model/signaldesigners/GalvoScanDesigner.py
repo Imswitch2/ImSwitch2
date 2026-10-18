@@ -479,7 +479,13 @@ class GalvoScanDesigner(ScanDesigner):
         # d2 axis signal
         if axis_count_scan > 1:
             axis = 1
-            axis_reps = self.__get_axis_reps(pos[0], samples_d2_period, n_steps_dx[1], self.__smooth_axis[axis-1])
+            # One hold per LINE STEP (n_d2 rows x n_linesteps), not per row:
+            # only the very first block is the measured first period; every
+            # later block, row 0's remaining line steps included, is one
+            # period. Expanding per-row holds afterwards repeated the long
+            # first period into row 0's later line steps, so the first row
+            # stepped early -- inside its last line step's read window.
+            axis_reps = self.__get_axis_reps(pos[0], samples_d2_period, n_steps_dx[1] * n_linesteps, self.__smooth_axis[axis-1])
             pos_temp, pad_prev_axis = self.__generate_step_scan(axis, n_scan_samples_dx[axis], n_steps_dx[axis], self.__smooth_axis, v_max=self.axis_vel_max[axis], a_max=self.axis_acc_max[axis], axis_reps=axis_reps, n_linesteps=n_linesteps)
             if pad_prev_axis:
                 pos, _ = self.__zero_padding(pos, padlen_base=pad_prev_axis)
@@ -627,8 +633,9 @@ class GalvoScanDesigner(ScanDesigner):
 
         Contract:
           - for dim==1 (Y): n_axis is the PHYSICAL number of Y positions (ny_phys)
-          - axis_reps is computed for ny_phys (NOT expanded)
-          - n_linesteps expands Y blocks internally
+          - axis_reps holds one entry per LINE STEP (ny_phys * n_linesteps),
+            so the first-period length applies to the first line step only
+          - n_linesteps expands the Y positions internally
         """
         if axis_reps is None:
             axis_reps = [0, 0]
@@ -663,32 +670,18 @@ class GalvoScanDesigner(ScanDesigner):
             self._samples_finalpos.append(len(pos_final))
 
             if dim == 1:
-                # axis_reps is provided for physical ny -> expand to match expanded positions
-                axis_reps = np.asarray(axis_reps, dtype=int)
-
-                if axis_reps.size != positions_phys.size:
-                    raise ValueError(
-                        f"axis_reps length ({axis_reps.size}) must match physical ny ({positions_phys.size})"
-                    )
-
-                if n_linesteps > 1:
-                    axis_reps_exp = np.repeat(axis_reps, n_linesteps)
-                else:
-                    axis_reps_exp = axis_reps
+                axis_reps_exp = self._line_step_reps(axis_reps, positions)
 
                 # IMPORTANT: apply the 'first-step' correction only once overall (first expanded block)
-                if smooth_axis[0] and self._samples_initpos[-1] == np.max(self._samples_initpos):
-                    if self._samples_initpos[:-1]:
-                        corr = int(np.max(self._samples_initpos[:-1]))
-                        axis_reps_exp[0] = int(axis_reps_exp[0] - corr)
+                if smooth_axis[0] and self._samples_initpos[:-1]:
+                    axis_reps_exp[0] = int(axis_reps_exp[0] - self._first_hold_correction())
 
                 pos_ret = np.repeat(positions, axis_reps_exp)
 
             else:
                 reps = np.ones(len(positions)) * len_axis
-                if True in smooth_axis[:dim] and self._samples_initpos[-1] == np.max(self._samples_initpos):
-                    if self._samples_initpos[:-1]:
-                        reps[0] = reps[0] - np.max(self._samples_initpos[:-1])
+                if True in smooth_axis[:dim] and self._samples_initpos[:-1]:
+                    reps[0] = reps[0] - self._first_hold_correction()
                 reps = [int(rep) for rep in reps]
                 pos_ret = np.repeat(positions, reps)
 
@@ -710,17 +703,41 @@ class GalvoScanDesigner(ScanDesigner):
             if 'mock' in self.axis_devs_order[dim].lower():
                 positions = positions - positions[0]
             if dim == 1:
-                axis_reps = np.asarray(axis_reps, dtype=int)
-                if axis_reps.size != positions_phys.size:
-                    raise ValueError(
-                        f"axis_reps length ({axis_reps.size}) must match physical ny ({positions_phys.size})"
-                    )
-                axis_reps_exp = np.repeat(axis_reps, n_linesteps) if n_linesteps > 1 else axis_reps
-                pos_ret = np.repeat(positions, axis_reps_exp)
+                pos_ret = np.repeat(positions, self._line_step_reps(axis_reps, positions))
             else:
                 pos_ret = np.repeat(positions, len_axis)
 
         return pos_ret, pad_prev_axis
+
+    @staticmethod
+    def _line_step_reps(axis_reps, positions):
+        """The per-line-step holds, checked against the expanded positions."""
+        reps = np.array(axis_reps, dtype=int)
+        if reps.size != len(positions):
+            raise ValueError(
+                f"axis_reps length ({reps.size}) must match the Y line steps ({len(positions)})"
+            )
+        return reps
+
+    def _first_hold_correction(self) -> int:
+        """Samples to take off this axis's first hold so its first step
+        lands where the lower axes' first period ends.
+
+        The first hold is measured on the lower axes' clock: it ends at their
+        first turnaround, counted from the start of their own positioning.
+        This axis starts holding only after ITS positioning, and the lower
+        axes are delayed (front-padded) only when this axis's positioning is
+        the longer one. So the hold must lose whichever positioning both
+        signals share: the lower axes' when this one is longer (they were
+        padded by the difference), this axis's own when the lower axes take
+        longer (nothing was padded). Taking off only the lower axes' length
+        in the second case made every step late by this axis's positioning;
+        far enough off-centre that pushed each step past the next read
+        window, and line k was imaged at row k-1.
+        """
+        own = int(self._samples_initpos[-1])
+        lower = int(np.max(self._samples_initpos[:-1]))
+        return min(own, lower)
 
     def __repeat_dlower(self, pos, n_steps_axis):
         """ Repeat the current positions, for all dimensions,
