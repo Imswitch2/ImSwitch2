@@ -108,6 +108,32 @@ def test_a_task_is_verified_against_what_the_driver_reports_for_it():
                              1e6, generated=False, mandatory=False)
 
 
+def test_a_counter_inputs_unreported_maximum_is_said_once_in_one_line():
+    """An X-series board never reports a counter input's maximum sample rate
+    (DAQmx status -200452). The driver's multi-line text, logged on every
+    scan, read like a failure at the rig (PCIe-6353, 2026-10-19): it is one
+    line, once per task kind, and names what is verified instead."""
+    class _DaqError(Exception):
+        error_code = -200452
+
+    class _NotApplicable:
+        @property
+        def samp_clk_max_rate(self):
+            raise _DaqError('Specified property is not supported by the device or is not '
+                            'applicable to the task.\nProperty: DAQmx_SampClk_MaxRate\n'
+                            '\nTask Name: APDgreen\n\nStatus Code: -200452')
+    manager = _manager(1_000_000)
+    said = []
+    manager._NidaqManager__logger = SimpleNamespace(
+        info=lambda message: said.append(message), debug=lambda *a, **k: None)
+    for _scan in range(3):
+        manager._verifyTaskClock(SimpleNamespace(timing=_NotApplicable()),
+                                 'counter input Dev1/ctr1', 1e6, generated=False,
+                                 mandatory=False)
+    assert len(said) == 1 and '\n' not in said[0]
+    assert 'status -200452' in said[0] and "detectors' timer" in said[0]
+
+
 def _timer(timebase=100e6, freq=1e6, delay=0.0, unreported=False):
     commits = []
     channel = SimpleNamespace(co_ctr_timebase_rate=timebase, co_pulse_freq=freq,

@@ -858,9 +858,19 @@ class NidaqManager(SignalInterface):
                 raise NidaqManagerError(
                     f'Cannot verify the {what} task: the driver did not report its maximum '
                     f'sample clock rate ({error}).') from error
-            self.__logger.info(f'The {what} task\'s maximum sample clock rate is not '
-                               f'reported by the driver ({error}); its clock is verified '
-                               'where it is made.')
+            # Said once per task kind, in one line: an X-series board never
+            # reports it for a counter input (status -200452), and the driver's
+            # multi-line text, every scan, read like a failure at the rig
+            # (2026-10-19).
+            noted = self.__dict__.setdefault('_unreportedClockLimits', set())
+            if what not in noted:
+                noted.add(what)
+                code = getattr(error, 'error_code', None)
+                self.__logger.info(
+                    f'The {what} task has no maximum sample rate from the driver '
+                    f'({"status " + str(code) if code is not None else type(error).__name__}, '
+                    'normal for a counter input on an X-series board); its clock, the '
+                    'detectors\' timer, is verified instead.')
             limit = None
         if limit is not None and rate > limit * (1 + GRID_RELATIVE_ERROR):
             raise NidaqManagerError(
