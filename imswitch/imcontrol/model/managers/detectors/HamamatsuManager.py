@@ -2,7 +2,9 @@ from imswitch.imcommon.model import initLogger
 from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter
 )
+from ._mock_lattice import MockLattice, MockLatticeFrames, trigger_positions_um
 import copy
+import threading
 
 class HamamatsuManager(DetectorManager):
     """ DetectorManager that deals with the Hamamatsu parameters and frame
@@ -18,6 +20,12 @@ class HamamatsuManager(DetectorManager):
       micrometers, i.e. physical sensor pitch divided by total optical
       magnification. Exposed at runtime as the 'Camera pixel size' detector
       parameter. Default: 0.15 µm.
+    - ``mockSample`` -- simulation only (mock camera on a simulated NI-DAQ):
+      frames show the synthetic sample under a MoNaLISA foci lattice, placed
+      from the scan waveforms. ``{"axes": {"<x device>": <µm per V>,
+      "<y device>": <µm per V>}}`` plus optional ``latticePeriodUm``,
+      ``latticeAngleDeg``, ``spotSigmaUm``, ``peakCounts``, ``offsetCounts``
+      and ``seed``; see ``_mock_lattice.py``.
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
@@ -70,6 +78,22 @@ class HamamatsuManager(DetectorManager):
         self._updatePropertiesFromCamera()
         super().setParameter('Set exposure time', self.parameters['Real exposure time'].value)
 
+        # Simulation only: draw the mock camera's frames from a synthetic
+        # sample under a foci lattice, placed by the scan's own waveforms.
+        self._mockFrames = None
+        mockLattice = MockLattice.from_property(
+            detectorInfo.managerProperties.get('mockSample')
+        )
+        if (mockLattice is not None and nidaqManager is not None
+                and getattr(nidaqManager, 'isSimulated', False)
+                and hasattr(self._camera, 'mock_frame_source')):
+            self._mockFrames = MockLatticeFrames(mockLattice, self.pixelSizeUm[-1])
+            self._camera.mock_frame_source = self._mockFrames
+            nidaqManager.sigScanBuilt.connect(self.__onSimScanBuilt)
+            # Built once per process (about a second); not on the first frame.
+            threading.Thread(target=mockLattice.sample.texture, daemon=True,
+                             name='mock-sample').start()
+
     def wait_and_get_NewFrame(self, properFrame=False):
         self.__logger.info("start wait_and_get_NewFrame")
 
@@ -114,6 +138,15 @@ class HamamatsuManager(DetectorManager):
 
     def mockScanDone(self):
         return True
+
+    def __onSimScanBuilt(self, _scanInfoDict, signalDict, _devices):
+        """Simulation only: the stage position of each camera trigger."""
+        positions = trigger_positions_um(
+            signalDict, self.__name, self._mockFrames.lattice.sample.axes
+        )
+        if positions is None:
+            positions = []
+        self._mockFrames.setScan(positions, pixel_um=self.pixelSizeUm[-1])
 
     def __onSimScanFrameTrigger(self, detectorName, nFrames):
         """Simulation only: forward a simulated NIDAQ scan's frame triggers to

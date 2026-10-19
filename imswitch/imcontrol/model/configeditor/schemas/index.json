@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 46,
-    "docs_agree": 137,
-    "docs_documented": 137,
-    "keys": 217,
+    "docs_agree": 138,
+    "docs_documented": 138,
+    "keys": 219,
     "managers": 62,
-    "none_default_only": 31,
+    "none_default_only": 33,
     "none_only": 16,
-    "optional": 155,
+    "optional": 157,
     "reads_any": 57,
     "refs": 15,
     "required": 62,
     "typed_by_code": 96,
-    "typed_with_docs": 161,
-    "typed_with_examples": 131,
+    "typed_with_docs": 163,
+    "typed_with_examples": 133,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 57,
@@ -82,7 +82,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 9,
+      "properties": 10,
       "required": 2
     },
     "AVManager": {
@@ -252,7 +252,7 @@
         "DetectorManager"
       ],
       "overridden": true,
-      "properties": 3,
+      "properties": 4,
       "required": 2
     },
     "HamamatsuSLMdviManager": {
@@ -678,6 +678,7 @@
   },
   "regenerate": "python tools/extract_manager_schemas.py --write",
   "unresolved": [
-    "PyCoboltManager"
+    "PyCoboltManager",
+    "lasers"
   ]
 }

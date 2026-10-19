@@ -36,6 +36,14 @@
         "code:required",
         "example:object"
       ]
+    },
+    "mockSample": {
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:object"
+      ]
     }
   },
   "required": [
