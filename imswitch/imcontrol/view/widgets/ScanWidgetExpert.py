@@ -202,14 +202,22 @@ class _RowTable(QtWidgets.QWidget):
             self._quiet = False
         self.table.resizeColumnsToContents()
 
+    def _choice(self, row, col):
+        """The cell's choice box, or None. A cell being typed in also has a
+        widget -- the view's editor, a QLineEdit -- and its value is the
+        item's: reading it as a choice box broke every typed edit (rig,
+        2026-10-19)."""
+        widget = self.table.cellWidget(row, col)
+        return widget if isinstance(widget, QtWidgets.QComboBox) else None
+
     def rows(self, raw=False) -> List[Dict]:
         """The rows as stored values; ``raw`` keeps the cells' text."""
         out = []
         for row in range(self.table.rowCount()):
             values = {}
             for col, column in enumerate(self._columns):
-                widget = self.table.cellWidget(row, col)
-                text = widget.currentText() if widget is not None else (
+                choice = self._choice(row, col)
+                text = choice.currentText() if choice is not None else (
                     self.table.item(row, col).text() if self.table.item(row, col) else '')
                 values[column.key] = text if raw else self._parse(column, text, row)
             out.append(values)
@@ -256,11 +264,11 @@ class _RowTable(QtWidgets.QWidget):
     def setValue(self, row, key, text):
         """Write ``text`` (shown units) into a cell, as typing it would."""
         col = next(i for i, c in enumerate(self._columns) if c.key == key)
-        widget = self.table.cellWidget(row, col)
-        if widget is not None:
-            if widget.findText(str(text)) < 0:
-                widget.addItem(str(text))
-            widget.setCurrentText(str(text))
+        choice = self._choice(row, col)
+        if choice is not None:
+            if choice.findText(str(text)) < 0:
+                choice.addItem(str(text))
+            choice.setCurrentText(str(text))
             return
         item = self.table.item(row, col)
         if item is None:

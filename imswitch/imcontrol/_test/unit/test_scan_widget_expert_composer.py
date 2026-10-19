@@ -574,3 +574,38 @@ def test_an_edit_marks_the_preview_out_of_date(rig):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def _type_into(table, row, col, text):
+    """Edit a cell the way a user does: the view's own editor, then Return."""
+    item = table.item(row, col)
+    if item is None:
+        table.setItem(row, col, QtWidgets.QTableWidgetItem(''))
+        item = table.item(row, col)
+    table.setCurrentItem(item)
+    table.editItem(item)
+    QtTest.QTest.qWait(20)
+    editor = table.cellWidget(row, col)          # Qt hands the editor out as the cell's widget
+    assert isinstance(editor, QtWidgets.QLineEdit)
+    editor.selectAll()
+    QtTest.QTest.keyClicks(editor, text)
+    QtTest.QTest.keyClick(editor, QtCore.Qt.Key_Return)
+    QtTest.QTest.qWait(20)
+
+
+def test_a_dimension_typed_into_the_table_is_taken(shown):
+    """Rig 2026-10-19: adding a dimension and typing into it raised
+    "'QLineEdit' object has no attribute 'currentText'" -- every typed edit
+    did: while a cell is edited its editor is the cell's widget, and the
+    table read every cell widget as a choice box."""
+    widget = shown.widget
+    loops = widget.loops
+    before = len(loops.rows(raw=True))
+    loops.addButton.click()
+    row = before
+    _type_into(loops.table, row, 0, 'z2')
+    _type_into(loops.table, row, 2, '5')
+    rows = loops.rows(raw=True)
+    assert rows[row]['id'] == 'z2' and rows[row]['count'] == '5'
+    # the new dimension reached the drives' weight columns (_loopsEdited ran)
+    assert 'w:z2' in [c.key for c in widget.drives.columns()]
