@@ -24,10 +24,9 @@ class MockRS232Driver:
         self.__logger.info(f"Writing to {self._settings['port']}: {arg}")
         pass
 
-    def bytesWaiting(self) -> int:
-        """Nothing is ever waiting on the mock port, so a poller that asks
-        before it reads never reads at all."""
-        return 0
+    def readWaiting(self) -> str:
+        """Nothing ever waits on the mock port."""
+        return ''
 
     def read(self, *args, **kwargs):
         """No-op read for the mock driver.
