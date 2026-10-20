@@ -426,6 +426,70 @@ def test_next_lapse_defers_start_while_previous_recording_active(monkeypatch):
     assert timer.timeout.cb == ctrl.nextLapse
 
 
+def test_panel_scan_series_uses_snapshotted_interval_after_completed_point(
+    monkeypatch,
+):
+    import types
+
+    import imswitch.imcontrol.controller.controllers.RecordingController as rc_mod
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class _Signal:
+        def __init__(self):
+            self.cb = None
+
+        def connect(self, cb):
+            self.cb = cb
+
+    class _Timer:
+        created = []
+
+        def __init__(self, singleShot=False):
+            self.timeout = _Signal()
+            self.started_ms = None
+            _Timer.created.append(self)
+
+        def start(self, ms):
+            self.started_ms = ms
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(rc_mod, 'Timer', _Timer)
+    request = types.SimpleNamespace(intervalSeconds=2.5)
+    ctrl = types.SimpleNamespace(
+        _recordingCycleTerminalHandled=False,
+        _shutdownRequested=False,
+        recMode=RecMode.ScanLapse,
+        stopRequested=False,
+        lapseCurrent=0,
+        lapseTotal=3,
+        _seriesRequest=request,
+        _acceptedScanCompletion=object(),
+        _exactScanCompletionHandled=True,
+        _scanLifecycleEndedObserved=True,
+        _recordingFailureHandled=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+        timer=None,
+        _widget=types.SimpleNamespace(
+            isRecButtonChecked=lambda: True,
+            updateRecLapseNum=lambda _value: None,
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None,
+        ),
+    )
+
+    RecordingController.recordingCycleEnded(ctrl)
+
+    assert ctrl.lapseCurrent == 1
+    assert _Timer.created[-1].started_ms == 2500
+
+
 def test_camera_lapse_uses_deadlines_and_starts_fresh_one_frame_session(
     monkeypatch,
 ):
@@ -5636,6 +5700,8 @@ def test_recording_savename_inserts_scan_suffix_before_rec_marker():
     )
 
     assert _compose_recording_savename('/tmp/cell') == '/tmp/cell_rec'
+    assert _compose_recording_savename('', 'RESOLFT') == 'RESOLFT_rec'
+    assert _compose_recording_savename('', '') == 'rec'
     assert (
         _compose_recording_savename('/tmp/cell', 'RESOLFT_ON1ms_OFF2ms_RO1ms')
         == '/tmp/cell_RESOLFT_ON1ms_OFF2ms_RO1ms_rec'

@@ -77,6 +77,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._view.sigRecordingSuffixToggled.connect(
             self._onRecordingSuffixToggled
         )
+        self._view.sigScanSeriesSettingsEdited.connect(
+            self._onScanSeriesSettingsEdited
+        )
         self._view.sigCameraReadoutAutoRequested.connect(
             self._onCameraReadoutAutoRequested
         )
@@ -93,11 +96,25 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._commChannel.sigDetectorParametersChanged.connect(
             self._onDetectorParametersChanged
         )
+        self._recordedSeriesActive = False
+        recordingWorkflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        settingsChanged = getattr(
+            recordingWorkflow, 'sigScanSeriesSettingsChanged', None
+        )
+        if settingsChanged is not None:
+            settingsChanged.connect(self._onScanSeriesSettingsChanged)
+        activityChanged = getattr(
+            recordingWorkflow, 'sigScanSeriesActivityChanged', None
+        )
+        if activityChanged is not None:
+            activityChanged.connect(self._onScanSeriesActivityChanged)
+
         self._refreshResolvedSetup(refreshView=False)
         state = self._monalisa()
         self._view.configure(state['limits'])
         self._view.setPlan(state['plan'])
         self._view.setBinding(state['binding'])
+        self._syncScanSeriesSettings()
         self._refreshSetupSummary()
         self._refreshLiveControls()
         self._refreshEstimate()
@@ -319,6 +336,44 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def cloakOwnsBackend(self) -> bool:
         return self.acquisitionPlan() is not None and self.profileBinding().is_bound
+
+    def _syncScanSeriesSettings(self) -> None:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        getter = getattr(workflow, 'get_scan_series_settings', None)
+        if not callable(getter):
+            return
+        settings = getter()
+        self._view.setScanSeriesSettings(
+            settings.timepoints, settings.interval_s
+        )
+        activeFor = getattr(workflow, 'scan_series_active_for', None)
+        active = bool(activeFor(self)) if callable(activeFor) else False
+        self._recordedSeriesActive = active
+        self._view.setAcquisitionSeriesActive(active)
+
+    def _onScanSeriesSettingsEdited(self, timepoints, interval_s) -> None:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        setter = getattr(workflow, 'set_scan_series_settings', None)
+        if not callable(setter):
+            return
+        try:
+            setter(timepoints=timepoints, interval_s=interval_s)
+        except Exception as error:
+            self._view.showMessage(
+                f'Invalid acquisition cadence: {error}', error=True
+            )
+            self._syncScanSeriesSettings()
+
+    def _onScanSeriesSettingsChanged(self, settings) -> None:
+        self._view.setScanSeriesSettings(
+            settings.timepoints, settings.interval_s
+        )
+
+    def _onScanSeriesActivityChanged(self, source, active) -> None:
+        if source is not self:
+            return
+        self._recordedSeriesActive = bool(active)
+        self._view.setAcquisitionSeriesActive(active)
 
     def _notifyRecordingFilenameSuffixChanged(self) -> None:
         workflow = getattr(self._commChannel, 'recordingWorkflow', None)
@@ -1457,11 +1512,15 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._releaseScreeningTriggerOverride()
 
     def _runSimpleAcquisition(
-        self, start, *, requireLiveView, keepPreparedIfIdle=False
+        self, start, *, requireLiveView, keepPreparedIfIdle=False,
+        refreshSetup=True,
     ):
-        # Capture ROI/readout-speed changes that may have happened without a
-        # dedicated UI signal immediately before the acquisition is compiled.
-        self._refreshResolvedSetup(refreshView=True, mirror=True)
+        # The first point captures ROI/readout-speed changes immediately before
+        # compilation. Continuations of one retained ScanLapse deliberately do
+        # not re-resolve/mirror Simple state: that acquisition was frozen at its
+        # first timepoint.
+        if refreshSetup:
+            self._refreshResolvedSetup(refreshView=True, mirror=True)
         if self.__dict__.get('_screeningActive', False) and not self._stopScreening():
             return None
         try:
@@ -1493,7 +1552,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             detectors = self._activeProfileDetectors()
             try:
                 result = self._commChannel.recordingWorkflow.record_scan_series(
-                    self, detectors, frames=1
+                    self, detectors
                 )
             except Exception as error:
                 self._view.showMessage(
@@ -1522,6 +1581,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             ),
             requireLiveView=False,
             keepPreparedIfIdle=bool(isNonFinalPartOfSequence),
+            refreshSetup=bool(recalculateSignals),
         )
 
     def _onStopClicked(self):
@@ -1530,6 +1590,17 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         # Live -> Stop -> Recording/Scan timelapse without another camera click.
         # It remains disabled while an acquisition owns the hardware.
         if self._onSimplePage():
+            if self.__dict__.get('_recordedSeriesActive', False):
+                workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+                stop = getattr(workflow, 'stop_scan_series', None)
+                if callable(stop) and stop(self):
+                    self._view.showMessage('')
+                    return
+                self._view.showMessage(
+                    'Could not stop the active recorded acquisition series.',
+                    error=True,
+                )
+                return
             if not self._stopScreening():
                 return
             detectors = self._profileScreeningDetectors()
@@ -2159,7 +2230,8 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         """Load backend first; re-bind Simple only when provenance still matches."""
         original_page = self.scanPage()
         if self._isBusy():
-            return super().applyComponentState(state, applyMode=applyMode)
+            self.__dict__['_stateApplied'] = False
+            return ['A scan acquisition is active; scan parameters were not changed.']
 
         # Applying while Advanced prevents ScanCloakController.setParameters()
         # from interpreting/recompiling the incoming dictionaries before they

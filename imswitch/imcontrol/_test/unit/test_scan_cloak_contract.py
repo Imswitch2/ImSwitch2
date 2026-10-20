@@ -1220,6 +1220,105 @@ def test_monalisa_save_acquire_delegates_one_scan_to_recording(qtbot, monkeypatc
         rig.close()
 
 
+def test_monalisa_series_cadence_is_shared_runtime_state(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        workflow = rig.channel.recordingWorkflow
+        workflow.set_scan_series_settings(timepoints=7, interval_s=2.5)
+        assert rig.view.seriesTimepointsSpin.value() == 7
+        assert rig.view.seriesIntervalSpin.value() == pytest.approx(2.5)
+
+        rig.view.seriesTimepointsSpin.setValue(4)
+        rig.view.seriesIntervalSpin.setValue(1.25)
+        settings = workflow.get_scan_series_settings()
+        assert settings.timepoints == 4
+        assert settings.interval_s == pytest.approx(1.25)
+    finally:
+        rig.close()
+
+
+def test_monalisa_acquire_options_follow_save_checkbox(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        rig.view.saveAcquireCheck.setChecked(False)
+        assert not rig.view.recordingSuffixCheck.isEnabled()
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+        assert not rig.view.seriesIntervalSpin.isEnabled()
+
+        rig.view.saveAcquireCheck.setChecked(True)
+        assert rig.view.recordingSuffixCheck.isEnabled()
+        assert rig.view.seriesTimepointsSpin.isEnabled()
+        rig.view.seriesTimepointsSpin.setValue(1)
+        assert not rig.view.seriesIntervalSpin.isEnabled()
+        rig.view.seriesTimepointsSpin.setValue(2)
+        assert rig.view.seriesIntervalSpin.isEnabled()
+    finally:
+        rig.close()
+
+
+def test_monalisa_scan_load_does_not_touch_series_cadence(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        state = copy.deepcopy(rig.scan.getComponentState())
+        workflow = rig.channel.recordingWorkflow
+        workflow.set_scan_series_settings(timepoints=9, interval_s=4.0)
+
+        rig.scan.applyComponentState(
+            state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+        )
+
+        settings = workflow.get_scan_series_settings()
+        assert settings.timepoints == 9
+        assert settings.interval_s == pytest.approx(4.0)
+    finally:
+        rig.close()
+
+
+def test_monalisa_scan_load_is_refused_while_series_retains_run(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        before = copy.deepcopy(rig.scan.getComponentState())
+        changed = copy.deepcopy(before)
+        axis = changed['analogParameterDict']['target_device'][0]
+        index = changed['analogParameterDict']['target_device'].index(axis)
+        changed['analogParameterDict']['axis_centerpos'][index] += 10.0
+
+        rig.scan.__dict__['_scanRunToken'] = object()
+        warnings = rig.scan.applyComponentState(
+            changed, applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+        )
+
+        assert any('scan acquisition is active' in warning for warning in warnings)
+        assert rig.scan.getComponentState() == before
+    finally:
+        rig.scan.__dict__['_scanRunToken'] = None
+        rig.close()
+
+
+def test_monalisa_series_activity_freezes_controls_and_routes_stop(
+    qtbot, monkeypatch
+):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        stopped = []
+        monkeypatch.setattr(
+            rig.channel.recordingWorkflow,
+            'stop_scan_series',
+            lambda source: stopped.append(source) or True,
+        )
+        rig.scan._onScanSeriesActivityChanged(rig.scan, True)
+
+        assert rig.view.stopButton.isEnabled()
+        assert not rig.view.startButton.isEnabled()
+        assert not rig.view.profileCombo.isEnabled()
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+
+        rig.scan._onStopClicked()
+        assert stopped == [rig.scan]
+    finally:
+        rig.close()
+
+
 def test_monalisa_stop_prepares_external_frame_trigger(qtbot, monkeypatch):
     rig = CloakRig('SimpleMoNaLISA')
     try:

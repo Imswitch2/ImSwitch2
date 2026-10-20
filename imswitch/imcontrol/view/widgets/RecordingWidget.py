@@ -64,6 +64,7 @@ class RecordingWidget(Widget):
     sigSnapRequested = QtCore.Signal()
     sigRecToggled = QtCore.Signal(bool)  # (enabled)
     sigScanSourceChanged = QtCore.Signal()
+    sigScanSeriesSettingsEdited = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -144,7 +145,7 @@ class RecordingWidget(Widget):
         self.recScanLapseBtn = QtWidgets.QRadioButton('Timelapse scan')
         self.currentLapse = QtWidgets.QLabel('0 / ')
         self.timeLapseEdit = QtWidgets.QLineEdit('5')
-        self.freqLabel = QtWidgets.QLabel('Freq [s]')
+        self.freqLabel = QtWidgets.QLabel('Interval [s]')
         self.freqEdit = QtWidgets.QLineEdit('0')
 
         self.singleFileLapseBox = QtWidgets.QCheckBox(
@@ -315,6 +316,12 @@ class RecordingWidget(Widget):
 
         self.snapTIFFButton.clicked.connect(self.sigSnapRequested)
         self.recButton.toggled.connect(self.sigRecToggled)
+        self.timeLapseEdit.editingFinished.connect(
+            self.sigScanSeriesSettingsEdited.emit
+        )
+        self.freqEdit.editingFinished.connect(
+            self.sigScanSeriesSettingsEdited.emit
+        )
 
     def getDetectorMode(self):
         """ Returns -1 if "current detector at start" is selected, -2 if "all
@@ -369,7 +376,12 @@ class RecordingWidget(Widget):
         return float(self.timeToRec.text())
 
     def getTimelapseTime(self):
-        return int(float(self.timeLapseEdit.text()))
+        value = float(self.timeLapseEdit.text())
+        if not value.is_integer():
+            raise ValueError(
+                f'Timelapse timepoints must be a whole number, not {self.timeLapseEdit.text()!r}.'
+            )
+        return int(value)
 
     def getTimelapseFreq(self):
         return float(self.freqEdit.text())

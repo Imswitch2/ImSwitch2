@@ -1,4 +1,6 @@
+import math
 import threading
+from dataclasses import dataclass
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import initLogger
@@ -231,22 +233,121 @@ class LiveScreeningWorkflowService:
         ).setDetectorParameterExact(detector_name, parameter_name, value)
 
 
-class RecordingWorkflowService:
+@dataclass(frozen=True)
+class ScanSeriesSettings:
+    """Runtime cadence shared by every UI that can start a scan series.
+
+    This is deliberately workflow state, not scan state: loading a saved scan,
+    switching a Simple cloak profile, or editing hardware setup must never
+    rewrite how many times the operator currently wants to repeat it.
+    """
+
+    timepoints: int = 1
+    interval_s: float = 0.0
+
+
+class RecordingWorkflowService(SignalInterface):
     """Narrow scan-panel seam into Recording's scan-series transaction.
 
     Scan panels may ask for an acquisition to be recorded, but Recording keeps
     ownership of writer configuration, arming, file naming and finalization.
-    The Recording controller then starts the exact scan source supplied here.
+    The service owns only the shared *runtime cadence* so Recording and Simple
+    scan UIs can edit one canonical value without depending on each other.
     """
 
-    def __init__(self, comm_channel) -> None:
-        self._comm_channel = comm_channel
+    sigScanSeriesSettingsChanged = Signal(object)
+    sigScanSeriesActivityChanged = Signal(object, bool)
 
-    def record_scan_series(self, source, detector_names, frames: int = 1):
+    def __init__(self, comm_channel) -> None:
+        super().__init__()
+        self._comm_channel = comm_channel
+        self._scanSeriesSettings = ScanSeriesSettings()
+        self._activeScanSeriesSource = None
+
+    @staticmethod
+    def _validated_scan_series_settings(timepoints, interval_s):
+        try:
+            timepoints_number = float(timepoints)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'Scan-series timepoints must be a whole number, not {timepoints!r}.'
+            ) from None
+        if (
+            not math.isfinite(timepoints_number)
+            or timepoints_number < 1
+            or not timepoints_number.is_integer()
+        ):
+            raise ValueError(
+                f'Scan-series timepoints must be a whole number >= 1, not {timepoints!r}.'
+            )
+
+        try:
+            interval_number = float(interval_s)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'Scan-series interval must be a finite number >= 0, not {interval_s!r}.'
+            ) from None
+        if not math.isfinite(interval_number) or interval_number < 0:
+            raise ValueError(
+                f'Scan-series interval must be a finite number >= 0, not {interval_s!r}.'
+            )
+
+        return ScanSeriesSettings(
+            timepoints=int(timepoints_number),
+            interval_s=interval_number,
+        )
+
+    def get_scan_series_settings(self) -> ScanSeriesSettings:
+        return self._scanSeriesSettings
+
+    def set_scan_series_settings(self, *, timepoints=None, interval_s=None):
+        current = self._scanSeriesSettings
+        updated = self._validated_scan_series_settings(
+            current.timepoints if timepoints is None else timepoints,
+            current.interval_s if interval_s is None else interval_s,
+        )
+        if updated == current:
+            return current
+        self._scanSeriesSettings = updated
+        self.sigScanSeriesSettingsChanged.emit(updated)
+        return updated
+
+    def record_scan_series(self, source, detector_names):
+        """Start one recorded scan series using a snapshot of shared cadence."""
         controller = self._comm_channel.controllerRegistry().get('Recording')
         if controller is None:
             raise RuntimeError('Required Recording widget not available')
-        return controller.recordScanSeries(source, detector_names, frames)
+        settings = self.get_scan_series_settings()
+        return controller.recordScanSeries(
+            source,
+            detector_names,
+            settings.timepoints,
+            settings.interval_s,
+        )
+
+    def stop_scan_series(self, source) -> bool:
+        """Stop only a recorded series owned by ``source``."""
+        controller = self._comm_channel.controllerRegistry().get('Recording')
+        if controller is None:
+            return False
+        stop = getattr(controller, 'stopScanSeries', None)
+        return bool(stop(source)) if callable(stop) else False
+
+    def publish_scan_series_activity(self, source, active: bool) -> None:
+        active = bool(active)
+        if active:
+            if self._activeScanSeriesSource is source:
+                return
+            self._activeScanSeriesSource = source
+            self.sigScanSeriesActivityChanged.emit(source, True)
+            return
+        if self._activeScanSeriesSource is not source:
+            return
+        self._activeScanSeriesSource = None
+        self.sigScanSeriesActivityChanged.emit(source, False)
+
+    def scan_series_active_for(self, source) -> bool:
+        return self._activeScanSeriesSource is source
 
     def recording_filename_suffix_changed(self, source) -> None:
         """Refresh Recording's read-only scan suffix preview, if present."""
