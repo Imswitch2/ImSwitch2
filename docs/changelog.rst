@@ -5,6 +5,15 @@ Changelog
 Unreleased
 ==========
 
+**Fixes**
+
+- Hardware Control no longer fails startup solely because a setup requests
+  real NI-DAQ channels while the ``nidaqmx`` backend is unavailable. The
+  NI-DAQ infrastructure stays in an explicit unavailable real-hardware state,
+  visible in Hardware Status; AO/DO writes fail closed and scans are refused
+  before arming. ``nidaq.simulation=true`` remains the only way to enable the
+  software scan simulator and synthetic acquisition paths.
+
 **New Features**
 
 - **Device reconnect 2.0: reconnectable by default, and no silent stand-ins.** Reconnecting a device in **Hardware → Hardware status** used to be refused whenever that device shared its serial port with another — the usual rig case — and worked only for the twelve managers that had written their own reconnect. Now a reconnect of any device on a port that can be reopened in place (``RS232Manager``, and the ESP32 / GRBL / SQUID port managers) reopens the port once and re-initialises every device on it, in order, each ending in its safe state, verified (lasers dark, shutters closed), and names any device that did not come back. Devices on such a port need no reconnect code of their own; MPB and AA AOTF repeat their startup exchange after one (they used to stay silent forever once startup had failed, because a "mock forever" flag was set once and never cleared). Managers that open their own driver do so through a *backend holder* (``_installBackend``) and get reconnect — and connect / disconnect for a device declared ``transient`` — from one template; Kinesis stages and rotators, Standa mounts, the Teensy pulse generator and the ThorCam, Photometrics, Allied Vision and PiCam cameras are on it. The rule behind it: **a device's mode comes from the setup file and never changes at runtime.** A real device that cannot be opened is left *not connected* — the error in Hardware status, its panel row greyed with the reason, every command refused with ``DeviceNotConnectedError``, scans and recordings refusing it by name — instead of being quietly replaced by a simulation that accepts commands; ``useMockOnFailure: true`` keeps the old fallback per device, and the configured mocks (``Mock*Manager``, ``MOCK_`` serials, ``simulation: true``, the hardware-free setups) are untouched. The one exception is cameras, which keep a mock until reconnected, because a detector needs its sensor size at construction and only the camera knows it. ``transient`` / ``connectOnStartup`` can now be set on any device, not only instruments. A **Check** button beside Reconnect asks a device whether it is still there without replacing anything (a cheap identity query; MPB, Kinesis, Standa, ThorCam, Teensy, CoolLED, Cobolt), and is allowed during a scan. The Positioner panel now refreshes a reconnected stage like every other panel. Design, inventory and what is still bespoke: ``docs/design/plans/device-reconnect-2.0.md``.
