@@ -714,3 +714,191 @@ def test_structured_diff_preserves_component_description_order(tmp_path, monkeyp
         "- Laser: {'power': 10}",
         "+ Laser: {'power': 20}",
     ]
+
+
+def test_save_from_state_preserves_inactive_component_payloads(tmp_path, monkeypatch):
+    calls = []
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "Scan": DummySetupModeController("Scan", {"step": 1}, calls),
+            "Laser": DummySetupModeController("Laser", {"power": 80}, calls),
+        },
+    )
+
+    result = setup_modes.saveSetupModeFromState(
+        "mode",
+        {
+            "Scan": {"step": 2},
+            "Laser": {"power": 80},
+        },
+        includedComponents=["Scan"],
+    )
+
+    assert result["mode"]["includedComponents"] == ["Scan"]
+    assert result["mode"]["state"] == {
+        "Scan": {"step": 2},
+        "Laser": {"power": 80},
+    }
+
+
+def test_set_included_components_is_non_destructive_and_allows_empty(tmp_path, monkeypatch):
+    calls = []
+    scan = DummySetupModeController("Scan", {"step": 1}, calls)
+    laser = DummySetupModeController("Laser", {"power": 80}, calls)
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {"Scan": scan, "Laser": laser},
+    )
+    setup_modes.saveSetupModeFromState(
+        "mode",
+        {"Scan": {"step": 1}, "Laser": {"power": 80}},
+        includedComponents=["Scan", "Laser"],
+    )
+
+    mode = setup_modes.setSetupModeIncludedComponents("mode", ["Scan"])
+    assert mode["includedComponents"] == ["Scan"]
+    assert set(mode["state"]) == {"Scan", "Laser"}
+
+    mode = setup_modes.setSetupModeIncludedComponents("mode", [])
+    assert mode["includedComponents"] == []
+    assert set(mode["state"]) == {"Scan", "Laser"}
+
+    # Re-enabling a dormant component must restore the original remembered state.
+    laser.state = {"power": 0}
+    setup_modes.setSetupModeIncludedComponents("mode", ["Laser"])
+    setup_modes.loadSetupMode("mode")
+    assert laser.state == {"power": 80}
+
+    try:
+        setup_modes.setSetupModeIncludedComponents("mode", ["Missing"])
+    except ValueError as exc:
+        assert '"Missing"' in str(exc)
+    else:
+        raise AssertionError("Including a component without saved state must fail")
+
+
+def test_full_apply_respects_explicit_empty_but_legacy_missing_field_applies_all(
+    tmp_path, monkeypatch
+):
+    calls = []
+    laser = DummySetupModeController("Laser", {"power": 0}, calls)
+    setup_modes = make_controller(tmp_path, monkeypatch, {"Laser": laser})
+    setup_modes.saveSetupModeFromState(
+        "mode", {"Laser": {"power": 25}}, includedComponents=[]
+    )
+
+    warnings = setup_modes.loadSetupMode("mode")
+    assert warnings == []
+    assert calls == []
+    assert laser.state == {"power": 0}
+
+    legacy_mode = setup_modes.getSetupMode("mode")
+    legacy_mode.pop("includedComponents")
+    setup_modes._writeMode(legacy_mode)
+
+    warnings = setup_modes.loadSetupMode("mode")
+    assert warnings == []
+    assert calls == ["Laser"]
+    assert laser.state == {"power": 25}
+
+
+def test_replace_component_state_preserves_inactive_membership(tmp_path, monkeypatch):
+    calls = []
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "Scan": DummySetupModeController("Scan", {"step": 1}, calls),
+            "Laser": DummySetupModeController("Laser", {"preset": "3D"}, calls),
+        },
+    )
+    setup_modes.saveSetupModeFromState(
+        "mode",
+        {"Scan": {"step": 1}, "Laser": {"preset": "3D"}},
+        includedComponents=["Scan"],
+    )
+
+    mode = setup_modes.replaceSetupModeComponentState(
+        "mode", "Laser", {"preset": "3D optimized"}
+    )
+
+    assert mode["includedComponents"] == ["Scan"]
+    assert mode["state"]["Laser"] == {"preset": "3D optimized"}
+
+
+def test_saved_mode_hazards_ignore_inactive_components(tmp_path, monkeypatch):
+    from enum import Enum
+
+    class ComponentStateApplyMode(Enum):
+        SETUP_MODE_APPLY = "setup_mode_apply"
+
+    def laser_hazard_fn(state, apply_mode, context):
+        power = state.get("power", 0)
+        if state.get("enabled") and power > context.get("laserPowerThresholdMw", 100):
+            return [{
+                "kind": "high_laser_power",
+                "details": {"laserName": "488", "value": power, "units": "mW"},
+            }]
+        return []
+
+    registry = DummyWidgetStatePersistence()
+    registry.register_component(
+        "Laser",
+        describe_fn=lambda state: [],
+        hazard_fn=laser_hazard_fn,
+    )
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {"Laser": DummySetupModeController("Laser", {}, [])},
+        state_registry=registry,
+    )
+    setup_modes.saveSetupModeFromState(
+        "mode",
+        {"Laser": {"enabled": True, "power": 200}},
+        includedComponents=[],
+    )
+
+    hazards = setup_modes.getSetupModeHazards(
+        "mode",
+        ComponentStateApplyMode.SETUP_MODE_APPLY,
+        context={"laserPowerThresholdMw": 100},
+    )
+    assert hazards == []
+
+    setup_modes.setSetupModeIncludedComponents("mode", ["Laser"])
+    hazards = setup_modes.getSetupModeHazards(
+        "mode",
+        ComponentStateApplyMode.SETUP_MODE_APPLY,
+        context={"laserPowerThresholdMw": 100},
+    )
+    assert len(hazards) == 1
+    assert hazards[0]["details"]["value"] == 200
+
+
+def test_duplicate_preserves_inactive_component_membership(tmp_path, monkeypatch):
+    calls = []
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "Scan": DummySetupModeController("Scan", {"step": 1}, calls),
+            "Laser": DummySetupModeController("Laser", {"power": 80}, calls),
+        },
+    )
+    setup_modes.saveSetupModeFromState(
+        "source",
+        {"Scan": {"step": 1}, "Laser": {"power": 80}},
+        includedComponents=["Scan"],
+    )
+
+    duplicate = setup_modes.duplicateSetupMode("source", "copy")
+
+    assert duplicate["includedComponents"] == ["Scan"]
+    assert duplicate["state"] == {
+        "Scan": {"step": 1},
+        "Laser": {"power": 80},
+    }

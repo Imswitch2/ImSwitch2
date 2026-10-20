@@ -27,6 +27,13 @@ class SetupModesWidget(Widget):
     sigModeSelected = QtCore.Signal(str)
     sigReloadMode = QtCore.Signal()
     sigInspectModes = QtCore.Signal()
+    sigManagerLoadMode = QtCore.Signal(str)
+    sigManagerComponentsMode = QtCore.Signal(str)
+    sigManagerEditDescription = QtCore.Signal(str)
+    sigManagerRenameMode = QtCore.Signal(str)
+    sigManagerDuplicateMode = QtCore.Signal(str)
+    sigManagerSetShortcut = QtCore.Signal(str)
+    sigManagerDeleteMode = QtCore.Signal(str)
     sigRenameMode = QtCore.Signal()
     sigDuplicateMode = QtCore.Signal()
     sigSetShortcut = QtCore.Signal()
@@ -40,6 +47,10 @@ class SetupModesWidget(Widget):
 
         self._modeSummaries = {}
         self._backendAvailable = False
+        self._setupModeManagerDialog = None
+        self._setupModeManagerWidgets = {}
+        self._setupModeManagerDetails = {}
+        self._setupModeManagerActiveName = None
 
         self.setMinimumWidth(260)
 
@@ -98,7 +109,7 @@ class SetupModesWidget(Widget):
         )
         self.infoButton.setAutoRaise(True)
         self.infoButton.setFixedSize(18, 18)
-        self.infoButton.setToolTip("Open setup mode inspector")
+        self.infoButton.setToolTip("Open setup mode manager")
         self.infoButton.setStyleSheet(self._transparentToolButtonStyle)
         self.reloadButton = QtWidgets.QToolButton()
         self.reloadButton.setIcon(
@@ -201,31 +212,43 @@ class SetupModesWidget(Widget):
     def getSelectedModeName(self):
         return self.modeCombo.currentData()
 
-    def showInspectModesDialog(self, modeDetails, selectedName=None):
+    def showSetupModeManagerDialog(self, modeDetails, selectedName=None, activeName=None):
+        if self._setupModeManagerDialog is not None:
+            self.updateSetupModeManager(modeDetails, selectedName, activeName)
+            self._setupModeManagerDialog.raise_()
+            self._setupModeManagerDialog.activateWindow()
+            return
+
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Inspect setup modes")
-        dialog.resize(720, 420)
+        dialog.setWindowTitle("Setup Modes")
+        dialog.resize(820, 470)
         dialogFont = self._applyInspectDialogFont(dialog)
+        self._setupModeManagerDialog = dialog
 
         mainLayout = QtWidgets.QHBoxLayout(dialog)
 
         modeList = QtWidgets.QListWidget()
-        modeList.setMinimumWidth(210)
-        for details in modeDetails:
-            item = QtWidgets.QListWidgetItem(details.get("displayName") or details["name"])
-            item.setData(QtCore.Qt.UserRole, details["name"])
-            modeList.addItem(item)
+        modeList.setMinimumWidth(220)
         mainLayout.addWidget(modeList, 0)
 
         detailWidget = QtWidgets.QWidget()
         detailLayout = QtWidgets.QVBoxLayout(detailWidget)
         detailLayout.setContentsMargins(6, 0, 0, 0)
 
+        headerRow = QtWidgets.QHBoxLayout()
         nameLabel = QtWidgets.QLabel()
         nameFont = QtGui.QFont(dialogFont)
         nameFont.setBold(True)
         nameLabel.setFont(nameFont)
-        detailLayout.addWidget(nameLabel)
+        activeLabel = QtWidgets.QLabel("Active")
+        activeFont = QtGui.QFont(dialogFont)
+        activeFont.setBold(True)
+        activeLabel.setFont(activeFont)
+        activeLabel.setVisible(False)
+        headerRow.addWidget(nameLabel)
+        headerRow.addWidget(activeLabel)
+        headerRow.addStretch(1)
+        detailLayout.addLayout(headerRow)
 
         form = QtWidgets.QFormLayout()
         shortcutLabel = QtWidgets.QLabel()
@@ -233,37 +256,41 @@ class SetupModesWidget(Widget):
         createdLabel = QtWidgets.QLabel()
         componentsLabel = QtWidgets.QLabel()
         componentsLabel.setWordWrap(True)
+        inactiveLabel = QtWidgets.QLabel()
+        inactiveLabel.setWordWrap(True)
         form.addRow("Shortcut:", shortcutLabel)
         form.addRow("Updated:", updatedLabel)
         form.addRow("Created:", createdLabel)
-        form.addRow("Includes:", componentsLabel)
+        form.addRow("Uses:", componentsLabel)
+        form.addRow("Saved but inactive:", inactiveLabel)
         detailLayout.addLayout(form)
 
+        descriptionHeader = QtWidgets.QHBoxLayout()
         descriptionLabel = QtWidgets.QLabel("Description")
         descriptionFont = QtGui.QFont(dialogFont)
         descriptionFont.setBold(True)
         descriptionLabel.setFont(descriptionFont)
-
+        editDescriptionButton = BetterPushButton("Edit…")
+        descriptionHeader.addWidget(descriptionLabel)
+        descriptionHeader.addStretch(1)
+        descriptionHeader.addWidget(editDescriptionButton)
         descriptionEdit = QtWidgets.QPlainTextEdit()
         descriptionEdit.setReadOnly(True)
-        descriptionEdit.setMaximumHeight(85)
+        descriptionEdit.setMaximumHeight(80)
         descriptionEdit.setPlaceholderText("No description")
         self._applyPlainTextEditFont(descriptionEdit, dialogFont)
-
-        detailLayout.addWidget(descriptionLabel)
+        detailLayout.addLayout(descriptionHeader)
         detailLayout.addWidget(descriptionEdit)
 
         smartRolesLabel = QtWidgets.QLabel("Smart microscopy roles")
         smartRolesFont = QtGui.QFont(dialogFont)
         smartRolesFont.setBold(True)
         smartRolesLabel.setFont(smartRolesFont)
-
         smartRolesEdit = QtWidgets.QPlainTextEdit()
         smartRolesEdit.setReadOnly(True)
-        smartRolesEdit.setMaximumHeight(60)
+        smartRolesEdit.setMaximumHeight(55)
         smartRolesEdit.setPlaceholderText("Not used in any workflow")
         self._applyPlainTextEditFont(smartRolesEdit, dialogFont)
-
         detailLayout.addWidget(smartRolesLabel)
         detailLayout.addWidget(smartRolesEdit)
 
@@ -271,60 +298,244 @@ class SetupModesWidget(Widget):
         savedStateFont = QtGui.QFont(dialogFont)
         savedStateFont.setBold(True)
         savedStateLabel.setFont(savedStateFont)
-
         stateSummary = QtWidgets.QPlainTextEdit()
         stateSummary.setReadOnly(True)
         self._applyPlainTextEditFont(stateSummary, dialogFont)
-
         detailLayout.addWidget(savedStateLabel)
         detailLayout.addWidget(stateSummary, 1)
 
-        buttonBox = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-        buttonBox.rejected.connect(dialog.reject)
-        detailLayout.addWidget(buttonBox)
+        actionRow = QtWidgets.QHBoxLayout()
+        loadButton = BetterPushButton("Load")
+        componentsButton = BetterPushButton("Components…")
+        renameButton = BetterPushButton("Rename…")
+        duplicateButton = BetterPushButton("Duplicate…")
+        shortcutButton = BetterPushButton("Shortcut…")
+        deleteButton = BetterPushButton("Delete")
+        closeButton = BetterPushButton("Close")
+        for button in (
+            loadButton, componentsButton, renameButton, duplicateButton,
+            shortcutButton, deleteButton
+        ):
+            actionRow.addWidget(button)
+        actionRow.addStretch(1)
+        actionRow.addWidget(closeButton)
+        detailLayout.addLayout(actionRow)
 
         mainLayout.addWidget(detailWidget, 1)
 
-        detailsByName = {details["name"]: details for details in modeDetails}
+        self._setupModeManagerWidgets = {
+            "modeList": modeList,
+            "nameLabel": nameLabel,
+            "activeLabel": activeLabel,
+            "shortcutLabel": shortcutLabel,
+            "updatedLabel": updatedLabel,
+            "createdLabel": createdLabel,
+            "componentsLabel": componentsLabel,
+            "inactiveLabel": inactiveLabel,
+            "descriptionEdit": descriptionEdit,
+            "editDescriptionButton": editDescriptionButton,
+            "smartRolesEdit": smartRolesEdit,
+            "stateSummary": stateSummary,
+            "actionButtons": (
+                loadButton, componentsButton, renameButton, duplicateButton,
+                shortcutButton, deleteButton
+            ),
+        }
 
-        def updateDetails(index):
-            item = modeList.item(index)
-            if item is None:
-                nameLabel.setText("No setup modes")
-                shortcutLabel.setText("")
-                updatedLabel.setText("")
-                createdLabel.setText("")
-                componentsLabel.setText("")
-                descriptionEdit.setPlainText("")
-                smartRolesEdit.setPlainText("")
-                stateSummary.setPlainText("")
+        modeList.currentRowChanged.connect(self._updateSetupModeManagerDetails)
+        loadButton.clicked.connect(
+            lambda: self._emitManagerAction(self.sigManagerLoadMode)
+        )
+        componentsButton.clicked.connect(
+            lambda: self._emitManagerAction(self.sigManagerComponentsMode)
+        )
+        editDescriptionButton.clicked.connect(
+            lambda: self._emitManagerAction(self.sigManagerEditDescription)
+        )
+        renameButton.clicked.connect(
+            lambda: self._emitManagerAction(self.sigManagerRenameMode)
+        )
+        duplicateButton.clicked.connect(
+            lambda: self._emitManagerAction(self.sigManagerDuplicateMode)
+        )
+        shortcutButton.clicked.connect(
+            lambda: self._emitManagerAction(self.sigManagerSetShortcut)
+        )
+        deleteButton.clicked.connect(
+            lambda: self._emitManagerAction(self.sigManagerDeleteMode)
+        )
+        closeButton.clicked.connect(dialog.accept)
+
+        self.updateSetupModeManager(modeDetails, selectedName, activeName)
+        try:
+            self._execDialog(dialog)
+        finally:
+            self._setupModeManagerDialog = None
+            self._setupModeManagerWidgets = {}
+            self._setupModeManagerDetails = {}
+            self._setupModeManagerActiveName = None
+
+    def updateSetupModeManager(self, modeDetails, selectedName=None, activeName=None):
+        if self._setupModeManagerDialog is None:
+            return
+
+        widgets = self._setupModeManagerWidgets
+        modeList = widgets.get("modeList")
+        if modeList is None:
+            return
+
+        currentName = self.getSetupModeManagerSelectedName()
+        targetName = selectedName if selectedName is not None else currentName
+        self._setupModeManagerDetails = {
+            details["name"]: details for details in modeDetails if details.get("name")
+        }
+        self._setupModeManagerActiveName = activeName
+
+        modeList.blockSignals(True)
+        modeList.clear()
+        targetRow = -1
+        for row, details in enumerate(modeDetails):
+            item = QtWidgets.QListWidgetItem(details.get("displayName") or details["name"])
+            item.setData(QtCore.Qt.UserRole, details["name"])
+            if details["name"] == activeName:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setToolTip("Currently active setup mode")
+            modeList.addItem(item)
+            if details["name"] == targetName:
+                targetRow = row
+
+        if targetRow < 0 and modeList.count() > 0:
+            targetRow = 0
+        modeList.setCurrentRow(targetRow)
+        modeList.blockSignals(False)
+        self._updateSetupModeManagerDetails(targetRow)
+
+    def getSetupModeManagerSelectedName(self):
+        modeList = self._setupModeManagerWidgets.get("modeList")
+        if modeList is None:
+            return None
+        item = modeList.currentItem()
+        if item is None:
+            return None
+        return item.data(QtCore.Qt.UserRole)
+
+    def _emitManagerAction(self, signal):
+        modeName = self.getSetupModeManagerSelectedName()
+        if modeName:
+            signal.emit(modeName)
+
+    def _updateSetupModeManagerDetails(self, row):
+        widgets = self._setupModeManagerWidgets
+        modeList = widgets.get("modeList")
+        item = modeList.item(row) if modeList is not None and row >= 0 else None
+        details = (
+            self._setupModeManagerDetails.get(item.data(QtCore.Qt.UserRole), {})
+            if item is not None else {}
+        )
+        hasMode = bool(details)
+        for button in widgets.get("actionButtons", ()):
+            button.setEnabled(hasMode)
+        widgets.get("editDescriptionButton").setEnabled(hasMode)
+
+        widgets.get("nameLabel").setText(details.get("name", "No setup modes"))
+        widgets.get("activeLabel").setVisible(
+            hasMode and details.get("name") == self._setupModeManagerActiveName
+        )
+        widgets.get("shortcutLabel").setText(details.get("shortcut") or "None")
+        widgets.get("updatedLabel").setText(details.get("updatedAt") or "Unknown")
+        widgets.get("createdLabel").setText(details.get("createdAt") or "Unknown")
+
+        included = (
+            details.get("includedComponentLabels")
+            or details.get("includedComponents")
+            or []
+        )
+        inactive = (
+            details.get("inactiveComponentLabels")
+            or details.get("inactiveComponents")
+            or []
+        )
+        widgets.get("componentsLabel").setText(
+            ", ".join(included) if included else "None"
+        )
+        widgets.get("inactiveLabel").setText(
+            ", ".join(inactive) if inactive else "None"
+        )
+        widgets.get("descriptionEdit").setPlainText(details.get("description") or "")
+        widgets.get("smartRolesEdit").setPlainText(
+            "\n".join(details.get("smartModeRoles") or [])
+        )
+        widgets.get("stateSummary").setPlainText(
+            "\n".join(details.get("stateSummary") or [])
+        )
+
+    def showDescriptionDialog(self, modeName, currentDescription):
+        description, accepted = QtWidgets.QInputDialog.getMultiLineText(
+            self,
+            f"Edit description — {modeName}",
+            "Description:",
+            currentDescription or "",
+        )
+        if not accepted:
+            return None
+        return description.strip()
+
+    def showModeComponentsDialog(self, modeName, components, includedComponents):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f'Components — {modeName}')
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        explanation = QtWidgets.QLabel(
+            "Choose which saved component states are used when this mode is loaded. "
+            "Unchecked components remain saved and can be re-enabled later."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+
+        group = QtWidgets.QGroupBox("Use when loading this mode")
+        groupLayout = QtWidgets.QVBoxLayout(group)
+        includedSet = set(includedComponents or [])
+        checks = {}
+        for component in components:
+            componentName = component.get("name")
+            if not componentName:
+                continue
+            check = QtWidgets.QCheckBox(component.get("label") or componentName)
+            check.setChecked(componentName in includedSet)
+            checks[componentName] = check
+            groupLayout.addWidget(check)
+        layout.addWidget(group)
+
+        buttonBox = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
+        )
+        layout.addWidget(buttonBox)
+
+        result = {"components": None}
+
+        def acceptIfValid():
+            selected = [
+                componentName
+                for componentName, check in checks.items()
+                if check.isChecked()
+            ]
+            if not selected:
+                QtWidgets.QMessageBox.warning(
+                    dialog,
+                    "Setup mode components",
+                    "Select at least one component to use when loading this mode.",
+                )
                 return
+            result["components"] = selected
+            dialog.accept()
 
-            details = detailsByName.get(item.data(QtCore.Qt.UserRole), {})
-            nameLabel.setText(details.get("name", ""))
-            shortcutLabel.setText(details.get("shortcut") or "None")
-            updatedLabel.setText(details.get("updatedAt") or "Unknown")
-            createdLabel.setText(details.get("createdAt") or "Unknown")
-            componentsLabel.setText(", ".join(details.get("includedComponents") or []))
-            descriptionEdit.setPlainText(details.get("description") or "")
-            smartRolesEdit.setPlainText("\n".join(details.get("smartModeRoles") or []))
-            stateSummary.setPlainText("\n".join(details.get("stateSummary") or []))
-
-        modeList.currentRowChanged.connect(updateDetails)
-
-        selectedRow = 0
-        if selectedName:
-            for row in range(modeList.count()):
-                if modeList.item(row).data(QtCore.Qt.UserRole) == selectedName:
-                    selectedRow = row
-                    break
-
-        if modeList.count() > 0:
-            modeList.setCurrentRow(selectedRow)
-        else:
-            updateDetails(-1)
-
-        self._execDialog(dialog)
+        buttonBox.accepted.connect(acceptIfValid)
+        buttonBox.rejected.connect(dialog.reject)
+        if self._execDialog(dialog) != QtWidgets.QDialog.Accepted:
+            return None
+        return result["components"]
 
     def _modeTooltipText(self, summary):
         lines = []
@@ -337,7 +548,11 @@ class SetupModesWidget(Widget):
         if shortcut:
             lines.append(f"Shortcut: {shortcut}")
 
-        components = summary.get("includedComponents") or []
+        components = (
+            summary.get("includedComponentLabels")
+            or summary.get("includedComponents")
+            or []
+        )
         if components:
             lines.append("Includes: " + ", ".join(components))
 
@@ -1170,7 +1385,7 @@ class SetupModesWidget(Widget):
             self.sigModeSelected.emit(modeName)
 
     def _updateInfoButton(self):
-        self.infoButton.setToolTip("Open setup mode inspector")
+        self.infoButton.setToolTip("Open setup mode manager")
         self.infoButton.setEnabled(self._backendAvailable and bool(self._modeSummaries))
 
     def _updateModeControls(self):

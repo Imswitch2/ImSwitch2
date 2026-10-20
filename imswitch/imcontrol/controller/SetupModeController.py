@@ -275,10 +275,6 @@ class SetupModeController:
         """Save an already-captured/merged setup-mode state without hardware I/O."""
         modeName = self._validateModeName(name)
         stateByComponent = stateByComponent or {}
-        if includedComponents is None:
-            includedComponents = list(stateByComponent.keys())
-        else:
-            includedComponents = list(includedComponents)
 
         now = self._nowIso()
         createdAt = now
@@ -295,14 +291,14 @@ class SetupModeController:
             shortcut = existingMode.get('shortcut')
 
         savedState = {}
-        savedComponents = []
-        for componentName in includedComponents:
-            if componentName not in stateByComponent:
-                continue
-            componentState = deepcopy(stateByComponent[componentName])
+        for componentName, componentState in stateByComponent.items():
+            componentState = deepcopy(componentState)
             self._assertJSONSerializable(componentState, componentName)
             savedState[componentName] = componentState
-            savedComponents.append(componentName)
+
+        includedComponents = self._normalizeStoredIncludedComponents(
+            includedComponents, savedState
+        )
 
         mode = {
             'schemaVersion': self.schemaVersion,
@@ -311,7 +307,7 @@ class SetupModeController:
             'shortcut': self._normalizeShortcut(shortcut),
             'createdAt': createdAt,
             'updatedAt': now,
-            'includedComponents': savedComponents,
+            'includedComponents': includedComponents,
             'state': savedState,
         }
         self._writeMode(mode)
@@ -361,7 +357,7 @@ class SetupModeController:
             raise FileExistsError(f'Setup mode "{newModeName}" already exists')
 
         now = self._nowIso()
-        mode = dict(sourceMode)
+        mode = deepcopy(sourceMode)
         mode['name'] = newModeName
         mode['description'] = (
             sourceMode.get('description', '') if description is None else description or ''
@@ -400,7 +396,7 @@ class SetupModeController:
 
         isFullModeApply = componentNames is None
         if isFullModeApply:
-            componentNames = mode.get('includedComponents') or list(modeState.keys())
+            componentNames = self._includedComponentsForMode(mode)
         else:
             componentNames = self._normalizeComponentNames(componentNames, modeAwareControllers)
 
@@ -499,16 +495,30 @@ class SetupModeController:
         return results
 
     @APIExport()
+    def setSetupModeIncludedComponents(self, modeName, componentNames):
+        """Change which already-saved component states are active for a mode.
+
+        This is a metadata-only operation: it performs no hardware snapshot and
+        leaves every saved component payload untouched, including dormant ones.
+        """
+        mode = self._loadModeByName(modeName)
+        state = mode.get('state') or {}
+        mode['includedComponents'] = self._normalizeStoredIncludedComponents(
+            componentNames, state
+        )
+        mode['updatedAt'] = self._nowIso()
+        self._writeMode(mode)
+        return mode
+
+    @APIExport()
     def replaceSetupModeComponentState(self, modeName, componentName, componentState):
-        """Atomically replace one component payload in an existing setup mode."""
+        """Atomically replace one component payload without changing membership."""
         mode = self._loadModeByName(modeName)
         state = dict(mode.get('state') or {})
         state[componentName] = componentState
         mode['state'] = state
-        included = list(mode.get('includedComponents') or [])
-        if componentName not in included:
-            included.append(componentName)
-        mode['includedComponents'] = included
+        # Do not modify includedComponents here. A component may deliberately be
+        # saved but inactive, e.g. while a referenced Laser preset is renamed.
         mode['updatedAt'] = self._nowIso()
         self._assertJSONSerializable(componentState, componentName)
         self._writeMode(mode)
@@ -546,6 +556,18 @@ class SetupModeController:
             self._logger.error(f'Failed to describe component state for "{componentName}": {e}')
             self._logger.error(traceback.format_exc())
             return [f"(error describing state: {e})"]
+
+    @APIExport()
+    def getSetupModeHazards(self, name, applyMode, context=None):
+        """Return hazards only for component states active in a saved mode."""
+        mode = self._loadModeByName(name)
+        state = mode.get('state') or {}
+        activeState = {
+            componentName: state[componentName]
+            for componentName in self._includedComponentsForMode(mode)
+            if componentName in state
+        }
+        return self.getModeHazards(activeState, applyMode, context)
 
     def getModeHazards(self, stateByComponent, applyMode, context=None):
         """Identify potential hazards in a mode state before applying it.
@@ -757,6 +779,49 @@ class SetupModeController:
             captureOptions=captureOptions,
             previousStateByComponent=previousStateByComponent,
         )
+
+    @staticmethod
+    def _includedComponentsForMode(mode):
+        """Return active components, preserving explicit empty membership.
+
+        Modes written before ``includedComponents`` existed implicitly included
+        every saved component. Once the field exists, its value is authoritative
+        even when it is an empty list.
+        """
+        state = mode.get('state') or {}
+        if 'includedComponents' in mode:
+            return list(mode.get('includedComponents') or [])
+        return list(state.keys())
+
+    @staticmethod
+    def _normalizeStoredIncludedComponents(componentNames, stateByComponent):
+        if componentNames is None:
+            componentNames = list(stateByComponent.keys())
+        elif isinstance(componentNames, str):
+            componentNames = [componentNames]
+        else:
+            try:
+                componentNames = list(componentNames)
+            except TypeError:
+                raise TypeError(
+                    'includedComponents must be None, a string, or an iterable of strings'
+                )
+
+        included = []
+        missing = []
+        for componentName in componentNames:
+            if componentName not in stateByComponent:
+                missing.append(componentName)
+                continue
+            if componentName not in included:
+                included.append(componentName)
+
+        if missing:
+            missingText = ', '.join(f'"{name}"' for name in missing)
+            raise ValueError(
+                f'Included setup-mode component(s) have no saved state: {missingText}'
+            )
+        return included
 
     def _normalizeComponentNames(self, componentNames, modeAwareControllers):
         if componentNames is None:

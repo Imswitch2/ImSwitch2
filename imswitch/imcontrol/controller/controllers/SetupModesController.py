@@ -45,6 +45,13 @@ class SetupModesController(ImConWidgetController):
         self._widget.sigModeSelected.connect(self.modeSelected)
         self._widget.sigReloadMode.connect(self.reloadSelectedMode)
         self._widget.sigInspectModes.connect(self.inspectModes)
+        self._widget.sigManagerLoadMode.connect(self.loadModeFromManager)
+        self._widget.sigManagerComponentsMode.connect(self.editModeComponents)
+        self._widget.sigManagerEditDescription.connect(self.editDescriptionByName)
+        self._widget.sigManagerRenameMode.connect(self.renameModeByName)
+        self._widget.sigManagerDuplicateMode.connect(self.duplicateModeByName)
+        self._widget.sigManagerSetShortcut.connect(self.setShortcutByName)
+        self._widget.sigManagerDeleteMode.connect(self.deleteModeByName)
         self._widget.sigUpdateMode.connect(self.updateCurrentMode)
         self._widget.sigSaveAsMode.connect(self.saveModeAs)
         self._widget.sigRenameMode.connect(self.renameMode)
@@ -124,21 +131,125 @@ class SetupModesController(ImConWidgetController):
         if self._setupModeController is None:
             return
 
+        modeDetails = self._collectModeDetails()
+        if modeDetails is None:
+            return
+
+        self._widget.showSetupModeManagerDialog(
+            modeDetails,
+            selectedName=self._widget.getSelectedModeName(),
+            activeName=self._activeModeName,
+        )
+
+    def _collectModeDetails(self):
+        if self._setupModeController is None:
+            return []
+
         try:
-            modeDetails = []
-            for modeName in self._setupModeController.listSetupModes():
-                modeDetails.append(
-                    self._makeInspectModeDetails(
-                        self._setupModeController.getSetupMode(modeName)
-                    )
+            return [
+                self._makeInspectModeDetails(
+                    self._setupModeController.getSetupMode(modeName)
                 )
+                for modeName in self._setupModeController.listSetupModes()
+            ]
         except Exception as e:
             self._logger.error("Failed to inspect setup modes")
             self._logger.error(traceback.format_exc())
-            self._widget.showError("Inspect setup modes", f"Could not inspect setup modes: {e}")
+            self._widget.showError(
+                "Setup modes", f"Could not inspect setup modes: {e}"
+            )
+            return None
+
+    def _refreshModeManager(self, selectedName=None):
+        modeDetails = self._collectModeDetails()
+        if modeDetails is None:
+            return
+        self._widget.updateSetupModeManager(
+            modeDetails, selectedName=selectedName, activeName=self._activeModeName
+        )
+
+    def loadModeFromManager(self, modeName):
+        if not modeName:
+            return
+        self._applyMode(modeName, source="manager")
+
+    def editModeComponents(self, modeName):
+        if not modeName or self._setupModeController is None:
             return
 
-        self._widget.showInspectModesDialog(modeDetails, self._widget.getSelectedModeName())
+        mode = self._getMode(modeName)
+        if not mode:
+            return
+
+        state = mode.get("state") or {}
+        components = [
+            {"name": componentName, "label": self._componentLabel(componentName)}
+            for componentName in state.keys()
+        ]
+        if not components:
+            self._widget.showWarnings(
+                "Setup mode components",
+                [f'Setup mode "{modeName}" has no saved component state.'],
+            )
+            return
+
+        included = self._includedComponentsForMode(mode)
+        selected = self._widget.showModeComponentsDialog(
+            modeName, components, included
+        )
+        if selected is None:
+            return
+
+        try:
+            self._setupModeController.setSetupModeIncludedComponents(
+                modeName, selected
+            )
+        except Exception as e:
+            self._logger.error(
+                f'Failed to update included components for setup mode "{modeName}"'
+            )
+            self._logger.error(traceback.format_exc())
+            self._widget.showError(
+                "Setup mode components",
+                f"Could not update setup mode components: {e}",
+            )
+            return
+
+        mainSelection = self._widget.getSelectedModeName()
+        self.refreshModes(mainSelection)
+        self._refreshModeManager(modeName)
+
+    def editDescriptionByName(self, modeName):
+        if not modeName or self._setupModeController is None:
+            return
+
+        mode = self._getMode(modeName)
+        if not mode:
+            return
+
+        description = self._widget.showDescriptionDialog(
+            modeName, mode.get("description", "")
+        )
+        if description is None or description == mode.get("description", ""):
+            return
+
+        mainSelection = self._widget.getSelectedModeName()
+        try:
+            self._setupModeController.updateSetupModeMetadata(
+                modeName, description=description
+            )
+        except Exception as e:
+            self._logger.error(
+                f'Failed to update description for setup mode "{modeName}"'
+            )
+            self._logger.error(traceback.format_exc())
+            self._widget.showError(
+                "Edit description", f"Could not update description: {e}"
+            )
+            return
+
+        self.refreshModes(mainSelection)
+        self._refreshModeManager(modeName)
 
     def saveModeAs(self):
         if self._setupModeController is None:
@@ -161,7 +272,11 @@ class SetupModesController(ImConWidgetController):
 
         selectedName = self._widget.getSelectedModeName()
         selectedMode = self._getMode(selectedName) if selectedName else {}
-        selectedComponents = selectedMode.get("includedComponents") or components
+        selectedComponents = (
+            self._includedComponentsForMode(selectedMode)
+            if selectedMode
+            else components
+        )
         selectedState = selectedMode.get("state") or {}
         componentCaptureOptions = {}
         for componentName in components:
@@ -220,7 +335,7 @@ class SetupModesController(ImConWidgetController):
             return
 
         savedState = savedMode.get("state") or {}
-        componentNames = savedMode.get("includedComponents") or list(savedState.keys())
+        componentNames = self._includedComponentsForMode(savedMode)
         if not componentNames:
             self._widget.showWarnings(
                 "Update setup mode",
@@ -316,7 +431,9 @@ class SetupModesController(ImConWidgetController):
             )
 
     def renameMode(self):
-        modeName = self._widget.getSelectedModeName()
+        self.renameModeByName(self._widget.getSelectedModeName())
+
+    def renameModeByName(self, modeName):
         if not modeName or self._setupModeController is None:
             return
 
@@ -331,6 +448,7 @@ class SetupModesController(ImConWidgetController):
             )
             return
 
+        mainSelection = self._widget.getSelectedModeName()
         try:
             self._setupModeController.renameSetupMode(modeName, newName)
         except Exception as e:
@@ -341,10 +459,15 @@ class SetupModesController(ImConWidgetController):
 
         if self._activeModeName == modeName:
             self._activeModeName = newName
-        self.refreshModes(newName)
+        if mainSelection == modeName:
+            mainSelection = newName
+        self.refreshModes(mainSelection)
+        self._refreshModeManager(newName)
 
     def duplicateMode(self):
-        modeName = self._widget.getSelectedModeName()
+        self.duplicateModeByName(self._widget.getSelectedModeName())
+
+    def duplicateModeByName(self, modeName):
         if not modeName or self._setupModeController is None:
             return
 
@@ -362,6 +485,7 @@ class SetupModesController(ImConWidgetController):
             )
             return
 
+        mainSelection = self._widget.getSelectedModeName()
         try:
             self._setupModeController.duplicateSetupMode(
                 modeName, newName, shortcut=""
@@ -372,10 +496,13 @@ class SetupModesController(ImConWidgetController):
             self._widget.showError("Duplicate setup mode", f"Could not duplicate setup mode: {e}")
             return
 
-        self.refreshModes(self._activeModeName)
+        self.refreshModes(mainSelection)
+        self._refreshModeManager(newName)
 
     def setShortcut(self):
-        modeName = self._widget.getSelectedModeName()
+        self.setShortcutByName(self._widget.getSelectedModeName())
+
+    def setShortcutByName(self, modeName):
         if not modeName or self._setupModeController is None:
             return
 
@@ -388,6 +515,7 @@ class SetupModesController(ImConWidgetController):
         if not self._ensureShortcutAvailable(shortcut, modeName):
             return
 
+        mainSelection = self._widget.getSelectedModeName()
         try:
             self._setupModeController.updateSetupModeMetadata(
                 modeName, shortcut=shortcut or ""
@@ -398,7 +526,8 @@ class SetupModesController(ImConWidgetController):
             self._widget.showError("Set shortcut", f"Could not update shortcut: {e}")
             return
 
-        self.refreshModes(modeName)
+        self.refreshModes(mainSelection)
+        self._refreshModeManager(modeName)
 
     def editSafetySettings(self):
         result = self._widget.showSafetySettingsDialog(self._safetySettings)
@@ -466,13 +595,16 @@ class SetupModesController(ImConWidgetController):
         self.refreshModes(self._widget.getSelectedModeName())
 
     def deleteMode(self):
-        modeName = self._widget.getSelectedModeName()
+        self.deleteModeByName(self._widget.getSelectedModeName())
+
+    def deleteModeByName(self, modeName):
         if not modeName or self._setupModeController is None:
             return
 
         if not self._widget.askDeleteMode(modeName):
             return
 
+        mainSelection = self._widget.getSelectedModeName()
         try:
             self._setupModeController.deleteSetupMode(modeName)
         except Exception as e:
@@ -483,7 +615,10 @@ class SetupModesController(ImConWidgetController):
 
         if self._activeModeName == modeName:
             self._activeModeName = None
-        self.refreshModes(self._activeModeName)
+        if mainSelection == modeName:
+            mainSelection = self._activeModeName
+        self.refreshModes(mainSelection)
+        self._refreshModeManager(None)
 
     def revealModesFolder(self):
         if self._setupModeController is None:
@@ -525,8 +660,8 @@ class SetupModesController(ImConWidgetController):
             "applySource": source,
         }
 
-        hazards = self._setupModeController.getModeHazards(
-            mode.get("state", {}),
+        hazards = self._setupModeController.getSetupModeHazards(
+            modeName,
             ComponentStateApplyMode.SETUP_MODE_APPLY,
             context
         )
@@ -585,6 +720,7 @@ class SetupModesController(ImConWidgetController):
 
         self._activeModeName = modeName
         self.refreshModes(modeName)
+        self._refreshModeManager(modeName)
         return True
 
     def _getMode(self, modeName):
@@ -599,6 +735,14 @@ class SetupModesController(ImConWidgetController):
             self._widget.showError("Setup modes", f"Could not read setup mode: {e}")
             return {}
 
+    @staticmethod
+    def _includedComponentsForMode(mode):
+        """Resolve active components without treating an explicit [] as legacy."""
+        state = mode.get("state") or {}
+        if "includedComponents" in mode:
+            return list(mode.get("includedComponents") or [])
+        return list(state.keys())
+
     def _modeExists(self, modeName):
         try:
             return modeName in self._setupModeController.listSetupModes()
@@ -611,10 +755,7 @@ class SetupModesController(ImConWidgetController):
         name = mode["name"]
         shortcut = self._normalizeShortcut(mode.get("shortcut"))
         displayName = f"{name} ({shortcut})" if shortcut else name
-        includedComponents = (
-            mode.get("includedComponents")
-            or sorted((mode.get("state") or {}).keys())
-        )
+        includedComponents = self._includedComponentsForMode(mode)
 
         return {
             "name": name,
@@ -622,43 +763,59 @@ class SetupModesController(ImConWidgetController):
             "description": mode.get("description", ""),
             "shortcut": shortcut,
             "includedComponents": includedComponents,
+            "includedComponentLabels": [
+                self._componentLabel(componentName)
+                for componentName in includedComponents
+            ],
             "smartModeRoles": self._summarizeSmartModeRoles(name),
         }
 
     def _makeInspectModeDetails(self, mode):
         details = self._makeModeSummary(mode)
+        state = mode.get("state") or {}
+        included = self._includedComponentsForMode(mode)
+        includedSet = set(included)
+        savedComponents = list(state.keys())
+        inactiveComponents = [
+            componentName
+            for componentName in savedComponents
+            if componentName not in includedSet
+        ]
         details.update({
             "createdAt": mode.get("createdAt"),
             "updatedAt": mode.get("updatedAt"),
+            "savedComponents": savedComponents,
+            "inactiveComponents": inactiveComponents,
+            "inactiveComponentLabels": [
+                self._componentLabel(componentName)
+                for componentName in inactiveComponents
+            ],
             "stateSummary": self._summarizeSavedState(mode),
         })
 
         return details
 
     def _summarizeSavedState(self, mode):
-        """Build per-component summary by delegating to describeModeComponent."""
+        """Describe every remembered payload, marking dormant components clearly."""
         state = mode.get("state") or {}
-        componentNames = mode.get("includedComponents") or sorted(state.keys())
+        includedSet = set(self._includedComponentsForMode(mode))
         summaries = []
 
-        for componentName in componentNames:
-            componentState = state.get(componentName)
+        for componentName, componentState in state.items():
             label = self._componentLabel(componentName)
+            if componentName not in includedSet:
+                label = f"{label} (inactive)"
             summaries.append(f"{label}:")
 
-            if componentName not in state:
-                summaries.append("  not saved")
+            # Delegate to backend (registry's describeComponentState)
+            componentSummary = self._setupModeController.describeModeComponent(
+                componentName, componentState
+            )
+            if componentSummary:
+                for line in componentSummary:
+                    summaries.append(f"  {line}")
             else:
-                # Delegate to backend (registry's describeComponentState)
-                componentSummary = self._setupModeController.describeModeComponent(
-                    componentName, componentState
-                )
-                if componentSummary:
-                    # Indent each line
-                    for line in componentSummary:
-                        summaries.append(f"  {line}")
-                else:
-                    summaries.append("  (no description available)")
+                summaries.append("  (no description available)")
 
             summaries.append("")
 
@@ -670,10 +827,7 @@ class SetupModesController(ImConWidgetController):
         """Build structured per-component data for the selective Update dialog."""
         savedState = savedMode.get("state") or {}
         currentState = snapshot.get("state") or {}
-        componentNames = (
-            savedMode.get("includedComponents")
-            or list(savedState.keys())
-        )
+        componentNames = self._includedComponentsForMode(savedMode)
         structuredDiff = self._setupModeController.diffModeComponentsStructured(
             savedState, currentState
         )
