@@ -295,6 +295,7 @@ IMPROCESS_RECONSTRUCTOR_FALLBACK = [
     "beadrec",
     "monalisa",
     "monalisa-legacy",
+    "polarisation-map",
     "smlm-localizer",
     "snouty",
     "snouty-projections",

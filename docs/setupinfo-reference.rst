@@ -78,6 +78,7 @@ Each detector takes:
 * ``managerName`` (required): Manager class (e.g., ``"HamamatsuManager"``, ``"AVManager"``)
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/detectors`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``forAcquisition``: ``true`` if used for live imaging (default ``false``)
 * ``forFocusLock``: ``true`` if used for focus lock (default ``false``)
 
@@ -121,6 +122,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``valueRangeStep`` (default ``1.0``): step of the power control in the
   **Laser** panel
 * ``freqRangeMin`` / ``freqRangeMax`` / ``freqRangeInit`` (default ``0``):
@@ -207,6 +209,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/positioners`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``resetOnClose`` (default ``false``): set it to ``true`` to have this
   positioner moved to ``0`` on every axis when ImSwitch2 closes with the
   **Positioner** panel loaded.  Otherwise a stage stays where it is on exit.

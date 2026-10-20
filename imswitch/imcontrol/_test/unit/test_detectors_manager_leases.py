@@ -414,3 +414,20 @@ def test_hardware_replacement_clears_stale_stop_quarantine(manager):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_an_absent_detector_is_refused_by_name_for_scans_recordings_and_live_view(manager):
+    """P-2: a detector that is not connected never acquires; the refusal
+    names it instead of starting on nothing."""
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+    from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
+
+    manager._subManagers['CAM'].isUsable = False
+    with pytest.raises(DeviceNotConnectedError, match='Not connected: CAM'):
+        manager.acquire(['CAM', 'APD'], LeasePurpose.SCAN)
+    with pytest.raises(DeviceNotConnectedError, match='CAM'):
+        manager.startAcquisition(liveView=True, detectorNames=['CAM'])
+    assert manager._subManagers['CAM'].startCalls == 0
+    handle = manager.acquire(['APD'], LeasePurpose.SCAN)      # the others still do
+    manager.release(handle)
+
