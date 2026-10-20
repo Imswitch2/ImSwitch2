@@ -10,9 +10,29 @@ Host applications should use the public `slmcore` interfaces rather than maintai
 
 `slmcore` requires Python 3.10 or newer.
 
-### Core development
+### Installation from PyPI
 
-The standard development environment does not require Qt.
+Install the host-independent core package with:
+
+```bash
+python -m pip install slmcore
+```
+
+Install the reusable Qt interface when `slmcore` is used as its own Qt application or from a host that does not already provide the required Qt stack:
+
+```bash
+python -m pip install "slmcore[qt]"
+```
+
+Importing `slmcore` itself does not import Qt. Qt functionality is accessed explicitly through `slmcore.qt`.
+
+### Optional GPU acceleration
+
+The CGH backends can use CuPy for GPU acceleration when a compatible CUDA/CuPy installation is available. GPU support is optional; the package falls back to CPU implementations when CuPy is unavailable.
+
+CuPy publishes different binary packages for different CUDA major versions, so `slmcore` deliberately does not declare a generic `gpu` extra. Install the CuPy package appropriate for the CUDA environment by following the CuPy installation instructions, then install `slmcore` normally. The runtime GPU availability probe will expose the GPU backend only when CuPy and CUDA can execute successfully.
+
+### Core development
 
 From a source checkout, create and activate a Python environment, then install:
 
@@ -26,9 +46,7 @@ python -m pip install -r requirements-dev.txt
 -e .[test]
 ```
 
-This installs `slmcore` in editable mode together with its test dependencies, but without the optional Qt stack.
-
-Changes under `src/slmcore/` are immediately available without reinstalling the package.
+This installs `slmcore` in editable mode together with its test dependencies, but without the optional Qt stack. Changes under `src/slmcore/` are immediately available without reinstalling the package.
 
 Run the test suite with:
 
@@ -38,43 +56,37 @@ python -m pytest
 
 The non-Qt tests run normally. Qt-specific tests are skipped when the Qt dependencies are not installed.
 
-This is the appropriate environment for development of the core, application, setup, workspace, and host-independent parts of `slmcore`.
+### Qt development and standalone demo
 
-### Qt development and standalone application
-
-To develop or use the Qt interface, install both the Qt and test dependency groups:
+To develop the reusable Qt interface and run the full test suite, install:
 
 ```bash
 python -m pip install -e ".[qt,test]"
 ```
 
-This installs the same editable `slmcore` package together with the dependencies required by `slmcore.qt`.
-
-The full test suite, including Qt tests, can then be run with:
+The standalone demo additionally uses QDarkStyle for its reference-host theme. It is intentionally kept out of the reusable `qt` dependency group. Install the demo dependencies with:
 
 ```bash
-python -m pytest
+python -m pip install -e ".[qt,demo,test]"
 ```
 
-Run the hardware-free standalone Qt demo with:
+Then run:
 
 ```bash
 python -m examples.qt_demo
 ```
 
-The demo uses mock SLM devices and does not require physical hardware. It also provides reference examples for setup files, multiple SLMs, workspace handling, session composition, and host integration.
+The demo uses mock SLM devices and does not require physical hardware. It also provides reference examples for setup files, multiple SLMs, workspace handling, session composition, and host integration. The `examples/` tree is distributed with the source distribution rather than installed as part of the `slmcore` wheel.
 
-### Minimal installation
+### Minimal source installation
 
-If tests and Qt are not required, the base package can be installed directly from a source checkout:
+If tests and Qt are not required, the base package can be installed from a source checkout in editable mode:
 
 ```bash
 python -m pip install -e .
 ```
 
-The base package contains the SLM runtime, computation, configuration, workspace, setup, and host APIs without installing the optional Qt dependencies.
-
-Importing `slmcore` itself does not import Qt. Qt functionality is accessed explicitly through `slmcore.qt`.
+The base package contains the SLM runtime, computation, configuration, workspace, setup, and host APIs without installing optional Qt or demo dependencies.
 
 ### Minimal standalone Qt composition
 
@@ -191,18 +203,22 @@ The public `slmcore` repository can therefore remain usable independently while 
 
 Package dependencies are defined in `pyproject.toml`.
 
-Three installation levels are intentionally supported:
+The main source-development installation levels are:
 
 ```text
--e .                base slmcore only
--e .[test]          core development and testing
--e .[qt,test]       Qt development and full testing
+-e .                     base slmcore only
+-e .[test]               core development and testing
+-e .[qt,test]            reusable Qt development and full testing
+-e .[qt,demo,test]       standalone demo development
 ```
 
 The optional dependency groups are:
 
 - `test`: test tooling only.
-- `qt`: Qt bindings and the dependencies required by the reusable Qt interface and standalone host.
+- `qt`: Qt bindings and dependencies required by the reusable Qt interface.
+- `demo`: standalone-demo-only dependencies such as QDarkStyle. Use it together with `qt`.
+
+GPU acceleration is intentionally not represented by a package extra because the appropriate CuPy binary package depends on the CUDA major version installed on the system.
 
 `requirements-dev.txt` is only a convenience entry point for the normal non-Qt development environment:
 

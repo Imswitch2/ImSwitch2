@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slmcore"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Reusable SLM control, pattern generation and CGH framework"
 readme = "README.md"
 license = "GPL-3.0-only"
@@ -19,12 +19,20 @@ dependencies = [
     "Pillow>=9.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/SLMCore/slmcore"
+Issues = "https://github.com/SLMCore/slmcore/issues"
+
+
 [project.optional-dependencies]
 qt = [
     "qtpy>=2.0",
     "PyQt5>=5.15",
     "pyqtgraph>=0.12",
     "matplotlib>=3.6",
+]
+
+demo = [
     "QDarkStyle>=3.0",
 ]
 

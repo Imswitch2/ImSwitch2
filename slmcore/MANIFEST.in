@@ -1,0 +1,3 @@
+include ARCHITECTURE.md
+include requirements-dev.txt
+recursive-include examples *.py *.json
