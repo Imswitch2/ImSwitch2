@@ -112,13 +112,16 @@ the refusals. The fake board takes two hooks outside the protocol, as the
 simulated board takes its ``arrivals`` and ``fail_at_step``:
 ``#ARRIVE,<t1>;<t2>;...`` (ticks since ``RUN``) and ``#FAIL,<step>``.
 
-**On the board**, with the firmware flashed and nothing wired to ``dac0``,
-``ttl0``, ``ttl1`` and ``ttl2`` (the programs drive them; ``dac1`` plays a
-power level):
+**On the board**, with the firmware flashed. The programs drive one DAC,
+three lines and, for the power level, a second DAC -- by default ``dac0``,
+``ttl0`` to ``ttl2`` and ``dac1``, which on a board in a rig have devices
+on them. Choose channels nothing is wired to instead (the setup file says
+which are taken), or leave the power level out:
 
 .. code-block:: bash
 
-    python tools/step_board_conformance.py --port COM5 --baudrate 115200 --reply-timeout 0.5
+    python tools/step_board_conformance.py --port COM5 --baudrate 115200 --reply-timeout 0.5 \
+        --dac 7 --lines 12,13,14 --power-dac 9
 
 It prints ``PASS`` or ``FAIL`` per program with every difference, and exits
 0 when all pass. The log it compares is what the board planned, tick by

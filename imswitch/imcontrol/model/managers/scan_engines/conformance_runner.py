@@ -172,10 +172,17 @@ def _deadline(schedule, rate_hz, transport, trigger_timeout_s):
 
 
 def run(transport, *, trigger=False, trigger_timeout_s=None,
-        report: Callable[[str], None] = print) -> List[Result]:
+        report: Callable[[str], None] = print, dac=None, power_dac=None, lines=None,
+        power=True) -> List[Result]:
     """Every conformance program on the board behind ``transport``.
     ``trigger_timeout_s``: how long a pulse on the trigger input may take to
-    come, per trigger wait (needed with ``trigger`` on a real board)."""
+    come, per trigger wait (needed with ``trigger`` on a real board).
+
+    The programs drive the board's first DAC, its first three lines and, for
+    the power level, the next DAC whose range takes 0 V -- unless told which:
+    ``dac``, ``lines`` (three line indices) and ``power_dac`` choose channels
+    nothing is wired to on a board in a rig, and ``power=False`` leaves the
+    power-level program out when no second DAC is free."""
     if trigger and trigger_timeout_s is None and transport.reply_timeout:
         raise ValueError('Trigger waits on a real board need trigger_timeout_s: how long a '
                          'pulse may take to come.')
@@ -191,21 +198,46 @@ def run(transport, *, trigger=False, trigger_timeout_s=None,
                              'lines.')
     report(f'{caps.board} ({caps.firmware}): grid {caps.grid_ns} ns, '
            f'{len(caps.dacs)} DACs, {caps.ttl_lines} lines')
-    dac = min(caps.dacs)
-    # A power level needs a second DAC whose range takes the laser's off, 0 V.
-    others = [index for index in sorted(caps.dacs) if index != dac
-              and caps.dacs[index][0] <= 0.0 <= caps.dacs[index][1]]
-    power_dac = others[0] if others else None
+    dac = min(caps.dacs) if dac is None else int(dac)
+    if dac not in caps.dacs:
+        raise StepBoardError(f'{caps.board} has no dac{dac}; it declares '
+                             f'{", ".join(f"dac{i}" for i in sorted(caps.dacs))}.')
+    lines = list(range(LINES)) if lines is None else [int(line) for line in lines]
+    if len(lines) != LINES or len(set(lines)) != LINES:
+        raise StepBoardError(f'The programs need {LINES} distinct lines, not {lines}.')
+    for line in lines:
+        if not 0 <= line < caps.ttl_lines:
+            raise StepBoardError(f'{caps.board} has no ttl{line}; it has ttl0 to '
+                                 f'ttl{caps.ttl_lines - 1}.')
+    if not power:
+        power_dac = None
+    elif power_dac is None:
+        # A power level needs a second DAC whose range takes the laser's off, 0 V.
+        others = [index for index in sorted(caps.dacs) if index != dac
+                  and caps.dacs[index][0] <= 0.0 <= caps.dacs[index][1]]
+        power_dac = others[0] if others else None
+    else:
+        power_dac = int(power_dac)
+        if power_dac not in caps.dacs or power_dac == dac:
+            raise StepBoardError(f'The power level needs a second DAC of {caps.board}, not '
+                                 f'dac{power_dac}.')
+        low, high = caps.dacs[power_dac]
+        if not low <= 0.0 <= high:
+            raise StepBoardError(f'dac{power_dac} gives {low:g} to {high:g} V and cannot '
+                                 'play a power level that is off at 0 V.')
     power_range = None if power_dac is None else caps.dacs[power_dac]
     engine._setupInfo = _setup(power_range)
-    channels = _channels(dac, range(LINES), power_dac)
+    channels = _channels(dac, lines, power_dac)
+    report(f'driving dac{dac}, ttl{lines[0]}, ttl{lines[1]}, ttl{lines[2]}'
+           + (f', a power level on dac{power_dac}' if power_dac is not None else
+              ', no power level'))
     grid_s = caps.grid_ns / NS_PER_S
     rate_hz = NS_PER_S / caps.grid_ns      # exact for a grid that divides a second
     step = caps.dac_step(dac)
     resolution = {'D': step} if step is not None else None
     results = []
-    power = None if power_range is None else float(power_range[1])   # its top: in range
-    for name, make in _programs(grid_s, trigger, power).items():
+    level = None if power_range is None else float(power_range[1])   # its top: in range
+    for name, make in _programs(grid_s, trigger, level).items():
         program = make()
         try:
             compiled = engine.compile(program, channels, captured_um={})

@@ -112,6 +112,21 @@ def test_the_conformance_programs_pass(transport):
     assert len(results) == 5       # the four, and a power level on the second DAC
 
 
+def test_the_programs_run_on_chosen_channels(transport):
+    """A board in a rig has devices on its first channels: the runner drives
+    the ones it is told, and leaves the power level out when asked."""
+    lines = []
+    results = conformance_runner.run(transport, report=lines.append, dac=1, lines=[3, 2, 1],
+                                     power=False)
+    assert [r.program for r in results if not r.passed] == []
+    assert len(results) == 4
+    assert 'driving dac1, ttl3, ttl2, ttl1, no power level' in lines
+    with pytest.raises(StepBoardError, match='no dac7'):
+        conformance_runner.run(transport, report=lambda line: None, dac=7)
+    with pytest.raises(StepBoardError, match='second DAC'):
+        conformance_runner.run(transport, report=lambda line: None, dac=0, power_dac=0)
+
+
 # -- trigger waits with chosen arrivals, a stop, a failure -----------------------
 
 CHANNELS = {
