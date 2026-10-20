@@ -293,8 +293,9 @@ interpreter.
 The **simulated board** (``"port": "simulated"``) is the board end of the
 protocol in process: it runs uploaded programs on the step executor the
 simulated step board uses, independently of the interpreter, and answers as
-firmware must. Until the TriggerScope firmware exists, it is the board the
-Expert panel and the conformance tests run against.
+firmware must. It is the board the Expert panel and the conformance tests run against
+without hardware; the TriggerScope firmware (:doc:`triggerscope-firmware`)
+is checked against the same programs.
 
 .. code-block:: json
 
