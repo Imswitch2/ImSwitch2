@@ -78,21 +78,24 @@ class RS232Manager(DeviceManagerStatusMixin):
             recv_args=(self._settings["recv_termination"], None),
         )
 
-    def bytesWaiting(self):
-        """Bytes the device has sent that no read has taken yet; ``None``
-        when the backend cannot say.
+    def readWaiting(self):
+        """What the device has sent that no read has taken yet, decoded,
+        without waiting (``''`` when nothing); ``None`` when the backend
+        cannot do that, and a caller falls back to ``read()``.
 
-        ``read()`` blocks until the port's timeout while nothing arrives, and
-        it holds the I/O lock the whole time, so a background reader that
-        polls an unprompted device (the TriggerScope's ``SerialMonitor``)
-        shuts every write out for as long as its timeout. Asking this first
-        and reading only when a line is coming keeps the lock free on an idle
-        port. The answer itself is a lock-held I/O call, but an instant one.
+        ``read()`` waits for the configured termination and holds the I/O
+        lock the whole time, so a background reader that polls an unprompted
+        device (the TriggerScope's ``SerialMonitor``) shut every write out
+        for the port's timeout whenever the termination did not come: on an
+        idle port, and after every line of a device that ends them with CR
+        LF on a port configured for CR. This holds the lock only for the
+        bytes already there, and the caller splits the lines itself, so no
+        termination setting can make it wait.
         """
         with self._ioLock:
-            if getattr(self._rs232port, 'bytesWaiting', None) is None:
+            if getattr(self._rs232port, 'readWaiting', None) is None:
                 return None
-            return self._callBackend('bytesWaiting')
+            return self._callBackend('readWaiting')
 
     def setTimeout(self, timeout_ms: int):
         """Set the serial read timeout.
