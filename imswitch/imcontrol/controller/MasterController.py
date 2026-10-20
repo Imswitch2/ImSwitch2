@@ -17,6 +17,17 @@ class MasterController:
     """
 
     def __init__(self, setupInfo, commChannel, moduleCommChannel):
+        try:
+            self._initialize(setupInfo, commChannel, moduleCommChannel)
+        except Exception:
+            # MasterController owns every manager that has been successfully
+            # assigned during initialization. If a later manager fails to
+            # construct, release those already-owned resources before
+            # propagating the original startup error.
+            self._cleanupAfterInitializationFailure()
+            raise
+
+    def _initialize(self, setupInfo, commChannel, moduleCommChannel):
         self.__logger = initLogger(self)
         self.__setupInfo = setupInfo
         self.__commChannel = commChannel
@@ -143,6 +154,34 @@ class MasterController:
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
+
+    def _cleanupAfterInitializationFailure(self):
+        """Best-effort cleanup without masking the startup exception."""
+        try:
+            cleanupCompleted = self.closeEvent()
+        except Exception:
+            logger = getattr(self, '_MasterController__logger', None)
+            if logger is not None:
+                try:
+                    logger.error(
+                        'Unexpected error while cleaning up after '
+                        'MasterController initialization failure.',
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
+            return
+
+        if cleanupCompleted is False:
+            logger = getattr(self, '_MasterController__logger', None)
+            if logger is not None:
+                try:
+                    logger.error(
+                        'Hardware cleanup after MasterController '
+                        'initialization failure was incomplete.'
+                    )
+                except Exception:
+                    pass
 
     def memoryRecordingAvailable(self, name, file, filePath, savedToDisk):
         self.__moduleCommChannel.memoryRecordings[name] = VFileItem(
