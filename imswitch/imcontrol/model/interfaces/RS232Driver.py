@@ -116,6 +116,11 @@ class _SerialAdapter:
     def read(self) -> str:
         return self._ser.readline().decode(self._encoding).rstrip(self._read_term)
 
+    @property
+    def bytes_in_buffer(self) -> int:
+        """Bytes received and not yet read, under pyvisa's attribute name."""
+        return int(self._ser.in_waiting)
+
     def query(self, command: str) -> str:
         self.write(command)
         return self.read()
@@ -222,6 +227,18 @@ class RS232Driver:
         if self._resource is None:
             raise OSError('RS232 resource already closed')
         return self._resource.read()
+
+    def bytesWaiting(self) -> int:
+        """Bytes the port has received and not yet read.
+
+        A reader that polls an unprompted device (the TriggerScope's
+        ``SerialMonitor``) asks this before ``read()``: a read on an idle port
+        blocks until the port's timeout, and under ``RS232Manager``'s I/O lock
+        that blocks every write to the device for as long.
+        """
+        if self._resource is None:
+            raise OSError('RS232 resource already closed')
+        return int(self._resource.bytes_in_buffer)
 
     @classmethod
     def getDefaults(cls, settings):

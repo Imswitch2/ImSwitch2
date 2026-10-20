@@ -213,6 +213,17 @@ class SerialMonitor(Worker):
 
     def checkSerial(self):
         try:
+            # The port's read blocks until its timeout while the board is
+            # silent, and RS232Manager holds its I/O lock through the read:
+            # every DAC, TTL and PARAMETER write then waited for that timeout
+            # (100 s here), which is what made the whole GUI crawl whenever
+            # the TriggerScope was involved. The board only ever speaks after
+            # a command or at the end of a scan, so read only when bytes are
+            # waiting; the lock is then held for the rest of a line that is
+            # already arriving, not for a timeout. A backend that cannot say
+            # (None) is read as before.
+            if self._rs232Manager.bytesWaiting() == 0:
+                return
             # RS232Manager.read() takes an optional positional arg and applies
             # the port's configured recv_termination itself. The previous
             # read(termination='\r\n') passed an unsupported keyword, so every
@@ -227,10 +238,11 @@ class SerialMonitor(Worker):
                 self._vtimer.stop()
             return
         except (VisaIOError, InvalidSession, SerialException, TypeError) as exc:
-            # A read timeout (no data within the port timeout) is normal while
-            # the firmware is busy/idle. Log it occasionally so we can confirm
-            # the monitor thread is alive but receiving nothing — which would
-            # point at a recv_termination mismatch rather than a code bug.
+            # A read timeout with bytes waiting means a line began and never
+            # ended within the port timeout: a recv_termination mismatch, or
+            # a board that died mid-line. Log it occasionally (throttled, in
+            # case a backend cannot count bytes and every idle poll times out
+            # as it used to).
             self._emptyReads += 1
             if self._emptyReads <= 3 or self._emptyReads % 20 == 0:
                 self.__logger.debug(
