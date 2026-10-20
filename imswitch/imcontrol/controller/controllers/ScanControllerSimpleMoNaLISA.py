@@ -30,6 +30,7 @@ from imswitch.imcontrol.model.simple_monalisa_scan import (
     dicts_to_plan,
     normalize_plan,
     plan_with_backend_geometry,
+    render_recording_suffix,
     select_mode,
     select_profile,
 )
@@ -73,6 +74,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._view.sigProfileRenameRequested.connect(self._onProfileRenameRequested)
         self._view.sigProfileDeleteRequested.connect(self._onProfileDeleteRequested)
         self._view.sigSetupEditRequested.connect(self._onSetupEditRequested)
+        self._view.sigRecordingSuffixToggled.connect(
+            self._onRecordingSuffixToggled
+        )
         self._view.sigCameraReadoutAutoRequested.connect(
             self._onCameraReadoutAutoRequested
         )
@@ -316,6 +320,53 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
     def cloakOwnsBackend(self) -> bool:
         return self.acquisitionPlan() is not None and self.profileBinding().is_bound
 
+    def _notifyRecordingFilenameSuffixChanged(self) -> None:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        notify = getattr(workflow, 'recording_filename_suffix_changed', None)
+        if callable(notify):
+            try:
+                notify(self)
+            except Exception:
+                self._logger.debug(
+                    'Could not refresh Recording filename suffix preview.',
+                    exc_info=True,
+                )
+
+    def getRecordingFilenameSuffix(self):
+        """Return the setup-configured suffix for this bound Simple scan."""
+        if self._savedMoNaLISAMetadata() is None:
+            return None
+        state = self._monalisa()
+        naming = state['limits'].recording_naming
+        if not naming.enabled:
+            return None
+        laser_states = {}
+        if naming.include_power:
+            getter = getattr(
+                getattr(self._commChannel, 'scanWorkflow', None),
+                'laser_acquisition_states',
+                None,
+            )
+            if callable(getter):
+                try:
+                    laser_states = getter()
+                except Exception:
+                    self._logger.warning(
+                        'Could not resolve laser powers for recording filename.',
+                        exc_info=True,
+                    )
+        try:
+            suffix = render_recording_suffix(
+                state['plan'], state['limits'], laser_states=laser_states
+            )
+        except Exception:
+            self._logger.warning(
+                'Could not render SimpleMoNaLISA recording filename suffix.',
+                exc_info=True,
+            )
+            return None
+        return suffix or None
+
     def parseBackendPlan(self, analog, digital, *, referencePlan=None):
         # Parse against exactly the profile/mode that Simple already owns.
         # Advanced can preserve or break this binding, never select another.
@@ -557,6 +608,40 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         except Exception:
             self._setupInfo.scan = previous_scan
             raise
+
+    def _onRecordingSuffixToggled(self, enabled: bool):
+        """Persist the main-panel recording suffix switch."""
+        state = self._monalisa()
+        current = bool(state['limits'].recording_naming.enabled)
+        if self._isBusy() or self.__dict__.get('_screeningActive', False):
+            self._view.setRecordingSuffixEnabled(current)
+            return
+
+        configured = dict(
+            getattr(self._setupInfo.scan, 'simpleMoNaLISA', None) or {}
+        )
+        naming = configured.get('recordingNaming')
+        naming = dict(naming) if isinstance(naming, dict) else {}
+        naming['enabled'] = bool(enabled)
+        configured['recordingNaming'] = naming
+
+        try:
+            self._persistSimpleConfig(configured)
+        except Exception as error:
+            self._view.setRecordingSuffixEnabled(current)
+            self._view.showMessage(
+                f'Could not save recording suffix setting: {error}', error=True
+            )
+            return
+
+        state['limits'] = dataclasses.replace(
+            state['limits'],
+            recording_naming=dataclasses.replace(
+                state['limits'].recording_naming, enabled=bool(enabled)
+            ),
+        )
+        self._view.setRecordingSuffixEnabled(bool(enabled))
+        self._notifyRecordingFilenameSuffixChanged()
 
     def _onSetupEditRequested(self):
         if self._isBusy() or self.__dict__.get('_screeningActive', False):
@@ -1512,6 +1597,8 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         switched = super().setScanPage(page, discardAdvanced=discardAdvanced)
         if switched and self._onSimplePage():
             self._refreshLiveControls()
+        if switched:
+            self._notifyRecordingFilenameSuffixChanged()
         return switched
 
     def _acquisitionContext(self, profile_id: str) -> dict:
@@ -2142,6 +2229,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             else:
                 refusal = 'Select/reapply a profile to return to a Simple acquisition.'
             self._view.setEstimate(0.0, refusal=refusal)
+            self._notifyRecordingFilenameSuffixChanged()
             return
         refusal = self._setupRefusal()
         plan = self.acquisitionPlan()
@@ -2164,6 +2252,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 f'{plan.dwell_s(limits) * 1e3:g} ms/pixel · stage returns included.'
             )
         self._view.setEstimate(plan.estimate_s(limits), note=note, refusal=refusal)
+        self._notifyRecordingFilenameSuffixChanged()
 
 
 __all__ = ['ScanControllerSimpleMoNaLISA']

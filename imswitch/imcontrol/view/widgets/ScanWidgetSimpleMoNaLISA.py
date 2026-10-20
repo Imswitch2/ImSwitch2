@@ -292,6 +292,7 @@ class MoNaLISAView(ScanCloakView):
     sigProfileRenameRequested = QtCore.Signal(str)
     sigProfileDeleteRequested = QtCore.Signal(str)
     sigSetupEditRequested = QtCore.Signal()
+    sigRecordingSuffixToggled = QtCore.Signal(bool)
     sigCameraReadoutAutoRequested = QtCore.Signal()
     sigScreeningRequested = QtCore.Signal()
     sigLiveSourceToggled = QtCore.Signal(str, bool)
@@ -332,6 +333,13 @@ class MoNaLISAView(ScanCloakView):
             'save format. Recording is armed before the scan starts.'
         )
         self.runRow.addWidget(self.saveAcquireCheck)
+        self.recordingSuffixCheck = QtWidgets.QCheckBox('Suffix')
+        self.recordingSuffixCheck.setToolTip(
+            'Add the configured Simple MoNaLISA suffix to recorded filenames. '
+            'Configurable in Setup… → Recording naming.'
+        )
+        self.recordingSuffixCheck.toggled.connect(self._recordingSuffixChanged)
+        self.runRow.addWidget(self.recordingSuffixCheck)
         self.runRow.addWidget(self.startButton)
         self.stopButton.setToolTip(
             'Switch off the lasers enabled by MoNaLISA Live screening and prepare '
@@ -683,6 +691,18 @@ class MoNaLISAView(ScanCloakView):
     def saveAcquisitionRequested(self) -> bool:
         return bool(self.saveAcquireCheck.isChecked())
 
+    def _recordingSuffixChanged(self, checked):
+        if self._updating:
+            return
+        self.sigRecordingSuffixToggled.emit(bool(checked))
+
+    def setRecordingSuffixEnabled(self, enabled: bool):
+        self._updating = True
+        try:
+            self.recordingSuffixCheck.setChecked(bool(enabled))
+        finally:
+            self._updating = False
+
     def setScreeningActive(self, active: bool):
         self._screeningActive = bool(active)
         self._updateControlState()
@@ -746,6 +766,7 @@ class MoNaLISAView(ScanCloakView):
             self.yLengthControl.setRange(*ranges['lateralScanLengthUm'])
             self.zStepControl.setRange(*ranges['zStepNm'])
             self.zLengthControl.setRange(*ranges['zScanLengthUm'])
+            self.recordingSuffixCheck.setChecked(bool(limits.recording_naming.enabled))
             self.profileCombo.clear()
             for profile_id, profile in limits.profile_store.profiles.items():
                 self.profileCombo.addItem(profile.label, profile_id)
@@ -1109,6 +1130,7 @@ class MoNaLISAView(ScanCloakView):
         editable = bound and not running and not screening
         self.startButton.setEnabled(bound and not running)
         self.saveAcquireCheck.setEnabled(bound and not running)
+        self.recordingSuffixCheck.setEnabled(not running and not screening)
         self.stopButton.setEnabled(screening and not running)
         self.screeningButton.setEnabled(
             bound and self._liveAvailable and not running and not screening

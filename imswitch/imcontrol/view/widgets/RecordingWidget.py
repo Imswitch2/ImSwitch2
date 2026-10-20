@@ -5,6 +5,38 @@ from imswitch.imcontrol.view import guitools
 from .basewidgets import Widget
 
 
+class _ElidedLabel(QtWidgets.QLabel):
+    """QLabel that keeps its full text in a tooltip and elides on resize."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fullText = ''
+
+    def setFullText(self, text):
+        self._fullText = str(text or '')
+        self.setToolTip(self._fullText)
+        self._refreshElidedText()
+
+    def clearFullText(self):
+        self._fullText = ''
+        self.clear()
+        self.setToolTip('')
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refreshElidedText()
+
+    def _refreshElidedText(self):
+        if not self._fullText:
+            super().setText('')
+            return
+        width = max(0, self.contentsRect().width())
+        text = self.fontMetrics().elidedText(
+            self._fullText, QtCore.Qt.ElideMiddle, width
+        )
+        super().setText(text)
+
+
 class RecordingWidget(Widget):
     """ Widget to control image or sequence recording. """
 
@@ -31,6 +63,7 @@ class RecordingWidget(Widget):
 
     sigSnapRequested = QtCore.Signal()
     sigRecToggled = QtCore.Signal(bool)  # (enabled)
+    sigScanSourceChanged = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -54,6 +87,9 @@ class RecordingWidget(Widget):
         self.openFolderButton = guitools.BetterPushButton('Open')
         self.specifyfile = QtWidgets.QCheckBox('Specify file name')
         self.filenameEdit = QtWidgets.QLineEdit('Current time')
+        self.scanFilenameSuffixLabel = _ElidedLabel()
+        self.scanFilenameSuffixLabel.setVisible(False)
+        self.scanFilenameSuffixLabel.setStyleSheet('color: #d98c10;')
 
         # Snap and recording buttons
         self.snapTIFFButton = guitools.BetterPushButton('Snap')
@@ -171,6 +207,8 @@ class RecordingWidget(Widget):
         recGrid.addWidget(self.filenameEdit, gridRow, 1, 1, 3)
         recGrid.addWidget(self.specifyfile, gridRow, 0)
         gridRow += 1
+        recGrid.addWidget(self.scanFilenameSuffixLabel, gridRow, 0, 1, -1)
+        gridRow += 1
 
         recGrid.addWidget(modeTitle, gridRow, 0)
         gridRow += 1
@@ -258,6 +296,7 @@ class RecordingWidget(Widget):
 
         # Connect signals
         self.detectorModeList.currentIndexChanged.connect(self.sigDetectorModeChanged)
+        self.scanSourceList.currentIndexChanged.connect(self.sigScanSourceChanged)
         self.detectorList.sigCheckedChanged.connect(self.sigDetectorSpecificChanged)
         self.openFolderButton.clicked.connect(self.sigOpenRecFolderClicked)
         self.specifyfile.toggled.connect(self.sigSpecFileToggled)
@@ -376,6 +415,15 @@ class RecordingWidget(Widget):
     def setScanSourceVisible(self, visible):
         self.scanSourceLabel.setVisible(visible)
         self.scanSourceList.setVisible(visible)
+
+    def setScanFilenameSuffix(self, suffix):
+        suffix = str(suffix or '').strip('_')
+        if not suffix:
+            self.scanFilenameSuffixLabel.clearFullText()
+            self.scanFilenameSuffixLabel.setVisible(False)
+            return
+        self.scanFilenameSuffixLabel.setFullText(f'Simple scan suffix: _{suffix}')
+        self.scanFilenameSuffixLabel.setVisible(True)
 
     def setDetectorList(self, detectorModels):
         self.detectorModeList.addItem('Current detector at start', -1)

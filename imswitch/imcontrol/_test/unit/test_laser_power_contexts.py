@@ -218,6 +218,8 @@ def test_coupled_acquisition_state_uses_live_setting_not_dormant_scan_setting():
         'power_control': 'direct',
         'power_device': '488',
         'value': 4.0,
+        'value_units': 'mW',
+        'value_decimals': 1,
         'value_context': 'live',
         'uses_fallback': False,
     }
@@ -294,6 +296,7 @@ def test_acquisition_state_resolves_gate_to_actual_power_device():
     assert state['power_device'] == '561AOTF'
     assert state['power_control'] == 'direct'
     assert state['value'] == 22.0
+    assert state['value_units'] == 'mW'
     assert state['value_context'] == 'scan'
 
 

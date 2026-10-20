@@ -702,14 +702,22 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             uses_fallback=usesFallback,
         )
 
-    @staticmethod
-    def _serializeLaserAcquisitionState(state: LaserAcquisitionState) -> Dict[str, Any]:
+    def _serializeLaserAcquisitionState(self, state: LaserAcquisitionState) -> Dict[str, Any]:
+        powerManager = self._master.lasersManager[state.power_device]
+        displayMeta = getattr(self, '_laserDisplayMeta', {}).get(state.power_device)
+        if displayMeta is not None:
+            valueUnits, valueDecimals = displayMeta
+        else:
+            valueUnits = getattr(powerManager, 'valueUnits', '')
+            valueDecimals = getattr(powerManager, 'valueDecimals', None)
         return {
             'active_for_scan': state.active_for_scan,
             'power_mode': state.power_mode.value,
             'power_control': state.power_control.value,
             'power_device': state.power_device,
             'value': state.value,
+            'value_units': str(valueUnits or ''),
+            'value_decimals': valueDecimals,
             'value_context': (
                 state.value_context.value
                 if state.value_context is not None else None
@@ -1565,6 +1573,13 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             # Some lightweight tests construct controllers without initializing
             # the QObject base. State updates must still work there.
             pass
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        notify = getattr(workflow, 'recording_filename_suffix_changed', None)
+        if callable(notify):
+            try:
+                notify(None)
+            except Exception:
+                pass
 
     def _emitLaserPresetListChanged(self, context):
         try:

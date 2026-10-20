@@ -5628,3 +5628,51 @@ def test_writer_finalize_phase_has_its_own_longer_bound(monkeypatch):
     _enqueue_chunks(writer, nChunks=1, framesPerChunk=2)
     writer.finish()
     assert storer.finalized and not storer.aborted
+
+
+def test_recording_savename_inserts_scan_suffix_before_rec_marker():
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        _compose_recording_savename,
+    )
+
+    assert _compose_recording_savename('/tmp/cell') == '/tmp/cell_rec'
+    assert (
+        _compose_recording_savename('/tmp/cell', 'RESOLFT_ON1ms_OFF2ms_RO1ms')
+        == '/tmp/cell_RESOLFT_ON1ms_OFF2ms_RO1ms_rec'
+    )
+
+
+def test_recording_filename_suffix_is_snapshotted_once_per_recording():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    suffix = {'value': 'RESOLFT_ON1ms'}
+    source = types.SimpleNamespace(
+        getRecordingFilenameSuffix=lambda: suffix['value']
+    )
+    ctrl = types.SimpleNamespace(
+        _recordingBaseSavename='/tmp/cell',
+        _recordingFilenameSuffix=None,
+        _recordingFilenameSuffixFrozen=False,
+        recordingArgs={'savename': '/tmp/cell_rec'},
+        savename='/tmp/cell_rec',
+        _RecordingController__logger=types.SimpleNamespace(
+            warning=lambda *_args, **_kwargs: None,
+        ),
+        _refreshScanFilenameSuffixPreview=lambda: None,
+    )
+    ctrl._scanFilenameSuffixFromSource = types.MethodType(
+        RecordingController._scanFilenameSuffixFromSource, ctrl
+    )
+
+    RecordingController._freezeRecordingFilenameSuffix(ctrl, source)
+    assert ctrl.savename == '/tmp/cell_RESOLFT_ON1ms_rec'
+    assert ctrl.recordingArgs['savename'] == ctrl.savename
+
+    suffix['value'] = 'Confocal_RO1ms'
+    RecordingController._freezeRecordingFilenameSuffix(ctrl, source)
+    assert ctrl.savename == '/tmp/cell_RESOLFT_ON1ms_rec'
+    assert ctrl._recordingFilenameSuffix == 'RESOLFT_ON1ms'

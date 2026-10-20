@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from dataclasses import dataclass
+import re
+import string
+from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .scan_cloak import PlanNotRepresentable, ScanCloak
@@ -33,6 +35,76 @@ DEFAULT_SLIDER_RANGES: Dict[str, Tuple[float, float]] = {
     'stepDurationMs': (0.01, 20.0),
 }
 
+SCAN_TYPES = ('XY', 'YZ', 'XZ', 'XYZ')
+FOV_VALUE_SOURCES = ('detector', 'manual')
+ULENS_PERIOD_POLICIES = ('fixed', 'per_profile')
+
+DEFAULT_RECORDING_NAMING: Dict[str, Any] = {
+    'enabled': True,
+    'template': '{mode}_{sequence}',
+    'includePower': False,
+    'includeScanInfo': False,
+    'scanLabels': {
+        'XY': '2D',
+        'XZ': 'slice',
+        'YZ': 'slice',
+        'XYZ': '3D',
+    },
+}
+
+RECORDING_NAMING_TEMPLATE_FIELDS = (
+    'mode', 'mode_id', 'profile', 'profile_id', 'sequence',
+)
+
+
+class RecordingNamingTemplateError(ValueError):
+    """Invalid user-configured SimpleMoNaLISA recording suffix template."""
+
+
+@dataclass(frozen=True)
+class MoNaLISARecordingNaming:
+    enabled: bool = True
+    template: str = '{mode}_{sequence}'
+    include_power: bool = False
+    include_scan_info: bool = False
+    scan_labels: Mapping[str, str] = field(default_factory=lambda: dict(
+        DEFAULT_RECORDING_NAMING['scanLabels']
+    ))
+
+    @classmethod
+    def from_config(cls, data: Optional[Mapping[str, Any]] = None):
+        raw = dict(DEFAULT_RECORDING_NAMING)
+        configured = dict(data or {}) if isinstance(data, Mapping) else {}
+        raw.update(configured)
+        labels = dict(DEFAULT_RECORDING_NAMING['scanLabels'])
+        configured_labels = configured.get('scanLabels')
+        if isinstance(configured_labels, Mapping):
+            labels.update({
+                str(key).upper(): str(value)
+                for key, value in configured_labels.items()
+                if str(key).upper() in SCAN_TYPES
+            })
+        result = cls(
+            enabled=bool(raw.get('enabled', True)),
+            template=str(raw.get('template', '{mode}_{sequence}')),
+            include_power=bool(raw.get('includePower', False)),
+            include_scan_info=bool(raw.get('includeScanInfo', False)),
+            scan_labels=labels,
+        )
+        return result
+
+    def to_config(self) -> dict:
+        return {
+            'enabled': bool(self.enabled),
+            'template': str(self.template),
+            'includePower': bool(self.include_power),
+            'includeScanInfo': bool(self.include_scan_info),
+            'scanLabels': {
+                scan_type: str(self.scan_labels.get(scan_type, ''))
+                for scan_type in SCAN_TYPES
+            },
+        }
+
 
 CONFIG_DEFAULTS: Dict[str, Any] = {
     'fovSource': 'detector',
@@ -50,12 +122,8 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
     'cameraReadoutToleranceMs': 0.1,
     'cameraReadoutUnoptimizedThresholdMs': 0.3,
     'sliderRanges': DEFAULT_SLIDER_RANGES,
+    'recordingNaming': DEFAULT_RECORDING_NAMING,
 }
-
-SCAN_TYPES = ('XY', 'YZ', 'XZ', 'XYZ')
-FOV_VALUE_SOURCES = ('detector', 'manual')
-ULENS_PERIOD_POLICIES = ('fixed', 'per_profile')
-
 
 def _configured_tuple(value, *, default=(40.0, 40.0)) -> Tuple[float, float]:
     if value is None:
@@ -86,6 +154,194 @@ def _configured_slider_ranges(value) -> Dict[str, Tuple[float, float]]:
             low, high = default
         result[key] = (float(low), float(high))
     return result
+
+
+def validate_recording_naming_template(template: str) -> None:
+    """Validate the deliberately small recording-suffix template language."""
+    text = str(template or '')
+    try:
+        parsed = tuple(string.Formatter().parse(text))
+    except ValueError as exc:
+        raise RecordingNamingTemplateError(str(exc)) from exc
+    allowed = set(RECORDING_NAMING_TEMPLATE_FIELDS)
+    for _literal, field_name, format_spec, conversion in parsed:
+        if field_name is None:
+            continue
+        if field_name not in allowed:
+            available = ', '.join(
+                '{' + name + '}'
+                for name in RECORDING_NAMING_TEMPLATE_FIELDS
+            )
+            raise RecordingNamingTemplateError(
+                f'Unknown recording naming token {{{field_name}}}. '
+                f'Available tokens: {available}.'
+            )
+        if format_spec or conversion:
+            raise RecordingNamingTemplateError(
+                f'Recording naming token {{{field_name}}} does not support '
+                'format specifiers or conversions.'
+            )
+
+
+def sanitize_recording_suffix(value: str) -> str:
+    """Return a readable Windows-safe filename suffix (without separators)."""
+    text = str(value or '').strip()
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', text)
+    text = re.sub(r'\s+', '_', text)
+    text = re.sub(r'_+', '_', text)
+    return text.strip(' ._-')
+
+
+def _compact_number(value: float, *, significant: int = 8) -> str:
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return str(numeric)
+    if math.isclose(numeric, round(numeric), rel_tol=0.0, abs_tol=1e-12):
+        return str(int(round(numeric)))
+    return f'{numeric:.{significant}g}'
+
+
+def _duration_text_s(value_s: float) -> str:
+    return f'{_compact_number(float(value_s) * 1e3)}ms'
+
+
+def _step_naming_label(step) -> str:
+    role = str(getattr(step, 'role', '') or '').strip().lower()
+    semantic = {'on': 'ON', 'off': 'OFF', 'readout': 'RO'}
+    if role in semantic:
+        return semantic[role]
+    label = str(getattr(step, 'label', '') or getattr(step, 'id', '') or 'STEP')
+    return sanitize_recording_suffix(label) or 'STEP'
+
+
+def _power_text(state: Mapping[str, Any]) -> str:
+    value = state.get('value')
+    if value is None:
+        return ''
+    units = str(state.get('value_units') or '').strip().replace(' ', '')
+    return f'{_compact_number(float(value))}{units}'
+
+
+def _step_power_suffix(active_devices, laser_states: Mapping[str, Mapping[str, Any]]) -> str:
+    resolved = []
+    seen_targets = set()
+    for device in active_devices:
+        state = laser_states.get(str(device))
+        if not isinstance(state, Mapping):
+            continue
+        if not bool(state.get('active_for_scan', False)):
+            continue
+        text = _power_text(state)
+        if not text:
+            continue
+        target = str(state.get('power_device') or device)
+        if target in seen_targets:
+            continue
+        seen_targets.add(target)
+        resolved.append((target, text))
+    if not resolved:
+        return ''
+    if len(resolved) == 1:
+        return resolved[0][1]
+    return ''.join(
+        f'_{sanitize_recording_suffix(target)}-{text}'
+        for target, text in resolved
+    )
+
+
+def _scan_step_text_um(value_um: float) -> str:
+    value_um = float(value_um)
+    if abs(value_um) < 1.0:
+        return f'{_compact_number(value_um * 1000.0)}nm'
+    return f'{_compact_number(value_um)}um'
+
+
+def render_scan_naming_descriptor(
+    plan: 'MoNaLISAScanPlan', naming: MoNaLISARecordingNaming
+) -> str:
+    axes = tuple(str(axis).upper() for axis in plan.axes)
+    steps = [float(plan.step_um_for_axis(axis)) for axis in axes]
+    scan_type = ''.join(axes)
+    label = str(naming.scan_labels.get(scan_type, scan_type) or '').strip()
+    prefix = sanitize_recording_suffix(label)
+    axis_text = ''.join(axis.lower() for axis in axes)
+    isotropic = bool(steps) and all(
+        math.isclose(step, steps[0], rel_tol=1e-9, abs_tol=1e-12)
+        for step in steps[1:]
+    )
+    if isotropic:
+        geometry = f'{axis_text}{_scan_step_text_um(steps[0])}'
+    else:
+        geometry = '_'.join(
+            f'{axis.lower()}{_scan_step_text_um(step)}'
+            for axis, step in zip(axes, steps)
+        )
+    return '_'.join(part for part in (prefix, geometry) if part)
+
+
+def render_recording_suffix(
+    plan: 'MoNaLISAScanPlan',
+    limits: 'MoNaLISALimits',
+    *,
+    laser_states: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    naming: Optional[MoNaLISARecordingNaming] = None,
+) -> str:
+    """Render one setup-configured suffix from the effective Simple plan."""
+    naming = naming or limits.recording_naming
+    if not naming.enabled:
+        return ''
+    validate_recording_naming_template(naming.template)
+    plan = normalize_plan(plan, limits)
+    profile = limits.profile_store.profile(plan.profile_id)
+    mode = profile.mode(plan.mode_id)
+    compiled = compile_plan_sequence(plan, limits)
+    durations = compiled.step_durations_s
+    active_ids = set(compiled.active_step_ids)
+    laser_states = dict(laser_states or {})
+
+    sequence_parts = []
+    for step in profile.steps:
+        if step.id not in active_ids:
+            continue
+        part = f'{_step_naming_label(step)}{_duration_text_s(durations[step.id])}'
+        if naming.include_power:
+            part += _step_power_suffix(mode.devices_for_step(step), laser_states)
+        sequence_parts.append(part)
+    sequence = '_'.join(sequence_parts)
+
+    values = {
+        'mode': mode.label,
+        'mode_id': mode.id,
+        'profile': profile.label,
+        'profile_id': profile.id,
+        'sequence': sequence,
+    }
+    rendered = str(naming.template).format_map(values).strip()
+    if naming.include_scan_info:
+        scan_descriptor = render_scan_naming_descriptor(plan, naming)
+        rendered = '_'.join(part for part in (rendered, scan_descriptor) if part)
+    return sanitize_recording_suffix(rendered)
+
+
+def example_recording_suffix(naming: MoNaLISARecordingNaming) -> str:
+    """Live setup-editor preview without depending on a selected profile."""
+    validate_recording_naming_template(naming.template)
+    sequence = 'ON1ms_OFF2ms_RO1ms'
+    if naming.include_power:
+        sequence = 'ON1ms50mW_OFF2ms200mW_RO1ms25mW'
+    values = {
+        'mode': 'RESOLFT',
+        'mode_id': 'resolft',
+        'profile': 'Default',
+        'profile_id': 'default',
+        'sequence': sequence,
+    }
+    rendered = str(naming.template).format_map(values).strip()
+    if naming.include_scan_info:
+        label = str(naming.scan_labels.get('XY', '2D') or '').strip()
+        descriptor = '_'.join(part for part in (label, 'xy25nm') if part)
+        rendered = '_'.join(part for part in (rendered, descriptor) if part)
+    return sanitize_recording_suffix(rendered)
 
 def _round_um(value: float) -> float:
     return round(float(value), 3)
@@ -137,6 +393,7 @@ class MoNaLISALimits:
     default_z_scan_length_um: float
     default_z_step_um: float
     slider_ranges: Mapping[str, Tuple[float, float]]
+    recording_naming: MoNaLISARecordingNaming
 
     @classmethod
     def from_setup(cls, setupInfo) -> 'MoNaLISALimits':
@@ -221,6 +478,9 @@ class MoNaLISALimits:
             default_z_scan_length_um=max(0.001, float(raw.get('defaultZScanLengthUm') or 1.0)),
             default_z_step_um=max(0.001, float(raw.get('defaultZStepUm') or 0.15)),
             slider_ranges=_configured_slider_ranges(raw.get('sliderRanges')),
+            recording_naming=MoNaLISARecordingNaming.from_config(
+                raw.get('recordingNaming')
+            ),
         )
 
     def resolve_ulens_period(
@@ -887,9 +1147,13 @@ class MoNaLISAScanCloak(ScanCloak):
 
 
 __all__ = [
-    'CONFIG_DEFAULTS', 'SCAN_TYPES',
-    'ULENS_PERIOD_POLICIES', 'MoNaLISALimits', 'MoNaLISAScanCloak',
-    'MoNaLISAScanPlan', 'compile_plan_sequence', 'default_plan', 'dicts_to_plan',
-    'normalize_plan', 'plan_to_dicts', 'plan_with_backend_geometry', 'select_mode',
-    'select_profile',
+    'CONFIG_DEFAULTS', 'DEFAULT_RECORDING_NAMING',
+    'RECORDING_NAMING_TEMPLATE_FIELDS', 'SCAN_TYPES',
+    'ULENS_PERIOD_POLICIES', 'MoNaLISALimits', 'MoNaLISARecordingNaming',
+    'MoNaLISAScanCloak', 'MoNaLISAScanPlan', 'RecordingNamingTemplateError',
+    'compile_plan_sequence', 'default_plan', 'dicts_to_plan',
+    'example_recording_suffix', 'normalize_plan', 'plan_to_dicts',
+    'plan_with_backend_geometry', 'render_recording_suffix',
+    'render_scan_naming_descriptor', 'sanitize_recording_suffix', 'select_mode',
+    'select_profile', 'validate_recording_naming_template',
 ]

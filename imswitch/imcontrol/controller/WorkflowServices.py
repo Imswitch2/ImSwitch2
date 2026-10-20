@@ -248,6 +248,17 @@ class RecordingWorkflowService:
             raise RuntimeError('Required Recording widget not available')
         return controller.recordScanSeries(source, detector_names, frames)
 
+    def recording_filename_suffix_changed(self, source) -> None:
+        """Refresh Recording's read-only scan suffix preview, if present."""
+        try:
+            controllers = self._comm_channel.controllerRegistry()
+        except Exception:
+            return
+        controller = controllers.get('Recording')
+        refresh = getattr(controller, 'scanFilenameSuffixChanged', None)
+        if callable(refresh):
+            refresh(source)
+
 
 class ScanWorkflowService(SignalInterface):
     """Small service wrapper for scan/recording workflow signals.
@@ -289,6 +300,22 @@ class ScanWorkflowService(SignalInterface):
     def laser_scan_state(self):
         """Return the latest semantic scan-laser state as a defensive copy."""
         return dict(self._laserScanState)
+
+    def laser_acquisition_states(self):
+        """Resolved effective scan powers for current runtime laser paths.
+
+        Scan-source features such as recording-name metadata can consume this
+        without depending directly on ``LaserController``.
+        """
+        try:
+            controllers = self._comm_channel.controllerRegistry()
+        except Exception:
+            return {}
+        laser = controllers.get('Laser')
+        getter = getattr(laser, 'getLaserAcquisitionStates', None)
+        if not callable(getter):
+            return {}
+        return dict(getter() or {})
 
     def set_laser_scan_preparation_error(self, message) -> None:
         """Record a safety-critical laser pre-arm failure for this scan run.

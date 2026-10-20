@@ -439,3 +439,231 @@ def test_profile_reload_uses_profile_owned_z_defaults():
 
     assert reloaded.z_step_um == pytest.approx(0.11)
     assert reloaded.z_length_um == pytest.approx(1.9)
+
+
+def test_recording_naming_defaults_include_all_active_steps_including_readout():
+    from imswitch.imcontrol.model.simple_monalisa_scan import render_recording_suffix
+
+    limits = MoNaLISALimits.from_setup(_Setup())
+    plan = default_plan(limits)
+
+    assert render_recording_suffix(plan, limits) == 'RESOLFT_ON1ms_OFF2ms_RO1ms'
+
+
+def test_recording_naming_can_include_effective_laser_power_and_units():
+    from imswitch.imcontrol.model.simple_monalisa_scan import (
+        MoNaLISARecordingNaming,
+        render_recording_suffix,
+    )
+
+    limits = MoNaLISALimits.from_setup(_Setup())
+    limits = dataclasses.replace(
+        limits,
+        recording_naming=MoNaLISARecordingNaming(
+            enabled=True,
+            template='{mode}_{sequence}',
+            include_power=True,
+        ),
+    )
+    plan = default_plan(limits)
+    laser_states = {
+        '405 ON': {
+            'active_for_scan': True, 'power_device': '405 ON',
+            'value': 50, 'value_units': 'mW',
+        },
+        '488 OFF': {
+            'active_for_scan': True, 'power_device': '488 OFF',
+            'value': 200, 'value_units': 'mW',
+        },
+        '488 EXC': {
+            'active_for_scan': True, 'power_device': '488 EXC',
+            'value': 25, 'value_units': 'mW',
+        },
+    }
+
+    assert render_recording_suffix(
+        plan, limits, laser_states=laser_states
+    ) == 'RESOLFT_ON1ms50mW_OFF2ms200mW_RO1ms25mW'
+
+
+def test_recording_naming_uses_only_steps_enabled_by_current_mode():
+    from imswitch.imcontrol.model.simple_monalisa_scan import render_recording_suffix
+
+    limits = MoNaLISALimits.from_setup(_Setup())
+    plan = select_mode(default_plan(limits), 'confocal', limits)
+
+    assert render_recording_suffix(plan, limits) == 'Confocal_ON1ms_RO1ms'
+
+
+def test_recording_scan_info_uses_slice_for_axial_planes_and_expands_anisotropic_steps():
+    from imswitch.imcontrol.model.simple_monalisa_scan import (
+        MoNaLISARecordingNaming,
+        render_recording_suffix,
+    )
+
+    limits = MoNaLISALimits.from_setup(_Setup())
+    naming = MoNaLISARecordingNaming(
+        enabled=True,
+        template='{mode}',
+        include_scan_info=True,
+    )
+    limits = dataclasses.replace(limits, recording_naming=naming)
+    plan = dataclasses.replace(
+        default_plan(limits),
+        scan_type='YZ',
+        lateral_step_um=0.05,
+        x_step_um=0.05,
+        y_step_um=0.05,
+        z_step_um=0.1,
+    )
+
+    assert render_recording_suffix(plan, limits) == 'RESOLFT_slice_y50nm_z100nm'
+
+    plan = dataclasses.replace(plan, z_step_um=0.05)
+    assert render_recording_suffix(plan, limits) == 'RESOLFT_slice_yz50nm'
+
+
+def test_recording_scan_labels_are_configurable():
+    from imswitch.imcontrol.model.simple_monalisa_scan import (
+        MoNaLISARecordingNaming,
+        render_recording_suffix,
+    )
+
+    limits = MoNaLISALimits.from_setup(_Setup())
+    naming = MoNaLISARecordingNaming(
+        enabled=True,
+        template='{mode}',
+        include_scan_info=True,
+        scan_labels={'XY': 'lateral', 'XZ': 'axial', 'YZ': 'axial', 'XYZ': 'volume'},
+    )
+    limits = dataclasses.replace(limits, recording_naming=naming)
+    plan = dataclasses.replace(
+        default_plan(limits),
+        scan_type='YZ',
+        lateral_step_um=0.05,
+        x_step_um=0.05,
+        y_step_um=0.05,
+        z_step_um=0.05,
+    )
+
+    assert render_recording_suffix(plan, limits) == 'RESOLFT_axial_yz50nm'
+
+
+def test_recording_naming_rejects_unknown_template_tokens():
+    from imswitch.imcontrol.model.simple_monalisa_scan import (
+        RecordingNamingTemplateError,
+        validate_recording_naming_template,
+    )
+
+    with pytest.raises(RecordingNamingTemplateError, match='Unknown recording naming token'):
+        validate_recording_naming_template('{mode}_{unknown}')
+
+
+def test_recording_naming_config_is_global_setup_state_and_round_trips():
+    from imswitch.imcontrol.model.simple_monalisa_scan import MoNaLISARecordingNaming
+
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['recordingNaming'] = {
+        'enabled': True,
+        'template': '{profile}_{mode}_{sequence}',
+        'includePower': True,
+        'includeScanInfo': True,
+        'scanLabels': {'XY': 'lateral', 'YZ': 'axial'},
+    }
+    limits = MoNaLISALimits.from_setup(setup)
+    naming = limits.recording_naming
+
+    assert naming.template == '{profile}_{mode}_{sequence}'
+    assert naming.include_power is True
+    assert naming.include_scan_info is True
+    assert naming.scan_labels['XY'] == 'lateral'
+    assert naming.scan_labels['YZ'] == 'axial'
+    # Missing labels inherit the setup-wide defaults rather than disappearing.
+    assert naming.scan_labels['XZ'] == 'slice'
+    assert naming.scan_labels['XYZ'] == '3D'
+    assert MoNaLISARecordingNaming.from_config(naming.to_config()) == naming
+
+
+def test_recording_scan_info_covers_xy_xz_yz_xyz_default_conventions():
+    from imswitch.imcontrol.model.simple_monalisa_scan import (
+        MoNaLISARecordingNaming,
+        render_recording_suffix,
+    )
+
+    limits = MoNaLISALimits.from_setup(_Setup())
+    naming = MoNaLISARecordingNaming(
+        enabled=True, template='{mode}', include_scan_info=True
+    )
+    limits = dataclasses.replace(limits, recording_naming=naming)
+    base = dataclasses.replace(
+        default_plan(limits),
+        lateral_step_um=0.05,
+        x_step_um=0.05,
+        y_step_um=0.05,
+        z_step_um=0.05,
+    )
+
+    expected = {
+        'XY': 'RESOLFT_2D_xy50nm',
+        'XZ': 'RESOLFT_slice_xz50nm',
+        'YZ': 'RESOLFT_slice_yz50nm',
+        'XYZ': 'RESOLFT_3D_xyz50nm',
+    }
+    for scan_type, suffix in expected.items():
+        plan = dataclasses.replace(base, scan_type=scan_type)
+        assert render_recording_suffix(plan, limits) == suffix
+
+
+def test_recording_naming_multiple_laser_powers_are_unambiguous():
+    from imswitch.imcontrol.model.simple_monalisa_scan import (
+        MoNaLISARecordingNaming,
+        render_recording_suffix,
+        select_profile,
+    )
+
+    limits = MoNaLISALimits.from_setup(_Setup())
+    naming = MoNaLISARecordingNaming(
+        enabled=True, template='{mode}_{sequence}', include_power=True
+    )
+    limits = dataclasses.replace(limits, recording_naming=naming)
+    plan = select_profile(default_plan(limits), 'dual_off', limits)
+    laser_states = {
+        '405 ON': {
+            'active_for_scan': True, 'power_device': '405 ON',
+            'value': 5, 'value_units': 'mW',
+        },
+        '488 OFF': {
+            'active_for_scan': True, 'power_device': '488 OFF',
+            'value': 100, 'value_units': 'mW',
+        },
+        '488 OFF 2': {
+            'active_for_scan': True, 'power_device': '488 OFF 2',
+            'value': 120, 'value_units': 'mW',
+        },
+        '488 EXC': {
+            'active_for_scan': True, 'power_device': '488 EXC',
+            'value': 20, 'value_units': 'mW',
+        },
+    }
+
+    suffix = render_recording_suffix(plan, limits, laser_states=laser_states)
+    assert '_OFF2ms_488_OFF-100mW_488_OFF_2-120mW_' in suffix
+
+
+def test_recording_naming_sanitizes_filename_unsafe_profile_and_mode_labels():
+    from imswitch.imcontrol.model.simple_monalisa_scan import render_recording_suffix
+
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['profiles']['green']['label'] = 'Green / test'
+    setup.scan.simpleMoNaLISA['profiles']['green']['modes']['resolft']['label'] = (
+        'RESOLFT:fast'
+    )
+    setup.scan.simpleMoNaLISA['recordingNaming'] = {
+        'template': '{profile}_{mode}_{sequence}',
+    }
+    limits = MoNaLISALimits.from_setup(setup)
+
+    suffix = render_recording_suffix(default_plan(limits), limits)
+    assert suffix == 'Green_test_RESOLFT_fast_ON1ms_OFF2ms_RO1ms'
+    assert '/' not in suffix
+    assert ':' not in suffix
