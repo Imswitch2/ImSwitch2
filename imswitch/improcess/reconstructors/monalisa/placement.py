@@ -168,8 +168,8 @@ def lock_step_to_lattice(
     subdividing step is the better estimate of the real one.
 
     Returns ``(step, change)``: the locked step, or the input when locking
-    would change it by more than ``tolerance``, and the relative change
-    locking asks for.
+    would change it by more than ``tolerance``, and the largest relative
+    change requested for either scan-axis vector.
     """
     lattice_matrix = np.asarray(lattice_matrix, dtype=float).reshape(2, 2)
     step = np.asarray(step, dtype=float).reshape(2, 2)
@@ -177,7 +177,19 @@ def lock_step_to_lattice(
     if int(round(abs(np.linalg.det(integer)))) == 0:
         return step, float("inf")
     locked = lattice_matrix @ np.linalg.inv(integer)
-    change = float(np.linalg.norm(locked - step, 2) / np.linalg.norm(step, 2))
+
+    # Judge the correction per scan axis.  A large raster pitch on one axis
+    # must not hide an excessive relative correction of the smaller step on
+    # the other axis (notably YZ scans of staggered lattices).
+    step_norm = np.linalg.norm(step, axis=0)
+    delta_norm = np.linalg.norm(locked - step, axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        axis_change = np.where(
+            step_norm > 1e-12,
+            delta_norm / step_norm,
+            np.where(delta_norm <= 1e-12, 0.0, np.inf),
+        )
+    change = float(np.max(axis_change))
     if change > tolerance:
         return step, change
     return locked, change

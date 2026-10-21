@@ -19,11 +19,13 @@ from imswitch.improcess.reconstructors.monalisa.spot_model import (
 from imswitch.improcess.reconstructors.monalisa.pipeline import (
     PipelineParams,
     choose_calibration_image,
+    complete_step,
     find_foci,
     prepare_geometry,
     reconstruct_scan,
     reconstruct_stack,
 )
+from imswitch.improcess.reconstructors.monalisa.lattice import Lattice
 
 A = 11.0
 S = 10.41
@@ -104,6 +106,36 @@ class TestNoiseless:
         plane = result.background.image[30:-30, 30:-30]
         assert np.nanmean(plane) == pytest.approx(35.0, abs=0.05)
         assert result.haze is None
+
+
+class TestCompleteStep:
+    def test_unscanned_axis_uses_staggered_focus_column_spacing(self):
+        """YZ output keeps both alternating X columns of a staggered grid."""
+        lattice = Lattice(
+            a1=(6.493, 4.903),
+            a2=(-6.520, 4.920),
+        )
+        scan_index = np.column_stack([np.zeros(19), np.arange(19)])
+        measured_y = 40.0 / 77.0
+        nominal = np.array([[np.nan, 0.0], [np.nan, measured_y]])
+
+        step, completed = complete_step(nominal, lattice, scan_index)
+
+        assert completed == (0,)
+        assert step[0, 0] == pytest.approx((6.493 + 6.520) / 2, abs=1e-6)
+        assert step[1, 0] == 0.0
+        assert step[0, 1] == 0.0
+        assert step[1, 1] == measured_y
+
+    def test_unscanned_rectangular_axis_keeps_its_period(self):
+        lattice = Lattice.rectangular(9.804, 9.803)
+        scan_index = np.column_stack([np.zeros(19), np.arange(19)])
+        nominal = np.array([[np.nan, 0.0], [np.nan, 40.0 / 77.0]])
+
+        step, _ = complete_step(nominal, lattice, scan_index)
+
+        assert step[0, 0] == pytest.approx(9.804)
+        assert step[1, 0] == 0.0
 
 
 class TestStep:

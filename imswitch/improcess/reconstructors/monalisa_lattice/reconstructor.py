@@ -143,6 +143,41 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 unload()
         return frames, attrs
 
+    def _reuse_geometry(self, frames, settings):
+        """Return the last explicitly localized geometry for these camera frames.
+
+        The cache is intentionally session-local and deliberately simple: a
+        successful reconstruction with *Reuse last localization* disabled
+        replaces it.  This is a practical escape hatch for timepoints where
+        the same illumination pattern is present but too weak to localize.
+        """
+        reference = getattr(self, "_localization_reference", None)
+        if reference is None:
+            raise ValueError(
+                "Reuse last localization is enabled, but no localization has "
+                "been cached yet. Reconstruct one good recording first with "
+                "this option off, then enable it for the failing frames."
+            )
+        frame_shape = tuple(np.asarray(frames).shape[-2:])
+        if frame_shape != reference["frame_shape"]:
+            raise ValueError(
+                "The cached localization was measured on camera frames of "
+                f"shape {reference['frame_shape']}, but this recording has "
+                f"shape {frame_shape}. Re-localize a compatible recording first."
+            )
+        geometry = replace(reference["geometry"], params=settings)
+        return geometry, reference["orientation"], reference["source"]
+
+    def _remember_geometry(self, geometry, orientation, frames, source) -> None:
+        """Keep one successful localization for an explicit later reuse."""
+        self._localization_reference = {
+            "geometry": geometry,
+            "orientation": str(orientation),
+            "frame_shape": tuple(np.asarray(frames).shape[-2:]),
+            "source": str(source),
+        }
+        self._logger.info(f"{source}: cached localization for later reuse")
+
     def process(
         self, data_obj: "DataObj", params: dict, context=None
     ) -> MonalisaLatticeResult:
@@ -193,13 +228,26 @@ class MonalisaLatticeReconstructor(Reconstructor):
             step = np.diag([scan.step_nm / pixel_nm] * 2)
         orientation = None if params["orientation"] == AUTO else str(params["orientation"])
         settings = pipeline_params(params)
+        reuse_localization = bool(params["reuse_localization"])
+        reference_source = None
+        geometry = None
+        if reuse_localization:
+            geometry, reference_orientation, reference_source = self._reuse_geometry(
+                frames, settings
+            )
+            if orientation is None:
+                orientation = reference_orientation
         shape = (scan.num_fast, scan.num_slow)
         per_stack = scan.frames_per_stack
 
         check_cancelled()
-        report("align", 0, 1, "Finding the lattice and the orientation of the scan")
+        report(
+            "align", 0, 1,
+            f"Reusing localization from {reference_source}"
+            if reuse_localization else
+            "Finding the lattice and the orientation of the scan",
+        )
         results = []
-        geometry = None
         for index in range(scan.num_stacks):
             check_cancelled()
             report("assemble", index, scan.num_stacks,
@@ -209,10 +257,14 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 stack, step, shape, settings,
                 orientation=orientation, geometry=geometry,
             )
-            if geometry is None:
+            if index == 0:
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
                 self._check_pinhole_stack(result, scan.num_stacks)
+                if not reuse_localization:
+                    self._remember_geometry(
+                        geometry, orientation, frames, data_obj.name
+                    )
             results.append(result)
         report("finalize", 0, 1, "Assembling the result")
 
@@ -228,6 +280,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
         diagnostics = self._diagnostics(
             scan, first, camera_pixel_nm, output_pixel_nm,
             time.perf_counter() - started,
+        )
+        diagnostics["localization"] = (
+            f"reused from {reference_source}"
+            if reuse_localization else f"from this recording ({data_obj.name})"
         )
         for key, value in diagnostics.items():
             self._logger.info(f"{data_obj.name}: {key}: {value}")
@@ -324,16 +380,26 @@ class MonalisaLatticeReconstructor(Reconstructor):
         # stage lies against the camera (signs, a swap) is read from the data
         # unless it is set, as for a raster.
         orientation = None if params["orientation"] == AUTO else str(params["orientation"])
+        reuse_localization = bool(params["reuse_localization"])
+        reference_source = None
 
         check_cancelled()
-        report("align", 0, 1, "Finding the lattice and the spot")
-        mean_frame = frames.mean(axis=0, dtype=np.float64)
-        modulation_frame = frames.var(axis=0, dtype=np.float64)
         order = self._stack_order(frames, scan)
-        geometry = prepare_geometry(
-            mean_frame, step, scan.index[scan.frames_of(order[0])], settings,
-            modulation_frame=modulation_frame, step_aspect=step_aspect,
-        )
+        if reuse_localization:
+            geometry, reference_orientation, reference_source = self._reuse_geometry(
+                frames, settings
+            )
+            if orientation is None:
+                orientation = reference_orientation
+            report("align", 0, 1, f"Reusing localization from {reference_source}")
+        else:
+            report("align", 0, 1, "Finding the lattice and the spot")
+            mean_frame = frames.mean(axis=0, dtype=np.float64)
+            modulation_frame = frames.var(axis=0, dtype=np.float64)
+            geometry = prepare_geometry(
+                mean_frame, step, scan.index[scan.frames_of(order[0])], settings,
+                modulation_frame=modulation_frame, step_aspect=step_aspect,
+            )
         shape = scan.in_plane_shape
 
         results = {}
@@ -355,6 +421,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
                 self._check_pinhole_stack(result, scan.num_stacks)
+                if not reuse_localization:
+                    self._remember_geometry(
+                        geometry, orientation, frames, data_obj.name
+                    )
             results[int(stack)] = result
         report("finalize", 0, 1, "Assembling the result")
 
@@ -384,6 +454,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
         diagnostics = self._diagnostics(
             scan, first, camera_pixel_nm, output_pixel_nm,
             time.perf_counter() - started,
+        )
+        diagnostics["localization"] = (
+            f"reused from {reference_source}"
+            if reuse_localization else f"from this recording ({data_obj.name})"
         )
         diagnostics.update(notes)
         for key, value in diagnostics.items():

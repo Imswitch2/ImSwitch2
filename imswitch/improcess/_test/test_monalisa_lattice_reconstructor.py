@@ -187,6 +187,9 @@ class TestPlugin:
         assert widget.p.param("Output pixel").value() == ""
         widget.load_from_attrs({}, _recording(np.zeros((500, 4, 4))))
         assert "square" in widget.p.param("Recording").value()
+        assert widget.get_values()["reuse_localization"] is False
+        widget.p.param("Estimator", "Reuse last localization").setValue(True)
+        assert widget.get_values()["reuse_localization"] is True
 
 
 class TestFociPreview:
@@ -787,6 +790,38 @@ class TestRecordedScans:
         assert result.axis_labels == ["C", "Y", "X"]
         ratio = _interior(result.data[1]) / _interior(result.data[0])
         assert np.median(ratio) == pytest.approx(2.0, rel=0.02)
+
+    def test_a_good_recording_can_supply_localization_to_bad_timepoints(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        loops = [_loop("scan_y", 11, 0.035), _loop("scan_x", 11, 0.035)]
+        good = _recorded(scan.frames, loops, name="good")
+        bad_frames = np.zeros_like(scan.frames)
+        bad = _recorded(bad_frames, loops, name="bad")
+
+        # The bad timepoint cannot localize by itself.
+        with pytest.raises(ValueError, match="periodic|peaks|lattice"):
+            MonalisaLatticeReconstructor().process(bad, _params(**PLAIN))
+
+        plugin = MonalisaLatticeReconstructor()
+        reference = plugin.process(good, _params(**PLAIN))
+        assert reference.diagnostics["localization"] == "from this recording (good)"
+
+        reused = plugin.process(
+            bad, _params(reuse_localization=True, **PLAIN)
+        )
+        assert reused.diagnostics["localization"] == "reused from good"
+        assert reused.data.shape == reference.data.shape
+        assert np.all(np.isfinite(reused.data))
+        assert np.max(np.abs(reused.data)) < 1e-6
+
+    def test_reuse_requires_a_cached_reference(self):
+        scan = make_scan(steps=(11, 11))
+        loops = [_loop("scan_y", 11, 0.035), _loop("scan_x", 11, 0.035)]
+        with pytest.raises(ValueError, match="Reconstruct one good recording first"):
+            MonalisaLatticeReconstructor().process(
+                _recorded(scan.frames, loops),
+                _params(reuse_localization=True, **PLAIN),
+            )
 
     def test_results_of_several_recordings_consolidate_along_time(self):
         """A lapse recorded one file per timepoint, reconstructed file by file."""

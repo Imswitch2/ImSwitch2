@@ -21,8 +21,8 @@ recordings (section 9). The scan is described by its step vectors and
 integer positions in camera pixels: a raster of ``(num_fast, num_slow)``
 steps whose orientation is read from the data, or the positions of every
 frame as the acquisition layout records them (``scan_index``), which may
-leave one camera axis unscanned -- that axis of the output raster is then
-one lattice period, one pixel per cell.
+leave one camera axis unscanned -- that output axis is then spaced by the
+projected focus columns of the illumination lattice.
 """
 
 from __future__ import annotations
@@ -211,6 +211,47 @@ def axis_period(lattice: Lattice, axis: int) -> np.ndarray:
     )
 
 
+def projected_axis_period(lattice: Lattice, axis: int) -> float:
+    """Spacing of regular focus columns projected onto a camera axis.
+
+    A staggered/hexagonal lattice can have two alternating focus columns
+    between successive lattice translations parallel to an axis.  In that
+    case :func:`axis_period` returns the full translation (two columns), while
+    an unscanned reconstruction axis needs one output pixel per projected
+    focus column.
+
+    Use the smallest significant basis projection when the other projection
+    is an integer multiple of it (within 5 %).  This covers rectangular and
+    staggered/hexagonal grids.  For a generally rotated lattice whose
+    projections do not form a regular 1-D grid, fall back to the full lattice
+    translation used historically.
+    """
+    axis = int(axis)
+    basis = np.asarray([lattice.a1, lattice.a2], dtype=float)
+    components = np.abs(basis[:, axis])
+    scale = float(np.max(components))
+    if scale <= 1e-12:
+        return abs(float(axis_period(lattice, axis)[axis]))
+
+    # Ignore tiny leakage from an almost axis-aligned localization.
+    significant = components[components > 0.05 * scale]
+    if significant.size == 1:
+        return float(significant[0])
+
+    for candidate in sorted(float(value) for value in significant):
+        multiples = np.rint(significant / candidate)
+        if np.any(multiples < 1):
+            continue
+        residual = np.max(np.abs(significant / candidate - multiples))
+        if residual <= 0.05:
+            # Refine the pitch from all projections instead of privileging
+            # either noisy measured basis vector.
+            pitch = float(np.dot(multiples, significant) / np.dot(multiples, multiples))
+            return pitch
+
+    return abs(float(axis_period(lattice, axis)[axis]))
+
+
 def complete_step(
     step: np.ndarray | None,
     lattice: Lattice,
@@ -222,11 +263,11 @@ def complete_step(
     ``step`` is 2x2 with the camera-space vectors of one scan step along the
     camera's x and y as columns. A column of NaN is an axis whose step the
     recording does not say -- the whole matrix ``None`` is both -- and is
-    taken from the lattice: the period of the lattice along that axis
-    (:func:`axis_period`) divided by the number of positions the scan has
-    along it. For an axis the scan does not step that is the period itself,
-    one output pixel per cell; for a scan whose pixel size is unknown it is
-    the step with which the scan covers the cell once.
+    taken from the lattice. For an axis the scan does not step, the output
+    spacing is the projected focus-column period (which is half a full
+    translation for a staggered grid). For a scanned axis whose pixel size is
+    unknown, the lattice period is divided by the number of scan positions so
+    the scan covers the cell once.
 
     When the scan steps both axes and says neither step in camera pixels,
     the step is the one that covers the cell once -- the scan of a cell that
@@ -253,7 +294,15 @@ def complete_step(
         pitch_y = float(np.sqrt(area / ratio))
         return np.diag([ratio * pitch_y, pitch_y]), (0, 1)
     for axis in missing:
-        filled[:, axis] = axis_period(lattice, axis) / counts[axis]
+        if counts[axis] == 1:
+            # An unscanned axis is an output coordinate, not a stage motion.
+            # Keep it camera-axis aligned and use one pixel per projected
+            # focus column.  For a staggered lattice this can be half the
+            # full lattice translation returned by axis_period().
+            filled[:, axis] = 0.0
+            filled[axis, axis] = projected_axis_period(lattice, axis)
+        else:
+            filled[:, axis] = axis_period(lattice, axis) / counts[axis]
     return filled, missing
 
 

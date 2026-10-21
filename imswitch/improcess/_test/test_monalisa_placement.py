@@ -135,6 +135,16 @@ class TestStepLock:
         np.testing.assert_allclose(locked, step, atol=1e-12)
         assert commensurability(lattice, locked)[1] < 1e-9
 
+    def test_large_axis_does_not_hide_excessive_change_on_small_axis(self):
+        """The 6.5 px X pitch must not mask a 5 % correction of Y."""
+        lattice = np.array([[6.493, -6.520], [4.903, 4.920]])
+        nominal = np.diag([(6.493 + 6.520) / 2, 40.0 / 77.0])
+
+        kept, change = lock_step_to_lattice(lattice, nominal, tolerance=0.02)
+
+        np.testing.assert_array_equal(kept, nominal)
+        assert change == pytest.approx(0.0506, abs=0.0002)
+
     def test_a_step_far_from_subdividing_is_kept(self):
         """22 / 1.024 = 21.5 steps per period: as far from 21 as from 22."""
         lattice, step, _ = CASES["rectangular"]

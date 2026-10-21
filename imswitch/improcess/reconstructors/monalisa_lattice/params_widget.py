@@ -17,6 +17,7 @@ DEFAULT_PARAMS = {
     "scan_step_nm": 0.0,
     "pixel_size_nm": 0.0,
     "orientation": AUTO,
+    "reuse_localization": False,
     "background": "constant",
     "frame_gain": True,
     "cell_offsets": True,
@@ -66,6 +67,12 @@ class MonalisaLatticeParamsWidget(QtWidgets.QWidget):
                         "frames by the layout; this is for recordings without one"},
             ]},
             {"name": "Estimator", "type": "group", "children": [
+                {"name": "Reuse last localization", "type": "bool",
+                 "value": DEFAULT_PARAMS["reuse_localization"],
+                 "tip": "Reuse the lattice/spot geometry from the last successful "
+                        "reconstruction done with this option off. Reconstruct one "
+                        "good recording first, then enable this for frames where "
+                        "localization fails."},
                 {"name": "Background", "type": "list",
                  "limits": ["constant", "none", "auto"],
                  "value": DEFAULT_PARAMS["background"],
@@ -135,6 +142,7 @@ class MonalisaLatticeParamsWidget(QtWidgets.QWidget):
             "scan_step_nm": float(scan.param("Step").value()),
             "pixel_size_nm": float(scan.param("Camera pixel").value()),
             "orientation": str(scan.param("Orientation").value()),
+            "reuse_localization": bool(estimator.param("Reuse last localization").value()),
             "background": str(estimator.param("Background").value()),
             "frame_gain": bool(corrections.param("Frame gain").value()),
             "cell_offsets": bool(corrections.param("Cell offsets").value()),
