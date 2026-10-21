@@ -633,6 +633,9 @@ class ScanWidgetExpert(SuperScanWidget):
         self.trajectoryCard = TrajectoryCard(self)
         self.order = OrderCard(self)
         self.positions = PositionsCard(self)
+        #: The program's prologues (a step of its own before every pass of a
+        #: loop): not in the tables, shown under the step and carried back.
+        self._prologues: List[Dict] = []
         self.step = StepCard(self)
         self.waitsCard = WaitsCard(self)
         self.recording = RecordingCard(self)
@@ -869,6 +872,7 @@ class ScanWidgetExpert(SuperScanWidget):
             self.drives.setRows(rows)
             self.timeline.setColumns(self._timelineColumns())
             self.timeline.setRows(data.get('timeline') or [])
+            self._prologues = [dict(p) for p in (data.get('prologues') or [])]
             self.waits.setRows(data.get('waits') or [])
             self.bindings.setRows(data.get('detectors') or [])
             step = data.get('step_s')
@@ -1170,6 +1174,8 @@ class ScanWidgetExpert(SuperScanWidget):
             except ValueError:
                 phases = None
             anchor = row['anchor'] or 'step'
+            if anchor.startswith('prologue:'):
+                continue                # drawn in its prologue's own section
             tag = {'level': row['value'], 'offset': f'{row["value"]} µm'}.get(row['kind'], '')
             if anchor.startswith('pass-start:'):
                 tag = (tag + ' ' if tag else '') + f'first of each {anchor.split(":", 1)[1]}'
@@ -1205,6 +1211,75 @@ class ScanWidgetExpert(SuperScanWidget):
                 notes.append(f'{row["device"]} moves between steps: '
                              f'{duration_text(busy)} after each.')
         return events, moving, notes
+
+    def prologueLoops(self) -> List[str]:
+        """The loops that have a prologue, in the program's order."""
+        return [str(p.get('loop')) for p in self._prologues]
+
+    def prologueContent(self) -> List[Dict]:
+        """One section per prologue: its loop, duration, what it says, the
+        events anchored on it (as the canvas draws them, on the prologue's
+        own axis) and the time its offset drives move at its end. An event
+        anchored on a loop without a prologue is a section of its own that
+        says so."""
+        drives = {row['device']: row for row in self.tableRows('drives')}
+        sections = {}
+        for prologue in self._prologues:
+            loop = str(prologue.get('loop'))
+            duration = prologue.get('duration_s')
+            offsets = dict(prologue.get('offsets_um') or {})
+            parts = [f'Before every pass of {loop}: the prologue, '
+                     f'{ms_text(float(duration)) if duration is not None else "?"} ms long.']
+            for device, value in offsets.items():
+                parts.append(f'{device} stands {float(value):+g} µm from the pass\'s first '
+                             'position, and moves there at the end.')
+            if not offsets:
+                parts.append('Every positioner stands at the pass\'s first position.')
+            moving = []
+            for device in offsets:
+                row = drives.get(device)
+                if row is None or duration is None:
+                    continue
+                try:
+                    busy = stored(row['move_s'], MS) + stored(row['settle_s'], MS)
+                except ValueError:
+                    continue
+                if busy > 0:
+                    moving.append((max(0.0, float(duration) - busy), float(duration),
+                                   f'{device} moves'))
+            sections[loop] = {'loop': loop, 'duration_s': duration, 'text': ' '.join(parts),
+                              'events': [], 'moving': moving, 'notes': []}
+        for index, row in enumerate(self.tableRows('timeline')):
+            anchor = row['anchor'] or 'step'
+            if not anchor.startswith('prologue:'):
+                continue
+            loop = anchor.split(':', 1)[1]
+            if loop not in sections:
+                sections[loop] = {'loop': loop, 'duration_s': None,
+                                  'text': f'Events anchored on the prologue of {loop}, which '
+                                          'has none: give it one, or anchor them elsewhere.',
+                                  'events': [], 'moving': [], 'notes': []}
+            section = sections[loop]
+            try:
+                start, end = stored(row['start_s'], MS), stored(row['end_s'], MS)
+            except ValueError:
+                section['notes'].append(f'{row["device"]}\'s event has a time that is not a '
+                                        'number, so it is not drawn.')
+                continue
+            try:
+                phases = (None if not row['phases'].strip() else
+                          frozenset(int(p) for p in row['phases'].split(',') if p.strip()))
+            except ValueError:
+                phases = None
+            tag = {'level': row['value'], 'offset': f'{row["value"]} µm'}.get(row['kind'], '')
+            if phases is not None:
+                tag = (tag + ' ' if tag else '') + 'phase ' + ', '.join(
+                    str(p) for p in sorted(phases))
+            section['events'].append({
+                'row': index, 'device': row['device'], 'label': row['device'],
+                'kind': row['kind'], 'start_s': start, 'end_s': end, 'from_end': False,
+                'phases': phases, 'color': self.deviceColor(row['device']), 'tag': tag})
+        return list(sections.values())
 
     def driveRange(self, index) -> str:
         """Where a positioner goes over the whole scan: from its dimensions'
@@ -1473,12 +1548,15 @@ class ScanWidgetExpert(SuperScanWidget):
         return box.clickedButton() is approve
 
     def showTraces(self, time_s, traces: Dict[str, object], *, analog=(), windows=None,
-                   note=''):
+                   note='', regions=()):
         """Every device's trace on its own lane; ``windows``: each zoom's
-        (start_s, end_s) -- one step, one pass, all of it -- else the whole."""
+        (start_s, end_s) -- one step, one pass, all of it -- else the whole;
+        ``regions``: (start_s, end_s, label) intervals shaded behind the
+        lanes (the prologues)."""
         self.preview.setWindows(*(windows or (None, None, None)))
         colors = {name: self.deviceColor(name) for name in traces}
-        self.preview.showTraces(time_s, traces, colors, analog=analog, note=note)
+        self.preview.showTraces(time_s, traces, colors, analog=analog, note=note,
+                                regions=regions)
 
     def showPreviewProblem(self, text):
         """Why the preview is not drawn, where the drawing would be."""

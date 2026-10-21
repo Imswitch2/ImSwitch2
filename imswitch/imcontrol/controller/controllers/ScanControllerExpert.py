@@ -123,6 +123,8 @@ def _end_positions(schedule):
 #: schedule's writes and edges, not from one sample per tick (1 s on a 1 µs
 #: grid, 10 s on the NI-DAQ's 100 kHz).
 PREVIEW_DENSE_TICKS = 1_000_000
+#: At most this many prologues are shaded in a preview.
+PREVIEW_REGIONS = 500
 
 
 def _preview_windows(schedule, program):
@@ -787,9 +789,18 @@ class ScanControllerExpert(SuperScanController):
         if segments > 1:
             notes.append('Drawn up to the first wait for a trigger: what follows depends on '
                          'when it comes.')
+        regions = []
+        for realized in getattr(schedule, 'spans', ()):
+            if realized.segment == 0 and realized.span.kind == 'prologue':
+                regions.append((realized.start_tick / rate,
+                                (realized.start_tick + realized.ticks) / rate, 'prologue'))
+        if len(regions) > PREVIEW_REGIONS:
+            notes.append(f'{len(regions)} prologues; the first {PREVIEW_REGIONS} are shaded.')
+            regions = regions[:PREVIEW_REGIONS]
         self._widget.showTraces(
             time_s, traces, analog=sorted(dense['analog']),
-            windows=_preview_windows(schedule, compiled.program), note=' '.join(notes))
+            windows=_preview_windows(schedule, compiled.program), note=' '.join(notes),
+            regions=regions)
 
     # ------------------------------------------------------------------
     # Running

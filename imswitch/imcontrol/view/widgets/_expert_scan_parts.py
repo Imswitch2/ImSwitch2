@@ -1170,6 +1170,14 @@ class StepCard(Card):
         self.hint = _muted('Hatched: a positioner moves and settles. Drag a bar to move it, an '
                            'edge to resize it; arrow keys nudge the selected one.')
         self.body.addWidget(self.hint)
+        # The prologues: each a step of its own before every pass of a loop,
+        # drawn on its own axis under the step so its pulses are not read as
+        # the step's.
+        self.prologueHost = QtWidgets.QWidget()
+        self.prologueLayout = QtWidgets.QVBoxLayout(self.prologueHost)
+        self.prologueLayout.setContentsMargins(0, 0, 0, 0)
+        self.prologueSections: Dict[str, tuple] = {}     # loop -> (title, text, canvas)
+        self.body.addWidget(self.prologueHost)
         self.noteHost = QtWidgets.QWidget()
         self.notes = FlowLayout(self.noteHost)
         self.body.addWidget(self.noteHost)
@@ -1192,9 +1200,52 @@ class StepCard(Card):
             self._panel.flushRefresh()
             self._select(row)
 
-    def _select(self, row):
-        self.canvas.setSelected(row)
+    def _select(self, row, origin=None):
+        # One selection across the step's canvas and the prologues': on the
+        # canvas it came from, else on the one that draws the row.
+        if origin is None:
+            origin = next((c for c in self._canvases()
+                           if any(e['row'] == row for e in c.events())), self.canvas)
+        for canvas in self._canvases():
+            canvas.setSelected(row if canvas is origin else -1)
         self.inspector.show_row(row)
+
+    def _canvases(self):
+        return [self.canvas] + [section[2] for section in self.prologueSections.values()]
+
+    def _prologueSection(self, loop):
+        if loop in self.prologueSections:
+            return self.prologueSections[loop]
+        title = QtWidgets.QLabel()
+        title.setObjectName('expertCardTitle')
+        text = _muted()
+        canvas = StepCanvas()
+        canvas.beforePress = self._panel.flushRefresh
+        canvas.sigSelected.connect(lambda row, c=canvas: self._select(row, c))
+        canvas.sigChanged.connect(self._dragged)
+        canvas.sigDelete.connect(lambda row: self._panel.removeTableRow('timeline', row))
+        for widget in (title, text, canvas):
+            self.prologueLayout.addWidget(widget)
+        self.prologueSections[loop] = (title, text, canvas)
+        return self.prologueSections[loop]
+
+    def _refreshPrologues(self, phase):
+        sections = self._panel.prologueContent()
+        wanted = {section['loop'] for section in sections}
+        for loop in list(self.prologueSections):
+            if loop not in wanted:
+                for widget in self.prologueSections.pop(loop):
+                    self.prologueLayout.removeWidget(widget)
+                    widget.deleteLater()
+        for section in sections:
+            title, text, canvas = self._prologueSection(section['loop'])
+            duration = section['duration_s']
+            title.setText(f'Before every pass of {section["loop"]} (prologue)')
+            text.setText(' '.join([section['text']] + section['notes']))
+            canvas.setContent(section['events'], None if duration is None else float(duration),
+                              self._panel.gridSeconds(), section['moving'], phase)
+            canvas.setVisible(bool(section['events']) or duration is not None)
+        self.prologueHost.setVisible(bool(sections))
 
     def _dragged(self, row, start_s, end_s):
         self._panel.setTimes(row, start_s, end_s)
@@ -1215,7 +1266,8 @@ class StepCard(Card):
         phase = self.phase.currentIndex() - 1 if self.phase.currentIndex() > 0 else None
         events, moving, notes = panel.stepContent()
         self.canvas.setContent(events, panel.stepSeconds(), panel.gridSeconds(), moving, phase)
-        self.hint.setVisible(bool(events))
+        self._refreshPrologues(phase)
+        self.hint.setVisible(bool(events) or bool(self.prologueSections))
         _clear(self.notes)
         for note in notes:
             if isinstance(note, tuple):           # (text, button title, action)
@@ -1229,11 +1281,14 @@ class StepCard(Card):
                 self.notes.addWidget(_muted(note))
         self.noteHost.setVisible(bool(notes))
         rows = len(panel.tableRows('timeline'))
-        if self.canvas.selected() >= rows:
-            self.canvas.setSelected(-1)
-        if self.canvas.selected() < 0 and rows:
-            self.canvas.setSelected(0)
-        self.inspector.show_row(self.canvas.selected())
+        selected = max((c.selected() for c in self._canvases()), default=-1)
+        if selected >= rows:
+            selected = -1
+        if selected < 0 and rows:
+            # the first event drawn anywhere: the step's, else a prologue's
+            drawn = [e['row'] for c in self._canvases() for e in c.events()]
+            selected = min(drawn) if drawn else -1
+        self._select(selected)
 
 
 class _EventInspector(QtWidgets.QFrame):
@@ -1331,11 +1386,15 @@ class _EventInspector(QtWidgets.QFrame):
         _quiet_set(self.still, self.still.setText, values['still'])
         self.stillGroup.setVisible(more and (values['during'] != 'any' or bool(values['still'])))
         anchors = [('every step', 'step')]
+        prologues = set(self._panel.prologueLoops())
         for loop in self._panel.tableRows('loops'):
             if loop['id']:
                 anchors += [(f'first step of each pass of {loop["id"]}',
                              f'pass-start:{loop["id"]}'),
                             (f'last step of each pass of {loop["id"]}', f'pass-end:{loop["id"]}')]
+                if loop['id'] in prologues:
+                    anchors.append((f'the prologue before each pass of {loop["id"]}',
+                                    f'prologue:{loop["id"]}'))
         current = [(self.anchor.itemText(i), self.anchor.itemData(i))
                    for i in range(self.anchor.count())]
         if current != anchors:
@@ -1808,8 +1867,20 @@ class LanePreview(Card):
         self.stale.setText('')
 
     def showTraces(self, time_s, traces: Dict[str, np.ndarray], colors: Dict[str, QtGui.QColor],
-                   analog: Sequence[str] = (), note=''):
+                   analog: Sequence[str] = (), note='', regions=()):
         self.plot.clear()
+        # the prologues: shaded behind the lanes, the first one labelled
+        shade = QtGui.QColor(self.palette().color(QtGui.QPalette.WindowText))
+        shade.setAlphaF(0.10)
+        for index, (start, end, label) in enumerate(regions):
+            region = pg.LinearRegionItem(values=(float(start), float(end)), movable=False,
+                                         brush=pg.mkBrush(shade), pen=pg.mkPen(None))
+            region.setZValue(-10)
+            self.plot.addItem(region)
+            if index == 0 and label:
+                mark = pg.TextItem(label, anchor=(0, 1), color=shade.darker(250))
+                mark.setPos(float(start), 0.0)
+                self.plot.addItem(mark)
         self.problem.setVisible(False)
         self.note.setText(note)
         self.note.setVisible(bool(note))
