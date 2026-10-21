@@ -1337,7 +1337,6 @@ class NidaqManager(SignalInterface):
         # snapshot and leave a "finalized" manager owning a live task.
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
-            self._requireHardwareBackend('start NI-DAQ scan')
             return self._runScanUnlocked(signalDic, scanInfoDict)
 
     def _runScanUnlocked(self, signalDic, scanInfoDict):
@@ -1370,6 +1369,10 @@ class NidaqManager(SignalInterface):
                     'Cannot start scan: the NI-DAQ manager is busy with another '
                     'scan or DAQ operation'
                 )
+            # Preserve the pre-existing refusal contract before consulting the
+            # hardware backend. A scan that is already busy must report BUSY,
+            # even on a host without nidaqmx, and no arm state is entered here.
+            self._requireHardwareBackend('start NI-DAQ scan')
             self._scanGeneration += 1
             scanGeneration = self._scanGeneration
             self.busy = True
