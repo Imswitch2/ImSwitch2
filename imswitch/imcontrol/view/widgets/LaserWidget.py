@@ -324,6 +324,18 @@ class LaserWidget(Widget):
     def setLaserEnableEditable(self, laserName, editable):
         self.laserModules[laserName].setEnableEditable(editable)
 
+    def setLaserUsable(self, laserName, usable, reason=''):
+        """ Grey out a laser that is not connected (absent at startup,
+        unplugged, faulted); ``reason`` becomes its tooltip. """
+        module = self.laserModules[laserName]
+        # Context refreshes may enable individual controls. Keep connection
+        # availability on the parent so they cannot revive a disconnected row.
+        module.setEnabled(usable)
+        module.setActivatable(usable)
+        module.setEditable(usable)
+        module.setEnableEditable(usable)
+        module.setToolTip('' if usable else reason)
+
     def setValue(self, laserName, value, emitSignal=True):
         self.laserModules[laserName].setValue(value, emitSignal=emitSignal)
 

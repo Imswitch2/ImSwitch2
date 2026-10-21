@@ -184,23 +184,126 @@ class _SharedTransportManager(_LifecycleManager):
 
 
 class _TransportResource(DeviceManagerStatusMixin):
+    """A plain transport with no runtime reconnect."""
+
     def getDeviceDescriptorSpec(self):
         return DeviceDescriptorSpec(role=DeviceRole.RESOURCE)
 
 
-def test_lifecycle_service_disables_reconnect_for_cross_device_shared_transport():
-    first_id = HardwareDeviceId("laser", "first:shared")
-    second_id = HardwareDeviceId("laser", "second:shared")
-    first = _SharedTransportManager(_Lifecycle(first_id), name="first")
-    second = _SharedTransportManager(_Lifecycle(second_id), name="second")
-    master = _master(lasers={"first": first, "second": second})
-    master.rs232sManager = _Group({"shared": _TransportResource()})
-    service = DeviceLifecycleService(master, DeviceSupervisor(master))
+class _ReopenableTransport(_TransportResource):
+    """An rs232devices manager that reopens its port in place."""
 
-    assert service.canReconnect(first_id) is False
-    assert service.canReconnect(second_id) is False
-    with pytest.raises(DeviceLifecycleBlockedError, match="shared"):
-        service.reconnect(first_id)
+    def __init__(self, *, succeed=True):
+        self.succeed = succeed
+        self.reconnects = 0
+        self._setConnectionError(OSError("gone"), summary="port lost")
+
+    def reconnectTransport(self):
+        self.reconnects += 1
+        if self.succeed:
+            self._setConnected("port reopened")
+            return True
+        self._setConnectionError(OSError("still gone"), summary="port still lost",
+                                 mock_active=True)
+        return False
+
+
+class _OnSharedPort(_LifecycleManager):
+    """A device on the shared port with no lifecycle adapter of its own."""
+
+    def __init__(self, hardware_id, *, name="device"):
+        super().__init__(None, name=name)
+        self.hardware_id = hardware_id
+
+    def getDeviceDescriptorSpec(self):
+        return DeviceDescriptorSpec(
+            role=DeviceRole.PRIMARY,
+            hardware_id=self.hardware_id,
+            category="laser",
+            display_name=self.name,
+            dependencies=(
+                DeviceDependencySpec(
+                    kind=DeviceRelationKind.USES_TRANSPORT,
+                    target=DeviceId("rs232", "shared"),
+                    label="shared",
+                ),
+            ),
+        )
+
+
+class _HookedManager(_OnSharedPort):
+    """A dependent with re-initialisation hooks (as MPB / AA have)."""
+
+    def __init__(self, hardware_id, *, name="device", errors=()):
+        super().__init__(hardware_id, name=name)
+        self.calls = []
+        self.errors = list(errors)
+
+    def _lifecycleSafeState(self, *, verified):
+        self.calls.append(("safe", verified))
+        return []
+
+    def _onTransportReconnected(self, real):
+        self.calls.append(("reinit", real))
+        return list(self.errors)
+
+
+FIRST_ID = HardwareDeviceId("laser", "first:shared")
+SECOND_ID = HardwareDeviceId("laser", "second:shared")
+
+
+def _transport_rig(transport, *managers):
+    master = _master(lasers={manager.name: manager for manager in managers})
+    master.rs232sManager = _Group({"shared": transport})
+    return DeviceLifecycleService(master, DeviceSupervisor(master))
+
+
+def test_reconnecting_one_device_on_a_shared_port_reopens_it_once_for_all():
+    """The port is one cable: it is reopened once, and every device on it is
+    re-initialised and reported as affected (this replaced the veto)."""
+    transport = _ReopenableTransport()
+    first = _HookedManager(FIRST_ID, name="first")
+    second = _OnSharedPort(SECOND_ID, name="second")      # no hooks: the default
+    service = _transport_rig(transport, first, second)
+
+    assert service.canReconnect(FIRST_ID) and service.canReconnect(SECOND_ID)
+    assert service.transportOf(FIRST_ID) == DeviceId("rs232", "shared")
+    assert set(service.devicesOnTransport(DeviceId("rs232", "shared"))) == {FIRST_ID, SECOND_ID}
+
+    result = service.reconnect(FIRST_ID)
+
+    assert result.success, result
+    assert transport.reconnects == 1
+    assert first.calls == [("safe", False), ("reinit", True)]
+    assert set(result.affected_device_ids) == {DeviceId("laser", "first"), DeviceId("laser", "second")}
+    assert set(result.deactivated_device_ids) == set(result.affected_device_ids)
+    assert second.connectionState is DeviceConnectionState.CONNECTED   # default hook
+    assert "re-initialised" in result.summary
+
+
+def test_a_failed_port_reopen_marks_every_device_on_it():
+    transport = _ReopenableTransport(succeed=False)
+    first = _OnSharedPort(FIRST_ID, name="first")
+    service = _transport_rig(transport, first)
+
+    result = service.reconnect(FIRST_ID)
+
+    assert not result.success
+    assert "did not reconnect" in result.summary
+    assert first.connectionState is DeviceConnectionState.ERROR
+    assert first.runtimeMode is DeviceRuntimeMode.MOCK          # the transport fell back
+
+
+def test_a_dependent_that_fails_to_reinitialise_fails_the_reconnect():
+    transport = _ReopenableTransport()
+    first = _HookedManager(FIRST_ID, name="first", errors=["APC mode not confirmed"])
+    service = _transport_rig(transport, first)
+
+    result = service.reconnect(FIRST_ID)
+
+    assert not result.success
+    assert "APC mode not confirmed" in result.summary
+    assert transport.reconnects == 1
 
 
 def _rs232_info(port="COM10"):
@@ -381,3 +484,67 @@ def test_failed_coolled_reconnect_keeps_mock_fallback_visible():
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert "transport unavailable" in result.summary.lower()
+
+
+@pytest.mark.parametrize("group, key_fn", [("lasers", "laser_key"),
+                                           ("positioners", "positioner_key")])
+def test_reconnect_is_refused_while_a_run_or_script_holds_the_device(group, key_fn):
+    """Review: a reserved Märzhäuser stage refused ordinary moves, yet
+    reconnect replaced its backend under the reservation."""
+    from imswitch.imcontrol.model import resources
+
+    registry = resources.ResourceRegistry()
+    previous = resources.set_resource_registry(registry)
+    try:
+        hardware_id = HardwareDeviceId("laser", "managed:stage")
+        lifecycle = _Lifecycle(hardware_id)
+        master = _master()
+        setattr(master, f"{group}Manager", _Group({"stage": _LifecycleManager(lifecycle, name="stage")}))
+        service = DeviceLifecycleService(master, DeviceSupervisor(master))
+        key = getattr(resources, key_fn)("stage")
+
+        run = registry.reserve([key], "laser power LUT")
+        with pytest.raises(DeviceLifecycleBlockedError, match="laser power LUT"):
+            service.reconnect(hardware_id)
+        assert lifecycle.calls == 0
+
+        registry.release(run.token)
+        assert service.reconnect(hardware_id).success
+        assert lifecycle.calls == 1
+        assert registry.in_flight(key) == []             # tickets released
+    finally:
+        resources.set_resource_registry(previous)
+
+
+def test_a_reservation_waits_for_a_running_reconnect():
+    """While a transition runs it holds the devices: a reservation cannot
+    slip in under it."""
+    import threading
+
+    from imswitch.imcontrol.model import resources
+
+    registry = resources.ResourceRegistry()
+    previous = resources.set_resource_registry(registry)
+    try:
+        hardware_id = HardwareDeviceId("laser", "managed:one")
+        entered, release = threading.Event(), threading.Event()
+
+        class _Slow(_Lifecycle):
+            def reconnect(self):
+                entered.set()
+                release.wait(5)
+                return super().reconnect()
+
+        lifecycle = _Slow(hardware_id)
+        master = _master(lasers={"one": _LifecycleManager(lifecycle, name="one")})
+        service = DeviceLifecycleService(master, DeviceSupervisor(master))
+        worker = threading.Thread(target=service.reconnect, args=(hardware_id,))
+        worker.start()
+        assert entered.wait(2)
+        with pytest.raises(resources.ResourceReservedError):
+            registry.reserve([resources.laser_key("one")], "script", deadline_s=0.05)
+        release.set()
+        worker.join(5)
+        registry.reserve([resources.laser_key("one")], "script", deadline_s=1.0)
+    finally:
+        resources.set_resource_registry(previous)

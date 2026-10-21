@@ -23,6 +23,15 @@ class DeviceInfo:
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Properties to be read by the manager. Empty when omitted. """
 
+    transient: bool = False
+    """ Declared but not required at startup: left absent (not an error, no
+    mock) until connected from the Hardware status window or a script. For
+    devices that are plugged in only when needed. """
+
+    connectOnStartup: bool = False
+    """ For a transient device: still try to connect at startup; a failure
+    leaves it absent with the error shown, never in mock. """
+
     def getAnalogChannel(self):
         """ :meta private: """
         if isinstance(self.analogChannel, int):
@@ -714,7 +723,12 @@ class NidaqInfo:
     """ Boolean for start triggering for sync. """
 
     simulation: Optional[bool] = False
-    """ Boolean for allowing to run nidaq-commands without access to a nidaq card. """
+    """ Use software NI-DAQ/scan simulation instead of physical NI-DAQ hardware.
+
+    If ``False`` and the NI-DAQmx backend is unavailable, ImControl still
+    starts but NI-DAQ operations remain unavailable rather than silently
+    switching to simulated acquisition.
+    """
 
     def getTimerCounterChannel(self):
         """ :meta private: """
@@ -752,7 +766,7 @@ class TeensyPulseInfo:
     purely a convenience for scripts to refer to ``pinMap['laser488']``
     rather than hardcoded integers. """
 
-    useMockOnFailure: bool = True
+    useMockOnFailure: bool = False
     """ Fall back to the in-process mock if the port can't be opened.
     Set False to make a missing device a hard failure. """
 
@@ -798,6 +812,13 @@ class FlipMirrorInfo:
 
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Optional manager-specific properties. """
+
+
+@dataclass(frozen=True, kw_only=True)
+class InstrumentInfo(DeviceInfo):
+    """ A measurement instrument: one physical device sampled as a whole
+    (``docs/design/plans/transient-instruments-step-scans.md``). Usually
+    ``transient``. """
 
 
 @dataclass_json(undefined=Undefined.INCLUDE)
@@ -849,6 +870,10 @@ class SetupInfo:
 
     flipMirrors: Optional[Dict[str, FlipMirrorInfo]] = field(default_factory=lambda: None)
     """ Motorized flip mirror settings. """
+
+    instruments: Optional[Dict[str, InstrumentInfo]] = field(default_factory=lambda: None)
+    """ Measurement instruments (power meters, polarimeters, ...). Usually
+    ``transient``: declared here, connected only when needed. """
 
     microscopeStand: Optional[MicroscopeStandInfo] = field(default_factory=lambda: None)
     """ Microscope stand settings. Required to be defined to use MotCorr widget. """

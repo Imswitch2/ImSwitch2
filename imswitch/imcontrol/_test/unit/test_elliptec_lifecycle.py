@@ -261,3 +261,45 @@ def test_lifecycle_service_exposes_reconnect_for_individual_elliptec_row(monkeyp
     result = service.reconnect(hardware_id)
     assert result.success is True
     assert manager.position == pytest.approx(42.0)
+
+
+def test_unplugged_elliptec_is_simulated_and_refused_by_measurement_runs(monkeypatch):
+    """Review: isSimulated read a bus attribute that no longer exists, so an
+    unplugged Elliptec was accepted as a real measurement control."""
+    from imswitch.imcontrol.model.measurement.adapters import (
+        NotAuditedError,
+        RotatorManagerControl,
+    )
+
+    def _open(_port, _scale):
+        raise OSError("COM20 unavailable")
+    monkeypatch.setattr(elliptecbus, "_open_elliptec_stage", _open)
+    manager = ElliptecRotatorManager(_info(), "HWP")
+    assert manager.isMock is True and manager.isSimulated is True
+    with pytest.raises(NotAuditedError, match="simulated"):
+        RotatorManagerControl(manager)
+
+
+def test_elliptec_falling_back_mid_run_refuses_every_later_command(monkeypatch):
+    from imswitch.imcontrol.model.measurement.adapters import (
+        RotatorManagerControl,
+        SimulatedDeviceError,
+    )
+    from imswitch.imcontrol.model.measurement.controls import ControlExecutor
+
+    stage = _FakeStage({0: 0.0, 1: 0.0}, missing={})
+    monkeypatch.setattr(elliptecbus, "_open_elliptec_stage", lambda *_: stage)
+    hwp = ElliptecRotatorManager(_info(address=0), "HWP")
+    assert hwp.isSimulated is False
+    control = RotatorManagerControl(hwp)
+    executor = ControlExecutor()
+    assert executor.apply(control, 10.0, 2.0).ok
+
+    stage.move_failures = [OSError("serial port is closed")] * 6     # cable pulled
+    failed = executor.apply(control, 20.0, 2.0)
+    assert not failed.ok
+    assert hwp.isSimulated is True
+    later = executor.apply(control, 30.0, 2.0)                      # the bus now "moves" a mock
+    assert not later.ok and "simulation" in later.cause
+    with pytest.raises(SimulatedDeviceError):
+        control.read_position()

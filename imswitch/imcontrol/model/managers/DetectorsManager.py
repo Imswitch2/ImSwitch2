@@ -167,7 +167,21 @@ class DetectorsManager(MultiManager, SignalInterface):
         names = list(dict.fromkeys(detectorNames))
         for detectorName in names:
             self._validateManagedDeviceName(detectorName)
+        self._refuseNotConnected(names)
         return self.__acquireImpl(names, purpose, allowEmpty=False)
+
+    def _refuseNotConnected(self, names) -> None:
+        """A scan, recording or live view never starts on a detector that is
+        not connected (absent at startup, unplugged); it is refused by name
+        instead of running on nothing."""
+        from imswitch.imcontrol.model.devices.status import (
+            DeviceNotConnectedError, device_usable,
+        )
+        absent = [name for name in names if not device_usable(self._subManagers[name])]
+        if absent:
+            raise DeviceNotConnectedError(
+                'Not connected: ' + ', '.join(absent)
+                + '. Reconnect from Hardware status, or deselect the detector.')
 
     def release(self, handle: LeaseHandle) -> None:
         """ Releases an acquisition lease; any detector whose last lease this
@@ -491,6 +505,7 @@ class DetectorsManager(MultiManager, SignalInterface):
             for detectorName in names:
                 self._validateManagedDeviceName(detectorName)
             allowEmpty = False
+        self._refuseNotConnected(names)
         purpose = LeasePurpose.LIVE_VIEW if liveView else LeasePurpose.GENERIC
         return self.__acquireImpl(names, purpose, allowEmpty=allowEmpty)
 
