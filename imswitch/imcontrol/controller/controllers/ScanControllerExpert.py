@@ -298,6 +298,7 @@ class ScanControllerExpert(SuperScanController):
         # A trajectory is not in the tables either: Make… edits its path.
         return {'park': dict(program.park), 'requested_as': None,
                 'trajectory': program_to_dict(program)['trajectory'],
+                'prologues': program_to_dict(program)['prologues'],
                 'separations': [{'after': list(s.after), 'before': list(s.before),
                                  'tolerance_s': s.tolerance_s} for s in program.separations]}
 

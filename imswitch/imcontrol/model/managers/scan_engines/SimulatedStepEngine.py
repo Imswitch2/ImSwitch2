@@ -35,8 +35,8 @@ from dataclasses import dataclass
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcontrol.model.scan_program.engine import (
-    AnalogOut, EngineCapabilities, FeasibilityReport, IMPOSSIBLE, ScanEngine,
-    ScanEngineRefused,
+    AnalogOut, EMULATED, EngineCapabilities, FeasibilityReport, FeatureVerdict, IMPOSSIBLE,
+    ScanEngine, ScanEngineRefused,
 )
 from imswitch.imcontrol.model.scan_program.interpreter import (
     InterpretError, RunContext, expand, return_seconds,
@@ -89,6 +89,7 @@ class StepEngineBase(SignalInterface, ScanEngine):
         self._maxSteps = None
         self._triggerMinPulse = None
         self._clockPpm = None
+        self._prologues = True      # the executor plays them; a board says so
 
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(
@@ -100,7 +101,7 @@ class StepEngineBase(SignalInterface, ScanEngine):
             trigger_min_pulse_s=None if self._triggerMinPulse is None
             else float(self._triggerMinPulse),
             clock_accuracy_ppm=None if self._clockPpm is None else float(self._clockPpm),
-            deadlines=False, waits=frozenset(self._waits),
+            deadlines=False, waits=frozenset(self._waits), prologues=self._prologues,
             abort='step-boundary',
             sources={'timing_grid_s': f'{self.name}.{self._capsSource}'},
         )
@@ -111,7 +112,10 @@ class StepEngineBase(SignalInterface, ScanEngine):
     def assess(self, program, channels, *, timing_only=frozenset()):
         """As every engine, without the devices another engine drives for it
         (``timing_only``, a leader's followers' devices, §5.4)."""
-        return super().assess(_without(program, timing_only), channels)
+        program = _without(program, timing_only)
+        report = super().assess(program, channels)
+        _assess_offsets(program, channels, self.owns, report)
+        return report
 
     # -- compile ----------------------------------------------------------------
 
@@ -224,12 +228,21 @@ class StepEngineBase(SignalInterface, ScanEngine):
         # the board never reports a run done before its drives have settled.
         pass_return = ticks(return_seconds(program), 'return')
         final = [s for s in schedule.spans if s.span.kind == 'return']
-        if final and final[-1].ticks != pass_return:
+        # Drives that move and settle in no time are written at the return's
+        # start and are there at once: the schedule's one tick for the final
+        # return (so that it plays at all) is no more than the board's none.
+        instant = all(float(d.motion.move_s) + float(d.motion.settle_s) == 0.0
+                      for d in program.drives)
+        if final and final[-1].ticks != pass_return and not (
+                instant and pass_return == 0 and final[-1].ticks == 1):
             refusals.append(
                 f'The return to the restore positions at the end takes '
                 f'{final[-1].ticks} ticks (the drives\' move and settle) while the return '
                 f'after each pass is {pass_return} ticks; a step board plays one return '
                 'time. Give the return that duration (return_s), or restore \'hold\'.')
+        prologues = [dict(loop=pro.loop, ticks=ticks(pro.duration_s, f'prologue of {pro.loop}'),
+                          offsets={name: float(v) for name, v in pro.offsets_um.items()})
+                     for pro in program.prologues]
         plan = StepPlan(
             loops=[(lp.id, int(lp.count), lp.traversal, tuple(lp.parity_loops))
                    for lp in program.loops],
@@ -242,11 +255,49 @@ class StepEngineBase(SignalInterface, ScanEngine):
                          if name in used and facts.preparation not in ('notRequired', 'unknown',
                                                                        None)},
             captured_um=dict(captured_um or {}), park_um=dict(program.park),
+            prologues=prologues,
         )
         if refusals:
             report.add('timing', IMPOSSIBLE, ' '.join(refusals))
             raise ScanEngineRefused(report)
         return Compiled(program, plan, report, schedule)
+
+
+def _assess_offsets(program, channels, owns, report):
+    """An intra-step offset on a step board: a board writes absolute levels
+    to a DAC inside a step (the protocol's EVENT on a DAC), so an offset is
+    played as such a level -- an emulation that holds only for a device
+    whose drive stands still over the scan (no loop weight, no table), since
+    the level is one number for every step. A device the loops move is
+    refused with the way out."""
+    still = {d.device for d in program.drives
+             if not any(d.weights_um.values()) and d.table_um is None}
+    moved = {d.device for d in program.drives} - still
+    for event in program.timeline:
+        if event.kind != 'offset':
+            continue
+        feature = f'offset {event.device}'
+        entry = channels.get(event.device)
+        line = entry.analog if entry else None
+        if not (line and owns(line)):
+            continue        # the generic verdict (no channel of this engine) stands
+        if event.device in moved:
+            verdict = FeatureVerdict(
+                feature, IMPOSSIBLE,
+                f'{event.device} moves with the loops; a board plays an intra-step offset as '
+                'an absolute level of its DAC, one for every step.',
+                'Keep the device still over the scan, or run it on a streaming engine.')
+        else:
+            verdict = FeatureVerdict(
+                feature, EMULATED,
+                f'{event.device} stands still over the scan: the offset is played as an '
+                f'absolute level of {line} inside the step.')
+        for i, item in enumerate(report.verdicts):
+            if item.feature == feature:
+                report.verdicts[i] = verdict
+                break
+        else:
+            report.verdicts.append(verdict)
 
 
 def _approach_ticks(schedule):

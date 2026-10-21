@@ -19,8 +19,8 @@ from typing import Any, Dict, Mapping
 
 from .policy import PolicyError, resolve_policy
 from .program import (
-    DetectorBinding, DeviceDrive, Loop, Motion, ProgramError, ScanProgram, Separation,
-    TimelineEvent, Trajectory, Wait, validate,
+    DetectorBinding, DeviceDrive, Loop, Motion, ProgramError, Prologue, ScanProgram,
+    Separation, TimelineEvent, Trajectory, Wait, validate,
 )
 
 FORMAT = 'scan-program/1'
@@ -118,6 +118,7 @@ def program_from_dict(data: Mapping[str, Any]) -> ScanProgram:
         'waits': _list(Wait),
         'separations': _list(Separation),
         'detectors': _list(DetectorBinding),
+        'prologues': _list(Prologue),
         'trajectory': _trajectory,
     })
     if problems or program is None:

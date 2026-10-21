@@ -153,6 +153,10 @@ def plan_to_lines(plan: WirePlan) -> List[str]:
             lines.append(f'WEIGHT,{d["device"]},{index[loop_id]},{_num(weight)}')
         if d['table'] is not None:
             lines.append(f'TABLE,{d["device"]},{index[d["table_loop"]]},{_list(d["table"])}')
+    for pro in getattr(plan, 'prologues', ()):
+        lines.append(f'PROLOGUE,{index[pro["loop"]]},{pro["ticks"]}')
+        for name, value in pro['offsets'].items():
+            lines.append(f'PROFFSET,{name},{index[pro["loop"]]},{_num(value)}')
     for e in plan.events:
         phases = NONE if e['phases'] is None else _list(sorted(e['phases']))
         lines.append(f'EVENT,{e["device"]},{e["start"]},{e["end"]},{e["anchor"]},'
@@ -179,7 +183,7 @@ _CHOICES = {
     'placement': ('in-step', 'between-steps'),
     'origin': ('absolute', 'captured'),
     'restore': ('captured', 'first', 'park', 'hold'),
-    'anchor': ('step', 'pass-start', 'pass-end'),
+    'anchor': ('step', 'pass-start', 'pass-end', 'prologue'),
     'on_timeout': ('fail', 'continue'),
 }
 
@@ -196,7 +200,7 @@ def lines_to_plan(lines: Sequence[str]) -> WirePlan:
     lines = [line.strip() for line in lines if line.strip()]
     if not lines or lines[0] != 'PROGRAM,BEGIN' or lines[-1] != 'PROGRAM,END':
         raise ProtocolError('A program is sent between PROGRAM,BEGIN and PROGRAM,END.')
-    loops, drives, events, waits = [], {}, [], []
+    loops, drives, events, waits, prologues = [], {}, [], [], {}
     plan = dict(phase_loop=None, step_ticks=None, return_ticks=0, preparation={},
                 captured_um={}, park_um={}, safe={})
 
@@ -237,6 +241,19 @@ def lines_to_plan(lines: Sequence[str]) -> WirePlan:
             drive = _drive(drives, f[0], where)
             drive['table_loop'] = loop_id(f[1])
             drive['table'] = _parse_list(f[2], _float, where)
+        elif kind == 'PROLOGUE' and len(f) == 2:
+            loop = loop_id(f[0])
+            if loop is None:
+                raise ProtocolError(f'{where}: a prologue needs its loop')
+            if loop in prologues:
+                raise ProtocolError(f'{where}: loop {loop} has a prologue already')
+            prologues[loop] = dict(loop=loop, ticks=_uint(f[1], where), offsets={})
+        elif kind == 'PROFFSET' and len(f) == 3:
+            loop = loop_id(f[1])
+            if loop not in prologues:
+                raise ProtocolError(f'{where}: no PROLOGUE line for loop {loop} before it')
+            _drive(drives, f[0], where)
+            prologues[loop]['offsets'][f[0]] = _float(f[2], where)
         elif kind == 'EVENT' and len(f) == 8:
             level = _level(device(f[0]))
             events.append(dict(
@@ -268,8 +285,12 @@ def lines_to_plan(lines: Sequence[str]) -> WirePlan:
     for w in waits:
         if w['trigger'] == 'time' and w['interval'] is None:
             raise ProtocolError('A time wait needs its interval.')
+    for e in events:
+        if e['anchor'] == 'prologue' and e['anchor_loop'] not in prologues:
+            raise ProtocolError(f'An event is anchored on the prologue of loop '
+                                f'{e["anchor_loop"]}, which has none.')
     return WirePlan(loops=loops, drives=list(drives.values()), events=events, waits=waits,
-                    **plan)
+                    prologues=list(prologues.values()), **plan)
 
 
 def _level(name):
@@ -321,6 +342,8 @@ class BoardCaps:
     #: (``WAITING`` while it waits): so a host can tell a board that fell
     #: silent from one that waits (§7.8). Not declared: it cannot.
     alive_ticks: Optional[int] = None
+    #: It plays a step of its own before every pass of a loop (PROLOGUE).
+    prologue: bool = False
 
     def dac_step(self, index) -> Optional[float]:
         """DAC ``index``'s smallest step in volts, or ``None``."""
@@ -361,6 +384,8 @@ class BoardCaps:
             out.append(f'CAPS,dac_bits,{index},{bits}')
         if self.alive_ticks is not None:
             out.append(f'CAPS,alive_ticks,{self.alive_ticks}')
+        if self.prologue:
+            out.append('CAPS,prologue,1')
         return out + ['CAPS,END']
 
     def has(self, token) -> bool:
@@ -394,7 +419,7 @@ def parse_caps(board: str, firmware: str, lines: Iterable[str]) -> BoardCaps:
         if key == 'END':
             return caps
         if key in ('grid_ns', 'ttl', 'max_steps', 'trigger_in', 'trigger_latency_ticks',
-                   'trigger_min_ticks', 'clock_ppm', 'alive_ticks') and len(f) != 1 \
+                   'trigger_min_ticks', 'clock_ppm', 'alive_ticks', 'prologue') and len(f) != 1 \
                 or key == 'dac' and len(f) != 3 or key == 'dac_bits' and len(f) != 2:
             raise ProtocolError(f'{where}: {line!r} has the wrong number of fields')
         if key == 'grid_ns':
@@ -417,6 +442,8 @@ def parse_caps(board: str, firmware: str, lines: Iterable[str]) -> BoardCaps:
             caps.dac_bits[_uint(f[0], where)] = _uint(f[1], where)
         elif key == 'alive_ticks':
             caps.alive_ticks = _uint(f[0], where)
+        elif key == 'prologue':
+            caps.prologue = bool(_uint(f[0], where))
         # Any other key is a capability this host does not use.
     raise ProtocolError('The capabilities end without CAPS,END.')
 

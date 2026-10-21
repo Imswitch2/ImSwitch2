@@ -246,7 +246,7 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
             tick = 0
             requested = 0.0
             continue
-        quantity = {'step': 'step', 'return': 'return', 'move': 'move',
+        quantity = {'step': 'step', 'prologue': 'step', 'return': 'return', 'move': 'move',
                     'wait': 'wait', 'preparation': 'preparation'}[span.kind]
         where = _where(span)
         ticks = conv.ticks(span.duration_s, quantity, where)
@@ -289,7 +289,7 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
                         f'{_fmt((realized.move_ticks[name] + realized.settle_ticks[name]) / rate_hz)}'
                         f', which leaves no stationary time in the {_fmt(ticks / rate_hz)} step.'
                     )
-        if span.kind == 'step':
+        if span.kind in ('step', 'prologue'):
             _realize_events(conv, program, policy, realized, events, offsets, motion, rate_hz,
                             carry)
             carry = {}
@@ -336,6 +336,8 @@ def realize(expansion: Expansion, rate_hz: float, policy=None, *,
 def _where(span):
     if span.kind == 'step':
         return f'step {span.step_index}'
+    if span.kind == 'prologue':
+        return f'prologue before step {span.step_index}'
     return span.kind
 
 
@@ -400,7 +402,7 @@ def _realize_events(conv, program, policy, realized, events, offsets, motion, ra
         events.append(RealizedEvent(event.device, event.kind,
                                     realized.start_tick + start, realized.start_tick + end,
                                     event.value, event.id, span.step_index, realized.segment))
-    _check_relations(conv, policy, placed, where, float(program.step_s))
+    _check_relations(conv, policy, placed, where, float(span.duration_s))
     _check_stationary(conv, program, realized, placed, offsets, where, rate_hz, carry or {})
 
 

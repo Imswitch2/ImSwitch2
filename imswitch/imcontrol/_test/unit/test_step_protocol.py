@@ -543,7 +543,7 @@ def test_the_reference_board_passes_every_conformance_program(dac_bits):
     results = conformance_runner.run(conformance_runner.simulated_transport(
         1000, dac_bits=dac_bits), report=lines.append)
     # the four programs, and a power level on its second DAC
-    assert [r.passed for r in results] == [True] * 5, lines
+    assert [r.passed for r in results] == [True] * 6, lines
     assert results[-1].program == 'a power level on the second DAC'
     assert lines[0].startswith('simulated (simulated): grid 1000 ns')
 
@@ -594,7 +594,10 @@ def test_a_port_that_does_not_open_leaves_the_engine_unknown(monkeypatch):
 
 
 def test_the_serial_link_reassembles_lines_split_by_its_timeout(monkeypatch):
-    chunks = [b'IMSWITCH', b'_STEP/1,B,1\n', b'', b'OK,RUN\n']
+    """The link takes what the port has in bulk and splits the lines itself: a
+    line that arrives in pieces is returned once it ends, a read with no
+    ended line gives None at its timeout, and what came stays for the next."""
+    chunks = []
 
     class Serial:
         timeout = None
@@ -602,19 +605,28 @@ def test_the_serial_link_reassembles_lines_split_by_its_timeout(monkeypatch):
         def __init__(self, *a, **k):
             self.written = []
 
-        def readline(self):
-            return chunks.pop(0)
+        @property
+        def in_waiting(self):
+            return len(chunks[0]) if chunks else 0
+
+        def read(self, n):
+            return chunks.pop(0) if chunks else b''
 
         def write(self, data):
             self.written.append(data)
 
     monkeypatch.setitem(sys.modules, 'serial', SimpleNamespace(Serial=Serial))
     link = SerialTransport('COM9', 115200, 0.5)
-    assert link.read(0.5) is None
-    assert link.read(0.5) == f'{PROTOCOL},B,1'
-    assert link.read(0.5) is None and link.read(0.5) == 'OK,RUN'
+    chunks.append(b'IMSWITCH')
+    assert link.read(0.02) is None            # a line that has not ended
+    chunks.append(b'_STEP/1,B,1' + bytes([10]) + b'OK,R')
+    assert link.read(0.02) == f'{PROTOCOL},B,1'
+    assert link.read(0.02) is None            # 'OK,R' waits for its end
+    chunks.append(b'UN' + bytes([10]))
+    assert link.read(0.02) == 'OK,RUN'
+    assert link.read(0.02) is None
     link.write('RUN')
-    assert link._serial.written == [b'RUN\n']
+    assert link._serial.written == [b'RUN' + bytes([10])]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

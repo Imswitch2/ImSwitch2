@@ -241,7 +241,19 @@ def expand(program: ScanProgram, context: Optional[RunContext] = None) -> Expans
     for wait in program.waits:
         waits_at.setdefault(wait.at, []).append(wait)
 
-    approach = _approach(program, drives, positions[0], context,
+    prologues = {p.loop: p for p in program.prologues}
+
+    def entry(index):
+        # Where the drives go before step ``index``: the first prologue's
+        # positions when the step opens a pass that has one, else the
+        # step's own.
+        chain = _prologues_before(program, prologues, visit_list, index)
+        if not chain:
+            return positions[index]
+        return {name: value + chain[0].offsets_um.get(name, 0.0)
+                for name, value in positions[index].items()}
+
+    approach = _approach(program, drives, entry(0), context,
                          visit_list[0].get(phase_loop.id, 0) if phase_loop else 0)
     if approach is not None:
         spans.append(approach)
@@ -260,7 +272,31 @@ def expand(program: ScanProgram, context: Optional[RunContext] = None) -> Expans
                                       for name, value in held.items()},
                               wait=wait, phase=phase))
             if wait.trigger != 'time':
-                spans.append(_preparation(program, drives, spans, here, context, phase))
+                spans.append(_preparation(program, drives, spans, entry(index), context,
+                                          phase))
+
+        chain = _prologues_before(program, prologues, visit_list, index)
+        for number, prologue in enumerate(chain):
+            # The prologue's positions, and where its offset devices go at
+            # its end: the next prologue's positions, or the step's.
+            after = chain[number + 1].offsets_um if number + 1 < len(chain) else {}
+            pro = Span('prologue', float(prologue.duration_s), counters=dict(counters),
+                       step_index=index, phase=phase)
+            for drive in drives:
+                name = drive.device
+                start_um = here[name] + prologue.offsets_um.get(name, 0.0)
+                end_um = here[name] + after.get(name, 0.0)
+                if name in prologue.offsets_um or name in after:
+                    pro.pieces[name] = Piece('end', start_um, end_um, drive.motion.transition,
+                                             float(drive.motion.move_s),
+                                             float(drive.motion.settle_s))
+                else:
+                    pro.pieces[name] = Piece('hold', here[name], here[name])
+            for event in program.timeline:
+                if event.anchor == f'prologue:{prologue.loop}' and _event_applies(event, phase):
+                    pro.events.append(EventInstance(event, float(event.start_s),
+                                                    float(event.end_s)))
+            spans.append(pro)
 
         step = Span('step', float(program.step_s), counters=dict(counters),
                     step_index=index, phase=phase)
@@ -309,7 +345,7 @@ def expand(program: ScanProgram, context: Optional[RunContext] = None) -> Expans
             spans.append(move)
 
         if pass_end:
-            target = restore if last else nxt
+            target = restore if last else entry(index + 1)
             ret = Span('return', return_s, phase=phase)
             for drive in drives:
                 name = drive.device
@@ -321,6 +357,15 @@ def expand(program: ScanProgram, context: Optional[RunContext] = None) -> Expans
             spans.append(ret)
 
     return Expansion(program, spans, visit_list, first, restore)
+
+
+def _prologues_before(program, prologues, visit_list, index):
+    """The prologues that run before step ``index``: one per loop that
+    starts a pass there and has one, outermost first."""
+    if not prologues:
+        return []
+    return [prologues[loop.id] for loop in program.loops
+            if loop.id in prologues and _starts_pass(program, visit_list, index, loop.id)]
 
 
 def _waits_before(program, waits_at, visit_list, index):

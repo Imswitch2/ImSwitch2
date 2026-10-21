@@ -33,7 +33,8 @@ from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional
 
 from imswitch.imcontrol.model.scan_program import (
-    DeviceDrive, Loop, Motion, RunContext, ScanProgram, TimelineEvent, Wait, expand, realize,
+    DeviceDrive, Loop, Motion, Prologue, RunContext, ScanProgram, TimelineEvent, Wait, expand,
+    realize,
 )
 from imswitch.imcontrol.model.scan_program.conformance import (
     engine_log, expected_log, level_differences, log_differences,
@@ -105,9 +106,25 @@ def _programs(grid_s: float, trigger: bool, power: Optional[float] = None
             waits=(Wait('y', 'time', interval_s=t(500)),),
             timing_policy='strict-v1')
 
+    def prologue():
+        # A step of its own before every line: the drive parked a micrometre
+        # below the line's start, one line pulsed there, the other in the
+        # steps; the return to the line start happens inside the prologue.
+        return ScanProgram(
+            loops=(Loop('y', 'scan_y', 2), Loop('x', 'scan_x', 3)),
+            drives=(DeviceDrive('D', weights_um={'x': 0.5}, motion=jump),),
+            step_s=t(1000),
+            timeline=(TimelineEvent('L0', 'ttl', 0.0, t(300), during='any'),
+                      TimelineEvent('L1', 'ttl', t(100), t(400), anchor='prologue:x',
+                                    during='any'),
+                      TimelineEvent('L2', 'detector', 0.0, t(800), during='any')),
+            prologues=(Prologue('x', t(1500), offsets_um={'D': -1.0}),),
+            timing_policy='strict-v1')
+
     programs = {'raster with line steps': raster, 'interleave': interleave,
                 'serpentine on two loops': serpentine,
-                'pass anchors, a table and time waits': anchors_and_time_waits}
+                'pass anchors, a table and time waits': anchors_and_time_waits,
+                'a prologue before every line': prologue}
     if power is not None:
         def power_level():
             return ScanProgram(

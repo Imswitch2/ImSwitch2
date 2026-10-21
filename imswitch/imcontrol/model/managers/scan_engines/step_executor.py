@@ -41,6 +41,10 @@ class StepPlan:
     preparation: Dict[str, int]
     captured_um: Dict[str, float]
     park_um: Dict[str, float]
+    #: ``{'loop': id, 'ticks': n, 'offsets': {device: value}}``: a step of its
+    #: own before every pass of that loop, its offset devices that far from
+    #: the pass's first position (the plan's unit) until its end.
+    prologues: List[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -197,6 +201,20 @@ class StepExecutor:
         first = positions[0] if positions else {}
 
         silent = {d['device'] for d in plan.drives if not d.get('output', True)}
+        prologues = {pro['loop']: pro for pro in getattr(plan, 'prologues', ())}
+
+        def prologues_before(index):
+            return [prologues[loop_id] for loop_id in ids
+                    if loop_id in prologues and self._starts(visits, index, ids, loop_id)]
+
+        def entry(index):
+            # Where the drives go before a step: the first prologue's
+            # positions when the step opens a pass that has one.
+            chain = prologues_before(index)
+            if not chain:
+                return positions[index]
+            return {name: value + chain[0]['offsets'].get(name, 0.0)
+                    for name, value in positions[index].items()}
 
         def write(device, value, tick=None):
             # A write at a time inside the current span names its tick; it
@@ -208,8 +226,9 @@ class StepExecutor:
                     self.log.add('dac', self._segment,
                                  self._tick if tick is None else tick, device, value)
 
+        start = entry(0) if positions else {}
         for d in plan.drives:
-            write(d['device'], first[d['device']])
+            write(d['device'], start[d['device']])
 
         for index, counters in enumerate(visits):
             self._step = index
@@ -220,7 +239,26 @@ class StepExecutor:
             self.listener.progressed(index, len(visits))
             phase = counters.get(plan.phase_loop, 0) if plan.phase_loop else 0
             for wait in self._waits_here(plan, visits, index, ids):
-                self._wait(wait, arrivals, plan, positions[index], held, write)
+                self._wait(wait, arrivals, plan, entry(index), held, write)
+            chain = prologues_before(index)
+            for number, pro in enumerate(chain):
+                # The prologue: its events from its start; at its end, each
+                # offset device goes to the next prologue's position, or the
+                # step's, inside its move and settle (as a step's end).
+                pro_start = self._tick
+                after = chain[number + 1]['offsets'] if number + 1 < len(chain) else {}
+                for event in plan.events:
+                    if event['anchor'] != 'prologue' or event['anchor_loop'] != pro['loop']:
+                        continue
+                    if event['phases'] is not None and phase not in event['phases']:
+                        continue
+                    self._edge(event, pro_start + event['start'], pro_start + event['end'])
+                for d in plan.drives:
+                    name = d['device']
+                    if name in pro['offsets'] or name in after:
+                        target = positions[index][name] + after.get(name, 0.0)
+                        write(name, target, pro_start + pro['ticks'] - d['move'] - d['settle'])
+                self._advance(pro_start + pro['ticks'])
             step_start = self._tick
             last = index == len(visits) - 1
             pass_end = last or any(visits[index + 1][o] != counters[o] for o in ids[:-1])
@@ -251,11 +289,12 @@ class StepExecutor:
                     self._advance(self._tick + max(d['move'] + d['settle'] for d in movers))
                 continue
             self._advance(step_start + plan.step_ticks)
+            following = {} if last else entry(index + 1)
             for d in plan.drives:
                 if last:
                     target = self._restore(d, first, positions[index], plan)
                 else:
-                    target = positions[index + 1][d['device']]
+                    target = following[d['device']]
                 write(d['device'], target)
             self._advance(self._tick + plan.return_ticks)
         self._step = len(visits)
