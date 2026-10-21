@@ -47,6 +47,7 @@ from imswitch.imcontrol.model.scan_program.bindings import (
     binding_lines, binding_problems, frames_per_step,
 )
 from imswitch.imcontrol.model.scan_program.densify import densify
+from imswitch.imcontrol.model.scan_program.preview import sparse_traces
 from imswitch.imcontrol.model.managers.scan_engines.NidaqScanEngine import (
     duration_cap_refusal,
 )
@@ -116,6 +117,12 @@ def _end_positions(schedule):
     if positions is not None:           # a trajectory: its last sample
         return {device: float(values[-1]) for device, values in positions.items()}
     return schedule.final_um()
+
+
+#: Above this many ticks in the drawn segment the preview is built from the
+#: schedule's writes and edges, not from one sample per tick (1 s on a 1 µs
+#: grid, 10 s on the NI-DAQ's 100 kHz).
+PREVIEW_DENSE_TICKS = 1_000_000
 
 
 def _preview_windows(schedule, program):
@@ -755,21 +762,34 @@ class ScanControllerExpert(SuperScanController):
             self._widget.showPreviewProblem(f'Nothing to draw: {error}')
             return
         schedule = self._scheduleOf(compiled)
+        rate = schedule.rate_hz
+        notes = []
         if isinstance(schedule, RealizedTrajectory):
             dense = {'analog': schedule.positions_um, 'digital': schedule.digital}
+            time_s = None
+        elif schedule.segments[0].ticks > PREVIEW_DENSE_TICKS:
+            # One sample per tick would be millions of points per trace (a
+            # step board's 1 µs grid): the picture from the writes and
+            # edges instead, thousands of points however long the run.
+            time_s, dense = sparse_traces(schedule)
+            notes.append("Drawn from the schedule's writes and edges (a long run): a smooth "
+                         "transition shows as a straight line.")
         else:
             dense = densify(schedule)
-        rate = schedule.rate_hz
+            time_s = None
         traces = dict(dense['analog'])
         for name, line in sorted(dense['digital'].items()):
-            traces[name] = line.astype(float)
-        n = max((len(v) for v in traces.values()), default=0)
+            traces[name] = np.asarray(line, dtype=float)
+        if time_s is None:
+            n = max((len(v) for v in traces.values()), default=0)
+            time_s = np.arange(n) / rate
         segments = len(getattr(schedule, 'segments', ()) or ())
+        if segments > 1:
+            notes.append('Drawn up to the first wait for a trigger: what follows depends on '
+                         'when it comes.')
         self._widget.showTraces(
-            np.arange(n) / rate, traces, analog=sorted(dense['analog']),
-            windows=_preview_windows(schedule, compiled.program),
-            note=('Drawn up to the first wait for a trigger: what follows depends on when it '
-                  'comes.') if segments > 1 else '')
+            time_s, traces, analog=sorted(dense['analog']),
+            windows=_preview_windows(schedule, compiled.program), note=' '.join(notes))
 
     # ------------------------------------------------------------------
     # Running
