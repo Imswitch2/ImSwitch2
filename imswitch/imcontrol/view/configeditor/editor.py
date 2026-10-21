@@ -44,6 +44,7 @@ _io_module = None
 _schema_module = None
 _resources_module = None
 _roles_module = None
+_disabled_devices_module = None
 _setup_kind_metadata = ()
 try:
     from imswitch.imcontrol.model.configeditor.catalog import build_catalog
@@ -53,6 +54,7 @@ try:
     from imswitch.imcontrol.model.configeditor import schemas as _schema_module
     from imswitch.imcontrol.model.configeditor import resources as _resources_module
     from imswitch.imcontrol.model.configeditor import roles as _roles_module
+    from imswitch.imcontrol.model.configeditor import disabled_devices as _disabled_devices_module
     from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
     _setup_kind_metadata = setup_kinds()
 except ImportError as e:
@@ -432,6 +434,20 @@ if "others" not in DEVICE_CATS:
 CAT_COLOR.setdefault("others", "#888888")
 CAT_LABEL.setdefault("others", "Others")
 
+DISABLED_DEVICES_KEY = (
+    _disabled_devices_module.DISABLED_DEVICES_KEY
+    if _disabled_devices_module is not None
+    else "disabledDevices"
+)
+DISABLEABLE_DEVICE_CATS = set(
+    _disabled_devices_module.DISABLEABLE_CATEGORIES
+    if _disabled_devices_module is not None
+    else (
+        "detectors", "lasers", "positioners", "rotators",
+        "rs232devices", "slms", "flipMirrors",
+    )
+)
+
 # Category settings are a first-class affordance for every device category,
 # even before that category has any settings of its own. Explicit JSON schemas
 # (currently lasers) override these empty placeholders. This keeps future
@@ -569,6 +585,127 @@ def _all_known_managers() -> list[str]:
     for mgrs in CAT_MANAGERS.values():
         managers.update(mgrs)
     return sorted(managers)
+
+
+def _device_section(data: dict, category: str, *, enabled: bool, create: bool = False) -> dict:
+    """Return the active/disabled device mapping used by the editor."""
+    if _disabled_devices_module is not None:
+        return _disabled_devices_module.device_section(
+            data, category, enabled=enabled, create=create
+        )
+    if enabled:
+        section = data.get(category)
+        if isinstance(section, dict):
+            return section
+        if create:
+            data[category] = {}
+            return data[category]
+        return {}
+    root = data.get(DISABLED_DEVICES_KEY)
+    if not isinstance(root, dict):
+        if not create:
+            return {}
+        root = {}
+        data[DISABLED_DEVICES_KEY] = root
+    section = root.get(category)
+    if isinstance(section, dict):
+        return section
+    if create:
+        root[category] = {}
+        return root[category]
+    return {}
+
+
+def _locate_device(data: dict, category: str, name: str):
+    if _disabled_devices_module is not None:
+        return _disabled_devices_module.locate_device(data, category, name)
+    active = _device_section(data, category, enabled=True)
+    if name in active:
+        return active[name], True
+    disabled = _device_section(data, category, enabled=False)
+    if name in disabled:
+        return disabled[name], False
+    return None, None
+
+
+def _set_device_enabled(data: dict, category: str, name: str, enabled: bool) -> bool:
+    if _disabled_devices_module is not None:
+        return _disabled_devices_module.set_device_enabled(data, category, name, enabled)
+    if category not in DISABLEABLE_DEVICE_CATS:
+        raise ValueError(f"category {category!r} does not support temporary disabling")
+    source = _device_section(data, category, enabled=not enabled)
+    if name not in source:
+        return False
+    destination = _device_section(data, category, enabled=enabled, create=True)
+    if name in destination:
+        raise ValueError(f"a device named {name!r} already exists in the destination section")
+    destination[name] = source.pop(name)
+    root = data.get(DISABLED_DEVICES_KEY)
+    if isinstance(root, dict):
+        for key in list(root):
+            if isinstance(root.get(key), dict) and not root[key]:
+                del root[key]
+        if not root:
+            data.pop(DISABLED_DEVICES_KEY, None)
+    return True
+
+
+def _remove_device(data: dict, category: str, name: str):
+    if _disabled_devices_module is not None:
+        return _disabled_devices_module.remove_device(data, category, name)
+    device, enabled = _locate_device(data, category, name)
+    if enabled is None:
+        return None
+    return _device_section(data, category, enabled=enabled).pop(name, None)
+
+
+def _known_device_references(data: dict, category: str, name: str) -> list[str]:
+    """Return well-known config paths that directly reference a device name.
+
+    This is deliberately conservative: it only warns for references ImSwitch
+    itself treats as device-name links, rather than flagging every string that
+    happens to equal the device name.
+    """
+    paths_by_category = {
+        "detectors": (
+            ("focusLock", "camera"),
+            ("autofocus", "camera"),
+            ("tiling", "camera"),
+        ),
+        "positioners": (
+            ("focusLock", "positioner"),
+            ("autofocus", "positioner"),
+            ("tiling", "xyPositioner"),
+            ("tiling", "zPositioner"),
+        ),
+        "rs232devices": (
+            ("triggerScope", "rs232device"),
+            ("microscopeStand", "rs232device"),
+        ),
+    }
+    refs: list[str] = []
+    for path in paths_by_category.get(category, ()):
+        value = data
+        for key in path:
+            if not isinstance(value, dict) or key not in value:
+                value = None
+                break
+            value = value[key]
+        if value == name:
+            refs.append(".".join(path))
+
+    # Managers commonly reference a shared serial connection from their
+    # managerProperties. Cover those without treating unrelated strings as
+    # references.
+    if category == "rs232devices":
+        for dev_cat in DEVICE_CATS:
+            for dev_name, device in (_device_section(data, dev_cat, enabled=True) or {}).items():
+                if not isinstance(device, dict):
+                    continue
+                props = device.get("managerProperties")
+                if isinstance(props, dict) and props.get("rs232device") == name:
+                    refs.append(f"{dev_cat}.{dev_name}.managerProperties.rs232device")
+    return refs
 
 
 def _schema_for_manager(manager_name: str) -> dict:
@@ -983,12 +1120,14 @@ class DeviceCard(QFrame):
     sig_delete    = pyqtSignal(str, str)
     sig_save_tmpl = pyqtSignal(str, str)
     sig_copy      = pyqtSignal(str, str)
+    sig_set_enabled = pyqtSignal(str, str, bool)
 
-    def __init__(self, category: str, name: str, device_data: dict, parent=None):
+    def __init__(self, category: str, name: str, device_data: dict, *, enabled: bool = True, parent=None):
         super().__init__(parent)
         self.category = category
         self.device_name = name
         self.device_data = device_data
+        self.enabled = enabled
         self._selected = False
         self._init_ui()
 
@@ -1003,23 +1142,41 @@ class DeviceCard(QFrame):
         layout.setContentsMargins(10, 7, 7, 7)
         layout.setSpacing(2)
 
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(4)
         self._name_lbl = QLabel(self.device_name)
         bold = QFont()
         bold.setBold(True)
         bold.setPointSize(9)
         self._name_lbl.setFont(bold)
         self._name_lbl.setWordWrap(True)
-        layout.addWidget(self._name_lbl)
+        if not self.enabled:
+            self._name_lbl.setStyleSheet("color:#888;")
+        name_row.addWidget(self._name_lbl, 1)
+        if not self.enabled:
+            disabled_lbl = QLabel("DISABLED")
+            disabled_lbl.setStyleSheet(
+                "color:#888; border:1px solid #888; border-radius:2px; "
+                "padding:0 3px; font-size:7pt; font-weight:bold;"
+            )
+            disabled_lbl.setToolTip(
+                "This device is kept in the setup file but will not be instantiated."
+            )
+            name_row.addWidget(disabled_lbl)
+        layout.addLayout(name_row)
 
         mgr = self.device_data.get("managerName", "")
         self._mgr_lbl = QLabel(_manager_display_name(mgr))
-        self._mgr_lbl.setStyleSheet("color:#666;font-size:8pt;")
+        self._mgr_lbl.setStyleSheet(
+            f"color:{'#888' if not self.enabled else '#666'};font-size:8pt;"
+        )
         layout.addWidget(self._mgr_lbl)
 
         info = self._summary()
         if info:
             lbl = QLabel(info)
-            lbl.setStyleSheet("color:#888;font-size:8pt;")
+            lbl.setStyleSheet(f"color:{'#999' if not self.enabled else '#888'};font-size:8pt;")
             lbl.setWordWrap(True)
             layout.addWidget(lbl)
 
@@ -1051,17 +1208,24 @@ class DeviceCard(QFrame):
         # Get themed colors based on current palette
         dark = is_dark_mode()
         colors = get_themed_colors(dark)
-        bg = colors['card_bg_selected'] if selected else colors['card_bg']
+        if self.enabled:
+            bg = colors['card_bg_selected'] if selected else colors['card_bg']
+            border_style = "solid"
+            accent = color
+        else:
+            bg = colors['card_bg_selected'] if selected else colors['card_bg']
+            border_style = "dashed"
+            accent = "#777777"
         self.setStyleSheet(f"""
             DeviceCard {{
                 background: {bg};
-                border: 1px solid {colors['card_border']};
-                border-left: {bw} solid {color};
+                border: 1px {border_style} {colors['card_border']};
+                border-left: {bw} {border_style} {accent};
                 border-radius: 4px;
             }}
             DeviceCard:hover {{
                 background: {colors['card_bg_hover']};
-                border-left: 5px solid {color};
+                border-left: 5px {border_style} {accent};
             }}
         """)
 
@@ -1080,6 +1244,10 @@ class DeviceCard(QFrame):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
+        a_enabled = None
+        if self.category in DISABLEABLE_DEVICE_CATS:
+            a_enabled = menu.addAction("Disable device" if self.enabled else "Enable device")
+            menu.addSeparator()
         a_copy = menu.addAction("Copy")
         menu.addSeparator()
         a_dup  = menu.addAction("Duplicate")
@@ -1089,7 +1257,9 @@ class DeviceCard(QFrame):
         menu.addSeparator()
         a_del  = menu.addAction("Delete")
         action = menu.exec_(self.mapToGlobal(event.pos()))
-        if action == a_copy:
+        if a_enabled is not None and action == a_enabled:
+            self.sig_set_enabled.emit(self.category, self.device_name, not self.enabled)
+        elif action == a_copy:
             self.sig_copy.emit(self.category, self.device_name)
         elif action == a_dup:
             self.sig_duplicate.emit(self.category, self.device_name)
@@ -1111,6 +1281,7 @@ class DeviceCanvas(QScrollArea):
     sig_device_renamed  = pyqtSignal(str, str)
     sig_save_tmpl       = pyqtSignal(str, str)
     sig_device_copied   = pyqtSignal(str, str)
+    sig_device_enabled_changed = pyqtSignal(str, str, bool)
     sig_category_settings = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -1130,9 +1301,10 @@ class DeviceCanvas(QScrollArea):
         self._clear()
         for cat in DEVICE_CATS:
             devices = data.get(cat) or {}
+            disabled = _device_section(data, cat, enabled=False) if cat in DISABLEABLE_DEVICE_CATS else {}
             # Always show categories from the registry, even if empty
             if cat in _CATEGORY_REGISTRY or cat == "others":
-                self._add_section(cat, devices, data)
+                self._add_section(cat, devices, disabled, data)
         self._layout.addStretch()
 
     def _clear(self):
@@ -1144,7 +1316,7 @@ class DeviceCanvas(QScrollArea):
             if item.widget():
                 item.widget().deleteLater()
 
-    def _add_section(self, cat: str, devices: dict, data: dict):
+    def _add_section(self, cat: str, devices: dict, disabled_devices: dict, data: dict):
         color = CAT_COLOR[cat]
         label_text = CAT_LABEL[cat]
 
@@ -1157,8 +1329,14 @@ class DeviceCanvas(QScrollArea):
         dot.setStyleSheet(f"color:{color}; font-size:14px;")
         hlay.addWidget(dot)
 
+        if cat in DISABLEABLE_DEVICE_CATS:
+            count_text = f"{len(devices)} active"
+            if disabled_devices:
+                count_text += f", {len(disabled_devices)} disabled"
+        else:
+            count_text = f"{len(devices)} device{'s' if len(devices)!=1 else ''}"
         lbl = QLabel(f"<b>{label_text}</b>  <span style='color:#999;font-size:9pt;'>"
-                     f"({len(devices)} device{'s' if len(devices)!=1 else ''})</span>")
+                     f"({count_text})</span>")
         lbl.setTextFormat(Qt.RichText)
         hlay.addWidget(lbl)
 
@@ -1226,14 +1404,21 @@ class DeviceCanvas(QScrollArea):
 
         col, row = 0, 0
         cols = 4
-        for name, dev_data in devices.items():
-            card = DeviceCard(cat, name, dev_data)
+        card_entries = [(name, dev_data, True) for name, dev_data in devices.items()]
+        card_entries.extend(
+            (name, dev_data, False)
+            for name, dev_data in disabled_devices.items()
+            if name not in devices
+        )
+        for name, dev_data, enabled in card_entries:
+            card = DeviceCard(cat, name, dev_data, enabled=enabled)
             card.sig_clicked.connect(self._on_card_clicked)
             card.sig_duplicate.connect(self.sig_device_duped)
             card.sig_rename.connect(self.sig_device_renamed)
             card.sig_delete.connect(self.sig_device_deleted)
             card.sig_save_tmpl.connect(self.sig_save_tmpl)
             card.sig_copy.connect(self.sig_device_copied)
+            card.sig_set_enabled.connect(self.sig_device_enabled_changed)
             grid.addWidget(card, row, col)
             self._cards[(cat, name)] = card
             col += 1
@@ -1601,6 +1786,7 @@ class FieldWidget(QWidget):
 class PropertyEditor(QWidget):
     sig_apply = pyqtSignal(str, str, dict)   # (category, name, new_device_dict)
     sig_rename = pyqtSignal(str, str, str)    # (category, old_name, new_name)
+    sig_enabled_changed = pyqtSignal(str, str, bool)  # requested enabled state
     sig_modified = pyqtSignal()               # any change to config settings (widgets, sections)
     sig_show_config = pyqtSignal()
 
@@ -1613,6 +1799,8 @@ class PropertyEditor(QWidget):
         self._data: dict = {}                 # Reference to full config data for config settings view
         self._setup: dict = {}                # The document the loaded device belongs to
         self._field_widgets: dict[tuple, FieldWidget] = {}   # (section, key) → widget
+        self._enabled = True
+        self._block_enabled = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -1647,6 +1835,13 @@ class PropertyEditor(QWidget):
         self._close_device_btn.clicked.connect(self.sig_show_config.emit)
         row1.addWidget(self._close_device_btn)
         hdr_lay.addLayout(row1)
+
+        self._enabled_cb = QCheckBox("Enabled")
+        self._enabled_cb.setToolTip(
+            "Disabled devices stay in this setup file but are not instantiated by ImSwitch."
+        )
+        self._enabled_cb.toggled.connect(self._on_enabled_toggled)
+        hdr_lay.addWidget(self._enabled_cb)
 
         # Manager type: combo for known schemas + line-edit for custom/free-form
         self._mgr_combo = QComboBox()
@@ -1826,6 +2021,7 @@ class PropertyEditor(QWidget):
         self._close_device_btn.setVisible(False)
         self._mgr_combo.setVisible(False)
         self._custom_mgr_edit.setVisible(False)
+        self._enabled_cb.setVisible(False)
         self._tabs.setVisible(False)
         self._val_lbl.setVisible(False)
         self._add_row_widget.setVisible(False)
@@ -1837,6 +2033,7 @@ class PropertyEditor(QWidget):
         self._rename_btn.setVisible(True)
         self._close_device_btn.setVisible(True)
         self._mgr_combo.setVisible(True)
+        self._enabled_cb.setVisible(self._cat in DISABLEABLE_DEVICE_CATS)
         self._tabs.setVisible(True)
         self._val_lbl.setVisible(True)
         self._add_row_widget.setVisible(True)
@@ -1850,10 +2047,11 @@ class PropertyEditor(QWidget):
         self._refresh_sections()
         self._show_config_view()
 
-    def load_device(self, cat: str, name: str, device: dict, setup: dict | None = None):
+    def load_device(self, cat: str, name: str, device: dict, setup: dict | None = None, *, enabled: bool = True):
         self._cat = cat
         self._name = name
         self._device = copy.deepcopy(device)
+        self.set_device_enabled(enabled)
         # The whole document, for role predicates (``scan.scanDesigner``).
         self._setup = setup if setup is not None else self._data
         self._name_lbl.setText(name)
@@ -1874,6 +2072,18 @@ class PropertyEditor(QWidget):
         self._block_combo = False
 
         self._rebuild_form()
+
+    def set_device_enabled(self, enabled: bool):
+        """Update the enabled checkbox without requesting another state change."""
+        self._enabled = bool(enabled)
+        self._block_enabled = True
+        self._enabled_cb.setChecked(self._enabled)
+        self._block_enabled = False
+
+    def _on_enabled_toggled(self, enabled: bool):
+        if self._block_enabled or self._cat not in DISABLEABLE_DEVICE_CATS:
+            return
+        self.sig_enabled_changed.emit(self._cat, self._name, bool(enabled))
 
     def _on_manager_changed(self, _):
         if self._block_combo:
@@ -2337,7 +2547,7 @@ class PropertyEditor(QWidget):
         colors = get_themed_colors(is_dark_mode())
         excluded_extras = (
             set(DEVICE_CATS)
-            | {"availableWidgets", "deviceCategorySettings"}
+            | {"availableWidgets", "deviceCategorySettings", DISABLED_DEVICES_KEY}
             | set(SECTION_SCHEMAS.keys())
         )
 
@@ -2496,7 +2706,7 @@ class PropertyEditor(QWidget):
     def _add_custom_section(self):
         """Prompt for a new free-form top-level key and open the raw editor."""
         reserved = (
-            set(DEVICE_CATS) | {"availableWidgets"} | set(SECTION_SCHEMAS.keys())
+            set(DEVICE_CATS) | {"availableWidgets", DISABLED_DEVICES_KEY} | set(SECTION_SCHEMAS.keys())
             | set(self._data.keys())
         )
         key, ok = QInputDialog.getText(
@@ -3874,8 +4084,14 @@ class ValidationPanel(QFrame):
             else:
                 notes.append(msg)
         
-        present = [CAT_LABEL[c] for c in DEVICE_CATS if data.get(c)]
+        present = [
+            CAT_LABEL[c] for c in DEVICE_CATS
+            if data.get(c) or (c in DISABLEABLE_DEVICE_CATS and _device_section(data, c, enabled=False))
+        ]
         devcount = sum(len(data.get(c) or {}) for c in DEVICE_CATS)
+        disabled_count = sum(
+            len(_device_section(data, c, enabled=False)) for c in DISABLEABLE_DEVICE_CATS
+        )
         
         lines: list = []
         for m in errors:
@@ -3890,9 +4106,10 @@ class ValidationPanel(QFrame):
             self._text.setStyleSheet("font-size:8pt;")
         else:
             cats_str = ", ".join(present) if present else "none"
+            disabled_text = f", {disabled_count} disabled" if disabled_count else ""
             self._text.setText(
                 f"<span style='color:#3A8B3A;'>✓ No issues</span>"
-                f"<span style='color:#666;'> — {devcount} devices"
+                f"<span style='color:#666;'> — {devcount} active devices{disabled_text}"
                 f" ({cats_str})</span>"
             )
             self._text.setStyleSheet("font-size:8pt;")
@@ -3930,7 +4147,7 @@ class MainWindow(QMainWindow):
         self._path: str = ""
         self._modified = False
         self._options_path: str = ""   # path to imcontrol_options.json if found
-        self._copied_device: object = None  # (category, name, device_dict)
+        self._copied_device: object = None  # (category, name, device_dict, enabled)
         # What this editing session changed on disk. A running ImSwitch reads
         # its setup once at startup, so an embedder needs to know whether
         # anything it is already using was rewritten -- see saved_files() and
@@ -4060,6 +4277,7 @@ class MainWindow(QMainWindow):
         self._canvas.sig_device_renamed.connect(self._on_device_rename_from_canvas)
         self._canvas.sig_save_tmpl.connect(self._on_save_template)
         self._canvas.sig_device_copied.connect(self._copy_device)
+        self._canvas.sig_device_enabled_changed.connect(self._on_device_enabled_changed)
         self._canvas.sig_category_settings.connect(self._on_category_settings)
         cl.addWidget(self._canvas, 1)
         self._val_panel = ValidationPanel()
@@ -4071,6 +4289,7 @@ class MainWindow(QMainWindow):
         self._editor = PropertyEditor()
         self._editor.sig_apply.connect(self._on_editor_apply)
         self._editor.sig_rename.connect(self._on_device_rename)
+        self._editor.sig_enabled_changed.connect(self._on_device_enabled_changed)
         self._editor.sig_modified.connect(self._on_extras_modified)
         self._editor.sig_show_config.connect(self._show_config_settings)
         splitter.addWidget(self._editor)
@@ -4215,14 +4434,19 @@ class MainWindow(QMainWindow):
         self._status.setText(f"Updated {CAT_LABEL.get(cat, cat)} settings")
 
     def _on_device_selected(self, cat: str, name: str):
-        device = (self._data.get(cat) or {}).get(name)
+        device, enabled = _locate_device(self._data, cat, name)
         if device is not None:
-            self._editor.load_device(cat, name, device, setup=self._data)
+            self._editor.load_device(
+                cat, name, device, setup=self._data,
+                enabled=True if enabled is None else enabled,
+            )
 
     def _on_editor_apply(self, cat: str, name: str, new_device: dict):
-        if cat not in self._data or not isinstance(self._data[cat], dict):
-            self._data[cat] = {}
-        self._data[cat][name] = new_device
+        _, enabled = _locate_device(self._data, cat, name)
+        if enabled is None:
+            enabled = True
+        section = _device_section(self._data, cat, enabled=enabled, create=True)
+        section[name] = new_device
         self._modified = True
         self._refresh_canvas()
         self._val_panel.validate(self._data)
@@ -4231,12 +4455,15 @@ class MainWindow(QMainWindow):
         self._canvas._on_card_clicked(cat, name)
 
     def _on_device_rename(self, cat: str, old_name: str, new_name: str):
-        section = self._data.get(cat)
-        if not section or old_name not in section:
+        _, enabled = _locate_device(self._data, cat, old_name)
+        if enabled is None:
             return
-        if new_name in section:
+        active = _device_section(self._data, cat, enabled=True)
+        disabled = _device_section(self._data, cat, enabled=False)
+        if new_name != old_name and (new_name in active or new_name in disabled):
             QMessageBox.warning(self, "Rename", f"Name '{new_name}' already exists.")
             return
+        section = _device_section(self._data, cat, enabled=enabled)
         section[new_name] = section.pop(old_name)
         self._modified = True
         self._refresh_canvas()
@@ -4249,17 +4476,74 @@ class MainWindow(QMainWindow):
         if ok and new_name.strip():
             self._on_device_rename(cat, name, new_name.strip())
 
+    def _on_device_enabled_changed(self, cat: str, name: str, enabled: bool):
+        device, current_enabled = _locate_device(self._data, cat, name)
+        if device is None or current_enabled is None:
+            return
+        if current_enabled == enabled:
+            self._editor.set_device_enabled(current_enabled)
+            return
+
+        if not enabled:
+            refs = _known_device_references(self._data, cat, name)
+            if refs:
+                details = "\n".join(f"  • {path}" for path in refs[:8])
+                if len(refs) > 8:
+                    details += f"\n  • … and {len(refs) - 8} more"
+                response = QMessageBox.question(
+                    self,
+                    "Disable Referenced Device",
+                    f"'{name}' is referenced elsewhere in this setup:\n\n"
+                    f"{details}\n\n"
+                    "Those features may be unavailable until the device is enabled again.\n\n"
+                    "Disable it anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if response != QMessageBox.Yes:
+                    self._editor.set_device_enabled(current_enabled)
+                    return
+
+        selected_before = self._canvas._selected
+        try:
+            changed = _set_device_enabled(self._data, cat, name, enabled)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Device State", str(exc))
+            self._editor.set_device_enabled(current_enabled)
+            return
+        if not changed:
+            self._editor.set_device_enabled(current_enabled)
+            return
+
+        self._modified = True
+        self._refresh_canvas()
+        if selected_before:
+            card = self._canvas._cards.get(selected_before)
+            if card is not None:
+                self._canvas._selected = selected_before
+                card.set_selected(True)
+        if selected_before == (cat, name):
+            # Keep any un-applied property edits in the right-hand form; only
+            # the storage state changed.
+            self._editor.set_device_enabled(enabled)
+        self._val_panel.validate(self._data)
+        state = "Enabled" if enabled else "Disabled"
+        self._status.setText(f"{state}: {name}")
+
     def _on_device_deleted(self, cat: str, name: str):
         if cat == "__ADD__":
             return
+        _, enabled = _locate_device(self._data, cat, name)
+        if enabled is None:
+            return
+        state = "disabled " if enabled is False else ""
         r = QMessageBox.question(
             self, "Delete Device",
-            f"Delete '{name}' from {CAT_LABEL.get(cat, cat)}?",
+            f"Delete {state}device '{name}' from {CAT_LABEL.get(cat, cat)}?",
             QMessageBox.Yes | QMessageBox.No,
         )
         if r == QMessageBox.Yes:
-            section = self._data.get(cat) or {}
-            section.pop(name, None)
+            _remove_device(self._data, cat, name)
             self._modified = True
             self._editor.clear()
             self._refresh_canvas()
@@ -4278,13 +4562,17 @@ class MainWindow(QMainWindow):
                 self._add_device(cat, dev_name, device)
             return
         # Normal duplicate
-        section = self._data.get(cat_signal) or {}
-        original = section.get(name_signal)
+        original, enabled = _locate_device(self._data, cat_signal, name_signal)
         if original is None:
             return
+        if enabled is None:
+            enabled = True
+        section = _device_section(self._data, cat_signal, enabled=enabled, create=True)
+        active = _device_section(self._data, cat_signal, enabled=True)
+        disabled = _device_section(self._data, cat_signal, enabled=False)
         base = name_signal + "_copy"
         i = 1
-        while base in section:
+        while base in active or base in disabled:
             base = f"{name_signal}_copy{i}"
             i += 1
         section[base] = copy.deepcopy(original)
@@ -4293,21 +4581,22 @@ class MainWindow(QMainWindow):
         self._canvas._on_card_clicked(cat_signal, base)
 
     def _copy_device(self, cat: str, name: str):
-        device = (self._data.get(cat) or {}).get(name)
+        device, enabled = _locate_device(self._data, cat, name)
         if device is None:
             return
-        self._copied_device = (cat, name, copy.deepcopy(device))
+        self._copied_device = (
+            cat, name, copy.deepcopy(device),
+            True if enabled is None else enabled,
+        )
         self._status.setText(f"Copied device: {name}")
 
     def _paste_device(self):
         if not self._copied_device:
             QMessageBox.information(self, "Paste Device", "Copy a device first.")
             return
-        cat, name, device = self._copied_device
-        if cat not in self._data or not isinstance(self._data.get(cat), dict):
-            self._data[cat] = {}
-        section = self._data[cat]
-        if name in section:
+        cat, name, device, enabled = self._copied_device
+        existing, _ = _locate_device(self._data, cat, name)
+        if existing is not None:
             response = QMessageBox.question(
                 self,
                 "Replace Device?",
@@ -4318,6 +4607,8 @@ class MainWindow(QMainWindow):
             )
             if response != QMessageBox.Yes:
                 return
+            _remove_device(self._data, cat, name)
+        section = _device_section(self._data, cat, enabled=enabled, create=True)
         section[name] = copy.deepcopy(device)
         self._modified = True
         self._refresh_canvas()
@@ -4347,16 +4638,22 @@ class MainWindow(QMainWindow):
     def _add_device(self, cat: str, name: str, device: dict):
         if cat not in self._data or not isinstance(self._data.get(cat), dict):
             self._data[cat] = {}
-        if name in self._data[cat]:
-            name = name + "_1"
-        self._data[cat][name] = device
+        active = _device_section(self._data, cat, enabled=True, create=True)
+        disabled = _device_section(self._data, cat, enabled=False)
+        if name in active or name in disabled:
+            base = name
+            i = 1
+            while f"{base}_{i}" in active or f"{base}_{i}" in disabled:
+                i += 1
+            name = f"{base}_{i}"
+        active[name] = device
         self._modified = True
         self._refresh_canvas()
         self._canvas._on_card_clicked(cat, name)
         self._editor.load_device(cat, name, device, setup=self._data)
 
     def _on_save_template(self, cat: str, name: str):
-        device = (self._data.get(cat) or {}).get(name)
+        device, _ = _locate_device(self._data, cat, name)
         if device is None:
             return
         tname, ok = QInputDialog.getText(
