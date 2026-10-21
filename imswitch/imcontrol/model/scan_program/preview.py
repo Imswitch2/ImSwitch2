@@ -68,10 +68,9 @@ def sparse_traces(schedule: RealizedSchedule, segment: int = 0
     # Intra-step offsets: a delta over the device's position.
     motion = {d.device: d.motion for d in program.drives}
     deltas: Dict[str, _Trace] = {}
+    steps = {s.span.step_index: s for s in spans if s.span.kind == 'step'}
     for offset in schedule.offsets:
-        span = next((s for s in spans if s.span.kind == 'step'
-                     and s.span.step_index == offset.step_index), None)
-        if span is None:
+        if offset.step_index not in steps:
             continue
         delta = deltas.setdefault(offset.device, _Trace(0.0))
         s, e = offset.start_tick, offset.end_tick

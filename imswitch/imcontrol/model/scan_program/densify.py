@@ -66,10 +66,10 @@ def densify(schedule: RealizedSchedule, segment: int = 0) -> Dict[str, Dict[str,
 
     program = schedule.expansion.program
     motion = {d.device: d.motion for d in program.drives}
+    # The step itself: a prologue before it carries the same index.
+    steps = {s.span.step_index: s for s in spans if s.span.kind == 'step'}
     for offset in schedule.offsets:
-        # The step itself: a prologue before it carries the same index.
-        span = next(s for s in spans if s.span.kind == 'step'
-                    and s.span.step_index == offset.step_index)
+        span = steps[offset.step_index]
         out = analog[offset.device]
         delta = np.zeros(span.ticks)
         base = span.start_tick
