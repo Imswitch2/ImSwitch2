@@ -442,7 +442,13 @@ Key fields:
 
 * ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
 * ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
-* ``simulation``: Allow NI-DAQ commands without physical hardware (``true`` / ``false``)
+* ``simulation``: Select software NI-DAQ/scan simulation (``true`` / ``false``).
+  With ``true``, ImSwitch deliberately runs the software scan simulator instead
+  of opening NI-DAQmx tasks. With ``false``, ImSwitch expects real NI-DAQ
+  hardware. If the ``nidaqmx`` backend is unavailable, Hardware Control still
+  starts in a degraded state, but NI-DAQ writes and scans are refused; it does
+  **not** silently switch to simulated acquisition. Install the hardware extra
+  (``pip install "imswitch2[hardware]"``) to restore real NI-DAQ operation.
 
 **Example** (simulation mode, no physical DAQ):
 

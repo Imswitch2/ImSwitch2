@@ -552,7 +552,12 @@ class NidaqInfo:
     """ Boolean for start triggering for sync. """
 
     simulation: Optional[bool] = False
-    """ Boolean for allowing to run nidaq-commands without access to a nidaq card. """
+    """ Use software NI-DAQ/scan simulation instead of physical NI-DAQ hardware.
+
+    If ``False`` and the NI-DAQmx backend is unavailable, ImControl still
+    starts but NI-DAQ operations remain unavailable rather than silently
+    switching to simulated acquisition.
+    """
 
     def getTimerCounterChannel(self):
         """ :meta private: """
