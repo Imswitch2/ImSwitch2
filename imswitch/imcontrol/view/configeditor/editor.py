@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
-    QDialog, QTextEdit, QLayout, QLayoutItem,
+    QDialog, QTextEdit, QLayout, QLayoutItem, QStyle,
 )
 
 # Try to import the manager catalog (Phase 1: registry-backed discovery)
@@ -2454,11 +2454,18 @@ class PropertyEditor(QWidget):
         lbl = QLabel(name)
         lbl.setStyleSheet("font-size:8pt; border:none; background:transparent;")
         lay.addWidget(lbl)
-        del_btn = QPushButton("×")
-        del_btn.setFixedSize(14, 14)
+        # Use Qt's close icon instead of a font glyph.  The old multiplication
+        # sign rendered like a small down-arrow with some platform fonts, which
+        # made this destructive action unnecessarily ambiguous.
+        del_btn = QPushButton()
+        del_btn.setIcon(self.style().standardIcon(QStyle.SP_TitleBarCloseButton))
+        del_btn.setIconSize(QSize(10, 10))
+        del_btn.setFixedSize(18, 18)
+        del_btn.setToolTip(f"Remove widget '{name}'")
+        del_btn.setAccessibleName(f"Remove widget {name}")
         del_btn.setStyleSheet(
-            "QPushButton { border:none; color:#666; background:transparent; font-size:9pt; }"
-            "QPushButton:hover { color:#C00; }"
+            "QPushButton { border:none; background:transparent; padding:0; }"
+            "QPushButton:hover { background:rgba(200, 40, 40, 45); border-radius:3px; }"
         )
         del_btn.clicked.connect(lambda _, n=name: self._remove_widget(n))
         lay.addWidget(del_btn)
@@ -3657,6 +3664,9 @@ class LeftPanel(QWidget):
         self.setFixedWidth(242)
         self._store = TemplateStore()
         self._config_dir: object = None
+        self._current_config_path: str = ""
+        self._active_config_path: str = ""
+        self._current_modified = False
         
         # Load plugin templates (Phase 3)
         self._plugin_templates: list = []
@@ -3675,38 +3685,40 @@ class LeftPanel(QWidget):
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(6)
 
-        # ── Config Files ──
-        hdr = QLabel("<b>Config Files</b>")
+        # ── Config files ──
+        # Keep folder actions next to the thing they operate on instead of in a
+        # separate button row.  This also gives the file list the full remaining
+        # height of the panel when templates are hidden.
+        config_hdr = QHBoxLayout()
+        config_hdr.setSpacing(4)
+        hdr = QLabel("<b>Configs</b>")
         hdr.setTextFormat(Qt.RichText)
-        hdr.setFixedHeight(22)
         hdr.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        lay.addWidget(hdr)
+        config_hdr.addWidget(hdr)
+        config_hdr.addStretch()
 
-        folder_btns = QHBoxLayout()
-        folder_btns.setSpacing(4)
-
-        open_btn = QPushButton("Open Folder…")
+        open_btn = QPushButton("Folder…")
+        open_btn.setFixedHeight(22)
+        open_btn.setToolTip("Choose the folder containing ImSwitch setup JSON files")
         open_btn.clicked.connect(self._open_folder)
-        folder_btns.addWidget(open_btn, 1)
+        config_hdr.addWidget(open_btn)
 
         reload_btn = QPushButton("Reload")
+        reload_btn.setFixedHeight(22)
         reload_btn.setToolTip("Reload JSON configs from the currently selected folder")
         reload_btn.clicked.connect(self.reload_folder)
-        folder_btns.addWidget(reload_btn)
-        lay.addLayout(folder_btns)
+        config_hdr.addWidget(reload_btn)
+        lay.addLayout(config_hdr)
 
         self._file_list = QTreeWidget()
         self._file_list.setHeaderHidden(True)
         self._file_list.setIndentation(12)
-        self._file_list.setTextElideMode(Qt.ElideNone)
+        self._file_list.setTextElideMode(Qt.ElideMiddle)
         self._file_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._file_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._file_list.setMinimumHeight(180)
-        self._file_list.setMaximumHeight(230)
-        self._file_list.header().setStretchLastSection(False)
-        self._file_list.setColumnWidth(0, 360)
+        self._file_list.header().setStretchLastSection(True)
         self._file_list.itemDoubleClicked.connect(self._on_file_double_click)
-        lay.addWidget(self._file_list)
+        lay.addWidget(self._file_list, 1)
 
         show_tmpl_btn = QPushButton("Add from Template…")
         show_tmpl_btn.setToolTip("Show built-in and saved templates for adding devices")
@@ -3764,17 +3776,57 @@ class LeftPanel(QWidget):
             count = self._refresh_file_list(d)
             self.sig_folder_reloaded.emit(d, count)
 
+    @property
+    def config_dir(self) -> str:
+        return str(self._config_dir or "")
+
+    @staticmethod
+    def _same_path(left: str, right: str) -> bool:
+        if not left or not right:
+            return False
+        try:
+            return Path(left).resolve() == Path(right).resolve()
+        except Exception:
+            return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+    def set_config_identity(
+        self, current_path: str = "", active_path: str = "", modified: bool = False
+    ) -> None:
+        """Update OPEN / ACTIVE / MODIFIED markers without rebuilding the list."""
+        self._current_config_path = str(current_path or "")
+        self._active_config_path = str(active_path or "")
+        self._current_modified = bool(modified)
+        for index in range(self._file_list.topLevelItemCount()):
+            item = self._file_list.topLevelItem(index)
+            path = str(item.data(0, Qt.UserRole) or "")
+            self._decorate_file_item(item, Path(path))
+
+    def _decorate_file_item(self, item: QTreeWidgetItem, path: Path) -> None:
+        is_current = self._same_path(str(path), self._current_config_path)
+        is_active = self._same_path(str(path), self._active_config_path)
+        badges = []
+        if is_current:
+            badges.append("EDITING")
+            if self._current_modified:
+                badges.append("MODIFIED")
+        if is_active:
+            badges.append("ACTIVE")
+        suffix = "  " + " ".join(f"[{badge}]" for badge in badges) if badges else ""
+        item.setText(0, f"{path.name}{suffix}")
+        item.setToolTip(0, str(path))
+        font = item.font(0)
+        font.setBold(is_current)
+        item.setFont(0, font)
+
     def _refresh_file_list(self, folder: str) -> int:
         self._file_list.clear()
         count = 0
         for p in sorted(Path(folder).glob("*.json")):
-            item = QTreeWidgetItem([p.name])
+            item = QTreeWidgetItem()
             item.setData(0, Qt.UserRole, str(p))
-            item.setToolTip(0, str(p))
+            self._decorate_file_item(item, p)
             self._file_list.addTopLevelItem(item)
             count += 1
-        self._file_list.resizeColumnToContents(0)
-        self._file_list.setColumnWidth(0, max(self._file_list.columnWidth(0), 360))
         return count
 
     def _on_file_double_click(self, item: QTreeWidgetItem, _col: int):
@@ -4223,36 +4275,42 @@ class MainWindow(QMainWindow):
         root_lay.setSpacing(0)
         self.setCentralWidget(root)
 
-        # ── Active-config banner (hidden until options file found) ──
+        # ── Config identity bar ──
+        # "Editing" is the primary identity; "Active" is deliberately a
+        # secondary line.  The old active-only banner visually implied that the
+        # active file was necessarily the file being edited.
+        colors = get_themed_colors(is_dark_mode())
         self._active_banner = QFrame()
+        self._active_banner.setObjectName("configIdentityBar")
         self._active_banner.setStyleSheet(
-            "QFrame { background:#1A3A5C; border-bottom:1px solid #0D2540; }"
+            f"QFrame#configIdentityBar {{ background:{colors['header_bg']}; "
+            f"border-bottom:1px solid {colors['card_border']}; }}"
         )
-        self._active_banner.setFixedHeight(36)
+        self._active_banner.setFixedHeight(56)
         bl = QHBoxLayout(self._active_banner)
-        bl.setContentsMargins(10, 0, 10, 0)
+        bl.setContentsMargins(10, 4, 10, 4)
+        bl.setSpacing(10)
 
+        identity_text = QVBoxLayout()
+        identity_text.setContentsMargins(0, 0, 0, 0)
+        identity_text.setSpacing(1)
+        self._editing_lbl = QLabel()
+        self._editing_lbl.setTextFormat(Qt.RichText)
+        self._editing_lbl.setStyleSheet("font-size:10pt;")
+        identity_text.addWidget(self._editing_lbl)
         self._active_lbl = QLabel()
-        self._active_lbl.setStyleSheet("color:#9CC4F0; font-size:9pt;")
         self._active_lbl.setTextFormat(Qt.RichText)
-        bl.addWidget(self._active_lbl)
-        bl.addStretch()
+        self._active_lbl.setStyleSheet("font-size:8pt;")
+        identity_text.addWidget(self._active_lbl)
+        bl.addLayout(identity_text, 1)
 
-        set_active_btn = QPushButton("Set as Active Config")
-        set_active_btn.setFixedHeight(24)
-        set_active_btn.setStyleSheet("""
-            QPushButton {
-                background:#2E6DA4; color:white; border-radius:3px;
-                font-size:9pt; padding:0 10px;
-            }
-            QPushButton:hover { background:#3A85C4; }
-            QPushButton:disabled { background:#334; color:#668; }
-        """)
+        set_active_btn = QPushButton("Set as Active")
+        set_active_btn.setFixedHeight(26)
+        set_active_btn.setToolTip("Make the config currently being edited the active ImSwitch setup")
         set_active_btn.clicked.connect(self._set_as_active_config)
         self._set_active_btn = set_active_btn
         bl.addWidget(set_active_btn)
 
-        self._active_banner.setVisible(False)
         root_lay.addWidget(self._active_banner)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -4309,11 +4367,10 @@ class MainWindow(QMainWindow):
         self._data = {cat: {} for cat in DEVICE_CATS}
         self._data["availableWidgets"] = []
         self._path = ""
-        self._modified = False
+        self._set_modified(False)
         self._refresh_canvas()
         self._editor.load_config_extras(self._data)
         self._status.setText("New config (unsaved)")
-        self.setWindowTitle("ImSwitch Config Studio — [new]")
 
     def _open_file(self):
         if not self._confirm_discard():
@@ -4335,11 +4392,10 @@ class MainWindow(QMainWindow):
                     self._data = json.load(fh)
             self._path = path
             self._left.set_folder(str(Path(path).parent))
-            self._modified = False
+            self._set_modified(False)
             self._refresh_canvas()
             self._editor.load_config_extras(self._data)
             self._val_panel.validate(self._data)
-            self.setWindowTitle(f"ImSwitch Config Studio — {Path(path).name}")
             self._status.setText(f"Loaded: {path}")
             # Try to find options file near the loaded config if not yet found
             if not self._options_path:
@@ -4379,9 +4435,12 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(data_to_write, fh, indent=2, ensure_ascii=False)
             self._path = path
-            self._modified = False
+            # Save As may move the editor to a different setup folder. Refresh
+            # that list so the newly written file and its EDITING marker appear
+            # immediately.
+            self._left.set_folder(str(Path(path).parent))
+            self._set_modified(False)
             self._note_saved(path)
-            self.setWindowTitle(f"ImSwitch Config Studio — {Path(path).name}")
             self._status.setText(f"Saved: {path}")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
@@ -4427,7 +4486,7 @@ class MainWindow(QMainWindow):
         if dlg.exec_() != QDialog.Accepted:
             return
         settings_root[cat] = dlg.result_data
-        self._modified = True
+        self._mark_modified()
         self._refresh_canvas()
         self._editor.load_config_extras(self._data)
         self._val_panel.validate(self._data)
@@ -4447,7 +4506,7 @@ class MainWindow(QMainWindow):
             enabled = True
         section = _device_section(self._data, cat, enabled=enabled, create=True)
         section[name] = new_device
-        self._modified = True
+        self._mark_modified()
         self._refresh_canvas()
         self._val_panel.validate(self._data)
         self._status.setText(f"Updated: {name}")
@@ -4465,7 +4524,7 @@ class MainWindow(QMainWindow):
             return
         section = _device_section(self._data, cat, enabled=enabled)
         section[new_name] = section.pop(old_name)
-        self._modified = True
+        self._mark_modified()
         self._refresh_canvas()
         self._canvas._on_card_clicked(cat, new_name)
 
@@ -4515,7 +4574,7 @@ class MainWindow(QMainWindow):
             self._editor.set_device_enabled(current_enabled)
             return
 
-        self._modified = True
+        self._mark_modified()
         self._refresh_canvas()
         if selected_before:
             card = self._canvas._cards.get(selected_before)
@@ -4544,7 +4603,7 @@ class MainWindow(QMainWindow):
         )
         if r == QMessageBox.Yes:
             _remove_device(self._data, cat, name)
-            self._modified = True
+            self._mark_modified()
             self._editor.clear()
             self._refresh_canvas()
             self._val_panel.validate(self._data)
@@ -4576,7 +4635,7 @@ class MainWindow(QMainWindow):
             base = f"{name_signal}_copy{i}"
             i += 1
         section[base] = copy.deepcopy(original)
-        self._modified = True
+        self._mark_modified()
         self._refresh_canvas()
         self._canvas._on_card_clicked(cat_signal, base)
 
@@ -4610,7 +4669,7 @@ class MainWindow(QMainWindow):
             _remove_device(self._data, cat, name)
         section = _device_section(self._data, cat, enabled=enabled, create=True)
         section[name] = copy.deepcopy(device)
-        self._modified = True
+        self._mark_modified()
         self._refresh_canvas()
         self._val_panel.validate(self._data)
         self._canvas._on_card_clicked(cat, name)
@@ -4647,7 +4706,7 @@ class MainWindow(QMainWindow):
                 i += 1
             name = f"{base}_{i}"
         active[name] = device
-        self._modified = True
+        self._mark_modified()
         self._refresh_canvas()
         self._canvas._on_card_clicked(cat, name)
         self._editor.load_device(cat, name, device, setup=self._data)
@@ -4687,10 +4746,7 @@ class MainWindow(QMainWindow):
         self._status.setText(f"Template '{tname}' saved to '{dest_cat}'")
 
     def _on_extras_modified(self):
-        self._modified = True
-        t = self.windowTitle()
-        if not t.endswith(" *"):
-            self.setWindowTitle(t + " *")
+        self._mark_modified()
         # Re-run validation so cross-reference issues update live as the user
         # adds, edits, or removes system sections.
         self._val_panel.validate(self._data)
@@ -4712,6 +4768,7 @@ class MainWindow(QMainWindow):
     # ── Active config / options file ──────────────────────────────────────
     def _detect_options_file(self):
         """Search well-known locations for imcontrol_options.json."""
+        self._options_path = ""
         candidates = list(self._OPTIONS_SEARCH_ROOTS)
         # Also look next to an already-open config file
         if self._path:
@@ -4720,10 +4777,8 @@ class MainWindow(QMainWindow):
             p = Path(root) / "imcontrol_options.json"
             if p.exists():
                 self._options_path = str(p)
-                self._active_banner.setVisible(True)
-                self._update_active_banner()
-                return
-        self._active_banner.setVisible(False)
+                break
+        self._update_active_banner()
 
     def _active_setup_name(self) -> str:
         """The setup file name ``imcontrol_options.json`` marks as active."""
@@ -4776,31 +4831,68 @@ class MainWindow(QMainWindow):
             self._status.setText(f"Could not open the active config: {exc}")
 
     def _update_active_banner(self):
-        if not self._options_path:
-            return
-        try:
-            with open(self._options_path, encoding="utf-8") as fh:
-                opts = json.load(fh)
-            active = opts.get("setupFileName", "<not set>")
-        except Exception:
-            active = "<error reading options>"
-
-        is_current = bool(self._path) and Path(self._path).name == active
-        mark = "  <span style='color:#5DADE2;'>◀ currently open</span>" if is_current else ""
-        self._active_lbl.setText(
-            f"<b style='color:#9CC4F0;'>Active config:</b>"
-            f"  <span style='color:white;'>{active}</span>{mark}"
-            f"  <span style='color:#5A7A9A; font-size:8pt;'>"
-            f"({Path(self._options_path).parent})</span>"
+        """Refresh the Editing / Active identity bar and left-list markers."""
+        editing_name = Path(self._path).name if self._path else "[new config]"
+        modified = " <span style='color:#D98C2B;'><b>MODIFIED</b></span>" if self._modified else ""
+        self._editing_lbl.setText(
+            f"<b>Editing:</b>&nbsp;&nbsp;<b>{editing_name}</b>{modified}"
         )
-        # Disable "Set as Active" if this file is already active or nothing is open
-        already_active = is_current or not self._path
-        self._set_active_btn.setEnabled(not already_active)
+        self._editing_lbl.setToolTip(self._path or "New unsaved configuration")
+
+        active = ""
+        active_path = ""
+        active_error = False
+        if self._options_path:
+            try:
+                with open(self._options_path, encoding="utf-8") as fh:
+                    opts = json.load(fh)
+                active = str(opts.get("setupFileName") or "<not set>")
+            except Exception:
+                active = "<error reading options>"
+                active_error = True
+            active_path = self._active_setup_path(self._left.config_dir)
+
+        if not self._options_path:
+            self._active_lbl.setText("<span style='color:#888;'><b>Active:</b>&nbsp;&nbsp;unavailable</span>")
+            self._active_lbl.setToolTip("No imcontrol_options.json was found")
+        else:
+            same = bool(self._path) and bool(active_path) and LeftPanel._same_path(self._path, active_path)
+            if not active_path and not active_error and active not in ("", "<not set>"):
+                # Keep the configured name visible even if the referenced file
+                # has since moved or been deleted.
+                state = " <span style='color:#B36B00;'>(file not found)</span>"
+            else:
+                state = ""
+            if same:
+                state += " <span style='color:#4B9B67;'>(same as editing)</span>"
+            self._active_lbl.setText(f"<b>Active:</b>&nbsp;&nbsp;{active}{state}")
+            self._active_lbl.setToolTip(str(self._options_path))
+
+        is_current = bool(self._path) and bool(active_path) and LeftPanel._same_path(self._path, active_path)
+        can_set_active = bool(self._path and self._options_path and not is_current)
+        self._set_active_btn.setEnabled(can_set_active)
         self._set_active_btn.setToolTip(
             "This file is already the active config" if is_current
-            else "Open a config file first" if not self._path
+            else "No imcontrol_options.json was found" if not self._options_path
+            else "Open or save a config file first" if not self._path
             else f"Set {Path(self._path).name} as the active ImSwitch config"
         )
+
+        self._left.set_config_identity(
+            current_path=self._path,
+            active_path=active_path,
+            modified=self._modified,
+        )
+        title_name = Path(self._path).name if self._path else "[new]"
+        star = " *" if self._modified else ""
+        self.setWindowTitle(f"ImSwitch Config Studio — {title_name}{star}")
+
+    def _set_modified(self, modified: bool) -> None:
+        self._modified = bool(modified)
+        self._update_active_banner()
+
+    def _mark_modified(self) -> None:
+        self._set_modified(True)
 
     def _set_as_active_config(self):
         if not self._path or not self._options_path:
