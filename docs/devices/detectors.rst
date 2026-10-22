@@ -292,8 +292,11 @@ Hamamatsu sCMOS cameras driven through the DCAM API.
    * - ``hamamatsu``
      - dict
      - Dictionary of DCAM API property name → value pairs applied via ``setPropertyValue`` at startup.
+   * - ``mockSample``
+     - object or null
+     - Simulation only (mock camera on a simulated NI-DAQ): the frames show the synthetic sample (cells and beads) under a square MoNaLISA foci lattice fixed on the camera, the sample moved by the stage position the scan waveforms give at each camera trigger. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "latticePeriodUm": 0.72, "seed": 0}``; each axis carries its positioner's ``conversionFactor``. Without it the mock frames are uniform noise.
 
-Both fields are **required**; no defaults.
+``cameraListIndex`` and ``hamamatsu`` are **required**; ``mockSample`` defaults to ``null``.
 
 **Low-level dependencies**
 

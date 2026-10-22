@@ -253,8 +253,7 @@ Setup templates
 Ready-to-use hardware-free setup files, all under
 ``imswitch/_data/user_defaults/imcontrol_setups/``:
 
-* ``simple_mock_setup.json`` — **the default setup** (preselected on first
-  start): mock camera (``AVManager``) for live widefield and one simulated
+* ``simple_mock_setup.json`` — mock camera (``AVManager``) for live widefield and one simulated
   APD imaging the synthetic sample (``mockSample``) through the
   SimplePointScan panel; galvos reaching 100 µm, three gated lasers,
   ``nidaq.simulation: true``.

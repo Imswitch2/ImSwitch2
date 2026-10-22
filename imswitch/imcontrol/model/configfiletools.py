@@ -11,16 +11,7 @@ from .Options import Options
 _LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan'}
 
 
-#: The setup a new installation starts with: a hardware-free point-scanning
-#: microscope (one camera, one APD, the SimplePointScan panel). Preselected
-#: in the setup picker the first time, until another is chosen.
-DEFAULT_SETUP_FILE = 'simple_mock_setup.json'
-
-
 def getSetupList():
-    return sorted(Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json')))
-
-
     return sorted(Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json')))
 
 
@@ -31,15 +22,6 @@ def _defaultSetupFileName(setupList):
     if setupList:
         return setupList[0]
     return ''
-
-
-def getDefaultSetup():
-    """``DEFAULT_SETUP_FILE`` when this installation has it, else the safest
-    first-run setup (``_defaultSetupFileName``), else None."""
-    setups = getSetupList()
-    if DEFAULT_SETUP_FILE in setups:
-        return DEFAULT_SETUP_FILE
-    return _defaultSetupFileName(setups) or None
 
 
 def getSetupFilesDir():
@@ -106,7 +88,7 @@ def loadOptions():
     optionsDidNotExist = False
     if not os.path.isfile(_optionsFilePath):
         _options = Options(
-            setupFileName=getDefaultSetup()
+            setupFileName=_defaultSetupFileName(getSetupList())
         )
         optionsDidNotExist = True
     else:

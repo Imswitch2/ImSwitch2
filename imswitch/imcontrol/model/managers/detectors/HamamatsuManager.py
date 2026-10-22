@@ -897,6 +897,10 @@ class HamamatsuManager(DetectorManager):
         self._applyCameraProperties(camera, self._startupCameraProperties)
         newFullShape = self._cameraSensorShape(camera)
         self._camera = camera
+        # A replacement mock keeps imaging the synthetic sample: the lattice
+        # frame source was bound to the camera this one replaces.
+        if self._mockFrames is not None and hasattr(camera, 'mock_frame_source'):
+            camera.mock_frame_source = self._mockFrames
         self._setFullShape(newFullShape)
 
         try:
