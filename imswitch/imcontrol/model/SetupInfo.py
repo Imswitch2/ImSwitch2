@@ -774,6 +774,16 @@ class SetupInfo:
     """ Detectors in this setup. This is a map from unique detector names to
     DetectorInfo objects. """
 
+    disabledDevices: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+    """ Device definitions parked by the configuration editor.
+
+    The outer key is the normal setup section name (for example ``detectors``
+    or ``positioners``), and the inner mapping keeps the original raw device
+    dictionaries keyed by device name. Disabled entries intentionally do not
+    appear in the active device mappings above/below, so runtime manager
+    construction and controllers continue to see only enabled hardware.
+    """
+
     lasers: Dict[str, LaserInfo] = field(default_factory=dict)
     """ Lasers in this setup. This is a map from unique laser names to
     LaserInfo objects. """
