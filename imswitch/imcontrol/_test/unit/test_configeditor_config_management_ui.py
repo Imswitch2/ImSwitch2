@@ -68,6 +68,46 @@ def test_config_list_exposes_management_actions_and_preserves_selection(qapp, tm
     assert {"Ctrl+D", "F2", "Del"}.issubset(shortcuts) or {"Ctrl+D", "F2", "Delete"}.issubset(shortcuts)
 
 
+def test_config_filter_matches_filenames_and_survives_reload(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(editor, "_user_template_dir", lambda: tmp_path / "templates")
+    setup_dir = tmp_path / "setups"
+    setup_dir.mkdir()
+    alpha = setup_dir / "monalisa_alpha.json"
+    beta = setup_dir / "widefield_beta.json"
+    gamma = setup_dir / "MONALISA_gamma.json"
+    for path in (alpha, beta, gamma):
+        _write_setup(path)
+
+    panel = editor.LeftPanel()
+    panel.set_folder(str(setup_dir))
+    assert panel._config_filter.placeholderText() == "Filter configs…"
+    assert panel._config_filter.isClearButtonEnabled() is True
+
+    panel._config_filter.setText("monalisa")
+    visible = []
+    hidden = []
+    for index in range(panel._file_list.topLevelItemCount()):
+        item = panel._file_list.topLevelItem(index)
+        path = Path(str(item.data(0, editor.Qt.UserRole)))
+        (hidden if item.isHidden() else visible).append(path.name)
+
+    assert visible == ["MONALISA_gamma.json", "monalisa_alpha.json"]
+    assert hidden == ["widefield_beta.json"]
+
+    panel.reload_folder()
+    assert panel._config_filter.text() == "monalisa"
+    assert sum(
+        not panel._file_list.topLevelItem(index).isHidden()
+        for index in range(panel._file_list.topLevelItemCount())
+    ) == 2
+
+    panel._config_filter.clear()
+    assert all(
+        not panel._file_list.topLevelItem(index).isHidden()
+        for index in range(panel._file_list.topLevelItemCount())
+    )
+
+
 def test_duplicate_config_creates_a_separate_file_without_switching_editor(qapp, tmp_path, monkeypatch):
     window, _setup_dir, active, other, _options = _make_window(tmp_path, monkeypatch)
     monkeypatch.setattr(

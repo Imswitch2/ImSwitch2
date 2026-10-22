@@ -4374,7 +4374,9 @@ class LeftPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(242)
+        # The left panel lives in the main QSplitter. Keep a practical
+        # minimum, but let users resize it narrower or wider as needed.
+        self.setMinimumWidth(100)
         self._store = TemplateStore()
         self._config_dir: object = None
         self._current_config_path: str = ""
@@ -4422,6 +4424,13 @@ class LeftPanel(QWidget):
         reload_btn.clicked.connect(self.reload_folder)
         config_hdr.addWidget(reload_btn)
         lay.addLayout(config_hdr)
+
+        self._config_filter = QLineEdit()
+        self._config_filter.setPlaceholderText("Filter configs…")
+        self._config_filter.setClearButtonEnabled(True)
+        self._config_filter.setToolTip("Filter the config list by filename")
+        self._config_filter.textChanged.connect(self._apply_file_filter)
+        lay.addWidget(self._config_filter)
 
         self._file_list = QTreeWidget()
         self._file_list.setHeaderHidden(True)
@@ -4538,7 +4547,7 @@ class LeftPanel(QWidget):
 
     def selected_config_path(self) -> str:
         items = self._file_list.selectedItems()
-        if not items:
+        if not items or items[0].isHidden():
             return ""
         return str(items[0].data(0, Qt.UserRole) or "")
 
@@ -4643,10 +4652,8 @@ class LeftPanel(QWidget):
         is_current = self._same_path(str(path), self._current_config_path)
         is_active = self._same_path(str(path), self._active_config_path)
         badges = []
-        if is_current:
-            badges.append("EDITING")
-            if self._current_modified:
-                badges.append("MODIFIED")
+        if is_current and self._current_modified:
+            badges.append("MODIFIED")
         if is_active:
             badges.append("ACTIVE")
         suffix = "  " + " ".join(f"[{badge}]" for badge in badges) if badges else ""
@@ -4655,6 +4662,15 @@ class LeftPanel(QWidget):
         font = item.font(0)
         font.setBold(is_current)
         item.setFont(0, font)
+
+    def _apply_file_filter(self, text: str = "") -> None:
+        needle = str(text or "").strip().casefold()
+        for index in range(self._file_list.topLevelItemCount()):
+            item = self._file_list.topLevelItem(index)
+            path = str(item.data(0, Qt.UserRole) or "")
+            filename = Path(path).name.casefold()
+            item.setHidden(bool(needle) and needle not in filename)
+        self._update_config_action_state()
 
     def _refresh_file_list(self, folder: str) -> int:
         selected_before = self.selected_config_path()
@@ -4678,7 +4694,7 @@ class LeftPanel(QWidget):
             self._file_list.setCurrentItem(preferred_item)
         elif current_item is not None:
             self._file_list.setCurrentItem(current_item)
-        self._update_config_action_state()
+        self._apply_file_filter(self._config_filter.text())
         return count
 
     def _on_file_double_click(self, item: QTreeWidgetItem, _col: int):
@@ -5158,30 +5174,60 @@ class MainWindow(QMainWindow):
             f"QFrame#configIdentityBar {{ background:{colors['header_bg']}; "
             f"border-bottom:1px solid {colors['card_border']}; }}"
         )
-        self._active_banner.setFixedHeight(56)
-        bl = QHBoxLayout(self._active_banner)
+        self._active_banner.setFixedHeight(60)
+        bl = QVBoxLayout(self._active_banner)
         bl.setContentsMargins(10, 4, 10, 4)
-        bl.setSpacing(10)
+        bl.setSpacing(2)
 
-        identity_text = QVBoxLayout()
-        identity_text.setContentsMargins(0, 0, 0, 0)
-        identity_text.setSpacing(1)
+        editing_row = QHBoxLayout()
+        editing_row.setContentsMargins(0, 0, 0, 0)
+        editing_row.setSpacing(6)
         self._editing_lbl = QLabel()
         self._editing_lbl.setTextFormat(Qt.RichText)
         self._editing_lbl.setStyleSheet("font-size:10pt;")
-        identity_text.addWidget(self._editing_lbl)
+        editing_row.addWidget(self._editing_lbl)
+
+        self._reset_editing_btn = QPushButton("Reset")
+        self._reset_editing_btn.setFixedHeight(22)
+        self._reset_editing_btn.setStyleSheet(
+            "QPushButton { color:#D98C2B; border:1px solid #D98C2B; "
+            "border-radius:3px; padding:1px 7px; font-weight:600; } "
+            "QPushButton:hover { background:rgba(217, 140, 43, 0.12); } "
+            "QPushButton:pressed { background:rgba(217, 140, 43, 0.20); }"
+        )
+        self._reset_editing_btn.setToolTip(
+            "Discard unsaved changes and restore the last saved version"
+        )
+        self._reset_editing_btn.clicked.connect(self._reset_editing_config)
+        editing_row.addWidget(self._reset_editing_btn)
+
+        self._set_active_btn = QPushButton("Set as Active")
+        self._set_active_btn.setFixedHeight(22)
+        self._set_active_btn.setToolTip(
+            "Make the config currently being edited the active ImSwitch setup"
+        )
+        self._set_active_btn.clicked.connect(self._set_as_active_config)
+        editing_row.addWidget(self._set_active_btn)
+        editing_row.addStretch(1)
+        bl.addLayout(editing_row)
+
+        active_row = QHBoxLayout()
+        active_row.setContentsMargins(0, 0, 0, 0)
+        active_row.setSpacing(6)
         self._active_lbl = QLabel()
         self._active_lbl.setTextFormat(Qt.RichText)
         self._active_lbl.setStyleSheet("font-size:8pt;")
-        identity_text.addWidget(self._active_lbl)
-        bl.addLayout(identity_text, 1)
+        active_row.addWidget(self._active_lbl)
 
-        set_active_btn = QPushButton("Set as Active")
-        set_active_btn.setFixedHeight(26)
-        set_active_btn.setToolTip("Make the config currently being edited the active ImSwitch setup")
-        set_active_btn.clicked.connect(self._set_as_active_config)
-        self._set_active_btn = set_active_btn
-        bl.addWidget(set_active_btn)
+        self._select_active_btn = QPushButton("Select")
+        self._select_active_btn.setFixedHeight(22)
+        self._select_active_btn.setToolTip(
+            "Open the active ImSwitch config in the editor"
+        )
+        self._select_active_btn.clicked.connect(self._select_active_config)
+        active_row.addWidget(self._select_active_btn)
+        active_row.addStretch(1)
+        bl.addLayout(active_row)
 
         root_lay.addWidget(self._active_banner)
 
@@ -6480,6 +6526,22 @@ class MainWindow(QMainWindow):
             else f"Set {Path(self._path).name} as the active ImSwitch config"
         )
 
+        # Reset is useful only while the primary editing config has unsaved
+        # changes. Keep the normal identity bar uncluttered otherwise.
+        self._reset_editing_btn.setVisible(self._modified)
+        self._reset_editing_btn.setEnabled(self._modified)
+
+        # When Active and Editing already point to the same file, the green
+        # '(same as editing)' label above is the affordance. Otherwise Select
+        # provides a direct way back to the active setup.
+        can_select_active = bool(active_path and not is_current)
+        self._select_active_btn.setVisible(can_select_active)
+        self._select_active_btn.setEnabled(can_select_active)
+        self._select_active_btn.setToolTip(
+            f"Open {Path(active_path).name} in the editor"
+            if can_select_active else "The active config is already being edited"
+        )
+
         self._left.set_config_identity(
             current_path=self._path,
             active_path=active_path,
@@ -6492,6 +6554,42 @@ class MainWindow(QMainWindow):
         title_name = Path(self._path).name if self._path else "[new]"
         star = " *" if self._modified else ""
         self.setWindowTitle(f"ImSwitch Config Studio — {title_name}{star}")
+
+    def _select_active_config(self) -> None:
+        """Open the active ImSwitch setup as the primary editing config."""
+        active_path = self._active_setup_path(self._left.config_dir)
+        if not active_path:
+            return
+        self._open_file_from_list(active_path)
+
+    def _reset_editing_config(self) -> None:
+        """Discard primary unsaved edits and restore the last saved state."""
+        if not self._modified:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Discard Unsaved Changes",
+            "Discard unsaved changes?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        if self._path:
+            self._load_file(self._path)
+            return
+
+        # An unsaved new config has no disk state to restore; reset it to the
+        # same empty structure created by New without prompting a second time.
+        self._data = {cat: {} for cat in DEVICE_CATS}
+        self._data["availableWidgets"] = []
+        self._set_modified(False)
+        self._refresh_canvas()
+        self._activate_pane("primary")
+        self._set_editor_source("primary")
+        self._editor.load_config_extras(self._data)
+        self._status.setText("Unsaved changes discarded")
 
     def _set_modified(self, modified: bool) -> None:
         self._modified = bool(modified)
