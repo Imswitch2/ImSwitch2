@@ -368,7 +368,8 @@ def test_float_pair_widget_round_trips_untouched(qapp):
 def test_float_pair_widget_returns_two_edited_numbers(qapp):
     fw = editor.FieldWidget(_field("fov", "float_pair"), [40.0, 40.0])
     left, right = fw._pair_edits
-    _type(left, "35.25")
-    _type(right, "36.5")
+    for edit, text in ((left, "35.25"), (right, "36.5")):
+        edit.clear()
+        QTest.keyClicks(edit, text)
 
     assert fw.get_value() == [35.25, 36.5]

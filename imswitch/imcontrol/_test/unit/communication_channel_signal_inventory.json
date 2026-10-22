@@ -31,6 +31,12 @@
     ]
   },
   {
+    "name": "sigDetectorParametersChanged",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigNewFrame",
     "args": []
   },
