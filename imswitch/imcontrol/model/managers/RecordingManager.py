@@ -2432,6 +2432,35 @@ class RecordingManager(SignalInterface):
                 'writer is still shutting down'
             )
 
+        # Admitted before anything changes: refused while a device reconnects.
+        from imswitch.imcontrol.model.devices.acquisition_gate import (
+            AcquisitionBlockedError,
+            get_acquisition_gate,
+        )
+        gate = get_acquisition_gate()
+        try:
+            acquisitionTicket = gate.admit('recording')
+        except AcquisitionBlockedError as exc:
+            raise RuntimeError(f'Cannot start a recording: {exc}') from None
+        try:
+            return self.__startRecordingAdmitted(
+                gate, acquisitionTicket, detectorNames, recMode, savename, saveMode,
+                attrs, saveFormat, singleMultiDetectorFile, singleLapseFile, recFrames,
+                recTime, numCamTTL, stallTimeout, recLapseTotal, recLapseIndex,
+                scanDims, scanStepSizes, recLapseIntervalS, recLapseScheduledTime,
+                acquisitionLayouts)
+        except BaseException:
+            if getattr(self.__recordingWorker, 'acquisitionTicket', None) is not acquisitionTicket:
+                gate.release(acquisitionTicket)      # the worker never took it over
+            raise
+
+    def __startRecordingAdmitted(self, gate, acquisitionTicket, detectorNames, recMode,
+                                 savename, saveMode, attrs, saveFormat,
+                                 singleMultiDetectorFile, singleLapseFile, recFrames,
+                                 recTime, numCamTTL, stallTimeout, recLapseTotal,
+                                 recLapseIndex, scanDims, scanStepSizes,
+                                 recLapseIntervalS, recLapseScheduledTime,
+                                 acquisitionLayouts):
         detectorNames = self.__normalizeDetectorNames(detectorNames)
         acquisitionLayouts = self.__normalizeAcquisitionLayouts(
             acquisitionLayouts,
@@ -2477,10 +2506,15 @@ class RecordingManager(SignalInterface):
             self.__scanCompletionGeneration = None
             self.__scanCompletionTime = None
         self.__recordingWorker.recordingGeneration = recordingGeneration
+        # Held until the worker has physically ended (its run() finally):
+        # no device reconnect can overlap the recording.
+        self.__recordingWorker.acquisitionTicket = acquisitionTicket
         self.__record = True
         try:
             self.__thread.start()
         except Exception as error:
+            gate.release(acquisitionTicket)
+            self.__recordingWorker.acquisitionTicket = None
             self.__record = False
             self.__activeDetectorNames = ()
             # The worker thread never started: nothing was acquired and
@@ -3806,6 +3840,9 @@ class RecordingWorker(Worker):
                         f'Failed to release recording detector lease: {e}',
                         exc_info=True,
                     )
+            from imswitch.imcontrol.model.devices.acquisition_gate import get_acquisition_gate
+            get_acquisition_gate().release(getattr(self, 'acquisitionTicket', None))
+            self.acquisitionTicket = None
     
     def _getFileDests(self):
         """Prepare file destinations and paths for streaming."""

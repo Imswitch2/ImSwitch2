@@ -78,6 +78,7 @@ Each detector takes:
 * ``managerName`` (required): Manager class (e.g., ``"HamamatsuManager"``, ``"AVManager"``)
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/detectors`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``forAcquisition``: ``true`` if used for live imaging (default ``false``)
 * ``forFocusLock``: ``true`` if used for focus lock (default ``false``)
 
@@ -121,6 +122,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``valueRangeStep`` (default ``1.0``): step of the power control in the
   **Laser** panel
 * ``freqRangeMin`` / ``freqRangeMax`` / ``freqRangeInit`` (default ``0``):
@@ -207,6 +209,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/positioners`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``resetOnClose`` (default ``false``): set it to ``true`` to have this
   positioner moved to ``0`` on every axis when ImSwitch2 closes with the
   **Positioner** panel loaded.  Otherwise a stage stays where it is on exit.
@@ -524,7 +527,13 @@ Key fields:
 
 * ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
 * ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
-* ``simulation``: Allow NI-DAQ commands without physical hardware (``true`` / ``false``)
+* ``simulation``: Select software NI-DAQ/scan simulation (``true`` / ``false``).
+  With ``true``, ImSwitch deliberately runs the software scan simulator instead
+  of opening NI-DAQmx tasks. With ``false``, ImSwitch expects real NI-DAQ
+  hardware. If the ``nidaqmx`` backend is unavailable, Hardware Control still
+  starts in a degraded state, but NI-DAQ writes and scans are refused; it does
+  **not** silently switch to simulated acquisition. Install the hardware extra
+  (``pip install "imswitch2[hardware]"``) to restore real NI-DAQ operation.
 
 **Example** (simulation mode, no physical DAQ):
 
@@ -1218,13 +1227,15 @@ Key fields (per ROI):
 laserPresets
 ------------
 
-Optional Live/Scan laser power preset system.
+Optional Live/Scan laser power preset system.  All presets share one name
+space under ``laserPresets``; each entry has one of two shapes:
 
-* ``laserPresets`` (dict): Live preset names mapped to ``{laserName: LaserPresetInfo}``.
-  This historical key remains the Live namespace for backward compatibility.
-* ``laserScanPresets`` (dict): Scan preset names mapped to the same structure.
-  Scan presets store acquisition power only; loading one does not itself emit
-  light or change Live ON/OFF state.
+* **Historical** ``{laserName: LaserPresetInfo}`` -- context-unspecified.
+  Files written before Live/Scan contexts load unchanged and are saved back
+  unchanged.
+* **Contextual** ``{"context": "live" | "scan", "powers": {laserName:
+  LaserPresetInfo}}``.  Scan presets store acquisition power only; loading one
+  does not itself emit light or change Live ON/OFF state.
 
 **LaserPresetInfo fields** (per laser, per preset):
 
@@ -1236,26 +1247,43 @@ Optional Live/Scan laser power preset system.
 
    "laserPresets": {
        "Screening": {
-           "Laser405": {
-               "value": 200.0
-           },
-           "Laser488": {
-               "value": 150.0
-           }
-       }
-   },
-   "laserScanPresets": {
+           "Laser405": {"value": 200.0},
+           "Laser488": {"value": 150.0}
+       },
        "Acquisition": {
-           "Laser405": {
-               "value": 50.0
-           },
-           "Laser488": {
-               "value": 30.0
+           "context": "scan",
+           "powers": {
+               "Laser405": {"value": 50.0},
+               "Laser488": {"value": 30.0}
            }
        }
    }
 
 **See also**: :class:`LaserPresetInfo`
+
+
+deviceCategorySettings
+----------------------
+
+Optional settings that apply to a whole device category rather than to one
+device, keyed by category name (``lasers``, ``positioners``, ...).  The config
+editor edits them with the **Settings** button in each category header.
+
+* ``lasers.powerMode`` (``"coupled"`` | ``"separated"``, default
+  ``"coupled"``): ``coupled`` uses the current Live power during scans;
+  ``separated`` keeps independent Live and Scan power settings.
+
+Any other key is kept as written: the editor's **Add property** button adds
+freeform keys (JSON values), and the Custom tab lists, edits and removes them.
+ImSwitch itself reads only the keys documented here.
+
+**Example**:
+
+.. code-block:: json
+
+   "deviceCategorySettings": {
+       "lasers": {"powerMode": "separated"}
+   }
 
 
 slm (singular)
@@ -1346,10 +1374,6 @@ references, and what fails silently if references are missing or incorrect.
      - ``timerCounterChannel`` references counter channel
      - Silent failure if simulation disabled + no hardware
    * - ``laserPresets``
-     - Lasers in setup
-     - Laser names in preset map
-     - Preset silently skips unknown lasers
-   * - ``laserScanPresets``
      - Lasers in setup
      - Laser names in preset map
      - Preset silently skips unknown lasers

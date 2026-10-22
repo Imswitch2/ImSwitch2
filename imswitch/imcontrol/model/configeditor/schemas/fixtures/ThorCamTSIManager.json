@@ -14,7 +14,8 @@
       },
       "dllLocation": "example",
       "flushFrameLimit": 1,
-      "frameBufferDepth": 1
+      "frameBufferDepth": 1,
+      "useMockOnFailure": true
     }
   }
 }

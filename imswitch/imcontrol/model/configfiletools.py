@@ -21,13 +21,25 @@ def getSetupList():
     return sorted(Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json')))
 
 
+    return sorted(Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json')))
+
+
+def _defaultSetupFileName(setupList):
+    """Choose the safest first-run setup deterministically."""
+    if 'example_no_hardware.json' in setupList:
+        return 'example_no_hardware.json'
+    if setupList:
+        return setupList[0]
+    return ''
+
+
 def getDefaultSetup():
-    """``DEFAULT_SETUP_FILE`` when this installation has it, else the first
-    setup in the list (None when there is none)."""
+    """``DEFAULT_SETUP_FILE`` when this installation has it, else the safest
+    first-run setup (``_defaultSetupFileName``), else None."""
     setups = getSetupList()
     if DEFAULT_SETUP_FILE in setups:
         return DEFAULT_SETUP_FILE
-    return setups[0] if setups else None
+    return _defaultSetupFileName(setups) or None
 
 
 def getSetupFilesDir():

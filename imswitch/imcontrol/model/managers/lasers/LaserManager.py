@@ -3,6 +3,8 @@ import json
 from abc import ABC, abstractmethod
 from typing import Union
 
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
+
 
 def normalise_ports(value) -> list:
     """Return *value* as a list of port strings.
@@ -39,9 +41,23 @@ def normalise_ports(value) -> list:
     return [p.strip() for p in s.split(',') if p.strip()]
 
 
-class LaserManager(ABC):
+class RawDriveError(RuntimeError):
+    """A raw-drive command did not reach the hardware."""
+
+
+class LaserManager(DeviceManagerStatusMixin, ABC):
     """ Abstract base class for managers that control lasers. Each type of
     laser corresponds to a manager derived from this class. """
+
+    #: Mutating commands admitted through the resource registry
+    #: (``imcontrol/model/resources.py``): refused while another owner
+    #: reserves this device; ``owner=<token>`` passes a reservation.
+    _GUARDED_METHODS = ('setValue', 'setEnabled', 'applyRawDrive', 'applyEnabled', 'applyValue')
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from imswitch.imcontrol.model.resources import guard_methods, laser_key
+        guard_methods(cls, _resource_key_for(laser_key), cls._GUARDED_METHODS)
 
     @abstractmethod
     def __init__(self, laserInfo, name: str, isBinary: bool, valueUnits: str,
@@ -155,6 +171,33 @@ class LaserManager(ABC):
         setpoint rather than the raw value range. """
         return self.hasProperty("calibCsvPath")
 
+    #: True when :meth:`applyRawDrive` is implemented (audited for runs).
+    supportsRawDrive: bool = False
+
+    def applyRawDrive(self, value: float) -> float:
+        """ Set the raw drive (volts, AOTF amplitude, ...) directly, bypassing
+        any calibration lookup table, and return the raw value applied.
+
+        Meant for calibration runs (``docs/design/plans/
+        transient-instruments-step-scans.md`` §7.4): unlike :meth:`setValue`,
+        a failure is never only logged — it raises :class:`RawDriveError`. """
+        raise NotImplementedError(f'{type(self).__name__} has no raw-drive command')
+
+    def applyEnabled(self, enabled: bool) -> bool:
+        """ Switch emission like :meth:`setEnabled`, but raise
+        :class:`RawDriveError` on any failure instead of logging it.
+
+        Returns ``False`` when the laser has no emission switch at all (the
+        command is not sent), ``True`` when the switch was set. Implemented
+        with :meth:`applyRawDrive` (``supportsRawDrive``). """
+        raise NotImplementedError(f'{type(self).__name__} has no checked enable command')
+
+    def applyValue(self, value: Union[int, float]) -> float:
+        """ Set the UI value (through the calibration lookup if one is
+        loaded) like :meth:`setValue`, but raise :class:`RawDriveError` on any
+        failure; returns the raw drive applied. """
+        raise NotImplementedError(f'{type(self).__name__} has no checked value command')
+
     @abstractmethod
     def setEnabled(self, enabled: bool) -> None:
         """ Sets whether the laser is enabled. """
@@ -185,6 +228,16 @@ class LaserManager(ABC):
     def finalize(self) -> None:
         """ Close/cleanup laser. """
         pass
+
+
+def _resource_key_for(key_of_name):
+    def key(manager):
+        try:
+            name = manager.name
+        except Exception:
+            name = f'{type(manager).__name__}@{id(manager):x}'
+        return key_of_name(name)
+    return key
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

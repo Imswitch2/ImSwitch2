@@ -6,6 +6,7 @@
       "microstepsPerStep": 1,
       "motorListIndex": 1,
       "stepsPerTurn": 1,
+      "useMockOnFailure": true,
       "ximcLibLocation": "example"
     }
   }

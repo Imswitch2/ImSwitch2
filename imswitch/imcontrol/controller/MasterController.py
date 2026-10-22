@@ -1,6 +1,6 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
-    DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
+    DetectorsManager, FlipMirrorsManager, InstrumentsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
     RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
@@ -18,6 +18,17 @@ class MasterController:
     """
 
     def __init__(self, setupInfo, commChannel, moduleCommChannel):
+        try:
+            self._initialize(setupInfo, commChannel, moduleCommChannel)
+        except Exception:
+            # MasterController owns every manager that has been successfully
+            # assigned during initialization. If a later manager fails to
+            # construct, release those already-owned resources before
+            # propagating the original startup error.
+            self._cleanupAfterInitializationFailure()
+            raise
+
+    def _initialize(self, setupInfo, commChannel, moduleCommChannel):
         self.__logger = initLogger(self)
         self.__setupInfo = setupInfo
         self.__commChannel = commChannel
@@ -78,6 +89,14 @@ class MasterController:
             self.__setupInfo.flipMirrors,
             **lowLevelManagers
         )
+        # Measurement instruments; transient ones stay absent until connected.
+        # Simulated instruments may follow simulated devices (the mock PAX
+        # reads the mock waveplate rotators), hence rotatorsManager.
+        self.instrumentsManager = InstrumentsManager(
+            getattr(self.__setupInfo, 'instruments', None),
+            rotatorsManager=self.rotatorsManager,
+            **lowLevelManagers
+        )
 
         self.recordingManager = RecordingManager(self.detectorsManager)
 
@@ -115,6 +134,19 @@ class MasterController:
                 )
                 return
 
+        # Read-only device inventory/status facade. It observes the managers
+        # created above and deliberately performs no probing or lifecycle work.
+        from imswitch.imcontrol.model.devices import (
+            DeviceLifecycleService, DeviceSupervisor,
+        )
+        self.deviceSupervisor = DeviceSupervisor(self, setupInfo=self.__setupInfo)
+        # Runtime lifecycle is a separate, opt-in mutation boundary. Legacy
+        # managers remain status-only/default-deny until they explicitly
+        # contribute a physical-device lifecycle adapter.
+        self.deviceLifecycleService = DeviceLifecycleService(
+            self, self.deviceSupervisor
+        )
+
         # Connect signals
         cc = self.__commChannel
 
@@ -131,6 +163,34 @@ class MasterController:
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
+
+    def _cleanupAfterInitializationFailure(self):
+        """Best-effort cleanup without masking the startup exception."""
+        try:
+            cleanupCompleted = self.closeEvent()
+        except Exception:
+            logger = getattr(self, '_MasterController__logger', None)
+            if logger is not None:
+                try:
+                    logger.error(
+                        'Unexpected error while cleaning up after '
+                        'MasterController initialization failure.',
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
+            return
+
+        if cleanupCompleted is False:
+            logger = getattr(self, '_MasterController__logger', None)
+            if logger is not None:
+                try:
+                    logger.error(
+                        'Hardware cleanup after MasterController '
+                        'initialization failure was incomplete.'
+                    )
+                except Exception:
+                    pass
 
     def memoryRecordingAvailable(self, name, file, filePath, savedToDisk):
         self.__moduleCommChannel.memoryRecordings[name] = VFileItem(
@@ -157,7 +217,8 @@ class MasterController:
         # finalizers remain pending on the next close attempt.
         manager_attrs = [
             'detectorsManager', 'lasersManager', 'positionersManager',
-            'rotatorsManager', 'flipMirrorsManager', 'recordingManager',
+            'rotatorsManager', 'flipMirrorsManager', 'instrumentsManager',
+            'recordingManager',
             'slmsManager', 'nidaqManager', 'rs232sManager',
             'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
             'scanManager',

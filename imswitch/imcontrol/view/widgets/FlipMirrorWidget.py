@@ -8,7 +8,6 @@ class FlipMirrorWidget(Widget):
 
     sigStateChanged = QtCore.Signal(str, int)
     sigLinkChanged = QtCore.Signal(str, object)  # follower_name, master_name or None
-    sigResetConnectionsClicked = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -32,12 +31,7 @@ class FlipMirrorWidget(Widget):
         self.grid.addWidget(QtWidgets.QLabel("Follow"), 0, 2, alignment=QtCore.Qt.AlignCenter)
         self.grid.addWidget(QtWidgets.QLabel("Master"), 0, 3, alignment=QtCore.Qt.AlignCenter)
 
-        self.resetButton = QtWidgets.QPushButton("Reset")
-        self.resetButton.setMinimumHeight(24)
-        self.resetButton.setMaximumWidth(140)
-        self.resetButton.clicked.connect(self.sigResetConnectionsClicked)
-
-        self.grid.addWidget(self.resetButton, 0, 4, alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.grid.addWidget(QtWidgets.QLabel("Status"), 0, 4, alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
         # Equal column distribution across the full widget width
         # for col in range(5):

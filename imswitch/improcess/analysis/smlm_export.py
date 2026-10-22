@@ -122,13 +122,16 @@ def _write_info_yaml(path: Path, info: list[dict]) -> None:
 
 
 def read_picasso_hdf5(path: Path, *, pixel_size_nm: float | None = None,
-                      name: str | None = None) -> LocalizationResult:
+                      name: str | None = None,
+                      preview_pixel_size_nm: float | None = None) -> LocalizationResult:
     """Read a Picasso/napari-storm HDF5 back into a canonical result.
 
     Mirrors napari-storm's field mapping (``load_locs`` + ``load_hdf5``) so the
     export can be round-trip verified without importing napari-storm. The pixel
     size is taken from ``pixel_size_nm``, else the ``locs`` attrs, else the
-    ``.yaml`` sidecar's ``Pixelsize``.
+    ``.yaml`` sidecar's ``Pixelsize``. ``preview_pixel_size_nm`` is the bin of
+    the histogram the result is first shown as; ``None`` leaves it to the
+    result's own thumbnail rule.
     """
     import h5py
 
@@ -183,6 +186,7 @@ def read_picasso_hdf5(path: Path, *, pixel_size_nm: float | None = None,
         pixel_size_nm=pixel_size_nm,
         dims="3D" if has_z else "2D",
         source_name=path.name,
+        preview_pixel_size_nm=preview_pixel_size_nm,
     )
 
 

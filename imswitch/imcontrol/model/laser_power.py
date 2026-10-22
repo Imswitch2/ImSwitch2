@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union
@@ -137,4 +138,9 @@ def laserPowerModeFromSetup(setupInfo) -> LaserPowerMode:
     laser_settings = settings.get("lasers")
     if not isinstance(laser_settings, dict):
         return LaserPowerMode.COUPLED
-    return normalizeLaserPowerMode(laser_settings.get("powerMode"))
+    try:
+        return normalizeLaserPowerMode(laser_settings.get("powerMode"))
+    except ValueError as e:
+        # A hand-edited typo must not stop the laser controller from starting.
+        logging.getLogger(__name__).warning(f"{e} Using 'coupled'.")
+        return LaserPowerMode.COUPLED
