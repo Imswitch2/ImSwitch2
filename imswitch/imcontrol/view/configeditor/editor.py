@@ -31,8 +31,8 @@ from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
+    QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar, QHeaderView,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction,
     QDialog, QTextEdit, QLayout, QLayoutItem, QStyle,
 )
 
@@ -46,6 +46,7 @@ _schema_module = None
 _resources_module = None
 _roles_module = None
 _disabled_devices_module = None
+_comparison_module = None
 _setup_kind_metadata = ()
 try:
     from imswitch.imcontrol.model.configeditor.catalog import build_catalog
@@ -56,6 +57,7 @@ try:
     from imswitch.imcontrol.model.configeditor import resources as _resources_module
     from imswitch.imcontrol.model.configeditor import roles as _roles_module
     from imswitch.imcontrol.model.configeditor import disabled_devices as _disabled_devices_module
+    from imswitch.imcontrol.model.configeditor import comparison as _comparison_module
     from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
     _setup_kind_metadata = setup_kinds()
 except ImportError as e:
@@ -660,6 +662,46 @@ def _remove_device(data: dict, category: str, name: str):
     return _device_section(data, category, enabled=enabled).pop(name, None)
 
 
+def _compare_configs(left: dict, right: dict) -> dict[tuple[str, str], str]:
+    """Return device-level comparison states for the card split view."""
+    if _comparison_module is not None:
+        return _comparison_module.compare_configs(left, right, DEVICE_CATS)
+
+    # Fallback kept for standalone/editor-only deployments where the shared
+    # model helpers are unavailable.  Enabled/disabled state is intentionally
+    # part of equality, matching the normal implementation.
+    states: dict[tuple[str, str], str] = {}
+    for cat in DEVICE_CATS:
+        names = set(_device_section(left, cat, enabled=True))
+        names.update(_device_section(left, cat, enabled=False))
+        names.update(_device_section(right, cat, enabled=True))
+        names.update(_device_section(right, cat, enabled=False))
+        for name in sorted(names, key=str.casefold):
+            left_dev, left_enabled = _locate_device(left, cat, name)
+            right_dev, right_enabled = _locate_device(right, cat, name)
+            if left_dev is None:
+                states[(cat, name)] = "right_only"
+            elif right_dev is None:
+                states[(cat, name)] = "left_only"
+            elif left_enabled == right_enabled and left_dev == right_dev:
+                states[(cat, name)] = "same"
+            else:
+                states[(cat, name)] = "different"
+    return states
+
+
+def _comparison_status_for_side(state: str, side: str) -> str:
+    if _comparison_module is not None:
+        return _comparison_module.status_for_side(state, side)
+    if state in {"same", "different"}:
+        return state
+    if state == "left_only":
+        return "only_here" if side == "left" else "missing_here"
+    if state == "right_only":
+        return "only_here" if side == "right" else "missing_here"
+    return state
+
+
 def _known_device_references(data: dict, category: str, name: str) -> list[str]:
     """Return well-known config paths that directly reference a device name.
 
@@ -1072,12 +1114,14 @@ class FlowLayout(QLayout):
             return self._v_spacing
         return self._smart_spacing(QSizePolicy.PushButton, Qt.Vertical)
 
-    def _smart_spacing(self, pm, orientation) -> int:
+    def _smart_spacing(self, _control_type, orientation) -> int:
         parent = self.parent()
         if parent is None:
             return -1
         if parent.isWidgetType():
-            return parent.style().pixelMetric(pm, None, parent)
+            return parent.style().layoutSpacing(
+                QSizePolicy.PushButton, QSizePolicy.PushButton, orientation
+            )
         return parent.spacing()
 
     def _do_layout(self, rect: QRect, test_only: bool) -> int:
@@ -1121,21 +1165,39 @@ class DeviceCard(QFrame):
     sig_delete    = pyqtSignal(str, str)
     sig_save_tmpl = pyqtSignal(str, str)
     sig_copy      = pyqtSignal(str, str)
+    sig_copy_other = pyqtSignal(str, str)
     sig_set_enabled = pyqtSignal(str, str, bool)
 
-    def __init__(self, category: str, name: str, device_data: dict, *, enabled: bool = True, parent=None):
+    def __init__(
+        self, category: str, name: str, device_data: dict, *,
+        enabled: bool = True, compact: bool = False,
+        comparison_state: str | None = None,
+        copy_direction: str | None = None,
+        missing: bool = False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.category = category
         self.device_name = name
         self.device_data = device_data
         self.enabled = enabled
+        self.compact = compact
+        self.comparison_state = comparison_state
+        self.copy_direction = copy_direction
+        self.missing = missing
         self._selected = False
         self._init_ui()
 
     def _init_ui(self):
-        self.setFixedWidth(195)
-        self.setMinimumHeight(80)
+        # Compare mode gets roughly half of the normal canvas width. Keep cards
+        # readable there and let the flow layout wrap them instead of forcing a
+        # horizontal scrollbar. Normal mode retains the roomier cards.
+        self.setFixedWidth(158 if self.compact else 195)
+        compare_extra = 18 if self.comparison_state else 0
+        self.setMinimumHeight((62 if self.compact else 80) + compare_extra)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        # Missing placeholders are still selectable so selection can stay
+        # synchronized with the real card on the opposite pane.
         self.setCursor(Qt.PointingHandCursor)
         self._apply_style(False)
 
@@ -1152,10 +1214,10 @@ class DeviceCard(QFrame):
         bold.setPointSize(9)
         self._name_lbl.setFont(bold)
         self._name_lbl.setWordWrap(True)
-        if not self.enabled:
+        if not self.enabled and not self.missing:
             self._name_lbl.setStyleSheet("color:#888;")
         name_row.addWidget(self._name_lbl, 1)
-        if not self.enabled:
+        if not self.enabled and not self.missing:
             disabled_lbl = QLabel("DISABLED")
             disabled_lbl.setStyleSheet(
                 "color:#888; border:1px solid #888; border-radius:2px; "
@@ -1168,20 +1230,66 @@ class DeviceCard(QFrame):
         layout.addLayout(name_row)
 
         mgr = self.device_data.get("managerName", "")
-        self._mgr_lbl = QLabel(_manager_display_name(mgr))
+        self._mgr_lbl = QLabel(
+            "Not present in this config" if self.missing else _manager_display_name(mgr)
+        )
         self._mgr_lbl.setStyleSheet(
-            f"color:{'#888' if not self.enabled else '#666'};font-size:8pt;"
+            f"color:{'#999' if self.missing else ('#888' if not self.enabled else '#666')};"
+            "font-size:8pt;"
         )
         layout.addWidget(self._mgr_lbl)
 
         info = self._summary()
-        if info:
+        if info and not self.compact and not self.missing:
             lbl = QLabel(info)
             lbl.setStyleSheet(f"color:{'#999' if not self.enabled else '#888'};font-size:8pt;")
             lbl.setWordWrap(True)
             layout.addWidget(lbl)
 
         layout.addStretch()
+
+        if self.comparison_state:
+            compare_row = QHBoxLayout()
+            compare_row.setContentsMargins(0, 1, 0, 0)
+            compare_row.setSpacing(4)
+
+            labels = {
+                "same": "SAME",
+                "different": "DIFFERENT",
+                "only_here": "ONLY HERE",
+                "missing_here": "MISSING HERE",
+            }
+            badge = QLabel(labels.get(self.comparison_state, self.comparison_state.upper()))
+            badge.setStyleSheet(
+                "color:#777; border:1px solid #999; border-radius:2px; "
+                "padding:0 3px; font-size:7pt; font-weight:bold;"
+            )
+            if self.comparison_state == "same":
+                badge.setToolTip("The stored device definition and enabled state match.")
+            elif self.comparison_state == "different":
+                badge.setToolTip(
+                    "This device exists in both configs but its definition or enabled state differs."
+                )
+            elif self.comparison_state == "only_here":
+                badge.setToolTip("This device exists only in this config.")
+            elif self.comparison_state == "missing_here":
+                badge.setToolTip("The other config has this device; this config does not.")
+            compare_row.addWidget(badge)
+            compare_row.addStretch()
+
+            if self.copy_direction and not self.missing:
+                arrow = "→" if self.copy_direction == "right" else "←"
+                copy_btn = QPushButton(f"Copy {arrow}" if arrow == "→" else f"{arrow} Copy")
+                copy_btn.setFixedHeight(19)
+                copy_btn.setStyleSheet("font-size:7pt; padding:0 4px;")
+                copy_btn.setToolTip("Copy this complete device definition to the other config")
+                copy_btn.clicked.connect(
+                    lambda _=False: self.sig_copy_other.emit(
+                        self.category, self.device_name
+                    )
+                )
+                compare_row.addWidget(copy_btn)
+            layout.addLayout(compare_row)
 
     def _summary(self) -> str:
         d = self.device_data
@@ -1209,7 +1317,11 @@ class DeviceCard(QFrame):
         # Get themed colors based on current palette
         dark = is_dark_mode()
         colors = get_themed_colors(dark)
-        if self.enabled:
+        if self.missing:
+            bg = colors['card_bg_selected'] if selected else colors['card_bg']
+            border_style = "dashed"
+            accent = "#999999"
+        elif self.enabled:
             bg = colors['card_bg_selected'] if selected else colors['card_bg']
             border_style = "solid"
             accent = color
@@ -1244,6 +1356,8 @@ class DeviceCard(QFrame):
         super().mousePressEvent(event)
 
     def contextMenuEvent(self, event):
+        if self.missing:
+            return
         menu = QMenu(self)
         a_enabled = None
         if self.category in DISABLEABLE_DEVICE_CATS:
@@ -1282,11 +1396,16 @@ class DeviceCanvas(QScrollArea):
     sig_device_renamed  = pyqtSignal(str, str)
     sig_save_tmpl       = pyqtSignal(str, str)
     sig_device_copied   = pyqtSignal(str, str)
+    sig_copy_to_other   = pyqtSignal(str, str)
     sig_device_enabled_changed = pyqtSignal(str, str, bool)
     sig_category_settings = pyqtSignal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, compact: bool = False):
         super().__init__(parent)
+        self._compact = compact
+        self._data: dict = {}
+        self._comparison_states: dict[tuple[str, str], str] = {}
+        self._compare_side: str | None = None
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._container = QWidget()
@@ -1296,9 +1415,18 @@ class DeviceCanvas(QScrollArea):
         self.setWidget(self._container)
         self._cards: dict[tuple, DeviceCard] = {}   # (cat, name) → card
         self._selected: object = None
-        self._section_grids: dict[str, QGridLayout] = {}
+        self._section_grids: dict[str, QLayout] = {}
 
-    def load(self, data: dict):
+    def load(
+        self,
+        data: dict,
+        *,
+        comparison_states: dict[tuple[str, str], str] | None = None,
+        compare_side: str | None = None,
+    ):
+        self._data = data
+        self._comparison_states = comparison_states or {}
+        self._compare_side = compare_side if self._comparison_states else None
         self._clear()
         for cat in DEVICE_CATS:
             devices = data.get(cat) or {}
@@ -1396,49 +1524,91 @@ class DeviceCanvas(QScrollArea):
         hlay.addWidget(add_btn)
         self._layout.addWidget(header)
 
-        # Grid of cards
+        # Cards use the existing flow layout so the same canvas can shrink
+        # cleanly into one half of Compare mode. The old fixed four-column grid
+        # overflowed narrow panes and effectively required horizontal scrolling.
         grid_widget = QWidget()
-        grid = QGridLayout(grid_widget)
+        grid = FlowLayout(grid_widget)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(8)
         self._section_grids[cat] = grid
 
-        col, row = 0, 0
-        cols = 4
-        card_entries = [(name, dev_data, True) for name, dev_data in devices.items()]
-        card_entries.extend(
-            (name, dev_data, False)
-            for name, dev_data in disabled_devices.items()
-            if name not in devices
-        )
-        for name, dev_data, enabled in card_entries:
-            card = DeviceCard(cat, name, dev_data, enabled=enabled)
+        if self._comparison_states and self._compare_side:
+            # Use the same union/order on both panes so corresponding cards are
+            # visually easy to scan even when the source JSON order differs.
+            names = sorted(
+                name
+                for (state_cat, name) in self._comparison_states
+                if state_cat == cat
+            )
+            card_entries = []
+            for name in names:
+                if name in devices:
+                    card_entries.append((name, devices[name], True, False))
+                elif name in disabled_devices:
+                    card_entries.append((name, disabled_devices[name], False, False))
+                else:
+                    card_entries.append((name, {}, True, True))
+        else:
+            card_entries = [
+                (name, dev_data, True, False) for name, dev_data in devices.items()
+            ]
+            card_entries.extend(
+                (name, dev_data, False, False)
+                for name, dev_data in disabled_devices.items()
+                if name not in devices
+            )
+
+        for name, dev_data, enabled, missing in card_entries:
+            state = self._comparison_states.get((cat, name))
+            perspective = (
+                _comparison_status_for_side(state, self._compare_side)
+                if state and self._compare_side
+                else None
+            )
+            copy_direction = None
+            if perspective in {"different", "only_here"} and not missing:
+                copy_direction = "right" if self._compare_side == "left" else "left"
+            card = DeviceCard(
+                cat, name, dev_data,
+                enabled=enabled,
+                compact=self._compact,
+                comparison_state=perspective,
+                copy_direction=copy_direction,
+                missing=missing,
+            )
             card.sig_clicked.connect(self._on_card_clicked)
             card.sig_duplicate.connect(self.sig_device_duped)
             card.sig_rename.connect(self.sig_device_renamed)
             card.sig_delete.connect(self.sig_device_deleted)
             card.sig_save_tmpl.connect(self.sig_save_tmpl)
             card.sig_copy.connect(self.sig_device_copied)
+            card.sig_copy_other.connect(self.sig_copy_to_other)
             card.sig_set_enabled.connect(self.sig_device_enabled_changed)
-            grid.addWidget(card, row, col)
+            grid.addWidget(card)
             self._cards[(cat, name)] = card
-            col += 1
-            if col >= cols:
-                col = 0
-                row += 1
 
         self._layout.addWidget(grid_widget)
 
     def _on_card_clicked(self, cat: str, name: str):
+        self.select_device(cat, name, emit=True)
+
+    def select_device(self, cat: str, name: str, *, emit: bool = False) -> bool:
         if self._selected:
             old = self._cards.get(self._selected)
             if old:
                 old.set_selected(False)
-        self._selected = (cat, name)
-        card = self._cards.get((cat, name))
+        key = (cat, name)
+        card = self._cards.get(key)
+        if card is None:
+            self._selected = None
+            return False
+        self._selected = key
         if card:
             card.set_selected(True)
-        self.sig_device_selected.emit(cat, name)
+        if emit:
+            self.sig_device_selected.emit(cat, name)
+        return True
 
     def _request_add(self, cat: str):
         if cat == "others":
@@ -1476,12 +1646,549 @@ class DeviceCanvas(QScrollArea):
         mgr_key = "__custom__" if mgr == "[Free-form / Custom]" else mgr
         self.sig_device_duped.emit("__ADD__", f"{cat}|{name.strip()}|{mgr_key}")
 
+    def set_compact(self, compact: bool) -> None:
+        compact = bool(compact)
+        if self._compact == compact:
+            return
+        selected = self._selected
+        self._compact = compact
+        self.load(
+            self._data,
+            comparison_states=self._comparison_states,
+            compare_side=self._compare_side,
+        )
+        if selected and selected in self._cards:
+            self._selected = selected
+            self._cards[selected].set_selected(True)
+
+    def clear_comparison(self) -> None:
+        """Remove compare badges/placeholders while preserving selection."""
+        selected = self._selected
+        self.load(self._data)
+        if selected:
+            cat, name = selected
+            self.select_device(cat, name)
+
     def deselect_all(self):
         if self._selected:
             old = self._cards.get(self._selected)
             if old:
                 old.set_selected(False)
         self._selected = None
+
+
+# =============================================================================
+# ConfigPane – reusable canvas wrapper for normal and split compare views
+# =============================================================================
+class ConfigPane(QWidget):
+    """One config canvas with a small identity/action header.
+
+    The primary editor and the reference side of Compare mode intentionally use
+    the same DeviceCanvas.  ConfigPane only owns presentation; MainWindow keeps
+    file/data lifecycle so existing config-editor semantics remain centralized.
+    """
+
+    sig_config_requested = pyqtSignal(str)
+    sig_paste_requested = pyqtSignal()
+    sig_save_requested = pyqtSignal()
+
+    def __init__(
+        self, title: str, *, selector: bool = False, compact: bool = False, parent=None
+    ):
+        super().__init__(parent)
+        self._selector_mode = selector
+        self._current_path = ""
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        self._header = QFrame()
+        self._header.setObjectName("configPaneHeader")
+        self._header_colors = get_themed_colors(is_dark_mode())
+        self._header_active = False
+        self._apply_header_style()
+        hl = QHBoxLayout(self._header)
+        hl.setContentsMargins(8, 5, 8, 5)
+        hl.setSpacing(6)
+
+        self._title_lbl = QLabel(f"<b>{title}</b>")
+        self._title_lbl.setTextFormat(Qt.RichText)
+        hl.addWidget(self._title_lbl)
+
+        self._selector = QComboBox()
+        self._selector.setMinimumWidth(130)
+        self._selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._selector.currentIndexChanged.connect(self._on_selector_changed)
+        self._selector.setVisible(selector)
+        hl.addWidget(self._selector, 1)
+
+        self._path_lbl = QLabel()
+        self._path_lbl.setTextFormat(Qt.RichText)
+        self._path_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._path_lbl.setVisible(not selector)
+        hl.addWidget(self._path_lbl, 1)
+
+        self._state_lbl = QLabel()
+        self._state_lbl.setTextFormat(Qt.RichText)
+        self._state_lbl.setStyleSheet("font-size:8pt;")
+        hl.addWidget(self._state_lbl)
+
+        self._paste_btn = QPushButton("Paste")
+        self._paste_btn.setFixedHeight(22)
+        self._paste_btn.setToolTip("Paste the copied device into this config")
+        self._paste_btn.clicked.connect(self.sig_paste_requested.emit)
+        hl.addWidget(self._paste_btn)
+
+        self._save_btn = QPushButton("Save")
+        self._save_btn.setFixedHeight(22)
+        self._save_btn.clicked.connect(self.sig_save_requested.emit)
+        hl.addWidget(self._save_btn)
+        lay.addWidget(self._header)
+
+        self.canvas = DeviceCanvas(compact=compact)
+        lay.addWidget(self.canvas, 1)
+        self.set_modified(False)
+
+    def _apply_header_style(self) -> None:
+        border = "#3A7FC1" if self._header_active else self._header_colors['card_border']
+        width = 2 if self._header_active else 1
+        self._header.setStyleSheet(
+            f"QFrame#configPaneHeader {{ "
+            f"background:{self._header_colors['header_bg']}; "
+            f"border-bottom:{width}px solid {border}; }}"
+        )
+
+    def set_active(self, active: bool) -> None:
+        self._header_active = bool(active)
+        self._apply_header_style()
+
+    def set_header_visible(self, visible: bool) -> None:
+        self._header.setVisible(bool(visible))
+
+    def set_identity(self, path: str, *, modified: bool = False) -> None:
+        self._current_path = str(path or "")
+        name = Path(path).name if path else "[new config]"
+        self._path_lbl.setText(f"<b>{name}</b>")
+        self._path_lbl.setToolTip(path or "New unsaved configuration")
+        self.set_modified(modified)
+
+    def set_modified(self, modified: bool) -> None:
+        self._state_lbl.setText(
+            "<span style='color:#D98C2B;'><b>MODIFIED</b></span>"
+            if modified else ""
+        )
+        can_save_unsaved_primary = not self._selector_mode and not self._current_path
+        self._save_btn.setEnabled(bool(modified) or can_save_unsaved_primary)
+
+    def set_selector_paths(self, paths, current: str = "") -> None:
+        self._selector.blockSignals(True)
+        self._selector.clear()
+        current_index = 0
+        paths = list(paths)
+        if not paths:
+            self._selector.addItem("No other configs", "")
+        else:
+            for path in paths:
+                path = str(path)
+                self._selector.addItem(Path(path).name, path)
+                if current and LeftPanel._same_path(path, current):
+                    current_index = self._selector.count() - 1
+        self._selector.setCurrentIndex(current_index)
+        self._selector.blockSignals(False)
+
+    def set_selected_path(self, path: str) -> None:
+        for index in range(self._selector.count()):
+            candidate = str(self._selector.itemData(index) or "")
+            if candidate and LeftPanel._same_path(candidate, path):
+                self._selector.blockSignals(True)
+                self._selector.setCurrentIndex(index)
+                self._selector.blockSignals(False)
+                return
+
+    def _on_selector_changed(self, index: int) -> None:
+        path = str(self._selector.itemData(index) or "")
+        if path:
+            self.sig_config_requested.emit(path)
+
+
+# =============================================================================
+# ComparisonSummary – compact synthetic view over the split comparison
+# =============================================================================
+class ComparisonSummary(QWidget):
+    """Two-column synthetic comparison embedded in the main Compare workspace.
+
+    This intentionally mirrors the original compare-dialog interaction: each
+    config gets its own compact device tree, selection is synchronized, and a
+    narrow centre strip owns the comparison status plus Copy → / ← Copy actions.
+    It remains presentation-only; editing and copy semantics stay owned by the
+    normal split-card workspace and 3B comparison backend.
+    """
+
+    sig_config_requested = pyqtSignal(str)
+    sig_copy_to_other = pyqtSignal(str, str, str)  # category, name, source pane
+    sig_device_selected = pyqtSignal(str, str, str)  # category, name, pane
+
+    _STATE_LABELS = {
+        "same": "SAME",
+        "different": "DIFFERENT",
+        "left_only": "ONLY LEFT",
+        "right_only": "ONLY RIGHT",
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._left_data: dict = {}
+        self._right_data: dict = {}
+        self._states: dict[tuple[str, str], str] = {}
+        self._items: dict[str, dict[tuple[str, str], QTreeWidgetItem]] = {
+            "left": {}, "right": {}
+        }
+        self._selected_key: tuple[str, str] | None = None
+        self._syncing_selection = False
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 6, 8, 8)
+        lay.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        header.addWidget(QLabel("<b>Compare summary</b>"))
+        self._counts_lbl = QLabel()
+        self._counts_lbl.setStyleSheet("color:#888; font-size:8pt;")
+        header.addWidget(self._counts_lbl)
+        header.addStretch()
+        self._diff_only = QCheckBox("Differences only")
+        self._diff_only.setToolTip(
+            "Hide devices whose definition and enabled state are identical"
+        )
+        self._diff_only.toggled.connect(self._rebuild)
+        header.addWidget(self._diff_only)
+        lay.addLayout(header)
+
+        selectors = QHBoxLayout()
+        selectors.setContentsMargins(0, 0, 0, 0)
+        selectors.setSpacing(10)
+        left_header = QHBoxLayout()
+        left_header.addWidget(QLabel("<b>Left config</b>"))
+        self._left_name = QLabel("—")
+        self._left_name.setStyleSheet("font-weight:bold;")
+        left_header.addWidget(self._left_name, 1)
+        left_wrap = QWidget()
+        left_wrap.setLayout(left_header)
+        selectors.addWidget(left_wrap, 1)
+
+        centre_header = QLabel("Comparison")
+        centre_header.setAlignment(Qt.AlignCenter)
+        centre_header.setStyleSheet("font-weight:bold; color:#777;")
+        centre_header.setFixedWidth(126)
+        selectors.addWidget(centre_header)
+
+        right_header = QHBoxLayout()
+        right_header.addWidget(QLabel("<b>Right config</b>"))
+        self._selector = QComboBox()
+        self._selector.setMinimumWidth(180)
+        self._selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._selector.currentIndexChanged.connect(self._on_selector_changed)
+        right_header.addWidget(self._selector, 1)
+        right_wrap = QWidget()
+        right_wrap.setLayout(right_header)
+        selectors.addWidget(right_wrap, 1)
+        lay.addLayout(selectors)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(10)
+        self._trees = {
+            "left": self._make_tree("left"),
+            "right": self._make_tree("right"),
+        }
+        body.addWidget(self._trees["left"], 1)
+
+        centre = QFrame()
+        centre.setFrameShape(QFrame.StyledPanel)
+        centre.setFixedWidth(126)
+        centre_lay = QVBoxLayout(centre)
+        centre_lay.setContentsMargins(7, 10, 7, 10)
+        centre_lay.setSpacing(7)
+        centre_lay.addStretch()
+        self._selected_name_lbl = QLabel("Select a device")
+        self._selected_name_lbl.setAlignment(Qt.AlignCenter)
+        self._selected_name_lbl.setWordWrap(True)
+        self._selected_name_lbl.setStyleSheet("font-size:8pt; color:#777;")
+        centre_lay.addWidget(self._selected_name_lbl)
+        self._selected_status_lbl = QLabel("—")
+        self._selected_status_lbl.setAlignment(Qt.AlignCenter)
+        self._selected_status_lbl.setStyleSheet("font-weight:bold;")
+        centre_lay.addWidget(self._selected_status_lbl)
+
+        self._copy_right_btn = QPushButton("Copy →")
+        self._copy_right_btn.setToolTip(
+            "Copy the selected left-side device into the right config"
+        )
+        self._copy_right_btn.clicked.connect(self._copy_selected_right)
+        centre_lay.addWidget(self._copy_right_btn)
+        self._copy_left_btn = QPushButton("← Copy")
+        self._copy_left_btn.setToolTip(
+            "Copy the selected right-side device into the left config"
+        )
+        self._copy_left_btn.clicked.connect(self._copy_selected_left)
+        centre_lay.addWidget(self._copy_left_btn)
+        centre_lay.addStretch()
+        body.addWidget(centre)
+
+        body.addWidget(self._trees["right"], 1)
+        lay.addLayout(body, 1)
+        self._update_selection_controls()
+
+    def _make_tree(self, side: str) -> QTreeWidget:
+        tree = QTreeWidget()
+        tree.setColumnCount(4)
+        tree.setHeaderLabels(["Device", "State", "Manager", "Comparison"])
+        tree.setRootIsDecorated(True)
+        tree.setAlternatingRowColors(True)
+        tree.setUniformRowHeights(True)
+        tree.setSelectionMode(QTreeWidget.SingleSelection)
+        tree.setIndentation(14)
+        header = tree.header()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        tree.itemSelectionChanged.connect(
+            lambda s=side: self._selection_changed(s)
+        )
+        tree.itemClicked.connect(
+            lambda item, _column, s=side: self._item_clicked(s, item)
+        )
+        return tree
+
+    @staticmethod
+    def _device_fields(
+        data: dict, category: str, name: str, state: str, side: str
+    ) -> tuple[str, str, str, str]:
+        device, enabled = _locate_device(data, category, name)
+        comparison = _comparison_status_for_side(state, side).replace("_", " ").upper()
+        if device is None:
+            return name, "Missing", "—", comparison
+        manager = str(device.get("managerName", "") or "(custom/unspecified)")
+        state_text = "Enabled" if enabled is not False else "Disabled"
+        return name, state_text, _manager_display_name(manager), comparison
+
+    def set_selector_paths(self, paths, current: str = "") -> None:
+        self._selector.blockSignals(True)
+        self._selector.clear()
+        current_index = 0
+        paths = list(paths)
+        if not paths:
+            self._selector.addItem("No other configs", "")
+        else:
+            for path in paths:
+                path = str(path)
+                self._selector.addItem(Path(path).name, path)
+                self._selector.setItemData(
+                    self._selector.count() - 1, path, Qt.ToolTipRole
+                )
+                if current and LeftPanel._same_path(path, current):
+                    current_index = self._selector.count() - 1
+        self._selector.setCurrentIndex(current_index)
+        self._selector.blockSignals(False)
+
+    def set_selected_path(self, path: str) -> None:
+        for index in range(self._selector.count()):
+            candidate = str(self._selector.itemData(index) or "")
+            if candidate and LeftPanel._same_path(candidate, path):
+                self._selector.blockSignals(True)
+                self._selector.setCurrentIndex(index)
+                self._selector.blockSignals(False)
+                return
+
+    def load(
+        self,
+        left: dict,
+        right: dict,
+        states: dict[tuple[str, str], str],
+        *,
+        left_path: str = "",
+        right_path: str = "",
+    ) -> None:
+        self._left_data = left or {}
+        self._right_data = right or {}
+        self._states = states or {}
+        self._left_name.setText(Path(left_path).name if left_path else "[new config]")
+        self._left_name.setToolTip(left_path or "New unsaved configuration")
+        if right_path:
+            self.set_selected_path(right_path)
+        self._rebuild()
+
+    def _rebuild(self, *_args) -> None:
+        previous = self._selected_key
+        for tree in self._trees.values():
+            tree.clear()
+        self._items = {"left": {}, "right": {}}
+
+        shown_states = self._states
+        if self._diff_only.isChecked():
+            shown_states = {
+                key: state for key, state in self._states.items() if state != "same"
+            }
+
+        changed_count = sum(1 for state in self._states.values() if state != "same")
+        total = len(self._states)
+        self._counts_lbl.setText(
+            f"{total} device{'s' if total != 1 else ''} · "
+            f"{changed_count} difference{'s' if changed_count != 1 else ''}"
+        )
+
+        any_rows = False
+        for category in DEVICE_CATS:
+            entries = sorted(
+                (
+                    (name, state)
+                    for (cat, name), state in shown_states.items()
+                    if cat == category
+                ),
+                key=lambda item: item[0].casefold(),
+            )
+            if not entries:
+                continue
+            any_rows = True
+            roots = {}
+            difference_count = sum(1 for _name, state in entries if state != "same")
+            suffix = (
+                f" · {difference_count} difference{'s' if difference_count != 1 else ''}"
+                if difference_count else ""
+            )
+            for side in ("left", "right"):
+                root = QTreeWidgetItem([f"{CAT_LABEL.get(category, category)}{suffix}"])
+                font = root.font(0)
+                font.setBold(True)
+                root.setFont(0, font)
+                self._trees[side].addTopLevelItem(root)
+                self._trees[side].setFirstItemColumnSpanned(root, True)
+                roots[side] = root
+
+            for name, state in entries:
+                for side, data in (("left", self._left_data), ("right", self._right_data)):
+                    values = self._device_fields(data, category, name, state, side)
+                    item = QTreeWidgetItem(list(values))
+                    item.setData(0, Qt.UserRole, (category, name, state))
+                    status_font = item.font(3)
+                    status_font.setBold(True)
+                    item.setFont(3, status_font)
+                    device, enabled = _locate_device(data, category, name)
+                    if device is None:
+                        item.setToolTip(0, "Device is not present in this config")
+                    else:
+                        manager = str(device.get("managerName", "") or "(custom/unspecified)")
+                        item.setToolTip(
+                            2,
+                            f"Manager: {manager}\nState: "
+                            f"{'enabled' if enabled is not False else 'disabled'}",
+                        )
+                    roots[side].addChild(item)
+                    self._items[side][(category, name)] = item
+
+            for root in roots.values():
+                root.setExpanded(True)
+
+        if not any_rows:
+            message = (
+                "No differences"
+                if self._diff_only.isChecked() and self._states
+                else "No devices to compare"
+            )
+            for side in ("left", "right"):
+                empty = QTreeWidgetItem([message])
+                self._trees[side].addTopLevelItem(empty)
+                self._trees[side].setFirstItemColumnSpanned(empty, True)
+
+        if previous and previous in self._items["left"]:
+            self._select_key(previous, focus_side=None)
+        else:
+            self._selected_key = None
+            self._update_selection_controls()
+
+    def _select_key(
+        self, key: tuple[str, str], *, focus_side: str | None = None
+    ) -> None:
+        if key not in self._items["left"] or key not in self._items["right"]:
+            return
+        self._syncing_selection = True
+        try:
+            for side in ("left", "right"):
+                tree = self._trees[side]
+                item = self._items[side][key]
+                tree.setCurrentItem(item)
+                item.setSelected(True)
+                if focus_side == side:
+                    tree.scrollToItem(item)
+        finally:
+            self._syncing_selection = False
+        self._selected_key = key
+        self._update_selection_controls()
+
+    def _selection_changed(self, side: str) -> None:
+        if self._syncing_selection:
+            return
+        selected = self._trees[side].selectedItems()
+        if not selected:
+            return
+        payload = selected[0].data(0, Qt.UserRole)
+        if not payload:
+            return
+        category, name, _state = payload
+        self._select_key((category, name), focus_side=side)
+
+    def _item_clicked(self, side: str, item: QTreeWidgetItem) -> None:
+        payload = item.data(0, Qt.UserRole)
+        if not payload:
+            return
+        category, name, _state = payload
+        pane = "primary" if side == "left" else "compare"
+        data = self._left_data if pane == "primary" else self._right_data
+        device, _enabled = _locate_device(data, category, name)
+        if device is None:
+            pane = "compare" if pane == "primary" else "primary"
+        self.sig_device_selected.emit(category, name, pane)
+
+    def _update_selection_controls(self) -> None:
+        key = self._selected_key
+        state = self._states.get(key) if key else None
+        if not key or not state:
+            self._selected_name_lbl.setText("Select a device")
+            self._selected_status_lbl.setText("—")
+            self._copy_right_btn.setEnabled(False)
+            self._copy_left_btn.setEnabled(False)
+            return
+
+        category, name = key
+        self._selected_name_lbl.setText(name)
+        self._selected_name_lbl.setToolTip(CAT_LABEL.get(category, category))
+        self._selected_status_lbl.setText(self._STATE_LABELS.get(state, state.upper()))
+        self._copy_right_btn.setEnabled(state in {"different", "left_only"})
+        self._copy_left_btn.setEnabled(state in {"different", "right_only"})
+
+    def _copy_selected_right(self) -> None:
+        if not self._selected_key:
+            return
+        category, name = self._selected_key
+        state = self._states.get(self._selected_key)
+        if state in {"different", "left_only"}:
+            self.sig_copy_to_other.emit(category, name, "primary")
+
+    def _copy_selected_left(self) -> None:
+        if not self._selected_key:
+            return
+        category, name = self._selected_key
+        state = self._states.get(self._selected_key)
+        if state in {"different", "right_only"}:
+            self.sig_copy_to_other.emit(category, name, "compare")
+
+    def _on_selector_changed(self, index: int) -> None:
+        path = str(self._selector.itemData(index) or "")
+        if path:
+            self.sig_config_requested.emit(path)
 
 
 _MISSING = object()
@@ -4345,6 +5052,16 @@ class MainWindow(QMainWindow):
         self._modified = False
         self._options_path: str = ""   # path to imcontrol_options.json if found
         self._copied_device: object = None  # (category, name, device_dict, enabled)
+        # Compare mode keeps the normal editor document pinned on the left and
+        # loads one additional saved config on the right. The shared property
+        # editor follows whichever pane was selected last.
+        self._compare_mode = False
+        self._compare_data: dict = {}
+        self._compare_path: str = ""
+        self._compare_modified = False
+        self._compare_view = "cards"
+        self._active_pane = "primary"
+        self._editor_pane = "primary"
         # What this editing session changed on disk. A running ImSwitch reads
         # its setup once at startup, so an embedder needs to know whether
         # anything it is already using was rewritten -- see saved_files() and
@@ -4399,13 +5116,22 @@ class MainWindow(QMainWindow):
 
         _btn("New",        self._new_file,   "Create blank config")
         _btn("Open File…", self._open_file,  "Open a JSON config file")
-        _btn("Save",       self._save_file,  "Save current file (Ctrl+S)")
+        _btn("Save",       self._save_active_pane,  "Save the active config pane (Ctrl+S)")
         _btn("Save As…",   self._save_as,    "Save to a new file")
-        _btn("Paste Device", self._paste_device, "Paste the copied device into this config")
+        _btn(
+            "Paste Device", lambda: self._paste_device(),
+            "Paste the copied device into the active config pane"
+        )
+        tb.addSeparator()
+        self._compare_action = _btn(
+            "Compare", self._toggle_compare_mode,
+            "Show a second config beside the current one"
+        )
+        self._compare_action.setCheckable(True)
         tb.addSeparator()
         _btn("Validate",   self._run_validation, "Check for DAQ conflicts")
 
-        self.addAction(self._make_shortcut("Ctrl+S", self._save_file))
+        self.addAction(self._make_shortcut("Ctrl+S", self._save_active_pane))
         self.addAction(self._make_shortcut("Ctrl+N", self._new_file))
 
     def _make_shortcut(self, key, slot):
@@ -4474,42 +5200,440 @@ class MainWindow(QMainWindow):
         self._left.sig_folder_reloaded.connect(self._on_folder_reloaded)
         splitter.addWidget(self._left)
 
-        # Centre + validation
+        # Centre + validation. ConfigPane is reused for both halves of the
+        # embedded compare workspace; normal mode simply hides the reference
+        # pane and the primary pane's small header.
         centre = QWidget()
         cl = QVBoxLayout(centre)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
-        self._canvas = DeviceCanvas()
-        self._canvas.sig_device_selected.connect(self._on_device_selected)
-        self._canvas.sig_device_deleted.connect(self._on_device_deleted)
-        self._canvas.sig_device_duped.connect(self._on_device_duped_or_add)
-        self._canvas.sig_device_renamed.connect(self._on_device_rename_from_canvas)
-        self._canvas.sig_save_tmpl.connect(self._on_save_template)
-        self._canvas.sig_device_copied.connect(self._copy_device)
-        self._canvas.sig_device_enabled_changed.connect(self._on_device_enabled_changed)
-        self._canvas.sig_category_settings.connect(self._on_category_settings)
-        cl.addWidget(self._canvas, 1)
+
+        self._compare_view_bar = QFrame()
+        self._compare_view_bar.setStyleSheet(
+            f"QFrame {{ background:{colors['header_bg']}; "
+            f"border-bottom:1px solid {colors['card_border']}; }}"
+        )
+        view_bar_lay = QHBoxLayout(self._compare_view_bar)
+        view_bar_lay.setContentsMargins(8, 4, 8, 4)
+        view_bar_lay.setSpacing(4)
+        view_bar_lay.addWidget(QLabel("<b>Compare view:</b>"))
+        self._cards_view_btn = QPushButton("Cards")
+        self._cards_view_btn.setCheckable(True)
+        self._cards_view_btn.setFixedHeight(23)
+        self._cards_view_btn.clicked.connect(lambda: self._set_compare_view("cards"))
+        view_bar_lay.addWidget(self._cards_view_btn)
+        self._summary_view_btn = QPushButton("Summary")
+        self._summary_view_btn.setCheckable(True)
+        self._summary_view_btn.setFixedHeight(23)
+        self._summary_view_btn.clicked.connect(lambda: self._set_compare_view("summary"))
+        view_bar_lay.addWidget(self._summary_view_btn)
+        view_bar_lay.addStretch()
+        self._compare_view_bar.setVisible(False)
+        cl.addWidget(self._compare_view_bar)
+
+        self._pane_splitter = QSplitter(Qt.Horizontal)
+        self._pane_splitter.setChildrenCollapsible(False)
+
+        self._primary_pane = ConfigPane("Editing")
+        self._primary_pane.set_header_visible(False)
+        self._primary_pane.sig_paste_requested.connect(
+            lambda: self._paste_device("primary")
+        )
+        self._primary_pane.sig_save_requested.connect(self._save_file)
+        self._canvas = self._primary_pane.canvas  # compatibility alias
+        self._connect_canvas(self._primary_pane.canvas, "primary")
+        self._pane_splitter.addWidget(self._primary_pane)
+
+        self._compare_pane = ConfigPane("Compare with", selector=True, compact=True)
+        self._compare_pane.sig_config_requested.connect(self._load_compare_file)
+        self._compare_pane.sig_paste_requested.connect(
+            lambda: self._paste_device("compare")
+        )
+        self._compare_pane.sig_save_requested.connect(self._save_compare_file)
+        self._compare_canvas = self._compare_pane.canvas
+        self._connect_canvas(self._compare_canvas, "compare")
+        self._compare_pane.setVisible(False)
+        self._pane_splitter.addWidget(self._compare_pane)
+
+        cl.addWidget(self._pane_splitter, 1)
+
+        self._compare_summary = ComparisonSummary()
+        self._compare_summary.sig_config_requested.connect(self._load_compare_file)
+        self._compare_summary.sig_copy_to_other.connect(self._copy_device_to_other)
+        self._compare_summary.sig_device_selected.connect(self._on_summary_device_selected)
+        self._compare_summary.setVisible(False)
+        cl.addWidget(self._compare_summary, 1)
+
         self._val_panel = ValidationPanel()
         self._val_panel.sig_fix_section.connect(self._on_fix_section_from_validation)
         cl.addWidget(self._val_panel)
         splitter.addWidget(centre)
 
-        # Right
+        # Right: one shared inspector follows the last selected pane. This is
+        # deliberately not duplicated in Compare mode; two inspectors would
+        # consume most of the horizontal space we just gained.
+        editor_wrap = QWidget()
+        editor_lay = QVBoxLayout(editor_wrap)
+        editor_lay.setContentsMargins(0, 0, 0, 0)
+        editor_lay.setSpacing(0)
+        self._editor_source_lbl = QLabel()
+        self._editor_source_lbl.setTextFormat(Qt.RichText)
+        self._editor_source_lbl.setStyleSheet("padding:5px 8px; font-size:8pt;")
+        self._editor_source_lbl.setVisible(False)
+        editor_lay.addWidget(self._editor_source_lbl)
         self._editor = PropertyEditor()
         self._editor.sig_apply.connect(self._on_editor_apply)
         self._editor.sig_rename.connect(self._on_device_rename)
         self._editor.sig_enabled_changed.connect(self._on_device_enabled_changed)
         self._editor.sig_modified.connect(self._on_extras_modified)
         self._editor.sig_show_config.connect(self._show_config_settings)
-        splitter.addWidget(self._editor)
+        editor_lay.addWidget(self._editor, 1)
+        splitter.addWidget(editor_wrap)
+        self._set_editor_source("primary")
 
+        splitter.setCollapsible(2, True)
         splitter.setSizes([242, 758, 340])
+        self._main_splitter = splitter
 
     def _build_status_bar(self):
         sb = QStatusBar()
         self.setStatusBar(sb)
         self._status = QLabel("Ready")
         sb.addWidget(self._status)
+
+    # ── Config panes / embedded compare mode ──────────────────────────────
+    def _connect_canvas(self, canvas: DeviceCanvas, pane: str) -> None:
+        canvas.sig_device_selected.connect(
+            lambda cat, name, p=pane: self._on_device_selected(cat, name, p)
+        )
+        canvas.sig_device_deleted.connect(
+            lambda cat, name, p=pane: self._on_device_deleted(cat, name, p)
+        )
+        canvas.sig_device_duped.connect(
+            lambda cat, name, p=pane: self._on_device_duped_or_add(cat, name, p)
+        )
+        canvas.sig_device_renamed.connect(
+            lambda cat, name, p=pane: self._on_device_rename_from_canvas(cat, name, p)
+        )
+        canvas.sig_save_tmpl.connect(
+            lambda cat, name, p=pane: self._on_save_template(cat, name, p)
+        )
+        canvas.sig_device_copied.connect(
+            lambda cat, name, p=pane: self._copy_device(cat, name, p)
+        )
+        canvas.sig_copy_to_other.connect(
+            lambda cat, name, p=pane: self._copy_device_to_other(cat, name, p)
+        )
+        canvas.sig_device_enabled_changed.connect(
+            lambda cat, name, enabled, p=pane:
+                self._on_device_enabled_changed(cat, name, enabled, p)
+        )
+        canvas.sig_category_settings.connect(
+            lambda cat, p=pane: self._on_category_settings(cat, p)
+        )
+
+    def _pane_data(self, pane: str) -> dict:
+        return self._compare_data if pane == "compare" else self._data
+
+    def _pane_canvas(self, pane: str) -> DeviceCanvas:
+        return self._compare_canvas if pane == "compare" else self._canvas
+
+    def _pane_path(self, pane: str) -> str:
+        return self._compare_path if pane == "compare" else self._path
+
+    def _pane_name(self, pane: str) -> str:
+        path = self._pane_path(pane)
+        return Path(path).name if path else ("compare config" if pane == "compare" else "new config")
+
+    def _set_compare_view(self, view: str) -> None:
+        """Switch between the editable card workspace and compact summary."""
+        if view not in {"cards", "summary"}:
+            return
+        self._compare_view = view
+        cards = view == "cards"
+        self._cards_view_btn.blockSignals(True)
+        self._summary_view_btn.blockSignals(True)
+        self._cards_view_btn.setChecked(cards)
+        self._summary_view_btn.setChecked(not cards)
+        self._cards_view_btn.blockSignals(False)
+        self._summary_view_btn.blockSignals(False)
+        self._pane_splitter.setVisible(cards or not self._compare_mode)
+        self._compare_summary.setVisible(self._compare_mode and not cards)
+        if self._compare_mode:
+            self._status.setText(
+                "Compare mode: card workspace" if cards else "Compare mode: summary"
+            )
+
+    def _on_summary_device_selected(self, cat: str, name: str, pane: str) -> None:
+        """Point the shared inspector at a device chosen from Summary."""
+        self._canvas.select_device(cat, name)
+        self._compare_canvas.select_device(cat, name)
+        self._on_device_selected(cat, name, pane)
+
+    def _activate_pane(self, pane: str) -> None:
+        self._active_pane = pane if pane == "compare" and self._compare_mode else "primary"
+        if hasattr(self, "_primary_pane"):
+            self._primary_pane.set_active(self._active_pane == "primary")
+        if hasattr(self, "_compare_pane"):
+            self._compare_pane.set_active(self._active_pane == "compare")
+
+    def _set_editor_source(self, pane: str) -> None:
+        self._editor_pane = pane if pane == "compare" and self._compare_mode else "primary"
+        if hasattr(self, "_editor_source_lbl"):
+            self._editor_source_lbl.setText(
+                f"<b>Properties:</b>&nbsp;&nbsp;{self._pane_name(self._editor_pane)}"
+            )
+            self._editor_source_lbl.setToolTip(self._pane_path(self._editor_pane))
+
+    def _load_inspector_for_pane(self, pane: str) -> None:
+        self._activate_pane(pane)
+        self._set_editor_source(pane)
+        canvas = self._pane_canvas(pane)
+        selected = canvas._selected
+        if selected:
+            cat, name = selected
+            device, enabled = _locate_device(self._pane_data(pane), cat, name)
+            if device is not None:
+                self._editor.load_device(
+                    cat, name, device, setup=self._pane_data(pane),
+                    enabled=True if enabled is None else enabled,
+                )
+                return
+        self._editor.load_config_extras(self._pane_data(pane))
+
+    def _mark_pane_modified(self, pane: str) -> None:
+        if pane == "compare":
+            self._compare_modified = True
+            self._compare_pane.set_modified(True)
+        else:
+            self._mark_modified()
+
+    def _refresh_pane(self, pane: str) -> None:
+        if self._compare_mode and self._compare_path:
+            self._refresh_comparison_view()
+        else:
+            canvas = self._pane_canvas(pane)
+            canvas.load(self._pane_data(pane))
+        if pane == "primary":
+            self._primary_pane.set_identity(self._path, modified=self._modified)
+        else:
+            self._compare_pane.set_modified(self._compare_modified)
+
+    def _refresh_comparison_view(self) -> None:
+        """Rebuild both card panes with one shared device comparison map."""
+        if not self._compare_mode or not self._compare_path:
+            return
+        selected = self._pane_canvas(self._active_pane)._selected
+        if selected is None:
+            selected = self._canvas._selected or self._compare_canvas._selected
+
+        states = _compare_configs(self._data, self._compare_data)
+        self._canvas.load(
+            self._data, comparison_states=states, compare_side="left"
+        )
+        self._compare_canvas.load(
+            self._compare_data, comparison_states=states, compare_side="right"
+        )
+        self._compare_summary.load(
+            self._data, self._compare_data, states,
+            left_path=self._path, right_path=self._compare_path,
+        )
+        if selected:
+            cat, name = selected
+            self._canvas.select_device(cat, name)
+            self._compare_canvas.select_device(cat, name)
+
+        self._primary_pane.set_identity(self._path, modified=self._modified)
+        self._compare_pane.set_modified(self._compare_modified)
+
+    def _validate_pane(self, pane: str) -> None:
+        # The validation panel belongs to the main editing document. Keeping it
+        # single avoids presenting a second independent validation UI in 3A.
+        if pane == "primary":
+            self._val_panel.validate(self._data)
+
+    def _available_compare_paths(self):
+        folder = self._left.config_dir
+        if not folder:
+            return []
+        paths = []
+        for path in sorted(Path(folder).glob("*.json")):
+            if self._path and LeftPanel._same_path(str(path), self._path):
+                continue
+            paths.append(str(path))
+        return paths
+
+    def _refresh_compare_choices(self, *, auto_load: bool = True) -> None:
+        paths = self._available_compare_paths()
+        keep = (
+            self._compare_path
+            if self._compare_path
+            and any(LeftPanel._same_path(self._compare_path, p) for p in paths)
+            else ""
+        )
+        target = keep or (paths[0] if paths else "")
+        self._compare_pane.set_selector_paths(paths, target)
+        self._compare_summary.set_selector_paths(paths, target)
+        if not auto_load:
+            return
+        if target:
+            if not self._compare_path or not LeftPanel._same_path(target, self._compare_path):
+                self._load_compare_file(target, force=True)
+        else:
+            self._compare_path = ""
+            self._compare_data = {}
+            self._compare_modified = False
+            self._compare_canvas.load({})
+            self._compare_summary.load(
+                self._data, {}, {}, left_path=self._path, right_path=""
+            )
+            if self._compare_mode:
+                self._canvas.clear_comparison()
+            self._compare_pane.set_modified(False)
+
+    def _toggle_compare_mode(self, checked=False) -> None:
+        if checked:
+            self._enter_compare_mode()
+            return
+        if not self._leave_compare_mode():
+            self._compare_action.blockSignals(True)
+            self._compare_action.setChecked(True)
+            self._compare_action.blockSignals(False)
+
+    def _enter_compare_mode(self) -> None:
+        if self._compare_mode:
+            return
+        self._compare_mode = True
+        self._compare_action.blockSignals(True)
+        self._compare_action.setChecked(True)
+        self._compare_action.blockSignals(False)
+        self._primary_pane.set_header_visible(True)
+        self._primary_pane.set_identity(self._path, modified=self._modified)
+        self._canvas.set_compact(True)
+        self._compare_pane.setVisible(True)
+        self._compare_view_bar.setVisible(True)
+        self._set_compare_view("cards")
+        self._editor_source_lbl.setVisible(True)
+        self._val_panel.setVisible(False)
+        self._refresh_compare_choices(auto_load=True)
+        self._pane_splitter.setSizes([1, 1])
+        self._load_inspector_for_pane("primary")
+        self._status.setText("Compare mode: current config pinned on the left")
+
+    def _leave_compare_mode(self) -> bool:
+        if not self._compare_mode:
+            return True
+        if not self._confirm_compare_changes("leaving Compare mode"):
+            return False
+        self._compare_mode = False
+        self._compare_pane.setVisible(False)
+        self._compare_view_bar.setVisible(False)
+        self._compare_summary.setVisible(False)
+        self._pane_splitter.setVisible(True)
+        self._primary_pane.set_header_visible(False)
+        self._canvas.clear_comparison()
+        self._canvas.set_compact(False)
+        self._editor_source_lbl.setVisible(False)
+        self._val_panel.setVisible(True)
+        self._load_inspector_for_pane("primary")
+        self._compare_action.blockSignals(True)
+        self._compare_action.setChecked(False)
+        self._compare_action.blockSignals(False)
+        self._status.setText("Compare mode closed")
+        return True
+
+    def _confirm_compare_changes(self, action: str) -> bool:
+        if not self._compare_modified:
+            return True
+        response = QMessageBox.question(
+            self,
+            "Unsaved Compare Changes",
+            f"Save changes to '{self._pane_name('compare')}' before {action}?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if response == QMessageBox.Cancel:
+            return False
+        if response == QMessageBox.Yes:
+            return self._save_compare_file()
+
+        # Discard means discard the staged in-memory copy as well, otherwise
+        # leaving and re-entering Compare would resurrect changes the user just
+        # chose to throw away.
+        try:
+            if self._compare_path:
+                if _io_module is not None:
+                    self._compare_data = _io_module.load_config_file(self._compare_path)
+                else:
+                    with open(self._compare_path, encoding="utf-8") as fh:
+                        self._compare_data = json.load(fh)
+                self._refresh_comparison_view()
+        except Exception:
+            self._compare_data = {}
+            self._compare_canvas.load({})
+            if self._compare_mode:
+                self._canvas.clear_comparison()
+        self._compare_modified = False
+        self._compare_pane.set_modified(False)
+        return True
+
+    def _load_compare_file(self, path: str, *, force: bool = False) -> None:
+        if not path:
+            return
+        if self._path and LeftPanel._same_path(path, self._path):
+            return
+        if (
+            not force
+            and self._compare_path
+            and not LeftPanel._same_path(path, self._compare_path)
+            and not self._confirm_compare_changes("switching reference config")
+        ):
+            self._compare_pane.set_selected_path(self._compare_path)
+            return
+        try:
+            if _io_module is not None:
+                data = _io_module.load_config_file(path)
+            else:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Compare Config", str(exc))
+            if self._compare_path:
+                self._compare_pane.set_selected_path(self._compare_path)
+            return
+
+        self._compare_data = data
+        self._compare_path = path
+        self._compare_modified = False
+        self._compare_pane.set_selected_path(path)
+        self._compare_summary.set_selected_path(path)
+        self._compare_pane.set_modified(False)
+        self._refresh_comparison_view()
+        self._activate_pane("compare")
+        self._set_editor_source("compare")
+        self._editor.load_config_extras(self._compare_data)
+        self._status.setText(f"Compare with: {Path(path).name}")
+
+    def _save_compare_file(self) -> bool:
+        if not self._compare_path:
+            return False
+        try:
+            if _io_module is not None:
+                data_to_write = _io_module.prepare_for_save(self._compare_data)
+            else:
+                data_to_write = copy.deepcopy(self._compare_data)
+                if "others" in data_to_write and not data_to_write["others"]:
+                    del data_to_write["others"]
+            with open(self._compare_path, "w", encoding="utf-8") as fh:
+                json.dump(data_to_write, fh, indent=2, ensure_ascii=False)
+            self._compare_modified = False
+            self._compare_pane.set_modified(False)
+            self._note_saved(self._compare_path)
+            self._status.setText(f"Saved compare config: {self._compare_path}")
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Compare Config", str(exc))
+            return False
 
     # ── File operations ───────────────────────────────────────────────────
     def _new_file(self):
@@ -4520,7 +5644,11 @@ class MainWindow(QMainWindow):
         self._path = ""
         self._set_modified(False)
         self._refresh_canvas()
+        self._activate_pane("primary")
+        self._set_editor_source("primary")
         self._editor.load_config_extras(self._data)
+        if self._compare_mode:
+            self._refresh_compare_choices(auto_load=True)
         self._status.setText("New config (unsaved)")
 
     def _open_file(self):
@@ -4541,6 +5669,20 @@ class MainWindow(QMainWindow):
         self._load_file(path)
 
     def _load_file(self, path: str):
+        compare_conflict = False
+        if self._compare_mode and self._compare_path:
+            compare_conflict = LeftPanel._same_path(path, self._compare_path)
+            try:
+                compare_conflict = compare_conflict or (
+                    Path(path).parent.resolve() != Path(self._compare_path).parent.resolve()
+                )
+            except Exception:
+                pass
+        if (
+            compare_conflict and self._compare_modified
+            and not self._confirm_compare_changes("opening this file as the main config")
+        ):
+            return
         try:
             # Delegate to shared helper when available, otherwise fallback
             if _io_module is not None:
@@ -4553,8 +5695,12 @@ class MainWindow(QMainWindow):
             self._set_modified(False)
             self._left.select_config_path(path)
             self._refresh_canvas()
+            self._activate_pane("primary")
+            self._set_editor_source("primary")
             self._editor.load_config_extras(self._data)
             self._val_panel.validate(self._data)
+            if self._compare_mode:
+                self._refresh_compare_choices(auto_load=True)
             self._status.setText(f"Loaded: {path}")
             # Try to find options file near the loaded config if not yet found
             if not self._options_path:
@@ -4565,6 +5711,20 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load Error", str(e))
 
     def _on_folder_reloaded(self, folder: str, count: int):
+        if self._compare_mode:
+            compare_outside_folder = (
+                self._compare_path
+                and Path(self._compare_path).parent.resolve() != Path(folder).resolve()
+            )
+            if (
+                compare_outside_folder and self._compare_modified
+                and not self._confirm_compare_changes("changing config folders")
+            ):
+                self._status.setText(
+                    "Folder changed; keeping the unsaved comparison config open"
+                )
+                return
+            self._refresh_compare_choices(auto_load=True)
         self._status.setText(f"Reloaded {count} JSON config(s) from {folder}")
 
     @staticmethod
@@ -4631,6 +5791,14 @@ class MainWindow(QMainWindow):
                 if self._modified:
                     return
 
+        if (
+            self._compare_path
+            and LeftPanel._same_path(str(source), self._compare_path)
+            and self._compare_modified
+        ):
+            if not self._confirm_compare_changes("duplicating this config"):
+                return
+
         stem = source.stem + "_copy"
         initial = f"{stem}.json"
         index = 2
@@ -4662,6 +5830,9 @@ class MainWindow(QMainWindow):
         active_path = self._active_setup_path(self._left.config_dir)
         was_active = bool(active_path) and LeftPanel._same_path(str(source), active_path)
         was_current = bool(self._path) and LeftPanel._same_path(str(source), self._path)
+        was_compare = bool(self._compare_path) and LeftPanel._same_path(
+            str(source), self._compare_path
+        )
         old_resolved = self._resolved_path(source)
         try:
             source.rename(target)
@@ -4673,11 +5844,17 @@ class MainWindow(QMainWindow):
                     raise
             if was_current:
                 self._path = str(target)
+            if was_compare:
+                self._compare_path = str(target)
             if old_resolved in self._saved_files:
                 self._saved_files.discard(old_resolved)
                 self._saved_files.add(self._resolved_path(target))
             self._left.set_folder(str(target.parent))
             self._left.select_config_path(str(target))
+            if self._compare_mode:
+                self._refresh_compare_choices(auto_load=False)
+                if was_compare:
+                    self._compare_pane.set_selected_path(str(target))
             self._update_active_banner()
             self._status.setText(f"Renamed {source.name} to {target.name}")
         except Exception as exc:
@@ -4700,6 +5877,12 @@ class MainWindow(QMainWindow):
             return
 
         is_current = bool(self._path) and LeftPanel._same_path(str(source), self._path)
+        is_compare = bool(self._compare_path) and LeftPanel._same_path(
+            str(source), self._compare_path
+        )
+        if is_compare and self._compare_modified:
+            if not self._confirm_compare_changes("deleting this config"):
+                return
         extra = "\n\nUnsaved changes to this config will also be discarded." if (is_current and self._modified) else ""
         response = QMessageBox.question(
             self,
@@ -4714,6 +5897,11 @@ class MainWindow(QMainWindow):
         try:
             source.unlink()
             self._saved_files.discard(self._resolved_path(source))
+            if is_compare:
+                self._compare_path = ""
+                self._compare_data = {}
+                self._compare_modified = False
+                self._compare_canvas.load({})
             if is_current:
                 self._path = ""
                 self._set_modified(False)
@@ -4724,10 +5912,18 @@ class MainWindow(QMainWindow):
                     self._new_file()
             else:
                 self._left.set_folder(str(source.parent))
+                if self._compare_mode:
+                    self._refresh_compare_choices(auto_load=True)
                 self._update_active_banner()
             self._status.setText(f"Deleted: {source.name}")
         except Exception as exc:
             QMessageBox.critical(self, "Delete Config", str(exc))
+
+    def _save_active_pane(self):
+        if self._compare_mode and self._active_pane == "compare":
+            self._save_compare_file()
+        else:
+            self._save_file()
 
     def _save_file(self):
         if not self._path:
@@ -4744,6 +5940,20 @@ class MainWindow(QMainWindow):
             self._write_file(path)
 
     def _write_file(self, path: str):
+        compare_conflict = False
+        if self._compare_mode and self._compare_path:
+            compare_conflict = LeftPanel._same_path(path, self._compare_path)
+            try:
+                compare_conflict = compare_conflict or (
+                    Path(path).parent.resolve() != Path(self._compare_path).parent.resolve()
+                )
+            except Exception:
+                pass
+        if (
+            compare_conflict and self._compare_modified
+            and not self._confirm_compare_changes("saving the main config here")
+        ):
+            return
         try:
             # Delegate transform to shared helper when available
             if _io_module is not None:
@@ -4767,6 +5977,8 @@ class MainWindow(QMainWindow):
             if left is not None:
                 left.select_config_path(path)
             self._note_saved(path)
+            if self._compare_mode:
+                self._refresh_compare_choices(auto_load=True)
             self._status.setText(f"Saved: {path}")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
@@ -4784,93 +5996,129 @@ class MainWindow(QMainWindow):
     # ── Canvas ↔ data ─────────────────────────────────────────────────────
     def _refresh_canvas(self):
         self._canvas.load(self._data)
+        if hasattr(self, "_primary_pane"):
+            self._primary_pane.set_identity(self._path, modified=self._modified)
 
     def _run_validation(self):
         self._val_panel.validate(self._data)
 
     def _show_config_settings(self):
-        self._canvas.deselect_all()
-        self._editor.load_config_extras(self._data)
-        self._status.setText("Showing config settings")
+        pane = self._active_pane if self._compare_mode else "primary"
+        self._pane_canvas(pane).deselect_all()
+        self._activate_pane(pane)
+        self._set_editor_source(pane)
+        self._editor.load_config_extras(self._pane_data(pane))
+        self._status.setText(f"Showing config settings: {self._pane_name(pane)}")
 
-    def _on_category_settings(self, cat: str):
+    def _on_category_settings(self, cat: str, pane: str = "primary"):
+        data = self._pane_data(pane)
         schema = CATEGORY_SCHEMAS.get(cat)
         if not schema:
             return
-        settings_root = self._data.get("deviceCategorySettings")
+        settings_root = data.get("deviceCategorySettings")
         if not isinstance(settings_root, dict):
             settings_root = {}
-            self._data["deviceCategorySettings"] = settings_root
+            data["deviceCategorySettings"] = settings_root
         current = settings_root.get(cat)
         if not isinstance(current, dict):
             current = {}
         dlg = SectionEditorDialog(
-            cat, schema, current, self._data, self,
+            cat, schema, current, data, self,
             title_prefix="Edit category settings",
             allow_custom_fields=True,
         )
         if dlg.exec_() != QDialog.Accepted:
             return
         settings_root[cat] = dlg.result_data
-        self._mark_modified()
-        self._refresh_canvas()
-        self._editor.load_config_extras(self._data)
-        self._val_panel.validate(self._data)
-        self._status.setText(f"Updated {CAT_LABEL.get(cat, cat)} settings")
+        self._mark_pane_modified(pane)
+        self._refresh_pane(pane)
+        self._activate_pane(pane)
+        self._set_editor_source(pane)
+        self._editor.load_config_extras(data)
+        self._validate_pane(pane)
+        self._status.setText(
+            f"Updated {CAT_LABEL.get(cat, cat)} settings in {self._pane_name(pane)}"
+        )
 
-    def _on_device_selected(self, cat: str, name: str):
-        device, enabled = _locate_device(self._data, cat, name)
+    def _on_device_selected(self, cat: str, name: str, pane: str = "primary"):
+        data = self._pane_data(pane)
+        device, enabled = _locate_device(data, cat, name)
+        if self._compare_mode and self._compare_path:
+            other_pane = "compare" if pane == "primary" else "primary"
+            self._pane_canvas(other_pane).select_device(cat, name)
         if device is not None:
+            self._activate_pane(pane)
+            self._set_editor_source(pane)
             self._editor.load_device(
-                cat, name, device, setup=self._data,
+                cat, name, device, setup=data,
                 enabled=True if enabled is None else enabled,
+            )
+        elif self._compare_mode:
+            self._activate_pane(pane)
+            self._set_editor_source(pane)
+            self._editor.load_config_extras(data)
+            self._status.setText(
+                f"{name} is missing from {self._pane_name(pane)}"
             )
 
     def _on_editor_apply(self, cat: str, name: str, new_device: dict):
-        _, enabled = _locate_device(self._data, cat, name)
+        pane = self._editor_pane if self._compare_mode else "primary"
+        data = self._pane_data(pane)
+        _, enabled = _locate_device(data, cat, name)
         if enabled is None:
             enabled = True
-        section = _device_section(self._data, cat, enabled=enabled, create=True)
+        section = _device_section(data, cat, enabled=enabled, create=True)
         section[name] = new_device
-        self._mark_modified()
-        self._refresh_canvas()
-        self._val_panel.validate(self._data)
-        self._status.setText(f"Updated: {name}")
-        # Reselect the card
-        self._canvas._on_card_clicked(cat, name)
+        self._mark_pane_modified(pane)
+        self._refresh_pane(pane)
+        self._validate_pane(pane)
+        self._status.setText(f"Updated {name} in {self._pane_name(pane)}")
+        self._pane_canvas(pane)._on_card_clicked(cat, name)
 
-    def _on_device_rename(self, cat: str, old_name: str, new_name: str):
-        _, enabled = _locate_device(self._data, cat, old_name)
+    def _on_device_rename(
+        self, cat: str, old_name: str, new_name: str, pane: str | None = None
+    ):
+        pane = pane or (self._editor_pane if self._compare_mode else "primary")
+        data = self._pane_data(pane)
+        _, enabled = _locate_device(data, cat, old_name)
         if enabled is None:
             return
-        active = _device_section(self._data, cat, enabled=True)
-        disabled = _device_section(self._data, cat, enabled=False)
+        active = _device_section(data, cat, enabled=True)
+        disabled = _device_section(data, cat, enabled=False)
         if new_name != old_name and (new_name in active or new_name in disabled):
             QMessageBox.warning(self, "Rename", f"Name '{new_name}' already exists.")
             return
-        section = _device_section(self._data, cat, enabled=enabled)
+        section = _device_section(data, cat, enabled=enabled)
         section[new_name] = section.pop(old_name)
-        self._mark_modified()
-        self._refresh_canvas()
-        self._canvas._on_card_clicked(cat, new_name)
+        self._mark_pane_modified(pane)
+        self._refresh_pane(pane)
+        self._pane_canvas(pane)._on_card_clicked(cat, new_name)
 
-    def _on_device_rename_from_canvas(self, cat: str, name: str):
+    def _on_device_rename_from_canvas(
+        self, cat: str, name: str, pane: str = "primary"
+    ):
         new_name, ok = QInputDialog.getText(
             self, "Rename Device", "New name:", text=name
         )
         if ok and new_name.strip():
-            self._on_device_rename(cat, name, new_name.strip())
+            self._on_device_rename(cat, name, new_name.strip(), pane)
 
-    def _on_device_enabled_changed(self, cat: str, name: str, enabled: bool):
-        device, current_enabled = _locate_device(self._data, cat, name)
+    def _on_device_enabled_changed(
+        self, cat: str, name: str, enabled: bool, pane: str | None = None
+    ):
+        pane = pane or (self._editor_pane if self._compare_mode else "primary")
+        data = self._pane_data(pane)
+        canvas = self._pane_canvas(pane)
+        device, current_enabled = _locate_device(data, cat, name)
         if device is None or current_enabled is None:
             return
         if current_enabled == enabled:
-            self._editor.set_device_enabled(current_enabled)
+            if self._editor_pane == pane:
+                self._editor.set_device_enabled(current_enabled)
             return
 
         if not enabled:
-            refs = _known_device_references(self._data, cat, name)
+            refs = _known_device_references(data, cat, name)
             if refs:
                 details = "\n".join(f"  • {path}" for path in refs[:8])
                 if len(refs) > 8:
@@ -4886,56 +6134,63 @@ class MainWindow(QMainWindow):
                     QMessageBox.No,
                 )
                 if response != QMessageBox.Yes:
-                    self._editor.set_device_enabled(current_enabled)
+                    if self._editor_pane == pane:
+                        self._editor.set_device_enabled(current_enabled)
                     return
 
-        selected_before = self._canvas._selected
+        selected_before = canvas._selected
         try:
-            changed = _set_device_enabled(self._data, cat, name, enabled)
+            changed = _set_device_enabled(data, cat, name, enabled)
         except ValueError as exc:
             QMessageBox.warning(self, "Device State", str(exc))
-            self._editor.set_device_enabled(current_enabled)
+            if self._editor_pane == pane:
+                self._editor.set_device_enabled(current_enabled)
             return
         if not changed:
-            self._editor.set_device_enabled(current_enabled)
+            if self._editor_pane == pane:
+                self._editor.set_device_enabled(current_enabled)
             return
 
-        self._mark_modified()
-        self._refresh_canvas()
+        self._mark_pane_modified(pane)
+        self._refresh_pane(pane)
+        canvas = self._pane_canvas(pane)
         if selected_before:
-            card = self._canvas._cards.get(selected_before)
+            card = canvas._cards.get(selected_before)
             if card is not None:
-                self._canvas._selected = selected_before
+                canvas._selected = selected_before
                 card.set_selected(True)
-        if selected_before == (cat, name):
-            # Keep any un-applied property edits in the right-hand form; only
-            # the storage state changed.
+        if selected_before == (cat, name) and self._editor_pane == pane:
             self._editor.set_device_enabled(enabled)
-        self._val_panel.validate(self._data)
+        self._validate_pane(pane)
         state = "Enabled" if enabled else "Disabled"
-        self._status.setText(f"{state}: {name}")
+        self._status.setText(f"{state} {name} in {self._pane_name(pane)}")
 
-    def _on_device_deleted(self, cat: str, name: str):
+    def _on_device_deleted(self, cat: str, name: str, pane: str = "primary"):
         if cat == "__ADD__":
             return
-        _, enabled = _locate_device(self._data, cat, name)
+        data = self._pane_data(pane)
+        _, enabled = _locate_device(data, cat, name)
         if enabled is None:
             return
         state = "disabled " if enabled is False else ""
         r = QMessageBox.question(
             self, "Delete Device",
-            f"Delete {state}device '{name}' from {CAT_LABEL.get(cat, cat)}?",
+            f"Delete {state}device '{name}' from {CAT_LABEL.get(cat, cat)} "
+            f"in {self._pane_name(pane)}?",
             QMessageBox.Yes | QMessageBox.No,
         )
         if r == QMessageBox.Yes:
-            _remove_device(self._data, cat, name)
-            self._mark_modified()
-            self._editor.clear()
-            self._refresh_canvas()
-            self._val_panel.validate(self._data)
+            _remove_device(data, cat, name)
+            self._mark_pane_modified(pane)
+            self._refresh_pane(pane)
+            self._validate_pane(pane)
+            if self._editor_pane == pane:
+                self._editor.load_config_extras(data)
 
-    def _on_device_duped_or_add(self, cat_signal: str, name_signal: str):
-        # Handle the "Add" path from canvas's internal _request_add
+    def _on_device_duped_or_add(
+        self, cat_signal: str, name_signal: str, pane: str = "primary"
+    ):
+        data = self._pane_data(pane)
         if cat_signal == "__ADD__":
             parts = name_signal.split("|", 2)
             if len(parts) == 3:
@@ -4944,69 +6199,88 @@ class MainWindow(QMainWindow):
                     device = {"managerName": "", "managerProperties": {}}
                 else:
                     device = _build_default_device(mgr)
-                self._add_device(cat, dev_name, device)
+                self._add_device(cat, dev_name, device, pane)
             return
-        # Normal duplicate
-        original, enabled = _locate_device(self._data, cat_signal, name_signal)
+
+        original, enabled = _locate_device(data, cat_signal, name_signal)
         if original is None:
             return
         if enabled is None:
             enabled = True
-        section = _device_section(self._data, cat_signal, enabled=enabled, create=True)
-        active = _device_section(self._data, cat_signal, enabled=True)
-        disabled = _device_section(self._data, cat_signal, enabled=False)
+        section = _device_section(data, cat_signal, enabled=enabled, create=True)
+        active = _device_section(data, cat_signal, enabled=True)
+        disabled = _device_section(data, cat_signal, enabled=False)
         base = name_signal + "_copy"
         i = 1
         while base in active or base in disabled:
             base = f"{name_signal}_copy{i}"
             i += 1
         section[base] = copy.deepcopy(original)
-        self._mark_modified()
-        self._refresh_canvas()
-        self._canvas._on_card_clicked(cat_signal, base)
+        self._mark_pane_modified(pane)
+        self._refresh_pane(pane)
+        self._pane_canvas(pane)._on_card_clicked(cat_signal, base)
 
-    def _copy_device(self, cat: str, name: str):
-        device, enabled = _locate_device(self._data, cat, name)
+    def _copy_device(self, cat: str, name: str, pane: str = "primary"):
+        device, enabled = _locate_device(self._pane_data(pane), cat, name)
         if device is None:
             return
         self._copied_device = (
             cat, name, copy.deepcopy(device),
             True if enabled is None else enabled,
         )
-        self._status.setText(f"Copied device: {name}")
+        self._activate_pane(pane)
+        self._status.setText(
+            f"Copied device: {name} from {self._pane_name(pane)}"
+        )
 
-    def _paste_device(self):
+    def _copy_device_to_other(self, cat: str, name: str, pane: str) -> None:
+        """Fast-path the normal copy/paste operation to the opposite pane."""
+        if not self._compare_mode or not self._compare_path:
+            return
+        target = "compare" if pane == "primary" else "primary"
+        device, _enabled = _locate_device(self._pane_data(pane), cat, name)
+        if device is None:
+            return
+        self._copy_device(cat, name, pane)
+        self._paste_device(target)
+
+    def _paste_device(self, pane: str | None = None):
+        pane = pane or (self._active_pane if self._compare_mode else "primary")
+        if pane == "compare" and not self._compare_path:
+            QMessageBox.information(
+                self, "Paste Device", "Select a comparison config first."
+            )
+            return
         if not self._copied_device:
             QMessageBox.information(self, "Paste Device", "Copy a device first.")
             return
+        data = self._pane_data(pane)
         cat, name, device, enabled = self._copied_device
-        existing, _ = _locate_device(self._data, cat, name)
+        existing, _ = _locate_device(data, cat, name)
         if existing is not None:
             response = QMessageBox.question(
                 self,
                 "Replace Device?",
-                f"A device named '{name}' already exists in {CAT_LABEL.get(cat, cat)}.\n\n"
-                "Replace it with the copied device?",
+                f"A device named '{name}' already exists in {CAT_LABEL.get(cat, cat)} "
+                f"of {self._pane_name(pane)}.\n\nReplace it with the copied device?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
             if response != QMessageBox.Yes:
                 return
-            _remove_device(self._data, cat, name)
-        section = _device_section(self._data, cat, enabled=enabled, create=True)
+            _remove_device(data, cat, name)
+        section = _device_section(data, cat, enabled=enabled, create=True)
         section[name] = copy.deepcopy(device)
-        self._mark_modified()
-        self._refresh_canvas()
-        self._val_panel.validate(self._data)
-        self._canvas._on_card_clicked(cat, name)
-        self._status.setText(f"Pasted device: {name}")
+        self._mark_pane_modified(pane)
+        self._refresh_pane(pane)
+        self._validate_pane(pane)
+        self._pane_canvas(pane)._on_card_clicked(cat, name)
+        self._status.setText(
+            f"Pasted device: {name} into {self._pane_name(pane)}"
+        )
 
     def _add_from_template(self, cat: str, device_or_mgr):
-        """Slot for LeftPanel.sig_tmpl_add(cat, device_or_mgr).
-
-        device_or_mgr is either a manager name string (builtin template)
-        or a device dict (user template).
-        """
+        """Instantiate a device template in the currently active pane."""
         if isinstance(device_or_mgr, str):
             tdata = _build_default_device(device_or_mgr)
         else:
@@ -5018,13 +6292,17 @@ class MainWindow(QMainWindow):
         )
         if not ok or not name.strip():
             return
-        self._add_device(cat, name.strip(), tdata)
+        pane = self._active_pane if self._compare_mode else "primary"
+        self._add_device(cat, name.strip(), tdata, pane)
 
-    def _add_device(self, cat: str, name: str, device: dict):
-        if cat not in self._data or not isinstance(self._data.get(cat), dict):
-            self._data[cat] = {}
-        active = _device_section(self._data, cat, enabled=True, create=True)
-        disabled = _device_section(self._data, cat, enabled=False)
+    def _add_device(
+        self, cat: str, name: str, device: dict, pane: str = "primary"
+    ):
+        data = self._pane_data(pane)
+        if cat not in data or not isinstance(data.get(cat), dict):
+            data[cat] = {}
+        active = _device_section(data, cat, enabled=True, create=True)
+        disabled = _device_section(data, cat, enabled=False)
         if name in active or name in disabled:
             base = name
             i = 1
@@ -5032,13 +6310,14 @@ class MainWindow(QMainWindow):
                 i += 1
             name = f"{base}_{i}"
         active[name] = device
-        self._mark_modified()
-        self._refresh_canvas()
-        self._canvas._on_card_clicked(cat, name)
-        self._editor.load_device(cat, name, device, setup=self._data)
+        self._mark_pane_modified(pane)
+        self._refresh_pane(pane)
+        self._pane_canvas(pane)._on_card_clicked(cat, name)
 
-    def _on_save_template(self, cat: str, name: str):
-        device, _ = _locate_device(self._data, cat, name)
+    def _on_save_template(
+        self, cat: str, name: str, pane: str = "primary"
+    ):
+        device, _ = _locate_device(self._pane_data(pane), cat, name)
         if device is None:
             return
         tname, ok = QInputDialog.getText(
@@ -5048,9 +6327,7 @@ class MainWindow(QMainWindow):
             return
         tname = tname.strip()
 
-        # Ask which category to file this under
         existing = self._left._store.categories()
-        # Suggest the device's natural category as default
         default_cat = SCHEMAS.get(device.get("managerName", ""), {}).get("category", cat)
         choices = existing + ["── New Category… ──"]
         default_idx = choices.index(default_cat) if default_cat in choices else 0
@@ -5072,10 +6349,9 @@ class MainWindow(QMainWindow):
         self._status.setText(f"Template '{tname}' saved to '{dest_cat}'")
 
     def _on_extras_modified(self):
-        self._mark_modified()
-        # Re-run validation so cross-reference issues update live as the user
-        # adds, edits, or removes system sections.
-        self._val_panel.validate(self._data)
+        pane = self._editor_pane if self._compare_mode else "primary"
+        self._mark_pane_modified(pane)
+        self._validate_pane(pane)
 
     def _on_fix_section_from_validation(self, section_key: str):
         """Handle 'Configure…' link clicks from validation warnings."""
@@ -5209,6 +6485,10 @@ class MainWindow(QMainWindow):
             active_path=active_path,
             modified=self._modified,
         )
+        if hasattr(self, "_primary_pane"):
+            self._primary_pane.set_identity(self._path, modified=self._modified)
+        if getattr(self, "_editor_pane", "primary") == "primary":
+            self._set_editor_source("primary")
         title_name = Path(self._path).name if self._path else "[new]"
         star = " *" if self._modified else ""
         self.setWindowTitle(f"ImSwitch Config Studio — {title_name}{star}")
@@ -5305,6 +6585,9 @@ class MainWindow(QMainWindow):
         return self._active_config_changed
 
     def closeEvent(self, event):
+        if self._compare_modified and not self._confirm_compare_changes("closing the editor"):
+            event.ignore()
+            return
         if self._modified and not self._confirm_discard():
             event.ignore()
             return
