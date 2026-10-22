@@ -9,11 +9,9 @@ def _canonical_slm_entry(**overrides):
         "managerName": "HamamatsuSLMdviManager",
         "analogChannel": None,
         "digitalLine": None,
-        "wavelength": None,
         "widgetOptions": None,
-        "setup": {
+        "definition": {
             "identity": {
-                "key": "SLM-A",
                 "serial_number": "SER123",
                 "display_name": "Left SLM",
             },
@@ -32,11 +30,10 @@ def _canonical_slm_entry(**overrides):
                 },
                 "customizable": False,
             },
-            "hardware": None,
         },
         "startup_preferences": {
             "startup_config": "boot.h5",
-            "default_planes": {},
+            "default_mappings": {},
             "section_display_mode": "tabs",
         },
     }
@@ -44,7 +41,7 @@ def _canonical_slm_entry(**overrides):
     return entry
 
 
-def test_slms_info_resolves_geometry_from_canonical_setup():
+def test_slms_info_resolves_geometry_from_canonical_definition():
     setup_info = SetupInfo.from_json(
         json.dumps({"slms": {"SLM-A": _canonical_slm_entry()}}),
         infer_missing=True,
@@ -112,7 +109,7 @@ def test_slms_pruning_drops_null_compat_fields_but_preserves_values():
         "wavelength",
     ):
         assert stale_key not in new_slm_data
-    assert new_slm_data["setup"]["geometry"]["width"] == 1920
+    assert new_slm_data["definition"]["geometry"]["width"] == 1920
     assert new_slm_data["startup_preferences"]["startup_config"] == "boot.h5"
 
     legacy_setup_info = SetupInfo.from_json(

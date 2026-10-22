@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
-    QDialog, QTextEdit, QLayout, QLayoutItem,
+    QDialog, QTextEdit, QLayout, QLayoutItem, QGroupBox,
 )
 
 # Try to import the manager catalog (Phase 1: registry-backed discovery)
@@ -44,6 +44,8 @@ _io_module = None
 _schema_module = None
 _resources_module = None
 _roles_module = None
+_structured_module = None
+_slm_authoring_module = None
 _setup_kind_metadata = ()
 try:
     from imswitch.imcontrol.model.configeditor.catalog import build_catalog
@@ -53,6 +55,8 @@ try:
     from imswitch.imcontrol.model.configeditor import schemas as _schema_module
     from imswitch.imcontrol.model.configeditor import resources as _resources_module
     from imswitch.imcontrol.model.configeditor import roles as _roles_module
+    from imswitch.imcontrol.model.configeditor import structured as _structured_module
+    from imswitch.imcontrol.model.configeditor import slm_authoring as _slm_authoring_module
     from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
     _setup_kind_metadata = setup_kinds()
 except ImportError as e:
@@ -1596,6 +1600,101 @@ class FieldWidget(QWidget):
 
 
 # =============================================================================
+# StructuredObjectEditor – nested JSON-Schema object using ordinary fields
+# =============================================================================
+class StructuredObjectEditor(QWidget):
+    """Edit one nested top-level object without owning its domain schema.
+
+    The schema is flattened by the pure model helper. Fixed nested objects are
+    shown as titled groups; dynamic maps/arrays remain JSON-valued fields. The
+    original object is copied on read-back so properties a newer schema knows
+    about but this editor does not are preserved verbatim.
+    """
+
+    def __init__(self, schema: dict, current, parent=None):
+        super().__init__(parent)
+        if _structured_module is None:
+            raise RuntimeError("structured config-editor helpers are unavailable")
+        self._schema = schema
+        self._original = copy.deepcopy(current)
+        self._field_widgets: dict[tuple[str, ...], FieldWidget] = {}
+        self._specs = _structured_module.flatten_object_schema(schema)
+        self._build()
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+
+        description = str(self._schema.get("description") or "").strip()
+        if description:
+            note = QLabel(description)
+            note.setWordWrap(True)
+            note.setStyleSheet("color:#777; font-size:8pt;")
+            outer.addWidget(note)
+
+        forms: dict[tuple[str, ...], QFormLayout] = {}
+
+        def form_for(section_titles: tuple[str, ...]) -> QFormLayout:
+            existing = forms.get(section_titles)
+            if existing is not None:
+                return existing
+            if section_titles:
+                group = QGroupBox(" / ".join(section_titles))
+                group_lay = QVBoxLayout(group)
+                group_lay.setContentsMargins(8, 8, 8, 8)
+                form = QFormLayout()
+                form.setContentsMargins(0, 0, 0, 0)
+                form.setSpacing(6)
+                form.setLabelAlignment(Qt.AlignRight)
+                group_lay.addLayout(form)
+                outer.addWidget(group)
+            else:
+                holder = QWidget()
+                form = QFormLayout(holder)
+                form.setContentsMargins(0, 0, 0, 0)
+                form.setSpacing(6)
+                form.setLabelAlignment(Qt.AlignRight)
+                outer.addWidget(holder)
+            forms[section_titles] = form
+            return form
+
+        for spec in self._specs:
+            present = _structured_module.path_exists(self._original, spec.path)
+            current = (
+                _structured_module.path_value(self._original, spec.path)
+                if present else copy.deepcopy(spec.default)
+            )
+            field_def = spec.as_field_dict()
+            fw = FieldWidget(field_def, current)
+            label = spec.label
+            if spec.required:
+                label = f"<b>{label}</b> *"
+            row_label = QLabel(label)
+            row_label.setTextFormat(Qt.RichText)
+            row_label.setToolTip(spec.tooltip)
+            form_for(spec.section_titles).addRow(row_label, fw)
+            self._field_widgets[spec.path] = fw
+
+        outer.addStretch()
+
+    def result_data(self):
+        """Return edited data while preserving unknown properties verbatim."""
+        result = copy.deepcopy(self._original) if isinstance(self._original, dict) else {}
+        for spec in self._specs:
+            fw = self._field_widgets[spec.path]
+            if not (_structured_module.path_exists(self._original, spec.path) or fw.is_touched()):
+                # Display defaults are informative. Like the ordinary form,
+                # merely opening the editor must not materialize absent keys.
+                continue
+            _structured_module.set_path(result, spec.path, fw.get_value())
+        return result
+
+    def is_touched(self) -> bool:
+        return any(widget.is_touched() for widget in self._field_widgets.values())
+
+
+# =============================================================================
 # PropertyEditor – right panel
 # =============================================================================
 class PropertyEditor(QWidget):
@@ -1613,6 +1712,8 @@ class PropertyEditor(QWidget):
         self._data: dict = {}                 # Reference to full config data for config settings view
         self._setup: dict = {}                # The document the loaded device belongs to
         self._field_widgets: dict[tuple, FieldWidget] = {}   # (section, key) → widget
+        self._structured_widgets: dict[str, StructuredObjectEditor] = {}
+        self._structured_specs = ()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -1894,6 +1995,8 @@ class PropertyEditor(QWidget):
     def _rebuild_form(self):
         self._tabs.clear()
         self._field_widgets.clear()
+        self._structured_widgets.clear()
+        self._structured_specs = ()
         # What the file had, so Apply can leave alone what it did not have:
         # presence of an optional key changes a manager's behaviour, and an
         # aliased key is written back under the spelling it was found in.
@@ -1907,7 +2010,36 @@ class PropertyEditor(QWidget):
         else:
             mgr = raw_mgr or self._device.get("managerName", "")
         schema = _with_role_fields(_schema_for_manager(mgr), self._cat, self._name, self._device, self._setup)
+        if self._cat == "slms" and _slm_authoring_module is not None:
+            schema = _slm_authoring_module.prepare_editor_schema(schema, self._device)
         props = self._device.get("managerProperties") or {}
+
+        # External integrations may own nested top-level setup objects. The
+        # ordinary device schema stays flat; these objects are rendered by the
+        # generic structured editor and therefore must not also appear as JSON
+        # blobs in the Device/Other tabs.
+        if self._cat == "slms" and _slm_authoring_module is not None:
+            self._structured_specs = _slm_authoring_module.structured_top_level_objects()
+        structured_keys = {spec.key for spec in self._structured_specs}
+        if structured_keys:
+            schema = copy.deepcopy(schema)
+            schema["top"] = [f for f in schema.get("top", []) if f.get("key") not in structured_keys]
+            schema["structured_top_keys"] = structured_keys
+
+        def _add_structured_tab(spec):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            editor = StructuredObjectEditor(spec.schema, self._device.get(spec.key, {}))
+            scroll.setWidget(editor)
+            self._structured_widgets[spec.key] = editor
+            self._tabs.addTab(scroll, spec.title)
+
+        # Definition is the first thing an SLM operator should see. Startup is
+        # added after host-owned hardware settings below.
+        for spec in self._structured_specs:
+            if spec.key == "definition":
+                _add_structured_tab(spec)
 
         # Collect fields grouped by grp
         groups: dict[str, list] = {}
@@ -1975,6 +2107,10 @@ class PropertyEditor(QWidget):
             scroll.setWidget(inner)
             self._tabs.addTab(scroll, grp)
 
+        for spec in self._structured_specs:
+            if spec.key != "definition":
+                _add_structured_tab(spec)
+
         # Unknown managerProperties not covered by schema (shown in "Properties" tab)
         unknown_props, unknown_top = self._collect_unknown(schema)
 
@@ -2005,6 +2141,8 @@ class PropertyEditor(QWidget):
     def _collect_unknown(self, schema: dict):
         """Return (unknown_props dict, unknown_top dict) — fields not covered by schema."""
         known_top = {f["key"] for f in schema.get("top", [])}
+        known_top |= set(schema.get("structured_top_keys", ()))
+        known_top |= set(schema.get("hidden_top_keys", ()))
         known_top |= {"managerName", "managerProperties"}
         unknown_top = {k: v for k, v in self._device.items() if k not in known_top}
 
@@ -2012,6 +2150,7 @@ class PropertyEditor(QWidget):
         for f in schema.get("props", []):
             known_props |= set(f.get("aliases") or [])
         known_props |= set(schema.get("nested", {}).keys())
+        known_props |= set(schema.get("hidden_prop_keys", ()))
         props = self._device.get("managerProperties") or {}
         # Expose scalar/list props; leave nested dicts collapsed in JSON
         unknown_props = {
@@ -2040,6 +2179,12 @@ class PropertyEditor(QWidget):
         else:
             mgr = raw_mgr or self._device.get("managerName", "")
         schema = _schema_for_manager(mgr)
+        if self._cat == "slms" and _slm_authoring_module is not None:
+            schema = _slm_authoring_module.prepare_editor_schema(schema, self._device)
+        structured_keys = {spec.key for spec in self._structured_specs}
+        if structured_keys:
+            schema = copy.deepcopy(schema)
+            schema["top"] = [f for f in schema.get("top", []) if f.get("key") not in structured_keys]
         new_device: dict = {"managerName": mgr, "managerProperties": {}}
         props = new_device["managerProperties"]
 
@@ -2141,6 +2286,15 @@ class PropertyEditor(QWidget):
                 # with only what its own schema requires, which here is nothing.
                 props[nest_key] = {}
 
+        # Read nested top-level objects after the ordinary flat form. Missing
+        # untouched objects stay absent; present objects preserve unknown keys.
+        for spec in self._structured_specs:
+            editor = self._structured_widgets.get(spec.key)
+            if editor is None:
+                continue
+            if spec.key in self._device or editor.is_touched():
+                new_device[spec.key] = editor.result_data()
+
         # A device the file wrote without a managerProperties key, and into
         # which nothing was written now, stays without one.
         if not props and "managerProperties" not in self._device:
@@ -2173,7 +2327,7 @@ class PropertyEditor(QWidget):
             from imswitch.imcontrol.model.configeditor.defaults import merge_preserving_unknown
             
             # Build known keys sets from schema
-            schema_top_keys = {f["key"] for f in schema.get("top", [])}
+            schema_top_keys = {f["key"] for f in schema.get("top", [])} | structured_keys
             schema_prop_keys = {f["key"] for f in schema.get("props", [])}
             schema_prop_keys |= set(schema.get("nested", {}).keys())
             schema_nested_prop_keys = {
@@ -2192,6 +2346,13 @@ class PropertyEditor(QWidget):
         except ImportError:
             # Phase 2 module unavailable - continue without merge (legacy behavior)
             pass
+
+        if self._cat == "slms" and _slm_authoring_module is not None:
+            errors = _slm_authoring_module.validate_device(self._name, new_device)
+            if errors:
+                validation_lines = [f"⚠  {message}" for message in errors]
+                self._val_lbl.setText("\n".join([*warnings, *validation_lines]))
+                return
 
         self.sig_apply.emit(self._cat, self._name, new_device)
 

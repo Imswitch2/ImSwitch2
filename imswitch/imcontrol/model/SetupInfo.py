@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Union, TypedDict, Literal
+from typing import Any, Dict, List, Optional, Union
 
 from dataclasses_json import dataclass_json, Undefined, CatchAll, config
 
@@ -187,81 +187,25 @@ class SLMInfo:
 
 
 # -------------------- #
-# slms info typed dict #
+# slms info #
 # -------------------- #
-
-class SLMIdentity(TypedDict, total=False):
-    """Authoring shape for setup.identity."""
-
-    key: str
-    serial_number: str
-    display_name: Optional[str]
-
-
-class SLMGeometry(TypedDict):
-    """Authoring shape for setup.geometry."""
-
-    width: int
-    height: int
-    pixel_size_um: float
-
-
-class SLMSectionLayout(TypedDict, total=False):
-    """Authoring shape for setup.sections.layout."""
-
-    n_sections: int
-    axis: Literal["x", "y"]
-    mode: Literal["even", "manual"]
-    sizes: Optional[List[int]]
-    key_prefix: str
-
-
-class SLMSections(TypedDict, total=False):
-    """Authoring shape for setup.sections."""
-
-    layout: SLMSectionLayout
-    customizable: bool
-
-
-class SLMHardware(TypedDict, total=False):
-    """Optional native slmcore hardware binding."""
-
-    driver: str
-    options: Dict[str, Any]
-
-
-class SLMDefinition(TypedDict, total=False):
-    """Portable definition of one physical SLM."""
-
-    identity: SLMIdentity
-    geometry: SLMGeometry
-    sections: SLMSections
-    hardware: Optional[SLMHardware]
-
-
-class SLMPreferences(TypedDict, total=False):
-    """Persistent slmcore startup/session preferences."""
-
-    startup_config: Optional[str]
-    default_planes: Dict[str, str]
-    section_display_mode: str
-
 
 @dataclass_json(undefined=Undefined.EXCLUDE)
 @dataclass(frozen=True, kw_only=True)
 class SLMsInfo(DeviceInfo):
-    definition: SLMDefinition = field(default_factory=dict)
-    """ Canonical definition of one physical SLM.
+    definition: Dict[str, Any] = field(default_factory=dict)
+    """ Canonical physical SLM definition owned by slmcore.
 
-    Describes its identity, physical geometry, section layout and optional
-    native hardware binding. Runtime validation is owned by slmcore.
+    ImSwitch deliberately treats this mapping as an opaque host payload. Its
+    structure, authoring metadata and semantic validation come from slmcore's
+    ``SLMDefinition`` API rather than a duplicate SetupInfo type declaration.
     """
 
-    startup_preferences: SLMPreferences = field(default_factory=dict)
-    """ Persistent slmcore startup preferences.
+    startup_preferences: Dict[str, Any] = field(default_factory=dict)
+    """ Persistent startup/session preferences owned by slmcore.
 
-    Controls session startup behavior such as the startup config, default
-    section planes and section display mode.
+    The Config Editor obtains their structure from slmcore at runtime; ImSwitch
+    stores and forwards the mapping without maintaining a shadow schema.
     """
 
     legacySerialNumber: Optional[str] = field(
@@ -271,7 +215,7 @@ class SLMsInfo(DeviceInfo):
     """ Legacy JSON field ``serial_number`` kept only for compatibility.
 
     New multiple-SLM configurations should declare the serial number at
-    ``setup.identity.serial_number``. """
+    ``definition.identity.serial_number``. """
 
     legacyWidth: Optional[int] = field(
         default=None,
@@ -279,8 +223,8 @@ class SLMsInfo(DeviceInfo):
     )
     """ Legacy JSON field ``width`` kept only for compatibility.
 
-    New code should read ``setup.geometry.width`` or the ``width`` property,
-    which resolves from ``setup.geometry`` before falling back to this value. """
+    New code should read ``definition.geometry.width`` or the ``width`` property,
+    which resolves from ``definition.geometry`` before falling back to this value. """
 
     legacyHeight: Optional[int] = field(
         default=None,
@@ -288,8 +232,8 @@ class SLMsInfo(DeviceInfo):
     )
     """ Legacy JSON field ``height`` kept only for compatibility.
 
-    New code should read ``setup.geometry.height`` or the ``height`` property,
-    which resolves from ``setup.geometry`` before falling back to this value. """
+    New code should read ``definition.geometry.height`` or the ``height`` property,
+    which resolves from ``definition.geometry`` before falling back to this value. """
 
     legacyPixelSize: Optional[float] = field(
         default=None,
@@ -297,8 +241,8 @@ class SLMsInfo(DeviceInfo):
     )
     """ Legacy JSON field ``pixelSize`` kept only for compatibility.
 
-    New code should read ``setup.geometry.pixel_size_um`` or the ``pixelSize``
-    property, which resolves from ``setup.geometry`` before falling back to this
+    New code should read ``definition.geometry.pixel_size_um`` or the ``pixelSize``
+    property, which resolves from ``definition.geometry`` before falling back to this
     value. """
 
     monitorIdx: Optional[int] = None
@@ -325,8 +269,8 @@ class SLMsInfo(DeviceInfo):
     )
     """ Legacy JSON field ``nSections`` kept for compatibility.
 
-    New code should read ``setup.sections.layout.n_sections`` or the
-    ``nSections`` property, which resolves from ``setup.sections`` before
+    New code should read ``definition.sections.layout.n_sections`` or the
+    ``nSections`` property, which resolves from ``definition.sections`` before
     falling back to this value. """
 
     widgetOptions: Optional[Dict[str, Any]] = None
@@ -337,17 +281,17 @@ class SLMsInfo(DeviceInfo):
 
     @property
     def width(self) -> int:
-        """ Resolved SLM width from ``setup.geometry.width``. """
+        """ Resolved SLM width from ``definition.geometry.width``. """
         return int(self._geometryValue("width", self.legacyWidth, "width"))
 
     @property
     def height(self) -> int:
-        """ Resolved SLM height from ``setup.geometry.height``. """
+        """ Resolved SLM height from ``definition.geometry.height``. """
         return int(self._geometryValue("height", self.legacyHeight, "height"))
 
     @property
     def pixelSize(self) -> float:
-        """ Resolved SLM pixel pitch from ``setup.geometry.pixel_size_um``. """
+        """ Resolved SLM pixel pitch from ``definition.geometry.pixel_size_um``. """
         return float(
             self._geometryValue(
                 "pixel_size_um",
@@ -358,7 +302,7 @@ class SLMsInfo(DeviceInfo):
 
     @property
     def nSections(self) -> Optional[int]:
-        """ Resolved SLM section count from ``setup.sections.layout.n_sections``. """
+        """ Resolved SLM section count from ``definition.sections.layout.n_sections``. """
         value = self._definitionValue("sections", "layout", "n_sections")
         if value is None:
             value = self.legacyNSections
@@ -366,7 +310,7 @@ class SLMsInfo(DeviceInfo):
 
     @property
     def serial_number(self) -> Optional[str]:
-        """ Resolved SLM serial number from ``setup.identity.serial_number``. """
+        """ Resolved SLM serial number from ``definition.identity.serial_number``. """
         value = self._definitionValue("identity", "serial_number")
         if value is None:
             value = self.legacySerialNumber
@@ -383,7 +327,7 @@ class SLMsInfo(DeviceInfo):
             value = legacyValue
         if value is None:
             raise AttributeError(
-                f"SLMsInfo.{publicName} requires setup.geometry.{setupField} "
+                f"SLMsInfo.{publicName} requires definition.geometry.{setupField} "
                 f"or legacy JSON field {publicName!r}"
             )
         return value

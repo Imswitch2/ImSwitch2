@@ -117,6 +117,21 @@ class TestKindReader:
         assert schema["maybe"]["default"] is None and schema["maybe"]["x-imswitch-nullable"] is True
         assert schema["step"]["x-imswitch-source"] == ["dataclass:Info.step: float"]
 
+    def test_dataclasses_json_field_name_is_the_setup_schema_key(self):
+        source = textwrap.dedent('''
+            from dataclasses import dataclass, field
+            from dataclasses_json import config
+            from typing import Optional
+            @dataclass
+            class Info:
+                legacyWidth: Optional[int] = field(
+                    default=None, metadata=config(field_name="width")
+                )
+        ''')
+        [field] = kinds.extract_info_classes(source)["Info"].fields
+        assert field.name == "legacyWidth"
+        assert field.json_name == "width"
+
     def test_the_kind_schema_shape(self, info_classes):
         schema = kinds.build_kind_schema("positioner", info_classes, sg.SCHEMA_DIALECT)
         assert schema["title"] == "positioner device entry (PositionerInfo)"
@@ -132,6 +147,15 @@ class TestKindReader:
             assert schema is not None and schema["x-imswitch-info-class"] == kinds.KIND_INFO_CLASSES[kind], kind
         assert resources.kind_schema_for("pulse_generator") is None, "a bespoke loader, no dataclass"
         assert resources.kind_schema_for("../index") is None
+
+    def test_slm_kind_schema_uses_canonical_objects_and_serialized_legacy_names(self):
+        schema = resources.kind_schema_for("slm")
+        properties = schema["properties"]
+        assert {"definition", "startup_preferences"} <= set(properties)
+        assert {"width", "height", "pixelSize", "nSections", "serial_number"} <= set(properties)
+        assert not {"legacyWidth", "legacyHeight", "legacyPixelSize", "legacyNSections", "legacySerialNumber"} & set(properties)
+        assert "wavelength" not in properties
+        assert schema["required"] == ["managerName"]
 
     def test_kinds_are_generated_and_roles_are_not(self, tmp_path):
         with pytest.raises(ValueError, match="refusing to generate into roles/"):
@@ -254,10 +278,11 @@ class TestRolePredicates:
         assert sorted(scan_axes_missing_limits(
             setup_info_module.SetupInfo.from_dict(GALVO, infer_missing=True).positioners)) == ["Bare", "ND-GalvoY"]
 
-    def test_the_slm_role_reads_what_the_controller_reads(self):
+    def test_the_slm_role_is_explicitly_legacy_and_reads_what_that_controller_reads(self):
         [role] = [r for r in resources.roles() if r["role"] == "slm"]
+        assert role["consumer"].endswith("SLMsController_legacy")
         assert role["requires"] == [] and [r["key"] for r in role["reads"]] == ["startConfig"]
-        controller = (_REPO / "imswitch" / "imcontrol" / "controller" / "controllers" / "SLMsController.py").read_text(encoding="utf-8")
+        controller = (_REPO / "imswitch" / "imcontrol" / "controller" / "controllers" / "SLMsController_legacy.py").read_text(encoding="utf-8")
         assert 'managerProperties.get("startConfig")' in controller
         findings = roles_module.evaluate(role, {"slms": {"slm": {"managerName": "X", "managerProperties": {}}}})
         assert [f.missing_required for f in findings] == [()] and findings[0].missing_reads[0].fallback is None

@@ -1,14 +1,20 @@
 {
   "role": "slm",
-  "title": "SLM (SLMsController)",
+  "title": "Legacy SLM controller compatibility",
   "applies_to": "slms",
-  "consumer": "imswitch.imcontrol.controller.controllers.SLMsController",
+  "consumer": "imswitch.imcontrol.controller.controllers.SLMsController_legacy",
   "when": {},
   "requires": [],
   "reads": [
-    {"key": "startConfig"}
+    {
+      "key": "startConfig"
+    }
   ],
   "properties": {
-    "startConfig": {"x-imswitch-kind": "string", "x-imswitch-widget": "path", "description": "Pattern configuration file SLMsController loads at startup; the controller writes it here when a configuration is saved as the start config."}
+    "startConfig": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-widget": "path",
+      "description": "Legacy pattern configuration path used by SLMsController_legacy. Canonical slmcore sessions use startup_preferences.startup_config instead."
+    }
   }
 }

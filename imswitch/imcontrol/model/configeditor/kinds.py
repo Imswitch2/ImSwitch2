@@ -69,6 +69,7 @@ class InfoField:
     description: str = ""
     annotation: str = ""
     owner: str = ""  # the class that declares the field
+    json_name: str = ""  # serialized setup-file key (dataclasses_json field_name)
 
 
 @dataclass
@@ -107,6 +108,7 @@ def extract_info_classes(source: str) -> dict[str, InfoClass]:
                 has_default=has_default, default=default, default_is_json=default_is_json,
                 items_types=tuple(items), description=description,
                 annotation=ast.unparse(statement.annotation), owner=node.name,
+                json_name=_field_name_override(statement.value) or name,
             ))
         classes[node.name] = info
     return classes
@@ -224,6 +226,23 @@ def _default_of(node: ast.AST) -> tuple[object, bool]:
     return None, False
 
 
+def _field_name_override(node: ast.AST | None) -> Optional[str]:
+    """Return ``dataclasses_json.config(field_name=...)`` from a field declaration.
+
+    SetupInfo uses this for compatibility attributes whose Python name is
+    deliberately different from the JSON key. The generated kind schema must
+    describe the setup file, not the private compatibility attribute name.
+    """
+    if not isinstance(node, ast.Call) or _base_name(node.func) != "field":
+        return None
+    metadata = next((kw.value for kw in node.keywords if kw.arg == "metadata"), None)
+    if not isinstance(metadata, ast.Call) or _base_name(metadata.func) != "config":
+        return None
+    field_name = next((kw.value for kw in metadata.keywords if kw.arg == "field_name"), None)
+    if isinstance(field_name, ast.Constant) and isinstance(field_name.value, str):
+        return field_name.value
+    return None
+
 def _collapse(text: str) -> str:
     """A docstring as one paragraph: the first paragraph only, whitespace folded."""
     first = text.strip().split("\n\n", 1)[0]
@@ -266,8 +285,8 @@ def build_kind_schema(kind: str, classes: dict[str, InfoClass], dialect: str) ->
     """The schema for a device entry of ``kind``: its top-level keys, from the dataclass."""
     class_name = KIND_INFO_CLASSES[kind]
     fields, chain = resolve_fields(class_name, classes)
-    properties = {f.name: field_schema(f) for f in fields}
-    required = sorted(f.name for f in fields if f.required)
+    properties = {(f.json_name or f.name): field_schema(f) for f in fields}
+    required = sorted((f.json_name or f.name) for f in fields if f.required)
     schema: dict = {
         "$schema": dialect,
         "title": f"{kind} device entry ({class_name})",

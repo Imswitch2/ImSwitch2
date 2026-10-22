@@ -30,11 +30,25 @@
       ]
     },
     "correctionPatternsDir": {
-      "description": "Directory of .bmp images provided by Hamamatsu for flatness correction at various wavelengths. A combination will be chosen based on the wavelength.",
-      "type": "string",
+      "default": null,
+      "description": "Legacy multiple-SLM correction directory.",
+      "type": [
+        "string",
+        "null"
+      ],
       "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "dataclass:SLMsInfo.correctionPatternsDir: str"
+        "dataclass:SLMsInfo.correctionPatternsDir: Optional[str]"
+      ]
+    },
+    "definition": {
+      "default": {},
+      "description": "Canonical physical SLM definition owned by slmcore.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:SLMsInfo.definition: Dict[str, Any]"
       ]
     },
     "digitalLine": {
@@ -55,11 +69,16 @@
       ]
     },
     "height": {
-      "description": "Height of SLM, in pixels.",
-      "type": "integer",
+      "default": null,
+      "description": "Legacy JSON field ``height`` kept only for compatibility.",
+      "type": [
+        "integer",
+        "null"
+      ],
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "dataclass:SLMsInfo.height: int"
+        "dataclass:SLMsInfo.legacyHeight: Optional[int]"
       ]
     },
     "managerName": {
@@ -80,16 +99,8 @@
       ]
     },
     "monitorIdx": {
-      "description": "Index of the monitor in the system list of monitors (indexing starts at 0).",
-      "type": "integer",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-source": [
-        "dataclass:SLMsInfo.monitorIdx: int"
-      ]
-    },
-    "nSections": {
       "default": null,
-      "description": "Numbers of sections the SLM is divided into (e.g. 2 for double-pass). If none, considered as single section.",
+      "description": "Legacy ImSwitch display-manager monitor index.",
       "type": [
         "integer",
         "null"
@@ -97,20 +108,38 @@
       "x-imswitch-kind": "integer",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "dataclass:SLMsInfo.nSections: Optional[int]"
+        "dataclass:SLMsInfo.monitorIdx: Optional[int]"
+      ]
+    },
+    "nSections": {
+      "default": null,
+      "description": "Legacy JSON field ``nSections`` kept for compatibility.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:SLMsInfo.legacyNSections: Optional[int]"
       ]
     },
     "pixelSize": {
-      "description": "Pixel size or pixel pitch of the SLM, in millimetres.",
-      "type": "number",
+      "default": null,
+      "description": "Legacy JSON field ``pixelSize`` kept only for compatibility.",
+      "type": [
+        "number",
+        "null"
+      ],
       "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "dataclass:SLMsInfo.pixelSize: float"
+        "dataclass:SLMsInfo.legacyPixelSize: Optional[float]"
       ]
     },
     "serial_number": {
       "default": null,
-      "description": "Unique n° of the SLM head you use. ``null``/omitted if not needed (e.g. simulated SLMs).",
+      "description": "Legacy JSON field ``serial_number`` kept only for compatibility.",
       "type": [
         "string",
         "null"
@@ -118,7 +147,16 @@
       "x-imswitch-kind": "string",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "dataclass:SLMsInfo.serial_number: Optional[str]"
+        "dataclass:SLMsInfo.legacySerialNumber: Optional[str]"
+      ]
+    },
+    "startup_preferences": {
+      "default": {},
+      "description": "Persistent startup/session preferences owned by slmcore.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:SLMsInfo.startup_preferences: Dict[str, Any]"
       ]
     },
     "transient": {
@@ -130,25 +168,22 @@
         "dataclass:DeviceInfo.transient: bool"
       ]
     },
-    "wavelength": {
-      "description": "Wavelength of the laser line used with the SLM.",
-      "type": "integer",
-      "x-imswitch-kind": "integer",
-      "x-imswitch-source": [
-        "dataclass:SLMsInfo.wavelength: int"
-      ]
-    },
     "wavelengthTableFile": {
-      "description": "Name of JSON file with table of wavelength correction values to transform 2pi modulation into gray values (given my manufacturer.) File is expected to be in the same direction than `correctionPatternsDir",
-      "type": "string",
+      "default": null,
+      "description": "Legacy multiple-SLM wavelength table file.",
+      "type": [
+        "string",
+        "null"
+      ],
       "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "dataclass:SLMsInfo.wavelengthTableFile: str"
+        "dataclass:SLMsInfo.wavelengthTableFile: Optional[str]"
       ]
     },
     "widgetOptions": {
       "default": null,
-      "description": "Widget options just as which patterns to display",
+      "description": "Legacy multiple-SLM widget options.",
       "type": [
         "object",
         "null"
@@ -160,23 +195,21 @@
       ]
     },
     "width": {
-      "description": "Width of SLM, in pixels.",
-      "type": "integer",
+      "default": null,
+      "description": "Legacy JSON field ``width`` kept only for compatibility.",
+      "type": [
+        "integer",
+        "null"
+      ],
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "dataclass:SLMsInfo.width: int"
+        "dataclass:SLMsInfo.legacyWidth: Optional[int]"
       ]
     }
   },
   "required": [
-    "correctionPatternsDir",
-    "height",
-    "managerName",
-    "monitorIdx",
-    "pixelSize",
-    "wavelength",
-    "wavelengthTableFile",
-    "width"
+    "managerName"
   ],
   "title": "slm device entry (SLMsInfo)",
   "type": "object",
