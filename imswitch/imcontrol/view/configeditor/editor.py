@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 import glob
@@ -3655,6 +3656,11 @@ class TemplateStore:
 # =============================================================================
 class LeftPanel(QWidget):
     sig_file_open = pyqtSignal(str)
+    sig_config_new = pyqtSignal()
+    sig_config_duplicate = pyqtSignal(str)
+    sig_config_rename = pyqtSignal(str)
+    sig_config_delete = pyqtSignal(str)
+    sig_config_set_active = pyqtSignal(str)
     # (category, device_or_mgr_name): str mgr_name for builtin, dict for user
     sig_tmpl_add  = pyqtSignal(str, object)
     sig_folder_reloaded = pyqtSignal(str, int)
@@ -3717,14 +3723,62 @@ class LeftPanel(QWidget):
         self._file_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._file_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._file_list.header().setStretchLastSection(True)
+        self._file_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._file_list.customContextMenuRequested.connect(self._file_context_menu)
+        self._file_list.itemSelectionChanged.connect(self._update_config_action_state)
         self._file_list.itemDoubleClicked.connect(self._on_file_double_click)
         lay.addWidget(self._file_list, 1)
 
-        show_tmpl_btn = QPushButton("Add from Template…")
-        show_tmpl_btn.setToolTip("Show built-in and saved templates for adding devices")
+        # Explicit file-management actions make the setup list useful as more
+        # than a file picker.  The same actions are also available from the
+        # context menu; shortcuts are scoped to the file list so Delete/F2
+        # cannot accidentally act on a config while the device canvas is in use.
+        self._config_actions = QWidget()
+        config_actions_lay = QHBoxLayout(self._config_actions)
+        config_actions_lay.setContentsMargins(0, 0, 0, 0)
+        config_actions_lay.setSpacing(3)
+
+        self._new_config_btn = QPushButton("New")
+        self._new_config_btn.setToolTip("Create a new unsaved configuration (Ctrl+N)")
+        self._new_config_btn.clicked.connect(self.sig_config_new.emit)
+        config_actions_lay.addWidget(self._new_config_btn)
+
+        self._duplicate_config_btn = QPushButton("Duplicate")
+        self._duplicate_config_btn.setToolTip("Duplicate the selected config (Ctrl+D)")
+        self._duplicate_config_btn.clicked.connect(self._request_duplicate)
+        config_actions_lay.addWidget(self._duplicate_config_btn)
+
+        self._rename_config_btn = QPushButton("Rename")
+        self._rename_config_btn.setToolTip("Rename the selected config (F2)")
+        self._rename_config_btn.clicked.connect(self._request_rename)
+        config_actions_lay.addWidget(self._rename_config_btn)
+
+        self._delete_config_btn = QPushButton("Delete")
+        self._delete_config_btn.setToolTip("Delete the selected config (Delete)")
+        self._delete_config_btn.clicked.connect(self._request_delete)
+        config_actions_lay.addWidget(self._delete_config_btn)
+
+        for button in (
+            self._new_config_btn, self._duplicate_config_btn,
+            self._rename_config_btn, self._delete_config_btn,
+        ):
+            button.setFixedHeight(23)
+            button.setStyleSheet("font-size:8pt; padding:0 3px;")
+        lay.addWidget(self._config_actions)
+
+        self._install_file_list_shortcut("Ctrl+D", self._request_duplicate)
+        self._install_file_list_shortcut("F2", self._request_rename)
+        self._install_file_list_shortcut("Delete", self._request_delete)
+
+        show_tmpl_btn = QPushButton("Device Templates…")
+        show_tmpl_btn.setToolTip(
+            "Show built-in and saved device templates. Templates add devices; "
+            "they do not replace the current config."
+        )
         show_tmpl_btn.clicked.connect(self._show_templates)
         lay.addWidget(show_tmpl_btn)
         self._show_tmpl_btn = show_tmpl_btn
+        self._update_config_action_state()
 
         # ── Templates (hidden until explicitly requested) ──
         self._tmpl_container = QWidget()
@@ -3744,7 +3798,7 @@ class LeftPanel(QWidget):
         new_cat_btn.clicked.connect(self._new_user_category)
         tmpl_hdr.addWidget(new_cat_btn)
 
-        hide_tmpl_btn = QPushButton("Hide")
+        hide_tmpl_btn = QPushButton("Hide Templates")
         hide_tmpl_btn.setFixedHeight(20)
         hide_tmpl_btn.setStyleSheet("font-size:8pt; padding:0 4px;")
         hide_tmpl_btn.clicked.connect(self._hide_templates)
@@ -3768,6 +3822,82 @@ class LeftPanel(QWidget):
         self._refresh_tmpl_tree()
 
     # ── File browser ──────────────────────────────────────────────────────
+    def _install_file_list_shortcut(self, key: str, slot) -> None:
+        action = QAction(self._file_list)
+        action.setShortcut(key)
+        action.setShortcutContext(Qt.WidgetShortcut)
+        action.triggered.connect(slot)
+        self._file_list.addAction(action)
+
+    def selected_config_path(self) -> str:
+        items = self._file_list.selectedItems()
+        if not items:
+            return ""
+        return str(items[0].data(0, Qt.UserRole) or "")
+
+    def select_config_path(self, path: str) -> bool:
+        for index in range(self._file_list.topLevelItemCount()):
+            item = self._file_list.topLevelItem(index)
+            item_path = str(item.data(0, Qt.UserRole) or "")
+            if self._same_path(item_path, path):
+                self._file_list.setCurrentItem(item)
+                return True
+        return False
+
+    def _update_config_action_state(self) -> None:
+        has_selection = bool(self.selected_config_path())
+        self._duplicate_config_btn.setEnabled(has_selection)
+        self._rename_config_btn.setEnabled(has_selection)
+        self._delete_config_btn.setEnabled(has_selection)
+
+    def _request_duplicate(self) -> None:
+        path = self.selected_config_path()
+        if path:
+            self.sig_config_duplicate.emit(path)
+
+    def _request_rename(self) -> None:
+        path = self.selected_config_path()
+        if path:
+            self.sig_config_rename.emit(path)
+
+    def _request_delete(self) -> None:
+        path = self.selected_config_path()
+        if path:
+            self.sig_config_delete.emit(path)
+
+    def _file_context_menu(self, pos) -> None:
+        item = self._file_list.itemAt(pos)
+        if item is None:
+            menu = QMenu(self)
+            new_action = menu.addAction("New Config")
+            if menu.exec_(self._file_list.mapToGlobal(pos)) == new_action:
+                self.sig_config_new.emit()
+            return
+
+        self._file_list.setCurrentItem(item)
+        path = str(item.data(0, Qt.UserRole) or "")
+        menu = QMenu(self)
+        open_action = menu.addAction("Open")
+        active_action = menu.addAction("Set as Active")
+        active_action.setEnabled(
+            not self._same_path(path, self._active_config_path)
+        )
+        menu.addSeparator()
+        duplicate_action = menu.addAction("Duplicate…")
+        rename_action = menu.addAction("Rename…")
+        delete_action = menu.addAction("Delete…")
+        action = menu.exec_(self._file_list.mapToGlobal(pos))
+        if action == open_action:
+            self.sig_file_open.emit(path)
+        elif action == active_action:
+            self.sig_config_set_active.emit(path)
+        elif action == duplicate_action:
+            self.sig_config_duplicate.emit(path)
+        elif action == rename_action:
+            self.sig_config_rename.emit(path)
+        elif action == delete_action:
+            self.sig_config_delete.emit(path)
+
     def _open_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Open Config Folder",
                                              str(_default_setup_dir()))
@@ -3800,6 +3930,7 @@ class LeftPanel(QWidget):
             item = self._file_list.topLevelItem(index)
             path = str(item.data(0, Qt.UserRole) or "")
             self._decorate_file_item(item, Path(path))
+        self._update_config_action_state()
 
     def _decorate_file_item(self, item: QTreeWidgetItem, path: Path) -> None:
         is_current = self._same_path(str(path), self._current_config_path)
@@ -3819,14 +3950,28 @@ class LeftPanel(QWidget):
         item.setFont(0, font)
 
     def _refresh_file_list(self, folder: str) -> int:
+        selected_before = self.selected_config_path()
         self._file_list.clear()
         count = 0
+        preferred_item = None
+        current_item = None
         for p in sorted(Path(folder).glob("*.json")):
             item = QTreeWidgetItem()
             item.setData(0, Qt.UserRole, str(p))
             self._decorate_file_item(item, p)
             self._file_list.addTopLevelItem(item)
+            if selected_before and self._same_path(str(p), selected_before):
+                preferred_item = item
+            if self._current_config_path and self._same_path(
+                str(p), self._current_config_path
+            ):
+                current_item = item
             count += 1
+        if preferred_item is not None:
+            self._file_list.setCurrentItem(preferred_item)
+        elif current_item is not None:
+            self._file_list.setCurrentItem(current_item)
+        self._update_config_action_state()
         return count
 
     def _on_file_double_click(self, item: QTreeWidgetItem, _col: int):
@@ -4261,6 +4406,7 @@ class MainWindow(QMainWindow):
         _btn("Validate",   self._run_validation, "Check for DAQ conflicts")
 
         self.addAction(self._make_shortcut("Ctrl+S", self._save_file))
+        self.addAction(self._make_shortcut("Ctrl+N", self._new_file))
 
     def _make_shortcut(self, key, slot):
         a = QAction(self)
@@ -4318,7 +4464,12 @@ class MainWindow(QMainWindow):
 
         # Left
         self._left = LeftPanel()
-        self._left.sig_file_open.connect(self._load_file)
+        self._left.sig_file_open.connect(self._open_file_from_list)
+        self._left.sig_config_new.connect(self._new_file)
+        self._left.sig_config_duplicate.connect(self._duplicate_config_file)
+        self._left.sig_config_rename.connect(self._rename_config_file)
+        self._left.sig_config_delete.connect(self._delete_config_file)
+        self._left.sig_config_set_active.connect(self._set_path_as_active_config)
         self._left.sig_tmpl_add.connect(self._add_from_template)
         self._left.sig_folder_reloaded.connect(self._on_folder_reloaded)
         splitter.addWidget(self._left)
@@ -4382,6 +4533,13 @@ class MainWindow(QMainWindow):
         if path:
             self._load_file(path)
 
+    def _open_file_from_list(self, path: str) -> None:
+        if self._path and LeftPanel._same_path(path, self._path):
+            return
+        if not self._confirm_discard():
+            return
+        self._load_file(path)
+
     def _load_file(self, path: str):
         try:
             # Delegate to shared helper when available, otherwise fallback
@@ -4393,6 +4551,7 @@ class MainWindow(QMainWindow):
             self._path = path
             self._left.set_folder(str(Path(path).parent))
             self._set_modified(False)
+            self._left.select_config_path(path)
             self._refresh_canvas()
             self._editor.load_config_extras(self._data)
             self._val_panel.validate(self._data)
@@ -4407,6 +4566,168 @@ class MainWindow(QMainWindow):
 
     def _on_folder_reloaded(self, folder: str, count: int):
         self._status.setText(f"Reloaded {count} JSON config(s) from {folder}")
+
+    @staticmethod
+    def _normalise_config_filename(value: str) -> str:
+        """Return a safe config basename, adding .json when omitted."""
+        name = str(value or "").strip()
+        if not name:
+            return ""
+        if Path(name).name != name or "/" in name or "\\" in name:
+            return ""
+        if not name.lower().endswith(".json"):
+            name += ".json"
+        return name
+
+    def _prompt_config_target(
+        self, source: Path, title: str, initial_name: str
+    ) -> object:
+        value, ok = QInputDialog.getText(
+            self, title, "File name:", text=initial_name
+        )
+        if not ok:
+            return None
+        name = self._normalise_config_filename(value)
+        if not name:
+            QMessageBox.warning(
+                self, title, "Enter a file name, not a path."
+            )
+            return None
+        target = source.parent / name
+        if target.exists() and not LeftPanel._same_path(str(source), str(target)):
+            QMessageBox.warning(
+                self, title, f"A config named '{target.name}' already exists."
+            )
+            return None
+        return target
+
+    @staticmethod
+    def _resolved_path(path: object) -> str:
+        try:
+            return str(Path(path).resolve())
+        except Exception:
+            return str(path)
+
+    def _duplicate_config_file(self, path: str) -> None:
+        source = Path(path)
+        if not source.is_file():
+            QMessageBox.warning(self, "Duplicate Config", "The selected config no longer exists.")
+            self._left.reload_folder()
+            return
+
+        if self._path and LeftPanel._same_path(str(source), self._path) and self._modified:
+            response = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                "This config has unsaved changes. Save them before duplicating?\n\n"
+                "Choose No to duplicate the last saved version.",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if response == QMessageBox.Cancel:
+                return
+            if response == QMessageBox.Yes:
+                self._save_file()
+                if self._modified:
+                    return
+
+        stem = source.stem + "_copy"
+        initial = f"{stem}.json"
+        index = 2
+        while (source.parent / initial).exists():
+            initial = f"{stem}{index}.json"
+            index += 1
+        target = self._prompt_config_target(source, "Duplicate Config", initial)
+        if target is None or LeftPanel._same_path(str(source), str(target)):
+            return
+        try:
+            shutil.copy2(source, target)
+            self._note_saved(str(target))
+            self._left.set_folder(str(source.parent))
+            self._left.select_config_path(str(target))
+            self._status.setText(f"Duplicated {source.name} as {target.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Duplicate Config", str(exc))
+
+    def _rename_config_file(self, path: str) -> None:
+        source = Path(path)
+        if not source.is_file():
+            QMessageBox.warning(self, "Rename Config", "The selected config no longer exists.")
+            self._left.reload_folder()
+            return
+        target = self._prompt_config_target(source, "Rename Config", source.name)
+        if target is None or LeftPanel._same_path(str(source), str(target)):
+            return
+
+        active_path = self._active_setup_path(self._left.config_dir)
+        was_active = bool(active_path) and LeftPanel._same_path(str(source), active_path)
+        was_current = bool(self._path) and LeftPanel._same_path(str(source), self._path)
+        old_resolved = self._resolved_path(source)
+        try:
+            source.rename(target)
+            if was_active:
+                try:
+                    self._write_active_setup_name(target.name)
+                except Exception:
+                    target.rename(source)
+                    raise
+            if was_current:
+                self._path = str(target)
+            if old_resolved in self._saved_files:
+                self._saved_files.discard(old_resolved)
+                self._saved_files.add(self._resolved_path(target))
+            self._left.set_folder(str(target.parent))
+            self._left.select_config_path(str(target))
+            self._update_active_banner()
+            self._status.setText(f"Renamed {source.name} to {target.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Rename Config", str(exc))
+            self._update_active_banner()
+
+    def _delete_config_file(self, path: str) -> None:
+        source = Path(path)
+        if not source.is_file():
+            self._left.reload_folder()
+            return
+
+        active_path = self._active_setup_path(self._left.config_dir)
+        if active_path and LeftPanel._same_path(str(source), active_path):
+            QMessageBox.information(
+                self,
+                "Delete Config",
+                "The active config cannot be deleted. Set another config as active first.",
+            )
+            return
+
+        is_current = bool(self._path) and LeftPanel._same_path(str(source), self._path)
+        extra = "\n\nUnsaved changes to this config will also be discarded." if (is_current and self._modified) else ""
+        response = QMessageBox.question(
+            self,
+            "Delete Config",
+            f"Delete '{source.name}'?{extra}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if response != QMessageBox.Yes:
+            return
+
+        try:
+            source.unlink()
+            self._saved_files.discard(self._resolved_path(source))
+            if is_current:
+                self._path = ""
+                self._set_modified(False)
+                active_after = self._active_setup_path(str(source.parent))
+                if active_after:
+                    self._load_file(active_after)
+                else:
+                    self._new_file()
+            else:
+                self._left.set_folder(str(source.parent))
+                self._update_active_banner()
+            self._status.setText(f"Deleted: {source.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Delete Config", str(exc))
 
     def _save_file(self):
         if not self._path:
@@ -4437,9 +4758,14 @@ class MainWindow(QMainWindow):
             self._path = path
             # Save As may move the editor to a different setup folder. Refresh
             # that list so the newly written file and its EDITING marker appear
-            # immediately.
-            self._left.set_folder(str(Path(path).parent))
+            # immediately.  Keep the bookkeeping method usable by lightweight
+            # non-UI tests/embedders that intentionally do not construct LeftPanel.
+            left = getattr(self, "_left", None)
+            if left is not None:
+                left.set_folder(str(Path(path).parent))
             self._set_modified(False)
+            if left is not None:
+                left.select_config_path(path)
             self._note_saved(path)
             self._status.setText(f"Saved: {path}")
         except Exception as e:
@@ -4889,10 +5215,46 @@ class MainWindow(QMainWindow):
 
     def _set_modified(self, modified: bool) -> None:
         self._modified = bool(modified)
-        self._update_active_banner()
+        if hasattr(self, "_editing_lbl") and hasattr(self, "_left"):
+            self._update_active_banner()
 
     def _mark_modified(self) -> None:
         self._set_modified(True)
+
+    def _write_active_setup_name(self, name: str) -> None:
+        """Persist the active setup name without exposing a half-written options file."""
+        if not self._options_path:
+            raise RuntimeError("No imcontrol_options.json was found")
+        options_path = Path(self._options_path)
+        with open(options_path, encoding="utf-8") as fh:
+            opts = json.load(fh)
+        opts["setupFileName"] = name
+        temp_path = options_path.with_name(options_path.name + ".tmp")
+        try:
+            with open(temp_path, "w", encoding="utf-8") as fh:
+                json.dump(opts, fh, indent=4, ensure_ascii=False)
+            os.replace(temp_path, options_path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._active_config_changed = True
+
+    def _set_path_as_active_config(self, path: str) -> None:
+        if not path or not self._options_path:
+            return
+        if self._path and LeftPanel._same_path(path, self._path):
+            self._set_as_active_config()
+            return
+        try:
+            self._write_active_setup_name(Path(path).name)
+            self._update_active_banner()
+            self._status.setText(f"Active config set to: {Path(path).name}")
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Error", f"Could not update options file:\n{exc}"
+            )
 
     def _set_as_active_config(self):
         if not self._path or not self._options_path:
@@ -4908,14 +5270,11 @@ class MainWindow(QMainWindow):
                 return
             if r == QMessageBox.Yes:
                 self._save_file()
+                if self._modified:
+                    return
 
         try:
-            with open(self._options_path, encoding="utf-8") as fh:
-                opts = json.load(fh)
-            opts["setupFileName"] = Path(self._path).name
-            with open(self._options_path, "w", encoding="utf-8") as fh:
-                json.dump(opts, fh, indent=4, ensure_ascii=False)
-            self._active_config_changed = True
+            self._write_active_setup_name(Path(self._path).name)
             self._update_active_banner()
             self._status.setText(
                 f"Active config set to: {Path(self._path).name}"
