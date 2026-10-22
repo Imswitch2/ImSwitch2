@@ -30,6 +30,9 @@ class _FakeWidget:
     def setScanButtonChecked(self, checked):
         self.scanButtonChecked = checked
 
+    def setRepeatEnabled(self, enabled):
+        self._repeat = bool(enabled)
+
 
 class _Logger:
     def error(self, *_args, **_kwargs):
@@ -49,6 +52,7 @@ class _StubController:
         SuperScanController._completeExternalScanRequest
     )
     _publishScanDone = SuperScanController._publishScanDone
+    finishScanRunAfterCurrent = SuperScanController.finishScanRunAfterCurrent
     abortScan = SuperScanController.abortScan
 
     def __init__(self, repeat=True):
@@ -67,6 +71,10 @@ class _StubController:
         self.emitted = []
         self.finishRunCalls = 0
         self._logger = _Logger()
+        self._scanCoordinator = type(
+            '_Coordinator', (),
+            {'runForOwner': lambda _coordinator, owner: owner._scanRunToken},
+        )()
 
     def emitScanSignal(self, signal):
         self.emitted.append(signal)
@@ -81,6 +89,35 @@ class _StubController:
 
     def scanFailed(self, **_kwargs):
         self.scanFailedCalls += 1
+
+
+def test_finish_after_current_marks_running_part_final_without_abort():
+    ctrl = _StubController(repeat=True)
+    ctrl._scanRunToken = object()
+    ctrl.isRunning = True
+    ctrl.doingNonFinalPartOfSequence = True
+    ctrl._repeatPending = True
+
+    assert ctrl.finishScanRunAfterCurrent() is True
+    assert ctrl.isRunning is True
+    assert ctrl.doingNonFinalPartOfSequence is False
+    assert ctrl._scanStopRequested is False
+    assert ctrl._repeatPending is False
+    assert ctrl._widget.repeatEnabled() is False
+    assert ctrl.finishRunCalls == 0
+
+
+def test_finish_after_current_releases_a_retained_run_in_the_gap():
+    ctrl = _StubController(repeat=False)
+    ctrl._scanRunToken = object()
+    ctrl.isRunning = False
+    ctrl.doingNonFinalPartOfSequence = True
+
+    assert ctrl.finishScanRunAfterCurrent() is True
+    assert ctrl.doingNonFinalPartOfSequence is False
+    assert ctrl._scanStopRequested is False
+    assert ctrl.finishRunCalls == 1
+    assert ctrl._widget.scanButtonChecked is False
 
 
 @pytest.fixture

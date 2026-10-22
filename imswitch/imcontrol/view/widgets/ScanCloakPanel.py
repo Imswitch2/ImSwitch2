@@ -120,6 +120,18 @@ class ScanCloakView(QtWidgets.QWidget):
         self.progressBar.setValue(0)
         self.progressLabel.clear()
 
+    def placeProgressRow(self, layout, stretch=0):
+        """Place the shared scan-progress widget in a cloak-specific row.
+
+        Progress ownership and updates stay generic in :class:`ScanCloakView`;
+        a cloak may only choose where that same widget is laid out. Cloaks that
+        never call this retain the default position below the scan-time row.
+        """
+        root = self.layout()
+        if root is not None:
+            root.removeWidget(self.progressRow)
+        layout.addWidget(self.progressRow, int(stretch))
+
     def showMessage(self, text, error=False):
         self.messageLabel.setText(text)
         self.messageLabel.setStyleSheet('color: #d9534f;' if error else '')

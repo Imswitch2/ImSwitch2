@@ -324,6 +324,9 @@ class RecordingWidget(Widget):
         self.freqEdit.editingFinished.connect(
             self.sigScanSeriesSettingsEdited.emit
         )
+        self.singleFileLapseBox.toggled.connect(
+            self.sigScanSeriesSettingsEdited.emit
+        )
 
     def getDetectorMode(self):
         """ Returns -1 if "current detector at start" is selected, -2 if "all
@@ -570,7 +573,6 @@ class RecordingWidget(Widget):
             self.timelapseFrameTimeEdit,
             self.recScanOnceBtn, self.recScanLapseBtn,
             self.timeLapseEdit, self.freqEdit,
-            self.singleFileLapseBox,
             self.scanSourceLabel, self.scanSourceList,
             self.untilSTOPbtn,
         )
@@ -585,6 +587,10 @@ class RecordingWidget(Widget):
                 control.setToolTip(str(tooltip or ''))
             elif control in self._acquisitionControlTooltips:
                 control.setToolTip(self._acquisitionControlTooltips[control])
+        # Timepoint grouping is a storage choice, not an acquisition-mode
+        # control. Keep it editable while a scan widget owns acquisition.
+        if locked:
+            self.singleFileLapseBox.setEnabled(True)
         if not locked:
             self._acquisitionControlTooltips = {}
 
@@ -596,7 +602,9 @@ class RecordingWidget(Widget):
         self.timeLapseEdit.setEnabled(editable and scanLapse)
         self.freqEdit.setEnabled(editable and scanLapse)
         self.scanSourceList.setEnabled(editable and scanLapse)
-        self.singleFileLapseBox.setEnabled(editable and (scanLapse or specLapse))
+        self.singleFileLapseBox.setEnabled(
+            self._acquisitionControlsLocked or (editable and (scanLapse or specLapse))
+        )
         self.timelapseFramesEdit.setEnabled(editable and specLapse)
         self.timelapseFrameTimeEdit.setEnabled(editable and specLapse)
         self.lasersList.setEnabled(False)

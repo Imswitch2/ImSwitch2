@@ -80,6 +80,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._view.sigSaveAcquisitionToggled.connect(
             self._onSaveAcquisitionToggled
         )
+        self._view.sigScanStopClicked.connect(self._onScanStopClicked)
         self._view.sigScanSeriesSettingsEdited.connect(
             self._onScanSeriesSettingsEdited
         )
@@ -348,7 +349,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return
         settings = getter()
         self._view.setScanSeriesSettings(
-            settings.timepoints, settings.interval_s
+            settings.timepoints, settings.interval_s, settings.single_file
         )
         activeFor = getattr(workflow, 'scan_series_active_for', None)
         active = bool(activeFor(self)) if callable(activeFor) else False
@@ -387,13 +388,18 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return
         self._syncRecordingAcquisitionOwnership()
 
-    def _onScanSeriesSettingsEdited(self, timepoints, interval_s) -> None:
+    def _onScanSeriesSettingsEdited(
+        self, timepoints, interval_s, single_file
+    ) -> None:
         workflow = getattr(self._commChannel, 'recordingWorkflow', None)
         setter = getattr(workflow, 'set_scan_series_settings', None)
         if not callable(setter):
             return
         try:
-            setter(timepoints=timepoints, interval_s=interval_s)
+            setter(
+                timepoints=timepoints, interval_s=interval_s,
+                single_file=single_file,
+            )
         except Exception as error:
             self._view.showMessage(
                 f'Invalid acquisition cadence: {error}', error=True
@@ -402,7 +408,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def _onScanSeriesSettingsChanged(self, settings) -> None:
         self._view.setScanSeriesSettings(
-            settings.timepoints, settings.interval_s
+            settings.timepoints, settings.interval_s, settings.single_file
         )
 
     def _onScanSeriesActivityChanged(self, source, active) -> None:
@@ -1588,7 +1594,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             detectors = self._activeProfileDetectors()
             try:
                 result = self._commChannel.recordingWorkflow.record_scan_series(
-                    self, detectors
+                    self, detectors, use_series=self._view.scanSeriesEnabled()
                 )
             except Exception as error:
                 self._view.showMessage(
@@ -1621,22 +1627,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
 
     def _onStopClicked(self):
-        # In Simple, Stop ends screening and leaves the acquisition camera ready
-        # for a frame-triggered scan. This supports the direct workflow
-        # Live -> Stop -> Recording/Scan timelapse without another camera click.
-        # It remains disabled while an acquisition owns the hardware.
+        # The top-row Stop belongs only to Live screening. It deliberately
+        # keeps the useful Live -> Stop -> Scan camera-trigger preparation.
         if self._onSimplePage():
-            if self.__dict__.get('_recordedSeriesActive', False):
-                workflow = getattr(self._commChannel, 'recordingWorkflow', None)
-                stop = getattr(workflow, 'stop_scan_series', None)
-                if callable(stop) and stop(self):
-                    self._view.showMessage('')
-                    return
-                self._view.showMessage(
-                    'Could not stop the active recorded acquisition series.',
-                    error=True,
-                )
-                return
             if not self._stopScreening():
                 return
             detectors = self._profileScreeningDetectors()
@@ -1656,6 +1649,24 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._view.showMessage('')
             return
         return super()._onStopClicked()
+
+    def _onScanStopClicked(self):
+        """Gracefully stop a recorded timelapse after the current point."""
+        if not self._onSimplePage():
+            return
+        if not self.__dict__.get('_recordedSeriesActive', False):
+            return
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        stop = getattr(workflow, 'stop_scan_series', None)
+        if callable(stop) and stop(self):
+            self._view.showMessage(
+                'Stopping timelapse; the current scan will finish if one is running.'
+            )
+            return
+        self._view.showMessage(
+            'Could not stop the active recorded acquisition series.',
+            error=True,
+        )
 
     def _onScanRejected(self, reason):
         super()._onScanRejected(reason)

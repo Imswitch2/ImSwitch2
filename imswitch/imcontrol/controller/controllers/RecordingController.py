@@ -68,6 +68,7 @@ class _ScanSeriesRequest:
     detectorNames: tuple
     frames: int
     intervalSeconds: float
+    singleFile: bool
     previousMode: Any
 
 
@@ -289,6 +290,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             return ScanSeriesSettings(
                 timepoints=int(settings.timepoints),
                 interval_s=float(settings.interval_s),
+                single_file=bool(getattr(settings, 'single_file', True)),
             )
 
         # Compatibility for standalone/lightweight controller tests and older
@@ -297,6 +299,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         return ScanSeriesSettings(
             timepoints=max(1, int(float(self._widget.getTimelapseTime()))),
             interval_s=max(0.0, float(self._widget.getTimelapseFreq())),
+            single_file=bool(getattr(
+                self._widget, 'getTimelapseSingleFile', lambda: True
+            )()),
         )
 
     def _syncScanSeriesSettingsFromWorkflow(self) -> None:
@@ -310,6 +315,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         try:
             self._widget.setTimelapseTime(int(settings.timepoints))
             self._widget.setTimelapseFreq(float(settings.interval_s))
+            self._widget.setTimelapseSingleFile(bool(settings.single_file))
         except Exception:
             self.__logger.debug(
                 'Could not mirror shared scan-series settings into Recording.',
@@ -325,6 +331,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             setter(
                 timepoints=self._widget.getTimelapseTime(),
                 interval_s=self._widget.getTimelapseFreq(),
+                single_file=self._widget.getTimelapseSingleFile(),
             )
         except Exception as error:
             self.__logger.warning(
@@ -681,8 +688,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         self._scanSeriesSettingsSnapshot()
                     )
                 singleFile = (
-                    True if seriesRequest is not None
-                    else self._widget.getTimelapseSingleFile()
+                    bool(seriesRequest.singleFile) if seriesRequest is not None
+                    else bool(self._activeScanSeriesSettings.single_file)
                 )
                 if singleFile and SaveFormat(
                     self._widget.getSaveFormat()
@@ -3473,7 +3480,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setTimelapseSingleFile(timelapseSingleFile)
 
     def recordScanSeries(
-        self, source, detectorNames, frames: int = 1, intervalSeconds: float = 0.0
+        self, source, detectorNames, frames: int = 1, intervalSeconds: float = 0.0,
+        singleFile: bool = True,
     ) -> ScanSeriesRecordingResult:
         """Record ``frames`` scans of ``source`` at a snapshotted cadence.
 
@@ -3482,8 +3490,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         and layouts, arm the writer, wait for the arm, then request the scan
         -- exactly as the REC button does, and answers synchronously. One
         frame is a Scan-once recording; more are a scan timelapse using
-        ``intervalSeconds`` as the delay after each completed point, with one
-        file and one time partition per frame.
+        ``intervalSeconds`` as the delay after each completed point. ``singleFile``
+        chooses one grouped HDF5/Zarr file versus one file per timepoint.
 
         The source and detectors are the caller's, not the Recording widget's
         selection, and the widget's mode, detector choice and lapse settings
@@ -3492,8 +3500,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         Refused, with the reason and nothing changed, when a recording is
         running or finalizing, when ``frames`` is below 1, when no detector
-        is named, or when several frames are asked for in TIFF (a series is
-        one file, which TIFF cannot be reopened for). A failure while arming
+        is named, or when a grouped multi-timepoint series is asked for in TIFF (it is
+        not reopenable as one lapse file). A failure while arming
         or starting ends the attempt exactly as a REC press would, and its
         reason is returned.
         """
@@ -3537,11 +3545,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 'A recording is already running or being finalized; wait for '
                 'it to end.'
             )
-        if frames > 1 and SaveFormat(self._widget.getSaveFormat()) == SaveFormat.TIFF:
+        singleFile = bool(singleFile)
+        if (
+            frames > 1
+            and singleFile
+            and SaveFormat(self._widget.getSaveFormat()) == SaveFormat.TIFF
+        ):
             return refuse(
-                f'Saving {frames} frames writes one file with a time partition '
-                'per frame, which needs HDF5 or Zarr; the Recording panel is '
-                'set to TIFF.'
+                f'Saving {frames} frames in one file needs HDF5 or Zarr; '
+                'select separate files or change the Recording format.'
             )
 
         self._seriesRequest = _ScanSeriesRequest(
@@ -3549,6 +3561,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             detectorNames=names,
             frames=frames,
             intervalSeconds=intervalSeconds,
+            singleFile=singleFile,
             previousMode=self.recMode,
         )
         self._publishScanSeriesActivity(source, True)
@@ -3585,18 +3598,65 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._refreshScanFilenameSuffixPreview()
 
     def stopScanSeries(self, source) -> bool:
-        """Stop only the panel-requested series owned by ``source``."""
+        """Gracefully stop a panel-requested timelapse owned by ``source``.
+
+        An active timepoint is allowed to finish normally, including its
+        writer. The current scan part is merely promoted to the final part of
+        the retained scan run. If the lapse is waiting between timepoints, the
+        cadence timer and retained run are closed immediately.
+        """
         request = self.__dict__.get('_seriesRequest')
         if request is None or request.source is not source:
             return False
-        try:
-            self._widget.setRecButtonChecked(False)
-        except Exception:
-            self.__logger.error(
-                'Could not stop the requested scan series', exc_info=True
-            )
+        if int(getattr(request, 'frames', 1)) <= 1:
             return False
-        return True
+        if self.__dict__.get('stopRequested', False):
+            return True
+
+        self.stopRequested = True
+        timer = self.__dict__.get('timer')
+        if timer is not None:
+            self.timer = None
+            try:
+                timer.stop()
+            except Exception:
+                self.__logger.error(
+                    'Could not cancel the requested scan-series cadence timer',
+                    exc_info=True,
+                )
+            # A completed point closes this guard before scheduling the next
+            # cadence callback. Re-open it so the retained run-level end can
+            # finalize the stopped series exactly once.
+            self._recordingCycleTerminalHandled = False
+
+        if self.__dict__.get('_scanRequestAccepted', False):
+            scanWorkflow = getattr(self._commChannel, 'scanWorkflow', None)
+            finish = getattr(
+                scanWorkflow, 'finish_scan_run_after_current_from', None
+            )
+            if not callable(finish):
+                self.stopRequested = False
+                return False
+            try:
+                finish(
+                    source,
+                    runToken=self.__dict__.get('_acceptedScanRunToken'),
+                )
+            except Exception:
+                self.stopRequested = False
+                self.__logger.error(
+                    'Could not gracefully stop the requested scan series',
+                    exc_info=True,
+                )
+                return False
+            return True
+
+        # A panel-requested timelapse normally has an accepted scan before its
+        # Stop control becomes available. Fail closed if that invariant is
+        # broken rather than switching REC off and truncating an unrelated
+        # writer.
+        self.stopRequested = False
+        return False
 
     @APIExport(runOnUIThread=True)
     def setRecModeScanOnce(self) -> None:
@@ -3611,11 +3671,14 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         workflow = getattr(self._commChannel, 'recordingWorkflow', None)
         setter = getattr(workflow, 'set_scan_series_settings', None)
         if callable(setter):
-            setter(timepoints=lapsesToRec, interval_s=freqSeconds)
+            setter(
+                timepoints=lapsesToRec, interval_s=freqSeconds,
+                single_file=timelapseSingleFile,
+            )
         else:
             self._widget.setTimelapseTime(lapsesToRec)
             self._widget.setTimelapseFreq(freqSeconds)
-        self._widget.setTimelapseSingleFile(timelapseSingleFile)
+            self._widget.setTimelapseSingleFile(timelapseSingleFile)
 
     @APIExport(runOnUIThread=True)
     def setRecModeUntilStop(self) -> None:

@@ -220,6 +220,9 @@ def test_a_run_shows_its_progress_on_the_simple_page(rig, qtbot):
     the backend's own box for it unticked (an Advanced setting)."""
     rig.panel.backend.setProgressEnabled(False)
     progress = rig.widget.progressRow
+    # MoNaLISA may relocate the shared progress widget, but ordinary Simple
+    # Point Scan retains ScanCloakView's default placement.
+    assert progress.parentWidget() is rig.widget
     assert not progress.isVisibleTo(rig.widget)
     rig.widget.startButton.click()
     qtbot.waitUntil(lambda: progress.isVisibleTo(rig.widget), timeout=5000)

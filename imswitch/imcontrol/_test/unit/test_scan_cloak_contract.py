@@ -1196,8 +1196,8 @@ def test_monalisa_save_acquire_delegates_one_scan_to_recording(qtbot, monkeypatc
             accepted = True
             reason = ''
 
-        def record_scan_series(source, detector_names, frames=1):
-            calls.append((source, tuple(detector_names), frames))
+        def record_scan_series(source, detector_names, *, use_series=True):
+            calls.append((source, tuple(detector_names), use_series))
             return Result()
 
         monkeypatch.setattr(
@@ -1213,9 +1213,44 @@ def test_monalisa_save_acquire_delegates_one_scan_to_recording(qtbot, monkeypatc
         assert calls == [(
             rig.scan,
             rig.scan._activeProfileDetectors(),
-            1,
+            False,
         )]
         assert not rig.scan._isBusy()
+    finally:
+        rig.close()
+
+
+def test_monalisa_timelapse_checkbox_controls_this_acquisition_only(qtbot, monkeypatch):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        calls = []
+
+        class Result:
+            accepted = True
+            reason = ''
+
+        def record_scan_series(source, detector_names, *, use_series=True):
+            calls.append(use_series)
+            return Result()
+
+        monkeypatch.setattr(
+            rig.channel.recordingWorkflow,
+            'record_scan_series',
+            record_scan_series,
+        )
+        rig.channel.recordingWorkflow.set_scan_series_settings(
+            timepoints=6, interval_s=2.0, single_file=False
+        )
+        rig.view.saveAcquireCheck.setChecked(True)
+
+        rig.view.seriesEnabledCheck.setChecked(False)
+        rig.scan.runScan()
+        assert calls == [False]
+        assert rig.channel.recordingWorkflow.get_scan_series_settings().timepoints == 6
+
+        rig.view.seriesEnabledCheck.setChecked(True)
+        rig.scan.runScan()
+        assert calls == [False, True]
     finally:
         rig.close()
 
@@ -1224,15 +1259,22 @@ def test_monalisa_series_cadence_is_shared_runtime_state(qtbot):
     rig = CloakRig('SimpleMoNaLISA')
     try:
         workflow = rig.channel.recordingWorkflow
-        workflow.set_scan_series_settings(timepoints=7, interval_s=2.5)
+        workflow.set_scan_series_settings(
+            timepoints=7, interval_s=2.5, single_file=False
+        )
         assert rig.view.seriesTimepointsSpin.value() == 7
         assert rig.view.seriesIntervalSpin.value() == pytest.approx(2.5)
+        assert not rig.view.seriesSingleFileCheck.isChecked()
 
+        rig.view.saveAcquireCheck.setChecked(True)
+        rig.view.seriesEnabledCheck.setChecked(True)
         rig.view.seriesTimepointsSpin.setValue(4)
         rig.view.seriesIntervalSpin.setValue(1.25)
+        rig.view.seriesSingleFileCheck.setChecked(True)
         settings = workflow.get_scan_series_settings()
         assert settings.timepoints == 4
         assert settings.interval_s == pytest.approx(1.25)
+        assert settings.single_file is True
     finally:
         rig.close()
 
@@ -1242,16 +1284,28 @@ def test_monalisa_acquire_options_follow_save_checkbox(qtbot):
     try:
         rig.view.saveAcquireCheck.setChecked(False)
         assert not rig.view.recordingSuffixCheck.isEnabled()
+        assert not rig.view.seriesEnabledCheck.isEnabled()
         assert not rig.view.seriesTimepointsSpin.isEnabled()
         assert not rig.view.seriesIntervalSpin.isEnabled()
+        assert not rig.view.seriesSingleFileCheck.isEnabled()
 
         rig.view.saveAcquireCheck.setChecked(True)
         assert rig.view.recordingSuffixCheck.isEnabled()
+        assert rig.view.seriesEnabledCheck.isEnabled()
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+
+        rig.view.seriesEnabledCheck.setChecked(True)
+        assert rig.view.seriesTimepointsSpin.value() >= 2
         assert rig.view.seriesTimepointsSpin.isEnabled()
-        rig.view.seriesTimepointsSpin.setValue(1)
-        assert not rig.view.seriesIntervalSpin.isEnabled()
-        rig.view.seriesTimepointsSpin.setValue(2)
         assert rig.view.seriesIntervalSpin.isEnabled()
+        assert rig.view.seriesSingleFileCheck.isEnabled()
+
+        stored = rig.view.seriesTimepointsSpin.value()
+        rig.view.seriesEnabledCheck.setChecked(False)
+        assert rig.view.seriesTimepointsSpin.value() == stored
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+        assert not rig.view.seriesIntervalSpin.isEnabled()
+        assert not rig.view.seriesSingleFileCheck.isEnabled()
     finally:
         rig.close()
 
@@ -1295,7 +1349,7 @@ def test_monalisa_scan_load_is_refused_while_series_retains_run(qtbot):
         rig.close()
 
 
-def test_monalisa_series_activity_freezes_controls_and_routes_stop(
+def test_monalisa_series_activity_freezes_controls_and_routes_scan_stop(
     qtbot, monkeypatch
 ):
     rig = CloakRig('SimpleMoNaLISA')
@@ -1306,15 +1360,45 @@ def test_monalisa_series_activity_freezes_controls_and_routes_stop(
             'stop_scan_series',
             lambda source: stopped.append(source) or True,
         )
+        rig.view.saveAcquireCheck.setChecked(True)
+        rig.view.setScanSeriesSettings(3, 1.0)
+        rig.view.seriesEnabledCheck.setChecked(True)
         rig.scan._onScanSeriesActivityChanged(rig.scan, True)
 
-        assert rig.view.stopButton.isEnabled()
+        assert not rig.view.stopButton.isEnabled()
+        assert not rig.view.scanStopButton.isHidden()
+        assert rig.view.scanStopButton.isEnabled()
         assert not rig.view.startButton.isEnabled()
         assert not rig.view.profileCombo.isEnabled()
         assert not rig.view.seriesTimepointsSpin.isEnabled()
 
-        rig.scan._onStopClicked()
+        rig.scan._onScanStopClicked()
         assert stopped == [rig.scan]
+    finally:
+        rig.close()
+
+
+def test_monalisa_one_timepoint_series_has_no_scan_stop(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        rig.view.setScanSeriesSettings(1, 0.0)
+        rig.scan._onScanSeriesActivityChanged(rig.scan, True)
+
+        assert not rig.view.scanStopButton.isVisible()
+        assert not rig.view.stopButton.isEnabled()
+    finally:
+        rig.close()
+
+
+def test_monalisa_progress_is_rehomed_into_run_scan_row(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        # The same ScanCloakView progress widget is reused, but MoNaLISA
+        # reparents it into its RUN SCAN action row.
+        assert rig.view.progressRow.parentWidget() is not rig.view
+        assert rig.view.liveActionTitle.text() == 'LIVE'
+        assert rig.view.acquireActionTitle.text() == 'ACQUIRE'
+        assert rig.view.screeningButton.width() == rig.view.startButton.width()
     finally:
         rig.close()
 

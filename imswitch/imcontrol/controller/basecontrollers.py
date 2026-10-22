@@ -1046,6 +1046,55 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             return
         self.loadScanParamsFromFile(fileName)
 
+    def finishScanRunAfterCurrent(self):
+        """Gracefully make the current scan part the final part of its run.
+
+        This is deliberately different from :meth:`abortScan`: an active
+        NI-DAQ iteration is not marked aborted and completes normally. If the
+        run is retained between sequence parts, its run-level reservation is
+        released immediately without publishing a synthetic extra scan-done
+        iteration.
+        """
+        runToken = getattr(self, '_scanRunToken', None)
+        if runToken is None:
+            return False
+        try:
+            if self._scanCoordinator.runForOwner(self) is not runToken:
+                return False
+        except Exception:
+            return False
+
+        self._repeatPending = False
+        self.doingNonFinalPartOfSequence = False
+        setRepeatEnabled = getattr(self._widget, 'setRepeatEnabled', None)
+        if callable(setRepeatEnabled):
+            try:
+                setRepeatEnabled(False)
+            except Exception:
+                self._logger.error(
+                    'Failed to disable scan repeat while finishing the run',
+                    exc_info=True,
+                )
+
+        if self.isRunning:
+            # scanDone() will now publish this physically completing iteration
+            # as the final successful part and release the run normally.
+            return True
+
+        # A non-final external sequence retains its run reservation between
+        # iterations. There is no next NI-DAQ terminal to release it, so close
+        # only the run-level lifecycle now; the preceding exact part terminal
+        # has already been published.
+        try:
+            self._widget.setScanButtonChecked(False)
+        except Exception:
+            self._logger.error(
+                'Failed to reset the scan widget while finishing the run',
+                exc_info=True,
+            )
+        self._finishScanRun(expectedRunToken=runToken)
+        return True
+
     def abortScan(self):
         """ Abort scan. """
         # Decided before the flags below are cleared (a repeat gap is only
