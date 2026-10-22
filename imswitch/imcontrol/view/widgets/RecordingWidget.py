@@ -68,6 +68,8 @@ class RecordingWidget(Widget):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._acquisitionControlsLocked = False
+        self._acquisitionControlTooltips = {}
 
         # Graphical elements
         recTitle = QtWidgets.QLabel('<h2><strong>Recording settings</strong></h2>')
@@ -551,16 +553,52 @@ class RecordingWidget(Widget):
     def setFieldsEnabled(self, enabled):
         self.recGridContainer.setEnabled(enabled)
 
+    def setAcquisitionControlsLocked(self, locked: bool, tooltip: str = ''):
+        """Lock only controls that define how a recording acquisition runs.
+
+        Folder/name/format/save-mode and Snap controls intentionally remain
+        editable while a scan widget owns acquisition.
+        """
+        locked = bool(locked)
+        controls = (
+            self.recButton,
+            self.detectorModeList, self.detectorList,
+            self.singleFileMultiDetectorBox,
+            self.specifyFrames, self.numExpositionsEdit,
+            self.specifyTime, self.timeToRec,
+            self.recTimelapseBtn, self.timelapseFramesEdit,
+            self.timelapseFrameTimeEdit,
+            self.recScanOnceBtn, self.recScanLapseBtn,
+            self.timeLapseEdit, self.freqEdit,
+            self.singleFileLapseBox,
+            self.scanSourceLabel, self.scanSourceList,
+            self.untilSTOPbtn,
+        )
+        if locked and not self._acquisitionControlsLocked:
+            self._acquisitionControlTooltips = {
+                control: control.toolTip() for control in controls
+            }
+        self._acquisitionControlsLocked = locked
+        for control in controls:
+            control.setEnabled(not locked)
+            if locked:
+                control.setToolTip(str(tooltip or ''))
+            elif control in self._acquisitionControlTooltips:
+                control.setToolTip(self._acquisitionControlTooltips[control])
+        if not locked:
+            self._acquisitionControlTooltips = {}
+
     def setEnabledParams(self, specFrames=False, specTime=False,
                          scanLapse=False, specLapse=False):
-        self.numExpositionsEdit.setEnabled(specFrames)
-        self.timeToRec.setEnabled(specTime)
-        self.timeLapseEdit.setEnabled(scanLapse)
-        self.freqEdit.setEnabled(scanLapse)
-        self.scanSourceList.setEnabled(scanLapse)
-        self.singleFileLapseBox.setEnabled(scanLapse or specLapse)
-        self.timelapseFramesEdit.setEnabled(specLapse)
-        self.timelapseFrameTimeEdit.setEnabled(specLapse)
+        editable = not self._acquisitionControlsLocked
+        self.numExpositionsEdit.setEnabled(editable and specFrames)
+        self.timeToRec.setEnabled(editable and specTime)
+        self.timeLapseEdit.setEnabled(editable and scanLapse)
+        self.freqEdit.setEnabled(editable and scanLapse)
+        self.scanSourceList.setEnabled(editable and scanLapse)
+        self.singleFileLapseBox.setEnabled(editable and (scanLapse or specLapse))
+        self.timelapseFramesEdit.setEnabled(editable and specLapse)
+        self.timelapseFrameTimeEdit.setEnabled(editable and specLapse)
         self.lasersList.setEnabled(False)
 
     def setRecButtonChecked(self, checked):
@@ -602,7 +640,8 @@ class RecordingWidget(Widget):
     @shortcut(actionId="recording.toggleRecord", defaultKey="Ctrl+R",
               displayName="Record", initiallyBound=True)
     def toggleRecButton(self):
-        self.recButton.toggle()
+        if self.recButton.isEnabled():
+            self.recButton.toggle()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

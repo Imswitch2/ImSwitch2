@@ -293,6 +293,7 @@ class MoNaLISAView(ScanCloakView):
     sigProfileDeleteRequested = QtCore.Signal(str)
     sigSetupEditRequested = QtCore.Signal()
     sigRecordingSuffixToggled = QtCore.Signal(bool)
+    sigSaveAcquisitionToggled = QtCore.Signal(bool)
     sigScanSeriesSettingsEdited = QtCore.Signal(int, float)
     sigCameraReadoutAutoRequested = QtCore.Signal()
     sigScreeningRequested = QtCore.Signal()
@@ -353,7 +354,7 @@ class MoNaLISAView(ScanCloakView):
             'Record this acquisition using the Recording panel folder, file name and '
             'save format. Timelapse controls are available only for saved acquisitions.'
         )
-        self.saveAcquireCheck.toggled.connect(lambda _checked: self._updateControlState())
+        self.saveAcquireCheck.toggled.connect(self._saveAcquisitionChanged)
         self.recordingSuffixCheck = QtWidgets.QCheckBox('Suffix')
         self.recordingSuffixCheck.setToolTip(
             'Add the configured Simple MoNaLISA suffix to recorded filenames. '
@@ -743,6 +744,19 @@ class MoNaLISAView(ScanCloakView):
 
     def saveAcquisitionRequested(self) -> bool:
         return bool(self.saveAcquireCheck.isChecked())
+
+    def setSaveAcquisitionRequested(self, enabled: bool):
+        self._updating = True
+        try:
+            self.saveAcquireCheck.setChecked(bool(enabled))
+        finally:
+            self._updating = False
+        self._updateControlState()
+
+    def _saveAcquisitionChanged(self, checked):
+        self._updateControlState()
+        if not self._updating:
+            self.sigSaveAcquisitionToggled.emit(bool(checked))
 
     def _scanSeriesSettingsChanged(self, *_args):
         if self._updating:

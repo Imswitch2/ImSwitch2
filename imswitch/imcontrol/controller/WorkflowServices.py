@@ -257,12 +257,14 @@ class RecordingWorkflowService(SignalInterface):
 
     sigScanSeriesSettingsChanged = Signal(object)
     sigScanSeriesActivityChanged = Signal(object, bool)
+    sigRecordingAcquisitionOwnerChanged = Signal(object)
 
     def __init__(self, comm_channel) -> None:
         super().__init__()
         self._comm_channel = comm_channel
         self._scanSeriesSettings = ScanSeriesSettings()
         self._activeScanSeriesSource = None
+        self._recordingAcquisitionOwner = None
 
     @staticmethod
     def _validated_scan_series_settings(timepoints, interval_s):
@@ -348,6 +350,38 @@ class RecordingWorkflowService(SignalInterface):
 
     def scan_series_active_for(self, source) -> bool:
         return self._activeScanSeriesSource is source
+
+    def recording_acquisition_owner(self):
+        """Return the scan UI currently owning Recording acquisition controls."""
+        return self._recordingAcquisitionOwner
+
+    def set_recording_acquisition_owner(self, source, active: bool = True) -> bool:
+        """Claim/release Recording acquisition ownership for one scan source.
+
+        Claims are source-scoped: an existing owner cannot be replaced by a
+        different source, and a source cannot release somebody else's claim.
+        """
+        if source is None:
+            return False
+        active = bool(active)
+        owner = self._recordingAcquisitionOwner
+        if active:
+            if owner is source:
+                return True
+            if owner is not None:
+                return False
+            self._recordingAcquisitionOwner = source
+            self.sigRecordingAcquisitionOwnerChanged.emit(source)
+            return True
+
+        if owner is not source:
+            return False
+        self._recordingAcquisitionOwner = None
+        self.sigRecordingAcquisitionOwnerChanged.emit(None)
+        return True
+
+    def recording_acquisition_owned_by(self, source) -> bool:
+        return self._recordingAcquisitionOwner is source
 
     def recording_filename_suffix_changed(self, source) -> None:
         """Refresh Recording's read-only scan suffix preview, if present."""

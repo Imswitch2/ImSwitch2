@@ -258,7 +258,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         )
         if settingsChanged is not None:
             settingsChanged.connect(self._scanSeriesSettingsChanged)
+        ownerChanged = getattr(
+            recordingWorkflow, 'sigRecordingAcquisitionOwnerChanged', None
+        )
+        if ownerChanged is not None:
+            ownerChanged.connect(self._recordingAcquisitionOwnerChanged)
         self._syncScanSeriesSettingsFromWorkflow()
+        self._recordingAcquisitionOwnerChanged(
+            self._recordingAcquisitionOwner()
+        )
         self._refreshScanFilenameSuffixPreview()
 
         # Register for unified state persistence (canonical name)
@@ -399,9 +407,60 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                                                     image,
                                                     attrs)
 
+    def _recordingAcquisitionOwner(self):
+        workflow = getattr(
+            getattr(self, '_commChannel', None), 'recordingWorkflow', None
+        )
+        getter = getattr(workflow, 'recording_acquisition_owner', None)
+        return getter() if callable(getter) else None
+
+    def _recordingAcquisitionStartAllowed(self) -> bool:
+        owner = self._recordingAcquisitionOwner()
+        if owner is None:
+            return True
+        request = self.__dict__.get('_seriesRequest')
+        return request is not None and request.source is owner
+
+    def _restoreRecordingModeControls(self) -> None:
+        mode = getattr(self, 'recMode', None)
+        if mode == RecMode.SpecFrames:
+            self._widget.setEnabledParams(specFrames=True)
+        elif mode == RecMode.SpecTime:
+            self._widget.setEnabledParams(specTime=True)
+        elif mode == RecMode.CameraLapse:
+            self._widget.setEnabledParams(specLapse=True)
+        elif mode == RecMode.ScanLapse:
+            self._widget.setEnabledParams(scanLapse=True)
+        else:
+            self._widget.setEnabledParams()
+
+    def _recordingAcquisitionOwnerChanged(self, owner) -> None:
+        locked = owner is not None
+        setter = getattr(self._widget, 'setAcquisitionControlsLocked', None)
+        if callable(setter):
+            setter(
+                locked,
+                'Acquisition is configured by the scan widget while Save is '
+                'enabled. Use Acquire/Stop in the scan widget.',
+            )
+        if not locked:
+            self._restoreRecordingModeControls()
+        self._refreshScanFilenameSuffixPreview()
+
     def toggleREC(self, checked):
         """ Start or end recording. """
         if self.__dict__.get('_shutdownRequested', False):
+            return
+        if checked and not self._recordingAcquisitionStartAllowed():
+            self.__logger.info(
+                'Recording acquisition is currently configured by a scan widget; '
+                'start it from that scan widget instead.'
+            )
+            self._finalizingRecCycle = True
+            try:
+                self._widget.setRecButtonChecked(False)
+            finally:
+                self._finalizingRecCycle = False
             return
         if self._finalizingRecCycle:
             # Programmatic REC-button reset during scan/lapse cycle finalization
@@ -3206,6 +3265,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         return suffix or None
 
     def _scanSourceForFilenamePreview(self):
+        owner = self._recordingAcquisitionOwner()
+        if owner is not None:
+            return owner
         seriesRequest = self.__dict__.get('_seriesRequest')
         if seriesRequest is not None:
             return seriesRequest.source
@@ -3460,6 +3522,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         names = tuple(str(name) for name in (detectorNames or ()))
         if not names:
             return refuse('Choose at least one detector to save.')
+        owner = self._recordingAcquisitionOwner()
+        if owner is not None and owner is not source:
+            return refuse(
+                'Recording acquisition is currently configured by another scan widget.'
+            )
         if (
             self.__dict__.get('_seriesRequest') is not None
             or self.recording

@@ -77,6 +77,9 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._view.sigRecordingSuffixToggled.connect(
             self._onRecordingSuffixToggled
         )
+        self._view.sigSaveAcquisitionToggled.connect(
+            self._onSaveAcquisitionToggled
+        )
         self._view.sigScanSeriesSettingsEdited.connect(
             self._onScanSeriesSettingsEdited
         )
@@ -120,6 +123,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._refreshEstimate()
         self._mirrorToBackend(force=True)
         self._panel.showPage(self.scanPage())
+        self._syncRecordingAcquisitionOwnership()
 
     def _monalisa(self) -> dict:
         # Advanced's constructor can ask this cloak for parameters before this
@@ -350,6 +354,38 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         active = bool(activeFor(self)) if callable(activeFor) else False
         self._recordedSeriesActive = active
         self._view.setAcquisitionSeriesActive(active)
+
+    def _setRecordingAcquisitionOwnership(self, active: bool) -> bool:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        setter = getattr(workflow, 'set_recording_acquisition_owner', None)
+        if not callable(setter):
+            return not active
+        try:
+            return bool(setter(self, bool(active)))
+        except Exception:
+            self._logger.warning(
+                'Could not update Recording acquisition ownership.',
+                exc_info=True,
+            )
+            return False
+
+    def _syncRecordingAcquisitionOwnership(self) -> None:
+        wantsOwnership = bool(
+            self._onSimplePage() and self._view.saveAcquisitionRequested()
+        )
+        if self._setRecordingAcquisitionOwnership(wantsOwnership):
+            return
+        if wantsOwnership:
+            self._view.setSaveAcquisitionRequested(False)
+            self._view.showMessage(
+                'Recording acquisition is already configured by another scan widget.',
+                error=True,
+            )
+
+    def _onSaveAcquisitionToggled(self, checked: bool) -> None:
+        if checked and not self._onSimplePage():
+            return
+        self._syncRecordingAcquisitionOwnership()
 
     def _onScanSeriesSettingsEdited(self, timepoints, interval_s) -> None:
         workflow = getattr(self._commChannel, 'recordingWorkflow', None)
@@ -1634,6 +1670,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self.__dict__['_closingSimpleMoNaLISA'] = True
         if self.__dict__.get('_screeningActive', False):
             self._stopScreening()
+        self._setRecordingAcquisitionOwnership(False)
         result = super().closeEvent()
         if '_acquisitionTriggerSnapshot' not in self.__dict__:
             self._releaseScreeningTriggerOverride()
@@ -1654,6 +1691,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._panel.showNote('')
             self._refreshLiveControls()
             self._refreshEstimate()
+            self._syncRecordingAcquisitionOwnership()
             return True
 
         # The Stop control disappears on Advanced, so do not carry Simple-owned
@@ -1669,6 +1707,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         if switched and self._onSimplePage():
             self._refreshLiveControls()
         if switched:
+            self._syncRecordingAcquisitionOwnership()
             self._notifyRecordingFilenameSuffixChanged()
         return switched
 
