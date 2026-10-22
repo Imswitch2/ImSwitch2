@@ -51,7 +51,7 @@ def test_move_never_overwrites_a_same_named_device_in_the_other_state():
 def test_only_repeated_runtime_device_sections_are_disableable():
     assert set(DISABLEABLE_CATEGORIES) == {
         "detectors", "lasers", "positioners", "rotators",
-        "rs232devices", "slms", "flipMirrors",
+        "rs232devices", "slms", "flipMirrors", "instruments",
     }
     with pytest.raises(ValueError, match="does not support"):
         set_device_enabled({"microscopeStand": {}}, "stands", "Stand", False)
