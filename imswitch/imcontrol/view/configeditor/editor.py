@@ -6147,17 +6147,24 @@ class MainWindow(QMainWindow):
             self._write_file(path)
 
     def _write_file(self, path: str):
+        # Keep this save funnel usable by lightweight non-UI sessions/tests that
+        # deliberately do not construct the full QMainWindow. Missing Qt-backed
+        # attributes can raise before getattr()/hasattr() gets a chance to fall
+        # back, so optional compare state is read directly from __dict__.
+        state = self.__dict__
+        compare_mode = bool(state.get("_compare_mode", False))
+        compare_path = state.get("_compare_path", "")
         compare_conflict = False
-        if self._compare_mode and self._compare_path:
-            compare_conflict = LeftPanel._same_path(path, self._compare_path)
+        if compare_mode and compare_path:
+            compare_conflict = LeftPanel._same_path(path, compare_path)
             try:
                 compare_conflict = compare_conflict or (
-                    Path(path).parent.resolve() != Path(self._compare_path).parent.resolve()
+                    Path(path).parent.resolve() != Path(compare_path).parent.resolve()
                 )
             except Exception:
                 pass
         if (
-            compare_conflict and self._compare_modified
+            compare_conflict and state.get("_compare_modified", False)
             and not self._confirm_compare_changes("saving the main config here")
         ):
             return
@@ -6177,14 +6184,14 @@ class MainWindow(QMainWindow):
             # that list so the newly written file and its EDITING marker appear
             # immediately.  Keep the bookkeeping method usable by lightweight
             # non-UI tests/embedders that intentionally do not construct LeftPanel.
-            left = getattr(self, "_left", None)
+            left = state.get("_left")
             if left is not None:
                 left.set_folder(str(Path(path).parent))
             self._set_modified(False)
             if left is not None:
                 left.select_config_path(path)
             self._note_saved(path)
-            if self._compare_mode:
+            if compare_mode:
                 self._refresh_compare_choices(auto_load=True)
             self._status.setText(f"Saved: {path}")
         except Exception as e:
@@ -6754,7 +6761,8 @@ class MainWindow(QMainWindow):
 
     def _set_modified(self, modified: bool) -> None:
         self._modified = bool(modified)
-        if hasattr(self, "_editing_lbl") and hasattr(self, "_left"):
+        state = self.__dict__
+        if "_editing_lbl" in state and "_left" in state:
             self._update_active_banner()
 
     def _mark_modified(self) -> None:

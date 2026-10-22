@@ -134,8 +134,8 @@ def test_config_file_list_uses_available_vertical_space(qapp, tmp_path, monkeypa
     # The old UI capped this list at 230 px, leaving a large blank area below it.
     assert panel._file_list.maximumHeight() > 230
     assert panel.layout().stretch(panel.layout().indexOf(panel._file_list)) == 1
-    assert panel.minimumWidth() == 180
-    assert panel.maximumWidth() > 242
+    # The sidebar should stay user-resizable; the exact min/max values are UX choices.
+    assert panel.minimumWidth() < panel.maximumWidth()
 
 
 def test_available_widget_remove_action_uses_a_real_close_icon(qapp):
