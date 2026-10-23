@@ -69,7 +69,8 @@ class ScanIterationToken:
 
     __slots__ = ('participants', 'owner', 'generation', 'leaseHandle',
                  'resolved', 'finishing', 'pending', 'acknowledgements',
-                 'onComplete', 'timedOut', 'scanInfoDict', '_lock')
+                 'onComplete', 'timedOut', 'scanInfoDict', 'acquisitionTicket',
+                 'resourceTicket', '_lock')
 
     def __init__(self, participants, *, owner=None, generation=0):
         self.participants = tuple(participants)
@@ -83,6 +84,10 @@ class ScanIterationToken:
         self.onComplete = None
         self.timedOut = False
         self.scanInfoDict = None
+        #: Acquisition-gate admission and waveform-output hold of an
+        #: iteration armed without a run.
+        self.acquisitionTicket = None
+        self.resourceTicket = None
         self._lock = threading.Lock()
 
     def __repr__(self):
@@ -107,7 +112,8 @@ class ScanRunToken:
     __slots__ = (
         'owner', 'generation', 'releaseRequested',
         'releaseBarrierCleared', 'holdReleaseUntilFinalized', 'released',
-        'releaseCallbacks', 'releaseCallbackInFlight',
+        'releaseCallbacks', 'releaseCallbackInFlight', 'acquisitionTicket',
+        'resourceTicket',
     )
 
     def __init__(self, owner, *, generation=0):
@@ -119,6 +125,9 @@ class ScanRunToken:
         self.released = False
         self.releaseCallbacks = []
         self.releaseCallbackInFlight = False
+        #: The run's acquisition-gate admission and waveform-output hold.
+        self.acquisitionTicket = None
+        self.resourceTicket = None
 
     def __repr__(self):
         return (f'ScanRunToken(generation={self.generation},'
@@ -126,6 +135,74 @@ class ScanRunToken:
                 f' releaseBarrierCleared={self.releaseBarrierCleared},'
                 f' holdReleaseUntilFinalized={self.holdReleaseUntilFinalized},'
                 f' released={self.released})')
+
+
+def _admitScanAcquisition(label):
+    """Admit a scan through the acquisition gate (refused during a reconnect)."""
+    from imswitch.imcontrol.model.devices.acquisition_gate import (
+        AcquisitionBlockedError,
+        get_acquisition_gate,
+    )
+    try:
+        return get_acquisition_gate().admit(label)
+    except AcquisitionBlockedError as exc:
+        raise ScanBusyError(str(exc)) from None
+
+
+def _releaseAcquisitionTicket(token):
+    ticket = getattr(token, 'acquisitionTicket', None)
+    if ticket is None:
+        return
+    token.acquisitionTicket = None
+    from imswitch.imcontrol.model.devices.acquisition_gate import get_acquisition_gate
+    get_acquisition_gate().release(ticket)
+
+
+def _admitWaveformOutput(label):
+    """Hold ``waveform-output`` in the resource registry for a scan.
+
+    A measurement run reserves it for its whole lifetime, so a scan cannot
+    start between two calibration points; and a running scan holds it, so a
+    measurement run cannot reserve it (plan §7.5). Not re-entrant: the hold
+    is released from whichever thread ends the scan.
+    """
+    from imswitch.imcontrol.model.resources import (
+        WAVEFORM_OUTPUT,
+        ReservationExpiredError,
+        ResourceReservedError,
+        get_resource_registry,
+    )
+    try:
+        return get_resource_registry().admit(
+            WAVEFORM_OUTPUT, None, label=label, reentrant=False)
+    except (ResourceReservedError, ReservationExpiredError) as exc:
+        raise ScanBusyError(f'Waveform outputs are not available: {exc}') from None
+
+
+def _releaseResourceTicket(token):
+    ticket = getattr(token, 'resourceTicket', None)
+    if ticket is None:
+        return
+    token.resourceTicket = None
+    from imswitch.imcontrol.model.resources import get_resource_registry
+    get_resource_registry().release_ticket(ticket)
+
+
+def _admitScan(label):
+    """Both admissions a scan holds: the acquisition gate (no device reconnect
+    meanwhile) and waveform-output (no measurement run meanwhile)."""
+    gateTicket = _admitScanAcquisition(label)
+    try:
+        return gateTicket, _admitWaveformOutput(label)
+    except BaseException:
+        from imswitch.imcontrol.model.devices.acquisition_gate import get_acquisition_gate
+        get_acquisition_gate().release(gateTicket)
+        raise
+
+
+def _releaseScanTickets(token):
+    _releaseAcquisitionTicket(token)
+    _releaseResourceTicket(token)
 
 
 class ScanExecutionCoordinator:
@@ -220,8 +297,11 @@ class ScanExecutionCoordinator:
                     'Another scan run is already reserved '
                     f'(generation {active.generation})'
                 )
+            gateTicket, resourceTicket = _admitScan('scan run')
             self._runGeneration += 1
             token = ScanRunToken(owner, generation=self._runGeneration)
+            token.acquisitionTicket = gateTicket
+            token.resourceTicket = resourceTicket
             self._activeRunToken = token
             return token
 
@@ -296,6 +376,8 @@ class ScanExecutionCoordinator:
                     token.released = True
                     self._activeRunToken = None
                 accepted = True
+        if token.released:
+            _releaseScanTickets(token)
         self._runReleaseCallbacks(token, callbacks)
         return accepted
 
@@ -319,7 +401,8 @@ class ScanExecutionCoordinator:
                 return False
             token.released = True
             self._activeRunToken = None
-            return True
+        _releaseScanTickets(token)
+        return True
 
     # ------------------------------------------------------------------ #
     # Participant composition                                            #
@@ -432,15 +515,21 @@ class ScanExecutionCoordinator:
                     'A scan iteration is still in flight or finishing '
                     f'(generation {active.generation})'
                 )
+            bareTickets = (None, None)
             if activeRun is None and owner is not None:
                 # Preserve safety for direct coordinator users that did not
                 # explicitly reserve first. Full controllers retain this token
                 # themselves and release it at run-level completion.
                 implicitRunToken = self.reserveRun(owner)
+            elif activeRun is None:
+                # An iteration without a run is an acquisition and drives
+                # waveform outputs too.
+                bareTickets = _admitScan('scan iteration')
             self._generation += 1
             token = ScanIterationToken(
                 participants, owner=owner, generation=self._generation
             )
+            token.acquisitionTicket, token.resourceTicket = bareTickets
             token.scanInfoDict = scanInfoDict
             # Reserve global ownership before touching hardware. Another entry
             # point must not slip in while acquire() or runScan() is running.
@@ -621,6 +710,7 @@ class ScanExecutionCoordinator:
 
         runReleaseCallbacks = ()
         runReleaseToken = None
+        releasedRun = None
         with self._stateLock:
             if self._activeToken is token:
                 self._activeToken = None
@@ -632,12 +722,16 @@ class ScanExecutionCoordinator:
                 if not activeRun.holdReleaseUntilFinalized:
                     activeRun.released = True
                     self._activeRunToken = None
+                    releasedRun = activeRun
                 runReleaseCallbacks = tuple(activeRun.releaseCallbacks)
                 activeRun.releaseCallbacks.clear()
                 if runReleaseCallbacks:
                     activeRun.releaseCallbackInFlight = True
                     runReleaseToken = activeRun
 
+        if releasedRun is not None:
+            _releaseScanTickets(releasedRun)
+        _releaseScanTickets(token)
         self._runReleaseCallbacks(runReleaseToken, runReleaseCallbacks)
         if onComplete is not None:
             try:

@@ -6,8 +6,7 @@
       "managerName": "APDManager",
       "managerProperties": {
         "ctrInputLine": "Dev1/ctr0",
-        "terminal": "PFI0",
-        "cameraListIndex": null
+        "terminal": "PFI0"
       },
       "forAcquisition": true
     },
@@ -17,8 +16,7 @@
       "managerName": "APDManager",
       "managerProperties": {
         "ctrInputLine": "Dev1/ctr1",
-        "terminal": "PFI12",
-        "cameraListIndex": null
+        "terminal": "PFI12"
       },
       "forAcquisition": true
     },
@@ -156,7 +154,8 @@
         "returnToCenterAfterScan": true
       },
       "axes": ["Z"],
-      "forScanning": true
+      "forScanning": true,
+      "physicalActuator": "piezoconcept-z"
     },
     "PiezoZ": {
       "analogChannel": null,
@@ -166,7 +165,8 @@
         "rs232device": "pczpiezo"
       },
       "axes": ["Z"],
-      "forPositioning": true
+      "forPositioning": true,
+      "physicalActuator": "piezoconcept-z"
     }
   },
   "rs232devices": {
@@ -246,14 +246,14 @@
   ],
 
   "scan": {
-    "scanWidgetType": "PointScan",
+    "scanWidgetType": "Advanced",
     "scanDesigner": "GalvoScanDesigner",
     "scanDesignerParams": {},
-    "TTLCycleDesigner": "PointScanTTLCycleDesigner",
+    "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
     "TTLCycleDesignerParams": {},
     "sampleRate": 100000,
     "lineClockLine": "Dev1/port0/line5",
-    "frameClockLine": "Dev1/port0/line6"
+    "frameStartClockLine": "Dev1/port0/line6"
   },
   "nidaq": {
     "timerCounterChannel": "Dev1/ctr2",

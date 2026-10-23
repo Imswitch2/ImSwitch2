@@ -31,6 +31,7 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.improcess.layer_selection import PSF_PREVIEW_LAYER_NAME as PREVIEW_LAYER_NAME
+from imswitch.improcess.view.runstate import RunState
 from imswitch.improcess.processors import PSFBeadSelectProcessor, PSFResolutionProcessor
 from imswitch.improcess.processors.psf_resolution._params import (
     CALIBRATION_GROUP,
@@ -52,6 +53,8 @@ class PSFResolutionWidget(QtWidgets.QWidget):
     """Measure the PSF from the beads of the selected image; show a measurement."""
 
     sigRunRequested = QtCore.Signal(object, dict)
+    sigCancelRequested = QtCore.Signal()
+    """**Cancel** was pressed while a run was going."""
 
     def __init__(self, napariViewer, roiManagerWidget=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -99,6 +102,11 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         fitRow.setContentsMargins(0, 0, 0, 0)
         fitRow.addStretch()
         fitRow.addWidget(self.fitButton)
+        #: Run / Cancel: Cancel sits after Fit and shows only while a run goes
+        #: (a fit or a re-select); the row stays, so Cancel is reachable while
+        #: a measurement hides the Fit button.
+        self._runState = RunState(self.fitButton, fitRow, self.sigCancelRequested.emit)
+        self.cancelButton = self._runState.cancelButton
         self.requirementLabel = QtWidgets.QLabel("")
         self.requirementLabel.setWordWrap(True)
         self.requirementLabel.setStyleSheet(f"color:{_WARN};")
@@ -239,10 +247,7 @@ class PSFResolutionWidget(QtWidgets.QWidget):
             self.summaryLabel.setText(str(exc))
             return
         self.processor = self.fitProcessor
-        self.summaryLabel.setText("Fitting…")
-        QtWidgets.QApplication.processEvents()
-        with _busy():
-            self.sigRunRequested.emit(self._currentResult, params)
+        self.sigRunRequested.emit(self._currentResult, params)
 
     def preview(self) -> None:
         """Run the bead analysis on the selected image and mark the beads."""
@@ -284,9 +289,7 @@ class PSFResolutionWidget(QtWidgets.QWidget):
             self.summaryLabel.setText("Select a PSF measurement to re-select its beads.")
             return
         self.processor = self.selectProcessor
-        self.summaryLabel.setText("Re-selecting…")
-        with _busy():
-            self.sigRunRequested.emit(self._currentResult, self.selectForm.get_values())
+        self.sigRunRequested.emit(self._currentResult, self.selectForm.get_values())
 
     def resetSelection(self) -> None:
         """Back to the automatic selection (all bounds 0, default thresholds)."""
@@ -325,8 +328,8 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         measurement = self._isMeasurement(result)
         fitting = not measurement and self._fitAccepts(result)
         self.setupBox.setVisible(fitting)
-        self.fitRow.setVisible(fitting)
-        self.fitButton.setEnabled(fitting)
+        self.fitButton.setVisible(fitting)
+        self._allowRun(fitting)
         self.previewButton.setEnabled(fitting)
         self.resultBox.setVisible(measurement)
         self.applySelectionButton.setVisible(measurement)
@@ -344,6 +347,23 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         else:
             self.beadsSection.setVisible(False)
             self.summaryLabel.setText(self._incompatibleText if result is not None else self._idleText)
+
+    def _allowRun(self, allowed: bool) -> None:
+        """Whether Run may be pressed, were nothing running."""
+        # Read through __dict__: a widget built without its __init__ (tests do)
+        # has no run state, and a plain getattr on it raises.
+        state = self.__dict__.get("_runState")
+        if state is None:
+            self.fitButton.setEnabled(allowed)
+        else:
+            state.setRunEnabled(allowed)
+
+    def isRunning(self) -> bool:
+        return self._runState.running
+
+    def setRunning(self, running: bool) -> None:
+        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        self._runState.setRunning(running)
 
     def setStatusText(self, text: str) -> None:
         """The controller's run status."""

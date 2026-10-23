@@ -217,14 +217,21 @@ class TestMaterialize:
         form = editor._schema_for_manager("ThorCamTSIManager")
         props = {f["key"]: f for f in form["props"]}
         assert {k: f["type"] for k, f in props.items()} == {
-            "cameraPixelSizeUm": "json", "cameraSerial": "text", "defaults": "json",
+            # A number since example_no_hardware's mock TSI camera declares one.
+            "cameraPixelSizeUm": "float", "cameraSerial": "text", "defaults": "json",
             "dllLocation": "text", "flushFrameLimit": "int",
             # The SDK ring depth, declared when the audit made it settable.
             "frameBufferDepth": "int",
+            # Reconnect 2.0: the fallback mock is an explicit (here: default) opt-in.
+            "useMockOnFailure": "bool",
         }
         assert props["cameraSerial"]["nullable"] is True
         assert props["cameraSerial"]["tip"].startswith("Camera serial number")
-        assert {f["key"] for f in form["top"]} == {"analogChannel", "digitalLine", "forAcquisition", "forFocusLock"}
+        assert {f["key"] for f in form["top"]} == {
+            "analogChannel", "digitalLine", "forAcquisition", "forFocusLock",
+            # Every device can be declared transient (device-reconnect-2.0 P-2).
+            "transient", "connectOnStartup",
+        }
 
     def test_a_union_kind_gets_the_text_box_even_over_a_template_int(self):
         form = editor._schema_for_manager("HamamatsuManager")
@@ -487,7 +494,9 @@ def test_the_corpus_is_what_the_plan_says():
     # single-axis scan work; 17: mock_scan_monalisa_live.json with the live
     # reconstruction work. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
     assert len(shipped_setups()) == 17
-    assert len(generated_fixtures()) == 62
+    # 64: plus the mock power meter and mock PAX instruments.
+    # 66: plus the Thorlabs PM100 and PAX1000.
+    assert len(generated_fixtures()) == 66
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 

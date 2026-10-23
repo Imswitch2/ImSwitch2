@@ -47,6 +47,7 @@ def test_title_falls_back_to_the_key():
     (ParamField("k", "int", 0, min=0, max=10), [0, 10, np.int64(3)], [-1, 11, 2.5, True, "3", None]),
     (ParamField("k", "float", 0.0, min=0.1), [0.1, 2, np.float32(1.5)], [0.0, True, "x", None]),
     (ParamField("k", "text", ""), ["", "abc"], [1, None, ["a"]]),
+    (ParamField("k", "code", ""), ["", "a = 1\nb = a + 1\n", "  indented\n\n"], [1, 2.5, None, ["a"]]),
     (ParamField("k", "path", ""), ["/tmp/x"], [None, 3]),
     (ParamField("k", "select", "a", options=("a", "b", 3)), ["a", "b", 3], ["c", None]),
     (ParamField("k", "multiselect", [], options=("a", "b")), [[], ["a"], ("a", "b")], ["a", ["c"], None]),
@@ -75,6 +76,19 @@ def test_to_dict_is_short_and_round_trips():
     assert ParamField.from_dict(json.loads(json.dumps(numeric.to_dict()))) == numeric
     with pytest.raises(ValueError):
         ParamField.from_dict({"key": "k", "type": "int", "default": 0, "widget": "spin"})
+
+
+def test_a_code_field_holds_multi_line_text_and_round_trips():
+    script = "ax = 0\nfor i in range(3):\n    print(i)\n"
+    field = ParamField("code", "code", script, label="Code", help="A script")
+    assert "code" in FIELD_TYPES
+    assert field.problem_with(script) is None
+    assert field.problem_with(3) == "must be text"
+    assert field.problem_with(None) == "must not be None"
+    assert ParamField("code", "code", None, nullable=True).problem_with(None) is None
+    payload = json.loads(json.dumps(field.to_dict()))
+    assert payload["type"] == "code" and payload["default"] == script
+    assert ParamField.from_dict(payload) == field
 
 
 # -- deriving from defaults ---------------------------------------------------

@@ -20,7 +20,7 @@
     },
     {
       "constrained": 1,
-      "keys": 3,
+      "keys": 4,
       "name": "AVManager",
       "refs": 0,
       "required": 2,
@@ -68,7 +68,7 @@
       "keys": 3,
       "name": "CoolLEDLaserManager",
       "refs": 1,
-      "required": 0,
+      "required": 1,
       "uncertain": 0,
       "unresolved": 0
     },
@@ -127,7 +127,7 @@
       "unresolved": 0
     },
     {
-      "constrained": 0,
+      "constrained": 1,
       "keys": 4,
       "name": "ElliptecRotatorManager",
       "refs": 0,
@@ -218,7 +218,7 @@
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "KinesisRotatorManager",
       "refs": 0,
       "required": 1,
@@ -227,7 +227,7 @@
     },
     {
       "constrained": 0,
-      "keys": 6,
+      "keys": 7,
       "name": "KinesisStageManager",
       "refs": 0,
       "required": 1,
@@ -293,6 +293,15 @@
       "keys": 7,
       "name": "MPBLaserManager",
       "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 3,
+      "keys": 6,
+      "name": "MockPAXManager",
+      "refs": 0,
       "required": 0,
       "uncertain": 0,
       "unresolved": 0
@@ -301,6 +310,15 @@
       "constrained": 0,
       "keys": 0,
       "name": "MockPositionerManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 2,
+      "keys": 3,
+      "name": "MockPowerMeterManager",
       "refs": 0,
       "required": 0,
       "uncertain": 0,
@@ -362,7 +380,7 @@
     },
     {
       "constrained": 1,
-      "keys": 3,
+      "keys": 4,
       "name": "PhotometricsManager",
       "refs": 0,
       "required": 1,
@@ -371,7 +389,7 @@
     },
     {
       "constrained": 1,
-      "keys": 4,
+      "keys": 5,
       "name": "PiCamManager",
       "refs": 0,
       "required": 3,
@@ -479,7 +497,7 @@
     },
     {
       "constrained": 0,
-      "keys": 4,
+      "keys": 5,
       "name": "StandaRotatorManager",
       "refs": 0,
       "required": 4,
@@ -515,7 +533,7 @@
     },
     {
       "constrained": 3,
-      "keys": 6,
+      "keys": 7,
       "name": "ThorCamTSIManager",
       "refs": 0,
       "required": 0,
@@ -541,6 +559,24 @@
       "unresolved": 0
     },
     {
+      "constrained": 3,
+      "keys": 7,
+      "name": "ThorlabsPAX1000Manager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 4,
+      "name": "ThorlabsPM100Manager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 0,
       "keys": 3,
       "name": "TriggerScopeLaserManager",
@@ -561,23 +597,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 46,
-    "docs_agree": 135,
-    "docs_documented": 135,
-    "keys": 215,
-    "managers": 62,
-    "none_default_only": 31,
-    "none_only": 19,
-    "optional": 153,
-    "reads_any": 56,
+    "constrained": 56,
+    "docs_agree": 162,
+    "docs_documented": 162,
+    "keys": 242,
+    "managers": 66,
+    "none_default_only": 37,
+    "none_only": 16,
+    "optional": 176,
+    "reads_any": 60,
     "refs": 14,
-    "required": 62,
-    "typed_by_code": 96,
-    "typed_with_docs": 156,
-    "typed_with_examples": 128,
+    "required": 66,
+    "typed_by_code": 121,
+    "typed_with_docs": 186,
+    "typed_with_examples": 156,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 56,
+    "with_keys": 60,
     "writes": 0
   }
 }

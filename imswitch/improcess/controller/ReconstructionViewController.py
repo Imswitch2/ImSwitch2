@@ -59,6 +59,7 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
         self._commChannel.sigResultProduced.connect(self.resultProduced)
+        self._commChannel.sigResultReplaced.connect(self.resultReplaced)
         self._commChannel.sigLiveResultUpdated.connect(self.liveResultUpdated)
         self._commChannel.sigLiveTimepointUpdated.connect(self.liveTimepointUpdated)
         self._commChannel.sigSaveLiveResult.connect(self.saveLiveResult)
@@ -706,6 +707,26 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         name = displayName or getattr(result, 'name', '') or 'result'
         self._widget.addNewData(result, name)
+        self._resultsChanged()
+
+    def resultReplaced(self, old, new, displayName):
+        """Put ``new`` in ``old``'s list entry; redraw if it is on screen.
+
+        A processor whose panel asked for in-place refinement (the SMLM
+        filter with *Copy* off) publishes this way. An ``old`` that is no
+        longer listed makes ``new`` an ordinary new entry.
+        """
+        if new is None:
+            return
+        name = displayName or getattr(new, 'name', '') or 'result'
+        replacer = getattr(self._widget, 'replaceData', None)
+        if not callable(replacer) or not replacer(old, new, name):
+            self.resultProduced(new, name)
+            return
+        if self._widget.getCurrentItemData() is new:
+            # The entry on screen now holds other data: render it, and tell
+            # everyone following the current result that it changed.
+            self.listItemChanged()
         self._resultsChanged()
 
     def liveResultUpdated(self, result):

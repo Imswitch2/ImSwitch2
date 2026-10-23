@@ -441,20 +441,29 @@ def test_the_profile_panel_and_the_measurement_share_one_sampler():
     import importlib
     import inspect
 
-    # By module path: `imswitch.improcess.view` re-exports the *class* under
-    # the same name, so a plain attribute lookup gets the class instead.
-    module = importlib.import_module("imswitch.improcess.view.ProfileWidget")
+    def imported_names(module_path):
+        # By module path: the view packages re-export the *class* under the
+        # same name, so a plain attribute lookup gets the class instead.
+        module = importlib.import_module(module_path)
+        tree = ast.parse(inspect.getsource(module))
+        return {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        }
 
-    source = inspect.getsource(module)
-    tree = ast.parse(source)
-    imported = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    assert "line_samples" in imported
-    assert "map_coordinates" not in imported
+    # The Profile panel is one widget, shared by ImProcess and imcontrol.
+    shared = imported_names("imswitch.imcommon.view.guitools.ProfileWidget")
+    assert "line_samples" in shared
+    assert "map_coordinates" not in shared
+
+    from imswitch.imcommon.view.guitools.ProfileWidget import (
+        ProfileWidget as SharedProfileWidget,
+    )
+    from imswitch.improcess.view.ProfileWidget import ProfileWidget
+
+    assert issubclass(ProfileWidget, SharedProfileWidget)
 
 
 def test_the_shared_sampler_reads_off_image_pixels_as_zero():

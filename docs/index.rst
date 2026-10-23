@@ -126,6 +126,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
 
     Home <self>
     installation
+    packaging
     developer-onboarding
     agent-task-templates
     changelog
@@ -154,6 +155,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/positioners
     devices/rotators
     devices/stands
+    devices/instruments
     Hdf5datafile
 
 .. toctree::

@@ -35,12 +35,71 @@ class _Widget:
         return 0.02
 
 
+class _SignallingWidget(_Widget):
+    def __init__(self):
+        super().__init__()
+        self.signals_blocked = False
+        self.block_calls = []
+        self.notifications = []
+
+    def blockSignals(self, block):
+        previous = self.signals_blocked
+        self.signals_blocked = bool(block)
+        self.block_calls.append(bool(block))
+        return previous
+
+    def _notify(self, field):
+        if not self.signals_blocked:
+            self.notifications.append(field)
+
+    def setPhaseDelayPar(self, value):
+        super().setPhaseDelayPar(value)
+        self._notify('phase')
+
+    def setd3StepDelayPar(self, value):
+        super().setd3StepDelayPar(value)
+        self._notify('d3')
+
+    def setSeqTimePar(self, value):
+        super().setSeqTimePar(value)
+        self._notify('seq')
+
+
 def test_the_setup_file_seeds_both_delays():
     widget = _Widget()
     setup = SimpleNamespace(scan=SimpleNamespace(
         scanDesignerParams={'phase_delay': 85, 'd3step_delay': 500}))
     seed_scan_delays_from_setup(widget, setup)
     assert widget.set == [('phase', 85), ('d3', 500)]
+
+
+def test_a_setup_can_give_the_first_dwell():
+    """A stepped stage cannot scan at the panel's 0.02 ms (example_monalisa)."""
+    widget = _Widget()
+    setup = SimpleNamespace(scan=SimpleNamespace(scanDesignerParams={'dwell_ms': 10}))
+    seed_scan_delays_from_setup(widget, setup)
+    assert widget.set == [('seq', pytest.approx(0.01))]
+
+
+def test_setup_seeding_does_not_emit_widget_change_signals():
+    """Setup defaults are applied before scan subclasses finish construction."""
+    widget = _SignallingWidget()
+    setup = SimpleNamespace(scan=SimpleNamespace(scanDesignerParams={
+        'phase_delay': 85,
+        'd3step_delay': 500,
+        'dwell_ms': 10,
+    }))
+
+    seed_scan_delays_from_setup(widget, setup)
+
+    assert widget.set == [
+        ('phase', 85),
+        ('d3', 500),
+        ('seq', pytest.approx(0.01)),
+    ]
+    assert widget.notifications == []
+    assert widget.block_calls == [True, False]
+    assert widget.signals_blocked is False
 
 
 def test_a_setup_without_the_delays_leaves_the_fields_alone():

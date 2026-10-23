@@ -140,6 +140,9 @@ class LocalizationResult(ProcessingResult):
                 anchor the preview extent when the point cloud is sparse.
             metadata: Free-form extra metadata (kept on save).
             preview_pixel_size_nm: Override the preview histogram bin size.
+                A size whose image would exceed the processing working set is
+                raised to the smallest that fits, and the adjustment is
+                recorded in ``metadata["preview_pixel_size_adjusted"]``.
         """
         self._locs = as_localizations(locs)
         self.pixel_size_nm = float(pixel_size_nm)
@@ -153,6 +156,16 @@ class LocalizationResult(ProcessingResult):
         self.source_shape = tuple(source_shape) if source_shape is not None else None
         self.metadata = dict(metadata or {})
 
+        #: The bin size that was asked for, or ``None`` for automatic. Kept
+        #: apart from :attr:`preview_pixel_size_nm`, the one in use, so a
+        #: result made from this one asks for the same thing again: the bin a
+        #: person chose survives the filter, drift and group steps instead of
+        #: falling back to the camera pixel size.
+        self.preview_pixel_size_requested_nm = (
+            float(preview_pixel_size_nm)
+            if preview_pixel_size_nm is not None and preview_pixel_size_nm > 0
+            else None
+        )
         preview, extent, bin_nm = self._build_preview(preview_pixel_size_nm)
         self.preview_extent_nm = extent
         self.preview_pixel_size_nm = bin_nm
@@ -356,6 +369,46 @@ class LocalizationResult(ProcessingResult):
             return "3D"
         return "2D"
 
+    def _fit_requested_bin(
+        self, bin_nm: float, width: int, height: int, span_x: float, span_y: float
+    ) -> tuple[float, int, int]:
+        """Raise a requested bin to the smallest one whose image fits.
+
+        The preview is a float32 image the viewer fills on first display, so
+        it costs ``width * height * 4`` bytes. The limit is the processing
+        working set already in force (``memory.processingWorkingSetMB``), the
+        one every other automatic allocation answers to. A fixed bin that is
+        fine for a 20 um field is 1.5 GiB for a 200 um one, so the size is
+        adjusted rather than refused: the localization that produced this
+        result may have run for an hour. The adjustment is recorded.
+        """
+        from .contrast import _sample_working_set_bytes
+
+        budget = _sample_working_set_bytes()
+        if width * height * 4 <= budget:
+            return bin_nm, width, height
+        # Rounding each side up can push the image just over; a thousandth
+        # of margin settles it in one step.
+        fitted = float(np.sqrt(span_x * span_y * 4.0 / budget)) * 1.001
+        width = max(1, int(np.ceil(span_x / fitted)))
+        height = max(1, int(np.ceil(span_y / fitted)))
+        self.metadata["preview_pixel_size_adjusted"] = {
+            "requested_nm": float(bin_nm),
+            "used_nm": fitted,
+            "reason": (
+                f"a {bin_nm:g} nm bin would make a larger image than the processing "
+                f"working set ({budget / 2**20:.0f} MiB)"
+            ),
+        }
+        from imswitch.imcommon.model import initLogger
+
+        initLogger("LocalizationResult").warning(
+            f"Preview pixel size {bin_nm:g} nm would make a {int(np.ceil(span_x / bin_nm))} x "
+            f"{int(np.ceil(span_y / bin_nm))} image, over the processing working set; "
+            f"using {fitted:.3g} nm."
+        )
+        return fitted, width, height
+
     def _build_preview(
         self, preview_pixel_size_nm: float | None
     ) -> tuple[_LazyHistogramPreview | np.ndarray, tuple[float, float, float, float], float]:
@@ -380,6 +433,10 @@ class LocalizationResult(ProcessingResult):
 
         width = max(1, int(np.ceil(span_x / bin_nm)))
         height = max(1, int(np.ceil(span_y / bin_nm)))
+        if self.preview_pixel_size_requested_nm is not None:
+            bin_nm, width, height = self._fit_requested_bin(
+                bin_nm, width, height, span_x, span_y
+            )
         preview = _LazyHistogramPreview(
             locs,
             x_min_nm=x_min,

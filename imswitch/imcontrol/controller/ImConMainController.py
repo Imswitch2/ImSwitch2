@@ -17,6 +17,7 @@ from imswitch.imcommon.model import (
 from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
+from imswitch.imcontrol.model.resources import get_resource_registry
 from imswitch.imcontrol.view import guitools
 from . import controllers
 from .CommunicationChannel import CommunicationChannel
@@ -29,6 +30,12 @@ from .basecontrollers import ImConWidgetControllerFactory
 
 
 _SERVER_THREAD_STOP_TIMEOUT_MS = 5000
+#: How long shutdown waits for hardware commands still in flight.
+_BUSY_BACKEND_WAIT_S = 5.0
+
+# Seconds a startup/shutdown message box waits for a person before it answers
+# itself; any key or mouse activity inside the box restarts the countdown.
+_UNATTENDED_DIALOG_TIMEOUT_S = 30
 
 
 def _activeSetupPath(options):
@@ -97,15 +104,21 @@ class ImConMainController(MainController):
         self.pickDatasetsController = self.__factory.createController(
             PickDatasetsController, self.__mainView.pickDatasetsDialog
         )
+        self.hardwareStatusController = self.__factory.createController(
+            controllers.HardwareStatusController, self.__mainView.hardwareStatusWidget
+        )
 
         self.controllers = {}
 
         # Extra kwargs forwarded to specific controllers that need view-layer objects
         _imageWidget = self.__mainView.widgets.get('Image')
-        _toolManager = _imageWidget.toolManager if _imageWidget else None
         _extraKwargs = {
-            'ViewerTools': {'imageWidget': _imageWidget},
-            'LineProfile': {'imageToolManager': _toolManager},
+            # Viewer Tools' line/rectangle/intensity buttons select the Line
+            # Profile panel's modes, so it is handed the panel too.
+            'ViewerTools': {
+                'imageWidget': _imageWidget,
+                'lineProfileWidget': self.__mainView.widgets.get('LineProfile'),
+            },
         }
 
         for widgetKey, widget in self.__mainView.widgets.items():
@@ -139,11 +152,31 @@ class ImConMainController(MainController):
             widget=None,  # API-only, no widget
         )
         
+        # ReservationController exports reserve(): exclusive, owner-bound
+        # control of audited devices for scripts and measurement runs.
+        self.reservationController = self.__factory.createController(
+            controllers.ReservationController,
+            widget=None,  # API-only, no widget
+        )
+
+        # InstrumentsController exports the setup's instruments to scripts:
+        # list / connect / read, and the laser power LUT procedure.
+        # With the Instruments panel it is that panel's controller already.
+        self.instrumentsController = self.controllers.get('Instruments')
+        if self.instrumentsController is None:
+            self.instrumentsController = self.__factory.createController(
+                controllers.InstrumentsController,
+                widget=None,  # API-only, no widget
+            )
+
         # Generate API
         self.__api = None
         apiObjs = (
             list(self.controllers.values())
-            + [self.setupModeController, self.__commChannel, self.workflowFacadeController]
+            + [self.setupModeController, self.__commChannel,
+               self.workflowFacadeController, self.reservationController]
+            + ([self.instrumentsController]
+               if self.instrumentsController not in self.controllers.values() else [])
         )
         self.__api = generateAPI(
             apiObjs,
@@ -528,12 +561,16 @@ class ImConMainController(MainController):
 
         self.__logger.warning(f'{title}: {critical}')
         warningText = '\n'.join(f'• {warning}' for warning in critical)
-        QtWidgets.QMessageBox.warning(
+        # The box closes by itself when nobody attends to it: the details are
+        # in the log either way, and a startup launched by a script or left
+        # running unattended must not stall on it.
+        guitools.showWarning(
             self.__mainView,
             title,
             'Some saved settings were not applied to the hardware. '
             'Check these details before acquiring data.\n\n'
             f'{warningText}',
+            unattendedAfterS=_UNATTENDED_DIALOG_TIMEOUT_S,
         )
         return True
 
@@ -841,11 +878,39 @@ class ImConMainController(MainController):
                     exc_info=True,
                 )
         
+        # No device reconnect may start once shutdown has begun (API, scripts
+        # and the Hardware status window alike); running ones are waited for
+        # by the HardwareStatusController's shutdown barrier.
+        lifecycleService = getattr(self.__masterController, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            lifecycleService.beginShutdown()
+
+        # Reservations end here, after the scripting drain: the controllers'
+        # shutdown safety actions (lasers off) must be admitted.
+        registry = get_resource_registry()
+        ended = registry.end_all_reservations()
+        if ended:
+            self.__logger.warning(
+                'Ended reservations at shutdown: '
+                + ', '.join(f'{r.owner} ({", ".join(sorted(r.resources))})' for r in ended)
+            )
+
         controllersClosed = True
         if self.__factory is not None:
             controllersClosed = self.__factory.closeAllCreatedControllers(
                 waitTimeoutS=30.0
             )
+
+        # A command still inside a backend (e.g. a move whose deadline passed
+        # on a device that cannot stop) makes finalization unsafe: wait, bounded.
+        # (Scan holds of the waveform outputs are not commands: the controller
+        # drain above already covers scans.)
+        commandKeys = {t.key for t in registry.in_flight() if t.reentrant}
+        if commandKeys and not registry.wait_idle(commandKeys, _BUSY_BACKEND_WAIT_S):
+            busy = sorted({t.key for t in registry.in_flight()
+                           if t.reentrant and t.key in commandKeys})
+            shutdownState.recordBusyBackends(
+                busy, 'hardware commands still running: ' + ', '.join(busy))
         if self.__masterController is not None and not serverStopped:
             self.__logger.error(
                 'Skipping hardware-manager finalization because the server '
@@ -885,14 +950,20 @@ class ImConMainController(MainController):
         return controllersClosed is not False
 
     def _shouldSaveWidgetStateOnClose(self):
-        result = QtWidgets.QMessageBox.question(
+        """Ask whether to keep the current widget state for the next startup.
+
+        Enter answers *Yes*, for the operator at the keyboard. Left alone the
+        box answers *No*: a state nobody chose to keep -- an application closed
+        by a script, or from a session someone walked away from -- should not
+        silently become tomorrow's defaults.
+        """
+        return guitools.askYesNoQuestion(
             self.__mainView,
             'Save Widget State',
             'Save the current widget state as the default for the next startup?',
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.Yes,
+            unattendedAnswer=False,
+            unattendedAfterS=_UNATTENDED_DIALOG_TIMEOUT_S,
         )
-        return result == QtWidgets.QMessageBox.Yes
 
 
 class _GuiLayoutStateAdapter:

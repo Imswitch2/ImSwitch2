@@ -2,7 +2,9 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 from imswitch.imcommon.model import initLogger
-from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError, DeviceRuntimeMode
+from .LaserManager import LaserManager, RawDriveError
+from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
 from .aa_aotf_protocols import DEFAULT_PROFILE_ID, build_profiles
 from .aa_aotf_protocols.frequency_startup import validate_frequency_mhz
 from ._protocol import DeviceInitializationError, ProtocolError
@@ -53,15 +55,18 @@ class AAAOTFLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
-        self._isMock = False
+        #: True once the controller completed the startup exchange on the
+        #: current port; the transport reconnect hook runs it again.
+        self._controllerAnswered = False
         self._channel = self._parse_channel(
             laserInfo.managerProperties['channel'], name
         )
-        self._rs232manager = lowLevelManagers['rs232sManager'][
-            laserInfo.managerProperties['rs232device']
-        ]
+        self._rs232Name = laserInfo.managerProperties['rs232device']
+        self._rs232manager = lowLevelManagers['rs232sManager'][self._rs232Name]
+        # P-2 (device-reconnect-2.0.md): a controller that does not answer is
+        # left not connected, with the error shown; a mock only on request.
         self._use_mock_on_failure = _as_bool(
-            laserInfo.managerProperties.get('useMockOnFailure', True)
+            laserInfo.managerProperties.get('useMockOnFailure', False)
         )
 
         self._profiles = build_profiles()
@@ -123,24 +128,7 @@ class AAAOTFLaserManager(LaserManager):
         # From here on the controller is talked to, and a controller that does
         # not answer must not take ImSwitch down with it.
         try:
-            if self._frequency_mhz is not None:
-                self._run('prepare_frequency_programming')
-                self._run('set_channel_frequency', self._frequency_mhz)
-
-            if self._toggleTrueExternal:
-                if self._ttlToggling:
-                    #self.blankingOnInternal()
-                    self.internalControl()
-                else:
-                    #self.blankingOnInternal()
-                    self.externalControl()
-            else:
-                if self._ttlToggling:
-                    #self.blankingOnExternal()
-                    self.externalControl()
-                else:
-                    #self.blankingOnInternal()
-                    self.internalControl()
+            self._startupExchange()
         except ProtocolError as exc:
             self._startWithoutController(name, exc)
 
@@ -158,6 +146,88 @@ class AAAOTFLaserManager(LaserManager):
             self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
+        if self._controllerAnswered:
+            self._setConnected("AA AOTF initialized")
+
+    def _startupExchange(self):
+        """Program the frequency (if configured) and set the control mode.
+        Raises ``ProtocolError`` when the controller does not answer. Run at
+        startup and again after the port was reconnected."""
+        self._controllerAnswered = True     # _run sends only while this holds
+        # The exchange talks to a real port: a mock installed by an earlier
+        # failure (useMockOnFailure) must not swallow it; the caller restores
+        # the mock if the exchange fails again.
+        self._deviceRuntimeMode = DeviceRuntimeMode.REAL
+        try:
+            if self._frequency_mhz is not None:
+                self._run('prepare_frequency_programming')
+                self._run('set_channel_frequency', self._frequency_mhz)
+
+            if self._toggleTrueExternal:
+                if self._ttlToggling:
+                    self.internalControl()
+                else:
+                    self.externalControl()
+            else:
+                if self._ttlToggling:
+                    self.externalControl()
+                else:
+                    self.internalControl()
+        except ProtocolError:
+            self._controllerAnswered = False
+            raise
+
+    @property
+    def _isMock(self):
+        """A simulation stands in for the controller: the port is a mock, or
+        the setup asked for a mock on failure and the startup exchange
+        failed. Derived, never stored. A real controller that did not answer
+        is *not* a mock: it is not connected, and commands raise."""
+        if self.runtimeMode is DeviceRuntimeMode.MOCK:
+            return True
+        mode = getattr(self._rs232manager, 'runtimeMode', None)
+        return getattr(mode, 'value', None) == 'mock'
+
+    # Transport hooks (DeviceLifecycleService): the port was, or is about to
+    # be, reopened in place.
+    def _lifecycleSafeState(self, *, verified: bool):
+        if not verified:
+            self._bestEffortChannelOff()
+            return []
+        try:
+            self.applyEnabled(False)
+        except Exception as exc:
+            return [f'channel OFF failed: {exc}']
+        return []
+
+    def _onTransportReconnected(self, real: bool):
+        """Repeat the startup exchange on the reopened port, then channel
+        OFF, verified; the errors found, if any."""
+        if not real:
+            self._controllerAnswered = False
+            details = getattr(self._rs232manager, 'connectionStatusDetails', None)
+            self._setConnectionError(
+                details or 'transport unavailable',
+                summary='AA AOTF transport did not reconnect'
+                        + ('; mock fallback active' if self._use_mock_on_failure else ''),
+                mock_active=self._use_mock_on_failure,
+            )
+            return [details or 'transport unavailable']
+        try:
+            self._startupExchange()
+        except ProtocolError as exc:
+            off_acknowledged = self._bestEffortChannelOff()
+            self._setConnectionError(
+                exc.message, summary='AA AOTF did not answer after reconnect',
+                mock_active=self._use_mock_on_failure)
+            return [f'{exc.message} (best-effort channel OFF '
+                    f'{"acknowledged" if off_acknowledged else "NOT acknowledged"})']
+        errors = self._lifecycleSafeState(verified=True)
+        if errors:
+            self._setConnectionError(errors[0], summary='AA AOTF reconnected but channel OFF failed')
+            return errors
+        self._setConnected('AA AOTF reconnected; channel OFF')
+        return []
 
     @staticmethod
     def _parse_channel(value, name):
@@ -194,6 +264,12 @@ class AAAOTFLaserManager(LaserManager):
                 f'not sent.'
             )
             return True
+        if not self._controllerAnswered:
+            # Nothing is sent to a controller that never completed the
+            # startup exchange on this port; reconnect it first.
+            raise DeviceNotConnectedError(
+                f'AA channel {self._channel}: {operation_name} refused, '
+                f'{self.connectionStatusSummary or "not connected"}')
         operation = getattr(self._profile, operation_name, None)
         if operation is None:
             self.__logger.error(
@@ -233,19 +309,24 @@ class AAAOTFLaserManager(LaserManager):
             f'channel OFF '
             f'{"was acknowledged" if off_acknowledged else "was not acknowledged"}.'
         )
-        if not self._use_mock_on_failure:
-            raise DeviceInitializationError(
-                f'{message} Check the rs232device port and line endings, or '
-                f'set managerProperties.useMockOnFailure to true to start '
-                f'without it.'
-            ) from exc
         log = self.__logger.warning if off_acknowledged else self.__logger.critical
-        log(
-            f'{message} Continuing in mock mode: nothing more is sent to '
-            f'channel {self._channel}. Set managerProperties.useMockOnFailure '
-            f'to false to make this a startup error.'
+        if self._use_mock_on_failure:
+            log(
+                f'{message} Continuing in mock mode: nothing more is sent to '
+                f'channel {self._channel}.'
+            )
+        else:
+            log(
+                f'{message} Not connected: check the rs232device port and line '
+                f'endings, then reconnect it from Hardware status.'
+            )
+        self._controllerAnswered = False
+        self._setConnectionError(
+            exc.message,
+            summary=('AA AOTF startup exchange failed; mock fallback active'
+                     if self._use_mock_on_failure else 'AA AOTF not connected'),
+            mock_active=self._use_mock_on_failure,
         )
-        self._isMock = True
 
     def _bestEffortChannelOff(self) -> bool:
         """Send channel OFF directly, bypassing ``_run`` and its logging."""
@@ -273,11 +354,20 @@ class AAAOTFLaserManager(LaserManager):
         else:
             self.internalControl()
 
+    def getDeviceDescriptorSpec(self):
+        return sharedRs232ComponentSpec(
+            category='laser',
+            family='aa-aotf',
+            display_name='AA AOTF',
+            rs232_name=str(self._rs232Name),
+        )
+
     def setEnabled(self, enabled):
-        """Turn on (1) or off (0) laser emission"""
+        """Turn emission on/off and report whether the command succeeded."""
         self._apply_ttl_control_mode(before_command=True)
-        self._run('set_channel_enabled', bool(enabled))
+        succeeded = self._run('set_channel_enabled', bool(enabled))
         self._apply_ttl_control_mode(before_command=False)
+        return succeeded
 
     def setValue(self, power):
         """Handles output power.
@@ -285,10 +375,66 @@ class AAAOTFLaserManager(LaserManager):
         """
         amplitude = self._amplitude_for(power)
         if amplitude is None:
-            return
+            return False
         self._apply_ttl_control_mode(before_command=True)
-        self._run('set_channel_amplitude', amplitude)
+        succeeded = self._run('set_channel_amplitude', amplitude)
         self._apply_ttl_control_mode(before_command=False)
+        return succeeded
+        return True
+
+    supportsRawDrive = True
+
+    def applyRawDrive(self, value):
+        """ Raw channel amplitude, bypassing the calibration LUT; raises when
+        the controller is absent (mock mode) or the command fails. """
+        amplitude = int(round(float(value)))
+        if not (self.valueRangeMin <= amplitude <= self.valueRangeMax):
+            raise RawDriveError(
+                f'AA channel {self._channel}: amplitude {amplitude} outside '
+                f'[{self.valueRangeMin:g}, {self.valueRangeMax:g}]')
+        if self._isMock:
+            raise RawDriveError(
+                f'AA channel {self._channel}: the controller did not answer at '
+                f'startup (mock mode); nothing can be sent')
+        self._apply_ttl_control_mode(before_command=True)
+        try:
+            ok = self._run('set_channel_amplitude', amplitude)
+        except Exception as exc:
+            raise RawDriveError(f'AA channel {self._channel}: {exc}') from exc
+        finally:
+            self._apply_ttl_control_mode(before_command=False)
+        if not ok:
+            raise RawDriveError(
+                f'AA channel {self._channel}: set_channel_amplitude {amplitude} failed')
+        return float(amplitude)
+
+    def applyEnabled(self, enabled):
+        """ Channel emission; raises when the controller is absent (mock
+        mode), refuses the command, or does not answer. """
+        if self._isMock:
+            raise RawDriveError(
+                f'AA channel {self._channel}: the controller did not answer at '
+                f'startup (mock mode); nothing can be sent')
+        self._apply_ttl_control_mode(before_command=True)
+        try:
+            ok = self._run('set_channel_enabled', bool(enabled))
+        except Exception as exc:
+            raise RawDriveError(f'AA channel {self._channel}: {exc}') from exc
+        finally:
+            self._apply_ttl_control_mode(before_command=False)
+        if not ok:
+            raise RawDriveError(
+                f'AA channel {self._channel}: set_channel_enabled {bool(enabled)} failed')
+        return True
+
+    def applyValue(self, value):
+        """ The UI value through the calibration lookup (if loaded); raises
+        like :meth:`applyRawDrive`. """
+        amplitude = self._amplitude_for(value)
+        if amplitude is None:
+            raise RawDriveError(
+                f'AA channel {self._channel}: {value!r} cannot be converted to an amplitude')
+        return self.applyRawDrive(amplitude)
 
     def _amplitude_for(self, power):
         """Convert an ImSwitch value to a raw AOTF amplitude.

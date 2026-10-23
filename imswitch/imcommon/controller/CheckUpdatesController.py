@@ -1,4 +1,3 @@
-import os
 import traceback
 
 import requests
@@ -8,6 +7,7 @@ from packaging import version
 import imswitch
 from imswitch.imcommon.framework import Signal, Thread
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.dirtools import isBundle
 from .basecontrollers import WidgetController
 
 
@@ -52,7 +52,7 @@ class CheckUpdatesThread(Thread):
     def run(self):
         currentVersion = imswitch.__version__
         try:
-            if 'IMSWITCH_IS_BUNDLE' in os.environ and os.environ['IMSWITCH_IS_BUNDLE'] == '1':
+            if isBundle():
                 # Installed from bundle - check GitHub
                 releaseResponse = requests.get(
                     f'https://api.github.com/repos/{imswitch.__github_repo__}/releases/latest',

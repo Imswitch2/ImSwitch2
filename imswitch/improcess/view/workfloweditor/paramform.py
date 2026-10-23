@@ -168,6 +168,8 @@ class ParamForm(QtWidgets.QWidget):
             return "checklist" if _HAS_CHECKLIST else "str"
         if field.type == "path":
             return "file"
+        if field.type == "code":
+            return "text"   # pyqtgraph's multi-line text parameter
         return "str"
 
     def _to_widget(self, field: ParamField, value):

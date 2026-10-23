@@ -8,6 +8,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
+from imswitch.imcommon.view.LogWidget import LogWidget
 from imswitch.improcess.model.runtime_tools import (
     RuntimeAnalysisToolSpec,
     runtime_analysis_panel_shortcuts,
@@ -29,6 +30,7 @@ from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
 from .SmlmRenderWidget import SmlmRenderWidget
 from .ProfileWidget import ProfileWidget
+from .PythonConsoleWidget import PythonConsoleWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
@@ -136,6 +138,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showPSFResolutionPanel: bool = False,
         showColocalizationPanel: bool = False,
         showMulticolorPanel: bool = False,
+        showLogPanel: bool = False,
         *args,
         **kwargs,
     ):
@@ -578,6 +581,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     dock.hide()
             prevAnalysisDock = dock
             self._runtimeAnalysisDockAnchor = dock
+
+        # --- Log panel: built always, hidden until asked for ---
+        # Registered here, before the View menu is populated, so it picks up a
+        # View > Log toggle from the loop below like any other dock.  Built even
+        # when hidden: it costs an empty text view, and a standalone bundle has
+        # no console behind it -- on macOS the log would otherwise be
+        # unreachable.  The records it shows were buffered long before this.
+        logDock = Dock('Log', size=(6, 3))
+        self.logWidget = LogWidget()
+        logDock.addWidget(self.logWidget)
+        self.dockArea.addDock(logDock, 'bottom')
+        self.docks['Log'] = logDock
+        if not showLogPanel:
+            logDock.hide()
 
         # Snapshot the default layout for the View > Reset layout action and
         # for callers that drop a corrupt persisted state.
@@ -1043,7 +1060,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 # Any of these may be opened first, and the wiring runs in
                 # both directions, so it is redone whenever one arrives.
                 self._wireROIManagerToDependentWidgets()
-            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager'):
+            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager', 'graph'):
+                # 'graph' too: its Push to table was wired only when the panel
+                # was built at startup, so a Graph opened later (the default)
+                # pushed its rows nowhere.
                 self._connectResultPusher(widget)
             if spec.widget_kind == 'graph':
                 self._wireGraphToDependentWidgets()
@@ -1457,6 +1477,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 spec.processor_id or spec.id
             ),
             'graph': lambda: GraphWidget(),
+            'console': lambda: PythonConsoleWidget(),
             'profile': lambda: ProfileWidget(viewer),
             'metadata': lambda: MetadataWidget(),
             'segmentation': lambda: SegmentationWidget(

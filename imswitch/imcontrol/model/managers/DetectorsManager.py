@@ -1,4 +1,5 @@
 import threading
+from contextlib import contextmanager
 from time import monotonic, sleep
 
 import numpy as np
@@ -6,6 +7,7 @@ from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Timer, Worker
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.lifecycle import DeviceLifecycleBlockedError
 from ._acquisition_leases import (FRAME_STREAM_PURPOSES, AcquisitionLeaseTable,
                                   DetectorFaultedError, LeaseHandle, LeasePurpose)
 from .MultiManager import MultiManager
@@ -68,6 +70,16 @@ class DetectorsManager(MultiManager, SignalInterface):
             stopDetector=self._stopDetectorBounded,
             onStateChanged=self.__onLeaseStateChanged,
         )
+
+        # Detector lifecycle adapters need the acquisition-ownership boundary,
+        # but ordinary detector managers should not depend on it. Opt-in
+        # managers receive this host only after the lease table exists.
+        for detectorName, manager in self._subManagers.items():
+            bindLifecycleHost = getattr(
+                manager, '_bindDetectorLifecycleHost', None
+            )
+            if callable(bindLifecycleHost):
+                bindLifecycleHost(self, detectorName)
 
         self._currentDetectorName = None
         for detectorName, detectorInfo in detectorInfos.items():
@@ -155,7 +167,21 @@ class DetectorsManager(MultiManager, SignalInterface):
         names = list(dict.fromkeys(detectorNames))
         for detectorName in names:
             self._validateManagedDeviceName(detectorName)
+        self._refuseNotConnected(names)
         return self.__acquireImpl(names, purpose, allowEmpty=False)
+
+    def _refuseNotConnected(self, names) -> None:
+        """A scan, recording or live view never starts on a detector that is
+        not connected (absent at startup, unplugged); it is refused by name
+        instead of running on nothing."""
+        from imswitch.imcontrol.model.devices.status import (
+            DeviceNotConnectedError, device_usable,
+        )
+        absent = [name for name in names if not device_usable(self._subManagers[name])]
+        if absent:
+            raise DeviceNotConnectedError(
+                'Not connected: ' + ', '.join(absent)
+                + '. Reconnect from Hardware status, or deselect the detector.')
 
     def release(self, handle: LeaseHandle) -> None:
         """ Releases an acquisition lease; any detector whose last lease this
@@ -229,6 +255,44 @@ class DetectorsManager(MultiManager, SignalInterface):
         propagates and the detector stays quarantined. """
         self._validateManagedDeviceName(detectorName)
         self._leaseTable.retryStop(detectorName)
+
+    @contextmanager
+    def detectorLifecycleMaintenance(self, detectorName: str):
+        """Exclusive maintenance window for replacing one detector backend.
+
+        The target must have zero acquisition leases. Holding the manager-level
+        lifecycle lock then prevents a new lease (or a release-side SDK stop)
+        from starting until the replacement finishes. A previously timed-out
+        stop thread must also be completely finished before its backend can be
+        retired. Other detectors may remain leased and continue polling.
+        """
+        self._validateManagedDeviceName(detectorName)
+        with self._frameStreamLifecycleLock:
+            if self._leaseTable.isLeased(detectorName):
+                raise DeviceLifecycleBlockedError(
+                    f'Detector {detectorName!r} is currently in use; stop '
+                    'acquisition before reconnecting.'
+                )
+
+            with self._detectorStopLock:
+                operation = self._detectorStopOperations.get(detectorName)
+                if operation is not None:
+                    thread = operation.get('thread')
+                    if thread is not None and thread.is_alive():
+                        raise DeviceLifecycleBlockedError(
+                            f'Detector {detectorName!r} still has a pending '
+                            'hardware stop; reconnect is blocked until it finishes.'
+                        )
+                    # The timed-out stop has now returned. Its quarantine is
+                    # intentionally kept until a replacement succeeds.
+                    self._detectorStopOperations.pop(detectorName, None)
+
+            yield
+
+    def clearFaultAfterHardwareReplacement(self, detectorName: str) -> None:
+        """Clear a stop quarantine after a lifecycle replaced the backend."""
+        self._validateManagedDeviceName(detectorName)
+        self._leaseTable.clearFaultAfterHardwareReplacement(detectorName)
 
     def _runDetectorStop(self, detectorName, operation) -> None:
         try:
@@ -441,6 +505,7 @@ class DetectorsManager(MultiManager, SignalInterface):
             for detectorName in names:
                 self._validateManagedDeviceName(detectorName)
             allowEmpty = False
+        self._refuseNotConnected(names)
         purpose = LeasePurpose.LIVE_VIEW if liveView else LeasePurpose.GENERIC
         return self.__acquireImpl(names, purpose, allowEmpty=allowEmpty)
 

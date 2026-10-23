@@ -28,6 +28,11 @@ name: imswitch-pypi
 #      tag that does not match, then uploads to PyPI.
 # A release runs this file as it exists at the tagged commit, so changes here
 # must be merged before tagging.
+#
+# A published release also starts imswitch-bundle.yml, which builds the Windows
+# and macOS installers and attaches them to the same release.  The two are
+# separate workflows on purpose: they fail for unrelated reasons, and a broken
+# bundle should not block a PyPI upload or the reverse.
 
 on:
   release:

@@ -168,6 +168,9 @@ class Processor(ABC):
     name: str = "Unnamed Processor"  # Human-readable
     id: str = "unnamed"  # Stable identifier for config + registry; every concrete subclass sets it
     category: str = "Other"  # Human-readable grouping for runtime tools/docs
+    #: Text of the panel's run button. ``None`` is "Run <name>"; a processor
+    #: whose run reads as something else to its user ("Apply filter") says so.
+    run_label: str | None = None
     #: Semantic result kinds this processor accepts (ProcessingResult.kind).
     #: Checked by accepts() BEFORE the shape/axis gate, so a table result with
     #: a 2D data array is never offered to an image processor.
@@ -356,7 +359,9 @@ class Processor(ABC):
         """
         Return the parameter editor widget shown in the processing chain panel.
         
-        Should expose a `get_values() -> dict` method.
+        Should expose a `get_values() -> dict` method. A widget may also declare
+        `after_run(results, failures)`, which the panel calls once a run has ended
+        (to show what the processor printed, or why it failed).
         """
         ...
     

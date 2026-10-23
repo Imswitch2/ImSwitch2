@@ -318,7 +318,10 @@ class GalvoScanDesigner(ScanDesigner):
             phase_delay=parameterDict['phase_delay'],
             smooth_axes=self.__smooth_axis,
             axis_names=self.axis_devs_order,
-            minmaxes=[[min(axis_signals[i]), max(axis_signals[i])] for i in range(axis_count_scan)],
+            # np.min/np.max: the builtins iterate element by element, which
+            # took ~0.5 s per axis on a 10 M-sample scan.
+            minmaxes=[[float(np.min(axis_signals[i])), float(np.max(axis_signals[i]))]
+                      for i in range(axis_count_scan)],
             tot_scan_time_s=tot_scan_time,
         )
         scanInfoDict = contract.to_dict()

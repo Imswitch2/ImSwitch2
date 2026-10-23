@@ -52,6 +52,32 @@ def editor(qapp, catalog, tmp_path):
     window.close()
 
 
+def test_a_code_field_is_shown_and_keeps_the_text_as_typed(qapp):
+    from imswitch.improcess.model.param_spec import ParamField
+    from imswitch.improcess.model.workfloweditor.catalog import PluginEntry
+    from imswitch.improcess.view.workfloweditor.paramform import ParamForm
+
+    entry = PluginEntry(
+        id="t.code", kind="processor", name="Code", category="Test", version="1",
+        description="", origin="builtin",
+        fields=(ParamField("code", "code", "pass\n", label="Code"),),
+        extra_keys=(), accepts_any_key=False, min_inputs=1, max_inputs=1,
+        accepted_kinds=("image",), supports_consolidation=False, accepts_roi=False,
+        roi_modes=(), gui_only=None,
+    )
+    form = ParamForm()
+    form.set_plugin(entry, {})
+    assert form.keys() == ["code"]
+    assert form.values() == {"code": "pass\n"}
+    seen = []
+    form.sigValueChanged.connect(lambda key, value: seen.append((key, value)))
+    script = "ax = 0\n  group = (np.arange(6) // 3) % 2\noutputs = {}\n"
+    form.set_value("code", script)
+    assert form.values() == {"code": script}
+    assert seen == [("code", script)]
+    assert form.problems() == {}
+
+
 def _h5(path, shape=(2, 8, 8)):
     with h5py.File(str(path), "w") as handle:
         handle.create_dataset("data", data=np.random.default_rng(0).random(shape).astype(np.float32))

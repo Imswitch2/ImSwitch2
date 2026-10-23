@@ -61,12 +61,12 @@
       "description": "RS232 channel name resolved via",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
-        "code:optional(try/except Exception)",
+        "code:required",
         "docs:string"
       ]
     },
     "useMockOnFailure": {
-      "description": "Continue in mock mode after an initialization failure. A best-effort",
+      "description": "Defaults to ``false``: after an initialization failure (a best-effort",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",
@@ -74,6 +74,9 @@
       ]
     }
   },
+  "required": [
+    "rs232device"
+  ],
   "title": "MPBLaserManager managerProperties",
   "type": "object",
   "x-imswitch-classes": [
