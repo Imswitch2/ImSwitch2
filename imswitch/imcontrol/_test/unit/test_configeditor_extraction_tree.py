@@ -114,8 +114,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # NidaqPositionerManager.defaultReferenceVoltage is now documented too.
     # 153: docs/devices/instruments.rst documents the 18 instrument keys.
     # 155: and MockPAX's plate rotators. 159 / 162: the seven useMockOnFailure rows.
-    # 163: mockSample on the Hamamatsu card (the APD's row was already there).
-    assert (report.docs_agree, report.docs_documented) == (163, 163)
+    # 163: the APD's mockSample row; 164: the Hamamatsu's.
+    assert (report.docs_agree, report.docs_documented) == (164, 164)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
