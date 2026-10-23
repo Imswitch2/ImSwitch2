@@ -828,8 +828,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             if (current.scan_extent_source != edited.scan_extent_source
                     and edited.scan_extent_source == 'manual'
                     and edited.manual_scan_extent_um is not None):
+                # normalize_plan prefers the per-axis lengths, which the
+                # adaptation above set to the old uLens length.
                 plan = dataclasses.replace(
-                    plan, lateral_length_um=edited.manual_scan_extent_um
+                    plan,
+                    lateral_length_um=edited.manual_scan_extent_um,
+                    x_length_um=edited.manual_scan_extent_um,
+                    y_length_um=edited.manual_scan_extent_um,
                 )
             self._setBoundPlan(plan)
         else:
@@ -1417,6 +1422,12 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
     def _runSimpleAcquisition(
         self, start, *, requireLiveView, keepPreparedIfIdle=False
     ):
+        # Refused before the camera is touched: a second start while an
+        # acquisition runs used to rewrite the running camera's trigger
+        # before the base refused it.
+        if self._isBusy():
+            self._recordScanStartRejection('An acquisition is already running.')
+            return None
         # Capture ROI/readout-speed changes that may have happened without a
         # dedicated UI signal immediately before the acquisition is compiled.
         self._refreshResolvedSetup(refreshView=True, mirror=True)
@@ -1510,7 +1521,21 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def _onScanRejected(self, reason):
         super()._onScanRejected(reason)
-        self._restoreAcquisitionTrigger()
+        # The signal is global: while an acquisition runs, a refusal is
+        # somebody else's start (REC, a script, another panel) and the
+        # running camera keeps its frame trigger. Only a refusal of this
+        # panel's own pending start gives the camera back.
+        if not self._isBusy():
+            self._restoreAcquisitionTrigger()
+
+    def _relinquishSimpleOwnership(self) -> bool:
+        """Leaving the simple page: screening lasers off and the camera's
+        pre-Live trigger back. The Stop control disappears on Advanced, so
+        Simple-owned illumination never crosses the page boundary. False
+        when something stayed as it was (the message says what)."""
+        if self.__dict__.get('_screeningActive', False) and not self._stopScreening():
+            return False
+        return self._releaseScreeningTriggerOverride()
 
     def closeEvent(self):
         # Screening is not a scan lifecycle, so the generic scan close path
@@ -1552,14 +1577,8 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._panel.showNote('Stop the scan before switching panels.')
             return False
 
-        # The Stop control disappears on Advanced, so do not carry Simple-owned
-        # illumination or its persistent camera-trigger override across the
-        # page boundary.
         leavingSimple = self._onSimplePage() and page != self.scanPage()
-        if leavingSimple and self.__dict__.get('_screeningActive', False):
-            if not self._stopScreening():
-                return False
-        if leavingSimple and not self._releaseScreeningTriggerOverride():
+        if leavingSimple and not self._relinquishSimpleOwnership():
             return False
         switched = super().setScanPage(page, discardAdvanced=discardAdvanced)
         if switched and self._onSimplePage():
@@ -1997,6 +2016,8 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
         if not result.compatible:
             self._clearLoadedSimpleBinding()
+            if self._onSimplePage():
+                self._relinquishSimpleOwnership()
             self._enterPage('advanced')
             self._panel.showPage('advanced')
             self._panel.showNote(f'{result.message} It is shown on the Advanced page.')
@@ -2129,7 +2150,12 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
         # Applying while Advanced prevents ScanCloakController.setParameters()
         # from interpreting/recompiling the incoming dictionaries before they
-        # have been accepted as the authoritative saved acquisition.
+        # have been accepted as the authoritative saved acquisition. The page
+        # may stay Advanced, so what Simple owns is handed back first (a
+        # setup-mode switch or a state load during Live screening left the
+        # lasers on with the Stop control gone).
+        if original_page == 'simple':
+            self._relinquishSimpleOwnership()
         self._enterPage('advanced')
         self._panel.showPage('advanced')
         warnings = super().applyComponentState(state, applyMode=applyMode)

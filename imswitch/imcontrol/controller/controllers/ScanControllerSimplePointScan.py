@@ -341,7 +341,10 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         be built (plan D5). The check reads the plan, not the dicts: the dicts
         cannot even express power for a laser without an analog channel."""
         if self._onSimplePage():
-            refusal = power_refusal(self.currentPlan(), self._scanLimits())
+            plan = self.currentPlan()
+            if not plan.channels:
+                raise ScanDesignRefusedError('Choose at least one laser.')
+            refusal = power_refusal(plan, self._scanLimits())
             if refusal:
                 raise ScanDesignRefusedError(refusal)
         return super()._buildScanSignals()

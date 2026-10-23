@@ -1358,3 +1358,22 @@ def test_monalisa_coupled_yz_exposes_editable_y_lateral_geometry(qtbot):
         assert rig.scan.acquisitionPlan().step_um_for_axis('X') == pytest.approx(0.073)
     finally:
         rig.close()
+
+
+def test_monalisa_profile_edit_to_a_manual_extent_applies_it(qtbot, monkeypatch):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        monkeypatch.setattr(rig.scan, '_persistSimpleConfig', lambda raw: None)
+        profile_id = rig.scan.acquisitionPlan().profile_id
+        current = rig.limits().profile_store.profile(profile_id)
+        edited = dataclasses.replace(current, scan_extent_source='manual', manual_scan_extent_um=2.0)
+        monkeypatch.setattr(rig.view, 'editProfileDefinition', lambda *args, **kwargs: edited)
+
+        rig.scan._onProfileEditRequested(profile_id)
+
+        plan = rig.scan.acquisitionPlan()
+        assert plan.length_um_for_axis('X') == pytest.approx(2.0)
+        assert plan.length_um_for_axis('Y') == pytest.approx(2.0)
+        assert rig.held() == rig.acquisition()
+    finally:
+        rig.close()
