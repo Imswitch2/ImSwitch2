@@ -249,7 +249,7 @@ now; entry-point discovery is a future item):
 - Processors — [`processors/__init__.py`](processors/__init__.py)
   `_AVAILABLE_PROCESSOR_CLASSES`:
   `colocalization`, `drift-correct`, `frc`, `multicolor-apply`,
-  `multicolor-registration`, `denoise`, `projection`, `psf-resolution`,
+  `multicolor-registration`, `denoise`, `projection`, `psf-resolution`, `psf-bead-select`,
   `segmentation`.
 
 `register_default_reconstructors(registry, filter_ids)` and

@@ -8,6 +8,7 @@ working with the very same objects.
 
 from imswitch.imcommon.algorithms.layer_selection import (  # noqa: F401
     ANNOTATION_LAYER_NAMES,
+    PSF_PREVIEW_LAYER_NAME,
     ROI_OVERLAY_LAYER_NAME,
     VIEWER_TOOL_POINTS_LAYER_NAME,
     VIEWER_TOOLS_LAYER_NAME,
@@ -17,6 +18,7 @@ from imswitch.imcommon.algorithms.layer_selection import (  # noqa: F401
 
 __all__ = [
     "ANNOTATION_LAYER_NAMES",
+    "PSF_PREVIEW_LAYER_NAME",
     "ROI_OVERLAY_LAYER_NAME",
     "VIEWER_TOOL_POINTS_LAYER_NAME",
     "VIEWER_TOOLS_LAYER_NAME",

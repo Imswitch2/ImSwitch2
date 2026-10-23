@@ -167,9 +167,12 @@ class ViewOnlyReconstructor(StreamingReconstructor):
     ) -> list[str]:
         """Name the axes from evidence, falling back to Frame rather than T/C.
 
-        A source that declares its own axes keeps them. A source that declares
-        nothing used to be labelled from rank alone, which called a plain 3D
-        camera stack ``C, Y, X`` -- channel data, on no evidence at all.
+        A source that declares its own axes keeps them -- also when its
+        acquisition layout is only inferred: an ``axes`` attribute (a saved
+        ``Z, Y, X`` volume) is evidence, a shape-inferred layout is not. A
+        source that declares nothing used to be labelled from rank alone,
+        which called a plain 3D camera stack ``C, Y, X`` -- channel data, on
+        no evidence at all.
 
         A file whose acquisition metadata cannot be resolved still has pixels,
         and this reconstructor's whole promise is that it never refuses data.
@@ -186,7 +189,8 @@ class ViewOnlyReconstructor(StreamingReconstructor):
         layout = getattr(resolved, "layout", None)
         inferred = layout is None or layout.provenance in self._INFERRED_PROVENANCE
 
-        if source_axis_labels and len(source_axis_labels) == ndim and not inferred:
+        declared = bool(getattr(data_obj, "axis_labels_declared", False))
+        if source_axis_labels and len(source_axis_labels) == ndim and (declared or not inferred):
             return list(source_axis_labels)
         if layout is not None and len(layout.storage_axes) == ndim:
             return [
