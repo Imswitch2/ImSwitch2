@@ -587,6 +587,15 @@ def select_profile(
     else:
         durations = {step.id: step.default_duration_s for step in profile.steps}
         mode_id = profile.default_mode
+    # The lateral geometry follows the profile (its uLens period or manual
+    # extent). The Z range and the scan type are the user's: a switch to
+    # another profile keeps them, while an explicit reload or re-selection
+    # (``preserve_if_same=False``) takes the profile's own Z defaults.
+    if preserve_if_same:
+        z_length, z_step = plan.z_length_um, plan.z_step_um
+    else:
+        z_length = limits.default_axis_scan_length_um('Z', profile.id)
+        z_step = limits.default_axis_step_um('Z', profile.id)
     return normalize_plan(dataclasses.replace(
         plan,
         profile_id=profile.id,
@@ -597,8 +606,8 @@ def select_profile(
         y_length_um=limits.default_axis_scan_length_um('Y', profile.id),
         x_step_um=limits.default_axis_step_um('X', profile.id),
         y_step_um=limits.default_axis_step_um('Y', profile.id),
-        z_length_um=limits.default_axis_scan_length_um('Z', profile.id),
-        z_step_um=limits.default_axis_step_um('Z', profile.id),
+        z_length_um=z_length,
+        z_step_um=z_step,
         step_durations_s=durations,
     ), limits)
 
@@ -752,7 +761,10 @@ def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict,
     for axis, device in zip(logical_all, device_order):
         active = axis in logical_active
         analog['target_device'].append(device)
-        analog['axis_length'].append(float(plan.length_um_for_axis(axis)) if active else 0.0)
+        # An axis the scan does not sweep is written as the Advanced panel
+        # writes it back (length 1, step 1), so a saved Simple scan is an
+        # exact round trip through that panel's serializer.
+        analog['axis_length'].append(float(plan.length_um_for_axis(axis)) if active else 1.0)
         analog['axis_step_size'].append(
             float(plan.step_um_for_axis(axis)) if active else 1.0
         )
@@ -786,8 +798,11 @@ def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict,
         'pulse_ends_s': ends,
         'sequence_time': dwell,
         'advanced_mode': True,
-        'linestep_power_percent': {},
-        'linestep_power_enabled': {},
+        # Full power on every device, no sequence rows and no device locks:
+        # the values the Advanced panel's serializer writes back for a scan
+        # that sets none of them, so the dicts compare equal after a mirror.
+        'linestep_power_percent': {name: [100.0] for name in limits.ttl_devices},
+        'linestep_power_enabled': {name: True for name in limits.ttl_devices},
         'intra_pixel_positioner_movement': False,
         'positioner_target_device': [],
         'positioner_linestep_enable': {},
@@ -795,9 +810,9 @@ def plan_to_dicts(plan: MoNaLISAScanPlan, limits: MoNaLISALimits) -> Tuple[dict,
         'positioner_movement_ends_s': {},
         'positioner_step_size_um': {},
         'advanced_program_mode': 'timing',
-        'advanced_sequence_rows': {},
+        'advanced_sequence_rows': [[]],
         'line_program_devices_enabled': True,
-        'advanced_device_lock_master': {},
+        'advanced_device_lock_master': {name: False for name in limits.ttl_devices},
         'advanced_device_lock_target': {},
     }
     return analog, digital

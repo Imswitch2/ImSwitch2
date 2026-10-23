@@ -137,8 +137,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         plan = plan if plan is not None else self.acquisitionPlan()
         if plan is None:
             return ()
-        profile = limits.profile_store.profile(plan.profile_id)
-        mode = profile.mode(plan.mode_id)
+        try:
+            profile = limits.profile_store.profile(plan.profile_id)
+            mode = profile.mode(plan.mode_id)
+        except MoNaLISAProfileError:
+            # The plan names a profile this store no longer has (the moment
+            # between a deletion and the plan's replacement).
+            return ()
         detectorNames = set(self._master.detectorsManager.getAllDeviceNames())
         result = []
         # Prefer semantic Readout steps for the normal MoNaLISA case, then
@@ -880,18 +885,38 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._view.showMessage(str(error), error=True)
             return
         active = state['plan'] is not None and state['plan'].profile_id == profile_id
+        previous = (state['plan'], state['binding'])
+        plan = None
+        if active and new_store.profiles:
+            # The replacement is chosen against the new store, and the plan
+            # leaves the deleted profile before the store is replaced: the
+            # resolution the save runs reads the plan's profile from the
+            # store, and the old plan's profile is no longer in it.
+            new_limits = dataclasses.replace(state['limits'], profile_store=new_store)
+            plan = select_profile(
+                state['plan'], new_store.default_profile, new_limits, preserve_if_same=False
+            )
+        if active:
+            state['plan'] = plan
+            state['binding'] = (
+                MoNaLISAProfileBinding.bound(new_store.profile(plan.profile_id), plan.mode_id)
+                if plan is not None else MoNaLISAProfileBinding.unbound()
+            )
         # Do not refresh through the old plan while persisting.  If the active
         # profile is being deleted, setPlan(old_plan) can otherwise reinsert
         # the deleted id into the combo before we select the replacement.
         if not self._saveProfileStoreOrReport(new_store, refresh_view=False):
+            state['plan'], state['binding'] = previous
             return
         state = self._monalisa()
+        if active:
+            # The view still shows the deleted profile's plan; configure()
+            # reads the shown plan's profile from the new store.
+            self._view.setPlan(None)
         self._view.configure(state['limits'])
-        if active and not new_store.profiles:
+        if active and plan is None:
             self._setUnboundProfileState()
         elif active:
-            replacement_id = new_store.default_profile
-            plan = self._planForProfile(replacement_id, preserve_if_same=False)
             self._setBoundPlan(plan)
         else:
             self._refreshViewAfterProfileStoreChange()
@@ -1974,6 +1999,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._clearLoadedSimpleBinding()
             self._enterPage('advanced')
             self._panel.showPage('advanced')
+            self._panel.showNote(f'{result.message} It is shown on the Advanced page.')
             self._showPendingLoadResolution(result)
             return
 
@@ -2132,7 +2158,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._clearLoadedSimpleBinding()
             self._enterPage('advanced')
             self._panel.showPage('advanced')
-            self._panel.showNote('')
+            self._panel.showNote(f'{result.message} It is shown on the Advanced page.')
             self._setPendingLoadResolution(metadata, state, result)
             warning = f'Loaded scan kept unchanged in Advanced. {result.message}'
             warnings.append(warning)
