@@ -253,10 +253,15 @@ def test_input_layout_says_what_is_analysed():
     assert layout.is3d and layout.pixel_size == (200.0, 100.0, 100.0) and layout.from_metadata
     assert "from metadata" in layout.describe()
     assert input_layout(stack, {"pixel_size_nm": 50.0}).pixel_size == (200.0, 50.0, 50.0)
+    frames = MinimalResult(name="f", data=np.zeros((4, 5, 6)), axis_labels=["T", "Y", "X"])
+    layout = input_layout(frames, {})
+    assert not layout.is3d and layout.pixel_size is None and layout.stack_axis == 0
+    assert "label it Z" in layout.note
+    # Channels are different images: never projected together, channel 0 only.
     channels = MinimalResult(name="c", data=np.zeros((4, 5, 6)), axis_labels=["C", "Y", "X"])
     layout = input_layout(channels, {})
-    assert not layout.is3d and layout.pixel_size is None
-    assert "label it Z" in layout.note
+    assert layout.stack_axis is None and layout.shape == (5, 6)
+    assert "index 0 of C" in layout.note and "label it Z" not in layout.note
 
 
 def test_preview_run_matches_the_fit():

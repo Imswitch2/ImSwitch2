@@ -137,12 +137,15 @@ def test_the_psf_panel_runs_off_the_gui_thread_and_publishes(qapp, qtbot):
     qtbot.addWidget(panel)
     panel.run()
     assert panel.isRunning() and not panel.fitButton.isEnabled() and not panel.cancelButton.isHidden()
-    qtbot.waitUntil(lambda: len(produced) == 1, timeout=10000)
-    assert not panel.isRunning() and panel.cancelButton.isHidden()
-    # the panel now follows the new (table) result, which it does not fit; showing the bead again re-arms Fit
-    assert panel.fitButton.isEnabled() == panel._acceptsResult(panel._currentResult)
+    qtbot.waitUntil(lambda: not panel.isRunning(), timeout=10000)
+    assert panel.cancelButton.isHidden()
+    # a fit publishes the averaged PSF and the measurement, the measurement last
+    assert [name for _result, name in produced] == ["bead — averaged PSF", "bead — PSF"]
+    # the panel now follows the measurement, which it re-selects rather than fits;
+    # showing the bead again re-arms Fit
+    assert panel.fitButton.isHidden() and panel.processor is panel.selectProcessor
     panel.setCurrentResult(ArrayProcessingResult("bead", blob, ["Y", "X"]))
-    assert panel.fitButton.isEnabled()
+    assert panel.fitButton.isEnabled() and panel.processor is panel.fitProcessor
     controller.shutdown()
 
 

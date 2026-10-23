@@ -17,7 +17,11 @@ from qtpy import QtWidgets
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorOutput
 from imswitch.improcess.processors.psf_resolution._params import SELECTION_FIELDS, build_form
-from imswitch.improcess.processors.psf_resolution.processor import measure, reselect
+from imswitch.improcess.processors.psf_resolution.processor import (
+    PSFResolutionProcessor,
+    measure,
+    reselect,
+)
 from imswitch.improcess.processors.psf_resolution.result import PSFMeasurementResult
 
 
@@ -38,8 +42,10 @@ class PSFBeadSelectProcessor(Processor):
         return {f.key: f.default for f in cls.param_spec()}
 
     def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
-        # ``average_psf`` only when the measurement was averaged.
-        return OutputSpec(ports=("psf", "average_psf"))
+        # The averaged PSF is recomputed only when the measurement asked for
+        # one (its ``average_psf`` parameter, which a re-select inherits).
+        merged = {**PSFResolutionProcessor.default_params(), **(params or {})}
+        return OutputSpec(ports=("psf", "average_psf") if merged.get("average_psf") else ("psf",))
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

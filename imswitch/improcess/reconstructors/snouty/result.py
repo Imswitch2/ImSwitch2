@@ -123,12 +123,14 @@ class SnoutyResult(ProcessingResult):
         Each ``(Z, Y, X)`` dataset carries ``axes`` and the Fiji/ImSwitch
         ``element_size_um``, so the volume reloads calibrated.
         """
-        voxel_um = float(self.params.get("sample_vx_size", 1.0)) / 1000.0
+        voxel_nm = self.params.get("sample_vx_size")
+        voxel_um = float(voxel_nm) / 1000.0 if voxel_nm else None
 
         def write(f, name, volume):
             dataset = f.create_dataset(name, data=volume, compression='gzip')
             dataset.attrs["axes"] = "ZYX"
-            dataset.attrs["element_size_um"] = [voxel_um, voxel_um, voxel_um]
+            if voxel_um:  # unknown stays unknown rather than becoming 1 nm
+                dataset.attrs["element_size_um"] = [voxel_um, voxel_um, voxel_um]
 
         with h5py.File(str(path), 'w') as f:
             if self.data.ndim == 3:

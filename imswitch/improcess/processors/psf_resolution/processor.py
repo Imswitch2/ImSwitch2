@@ -53,6 +53,9 @@ from .result import PSFMeasurementResult, averaged_psf_image
 
 SOURCES = ("auto", "rois", "full_image")
 
+#: Axis labels that hold channels: only index 0 is analysed, never a projection.
+CHANNEL_LABELS = ("C",)
+
 #: Length units a result's ``scale_unit`` may carry, in nanometres.
 UNIT_TO_NM = {"nm": 1.0, "um": 1000.0, "µm": 1000.0, "μm": 1000.0, "micron": 1000.0, "mm": 1e6}
 
@@ -311,6 +314,9 @@ def run_bead_analysis(result: ProcessingResult, params: dict) -> BeadRun:
         if stack_2d:  # the brightest plane holds the PSF in focus
             plane = int(np.argmax(data.reshape(data.shape[0], -1).max(axis=1)))
             analysis = analyze_whole_image(data[plane], settings)
+            # Like a detected bead on a projection: the result shows the
+            # projection, averages from the bead's plane, lists the plane.
+            analysis.projected = True
             for bead in analysis.beads:
                 bead["plane"] = plane
         else:
@@ -348,7 +354,8 @@ def input_layout(result: ProcessingResult, params: dict) -> InputLayout:
     index 0. Without one, a stack over any other axis (frames, time, an
     unlabelled axis; the one nearest the image plane if several) gives a
     ``(planes, Y, X)`` stack analysed in 2-D on its maximum projection, never
-    only its first plane; a single plane is a 2-D image. The pixel size comes
+    only its first plane; channels (``C``) are never projected together, only
+    channel 0 is analysed; a single plane is a 2-D image. The pixel size comes
     from ``axis_scales`` and ``scale_unit`` (converted to nm), unless the
     ``pixel_size_nm`` / ``z_step_nm`` overrides are set.
     """
@@ -356,12 +363,16 @@ def input_layout(result: ProcessingResult, params: dict) -> InputLayout:
     shape = tuple(int(n) for n in np.shape(result.data))
     ndim = len(shape)
     scales = list(getattr(result, "axis_scales", None) or [1.0] * ndim)
+    labels = (labels + [""] * ndim)[:ndim]
     factor = UNIT_TO_NM.get(str(getattr(result, "scale_unit", "px") or "px").strip().lower())
     z_index = labels.index("Z") if "Z" in labels else None
     is3d = z_index is not None and z_index < ndim - 2 and shape[z_index] > 1
     plane = shape[-2:]
     stacked = [k for k in range(ndim - 2) if shape[k] > 1]
-    stack_axis = stacked[-1] if stacked and not is3d else None
+    # Frames, time or an unlabelled axis are planes of one image; channels
+    # are different images and must not be projected together.
+    planes = [k for k in stacked if labels[k] not in CHANNEL_LABELS]
+    stack_axis = planes[-1] if planes and not is3d else None
     lead = z_index if is3d else stack_axis
     out_shape = ((shape[lead],) if lead is not None else ()) + tuple(plane)
 

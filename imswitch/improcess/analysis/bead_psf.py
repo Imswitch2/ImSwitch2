@@ -1016,6 +1016,7 @@ def summarize(analysis: BeadAnalysis, mask: np.ndarray, selection: Selection) ->
         out["ratio_to_theory"] = {
             ax: out["stats"][f"fwhm_{ax}{suffix}"]["median"] / out["theory_fwhm_nm"][ax]
             for ax in (("lat", "z") if analysis.ndim == 3 else ("lat",))
+            if np.isfinite(out["theory_fwhm_nm"][ax])  # axial is NaN when NA >= n
         }
     if p.physical and p.bead_diameter_nm:
         for ax in ("lat", *analysis.axes):
