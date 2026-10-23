@@ -211,6 +211,17 @@ class PSFMeasurementResult(ProcessingResult):
 
     kind = "table"
     supported_formats = ("hdf5", "csv")
+    list_icon = "mdi6.chart-bell-curve"
+
+    def list_summary(self) -> str:
+        """``PSF · 12/15 beads · lateral 231 nm · axial 612 nm``."""
+        stats = self.summary["stats"]
+        parts = [f"{self.summary['n_selected']}/{self.summary['n_candidates']} beads"]
+        for key, label in (("fwhm_lat_hm", "lateral"), ("fwhm_z_hm", "axial")):
+            median = stats.get(key, {}).get("median")
+            if median is not None and np.isfinite(median):
+                parts.append(f"{label} {_fmt_width(median, self.unit)}")
+        return "PSF · " + " · ".join(parts)
 
     def __init__(self, name: str, run, summary: dict, *, source_name: str = "", averaged=None,
                  aberrations=None, focal=None, trend=None, params: dict | None = None):

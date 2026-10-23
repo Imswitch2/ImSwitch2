@@ -344,6 +344,19 @@ default and hidden by setting ``"napariLayerControls": false`` in the
   These settings are persisted when you adjust contrast or LUT, and restored
   when you click back to that result.
 
+  Every entry shows, under its name, an icon and a line saying what it holds,
+  so the list can be read without selecting each entry: an image
+  (``image · 2048 × 2048 · uint16``), a Z-stack (``Z-stack · Z 121 · 512 ×
+  512``), a time series (an axis labelled ``T``/``Frame``), channels (``C``),
+  a label image, a curve (``curve · 128 points along frequency``), a table
+  (``table · 42 rows``), localizations (``12,345 localizations``), a single
+  value, an RGB or composite image.  A result can describe itself instead
+  (``list_icon`` and ``list_summary()`` on the result class): a PSF
+  measurement says ``PSF · 12/15 beads · lateral 231 nm``.  Hovering an entry
+  shows the full line.  The Data dock's file list does the same for its
+  files (``file · not opened`` until a file is opened; then its axes and
+  sizes, and whether it is on disk or in memory).
+
 * The **napari layer list** is the *presentation* of the currently selected
   result.  It contains:
   
