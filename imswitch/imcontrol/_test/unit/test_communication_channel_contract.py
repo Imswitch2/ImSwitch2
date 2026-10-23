@@ -111,7 +111,13 @@ def test_communication_channel_event_groups_alias_existing_signals():
 def test_communication_channel_exposes_scan_workflow_service():
     source = CHANNEL_PATH.read_text()
 
-    assert 'from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService' in source
+    imported = {
+        alias.name
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ImportFrom) and node.module == 'WorkflowServices' and node.level == 1
+        for alias in node.names
+    }
+    assert {'BeadRecWorkflowService', 'ScanWorkflowService'} <= imported
     assert 'self.scanWorkflow = ScanWorkflowService(self)' in source
     assert 'self.beadRecWorkflow = BeadRecWorkflowService(self)' in source
     assert 'def run_scan(self, recalculate_signals: bool,' in (

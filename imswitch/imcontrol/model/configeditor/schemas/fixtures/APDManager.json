@@ -10,6 +10,7 @@
       "mockPhotonCountMax": 1,
       "mockPhotonCountMean": 1.5,
       "mockRandomSeed": 1,
+      "mockSample": {},
       "simulation_mode": true,
       "terminal": "example"
     }

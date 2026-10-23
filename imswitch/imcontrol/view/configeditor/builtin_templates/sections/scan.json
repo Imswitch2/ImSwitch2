@@ -6,7 +6,8 @@
   "summary": "Scan widget configuration. Required to use the Scan widget. References positioners with forScanning=true.",
   "requires_widget": "Scan",
   "fields": [
-    {"key": "scanWidgetType",        "label": "Scan widget type",    "type": "select", "default": "Base", "req": true, "grp": "Basic",    "tip": "Selects the controller dispatched by MasterController.",      "opts": ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"]},
+    {"key": "scanWidgetType",        "label": "Scan widget type",    "type": "select", "default": "Base", "req": true, "grp": "Basic",    "tip": "Selects the real scan backend/controller.",                    "opts": ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"]},
+    {"key": "cloak",                 "label": "Scan cloak",          "type": "select", "default": null,   "req": false,"grp": "Basic",    "tip": "Optional simplified frontend; must support the selected scan widget type.", "opts": ["__scan_cloaks__"]},
     {"key": "scanDesigner",          "label": "Scan designer",       "type": "select", "default": "GalvoScanDesigner", "req": true, "grp": "Designers","tip": "Class that builds the scan trajectory.", "opts": ["GalvoScanDesigner", "BetaScanDesigner"]},
     {"key": "scanDesignerParams",    "label": "Scan designer params","type": "json",   "default": "{}",   "req": false,"grp": "Designers","tip": "JSON dict passed to the scan designer.",                       "opts": []},
     {"key": "TTLCycleDesigner",      "label": "TTL cycle designer",  "type": "select", "default": "PointScanTTLCycleDesigner","req": true,"grp": "Designers","tip": "Class that emits the TTL pattern in sync with the scan.","opts": ["PointScanTTLCycleDesigner", "AdvancedScanTTLCycleDesigner", "BetaTTLCycleDesigner"]},
@@ -16,5 +17,28 @@
     {"key": "lineClockLine",         "label": "Line clock line",     "type": "text",   "default": "null", "req": false,"grp": "DAQ clocks","tip": "Digital line for line-clock output, e.g. Dev1/port0/line6. null if unused.", "opts": []},
     {"key": "frameStartClockLine",   "label": "Frame start clock",   "type": "text",   "default": "null", "req": false,"grp": "DAQ clocks","tip": "Digital line for frame-start clock output. null if unused.", "opts": []},
     {"key": "frameEndClockLine",     "label": "Frame end clock",     "type": "text",   "default": "null", "req": false,"grp": "DAQ clocks","tip": "Digital line for frame-end clock output. null if unused.",   "opts": []}
-  ]
+  ],
+  "nested": {
+    "simplePointScan": [
+      {"key": "objectiveNA",           "label": "Objective NA",                     "type": "float", "default": null, "req": false, "grp": "SimplePointScan", "tip": "Objective numerical aperture used to derive the default Nyquist pixel size when no explicit override is set. Leave blank if unknown.", "opts": []},
+      {"key": "nyquistPixelSizeUm",    "label": "Nyquist pixel size override (µm)", "type": "float", "default": null, "req": false, "grp": "SimplePointScan", "tip": "Optional explicit Nyquist pixel size in µm. When set, it takes precedence over Objective NA.", "opts": []},
+      {"key": "overviewFieldUm",       "label": "Overview field (µm)",              "type": "float", "default": 60.0, "req": false, "grp": "SimplePointScan", "tip": "Preferred field of view for the coarse overview scan.", "opts": []},
+      {"key": "overviewFrameTimeS",   "label": "Overview target time (s)",         "type": "float", "default": 1.0,  "req": false, "grp": "SimplePointScan", "tip": "Target duration used when planning the coarse overview scan.", "opts": []},
+      {"key": "minSamplesPerPixel",   "label": "Minimum samples / pixel",          "type": "int",   "default": 2,    "req": false, "grp": "SimplePointScan", "tip": "Minimum DAQ samples allocated to one overview pixel.", "opts": []},
+      {"key": "maxDwellMs",           "label": "Maximum dwell (ms)",               "type": "float", "default": 10.0, "req": false, "grp": "SimplePointScan", "tip": "Upper bound on the dwell time offered by the simplified point-scan panel.", "opts": []}
+    ],
+    "simpleMoNaLISA": [
+      {"key": "fovSource",                      "label": "FOV source",                  "type": "select",     "default": "detector", "req": false, "grp": "SimpleMoNaLISA", "tip": "Use the detector ROI/pixel size for the current FOV, or use the configured manual FOV.", "opts": ["detector", "manual"]},
+      {"key": "fovUm",                          "label": "Manual / fallback FOV (µm)",  "type": "float_pair", "default": [40.0, 40.0], "req": false, "grp": "SimpleMoNaLISA", "tip": "X × Y FOV in µm. Used directly in Manual mode and retained as the fallback value for detector-derived FOV.", "opts": []},
+      {"key": "ulensPeriodPolicy",               "label": "uLens period policy",         "type": "select",     "default": "fixed", "req": false, "grp": "SimpleMoNaLISA", "tip": "Use one setup-wide uLens period or require each profile to define its own period.", "opts": ["fixed", "per_profile"]},
+      {"key": "ulensPeriodUm",                   "label": "Fixed uLens period (µm)",      "type": "float",      "default": 0.72, "req": false, "grp": "SimpleMoNaLISA", "tip": "Setup-wide uLens period used when the policy is fixed.", "opts": []},
+      {"key": "defaultCameraReadoutTimeMs",      "label": "Default camera readout (ms)", "type": "float",      "default": 3.0, "req": false, "grp": "SimpleMoNaLISA", "tip": "Camera readout gap inherited by profiles that do not define their own cameraReadoutTimeMs.", "opts": []},
+      {"key": "interPulseDelayMs",               "label": "Inter-pulse delay (ms)",       "type": "float",      "default": 0.1, "req": false, "grp": "SimpleMoNaLISA", "tip": "Delay inserted between consecutive MoNaLISA sequence pulses.", "opts": []},
+      {"key": "readoutPulseTimeMs",              "label": "READOUT pulse (ms)",           "type": "float",      "default": 1.0, "req": false, "grp": "SimpleMoNaLISA", "tip": "Duration of every semantic READOUT illumination step. Runtime enforces a minimum of 1 ms.", "opts": []},
+      {"key": "defaultScanType",                 "label": "Default scan type",            "type": "select",     "default": "XY", "req": false, "grp": "SimpleMoNaLISA", "tip": "Scan type selected when the SimpleMoNaLISA panel initializes.", "opts": ["XY", "YZ", "XZ", "XYZ"]},
+      {"key": "defaultLateralStepUm",            "label": "Default pixel size (µm)",       "type": "float",      "default": 0.04, "req": false, "grp": "SimpleMoNaLISA", "tip": "Default lateral sampling step / pixel size in µm.", "opts": []},
+      {"key": "defaultZStepUm",                  "label": "Default Z step (µm)",           "type": "float",      "default": 0.15, "req": false, "grp": "SimpleMoNaLISA", "tip": "Default axial sampling step in µm.", "opts": []},
+      {"key": "defaultZScanLengthUm",            "label": "Default Z range (µm)",          "type": "float",      "default": 1.0, "req": false, "grp": "SimpleMoNaLISA", "tip": "Default axial scan range in µm.", "opts": []}
+    ]
+  }
 }

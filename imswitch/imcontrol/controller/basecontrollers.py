@@ -391,6 +391,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     legacyStateNames = ('ScanController', 'ScanControllerAdvanced', 'ScanControllerMoNaLISA', 'ScanControllerPointScan')
     setupModeCategory = 'scan'
     setupModeApplyPriority = SetupModeApplyPriority.SCAN
+    # Saved-state features this controller can run beyond the common scan
+    # dicts; see _unsupportedStateFeatureRefusal.
+    supportedStateFeatures = frozenset()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -449,8 +452,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self.TTLDevices = self._setupInfo.getTTLDevices()
 
         self.scanDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_scans')
-        if not os.path.exists(self.scanDir):
-            os.makedirs(self.scanDir)
+        os.makedirs(self.scanDir, exist_ok=True)
 
         # All NI-DAQ entry points share one global iteration owner. Ownership is
         # recorded on the token, so the broadcast completion signals are acted
@@ -2122,6 +2124,33 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             'mode': mode,
         }
 
+    def _unsupportedStateFeatureRefusal(self, state: dict) -> str:
+        """Why this controller must not apply ``state``, or ``''``.
+
+        A saved scan state may declare ``requiredFeatures``: a mapping from a
+        feature name to a sentence saying what it needs ("10 T frames"). The
+        SimplePointScan panel declares features the other scan panels cannot
+        run, so that loading such a file elsewhere is refused with the reason
+        instead of quietly running part of it. A state without the key (every
+        file the other panels write) is unaffected.
+        """
+        required = state.get('requiredFeatures') or {}
+        if not isinstance(required, dict):
+            return 'Saved scan state declares its required features in an unreadable form; it was not applied.'
+        unsupported = [
+            str(reason) for feature, reason in required.items()
+            if feature not in self.supportedStateFeatures
+        ]
+        if not unsupported:
+            return ''
+        panel = getattr(
+            getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None
+        ) or type(self).__name__
+        return (
+            f'This scan needs {"; ".join(unsupported)}, which the {panel} scan '
+            f'panel cannot run. Scan state was not applied.'
+        )
+
     def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
         """Apply scan parameter dictionaries from component state.
         
@@ -2143,6 +2172,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
         if not isinstance(state, dict):
             return ['Saved scan state is not a dictionary.']
+
+        refusal = self._unsupportedStateFeatureRefusal(state)
+        if refusal:
+            return [refusal]
 
         savedWidgetType = state.get('scanWidgetType')
         currentWidgetType = getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None)

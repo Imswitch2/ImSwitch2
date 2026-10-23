@@ -49,8 +49,11 @@ Quick Start
 
       python -m imswitch
 
-   Select ``example_no_hardware.json`` from the setup picker, or one of the
-   ``*mock*`` setups (for example ``mock_scan_setup.json``) to try scanning.
+   Keep ``example_no_hardware.json`` (preselected) in the setup picker for
+   the no-hardware validation profile. ``simple_mock_setup.json`` is a
+   simulated point-scanning microscope with one camera and one APD on the
+   SimplePointScan panel; the other ``*mock*`` setups (for example
+   ``mock_scan_setup.json``) try other kinds of scanning.
 
 
 Understanding the Codebase

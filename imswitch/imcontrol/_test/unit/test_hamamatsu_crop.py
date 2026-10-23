@@ -119,6 +119,27 @@ def test_crop_with_off_step_roi_stores_applied_not_requested_values(monkeypatch)
     assert mgr.shape != (301, 199)
 
 
+class RoiTimingFakeCamera(SnappingFakeCamera):
+    """Expose a readout time that changes with the applied ROI width."""
+
+    def setPropertyValue(self, name, value):
+        applied = super().setPropertyValue(name, value)
+        if name == 'subarray_hsize':
+            self.properties['timing_readout_time'] = (
+                0.002 if int(self.properties[name]) < 2048 else 0.006
+            )
+        return applied
+
+
+def test_crop_refreshes_camera_reported_timing_parameters(monkeypatch):
+    mgr = _make_manager(monkeypatch, RoiTimingFakeCamera)
+    assert mgr.parameters['Readout time'].value == 0.0
+
+    mgr.crop(hpos=128, vpos=96, hsize=512, vsize=512)
+
+    assert mgr.parameters['Readout time'].value == pytest.approx(0.002)
+
+
 class ModeSensitiveFakeCamera(SnappingFakeCamera):
     """Models DCAM's cold-start ranges: while subarray mode is OFF every
     subarray write reads back as the full chip at position zero."""

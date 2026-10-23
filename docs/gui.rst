@@ -744,9 +744,65 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
-``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
-:doc:`setupinfo-reference`.
+Four scan widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
+``Advanced`` — selected by ``scan.scanWidgetType``. An optional ``scan.cloak``
+selects a compatible simplified frontend; see :doc:`setupinfo-reference`.
+``SimplePointScan`` is a
+beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
+its header switches between the two, on the same scan.
+
+- **Overview** scans live at about one frame per second, and shows the
+  measured frame rate. Its **Size** slider sets the field (default 60 µm,
+  up to what the scanners reach); pixels and dwell follow it.
+- **Acquisition** scans a chosen region, with sliders for pixel size
+  (overview to Nyquist) and dwell, and an estimate of the scan time.
+- While a scan runs, a progress bar under the scan time shows the elapsed
+  and expected time, and the frame number in Live, as in the Advanced panel.
+- **Draw in viewer** draws the region as a rectangle on the live image (on
+  the ``Scan region`` layer). Moving or resizing it changes the region;
+  editing the numbers moves it. Drawing needs an image the scanners made,
+  so start the overview first. The rectangle shows in Acquisition, and in
+  Overview once Draw is clicked; the region numbers and sampling sliders
+  are greyed in Overview, which scans its own field.
+- **Lasers and channels:** drag a laser from the palette onto a channel,
+  onto *Drop a laser here for a new channel*, or between channels; the ×
+  or a drag back to the palette removes it. Lasers in one channel fire
+  together; each channel is its own line pass, and a laser can be in
+  several channels.
+
+``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware; its
+simulated APDs image a synthetic sample, so the region drawn on the overview
+is visibly the region acquired.
+
+``SimpleMoNaLISA`` is the profile-driven MoNaLISA cloak over Advanced. Its
+profile selector chooses an ordered illumination recipe while the mode selector
+enables a subset of that recipe (for example RESOLFT versus Confocal). Sequence
+steps have ON/OFF/READOUT/CUSTOM roles, but roles may repeat and a step may
+drive several TTL devices synchronously. A mode may also enable only selected
+devices inside one enabled step, which supports alignment pulses where several
+lasers share one timing window. The ``…`` menu beside Profile creates,
+duplicates, edits, renames and deletes profiles in the active setup. Profile
+editing changes setup configuration, whereas normal duration/geometry edits
+change only the current acquisition. Advanced edits that no longer match the
+explicitly selected profile/mode return Simple to **Advanced / custom** rather
+than silently selecting another profile. With separated Live/Scan laser powers,
+the top Live role row lets ON/OFF/Readout roles participate independently.
+Those checkboxes change only laser enable state; power stays editable in the
+Laser widget. **Live**, **Stop** and **Acquire** stay together in the top action
+row. Live keeps the existing camera acquisition running but switches the Readout
+camera to internal trigger, Stop switches off only the screening lasers, and
+Acquire uses external frame trigger plus the normal scan powers. The Live action
+is disabled for coupled laser-power setups. **Setup…** opens persistent setup
+editing, including detector-derived FOV/readout policies and slider ranges.
+Camera-derived FOV/readout track the current detector ROI/timings; camera
+readout is shown read-only in Simple and Auto/Manual editing stays in Setup.
+uLens period is either fixed by
+setup or owned by the selected profile (never by a mode), while a profile may
+independently choose one-uLens or manual lateral scan extent. The sequence view
+is role-first and wavelength-coloured for ON/OFF/READOUT steps. CUSTOM steps
+show their active non-detector device names directly, one badge per device,
+while a separate red acquisition marker appears automatically on any step that
+drives a detector.
 
 Controls shared by the variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
