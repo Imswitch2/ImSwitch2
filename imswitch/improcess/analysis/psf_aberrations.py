@@ -37,6 +37,8 @@ from typing import Protocol, Sequence
 import numpy as np
 from scipy import ndimage, optimize
 
+from imswitch.imcommon.model.cancellation import checkpoint
+
 from .bead_psf import BeadAnalysis, average_psf, bead_sigma_nm, expected_fwhm_nm
 
 DEFAULT_MODES = (5, 6, 7, 8, 9, 10, 11)
@@ -384,6 +386,7 @@ def fit_aberrations(
     starts = [0.0] if spherical is None or n_starts <= 1 else list(np.linspace(-lam / 8, lam / 8, n_starts))
     best = None
     for start in starts:
+        checkpoint()  # a cancelled run stops between starting values
         p0 = p_start.copy()
         if spherical is not None:
             p0[5 + spherical] = start

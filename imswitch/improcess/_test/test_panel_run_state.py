@@ -149,6 +149,59 @@ def test_the_psf_panel_runs_off_the_gui_thread_and_publishes(qapp, qtbot):
     controller.shutdown()
 
 
+def test_the_psf_preview_runs_off_the_gui_thread_and_can_be_cancelled(qapp, qtbot):
+    from imswitch.improcess.controller.ResultProcessorController import ResultProcessorController
+    from imswitch.improcess.view.PSFResolutionWidget import PSFResolutionWidget
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def emit(self, *args):
+            for slot in list(self.slots):
+                slot(*args)
+
+    comm = type("Comm", (), {})()
+    comm.sigCurrentResultChanged, comm.sigResultsChanged, comm.sigResultProduced = Signal(), Signal(), Signal()
+    comm.getAllResults = comm.getSelectedResults = lambda: []
+    produced = []
+    comm.sigResultProduced.connect(lambda result, name: produced.append((result, name)))
+
+    panel = PSFResolutionWidget(napariViewer=None)
+    controller = ResultProcessorController(commChannel=comm, widget=panel, factory=None, moduleCommChannel=None)
+    rng = np.random.default_rng(1)
+    yy, xx = np.mgrid[:120, :120]
+    field = np.full((120, 120), 50.0)
+    for cy, cx in [(20, 20), (20, 80), (60, 50), (95, 25), (95, 95)]:
+        field += 800.0 * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * 1.8 ** 2))
+    bead = ArrayProcessingResult("beads", rng.poisson(field).astype(np.float32), ["Y", "X"])
+    panel.setCurrentResult(bead)
+    qtbot.addWidget(panel)
+
+    panel.preview()
+    # The same run state as a fit: Fit and Preview off, Cancel on, nothing published.
+    assert panel.isRunning() and not panel.fitButton.isEnabled() and not panel.previewButton.isEnabled()
+    assert not panel.cancelButton.isHidden()
+    qtbot.waitUntil(lambda: not panel.isRunning(), timeout=10000)
+    assert produced == []
+    assert panel._beadRun is not None and len(panel._beadRun.analysis.beads) >= 5
+    assert panel.previewButton.isEnabled() and panel.fitButton.isEnabled()
+    assert not panel.beadsSection.isHidden()
+    first = panel._beadRun
+
+    # Cancel right after the request: the run is reported cancelled even if it
+    # finished first, and the panel keeps the previous preview.
+    panel.preview()
+    panel.cancelButton.click()
+    qtbot.waitUntil(lambda: not panel.isRunning(), timeout=10000)
+    assert panel.summaryLabel.text() == "Preview cancelled."
+    assert panel._beadRun is first and produced == []
+    controller.shutdown()
+
+
 def test_cancelling_a_hand_built_panel_discards_its_run(qapp, qtbot):
     from imswitch.improcess.controller import processor_runner
     from imswitch.improcess.controller.ResultProcessorController import ResultProcessorController

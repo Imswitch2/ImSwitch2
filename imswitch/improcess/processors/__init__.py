@@ -193,12 +193,22 @@ def register_processor_by_id(registry, processor_id: str) -> Processor:
     return plugin
 
 
+#: Built-ins that come with another: a preset listing the first gets the
+#: others too, so what its panel publishes can be processed further and a
+#: recorded workflow with that step replays. ``psf-bead-select`` works only on
+#: ``psf-resolution``'s measurement.
+COMPANION_PROCESSORS: dict[str, tuple[str, ...]] = {
+    "psf-resolution": ("psf-bead-select",),
+}
+
+
 def register_default_processors(registry, filter_ids: list[str] | None = None) -> None:
     """
     Register built-in processors plus all discovered user drop-in plugins.
 
     Built-ins are gated by config (``filter_ids``); user plugins are gated by
-    their presence on disk, so a dropped-in plugin is always active.
+    their presence on disk, so a dropped-in plugin is always active. A listed
+    built-in brings its :data:`COMPANION_PROCESSORS`.
 
     Args:
         registry: Plugin registry to populate.
@@ -215,7 +225,10 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
                 f"Unknown processor id(s): {unknown}. "
                 f"Available processors: {available_processor_ids()}"
             )
-        to_register = [(pid, all_classes[pid]) for pid in filter_ids]
+        ids = list(filter_ids)
+        for pid in filter_ids:
+            ids += [c for c in COMPANION_PROCESSORS.get(pid, ()) if c not in ids]
+        to_register = [(pid, all_classes[pid]) for pid in ids]
 
     registered_ids = set()
     for pid, plugin_cls in to_register:

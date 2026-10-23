@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pytest
 
@@ -11,7 +10,6 @@ from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.processors.psf_resolution import (
     PSFMeasurementResult,
     PSFResolutionProcessor,
-    PSFResolutionResult,
 )
 
 
@@ -147,20 +145,6 @@ def test_output_ports_follow_the_params():
     assert PSFResolutionProcessor().output_spec({"average_psf": False}).ports == ("psf",)
     spec = PSFResolutionProcessor().output_spec({"fit_aberrations": True})
     assert spec.ports == ("psf", "average_psf")
-
-
-def test_psf_resolution_result_saves_hdf5(tmp_path):
-    analysis = fit_psf_batch(_gaussian(), pixel_size=1.0, unit="px")
-    result = PSFResolutionResult("psf", analysis, params={"pixel_size": 1.0})
-    out_path = tmp_path / "psf.h5"
-
-    result.save(out_path, "hdf5")
-
-    with h5py.File(out_path, "r") as h5:
-        assert h5.attrs["fit_count"] == 1
-        assert "fits" in h5
-        assert h5["fits"]["fwhm_x_px"][0] > 0
-        assert h5["fits"]["fit_error"][0] < 1e-4
 
 
 # --------------------------------------------------------------------------- #

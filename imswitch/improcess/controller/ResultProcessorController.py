@@ -2,6 +2,7 @@
 
 from .basecontrollers import ImProcessWidgetController
 from .processor_runner import ProcessorRunner
+from imswitch.improcess.processors.execution import RunOutcome
 from imswitch.improcess.processors.run import (
     restriction_for,
     run_batch,
@@ -144,6 +145,9 @@ class ResultProcessorController(ImProcessWidgetController):
         self._runner = ProcessorRunner()
         self._runInputs = None
         self._runProcessor = None
+        #: The running run is a preview: its outcome goes back to the panel
+        #: (``previewFinished``) instead of being published.
+        self._runPreview = False
         self._runner.sigOutput.connect(self._runOutput)
         self._runner.sigFinished.connect(self._runFinished)
         self._commChannel.sigCurrentResultChanged.connect(self._widget.setCurrentResult)
@@ -152,6 +156,9 @@ class ResultProcessorController(ImProcessWidgetController):
         cancelRequested = getattr(self._widget, "sigCancelRequested", None)
         if cancelRequested is not None:
             cancelRequested.connect(self.cancelRun)
+        previewRequested = getattr(self._widget, "sigPreviewRequested", None)
+        if previewRequested is not None:
+            previewRequested.connect(self.previewProcessor)
         self.resultsChanged()
 
     def resultsChanged(self) -> None:
@@ -205,6 +212,32 @@ class ResultProcessorController(ImProcessWidgetController):
             setRunning(True)
         self._widget.setStatusText(f"Running {processor.name}…")
 
+    def previewProcessor(self, processor, inputs, params: dict) -> None:
+        """Run ``processor`` like :meth:`runProcessor`, but hand the outcome to
+        the panel's ``previewFinished(outcome)`` instead of publishing it.
+
+        For a panel that shows what a run *would* do (the PSF panel's bead
+        preview): the same thread, Run/Cancel state and "already running"
+        refusal as a real run, and nothing reaches the results list.
+        """
+        inputs = list(inputs) if isinstance(inputs, (list, tuple)) else [inputs]
+        runner = self.__dict__.get("_runner")
+        if runner is None:
+            results, failures = run_processor(processor, inputs, params, self._logger)
+            self._widget.previewFinished(RunOutcome(results=results, failures=failures))
+            return
+        if runner.isRunning():
+            self._widget.setStatusText(f"{self._widget.processor.name} is already running.")
+            return
+        if not runner.start(processor, inputs, params, self._logger):
+            self._widget.setStatusText(f"{processor.name} is already running.")
+            return
+        self._runInputs, self._runProcessor, self._runPreview = inputs, processor, True
+        setRunning = getattr(self._widget, "setRunning", None)
+        if callable(setRunning):
+            setRunning(True)
+        self._widget.setStatusText(f"Running {processor.name}…")
+
     def cancelRun(self) -> None:
         """Stop the running processor; what it had made is discarded."""
         if self._runner.cancel():
@@ -220,11 +253,15 @@ class ResultProcessorController(ImProcessWidgetController):
     def _runFinished(self, outcome) -> None:
         inputs, self._runInputs = self._runInputs, None
         processor, self._runProcessor = self._runProcessor, None
+        preview, self._runPreview = self._runPreview, False
         if processor is None:
             processor = self._widget.processor
         setRunning = getattr(self._widget, "setRunning", None)
         if callable(setRunning):
             setRunning(False)
+        if preview:
+            self._widget.previewFinished(outcome)
+            return
         if outcome.cancelled:
             notify_param_widget(self._widget, [], [(None, "Cancelled.")], self._logger)
             self._widget.setStatusText("Cancelled: nothing was published.")

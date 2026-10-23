@@ -690,7 +690,8 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Measurement
      - A measurement from ``psf-resolution``.
      - Ports ``psf`` and ``average_psf`` with the new selection; no refitting
-       (the average and the aberrations are recomputed).
+       (the average and the aberrations are recomputed).  A preset that lists
+       ``psf-resolution`` gets this one with it.
    * - ``colocalization``
      - Measurement
      - Rank >= 3 image-like result with a compare axis containing at least two
@@ -1074,7 +1075,9 @@ collapsed.  The panel reads top to bottom in the order of the work: setup,
 **Preview beads**, the bead selection, **Fit**.
 
 **Preview beads** runs the detection, the fits and the selection without
-publishing anything.  Every candidate is marked in the viewer (a points layer
+publishing anything.  It runs on the same thread as a fit, so the window
+stays alive and **Cancel** stops it (between beads).  Every candidate is
+marked in the viewer (a points layer
 named *PSF bead preview*, drawn in 3-D so it follows the z slider and the
 XZ / YZ views): green beads are selected, grey ones sit at the image or data
 edge, orange ones are too close to another bead, violet ones are too bright

@@ -218,6 +218,27 @@ class PSFResolutionProcessor(Processor):
         return measure(run_bead_analysis(result, p), p, result.name)
 
 
+class BeadPreviewProcessor(PSFResolutionProcessor):
+    """The first half of a fit, for the panel's **Preview beads**.
+
+    Detects, fits and selects the beads exactly as a fit does and keeps the
+    :class:`BeadRun` on itself (``run``) instead of publishing anything, so
+    the panel can run it through the same runner as a fit: the window stays
+    alive and Cancel works. Not registered; never in a workflow.
+    """
+
+    name = "PSF bead preview"
+    id = "psf-bead-preview"
+
+    def __init__(self):
+        super().__init__()
+        self.run: BeadRun | None = None
+
+    def apply(self, result: ProcessingResult, params: dict) -> ProcessorOutput:
+        self.run = run_bead_analysis(result, params)
+        return ProcessorOutput([])
+
+
 def measure(run: BeadRun, params: dict, source_name: str, suffix: str = "") -> ProcessorOutput:
     """The outputs of one bead analysis: the measurement and the averaged PSF.
 

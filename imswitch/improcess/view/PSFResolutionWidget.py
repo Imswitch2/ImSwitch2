@@ -12,7 +12,9 @@ The panel reads top to bottom, in the order the work happens:
    collapsed.
 2. **Beads**: Preview detects, fits and selects the beads without publishing
    anything and marks every candidate in the viewer (green = used, other
-   colours = why not). The histogram's shaded range is the lateral FWHM
+   colours = why not). It runs on the controller's thread like a fit
+   (sigPreviewRequested -> previewFinished), so the window stays alive and
+   Cancel works. The histogram's shaded range is the lateral FWHM
    selection: dragging it (or editing the bounds) re-selects live, no
    refitting. Fit then publishes the measurement with that selection.
 3. **Result** (a measurement is selected, e.g. right after a fit): the
@@ -33,6 +35,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from imswitch.improcess.layer_selection import PSF_PREVIEW_LAYER_NAME as PREVIEW_LAYER_NAME
 from imswitch.improcess.view.runstate import RunState
 from imswitch.improcess.processors import PSFBeadSelectProcessor, PSFResolutionProcessor
+from imswitch.improcess.processors.psf_resolution.processor import BeadPreviewProcessor
 from imswitch.improcess.processors.psf_resolution._params import (
     CALIBRATION_GROUP,
     SELECTION_FIELDS,
@@ -55,6 +58,9 @@ class PSFResolutionWidget(QtWidgets.QWidget):
     sigRunRequested = QtCore.Signal(object, dict)
     sigCancelRequested = QtCore.Signal()
     """**Cancel** was pressed while a run was going."""
+    sigPreviewRequested = QtCore.Signal(object, object, dict)
+    """``(processor, inputs, params)``: run this, then call ``previewFinished``
+    with the outcome instead of publishing it."""
 
     def __init__(self, napariViewer, roiManagerWidget=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -65,6 +71,9 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         #: measurement's run re-selected with the current bounds.
         self._beadRun = None
         self._previewing = False
+        #: The preview run going on, and the result it was asked for.
+        self._previewProcessor = None
+        self._previewTarget = None
         self.fitProcessor = PSFResolutionProcessor()
         self.selectProcessor = PSFBeadSelectProcessor()
         self.processor = self.fitProcessor
@@ -250,9 +259,8 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         self.sigRunRequested.emit(self._currentResult, params)
 
     def preview(self) -> None:
-        """Run the bead analysis on the selected image and mark the beads."""
-        from imswitch.improcess.processors.psf_resolution.processor import run_bead_analysis
-
+        """Ask for the bead analysis of the selected image; ``previewFinished``
+        marks the beads when it is done."""
         if self._currentResult is None or not self._fitAccepts(self._currentResult):
             self.summaryLabel.setText("Select an image to preview its beads.")
             return
@@ -261,14 +269,24 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         except ValueError as exc:
             self.summaryLabel.setText(str(exc))
             return
+        self._previewProcessor = BeadPreviewProcessor()
+        self._previewTarget = self._currentResult
         self.summaryLabel.setText("Detecting and fitting beads…")
-        QtWidgets.QApplication.processEvents()
-        try:
-            with _busy():
-                run = run_bead_analysis(self._currentResult, params)
-        except Exception as exc:
-            self.summaryLabel.setText(f"Preview failed: {exc}")
+        self.sigPreviewRequested.emit(self._previewProcessor, [self._currentResult], params)
+
+    def previewFinished(self, outcome) -> None:
+        """The controller's answer to ``sigPreviewRequested``."""
+        processor, self._previewProcessor = self._previewProcessor, None
+        target, self._previewTarget = self._previewTarget, None
+        if outcome.cancelled:
+            self.summaryLabel.setText("Preview cancelled.")
             return
+        if outcome.failures:
+            self.summaryLabel.setText(f"Preview failed: {outcome.failures[0][1]}")
+            return
+        run = getattr(processor, "run", None)
+        if run is None or target is not self._currentResult:
+            return  # the selection moved on while it ran; the preview was of something else
         self._previewing = True
         self._beadRun = run
         self._loadHistogram(run)
@@ -330,7 +348,7 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         self.setupBox.setVisible(fitting)
         self.fitButton.setVisible(fitting)
         self._allowRun(fitting)
-        self.previewButton.setEnabled(fitting)
+        self.previewButton.setEnabled(fitting and not self._running())
         self.resultBox.setVisible(measurement)
         self.applySelectionButton.setVisible(measurement)
         self.processor = self.selectProcessor if measurement else self.fitProcessor
@@ -361,9 +379,15 @@ class PSFResolutionWidget(QtWidgets.QWidget):
     def isRunning(self) -> bool:
         return self._runState.running
 
+    def _running(self) -> bool:
+        state = self.__dict__.get("_runState")
+        return state is not None and state.running
+
     def setRunning(self, running: bool) -> None:
-        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        """Show that a run is going (Run off, Cancel on, Preview off) or that it ended."""
         self._runState.setRunning(running)
+        self.previewButton.setEnabled(not running and self._fitAccepts(self._currentResult)
+                                      and not self._isMeasurement(self._currentResult))
 
     def setStatusText(self, text: str) -> None:
         """The controller's run status."""
@@ -899,18 +923,6 @@ def _num(value) -> str:
     if not np.isfinite(value):
         return "–"
     return f"{value:.3g}" if abs(value) < 10 else f"{value:.0f}"
-
-
-class _busy:
-    """Wait cursor for the duration of a synchronous analysis."""
-
-    def __enter__(self):
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        return self
-
-    def __exit__(self, *exc):
-        QtWidgets.QApplication.restoreOverrideCursor()
-        return False
 
 
 def _is_image(layer) -> bool:

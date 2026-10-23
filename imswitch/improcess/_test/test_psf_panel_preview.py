@@ -64,6 +64,14 @@ def _panel_on(result):
     viewer.layers.append(image_layer)
     panel = PSFResolutionWidget(napariViewer=viewer)
     panel.setCurrentResult(result)
+
+    def preview_controller(processor, inputs, params):  # what ResultProcessorController does, synchronously
+        from imswitch.improcess.processors.execution import RunOutcome
+
+        processor.apply(inputs[0], params)
+        panel.previewFinished(RunOutcome())
+
+    panel.sigPreviewRequested.connect(preview_controller)
     return panel, viewer
 
 

@@ -58,6 +58,8 @@ import numpy as np
 from scipy import ndimage, optimize
 from scipy.spatial import cKDTree
 
+from imswitch.imcommon.model.cancellation import checkpoint
+
 FWHM_FACTOR = 2.0 * math.sqrt(2.0 * math.log(2.0))
 MAD_SCALE = 1.4826  # MAD -> standard deviation for normally distributed data
 
@@ -721,6 +723,7 @@ def _analyze_once(
 
     r_xy = max(1, int(round(0.5 * float(sig[-2:].mean()))))
     for bead in analysis.beads:
+        checkpoint()  # a cancelled run stops between beads
         if bead["status"] != STATUS_OK:
             continue
         crop, origin, valid_crop = crops[bead["id"]]
@@ -1078,6 +1081,7 @@ def average_psf(
     for bead, chosen in zip(analysis.beads, mask):
         if not chosen:
             continue
+        checkpoint()
         center = np.array([bead[ax] for ax in axes])
         icenter = np.round(center).astype(int)
         lo = icenter - half - margin

@@ -1,6 +1,7 @@
 """PSF / bead resolution processor."""
 
 from .processor import (
+    BeadPreviewProcessor,
     PSFResolutionProcessor,
     aberration_requirements,
     input_layout,
@@ -8,12 +9,12 @@ from .processor import (
     reselect,
     run_bead_analysis,
 )
-from .result import PSFMeasurementResult, PSFResolutionResult, psf_report
+from .result import PSFMeasurementResult, psf_report
 
 __all__ = [
+    "BeadPreviewProcessor",
     "PSFMeasurementResult",
     "PSFResolutionProcessor",
-    "PSFResolutionResult",
     "aberration_requirements",
     "input_layout",
     "measure",
