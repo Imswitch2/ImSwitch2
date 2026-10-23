@@ -479,6 +479,7 @@ frc                     Processor      Fourier ring correlation and single-image
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
 multicolor-apply        Processor      Apply saved three-color X-strip alignment to deskewed sample volumes
 denoise                 Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
+deconvolve-rl           Processor      2D Richardson-Lucy deconvolution with a theoretical (Airy or Gaussian) PSF
 smlm-render             Processor      Render a localization table into a super-resolved image/volume
 smlm-filter             Processor      Keep or drop the localizations inside a band of one property (histogram-guided)
 smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
@@ -641,6 +642,15 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``DenoisedResult``.  With padding enabled the original shape is
        preserved; without padding the output can become a cropped plane or
        frame stack depending on the selected frame-like axis.
+   * - ``deconvolve-rl``
+     - Restoration
+     - Any rank >= 2 image-like result with a calibrated Y/X pixel size, or an
+       explicit *Pixel size (nm)*.
+     - Float32 ``ArrayProcessingResult`` of the same shape: each Y/X plane
+       deconvolved by the chosen number of Richardson-Lucy iterations with an
+       in-focus widefield PSF (Airy from emission wavelength and NA, or a
+       Gaussian of a measured FWHM / the Zhang 2007 fit), reflective edges.
+       Leading Z/T/C planes are deconvolved independently with one PSF.
    * - ``segmentation``
      - Segmentation
      - Any rank >= 2 image-like result.  Extra axes are collapsed to selected
