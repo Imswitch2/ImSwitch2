@@ -395,13 +395,14 @@ def test_reference_homes_the_xy_stage_and_marks_it_referenced(hub):
 def test_reference_calls_home_with_the_label_and_waits(hub, monkeypatch):
     core = core_of(hub)
     order = []
-    real_home, real_wait = core.home, core.waitForDevice
+    real_home, real_busy = core.home, core.deviceBusy
     monkeypatch.setattr(core, "home", lambda label: (order.append(("home", label)), real_home(label))[1])
-    monkeypatch.setattr(core, "waitForDevice", lambda label: (order.append(("wait", label)), real_wait(label))[1])
+    # The wait polls deviceBusy outside the hub lock (not core.waitForDevice, which would hold it).
+    monkeypatch.setattr(core, "deviceBusy", lambda label: (order.append(("busy", label)), real_busy(label))[1])
     stage = make_stage(hub, XY, homeable=True, waitForDevice=False)     # homing waits whatever waitForDevice says
     try:
         stage.reference("X")
-        assert order == [("home", XY), ("wait", XY)]
+        assert order[0] == ("home", XY) and ("busy", XY) in order[1:]
         assert stage.isAxisReferenced("X") and stage.isAxisReferenced("Y")        # MM homes the whole device
     finally:
         stage.finalize()
@@ -605,3 +606,55 @@ def test_stage_module_has_no_forbidden_calls_and_homes_only_in_reference():
         assert forbidden not in source, forbidden
     assert source.count("home(") == 1
     assert "home(" in inspect.getsource(MicroManagerStageManager.reference)
+
+
+def test_a_blocking_move_does_not_hold_the_hub_lock_while_the_device_is_busy(z, hub, monkeypatch):
+    """Plan section 4.5: a multi-second stage move must not stall the camera drain thread.
+    The device is made to report busy for a while; the hub lock must be acquirable meanwhile."""
+    core = hub.host.core
+    polls = {"busy": 6}
+    real_busy = core.deviceBusy
+
+    def slow_busy(label):
+        if polls["busy"] > 0:
+            polls["busy"] -= 1
+            return True
+        return real_busy(label)
+
+    monkeypatch.setattr(core, "deviceBusy", slow_busy)
+    acquired_during_wait = []
+
+    def poke():
+        wait_until(lambda: polls["busy"] < 6, message="the move to start polling")
+        acquired_during_wait.append(hub.host.lock.acquire(timeout=1.0))
+        if acquired_during_wait[-1]:
+            hub.host.lock.release()
+
+    poker = threading.Thread(target=poke)
+    poker.start()
+    z.setPosition(42.0, "Z")
+    poker.join(timeout=5)
+    assert acquired_during_wait == [True]
+    assert polls["busy"] == 0                      # the wait really polled through the busy phase
+    assert z.position["Z"] == pytest.approx(42.0)
+
+
+def test_a_device_that_never_goes_idle_fails_at_micromanagers_timeout(z, hub, monkeypatch):
+    core = hub.host.core
+    monkeypatch.setattr(core, "deviceBusy", lambda label: True)
+    monkeypatch.setattr(core, "getTimeoutMs", lambda: 50)
+    with pytest.raises(stage_module.MMCoreHostError, match="still busy"):
+        z.setPosition(1.0, "Z")
+
+
+def test_a_hub_reload_makes_a_homed_stage_unreferenced_again(hub):
+    stage = make_stage(hub, XY, homeable=True)
+    try:
+        assert not stage.isReferenced
+        stage.reference()
+        assert stage.isReferenced
+        assert hub.reconnectTransport()
+        assert stage._onTransportReconnected(True) == []
+        assert not stage.isReferenced                  # the reloaded core's homed state is unknown
+    finally:
+        stage.finalize()
