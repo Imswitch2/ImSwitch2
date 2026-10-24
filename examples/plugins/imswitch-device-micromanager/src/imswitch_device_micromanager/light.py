@@ -452,7 +452,14 @@ class MicroManagerLightManager(MicroManagerDeviceMixin, LaserManager):
 
     def setValue(self, value, enabled=True, for_scanning=False):
         """Write the power property (see the module docstring for ``enabled`` and ``for_scanning``);
-        ``True`` when written, else ``False`` (logged)."""
+        ``True`` when written, else ``False`` (logged).
+
+        A binary light has no power to set: the laser controller still calls
+        ``setValue(0)`` on every laser at startup, so that is a no-op here, not an error.
+        """
+        if self.isBinary:
+            self.__logger.debug('Light %s: binary, setValue(%r) ignored', self._setupName, value)
+            return True
         try:
             self._write_power(value)
         except DeviceNotConnectedError:

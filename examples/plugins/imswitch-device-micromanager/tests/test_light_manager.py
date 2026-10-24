@@ -431,7 +431,9 @@ def test_a_command_micro_manager_refuses_is_logged_and_false_but_raises_when_che
 
 def test_a_binary_light_has_no_power_command(led):
     assert not led.supportsRawDrive
-    assert led.setValue(1.0) is False and "no power property" in led.lastError
+    # The laser convention: setValue on a binary light is a no-op (the controller calls
+    # setValue(0) on every laser at startup), while the checked raw-drive path refuses.
+    assert led.setValue(1.0) is True and led.lastError is None
     with pytest.raises(RawDriveError, match="no power property"):
         led.applyRawDrive(1.0)
 
@@ -643,3 +645,17 @@ def test_descriptor_spec_is_a_laser_using_the_hub_transport(led):
     (dependency,) = spec.dependencies
     assert dependency.kind is DeviceRelationKind.USES_TRANSPORT
     assert (dependency.target.kind, dependency.target.name) == ("rs232", "MMCore")
+
+
+def test_set_value_on_a_binary_light_is_a_no_op_not_an_error(hub, caplog):
+    """LaserController.setValue(0) hits every laser at startup; a shutter-only light must not
+    log an error for it (seen as 'setting power 0 failed: no power property' in the e2e log)."""
+    import logging
+    light = make_light(hub, label="LED Shutter", enable={"kind": "shutter"})
+    try:
+        with caplog.at_level(logging.ERROR):
+            assert light.setValue(0) is True
+        assert "setting power" not in caplog.text
+        assert light.lastError is None
+    finally:
+        light.finalize()
