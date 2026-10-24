@@ -11,12 +11,45 @@ ordinary ImSwitch2 detector, positioner, laser or flip mirror, and a converter t
 Micro-Manager hardware configuration (``*.cfg``) into a setup-file skeleton.
 
 The plugin is a normal device plugin (see :doc:`plugins`); it needs no change to the ImSwitch2 core.
-This page covers installing it, the setup-file shape of each manager, the converter, the limits and
-how it is tested. The design record is ``docs/design/plans/micromanager-bridge.md`` in the repository.
+It is installed from a source checkout of ImSwitch2 into a Python 3.11 or newer environment, and no rig has
+run it yet: everything here is verified against the real MMCore with Micro-Manager's demo adapters only.
+This page covers a quick start, installing the plugin, the setup-file shape of each manager, the converter,
+the limits, troubleshooting and how it is tested. The design record is
+``docs/design/plans/micromanager-bridge.md`` in the repository.
 
 .. contents::
    :local:
    :depth: 2
+
+
+Quick start
+===========
+
+Install the plugin first (next section). Then there are three ways in, depending on what you have:
+
+**You have a Micro-Manager configuration file (``*.cfg``).** In the config editor (**Hardware > Edit hardware
+configuration...**) choose **Import Micro-Manager...**, pick the ``.cfg`` and read the report: it lists what
+was written and what is still a ``TODO`` (a light's ``wavelength``, the axis name of a stage that is not the
+focus device). Or run the converter from a terminal and open the result in the editor:
+
+.. code-block:: bash
+
+   python -m imswitch_device_micromanager convert /full/path/MMConfig_scope.cfg -o scope_setup.json
+   python -m imswitch.imcontrol.model.plugins validate-setup scope_setup.json
+
+Use an absolute path for the ``.cfg``: it is written into the hub as given, and a relative one is resolved
+against the folder ImSwitch2 is started from. Fill in the ``TODO`` values, save the file in
+``~/ImSwitchConfig/imcontrol_setups`` and pick it with **Hardware > Pick hardware setup...**.
+
+**You have a device Micro-Manager supports, but no configuration yet.** Build the ``.cfg`` where Micro-Manager
+expects it: in Micro-Manager's Hardware Configuration Wizard, add the device, give it its label, and confirm
+there that it works (live view, the stage moves). Save the configuration, then import it as above. The
+hardware stays Micro-Manager's business; ImSwitch2 only loads what the ``.cfg`` describes. For one device
+you can skip the ``.cfg``: the setup entry names the adapter and the device itself (*inline mode*, below).
+
+**You have no hardware.** Install the demo adapters (``pip install mm-test-adapters``) and copy the bundled
+setup template ``demo_scope.json`` (see *The demo setup template*): a camera, two stages, a light and two
+switches on Micro-Manager's own demo devices.
 
 
 Install
@@ -415,7 +448,8 @@ logs it and returns ``False``; ``applyEnabled`` raises ``RawDriveError``).
 **What it does not do.** Power and emission are separate switches in Micro-Manager, so writing power does
 not switch emission. There is no TTL path, so a scan cannot gate the light, and there is no modulation.
 After a hub reconnect and when it finalizes, the light is switched off and must read back off before it
-counts as connected. ``wavelength`` is ImSwitch2's own field (it colours the panel) and is required there.
+counts as connected. ``wavelength`` is ImSwitch2's own field (it colours the panel): the laser kind requires it, the
+converter cannot know it and leaves it out, and ``validate-setup`` warns until you set it.
 
 
 Flip mirror: ``micromanager.flip-mirror``
@@ -458,8 +492,7 @@ state index ``N``.
      - Optional, State devices with exactly two positions only. The two Micro-Manager positions (state
        labels or indices) used as logical states 0 and 1; default: position 0 is state 0 and position 1
        is state 1. It only orders the two positions. A device with more positions exposes every position,
-       so ``states`` is refused there (every position is exposed now); refused for a Shutter too (use
-       ``invert``).
+       so ``states`` is refused there; refused for a Shutter too (use ``invert``).
 
 ``invert``, ``initial_state`` and ``state_names`` are fields of the flip-mirror entry itself (as for the
 Thorlabs MFF), not of ``managerProperties``:
@@ -616,8 +649,10 @@ is never invented, and the JSON never carries comments (``validate-setup`` reads
 - A light's ``wavelength`` is **omitted** (the loader reads a missing one as ``None``). ``validate-setup``
   shows one warning per light until you set it, which is the same TODO.
 
-An excerpt of the report for ``MMConfig_demo.cfg`` (the demo configuration of the test adapters; 13
-devices):
+The demo configuration of the test adapters, ``MMConfig_demo.cfg`` (13 devices), converts to the hub, the
+Camera, the Z and XY stages, two lights (the two shutters) and six switches (the filter wheels Dichroic,
+Emission and Excitation, the Objective turret, the light Path and the LED selector); the hub device
+``DHub`` and the ``Autofocus`` are reported and not written. An excerpt of its report:
 
 .. code-block:: text
 
@@ -674,7 +709,8 @@ In the config editor
 
 Hardware > Edit hardware configuration... (Config Studio) knows the five managers: they are in the device
 palette by category, their forms come from the plugin's schemas, and the plugin's ``demo_scope.json`` is
-offered under *Plugin Templates*.
+offered under *Plugin Templates*. A template opens without complaints about its other devices (the camera of
+the template names the hub that the same template declares).
 
 - **Import Micro-Manager...** (toolbar, and under the setup list) asks for a ``.cfg``, runs the converter
   above on it and merges the result into the open config: the hub into ``rs232devices``, each device into its
@@ -687,9 +723,13 @@ offered under *Plugin Templates*.
 - **Label picker.** In the form of a bridge device, ``label`` is a drop-down of the device labels in the hub's
   ``.cfg`` (read from ``configFile`` of the ``rs232devices`` entry named in ``rs232device``, relative names
   resolved like MMCore does), narrowed to the types the manager accepts when the adapters can classify them.
-  You can still type any text. ``rs232device`` lists the ``micromanager.core`` entries. The labels are read
+  You can still type any text.
+- **Hub picker.** ``rs232device`` lists the ``micromanager.core`` entries of the config. The labels are read
   when a device is selected and again when you pick another hub in the form; with no hub, no ``configFile`` or
-  an unreadable file the field is plain text with a hint saying why.
+  an unreadable file the label field is plain text with a hint saying why.
+
+The editor shows the hub in its *RS232 devices* section: Micro-Manager's core takes the slot that ImSwitch2
+uses for shared communication resources, and the name of the section is a label only.
 
 
 Known limits
@@ -715,6 +755,66 @@ Known limits
   ``adapterPaths`` alone. This has not been measured on a rig yet.
 - **Hardware is not verified.** Everything on this page is verified against the real MMCore with the
   Micro-Manager demo adapters only; no rig has run the bridge yet.
+
+
+Troubleshooting
+===============
+
+A hub or device that cannot start does not stop ImSwitch2: it shows as an error in **Hardware > Hardware
+status** with Micro-Manager's own message, and the log (**View > Log**) has the same text. The hub also logs
+at start which adapter folder it chose and the MMCore versions. These are the messages you are likely to meet.
+
+**"no Micro-Manager device adapters found: set adapterPaths, set MICROMANAGER_PATH, run ``mmcore install`` ..."**
+   The hub found no adapter folder. It looks in the hub's ``adapterPaths``, then the ``MICROMANAGER_PATH``
+   environment variable, then wherever ``pymmcore-plus`` finds an install (``mmcore list`` shows what it
+   knows). Run ``mmcore install`` (Windows and Intel macOS), point ``MICROMANAGER_PATH`` or ``adapterPaths``
+   at the folder of an existing Micro-Manager install, or ``pip install mm-test-adapters`` for the demo
+   devices. "adapter folder(s) do not exist" means one of those paths is wrong; "configuration file not
+   found" names a ``configFile`` that is not there.
+
+**A device fails to load with an MMCore message about the device interface version.**
+   Every adapter is built for one device interface version, and the ``pymmcore`` in your environment speaks
+   one version. They must be the same. ``mmcore --version`` prints the ``pymmcore`` side ("Device API
+   version ..."); the same number is the fourth component of the ``pymmcore`` version (``12.5.1.75`` is
+   version 75). ``mmcore install`` downloads the matching nightly. If you point ``adapterPaths`` at an
+   existing Micro-Manager install, it has to be a build of that interface version, or you have to change
+   the ``pymmcore`` version to match it. The exact wording of the message is MMCore's.
+
+**"camera 'X' cannot start streaming or change its ROI while camera 'Y' is recording"**
+   MMCore has one frame buffer for all cameras, and starting a camera or changing a ROI clears it, which
+   would silently drop frames of the recording. Stop the recording of ``Y`` first, or start both cameras
+   before the recording begins. A related message, "would deliver ... frames while camera 'Y' is streaming",
+   means the two cameras would deliver different frame sizes or pixel types: give them the same ROI,
+   binning and pixel type (see *Known limits*).
+
+**"Unsupported device command" when you press Reference.**
+   That is Micro-Manager's own reply: the adapter has no home command. Homing is only ever tried from the
+   Reference action, and only for a stage with ``homeable: true``. Remove ``homeable`` (or set it to
+   ``false``) for this stage.
+
+**"Micro-Manager has no camera device 'X'. Did you mean 'Y'? Loaded camera devices: [...]"**
+   The ``label`` of the entry is not a loaded device of that type (``stage``, ``light`` and ``flip mirror``
+   entries say the same with their own device type). Labels are case sensitive; in system-config mode they
+   come from the ``.cfg`` the hub loaded, so a label added to Micro-Manager later is only there after the
+   ``.cfg`` is saved and the hub reconnects. The label picker of the config editor lists the labels of the
+   ``.cfg``.
+
+**"... delivers colour frames ..."**
+   The camera is a colour camera (RGB pixel type) and the bridge carries mono cameras only. Give the camera
+   an 8-bit or 16-bit mono pixel type, as a pre-init property or in the ``.cfg``.
+
+**pip refuses to install the plugin on Python 3.10.**
+   ``pymmcore`` needs Python 3.11 or newer, so the plugin does too, and the standalone installers bundle
+   3.10. Install ImSwitch2 from source into a 3.11 or newer environment (see *Install*).
+
+**``validate-setup`` warns "'wavelength' is a required property" after a conversion.**
+   Not an error: Micro-Manager does not know the wavelength of a light, so the converter leaves it out
+   instead of inventing one. Set ``wavelength`` (nanometres) in each ``lasers`` entry.
+
+**On Windows, a vendor adapter fails to load although its library is in the adapter folder.**
+   Vendor adapters load the vendor's SDK DLLs, and these have to be found too. ``pymmcore-plus`` adds the
+   adapter folder to ``PATH``; if the SDK's DLLs are in another folder, adding that folder to ``PATH``
+   before starting ImSwitch2 is the first thing to try. This has not been measured on a rig yet.
 
 
 How it is tested

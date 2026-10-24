@@ -43,7 +43,6 @@ import numpy as np
 from ._frames import (
     FrameFormatError,
     dtype_for_bytes_per_pixel,
-    frame_bytes,
     normalize_frame,
 )
 
@@ -110,6 +109,8 @@ class FramesLostError(MMCoreHostError):
 
 
 class StreamFaultKind(str, enum.Enum):
+    """Why a stream is faulted (:attr:`StreamFault.kind`); the value is what :meth:`MMCoreHost.snapshot` reports."""
+
     #: MMCore ended the sequence because its buffer was full (``isBufferOverflowed``).
     OVERFLOW = 'overflow'
     #: The sequence ended and nobody asked for it, without the overflow flag.
@@ -211,10 +212,12 @@ class MMCoreHost:
     # ------------------------------------------------------------- basic access
     @property
     def lock(self) -> threading.RLock:
+        """The re-entrant lock every MMCore call goes through (see the module docstring)."""
         return self._lock
 
     @property
     def is_connected(self) -> bool:
+        """True while a core is loaded; False before :meth:`connect` and after :meth:`shutdown`."""
         return self._core is not None
 
     @property
@@ -431,6 +434,7 @@ class MMCoreHost:
             self._inline_labels.append(label)
 
     def unload_device(self, label: str) -> None:
+        """Stop the label's stream if it runs, forget it and unload the device from the core."""
         with self._lock:
             stream = self._streams.get(label)
             if stream is not None:
@@ -442,14 +446,17 @@ class MMCoreHost:
                 self._inline_labels.remove(label)
 
     def has_device(self, label: str) -> bool:
+        """True when the core has a loaded device with this label."""
         with self._lock:
             return label in self.core.getLoadedDevices()
 
     def device_type(self, label: str):
+        """MMCore's ``DeviceType`` of a loaded device."""
         with self._lock:
             return self.core.getDeviceType(label)
 
     def labels_of_type(self, device_type) -> List[str]:
+        """Labels of the loaded devices of one MMCore ``DeviceType``."""
         with self._lock:
             return list(self.core.getLoadedDevicesOfType(device_type))
 
@@ -549,6 +556,7 @@ class MMCoreHost:
             return stream
 
     def stream(self, label: str) -> CameraStream:
+        """The label's :class:`CameraStream`; :class:`MMCoreHostError` when it was never registered."""
         with self._lock:
             try:
                 return self._streams[label]

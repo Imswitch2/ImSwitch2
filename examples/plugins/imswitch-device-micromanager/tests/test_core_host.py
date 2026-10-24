@@ -448,7 +448,7 @@ def test_roi_of_an_idle_camera_does_not_fault_a_running_one(host):
     start(host, "Camera")
     collect_records(host, "Camera", 2)
     assert host.set_roi("Cam2", 0, 0, FRAME_SIDE, FRAME_SIDE) == (0, 0, FRAME_SIDE, FRAME_SIDE)
-    records = collect_records(host, "Camera", 2)
+    collect_records(host, "Camera", 2)
     host.stop_stream("Camera")                          # raises if the epoch bookkeeping was wrong
     assert host.snapshot()["streams"]["Camera"]["fault"] is None
 

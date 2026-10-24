@@ -470,6 +470,7 @@ class MicroManagerLightManager(MicroManagerDeviceMixin, LaserManager):
         return self._checked(lambda: self._write_power(value), f'power {value!r}')
 
     def applyValue(self, value):
+        """Same as :meth:`applyRawDrive`: there is no calibration between a value and the property."""
         return self.applyRawDrive(value)
 
     def applyEnabled(self, enabled):

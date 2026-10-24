@@ -294,7 +294,7 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
         state = int(state)
         count = self._adopted.count
         if not 0 <= state < count:
-            raise ValueError(f"Flip mirror state must be a position 0 to {count - 1}, got {state}")
+            raise ValueError(f"{self._where()}: state must be a position 0 to {count - 1}, got {state}")
         return 1 - state if self.invert else state
 
     def _from_hw_state(self, slot: int) -> int:

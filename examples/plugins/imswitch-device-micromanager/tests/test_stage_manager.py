@@ -11,6 +11,7 @@ from imswitch.imcontrol.model.devices.status import (
     DeviceConnectionState, DeviceFailureKind, DeviceNotConnectedError, DeviceRuntimeMode,
 )
 from imswitch_device_micromanager import stage as stage_module
+from imswitch_device_micromanager._core import MMCoreHostError
 from imswitch_device_micromanager.core import MicroManagerCoreManager
 from imswitch_device_micromanager.stage import MicroManagerStageManager, UNKNOWN_POSITION
 from mm_helpers import DEMO_CONFIG, wait_until
@@ -643,7 +644,7 @@ def test_a_device_that_never_goes_idle_fails_at_micromanagers_timeout(z, hub, mo
     core = hub.host.core
     monkeypatch.setattr(core, "deviceBusy", lambda label: True)
     monkeypatch.setattr(core, "getTimeoutMs", lambda: 50)
-    with pytest.raises(stage_module.MMCoreHostError, match="still busy"):
+    with pytest.raises(MMCoreHostError, match="still busy"):
         z.setPosition(1.0, "Z")
 
 

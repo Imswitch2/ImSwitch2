@@ -56,6 +56,7 @@ class MicroManagerCoreManager(DeviceManagerStatusMixin):
     # ------------------------------------------------------------------ access
     @property
     def name(self) -> str:
+        """The hub's key in ``rs232devices``."""
         return self._name
 
     @property
@@ -65,6 +66,7 @@ class MicroManagerCoreManager(DeviceManagerStatusMixin):
 
     @property
     def isConnected(self) -> bool:
+        """True while the core is loaded."""
         return self._host.is_connected
 
     # --------------------------------------------------------------- connection
@@ -106,9 +108,11 @@ class MicroManagerCoreManager(DeviceManagerStatusMixin):
         return self._connect(context='reconnect')
 
     def finalize(self) -> None:
+        """Unload every device and release the core; the dependents are finalized before the hub."""
         self._host.shutdown()
         self._setFinalizedStatus()
 
     def getDeviceDescriptorSpec(self):
+        """Graph descriptor: a resource, not a microscope device."""
         # The hub is communication infrastructure, not a microscope device.
         return DeviceDescriptorSpec(role=DeviceRole.RESOURCE)

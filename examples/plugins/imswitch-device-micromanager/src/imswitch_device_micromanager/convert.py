@@ -121,6 +121,8 @@ class CfgDevice:
 
 @dataclass(frozen=True)
 class PositionCount:
+    """Number of positions of a State device and where the ``.cfg`` says so (the report quotes ``source``)."""
+
     count: int
     source: str
 
@@ -136,6 +138,8 @@ class PixelSizeConfig:
 
 @dataclass
 class CfgModel:
+    """What :func:`parse_cfg` read from a ``.cfg``: devices, core roles, pixel-size and config groups, warnings."""
+
     path: str
     devices: Dict[str, CfgDevice] = field(default_factory=dict)
     #: ``Property,Core,<name>,<value>`` lines other than ``Initialize``: the roles, ``AutoShutter`` ...
@@ -571,6 +575,7 @@ def build_setup(model: CfgModel, types: Mapping[str, Any], hub_name: str = 'MMCo
 
 
 def relative_path(path: str) -> bool:
+    """True when ``path`` (after ``~`` expansion) is not absolute, i.e. depends on the working directory."""
     return not os.path.isabs(os.path.expanduser(str(path)))
 
 
@@ -633,7 +638,12 @@ def _parser() -> argparse.ArgumentParser:
         description=(
             'Reads CFG with the grammar MMCore parses and writes OUT.json (the setup skeleton) and '
             'OUT.conversion-report.txt (every device that was not written and every value still to '
-            'fill in). Device types come from the Micro-Manager adapter libraries; nothing is loaded.'))
+            'fill in). Device types come from the Micro-Manager adapter libraries; nothing is loaded '
+            'or initialised.'),
+        epilog=(
+            'Exit code 0 when the setup was written (also when TODOs remain), 2 when it was not. '
+            'Check the result with: python -m imswitch.imcontrol.model.plugins validate-setup OUT.json. '
+            'Reference: docs/devices/micromanager.rst.'))
     convert.add_argument('cfg', help='the Micro-Manager configuration file')
     convert.add_argument('-o', '--output', required=True, help='the setup file to write (OUT.json)')
     convert.add_argument('--type', action='append', default=[], metavar='LABEL=TYPE',
@@ -643,7 +653,8 @@ def _parser() -> argparse.ArgumentParser:
     convert.add_argument('--adapter-path', action='append', default=[], metavar='DIR',
                          help='adapter folder to classify with and to write to the hub as adapterPaths; repeatable '
                               '(default: MICROMANAGER_PATH, then pymmcore-plus\' own search)')
-    convert.add_argument('--hub-name', default='MMCore', help='key of the hub in rs232devices (default MMCore)')
+    convert.add_argument('--hub-name', default='MMCore', metavar='NAME',
+                         help='key of the hub in rs232devices (default MMCore)')
     return parser
 
 

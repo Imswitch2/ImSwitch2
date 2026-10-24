@@ -1,3 +1,4 @@
+"""Frame normalisation (``_frames``): dtype from PixelType, shape checks, colour refused. Pure numpy, no MMCore."""
 import numpy as np
 import pytest
 

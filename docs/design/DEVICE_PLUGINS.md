@@ -35,9 +35,9 @@ The core of this plan is implemented on `codex/testalab-scandev-port`:
 - **Micro-Manager bridge** (P1 + P2 implemented 2026-10-24, rig and publish
   open): `examples/plugins/imswitch-device-micromanager` bridges Micro-Manager
   device adapters through one shared MMCore hub in `rs232devices` and
-  contributes camera, stage, light and flip-mirror managers plus a `.cfg`
-  converter; it is the first of the bundled example plugins with a `flip_mirror`
-  contribution. Plan:
+  contributes camera, stage, light and flip-mirror (N-position switch) managers
+  plus a `.cfg` converter; it is the first of the bundled example plugins with a
+  `flip_mirror` contribution. Plan:
   `docs/design/plans/micromanager-bridge.md`; user page:
   `docs/devices/micromanager.rst`.
 

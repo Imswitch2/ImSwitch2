@@ -1,7 +1,7 @@
 """The plumbing every bridged Micro-Manager device manager shares.
 
-Camera, stage and light managers all do the same things around their own
-device logic (plan ``micromanager-bridge.md`` sections 4.2 and 4.7):
+The camera, stage, light and flip-mirror managers all do the same things around
+their own device logic (plan ``micromanager-bridge.md`` sections 4.2 and 4.7):
 
 - find the hub in ``lowLevelManagers['rs232sManager']`` by
   ``managerProperties.rs232device``;
@@ -15,15 +15,18 @@ device logic (plan ``micromanager-bridge.md`` sections 4.2 and 4.7):
   manager absent instead of aborting the app;
 - carry the hub's failure as the manager's own status;
 - after the hub reloaded the core (``_onTransportReconnected``): reopen the
-  backend, adopt the device again, report.
+  backend, adopt the device again, report;
+- wait for a device to go idle (:meth:`~MicroManagerDeviceMixin._wait_until_idle`),
+  polling ``deviceBusy`` outside the hub lock; stage and flip-mirror moves use it.
 
 :class:`MicroManagerDeviceMixin` holds all of that once. A manager keeps only
 what is its own: the device-type rule, what it reads at adoption
 (:meth:`~MicroManagerDeviceMixin._reinitialise`) and its safe state.
 
-Why a mixin and not a base class. The three managers derive from
-``DetectorManager``, ``PositionerManager`` and ``LaserManager``, which are
-unrelated classes; all three already inherit :class:`DeviceManagerStatusMixin`,
+Why a mixin and not a base class. The managers derive from ``DetectorManager``,
+``PositionerManager`` and ``LaserManager`` (the flip mirror has no ImSwitch2 base
+class and takes :class:`DeviceManagerStatusMixin` directly), which are unrelated
+classes; the three already inherit :class:`DeviceManagerStatusMixin`,
 and the mixin only *uses* that class's methods (``_installBackend``,
 ``_setConnected`` ...) through ``self``. It has no ``__init__`` and is listed
 first in the bases, so it never takes part in a constructor chain and the
@@ -269,6 +272,7 @@ class MicroManagerDeviceMixin:
 
     @property
     def hub(self) -> MicroManagerCoreManager:
+        """The ``micromanager.core`` hub this device is bound to."""
         return self._hub
 
     def _use(self, what: str):
@@ -302,6 +306,7 @@ class MicroManagerDeviceMixin:
             self._idle_poll.wait(BUSY_POLL_S)
 
     def getDeviceDescriptorSpec(self):
+        """Graph descriptor: a primary device that depends on its hub through ``rs232device``."""
         return rs232BackedPrimarySpec(
             category=self.BRIDGE_CATEGORY, rs232_name=str(self._props['rs232device']),
             display_name=f'{self._setupName} (Micro-Manager {self._label})')

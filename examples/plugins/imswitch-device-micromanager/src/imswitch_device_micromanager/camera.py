@@ -321,6 +321,8 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
 
     # ------------------------------------------------------------- parameters
     def setParameter(self, name, value):
+        """Write Exposure or a Micro-Manager property and read it back; any property other than
+        Exposure restarts a running stream (MMCore cannot say which ones change the frame)."""
         if name == PARAM_EXPOSURE:
             self._requireConnected('setParameter')
             with self._host.lock:
@@ -375,6 +377,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             self.parameters[PARAM_EXPOSURE].value = float(core.getExposure(self._label))
 
     def setBinning(self, binning):
+        """Set the ``Binning`` property to a supported value and re-read the frame geometry."""
         if not self.__dict__.get('_ready'):
             return super().setBinning(binning)         # DetectorManager.__init__ sets the first supported binning
         binning = int(binning)
@@ -536,6 +539,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
 
     # ----------------------------------------------------------- acquisition
     def startAcquisition(self):
+        """Start this camera's sequence through the host, which guards frame shape and buffer ownership."""
         self._requireConnected('startAcquisition')
         host = self._host
         with host.lock:
@@ -557,6 +561,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         self._raise_staged_fault()
 
     def flushBuffers(self):
+        """Drop this camera's queued and staged frames; other cameras are not touched."""
         if not self._ready:
             return
         with self._host.lock:

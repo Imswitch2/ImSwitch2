@@ -1,3 +1,5 @@
+"""Manifest, JSON schemas and the bundled setup template, read from the installed package files: ids, no in-tree alias,
+schema accept/reject cases per manager. No MMCore and no adapters needed."""
 import json
 from importlib import resources
 

@@ -25,9 +25,12 @@ Position. The tracked position is what the hardware says: ``initialPosition``
 is read from the device, a blocking move reads the position back after the wait
 and records that, and ``stagePositionChanged`` / ``XYStagePositionChanged``
 events update it from MMCore's callback thread. The handlers only store, under
-a lock of this manager's own: they must not take the hub lock, which a move
-holds while it waits for the device (the callback would then wait for the very
-move that waits for it).
+a lock of this manager's own, and never take the hub lock: they run on a thread
+inside MMCore, and a command holds the hub lock around its MMCore call.
+
+Waiting. A blocking move or home polls ``deviceBusy`` through
+:meth:`~._bridge.MicroManagerDeviceMixin._wait_until_idle`, outside the hub lock,
+so a slow stage does not stall the camera drain thread.
 
 Homing. ``home`` moves hardware and MMCore has no query for whether an adapter
 supports it, so it is called from :meth:`MicroManagerStageManager.reference`
@@ -45,7 +48,6 @@ from imswitch.imcommon.model import initLogger
 from imswitch.pluginapi import PositionerManager
 
 from ._bridge import MicroManagerDeviceMixin
-from ._core import MMCoreHostError
 
 #: Axis names of a Micro-Manager XYStage, in the order ``getXYPosition`` returns them.
 XY_AXES = ['X', 'Y']

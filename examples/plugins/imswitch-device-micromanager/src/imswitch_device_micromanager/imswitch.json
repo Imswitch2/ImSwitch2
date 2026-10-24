@@ -14,51 +14,51 @@
         "manager_name_aliases": [],
         "manager_properties_schema": "schemas/micromanager_core.schema.json",
         "setup_templates": ["setup_templates/demo_scope.json"],
-        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "docs_url": "https://github.com/Imswitch2/Imswitch2/blob/main/docs/devices/micromanager.rst",
         "supported_platforms": ["linux", "win32", "darwin"]
       },
       {
         "id": "micromanager.camera",
         "kind": "detector",
-        "display_name": "Micro-Manager camera (mono, via the shared MMCore hub)",
+        "display_name": "Micro-Manager camera (mono)",
         "python_name": "imswitch_device_micromanager.camera:MicroManagerCameraManager",
         "manager_name_aliases": [],
         "manager_properties_schema": "schemas/micromanager_camera.schema.json",
         "setup_templates": ["setup_templates/demo_scope.json"],
-        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "docs_url": "https://github.com/Imswitch2/Imswitch2/blob/main/docs/devices/micromanager.rst",
         "supported_platforms": ["linux", "win32", "darwin"]
       },
       {
         "id": "micromanager.stage",
         "kind": "positioner",
-        "display_name": "Micro-Manager stage (Stage or XYStage, via the shared MMCore hub)",
+        "display_name": "Micro-Manager stage (Stage or XYStage)",
         "python_name": "imswitch_device_micromanager.stage:MicroManagerStageManager",
         "manager_name_aliases": [],
         "manager_properties_schema": "schemas/micromanager_stage.schema.json",
         "setup_templates": ["setup_templates/demo_scope.json"],
-        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "docs_url": "https://github.com/Imswitch2/Imswitch2/blob/main/docs/devices/micromanager.rst",
         "supported_platforms": ["linux", "win32", "darwin"]
       },
       {
         "id": "micromanager.light",
         "kind": "laser",
-        "display_name": "Micro-Manager light (shutter, state or property switch, optional power property, via the shared MMCore hub)",
+        "display_name": "Micro-Manager light (shutter, state or property switch, optional power property)",
         "python_name": "imswitch_device_micromanager.light:MicroManagerLightManager",
         "manager_name_aliases": [],
         "manager_properties_schema": "schemas/micromanager_light.schema.json",
         "setup_templates": ["setup_templates/demo_scope.json"],
-        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "docs_url": "https://github.com/Imswitch2/Imswitch2/blob/main/docs/devices/micromanager.rst",
         "supported_platforms": ["linux", "win32", "darwin"]
       },
       {
         "id": "micromanager.flip-mirror",
         "kind": "flip_mirror",
-        "display_name": "Micro-Manager flip mirror (N-position State device or Shutter, via the shared MMCore hub)",
+        "display_name": "Micro-Manager flip mirror (State device with N positions, or Shutter)",
         "python_name": "imswitch_device_micromanager.flipmirror:MicroManagerFlipMirrorManager",
         "manager_name_aliases": [],
         "manager_properties_schema": "schemas/micromanager_flip_mirror.schema.json",
         "setup_templates": ["setup_templates/demo_scope.json"],
-        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "docs_url": "https://github.com/Imswitch2/Imswitch2/blob/main/docs/devices/micromanager.rst",
         "supported_platforms": ["linux", "win32", "darwin"]
       }
     ]

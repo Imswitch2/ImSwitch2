@@ -5,15 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "imswitch-device-micromanager"
 version = "0.1.0"
-description = "Micro-Manager device bridge for ImSwitch2, built on pymmcore-plus"
+description = "Micro-Manager device bridge for ImSwitch2: cameras, stages, lights and N-position switches through pymmcore-plus"
 readme = "README.md"
 # pymmcore (a pymmcore-plus dependency) requires Python >= 3.11; ImSwitch2 itself still supports 3.10.
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }
-keywords = ["imswitch", "imswitch-plugin", "micro-manager", "mmcore", "pymmcore-plus", "camera", "stage", "flip-mirror"]
+keywords = [
+    "imswitch", "imswitch-plugin", "micro-manager", "micromanager", "mmcore", "pymmcore-plus",
+    "microscopy", "camera", "stage", "light-source", "shutter", "filter-wheel", "flip-mirror",
+]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Plugins",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
@@ -21,6 +34,11 @@ dependencies = [
     "pymmcore-plus>=0.18,<0.19",
     "numpy",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Imswitch2/Imswitch2/tree/main/examples/plugins/imswitch-device-micromanager"
+Documentation = "https://github.com/Imswitch2/Imswitch2/blob/main/docs/devices/micromanager.rst"
+Issues = "https://github.com/Imswitch2/Imswitch2/issues"
 
 [project.optional-dependencies]
 # mm-test-adapters ships the real MMCore DemoCamera adapters (and MMConfig_demo.cfg)

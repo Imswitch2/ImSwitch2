@@ -7,7 +7,7 @@ from imswitch.imcontrol.model.SetupInfo import RS232Info
 from imswitch.imcontrol.model.devices.graph import DeviceRole
 from imswitch.imcontrol.model.devices.status import DeviceConnectionState, DeviceFailureKind
 from imswitch_device_micromanager.core import MicroManagerCoreManager
-from mm_helpers import DEMO_CONFIG, start, wait_until
+from mm_helpers import DEMO_CONFIG, start
 
 
 def make_manager(adapter_dir, **properties):

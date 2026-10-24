@@ -469,7 +469,12 @@ rs232devices
 Optional map of RS232 connection names to :class:`RS232Info` objects.
 
 Some detector/laser/positioner managers require a corresponding RS232
-connection to be referenced in their ``managerProperties``.
+connection to be referenced in their ``managerProperties``.  An entry is not
+always a serial port: a device plugin may use the slot for any shared
+communication resource that devices reference by name.  The Micro-Manager
+bridge puts its shared MMCore there (``managerName`` ``micromanager.core``),
+and every bridged device names it in ``managerProperties.rs232device``; see
+:doc:`devices/micromanager`.
 
 ``RS232Manager`` reads eight properties, and all of them are needed:
 ``port``, ``baudrate``, ``bytesize``, ``parity``, ``stopbits``,
@@ -946,18 +951,29 @@ Key fields (per SLM):
 flipMirrors
 -----------
 
-Optional map of motorized flip mirror names to :class:`FlipMirrorInfo`
-objects.  Required by the ``FlipMirror`` panel.
+Optional map of switch names to :class:`FlipMirrorInfo` objects.  Required by
+the ``FlipMirror`` panel.
 
-Key fields (per mirror):
+A flip mirror is a **switch with N named positions**, numbered ``0`` to
+``N-1``: two for a mirror, more for a filter wheel, an objective turret or a
+multi-way light path.  The panel shows one row per switch, with one button per
+position up to four positions and a drop-down list above that.  A switch can
+follow another (the panel's *Follow* column) only when both have the same
+number of positions.
+
+Key fields (per switch):
 
 * ``managerName`` (str): ``"ThorlabsMFFManager"`` for Thorlabs MFF101/MFF102
-  mounts, ``"ThorlabsMFF_mock"`` for a simulated one
+  mounts, ``"ThorlabsMFF_mock"`` for a simulated one, ``"micromanager.flip-mirror"``
+  for a Micro-Manager State device or Shutter (:doc:`devices/micromanager`)
 * ``serial_number`` (str): Serial number the manager uses to find the device
-* ``invert`` (bool, default ``false``): Swap logical states 0 and 1
-* ``initial_state`` (int, optional): State to move to at startup; omit to
-  leave the mirror where it is
-* ``state_names`` (dict, optional): Display names for states ``"0"`` and ``"1"``
+* ``invert`` (bool, default ``false``): Swap logical states 0 and 1.  Two-state
+  devices only; a device with more positions does not take it
+* ``initial_state`` (int, optional): State ``0`` to ``N-1`` to move to at
+  startup; omit to leave the device where it is
+* ``state_names`` (dict, optional): Display names, keyed by the state numbers
+  as strings, ``"0"`` to ``"N-1"``.  A state it does not name keeps its
+  manager's own name
 * ``managerProperties`` (dict, optional): Manager-specific settings
 
 **Example** (from ``example_snouty_smart_modes.json``):
@@ -972,6 +988,21 @@ Key fields (per mirror):
                "0": "Widefield",
                "1": "Light sheet"
            }
+       }
+   }
+
+**Example** (a ten-position Micro-Manager filter wheel, hub ``MMCore`` in
+``rs232devices``; the positions are named by Micro-Manager's state labels unless
+``state_names`` says otherwise):
+
+.. code-block:: json
+
+   "flipMirrors": {
+       "Dichroic": {
+           "managerName": "micromanager.flip-mirror",
+           "managerProperties": {"rs232device": "MMCore", "label": "Dichroic"},
+           "initial_state": 0,
+           "state_names": {"0": "DAPI", "1": "GFP"}
        }
    }
 
