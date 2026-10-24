@@ -1,0 +1,14 @@
+{
+  "rs232devices": {
+    "MMCore": {
+      "managerName": "micromanager.core",
+      "managerProperties": {
+        "configFile": "MMConfig_demo.cfg",
+        "adapterPaths": [],
+        "circularBufferMB": null,
+        "logDir": null,
+        "adoptExistingCore": false
+      }
+    }
+  }
+}

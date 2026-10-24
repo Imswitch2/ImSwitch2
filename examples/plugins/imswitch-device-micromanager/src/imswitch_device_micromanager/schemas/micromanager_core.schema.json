@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Micro-Manager core hub managerProperties",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "configFile": {
+      "type": "string",
+      "description": "Micro-Manager hardware configuration (.cfg) loaded when the hub starts (system-config mode). '~' is expanded; a relative name is looked up in the working directory, then in the first adapter path. Omit it to load devices one by one from the device entries (inline mode)."
+    },
+    "adapterPaths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Folders searched for device adapter libraries. Empty uses the MICROMANAGER_PATH environment variable, then the Micro-Manager install found by pymmcore-plus (which falls back to the mm-test-adapters demo adapters)."
+    },
+    "circularBufferMB": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null,
+      "description": "Size of MMCore's circular image buffer in MB. null keeps MMCore's own default."
+    },
+    "logDir": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Folder that receives MMCore's own log file. null leaves MMCore's logging where pymmcore-plus puts it."
+    },
+    "adoptExistingCore": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reuse the process-wide CMMCorePlus another package created instead of constructing a private one. Only for setups that share a core with napari-micromanager or similar; the core's signal backend is then not under ImSwitch2's control."
+    }
+  }
+}

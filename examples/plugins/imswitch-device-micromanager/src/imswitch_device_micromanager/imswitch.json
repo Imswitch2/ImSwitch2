@@ -1,0 +1,22 @@
+{
+  "name": "imswitch-device-micromanager",
+  "display_name": "Micro-Manager Device Bridge (pymmcore-plus)",
+  "schema_version": "0.1",
+  "imswitch_min_version": "0.1",
+  "license": "GPL-3.0-or-later",
+  "contributions": {
+    "device_managers": [
+      {
+        "id": "micromanager.core",
+        "kind": "rs232",
+        "display_name": "Micro-Manager core (shared MMCore hub)",
+        "python_name": "imswitch_device_micromanager.core:MicroManagerCoreManager",
+        "manager_name_aliases": [],
+        "manager_properties_schema": "schemas/micromanager_core.schema.json",
+        "setup_templates": ["setup_templates/demo_scope.json"],
+        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "supported_platforms": ["linux", "win32", "darwin"]
+      }
+    ]
+  }
+}
