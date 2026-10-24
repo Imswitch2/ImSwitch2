@@ -1,8 +1,9 @@
 # Micro-Manager device bridge
 
-Status: Proposed — revision 3, 2026-10-24 (two independent reviews the same
-day, each against the code and a pymmcore-plus probe venv; §10 lists what
-changed). Phase 0 spike is the first deliverable; nothing in this
+Status: Active — P0, P1 and P2 IMPLEMENTED 2026-10-24 on `feat/micromanager-bridge`
+(590 plugin tests on the real MMCore with the demo adapters; see §5 and §10);
+P3 rig and P4 publish open. Design text below is revision 3 (two independent
+reviews the same day); implementation deviations are recorded in §10. Phase 0 spike is the first deliverable; nothing in this
 document is implemented yet.
 Branch: `feat/micromanager-bridge` (worktree `../Imswitch2-micromanager`), one
 branch for the whole effort.
@@ -255,7 +256,7 @@ loaded labels of the right MM device type, so a typo is a one-line fix.
 | `DetectorManager` | Camera, **mono only** | Exposure ⇄ `setExposure(label)` (ms, MM's unit). Every MM property becomes a parameter: allowed values → `DetectorListParameter`; numeric with limits → `DetectorNumberParameter`; read-only → non-editable; `Binning` allowed values → `supportedBinnings`. `fullShape` = `(width, height)` from `clearROI` + `getImageWidth/Height` at init. `startAcquisition` → host-guarded `startSequenceAcquisition(label, 2**31-1, 0, stopOnOverflow=True)`; `stopAcquisition` → `stopSequenceAcquisition(label)` and **lets MM errors raise** (the lease table turns that into the hardware fault); a detected frame loss (§4.5) is re-raised here too, so a recording that lost frames fails instead of finishing short. `getChunk` pops **this camera's queue in the host** (§4.5), never the MM buffer, and returns a list of equally-shaped `(h, w)` frames (a list is tolerated by `_distributeChunkLocked`; Hamamatsu returns one). `flushBuffers` clears **this camera's queue only**. `crop` → stop, `setROI(label, …)`, read `getROI(label)` back and set `_frameStart`/`_shape` from the applied values (adapters snap; Hamamatsu precedent), restart. **`dtype` overridden** from `PixelType`/bytes-per-pixel so an 8-bit camera is not declared uint16 to a storer created before the first frame; `bitDepth` stays itemsize×8. `isScanDriven` False. `cameraPixelSizeUm` from the setup file, else from MM's pixel-size config: `getPixelSizeUm()` **includes binning** and returns 0.0 when no pixel config matches (P0 probe), so the manager divides by the current binning to get the unbinned camera pixel size ImSwitch2 expects, treats 0.0 as "not configured", and logs which source won (the setup value wins). **Colour cameras (4-component frames) are refused at init** with a message: ImSwitch2's chunk contract is `(numFrames, height, width)`, the Zarr writer and napari layers assume it; a per-component split is a later feature. |
 | `PositionerManager` | Stage, XYStage | Axes: a Stage has one axis (name from the setup file); an XYStage has exactly `["X","Y"]`. µm in both systems, no conversion. **`initialPosition` read from `getPosition`/`getXYPosition`** (not zeros). `setPosition`/`move` → `setPosition` / `setXYPosition` / relative variants, then `waitForDevice` when `waitForDevice: true`. `stagePositionChanged` / `XYStagePositionChanged` → `updateTrackedPosition`. `reference()` → `home(label)`. `requiresReference` is a **class attribute of `PositionerManager`** (default False), not a setup field, so the bridge manager sets it per instance from `managerProperties.homeable` (default false; `isReferenceActionable` = requiresReference × forPositioning × not hide); the manager **never calls `home` on its own** — homing moves hardware, and MMCore offers no support query — so an unsupported adapter surfaces as an error on the explicit reference action, not at startup. `forScanning` False (no analog line). |
 | `LaserManager` (done, 0ab55bd39) | Shutter, State, property | `managerProperties.enable` = `{kind: shutter}` \| `{kind: state, on, off}` (label or index) \| `{kind: property, name, on, off}`; optional `power` = `{label?, property, units, decimals}` — `units` and `decimals` have **no default** (MM properties carry no unit; we do not guess `mW`); `isBinary` when `power` is absent. Device type must match `enable.kind`; state labels / property values are verified at init (read-only refused). `LaserInfo.valueRangeMin/Max` must lie inside MM's limits when MM states them. `setEnabled`/`setValue` read back and return False on failure (the laser convention); `applyEnabled`/`applyValue`/`applyRawDrive` raise `RawDriveError`; `supportsRawDrive` only with `power`. Safe state, reload and finalize switch the light off unguarded and **verify it reads back off**. Modulation: unsupported, `isModulated` False. |
-| Flip mirror [P2] | State device with **exactly two** positions (flip mounts, two-way light paths, a Shutter presented as a switch) | No base class exists; `FlipMirrorsManager` instantiates `cls(info, name, **lowLevelManagers)` and `FlipMirrorController` duck-types `move_to(state)`, `get_state()`, `get_state_names()`, `is_connected()`, `get_cached_state()`, `get_last_error()`, `getDeviceLifecycle()`, `finalize()` (ThorlabsMFF is the model); `FlipMirrorWidget` draws exactly two buttons named from `get_state_names()`. `managerProperties`: `rs232device`, `label`, optional `states` = the two MM state labels to use as 0 and 1 when the adapter's own labels are unhelpful. A device with more than two positions is **refused** at init with its position count; `states` does not turn a wheel into a switch. `FlipMirrorInfo.invert` is applied inside the manager. **Filter wheels, objective turrets and multi-way light paths are deferred** (§9): ImSwitch2 has no selector device kind, and squeezing ten positions into two buttons would misrepresent the hardware. |
+| Flip mirror (done, 4fd0fda95) | State device with **exactly two** positions, or a Shutter presented as a switch (closed = 0, open = 1; `states` refused for a Shutter, use `invert`) | No base class exists; `FlipMirrorsManager` instantiates `cls(info, name, **lowLevelManagers)` and `FlipMirrorController` duck-types `move_to(state)`, `get_state()`, `get_state_names()`, `is_connected()`, `get_cached_state()`, `get_last_error()`, `getDeviceLifecycle()`, `finalize()` (ThorlabsMFF is the model); `FlipMirrorWidget` draws exactly two buttons named from `get_state_names()`. `managerProperties`: `rs232device`, `label`, optional `states` = the two MM state labels to use as 0 and 1 when the adapter's own labels are unhelpful. A device with more than two positions is **refused** at init with its position count; `states` does not turn a wheel into a switch. `FlipMirrorInfo.invert`, `initial_state` (startup only) and `state_names` are applied inside the manager (unnamed states carry MM's own labels / Closed, Open); moves wait outside the hub lock and are read back; lifecycle = the hub's transport path. **Filter wheels, objective turrets and multi-way light paths are deferred** (§9): ImSwitch2 has no selector device kind, and squeezing ten positions into two buttons would misrepresent the hardware. |
 | `RotatorManager` [P3] | Stage used as a rotation axis | `move_rel` / `move_abs` in degrees → the Stage's µm API; conversion factor required in the setup. |
 | not mapped | Serial, Hub, Core, Generic, ImageProcessor, Magnifier, SignalIO, Galvo, AutoFocus, SLM, pumps | Serial/Hub/Core are MM-internal; Galvo/SignalIO duplicate ImSwitch2's native waveform scanning; AutoFocus and SLM wait for a concrete user. |
 
@@ -304,32 +305,39 @@ relabels frames on the tagged-pop path (§3). So the buffer gets one owner.
   read-back (stage) and property echo (camera parameter refresh). Nothing
   from a signal touches Qt.
 
-### 4.6 Converter
+### 4.6 Converter (done, 26b2938f1)
 
-`python -m imswitch_device_micromanager convert MMConfig.cfg -o setup.json`
-reads the `.cfg` (`Device,` / `Parent,` / `Property,` / `ConfigGroup,`
-lines, the same grammar MMCore parses). A `Device,` record carries label,
-adapter library and adapter device name but **not** the device type, so the
-converter classifies each device through
-`getAvailableDeviceTypes(library)` on a bare core (adapters installed,
-nothing loaded or initialised — verified in §3). Without the adapters on the
-converting machine, or for a library it cannot find, the device is written as
-**unresolved**; `--type LABEL=camera|stage|xystage|shutter|state` overrides
-or supplies a type by hand.
+`python -m imswitch_device_micromanager convert MMConfig.cfg -o setup.json
+[--type LABEL=camera|stage|xystage|shutter|state]… [--no-classify]
+[--adapter-path DIR]… [--hub-name NAME]` — pure Python (a test pins that it
+imports neither `imswitch` nor Qt). It parses MMCore's `.cfg` grammar
+(`Device`, `Parent`, `Property`, `Label`, `ConfigGroup`, `ConfigPixelSize`,
+`PixelSize_um`, `Delay`, `FocusDirection`; unknown commands become report
+warnings, a malformed line is `file:line` and exit 2). A `Device,` record
+carries no type, so devices are classified through
+`getAvailableDeviceTypes(library)` on a bare core (adapters installed, nothing
+loaded or initialised — verified in §3); unresolved libraries stay unresolved,
+`--type` supplies or overrides a type.
 
-Output: a setup skeleton with the `MMCore` hub, one entry per Camera / Stage /
-XYStage / Shutter / two-position State device with the right `managerName`
-and `rs232device`, and a `TODO` marker where a value cannot be derived:
-camera pixel size, the axis name of a single Stage, and for lights the
-wavelength, value range, units and decimals. Multi-position State devices
-and devices of unmapped or unresolved types are **not** written into the
-setup file and **not** written as comments (`validate_setup_file` uses
-`json.load`, which rejects them): they go to a sidecar
-`<out>.conversion-report.txt` and to stdout, one line per device with label,
-library, device name, type and the reason. The JSON output must pass
-`python -m imswitch.imcontrol.model.plugins validate-setup`. Later: a
-config-editor action "Import Micro-Manager configuration…" on top of the
-same function.
+Output: the hub in `rs232devices`, one `detectors` entry per Camera, one
+`positioners` entry per Stage (`["Z"]` when `Core,Focus` names it, else the
+axis string `"TODO"`, which loads and is listed in the report) and XYStage
+(`["X","Y"]`, `homeable` false), one `lasers` entry per Shutter (binary:
+ranges `null`; `wavelength` **omitted** — MM does not know it; the loader
+reads it as `None` and `validate-setup` warns once per light, which doubles as
+the checklist), one `flipMirrors` entry per two-position State device (count
+from the pre-init `Number of positions` or the `Label` lines; unknown or
+contradictory → report), `availableWidgets` = what the written sections need.
+`cameraPixelSizeUm` is omitted: MM's pixel-size configs supply it, else a
+report TODO. Nothing is ever invented and nothing is written as a JSON
+comment (`validate_setup_file` uses `json.load`): multi-position State
+devices, AutoFocus, SignalIO, Galvo, Magnifier, ImageProcessor, Hub, Serial,
+Core, pumps and unresolved devices go to `<out>.conversion-report.txt` and
+stdout, one line each with label, library, device, type and reason. The demo
+config converts to hub + Camera + Z + XY + two shutter lights with 8 devices
+reported, and the output boots through the real managers (test). Later: a
+config-editor action "Import Micro-Manager configuration…" on the same
+function.
 
 ### 4.7 Failure and reconnect behaviour
 
@@ -410,7 +418,10 @@ first time imswitch2 itself installs on ≥ 3.11 in CI; it installs
 extracts the shared hub plumbing into `_bridge.MicroManagerDeviceMixin`,
 0ab55bd39 adds `micromanager.light`; 434 plugin tests; test devices `LED
 Shutter`, `White Light Shutter`, `LED` (State), inline `D-DA` `Voltage`.)
-Remaining: `micromanager.flip-mirror`
+P2b done the same day: 4fd0fda95 `micromanager.flip-mirror`, 26b2938f1
+`convert` + `docs/devices/micromanager.rst` (linked from the docs index, the
+device README, plugins.rst, DEVICE_PLUGINS.md); 590 plugin tests, `sphinx -W`
+clean. **P2 is complete.** Original scope: `micromanager.flip-mirror`
 (two-position devices only), `convert` with library-based classification and
 the sidecar report, `docs/devices/micromanager.rst` (install matrix per platform,
 both modes, the unmapped-type table, the mono-only limit), plans README row,
@@ -488,6 +499,28 @@ Prerequisite for installer users: the bundle moves to Python ≥ 3.11 (§6).
 - Config-editor "Import Micro-Manager configuration…" on top of `convert`.
 
 ## 10. Review log
+
+**Implementation log (2026-10-24, all on `feat/micromanager-bridge`, Sonnet
+agents from structured briefs, reviewed and fixed in-session).** Deviations
+from the revision-3 text that were accepted: the hub plumbing lives in one
+mixin `_bridge.MicroManagerDeviceMixin` (camera, stage, light, flip mirror);
+the camera keeps a manager-side staging list so `getLatestFrame` never steals
+frames from a `readChunk` consumer (eviction there is a fault, like the
+host's); every property write except Exposure restarts the stream (MMCore
+cannot say which properties change the frame format); `Binning` is not a
+parameter (only `setBinning`); the host selects the first streaming camera as
+MMCore's current camera (pop shapes by the current camera, §3); blocking
+stage/flip-mirror waits poll `deviceBusy` outside the hub lock at MMCore's 10 ms
+cadence and fail at `getTimeoutMs`; a hub reload marks a homeable stage
+unreferenced; an absent stage shows `nan`, not 0; `requiresReference` comes
+from `managerProperties.homeable`; the light's `enable`/`power` objects replace
+the flat `enableProperty`/`powerProperty` names; a refused light command sets
+`lastError`, not connection ERROR (so "off" always stays possible); the
+converter omits unknown values instead of writing markers. Known core issues
+met, left alone: SettingsController ROI/binning double-multiply; the transport
+reconnect path never calls `clearFaultAfterHardwareReplacement`; the real
+napari canvas segfaults offscreen (the e2e stubs it).
+
 
 **Revision 3 (2026-10-24)** — second independent review (8 findings), all
 re-verified in our own probe venv and accepted. Buffer ownership moved to
