@@ -1,10 +1,10 @@
 # ImProcess Workflow Editor 2.0: a patcher canvas and interactive runs
 
-Date: 2026-10-24 (revision 3, after two review rounds)
+Date: 2026-10-24 (revision 4, after three review rounds)
 
-Status: Revision 3, for final confirmation. Two independent review rounds on
-2026-10-24 (both GREEN WITH CHANGES; every finding is addressed in this
-revision, see *Review record*). The mockups
+Status: Approved for implementation, starting with Phase 0. Three independent
+review rounds on 2026-10-24; the third ended "Fix that sentence and Phase 0 is
+GREEN", and revision 4 makes that fix (see *Review record*). The mockups
 are renders of a working spike (`tools/workflow_editor_2_mockups/`) that uses
 the real plugin catalogue, the real `WorkflowDocument` and real run results;
 the window around them is the proposal. Supersedes the "graph canvas" item of
@@ -215,7 +215,7 @@ curve plotted in the inspector, and the two CSV files the Save steps wrote.
 | Drag from an output to an input | Connect; compatible inputs highlight, incompatible ones dim |
 | Drop a cable on a box's body | Connect to its first free compatible input |
 | Drop a cable in empty space | Quick-add picker filtered by kind and arity; the new step is connected |
-| Drag an input's cable end into empty space | Disconnect |
+| Drag an input's cable end into empty space | Disconnect (refused for a Save's input, which the format requires: the cable snaps back with "a Save needs an input — delete the Save instead") |
 | Drop a box on a cable | Splice it in between |
 | Right-click a box | Run to here, Re-run from here, Show output in viewer, Pin output, Duplicate, Delete |
 | Right-click a cable | Insert step…, Delete |
@@ -272,7 +272,13 @@ SMLM reconstructor makes localizations. So:
   port or pattern, so ports and kinds are one declaration. `output_spec`
   already accepts `input_specs`, but no caller passes them today; the runner,
   `steps.validate()`, the catalogue and `runtime.describe_registry` are
-  changed to pass the input kinds. Reconstructors have no `output_spec` at
+  changed to pass the input kinds **through one helper that passes them only
+  when the override accepts the argument** (a signature check), because the
+  documented signature for drop-ins is `output_spec(params)` and a drop-in
+  written to it must keep working — in `validate()` an unexpected argument
+  would raise and take the editor's issue list down with it. A contract test
+  runs a drop-in whose override is `output_spec(self, params=None)`, and the
+  user docs gain a note on the new optional argument. Reconstructors have no `output_spec` at
   all and get one (one port, `out`, with its kind). A Source produces the
   pseudo-kind `recording`. A test fails when a built-in declares none.
 - **"any"** is a declared kind (the Python step: what the code returns), and
@@ -359,7 +365,10 @@ handle (a View-only result reads straight from the recording), and
 - *Pin* publishes the result to the results list, and pinned entries are never
   evicted; when the editor closes, the session hands the handles still used
   by pinned results to the controller's retained list, keyed by those pinned
-  results' uids, and closes the rest.
+  results' uids, closes the rest, and calls `releaseUnusedSources()` at once
+  (it otherwise runs only on the next change to the results list, so handles
+  of pinned results already removed would stay open); if the controller is
+  already shutting down, the session closes every handle instead.
 
 **An interactive controller path.** Interactive runs use the controller's
 worker and cancel machinery but not its publishing: no `_publish`, no output
@@ -472,7 +481,8 @@ snippet gets the right saves too.
 | --- | --- |
 | `workflows/runner.py`, `processors/run.py`, `processors/execution.py`, `python_step/context.py` | extensions 1–5 (§4.5); failure details kept as data |
 | `processors/base.py`, `reconstructors/base.py` + built-ins | kinds in `OutputSpec`, explicit declarations, `output_spec` on reconstructors, `deterministic`, contract tests (§4.4, §4.5) |
-| `workflows/steps.py`, `workflows/runtime.py`, `model/workfloweditor/catalog.py` | pass input kinds to `output_spec` |
+| `workflows/steps.py`, `workflows/runtime.py`, `model/workfloweditor/catalog.py` | pass input kinds to `output_spec` through the signature-checking helper |
+| `docs/improcess-workflows.rst`, `docs/improcess.rst` | the optional `input_specs` argument of `output_spec`, and port kinds |
 | `workflows/steps.py` | kind check in `validate()` only for declared producer kinds |
 | `model/workfloweditor/document.py` | `connect` / `disconnect` / `splice` with stable topological reordering that keeps Source and Save order, cycle refusal, fan-out, delete that empties inputs and removes dependent Saves, copy/paste fragments, renames that rewrite positions and `provenance_nodes`, float positions, no `editor: {}` on read, undoable commands |
 | `model/workfloweditor/session.py` (new, Phase 2) | `RunSession`: fingerprints, cache, states, run planning, handle ownership |
@@ -697,6 +707,15 @@ Second round, on revision 2, 2026-10-24: **GREEN WITH CHANGES**; blockers 1,
 | R2-4 | Zarr folders have no identifier; `fingerprint_of()` needs the source open | Should | Stated as a known limit; computed at binding, refreshed by a file check before runs |
 | R2-5 | Delete/paste cannot leave a Save without an input | Should | Dependent Saves are deleted with the step (one command); pasted Saves with outside inputs are left out |
 | R2-6 | Smaller: no caller passes `input_specs`; reconstructors lack `output_spec`; channel-merge fixture; Shift-drop only for process steps; extension 5 touches `processors/run.py`, `execution.py`, `context.py`; the fourth limit needs `Options.py`, `MemoryLimitsDialog.py`, `memory-budgets.md`; coalescing only with auto-run or a second Run | Should | All applied in §4.3, §4.4, §4.5, §4.8 |
+
+Third round, on revision 3, 2026-10-24: **GREEN WITH CHANGES — "Fix that
+sentence and Phase 0 is GREEN"**; R2-1 to R2-5 confirmed resolved. Revision 4:
+
+| # | Finding | Severity | Resolution |
+| --- | --- | --- | --- |
+| R3-1 | Passing `input_specs` to `output_spec` breaks drop-ins written to the documented `output_spec(params)` (TypeError in the runner, an uncaught raise in `validate()`, silently lost ports in the catalogue) | Blocking | One helper passes it only to overrides that accept it; contract test with such a drop-in; docs note |
+| R3-2 | Disconnect can leave a Save without an input | Should | Disconnecting a Save's input is refused, with the reason |
+| R3-3 | The pinned-handle handover needs an immediate `releaseUnusedSources()` and a shutdown case | Should | Both added to §4.5 |
 
 ## Appendix: how the mockups are made
 
