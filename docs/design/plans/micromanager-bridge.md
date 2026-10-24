@@ -1,7 +1,8 @@
 # Micro-Manager device bridge
 
 Status: Active — P0, P1 and P2 IMPLEMENTED 2026-10-24 on `feat/micromanager-bridge`
-(620 plugin tests on the real MMCore with the demo adapters; see §5 and §10);
+(616 plugin tests on the real MMCore with the demo adapters, plus N-position
+flip mirrors and the config-editor import/label picker; see §5 and §10);
 P3 rig and P4 publish open. Design text below is revision 3 (two independent
 reviews the same day); implementation deviations are recorded in §10. Phase 0 spike is the first deliverable; nothing in this
 document is implemented yet.
@@ -353,9 +354,14 @@ Core, pumps and unresolved devices go to `<out>.conversion-report.txt` and
 stdout, one line each with label, library, device, type and reason. The demo
 config converts to hub + Camera + Z + XY + two shutter lights + six switches
 (Dichroic, Emission, Excitation, Objective, Path, LED) with 2 devices
-reported (DHub, Autofocus), and the output boots through the real managers (test). Later: a
-config-editor action "Import Micro-Manager configuration…" on the same
-function.
+reported (DHub, Autofocus), and the output boots through the real managers (test). **Config editor (ce8b353a1):** "Import Micro-Manager
+configuration…" (toolbar + left panel; enabled when the plugin is importable)
+runs this converter and merges the result into the open config with suffixed
+names and a report dialog; bridge devices get a `label` picker filled from
+the hub's `.cfg` (type-filtered when the adapters are installed) and an
+`rs232device` picker listing the `micromanager.core` hubs; the plugin template
+loader no longer flags sibling contributions' devices as errors. The palette
+already listed the five managers with schema-driven forms before this.
 
 ### 4.7 Failure and reconnect behaviour
 
@@ -513,7 +519,7 @@ Prerequisite for installer users: the bundle moves to Python ≥ 3.11 (§6).
 - ~~A generic selector kind~~ — done 2026-10-24 by generalising the flip-mirror
   kind to N positions (87e19a5bb); the Leica stand's cube turret could move
   onto it later.
-- Config-editor "Import Micro-Manager configuration…" on top of `convert`.
+- ~~Config-editor "Import Micro-Manager configuration…"~~ — done ce8b353a1.
 
 ## 10. Review log
 
