@@ -837,3 +837,25 @@ Use ``QT_QPA_PLATFORM=offscreen`` on a machine without a display, and do not run
 ``pytest-xdist``: the tests do not share an MMCore between processes. The discovery tests are skipped
 until the plugin is installed into the environment. The end-to-end module shares one app between its
 tests and skips itself under ``pytest-xdist`` and ``pytest-randomly``.
+
+
+Validating against a native manager
+===================================
+
+When the same camera can be driven by an ImSwitch2 manager and by a Micro-Manager adapter (a Hamamatsu
+camera through ``HamamatsuManager`` and ``HamamatsuHam``, for example), the plugin ships a comparison kit:
+a setup template that carries both entries (one of them under ``disabledDevices``, because the camera's driver
+allows one open handle), and a headless tool that measures one detector the same way whichever driver runs
+it and diffs two reports. The rig rows, what to write down and the property-name mapping are in
+``docs/design/plans/micromanager-bridge-rig-test.md``. In short, once per variant and then the diff:
+
+.. code-block:: bash
+
+   python examples/plugins/imswitch-device-micromanager/tools/compare_cameras.py measure SETUP.json --detector NAME --out report.json
+   python examples/plugins/imswitch-device-micromanager/tools/compare_cameras.py diff native.json bridge.json
+
+``measure`` boots the real application on the setup (without moving ``~/ImSwitchConfig``), sets each
+exposure through the Settings controller, counts live-view frames, records a fixed number of frames through
+the real recording manager and reads them back; ``diff`` prints every quantity side by side with PASS or
+CHECK. The template (``hamamatsu_native_vs_bridge.json``) needs a camera and is not offered by the config
+editor's template list.

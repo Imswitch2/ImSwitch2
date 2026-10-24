@@ -161,6 +161,17 @@ into the environment. CI runs the suite in its own job on Python 3.11.
 `tools/p0_probe.py` is the measurement script behind the numbers in the design record (frame rate,
 drain latency, overflow behaviour, signal backend); it is not part of the package.
 
+## Rig comparison
+
+For a camera that both an ImSwitch2 manager and a Micro-Manager adapter can drive (a Hamamatsu through
+`HamamatsuManager` and `HamamatsuHam`), `src/imswitch_device_micromanager/setup_templates/hamamatsu_native_vs_bridge.json`
+carries both entries with one of them under `disabledDevices` (the camera's driver allows one open handle, so the
+two runs are sequential), and `tools/compare_cameras.py` measures a detector headlessly (`measure SETUP --detector
+NAME --out report.json`) and diffs two reports (`diff A.json B.json`). The template needs hardware, so it is
+shipped with the package but **not** listed in `imswitch.json` and not offered by the config editor. The rig rows
+are in [`docs/design/plans/micromanager-bridge-rig-test.md`](../../../docs/design/plans/micromanager-bridge-rig-test.md);
+`headless.py` (`boot`, `record_frames`, `read_recording`) is the harness the end-to-end tests and the tool share.
+
 ## License
 
 GPL-3.0-or-later, like the other bundled plugins. MMCore is LGPL-2.1 (through the `pymmcore` wheel); the
