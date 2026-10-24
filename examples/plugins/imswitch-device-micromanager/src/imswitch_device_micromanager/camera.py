@@ -58,7 +58,7 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
 from imswitch.pluginapi import DetectorManager, DetectorNumberParameter
 
 from . import _properties
-from ._core import FramesLostError, MMCoreHostError, queue_budget_bytes
+from ._core import FramesLostError, MMCoreHostError, StreamFault, StreamFaultKind, queue_budget_bytes
 from ._frames import UnsupportedPixelTypeError
 from .core import MicroManagerCoreManager
 
@@ -143,6 +143,7 @@ class MicroManagerCameraManager(DetectorManager):
         self._staged: Deque[np.ndarray] = collections.deque()
         self._staged_bytes = 0
         self._staged_dropped = 0
+        self._staged_fault: Optional[StreamFault] = None   # staged frames evicted: raised once by getChunk/stopAcquisition
         self._latest: Optional[np.ndarray] = None
         self._lost_reported = None                # StreamFault already logged by the live-view path
         self._stream_hw: Tuple[int, int] = (ABSENT_FULL_SHAPE[1], ABSENT_FULL_SHAPE[0])
@@ -628,6 +629,7 @@ class MicroManagerCameraManager(DetectorManager):
         if not (self._ready and self._host.is_connected):
             return
         self._host.stop_stream(self._label)
+        self._raise_staged_fault()
 
     def flushBuffers(self):
         if not self._ready:
@@ -637,6 +639,7 @@ class MicroManagerCameraManager(DetectorManager):
             self._staged.clear()
             self._staged_bytes = 0
             self._staged_dropped = 0
+            self._staged_fault = None
 
     def getChunk(self):
         """Frames since the last call, a list of equally shaped ``(h, w)`` arrays (maybe empty).
@@ -649,6 +652,7 @@ class MicroManagerCameraManager(DetectorManager):
             return []
         with self._host.lock:
             self._ingest(self._host.pop_frames(self._label), stage=True)
+            self._raise_staged_fault()
             return self._take_run()
 
     def getLatestFrame(self, is_save=False):
@@ -688,10 +692,21 @@ class MicroManagerCameraManager(DetectorManager):
             evicted = self._staged.popleft()
             self._staged_bytes -= int(evicted.nbytes) + QUEUED_FRAME_OVERHEAD_BYTES
             self._staged_dropped += 1
-            if self._staged_dropped == 1:
-                self.__logger.warning(
-                    'Frames staged for getChunk exceeded the %d byte queue budget because nobody read '
-                    'them; the oldest are dropped until the next flush', budget)
+            if self._staged_fault is None:
+                # Same rule as the host's consumer_overflow fault (plan section 4.5, "loss is an
+                # error"): a recording whose frames were evicted here must fail, not finish short.
+                self._staged_fault = StreamFault(
+                    StreamFaultKind.CONSUMER_OVERFLOW,
+                    f'frames staged for getChunk exceeded the {budget} byte queue budget '
+                    f'(memory.perDetectorQueueMB in imcontrol_options.json) because nobody read '
+                    f'them; the oldest were dropped')
+                self.__logger.error('Camera %s: %s', self._label, self._staged_fault.message)
+
+    def _raise_staged_fault(self) -> None:
+        """Raise (once) the fault recorded when staged frames were evicted."""
+        fault, self._staged_fault = self._staged_fault, None
+        if fault is not None:
+            raise FramesLostError(self._label, fault)
 
     def _take_run(self) -> List[np.ndarray]:
         """Pop the staged frames that share the first frame's shape and dtype. Lock held."""

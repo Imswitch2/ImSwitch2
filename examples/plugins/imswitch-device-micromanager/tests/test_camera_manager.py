@@ -14,7 +14,7 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     PIXEL_SIZE_SOURCE_SETUP, PIXEL_SIZE_SOURCE_USER, RawFrameUnavailableError,
 )
 from imswitch_device_micromanager import camera as camera_module
-from imswitch_device_micromanager._core import FramesLostError, FrameShapeMismatchError
+from imswitch_device_micromanager._core import FramesLostError, FrameShapeMismatchError, StreamFaultKind
 from imswitch_device_micromanager._frames import UnsupportedPixelTypeError
 from imswitch_device_micromanager.camera import (
     ABSENT_FULL_SHAPE, PIXEL_SIZE_SOURCE_MICROMANAGER, MicroManagerCameraManager,
@@ -686,3 +686,29 @@ def test_camera_module_has_no_forbidden_core_calls():
                       "stopSequenceAcquisition", "setROI(", "time.sleep", "_hardwareFaulted", "_acquisitionLeased",
                       ".instance()", "home("):
         assert forbidden not in source, forbidden
+
+
+def test_evicted_staged_frames_are_a_fault_not_a_hole(camera, monkeypatch):
+    """Plan section 4.5, "loss is an error": frames a registered consumer never read are evicted
+    from the staging list when it exceeds the per-detector queue budget, and that eviction must
+    fail the recording (getChunk / stopAcquisition raise once) instead of leaving a hole."""
+    from imswitch_device_micromanager import camera as camera_module
+    one_frame = FRAME_SIDE * FRAME_SIDE * 2 + camera_module.QUEUED_FRAME_OVERHEAD_BYTES
+    monkeypatch.setattr(camera_module, "queue_budget_bytes", lambda: 3 * one_frame)
+    camera.startChunkConsumer("recording")
+    camera.startAcquisition()
+    try:
+        # Live view keeps pulling while the recording never calls getChunk: staging fills, evicts.
+        wait_until(lambda: (camera.getLatestFrame().any() and camera._staged_dropped > 0),
+                   message="staged frames evicted")
+        with pytest.raises(FramesLostError) as info:
+            camera.getChunk()
+        assert info.value.fault.kind is StreamFaultKind.CONSUMER_OVERFLOW
+        assert camera.getChunk() is not None                # raised once; the next call works again
+        camera.flushBuffers()
+        assert camera._staged_fault is None
+    finally:
+        try:
+            camera.stopAcquisition()
+        except FramesLostError:
+            pass
