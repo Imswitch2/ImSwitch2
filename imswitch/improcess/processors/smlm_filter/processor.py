@@ -89,6 +89,7 @@ class SmlmFilterProcessor(Processor):
     id = "smlm-filter"
     category = "SMLM"
     kinds = ("localization",)
+    output_kind = "localization"
     run_label = "Apply filter"
     params_version = 2
 

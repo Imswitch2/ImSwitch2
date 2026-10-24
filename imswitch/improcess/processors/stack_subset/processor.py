@@ -27,6 +27,7 @@ class StackSubsetProcessor(Processor):
     id = "stack-subset"
     category = "Dimensions and channels"
     kinds = ("image", "composite")
+    output_kind = "image"
 
     @classmethod
     def default_params(cls) -> dict:

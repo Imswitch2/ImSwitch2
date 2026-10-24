@@ -17,6 +17,7 @@ class StackSplitProcessor(Processor):
     id = "stack-split"
     category = "Dimensions and channels"
     kinds = ("image", "composite")
+    output_kind = "image"
 
     @classmethod
     def default_params(cls) -> dict:
@@ -65,4 +66,4 @@ class StackSplitProcessor(Processor):
         how many depends on the data."""
         from imswitch.improcess.processors.base import OutputSpec
 
-        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+")
+        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+", kind=self.output_kind)

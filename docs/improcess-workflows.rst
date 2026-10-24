@@ -147,6 +147,15 @@ A processor declares its output ports through ``output_spec(params)``:
   named after the split axis and the index along it: ``C0, C1, …`` for
   channels, ``Z0, Z1, …`` for a Z split).
 
+Every port also has a **kind**, declared by the plugin (``output_kind``): a
+Source's port carries the recording; the others carry ``image``, ``labels``,
+``table``, ``curve``, ``localization``, ``rgb`` or ``composite`` results, or
+``any`` when it depends on the run (the Python step).  ``validate`` refuses a
+step whose input has a *declared* kind the processor does not accept (FRC's
+curve into a filter); a port of kind ``any`` or ``unknown`` (a plugin that
+declares none) is never refused before the run, and the runner checks the
+real result then, as it always has.
+
 ``validate`` checks every reference against the declared ports or pattern
 before anything runs, and the runner checks the ports actually produced
 against the declaration after each step. A single-input processor given

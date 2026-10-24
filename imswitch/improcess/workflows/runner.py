@@ -417,7 +417,10 @@ def run(
                             f"(kind {getattr(item, 'kind', 'image')!r}, axes "
                             f"{list(getattr(item, 'axis_labels', []) or [])}, shape {shape})"
                         )
-                spec = plugin.output_spec(params)
+                from imswitch.improcess.model.result import result_kind
+                from imswitch.improcess.processors.base import call_output_spec
+
+                spec = call_output_spec(plugin, params, tuple(result_kind(item) for item in inputs))
                 fan_out = len(inputs) > 1 and getattr(plugin, "max_inputs", 1) == 1
                 # A single-input processor over several inputs runs once per
                 # input, and each run's ports are suffixed with *that input's*

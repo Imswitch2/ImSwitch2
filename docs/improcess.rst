@@ -2575,7 +2575,26 @@ Running and cancelling
 ``output_spec()`` (optional)
     One port ``out`` unless you say otherwise: named ports when ``apply``
     returns a ``ProcessorOutput`` with ``keys``, a pattern when the ports
-    depend on the data.
+    depend on the data.  The full signature is ``output_spec(params,
+    input_specs=None)``, where ``input_specs`` are the inputs' kinds in input
+    order (``None`` when not known); an override written as
+    ``output_spec(params)`` keeps working, because the framework leaves the
+    argument out for it.  Return the spec with ``kind=self.output_kind``.
+
+``output_kind`` (optional, recommended)
+    The kind of result ``apply`` returns: ``"image"``, ``"labels"``,
+    ``"table"``, ``"curve"``, ``"localization"``, ``"rgb"`` or
+    ``"composite"``; ``"any"`` when it depends on the run.  The workflow
+    editor colours a port by it, and a workflow is refused before it runs
+    when a declared kind meets a step that does not accept it.  Without it the
+    kind is ``"unknown"`` and nothing is checked against it.  Every built-in
+    declares one, and a test holds each declaration to what ``apply``
+    returns.  Reconstructors declare ``output_kind`` too.
+
+``deterministic`` (optional)
+    ``True`` by default: the same inputs and parameters give the same
+    result.  Set it to ``False`` when a run may differ from the last one (the
+    Python step does), so a cache of results never mixes outputs of two runs.
 
 ``params_version`` / ``migrate_params`` / ``encode_params`` / ``decode_params`` (optional)
     Only when the parameter schema changes over time, or parameters carry

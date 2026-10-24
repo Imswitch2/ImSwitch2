@@ -45,6 +45,9 @@ class PythonStepProcessor(Processor):
     id = "python"
     category = "Scripting"
     kinds = ("image", "labels", "composite")
+    output_kind = "any"
+    #: User code may draw random numbers: a re-run may differ.
+    deterministic = False
     min_inputs = 1
     max_inputs = None
     preserves_grid = None
@@ -73,9 +76,9 @@ class PythonStepProcessor(Processor):
         workflow's own validation, and ``apply`` raises the real error.
         """
         try:
-            return OutputSpec(ports=parse_ports((params or {}).get("ports", DEFAULT_PORTS)))
+            return OutputSpec(ports=parse_ports((params or {}).get("ports", DEFAULT_PORTS)), kind=self.output_kind)
         except ValueError:
-            return OutputSpec(ports=(), pattern=None)
+            return OutputSpec(ports=(), pattern=None, kind=self.output_kind)
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
