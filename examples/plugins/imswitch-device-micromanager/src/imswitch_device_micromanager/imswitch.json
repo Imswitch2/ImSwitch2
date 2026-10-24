@@ -27,6 +27,17 @@
         "setup_templates": ["setup_templates/demo_scope.json"],
         "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
         "supported_platforms": ["linux", "win32", "darwin"]
+      },
+      {
+        "id": "micromanager.stage",
+        "kind": "positioner",
+        "display_name": "Micro-Manager stage (Stage or XYStage, via the shared MMCore hub)",
+        "python_name": "imswitch_device_micromanager.stage:MicroManagerStageManager",
+        "manager_name_aliases": [],
+        "manager_properties_schema": "schemas/micromanager_stage.schema.json",
+        "setup_templates": ["setup_templates/demo_scope.json"],
+        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "supported_platforms": ["linux", "win32", "darwin"]
       }
     ]
   }

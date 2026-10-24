@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Micro-Manager stage managerProperties",
+  "description": "One Micro-Manager Stage (one axis) or XYStage (axes X and Y) presented as an ImSwitch2 positioner. The axes come from the positioner's own 'axes' list: exactly one axis of any name for a Stage, exactly ['X', 'Y'] for an XYStage. Positions are micrometres in both systems. System-config mode: 'label' names a stage the hub's .cfg loaded. Inline mode: 'adapter' and 'device' make the manager load the stage itself under 'label' (and unload it when it finalizes). The positioner must have forScanning false: Micro-Manager stages have no analog scan line.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rs232device", "label"],
+  "properties": {
+    "rs232device": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the 'micromanager.core' entry in rs232devices that owns the MMCore this stage lives in."
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Micro-Manager device label. System-config mode: a Stage or XYStage device the hub's .cfg loaded (a typo is reported with the list of loaded stages). Inline mode: the label the new device gets."
+    },
+    "adapter": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: Micro-Manager device adapter library (for example 'DemoCamera'). Must be given together with 'device'; leave both out when the .cfg already loads the label."
+    },
+    "device": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: device name inside the adapter (for example 'DStage' or 'DXYStage'). Must be given together with 'adapter'."
+    },
+    "parent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: label of the hub device (Micro-Manager Hub) the stage hangs off, when the adapter needs one."
+    },
+    "preInitProperties": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] },
+      "description": "Inline mode: properties that can only be set before the device is initialised (Micro-Manager 'pre-init' properties), applied in order before initialisation."
+    },
+    "waitForDevice": {
+      "type": "boolean",
+      "default": true,
+      "description": "true (default): a move blocks until the device reports it finished, then the position is read back from the device, so 'position' is what the hardware says. false: the move command returns at once (fire and forget) and the position follows the device's own position-changed events, which not every adapter sends; call updatePosition for an authoritative read."
+    },
+    "homeable": {
+      "type": "boolean",
+      "default": false,
+      "description": "true: this setup declares that the adapter supports a home command and that the stage may be homed. The positioner then starts unreferenced and the reference action homes it. Micro-Manager has no way to ask whether an adapter can home, and homing moves hardware, so it is never tried on its own: with false (default) the reference action does nothing, and an adapter without a home command reports Micro-Manager's own error when the reference action is used."
+    }
+  },
+  "dependentRequired": {
+    "adapter": ["device"],
+    "device": ["adapter"],
+    "parent": ["adapter"],
+    "preInitProperties": ["adapter"]
+  }
+}

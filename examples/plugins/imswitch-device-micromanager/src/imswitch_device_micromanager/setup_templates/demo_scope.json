@@ -20,5 +20,26 @@
       },
       "forAcquisition": true
     }
+  },
+  "positioners": {
+    "Z": {
+      "managerName": "micromanager.stage",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "Z"
+      },
+      "axes": ["Z"],
+      "forPositioning": true
+    },
+    "XY": {
+      "managerName": "micromanager.stage",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "XY",
+        "homeable": true
+      },
+      "axes": ["X", "Y"],
+      "forPositioning": true
+    }
   }
 }

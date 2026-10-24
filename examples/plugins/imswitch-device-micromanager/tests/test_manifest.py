@@ -141,3 +141,74 @@ def test_camera_schema_documents_every_property():
     schema = _camera_schema()
     assert schema["additionalProperties"] is False and schema["required"] == ["rs232device", "label"]
     assert all(spec.get("description") for spec in schema["properties"].values())
+
+
+# ------------------------------------------------------------------- stage
+def _stage_schema():
+    return json.loads((resources.files("imswitch_device_micromanager")
+                       / "schemas/micromanager_stage.schema.json").read_text(encoding="utf-8"))
+
+
+def test_manifest_declares_the_stage_as_a_positioner_contribution():
+    manager = _managers_by_id()["micromanager.stage"]
+    assert manager["kind"] == "positioner"
+    assert manager["python_name"] == "imswitch_device_micromanager.stage:MicroManagerStageManager"
+    assert manager["manager_properties_schema"] == "schemas/micromanager_stage.schema.json"
+    assert "setup_templates/demo_scope.json" in manager["setup_templates"]
+    assert manager["manager_name_aliases"] == []
+
+
+def test_setup_template_declares_stages_that_match_the_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    package = resources.files("imswitch_device_micromanager")
+    setup = json.loads((package / "setup_templates/demo_scope.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator.check_schema(_stage_schema())
+    positioners = setup["positioners"]
+    assert positioners["Z"]["axes"] == ["Z"] and positioners["XY"]["axes"] == ["X", "Y"]
+    for positioner in positioners.values():
+        assert positioner["managerName"] == "micromanager.stage" and positioner["forPositioning"] is True
+        assert not positioner.get("forScanning")
+        jsonschema.Draft202012Validator(_stage_schema()).validate(positioner["managerProperties"])
+        assert positioner["managerProperties"]["rs232device"] in setup["rs232devices"]
+    assert positioners["XY"]["managerProperties"]["homeable"] is True      # DemoXYStage homes, DemoStage does not
+    assert "homeable" not in positioners["Z"]["managerProperties"]
+
+
+@pytest.mark.parametrize("properties", [
+    {"rs232device": "MMCore", "label": "Z"},
+    {"rs232device": "MMCore", "label": "XY", "homeable": True, "waitForDevice": False},
+    {"rs232device": "MMCore", "label": "Focus", "adapter": "DemoCamera", "device": "DStage"},
+    {"rs232device": "MMCore", "label": "Focus", "adapter": "DemoCamera", "device": "DStage", "parent": "DHub",
+     "preInitProperties": {"Mode": "fast", "Steps": 3, "Flag": True}},
+])
+def test_stage_schema_accepts_valid_properties(properties):
+    jsonschema = pytest.importorskip("jsonschema")
+    jsonschema.Draft202012Validator(_stage_schema()).validate(properties)
+
+
+@pytest.mark.parametrize("properties", [
+    {"label": "Z"},                                                         # hub missing
+    {"rs232device": "MMCore"},                                              # label missing
+    {"rs232device": "MMCore", "label": ""},
+    {"rs232device": "MMCore", "label": "Z", "homeable": "yes"},
+    {"rs232device": "MMCore", "label": "Z", "homeable": 1},
+    {"rs232device": "MMCore", "label": "Z", "waitForDevice": "no"},
+    {"rs232device": "MMCore", "label": "Z", "adapter": "DemoCamera"},        # adapter without device
+    {"rs232device": "MMCore", "label": "Z", "device": "DStage"},             # device without adapter
+    {"rs232device": "MMCore", "label": "Z", "parent": "DHub"},               # inline-only fields without adapter
+    {"rs232device": "MMCore", "label": "Z", "preInitProperties": {"a": 1}},
+    {"rs232device": "MMCore", "label": "Z", "axisNames": ["Z"]},             # axes come from PositionerInfo.axes
+    {"rs232device": "MMCore", "label": "Z", "cameraPixelSizeUm": 0.1},       # a camera key
+])
+def test_stage_schema_rejects_invalid_properties(properties):
+    jsonschema = pytest.importorskip("jsonschema")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(_stage_schema()).validate(properties)
+
+
+def test_stage_schema_documents_every_property_and_its_defaults():
+    schema = _stage_schema()
+    assert schema["additionalProperties"] is False and schema["required"] == ["rs232device", "label"]
+    assert all(spec.get("description") for spec in schema["properties"].values())
+    assert schema["properties"]["waitForDevice"]["default"] is True
+    assert schema["properties"]["homeable"]["default"] is False

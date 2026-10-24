@@ -183,3 +183,42 @@ def test_a_lost_frame_stream_faults_the_detector_through_the_lease_table(adapter
 def _recording_purpose():
     from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
     return LeasePurpose.RECORDING
+
+
+@requires_installed
+def test_registry_loads_the_stage_class():
+    from imswitch_device_micromanager.stage import MicroManagerStageManager
+
+    assert _registry().load_manager_class("positioner", "micromanager.stage") is MicroManagerStageManager
+
+
+@requires_installed
+def test_cli_list_names_the_stage_contribution():
+    result = _run_cli("list")
+    assert result.returncode == 0, result.stderr
+    assert any(line.startswith("micromanager.stage") and "[positioner]" in line
+               and "imswitch-device-micromanager" in line for line in result.stdout.splitlines())
+
+
+@requires_installed
+def test_template_builds_the_stages_through_positioners_manager_loading(adapter_dir):
+    from imswitch.imcontrol.model.SetupInfo import SetupInfo
+    from imswitch.imcontrol.model.managers.PositionersManager import PositionersManager
+    from imswitch.imcontrol.model.managers.RS232sManager import RS232sManager
+
+    raw = json.loads((resources.files("imswitch_device_micromanager")
+                      / "setup_templates/demo_scope.json").read_text(encoding="utf-8"))
+    raw["rs232devices"]["MMCore"]["managerProperties"]["adapterPaths"] = [adapter_dir]
+    info = SetupInfo.from_json(json.dumps(raw), infer_missing=True)
+    rs232 = RS232sManager(info.rs232devices)
+    positioners = PositionersManager(info.positioners, rs232sManager=rs232)
+    try:
+        z, xy = positioners["Z"], positioners["XY"]
+        assert type(z).__name__ == "MicroManagerStageManager" and z.axes == ["Z"]
+        assert xy.axes == ["X", "Y"] and xy.isReferenceActionable and not z.isReferenceActionable
+        z.setPosition(15.0, "Z")
+        assert rs232["MMCore"].host.call("getPosition", "Z") == 15.0
+    finally:
+        for name in positioners.getAllDeviceNames():
+            positioners[name].finalize()
+        rs232.finalize()

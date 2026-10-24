@@ -6,20 +6,22 @@ Micro-Manager adapter can drive becomes an ordinary ImSwitch2 device. The design
 and the numbers behind it are in `docs/design/plans/micromanager-bridge.md` in
 the ImSwitch2 repository.
 
-## Status: Phase 1b (hub and camera)
+## Status: Phase 1c (hub, camera and stage)
 
 | Contribution id | Kind | Class | What it is |
 |---|---|---|---|
 | `micromanager.core` | rs232 | `MicroManagerCoreManager` | The shared MMCore hub: owns the one `CMMCorePlus`, its circular buffer and the frame drain thread |
 | `micromanager.camera` | detector | `MicroManagerCameraManager` | One Micro-Manager Camera device as an ImSwitch2 detector (mono only) |
+| `micromanager.stage` | positioner | `MicroManagerStageManager` | One Micro-Manager Stage (one axis) or XYStage (axes `X`, `Y`) as an ImSwitch2 positioner |
 
-Stage, light and flip-mirror managers follow in later phases; they all name the
+Light and flip-mirror managers follow in later phases; they all name the
 hub in `managerProperties.rs232device`. The hub never lets a startup failure
 escape: a missing install, missing adapters or a bad `.cfg` becomes an ERROR
 status carrying the Micro-Manager message, and a dependent camera is then built
 in the same ERROR state (reconnecting the hub from Hardware status brings it
-up). A wrong label, a label that is not a camera, or a colour camera is a setup
-error and refuses to start with a message that says what to change.
+up). A wrong label, a label that is not a camera or stage, wrong axes for the
+stage type, or a colour camera is a setup error and refuses to start with a
+message that says what to change.
 
 ```json
 "rs232devices": {
@@ -115,6 +117,62 @@ without taking frames away from a recording, so live view keeps running while a
 recording reads the chunk path. Lost frames (the buffer overflowed, or the
 stream ended by itself) make the next `getChunk` and the `stopAcquisition` raise
 `FramesLostError`, which the detector lease table turns into the hardware fault.
+
+## The stage
+
+```json
+"positioners": {
+  "Z": {
+    "managerName": "micromanager.stage",
+    "managerProperties": {"rs232device": "MMCore", "label": "Z"},
+    "axes": ["Z"],
+    "forPositioning": true
+  },
+  "XY": {
+    "managerName": "micromanager.stage",
+    "managerProperties": {"rs232device": "MMCore", "label": "XY", "homeable": true},
+    "axes": ["X", "Y"],
+    "forPositioning": true
+  }
+}
+```
+
+The loading modes are the camera's (`.cfg` label, or inline `adapter` +
+`device` + optional `parent` and `preInitProperties`); the properties are
+documented in `schemas/micromanager_stage.schema.json`.
+
+**Axes.** A Micro-Manager `Stage` has one axis: `axes` is a one-element list
+with any name (`["Z"]`, `["Focus"]`). An `XYStage` has exactly `["X", "Y"]`.
+Any other combination, or a label that is not a stage, refuses to start naming
+what Micro-Manager has. Positions are micrometres in both systems; nothing is
+scaled. `forScanning` must stay false: Micro-Manager stages have no analog scan
+line.
+
+**Position.** The tracked position is what the hardware says, never a zero:
+`initialPosition` is read from the device, and after a move the position is
+read back, so a stage that snaps to its step size shows the position it
+reached. The device's own position notifications (a joystick, a front panel)
+update it as well. A stage whose hub is down at startup starts with the
+position `nan` ("unknown") and refuses every command with
+`DeviceNotConnectedError` until the hub is reconnected; the reconnect re-reads
+the position (`updatePosition` does the same on demand).
+
+**`waitForDevice`** (default `true`). A move blocks until the device reports it
+finished, then the position is read back. With `false` the command returns at
+once and the position follows the device's position-changed events; not every
+adapter sends them, so use `updatePosition` for an authoritative read. A
+blocking move holds the hub lock while it waits, so a long move briefly stops
+the camera frame drain.
+
+**`homeable`** (default `false`). Micro-Manager cannot say whether an adapter
+supports a home command and homing moves hardware, so it is never tried on its
+own. With `homeable: true` the setup declares that it works: the positioner
+then starts *unreferenced* and the Reference action (`reference()`) homes the
+whole device, waits for it, re-reads the position and marks it referenced. An
+adapter without a home command (the demo `Z`) reports Micro-Manager's own
+"Unsupported device command" on that action, never at startup. Without
+`homeable` the reference action does nothing. A reference position cannot be
+given: homing defines the adapter's own origin.
 
 ## Install
 
