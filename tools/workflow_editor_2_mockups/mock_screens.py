@@ -23,7 +23,6 @@ from imswitch.imcommon import prepareApp  # noqa: E402
 
 app = prepareApp()
 
-import h5py  # noqa: E402
 import numpy as np  # noqa: E402
 from qtpy import QtCore, QtGui, QtWidgets  # noqa: E402
 
@@ -90,9 +89,7 @@ def recordings():
     from _synthetic import write_synthetic_recording
 
     os.makedirs(DATA, exist_ok=True)
-    two = write_synthetic_recording(os.path.join(DATA, "cells.h5"), frames=2)
-    with h5py.File(two, "a") as handle:
-        handle["data"].attrs["axes"] = "CYX"
+    two = write_synthetic_recording(os.path.join(DATA, "cells.h5"), frames=2, axes="CYX")
     twelve = write_synthetic_recording(os.path.join(DATA, "timelapse.h5"), frames=12, seed=3)
     return str(two), str(twelve)
 
