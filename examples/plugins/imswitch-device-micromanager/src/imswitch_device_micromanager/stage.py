@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import difflib
 import threading
-import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -59,12 +58,6 @@ UNKNOWN_POSITION = float('nan')
 #: ``model`` text of a stage whose device is not there yet.
 ABSENT_MODEL = 'Micro-Manager stage (not connected)'
 
-#: How often a blocking move asks the device whether it is still busy. MMCore's own
-#: ``waitForDevice`` polls ``Busy()`` every 10 ms (``CMMCore::pollingIntervalMs_``);
-#: the same cadence here, but between polls the hub lock is RELEASED, so a stage move
-#: that takes seconds does not stall the camera drain thread (plan section 4.5: a stalled
-#: drain overflows the circular buffer and fails the recording).
-BUSY_POLL_S = 0.010
 
 
 @dataclass
@@ -104,7 +97,6 @@ class MicroManagerStageManager(MicroManagerDeviceMixin, PositionerManager):
 
         # Guards the tracked position against the callback thread of MMCore's events (see module doc).
         self._track_lock = threading.Lock()
-        self._idle_poll = threading.Event()        # never set: a sleep that other code could wake
         self._ready = False                       # False until the device was adopted
         self._is_xy = self._axes == XY_AXES
         self._model = ABSENT_MODEL
@@ -280,28 +272,6 @@ class MicroManagerStageManager(MicroManagerDeviceMixin, PositionerManager):
                 self._store_position(self._read_position(host.core))
         with self._track_lock:
             return dict(self._position)
-
-    def _wait_until_idle(self, host, label: str) -> None:
-        """Block until the device reports not busy, polling OUTSIDE the hub lock.
-
-        ``core.waitForDevice`` would hold the lock for the whole move and starve the
-        camera drain thread. The deadline is MMCore's own device timeout
-        (``getTimeoutMs``, the value ``waitForDevice`` enforces too), so a stuck stage
-        fails the same way it would in Micro-Manager.
-        """
-        with host.lock:
-            timeout_s = float(host.core.getTimeoutMs()) / 1000.0
-        deadline = time.monotonic() + timeout_s
-        while True:
-            with host.lock:
-                busy = host.core.deviceBusy(label)
-            if not busy:
-                return
-            if time.monotonic() >= deadline:
-                raise MMCoreHostError(
-                    f"positioner {self._setupName!r}: device {label!r} still busy after "
-                    f"{timeout_s:.1f} s (MMCore device timeout, core.setTimeoutMs)")
-            self._idle_poll.wait(BUSY_POLL_S)
 
     def updatePosition(self) -> None:
         """Re-read the position from the device (the positioner controller calls this hook before it

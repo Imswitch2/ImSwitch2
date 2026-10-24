@@ -51,7 +51,7 @@ from .core import MicroManagerCoreManager
 #: busy. MMCore's own ``waitForDevice`` polls ``Busy()`` every 10 ms (``CMMCore::pollingIntervalMs_``);
 #: the same cadence here, but between polls the hub lock is RELEASED, so a move that takes seconds
 #: does not stall the camera drain thread (plan section 4.5: a stalled drain overflows the circular
-#: buffer and fails the recording). ``stage.py`` keeps its own copy of this loop and constant.
+#: buffer and fails the recording).
 BUSY_POLL_S = 0.010
 
 
