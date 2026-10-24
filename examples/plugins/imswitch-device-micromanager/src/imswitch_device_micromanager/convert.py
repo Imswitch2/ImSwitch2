@@ -547,8 +547,13 @@ def build_setup(model: CfgModel, types: Mapping[str, Any], hub_name: str = 'MMCo
         notes.append(summary)
     notes.extend(f'.cfg: {warning}' for warning in model.warnings)
 
-    hub = {'managerName': MANAGER_HUB,
-           'managerProperties': {'configFile': config_file, 'adapterPaths': [str(p) for p in adapter_paths]}}
+    # ``adapterPaths`` only when given: the hub reads an absent key and an empty list alike
+    # (core.py: ``properties.get('adapterPaths') or ()``), and an empty list in a generated
+    # file suggests the user was meant to fill it in.
+    hub_properties: Dict[str, Any] = {'configFile': config_file}
+    if adapter_paths:
+        hub_properties['adapterPaths'] = [str(p) for p in adapter_paths]
+    hub = {'managerName': MANAGER_HUB, 'managerProperties': hub_properties}
     setup: Dict[str, Any] = {SECTION_HUB: {hub_name: hub}}
     widgets = list(BASE_WIDGETS)
     for section, widget in ((SECTION_DETECTORS, None), *SECTION_WIDGETS):

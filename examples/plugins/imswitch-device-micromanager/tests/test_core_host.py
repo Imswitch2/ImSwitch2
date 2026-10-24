@@ -498,6 +498,48 @@ def test_failed_roi_restores_the_old_roi_and_restarts_the_stream(host, monkeypat
     host.stop_stream("Camera")
 
 
+# ------------------------------------------------ no buffer clear next to a recording
+def test_no_start_or_roi_change_while_another_running_stream_is_recording(host):
+    """startSequenceAcquisition and setROI clear MMCore's one buffer and reset every camera's
+    ImageNumber; a frame a running camera inserts after the host's drain would vanish without a
+    trace. So while another running stream is being recorded, those calls are refused."""
+    recording = {"Camera": False}
+    host.register_camera("Camera", lambda: recording["Camera"])
+    host.register_camera("Cam2", lambda: False)
+    start(host, "Camera")
+    collect_records(host, "Camera", 2)
+    assert start(host, "Cam2") is True                            # nobody records yet: allowed
+    host.stop_stream("Cam2")
+    assert host.set_roi("Cam2", 0, 0, FRAME_SIDE, FRAME_SIDE) == (0, 0, FRAME_SIDE, FRAME_SIDE)
+
+    recording["Camera"] = True
+    with pytest.raises(MMCoreHostError, match=r"recording.*#936"):
+        start(host, "Cam2")
+    with pytest.raises(MMCoreHostError, match="recording"):
+        host.set_roi("Cam2", 0, 0, FRAME_SIDE, FRAME_SIDE)
+    with pytest.raises(MMCoreHostError, match="recording"):
+        host.check_buffer_may_be_cleared("Cam2")
+    assert not host.stream("Cam2").streaming
+    host.check_buffer_may_be_cleared("Camera")                    # a camera never blocks itself
+    collect_records(host, "Camera", 2)                            # the recording went on, unbroken
+
+    recording["Camera"] = False
+    assert start(host, "Cam2") is True
+    host.stop_stream("Cam2")
+    host.stop_stream("Camera")                                    # no fault from any of it
+    host.register_camera("Camera")                                # re-registering keeps the callable
+    assert host.stream("Camera").is_recording is not None
+
+
+def test_a_recording_stream_that_is_not_running_does_not_block_anyone(host):
+    host.register_camera("Camera", lambda: True)
+    host.register_camera("Cam2", lambda: True)
+    start(host, "Cam2")
+    host.stop_stream("Cam2")
+    start(host, "Camera")                                         # "recording" but not running: nothing to lose
+    host.stop_stream("Camera")
+
+
 # ---------------------------------------------------------------- overflow
 def test_buffer_overflow_is_a_recorded_fault_not_silent_loss(adapter_dir):
     """1 MB buffer = 2 frames of 512 KB, 1 ms exposure, a stalled consumer (plan 4.5, P0)."""
@@ -586,6 +628,67 @@ def test_a_sequence_that_ends_unrequested_is_a_fault(host):
     wait_until(lambda: host.snapshot()["streams"]["Camera"]["fault"], message="unrequested stop")
     assert host.snapshot()["streams"]["Camera"]["fault"]["kind"] == StreamFaultKind.STOPPED_UNREQUESTED.value
     with pytest.raises(FramesLostError, match="without being stopped"):
+        host.stop_stream("Camera")
+
+
+class _LoggedCore:
+    """The host's core with a call log: everything is delegated to the real core."""
+
+    def __init__(self, core, log, overflowed):
+        self._core, self._log, self._overflowed = core, log, overflowed
+
+    def __getattr__(self, name):
+        return getattr(self._core, name)
+
+    def isSequenceRunning(self, *args):
+        self._log.append("running?")
+        return self._core.isSequenceRunning(*args)
+
+    def isBufferOverflowed(self):
+        self._log.append("overflowed?")
+        return self._overflowed
+
+    def popNextImageAndMD(self):
+        self._log.append("pop")
+        return self._core.popNextImageAndMD()
+
+
+@pytest.mark.parametrize("overflowed, kind", [(True, StreamFaultKind.OVERFLOW),
+                                              (False, StreamFaultKind.STOPPED_UNREQUESTED)])
+def test_drain_reads_whether_the_sequence_ended_before_it_pops(host, monkeypatch, overflowed, kind):
+    """A stopped sequence cannot add frames, so what is read BEFORE the pops is complete after
+    them. Read after the loop, a frame could land between the last pop and the check and the
+    fault would be reported with that frame still in MMCore's buffer. Pinned by call order, and
+    by every frame being queued by the time the fault is recorded."""
+    start(host, "Camera")
+    log, queued_at_fault = [], []
+    real_core = host._core
+    with host.lock:                                               # the drain thread cannot pop
+        wait_until(lambda: host.core.getRemainingImageCount() >= 5, message="5 frames in the buffer")
+        host.core.stopSequenceAcquisition("Camera")               # ended behind the host's back
+        in_buffer = host.core.getRemainingImageCount()
+        real_record = host._record_fault
+
+        def record(stream, fault_kind, message):
+            queued_at_fault.append(len(stream.queue))
+            real_record(stream, fault_kind, message)
+
+        monkeypatch.setattr(host, "_record_fault", record)
+        host._core = _LoggedCore(real_core, log, overflowed)
+        try:
+            host.drain_now()
+        finally:
+            host._core = real_core
+            monkeypatch.undo()
+    assert log.count("pop") >= in_buffer
+    first_pop = log.index("pop")
+    assert "running?" in log[:first_pop] and "overflowed?" in log[:first_pop]
+    assert "running?" not in log[first_pop:] and "overflowed?" not in log[first_pop:]
+    stats = host.snapshot()["streams"]["Camera"]
+    assert stats["frames_received"] == in_buffer and stats["queued_frames"] == in_buffer
+    assert queued_at_fault == [in_buffer]                         # the fault came after the last frame
+    assert stats["fault"]["kind"] == kind.value
+    with pytest.raises(FramesLostError):
         host.stop_stream("Camera")
 
 

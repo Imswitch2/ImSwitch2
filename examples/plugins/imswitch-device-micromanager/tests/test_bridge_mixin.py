@@ -190,3 +190,34 @@ def test_a_manager_whose_info_has_no_transient_flags_is_not_transient(hub):
         assert holder.transient is False and holder.connect_on_startup is False and manager.backendIsReal
     finally:
         manager.finalize()
+
+
+#: kind -> the inline adapter device that is of the manager's type
+INLINE_DEVICE = {"camera": "DCam", "stage": "DStage", "light": "DShutter", "flip-mirror": "DShutter"}
+
+
+def test_a_hub_reload_forgets_that_an_inline_device_was_loaded(kind, hub, tmp_path):
+    """After ``reconnectTransport`` every device is gone, the inline one too. If the reloaded
+    ``.cfg`` now loads the same label, re-adoption must refuse it ("already loaded by the hub's
+    configuration") instead of treating that device as the one this manager loaded."""
+    device = INLINE_DEVICE[kind]
+    manager = build(kind, {"MMCore": hub}, label="Inline", adapter="DemoCamera", device=device)
+    try:
+        assert manager._inline_loaded and "Inline" in hub.host.call("getLoadedDevices")
+
+        assert hub.reconnectTransport() is True                    # the same setup: Inline is gone again
+        assert "Inline" not in hub.host.call("getLoadedDevices")
+        assert manager._onTransportReconnected(True) == []         # loaded again, flag set again
+        assert manager._inline_loaded and "Inline" in hub.host.call("getLoadedDevices")
+
+        cfg = tmp_path / "now_loads_it.cfg"
+        cfg.write_text(f"Device,Inline,DemoCamera,{device}\nProperty,Core,Initialize,1\n")
+        hub.host.config_file = str(cfg)
+        assert hub.reconnectTransport() is True
+        errors = manager._onTransportReconnected(True)
+        assert errors and "already loaded by the hub's configuration" in errors[0]
+        assert not manager._inline_loaded                          # it is the configuration's device, not ours
+        assert "Inline" in hub.host.call("getLoadedDevices")
+    finally:
+        manager.finalize()
+        assert "Inline" in hub.host.call("getLoadedDevices")       # finalize did not unload the cfg's device

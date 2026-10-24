@@ -83,15 +83,15 @@ _TIS = ExternalManagerHint(
     source="examples/plugins/imswitch-device-tis",
 )
 
-# Micro-Manager devices through pymmcore-plus: a hub (rs232 kind), cameras and
-# stages. Not an extraction either -- nothing in-tree is called micromanager --
+# Micro-Manager devices through pymmcore-plus: a hub (rs232 kind), cameras,
+# stages, lights and flip mirrors. Not an extraction either -- nothing in-tree is called micromanager --
 # so only the plugin's own ids are hinted. The plugin needs Python >= 3.11 while
 # ImSwitch2 still supports 3.10; pip says so itself on an older interpreter.
 _MICROMANAGER = ExternalManagerHint(
     package="imswitch-device-micromanager",
     extra=None,
     note=(
-        "Micro-Manager device adapters through pymmcore-plus (camera, stages; "
+        "Micro-Manager device adapters through pymmcore-plus (camera, stages, lights, flip mirrors; "
         "Python >= 3.11; the Micro-Manager adapters are installed separately, "
         "see the plugin README)."
     ),
@@ -110,6 +110,8 @@ KNOWN_EXTERNAL_MANAGERS: dict[tuple[str, str], ExternalManagerHint] = {
     ("rs232", "micromanager.core"): _MICROMANAGER,
     ("detector", "micromanager.camera"): _MICROMANAGER,
     ("positioner", "micromanager.stage"): _MICROMANAGER,
+    ("laser", "micromanager.light"): _MICROMANAGER,
+    ("flip_mirror", "micromanager.flip-mirror"): _MICROMANAGER,
 }
 
 

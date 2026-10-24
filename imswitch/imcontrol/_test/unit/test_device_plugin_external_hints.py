@@ -93,6 +93,8 @@ MICROMANAGER_KEYS = [
     ("rs232", "micromanager.core", "rs232"),
     ("detector", "micromanager.camera", "detectors"),
     ("positioner", "micromanager.stage", "positioners"),
+    ("laser", "micromanager.light", "lasers"),
+    ("flip_mirror", "micromanager.flip-mirror", "flipMirrors"),
 ]
 
 
@@ -104,6 +106,7 @@ def test_micromanager_plugin_backs_hub_camera_and_stage_across_kinds():
     assert hint.extra is None
     assert hint.install_command() == 'pip install "./examples/plugins/imswitch-device-micromanager"'
     assert "Python >= 3.11" in hint.note
+    assert "camera, stages, lights, flip mirrors" in hint.note
     # Kind is part of the key, and nothing in-tree is redirected: only the plugin's own ids are hinted.
     assert lookup_external_hint("detector", "micromanager.core") is None
     assert lookup_external_hint("detector", "MicroManagerCameraManager") is None

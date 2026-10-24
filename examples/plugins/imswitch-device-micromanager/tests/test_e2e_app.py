@@ -18,6 +18,14 @@ so nothing here reads or writes the real ``~/ImSwitchConfig``.
 a child interpreter and lets it fall off the end: the "full MasterController
 close with the real widget tree" that plan section 3 (P0 exit row) left to this
 end-to-end.
+
+Because the tests depend on each other (one shared app, file order), the module
+SKIPS ITSELF, with a message, when pytest would run it out of order or in a
+worker: under pytest-xdist (``PYTEST_XDIST_WORKER`` is set; ``-n`` spreads the
+tests of one file over processes, each booting its own app and finding it in the
+wrong state) and under pytest-randomly (it reorders the tests of a module unless
+``-p no:randomly`` or ``--randomly-dont-reorganize`` is given). Run the module
+serially, e.g. ``pytest -p no:randomly examples/plugins/imswitch-device-micromanager/tests/test_e2e_app.py``.
 """
 import os
 import subprocess
@@ -42,6 +50,19 @@ def _plugin_installed() -> bool:
         return get_default_registry().resolve("rs232", "micromanager.core") is not None
     except Exception:                                   # noqa: BLE001 - the reason is reported by the fixture
         return False
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _ordered_serial_run_only(request):
+    """Skip the module when the tests would not run in file order in this process."""
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        pytest.skip("test_e2e_app.py shares one app between tests that run in file order; it does "
+                    "not run under pytest-xdist workers (PYTEST_XDIST_WORKER is set). Run it serially.")
+    config = request.config
+    if config.pluginmanager.hasplugin("randomly") and config.getoption("randomly_reorganize", True):
+        pytest.skip("test_e2e_app.py shares one app between tests that run in file order; "
+                    "pytest-randomly would reorder them. Run it with -p no:randomly or "
+                    "--randomly-dont-reorganize.")
 
 
 @pytest.fixture(scope="module")

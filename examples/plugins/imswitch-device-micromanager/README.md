@@ -113,7 +113,14 @@ when a `PixelType` change would select one (the change is undone): ImSwitch2's
 chunk contract is `(frames, height, width)`, which the Zarr writer and napari
 layers assume. A per-component split is a later feature. Two cameras can stream
 at once only with the same frame size and pixel type (Micro-Manager's single
-circular buffer).
+circular buffer). While a camera runs and a recording is reading its frames
+(the camera is leased and a `RAW` chunk consumer is registered), no other camera
+can start streaming, live view included, and no other camera's ROI can change:
+both clear MMCore's one buffer, and a frame the recording camera produced at
+that moment would vanish without a trace. The call raises `MMCoreHostError`
+naming the recording camera; stop the recording first, or start the cameras
+together before it begins. Live view of two cameras without a recording is not
+affected.
 
 **Frames.** `getChunk` returns this camera's frames from the host queue as a
 list of `(height, width)` arrays; `getLatestFrame` shows the newest frame
@@ -121,6 +128,13 @@ without taking frames away from a recording, so live view keeps running while a
 recording reads the chunk path. Lost frames (the buffer overflowed, or the
 stream ended by itself) make the next `getChunk` and the `stopAcquisition` raise
 `FramesLostError`, which the detector lease table turns into the hardware fault.
+A fault found while a setting is changed on a running stream (a property write, a
+binning change) does not cancel the change or leave the stream stopped: the
+change is applied, the stream restarts, the fault stays pending for the
+recording's next `getChunk` / `stopAcquisition`, and the setting call raises it
+as well. Live view keeps showing the last frame after a fault, so the camera's
+status (still connected) carries a "lost frames" summary and the fault text in
+its details until the stream is stopped or restarted.
 
 ## The stage
 
@@ -392,7 +406,8 @@ on the demo template (only the napari canvas is replaced, it cannot get an
 OpenGL context offscreen), so it needs the same environment as ImSwitch2's own
 UI tests: `QT_QPA_PLATFORM=offscreen` on a machine without a display. The
 tests do not share the MMCore between processes, so do not run them with
-`pytest-xdist`.
+`pytest-xdist`; `test_e2e_app.py` shares one app between tests that run in file
+order and skips itself under `pytest-xdist` and `pytest-randomly`.
 
 ```
 pip install -e ".[test]"
@@ -411,4 +426,7 @@ drain thread pops with `popNextImageAndMD` into bounded per-camera queues, the
 buffer is drained before every state change, sequences run with
 `stopOnOverflow=True` and an ended or overflowed sequence becomes a recorded
 fault that the next `pop_frames` / `stop_stream` raises, and a second camera can
-only start with the frame shape and dtype of the one already streaming.
+only start with the frame shape and dtype of the one already streaming, and not
+at all while another running camera is being recorded (a start or `setROI` clears
+the buffer; the frame a running camera inserts after the drain would be lost
+silently).

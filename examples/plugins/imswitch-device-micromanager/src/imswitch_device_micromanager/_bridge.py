@@ -316,7 +316,14 @@ class MicroManagerDeviceMixin:
         return f'{self._label} reconnected'
 
     def _onTransportReconnected(self, real: bool):
-        """After the hub reloaded the core: reopen the backend, adopt the device again; the errors found."""
+        """After the hub reloaded the core: reopen the backend, adopt the device again; the errors found.
+
+        The reload unloaded every device, an inline one included, so the "I loaded it" flag is
+        reset first: left set, it would hide a ``.cfg`` that now loads the same label (the
+        "already loaded by the hub's configuration" refusal is skipped for a device this manager
+        thinks it loaded) and a re-adoption that fails half-way would not unload what it loaded.
+        """
+        self._inline_loaded = False
         if not real:
             details = self._hub.connectionStatusDetails or 'transport unavailable'
             self._setConnectionError(details, summary=f'{self._label}: Micro-Manager core did not reconnect')

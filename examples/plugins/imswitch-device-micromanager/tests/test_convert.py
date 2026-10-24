@@ -199,7 +199,7 @@ def test_build_setup_on_the_demo_maps_camera_stages_and_shutters(demo_model, dem
     setup, report = build_setup(demo_model, demo_types, config_file=demo_cfg_path)
     assert list(setup) == ["rs232devices", "detectors", "positioners", "lasers", "availableWidgets"]
     assert setup["rs232devices"] == {"MMCore": {"managerName": "micromanager.core", "managerProperties": {
-        "configFile": demo_cfg_path, "adapterPaths": []}}}
+        "configFile": demo_cfg_path}}}                       # no adapterPaths key when none were given
     assert setup["detectors"] == {"Camera": {
         "managerName": "micromanager.camera",
         "managerProperties": {"rs232device": "MMCore", "label": "Camera"}, "forAcquisition": True}}
@@ -289,6 +289,28 @@ def test_two_position_state_devices_become_flip_mirrors_and_others_are_reported(
     assert "'Lonely'  DemoCamera/DStateDevice  State  position count unknown" in text
     assert "add a flipMirrors entry by hand" in text
     assert "'Clash'" in text and "says 2 but the Label lines go up to state 4" in text
+
+
+def test_an_empty_adapter_path_list_is_omitted_and_the_hub_reads_it_the_same():
+    """The hub treats an absent ``adapterPaths`` and an empty one alike (``or ()``), so the converter
+    writes the key only when folders were given."""
+    from imswitch.imcontrol.model.SetupInfo import RS232Info
+    from imswitch_device_micromanager.core import MicroManagerCoreManager
+
+    model = parse_cfg_text("Device,A,DemoCamera,DCam\n")
+    for given, expected in (((), None), (["/mm"], ["/mm"])):
+        setup, _ = build_setup(model, classify(model), config_file="MMConfig_demo.cfg", adapter_paths=given)
+        properties = setup["rs232devices"]["MMCore"]["managerProperties"]
+        assert properties.get("adapterPaths") == expected and ("adapterPaths" in properties) == bool(given)
+    absent = {"configFile": "MMConfig_demo.cfg"}
+    empty = {"configFile": "MMConfig_demo.cfg", "adapterPaths": []}
+    hubs = [MicroManagerCoreManager(RS232Info(managerName="micromanager.core", managerProperties=props), "MMCore")
+            for props in (absent, empty)]
+    try:
+        assert hubs[0].host.adapter_paths == hubs[1].host.adapter_paths == ()
+    finally:
+        for hub in hubs:
+            hub.finalize()
 
 
 def test_several_cameras_and_a_relative_cfg_path_are_noted():

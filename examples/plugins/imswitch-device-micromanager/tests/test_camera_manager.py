@@ -10,11 +10,13 @@ from imswitch.imcontrol.model.devices.status import (
     DeviceConnectionState, DeviceFailureKind, DeviceNotConnectedError, DeviceRuntimeMode,
 )
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
-    CAMERA_PIXEL_SIZE_PARAM, CAMERA_PIXEL_SIZE_SOURCE_PARAM, PIXEL_SIZE_SOURCE_DEFAULT,
+    CAMERA_PIXEL_SIZE_PARAM, CAMERA_PIXEL_SIZE_SOURCE_PARAM, ChunkKind, PIXEL_SIZE_SOURCE_DEFAULT,
     PIXEL_SIZE_SOURCE_SETUP, PIXEL_SIZE_SOURCE_USER, RawFrameUnavailableError,
 )
 from imswitch_device_micromanager import camera as camera_module
-from imswitch_device_micromanager._core import FramesLostError, FrameShapeMismatchError, StreamFaultKind
+from imswitch_device_micromanager._core import (
+    FramesLostError, FrameShapeMismatchError, MMCoreHostError, StreamFaultKind,
+)
 from imswitch_device_micromanager._frames import UnsupportedPixelTypeError
 from imswitch_device_micromanager.camera import (
     ABSENT_FULL_SHAPE, PIXEL_SIZE_SOURCE_MICROMANAGER, MicroManagerCameraManager,
@@ -534,6 +536,24 @@ def test_crop_back_to_the_full_frame(camera):
     assert camera.frameStart == (0, 0) and camera.shape == (FRAME_SIDE, FRAME_SIDE)
 
 
+def test_start_acquisition_picks_up_changes_made_behind_the_managers_back(camera):
+    """The manager caches ROI, shape and dtype; whoever changed them directly through the core
+    while the camera was idle must not leave the stream started with the stale format."""
+    host = camera._host
+    with host.lock:
+        host.core.setROI(LABEL, 10, 6, 64, 32)
+        host.core.setProperty(LABEL, "PixelType", "8bit")
+    assert camera.shape == (FRAME_SIDE, FRAME_SIDE) and camera.dtype == np.uint16     # not yet known
+    camera.startAcquisition()
+    assert camera.shape == (64, 32) and camera.frameStart == (10, 6)
+    assert camera.dtype == np.uint8
+    stream = host.stream(LABEL)
+    assert stream.shape == (32, 64) and stream.dtype == np.uint8
+    frames = frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()                              # a stale format would be a frame-format fault
+    assert frames[0].shape == (32, 64) and frames[0].dtype == np.uint8
+
+
 def test_a_second_camera_with_a_different_size_cannot_start_next_to_a_running_one(hub):
     hub.host.load_device("Cam2", "DemoCamera", "DCam")
     first, second = make_camera(hub, name="A"), make_camera(hub, name="B", label="Cam2")
@@ -587,6 +607,162 @@ def test_live_view_logs_a_stream_fault_once_and_keeps_the_last_frame(adapter_dir
         assert sum("Live view" in r.getMessage() for r in caplog.records) == 1
         with pytest.raises(FramesLostError):
             cam.stopAcquisition()
+    finally:
+        cam.finalize()
+        hub.finalize()
+
+
+# ------------------------------------------------- one buffer: no change while another camera records
+def _two_cameras(hub):
+    """Two cameras of one format (the buffer needs it; PR #936): the .cfg's and an inline one."""
+    hub.host.load_device("Cam2", "DemoCamera", "DCam")
+    hub.host.call("setProperty", "Cam2", "PixelType", "16bit")
+    return make_camera(hub, name="A"), make_camera(hub, name="B", label="Cam2")
+
+
+def _record(cam):
+    """What the recording does to a camera: a lease, then a RAW chunk consumer."""
+    cam._acquisitionLeased = True
+    cam.startChunkConsumer("recording", kind=ChunkKind.RAW)
+
+
+def _stop_recording(cam):
+    cam.releaseChunkConsumer("recording")
+    cam._acquisitionLeased = False
+
+
+def test_a_fault_found_while_changing_a_setting_neither_loses_the_change_nor_stalls_the_recording(adapter_dir):
+    """The sequence overflowed and the drain thread had not noticed yet when a property was
+    written: the stop finds the fault. The change must still be applied, the stream restarted,
+    the caller told, and the recording's next getChunk / stopAcquisition must raise it too
+    (the lease table faults the detector from stopAcquisition) instead of reading [] forever."""
+    hub = make_hub(adapter_dir, circularBufferMB=1)
+    cam = make_camera(hub)
+    try:
+        cam.setParameter("Exposure", 1)
+        cam.startAcquisition()
+        with cam._host.lock:                              # the drain thread cannot notice the overflow ...
+            threading.Event().wait(0.2)
+            assert cam._host.stream(LABEL).streaming and cam._host.stream(LABEL).fault is None
+            with pytest.raises(FramesLostError, match="overflow"):
+                cam.setParameter("Mode", "Noise")         # ... so the settings change's stop finds it
+        assert hub.host.call("getProperty", LABEL, "Mode") == "Noise"     # the change was applied
+        assert cam.parameters["Mode"].value == "Noise" and cam._edited["Mode"] == "Noise"
+        assert cam._host.stream(LABEL).streaming          # restarted: not left stopped and silent
+        with pytest.raises(FramesLostError, match="overflow"):
+            cam.getChunk()                                # the recording's next read fails ...
+        with pytest.raises(FramesLostError) as info:
+            cam.stopAcquisition()                         # ... and so does its stop (the lease table's fault)
+        assert info.value.fault.kind is StreamFaultKind.OVERFLOW
+        assert not cam._host.stream(LABEL).streaming
+    finally:
+        cam.finalize()
+        hub.finalize()
+
+
+def test_a_fault_recorded_before_a_settings_change_stays_pending(adapter_dir):
+    hub = make_hub(adapter_dir, circularBufferMB=1)
+    cam = make_camera(hub)
+    try:
+        cam.setParameter("Exposure", 1)
+        cam.startAcquisition()
+        with cam._host.lock:
+            threading.Event().wait(0.2)
+        wait_until(lambda: cam._host.snapshot()["streams"][LABEL]["fault"], message="overflow fault")
+        cam.setParameter("Mode", "Noise")                 # nothing runs: applied, no restart, no second raise
+        assert hub.host.call("getProperty", LABEL, "Mode") == "Noise"
+        assert not cam._host.stream(LABEL).streaming
+        with pytest.raises(FramesLostError, match="overflow"):
+            cam.getChunk()
+        with pytest.raises(FramesLostError, match="overflow"):
+            cam.stopAcquisition()
+    finally:
+        cam.finalize()
+        hub.finalize()
+
+
+def test_a_settings_change_is_refused_before_it_stops_a_stream_that_could_not_restart(hub):
+    first, second = _two_cameras(hub)
+    try:
+        first.startAcquisition()
+        second.startAcquisition()                         # both stream (equal format) before anyone records
+        first._acquisitionLeased = True
+        first.startChunkConsumer("recording", kind=ChunkKind.RAW)
+        with pytest.raises(MMCoreHostError, match="recording"):
+            second.setParameter("PixelType", "8bit")      # would stop B and could not restart it
+        assert hub.host.stream("Cam2").streaming
+        assert hub.host.call("getProperty", "Cam2", "PixelType") == "16bit"
+        first.releaseChunkConsumer("recording")
+        first._acquisitionLeased = False
+        first.stopAcquisition()
+        second.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_camera_cannot_start_or_crop_while_another_records(hub):
+    first, second = _two_cameras(hub)
+    try:
+        first.startAcquisition()
+        _record(first)
+        with pytest.raises(MMCoreHostError, match=r"recording.*#936"):
+            second.startAcquisition()
+        with pytest.raises(MMCoreHostError, match="recording"):
+            second.crop(0, 0, FRAME_SIDE, FRAME_SIDE)     # setROI would clear the recording's buffer too
+        assert not hub.host.stream("Cam2").streaming
+        frames_within_deadline(first.getChunk, count=3)   # the recording went on untouched
+        _stop_recording(first)
+        second.startAcquisition()                         # the recording is over: allowed again
+        second.stopAcquisition()
+        first.stopAcquisition()                           # no fault: nothing was lost
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_live_view_and_the_start_of_a_recording_do_not_count_as_recording(hub):
+    """A recording leases all its cameras in one acquire before it registers its consumers, and
+    live view consumes DISPLAY chunks: neither may block the other camera."""
+    first, second = _two_cameras(hub)
+    try:
+        first._acquisitionLeased = True                   # leased, no consumer yet: the acquire window
+        first.startAcquisition()
+        second.startAcquisition()
+        second.stopAcquisition()
+        first.startChunkConsumer("viewer", kind=ChunkKind.DISPLAY)
+        second.startAcquisition()                         # a viewer is not a recording
+        second.stopAcquisition()
+        first.releaseChunkConsumer("viewer")
+        first._acquisitionLeased = False
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_live_view_says_in_the_status_that_frames_were_lost(adapter_dir):
+    """A stale live image looks alive. The status stays CONNECTED (commands are not refused) but its
+    summary and details name the lost frames, until the stream is stopped (the fault is raised) or restarted."""
+    hub = make_hub(adapter_dir, circularBufferMB=1)
+    cam = make_camera(hub)
+    try:
+        cam.setParameter("Exposure", 1)
+        cam.startAcquisition()
+        wait_until(lambda: cam.getLatestFrame().any(), message="a frame")
+        assert cam.statusSnapshot()[3] is None                        # healthy: no details
+        with cam._host.lock:
+            threading.Event().wait(0.2)
+        wait_until(lambda: cam._host.snapshot()["streams"][LABEL]["fault"], message="overflow fault")
+        assert cam.getLatestFrame().shape == (FRAME_SIDE, FRAME_SIDE)  # still returns the last frame ...
+        state, _mode, summary, details, failure_kind = cam.statusSnapshot()
+        assert state is DeviceConnectionState.CONNECTED and failure_kind is None
+        assert "lost frames" in summary and "overflow" in details      # ... and says so
+        assert cam.isUsable
+        with pytest.raises(FramesLostError):
+            cam.stopAcquisition()
+        state, _mode, summary, details, _kind = cam.statusSnapshot()
+        assert state is DeviceConnectionState.CONNECTED and details is None and "lost" not in summary
     finally:
         cam.finalize()
         hub.finalize()

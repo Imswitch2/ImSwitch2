@@ -45,9 +45,11 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import DeviceConnectionState
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     CAMERA_PIXEL_SIZE_PARAM,
     CAMERA_PIXEL_SIZE_SOURCE_PARAM,
+    ChunkKind,
     PIXEL_SIZE_SOURCE_DEFAULT,
     QUEUED_FRAME_OVERHEAD_BYTES,
     RawFrameUnavailableError,
@@ -179,8 +181,22 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         """Resolve the label, register it with the host and read everything from Micro-Manager."""
         with self._host.lock:
             self._resolve_label()
-            self._host.register_camera(self._label)
+            self._host.register_camera(self._label, self._is_recording)
             return self._read_identity()
+
+    def _is_recording(self) -> bool:
+        """True while a recording consumes this camera's frames (the host's "is recording" test).
+
+        Leased *and* a ``RAW`` chunk consumer registered: the recording asks for ``RAW``
+        (``DISPLAY`` is the viewer's). Leased alone is not enough: a recording leases all
+        its cameras in one ``acquire`` before it registers its consumers, and live view
+        leases too, so ``acquisitionLeased`` alone would refuse starting two equally
+        sized cameras together and a second camera's live view.
+        """
+        if not self.acquisitionLeased:
+            return False
+        kinds = self._chunkKinds() or {}
+        return any(kind is ChunkKind.RAW for kind in list(kinds.values()))
 
     def _read_identity(self) -> _Identity:
         host, label = self._host, self._label
@@ -334,11 +350,13 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                     raise UnsupportedPixelTypeError(_COLOUR_REFUSAL.format(label=label, reason=exc)) from exc
                 return _properties.read_back(core, label, name)
 
-        applied = self._safe_camera_action(action)
-        self._edited[name] = str(applied)
-        self.refreshParameters()
-        self._warn_if_changed(name, value, applied)
-        return applied
+        def after(applied):
+            self._edited[name] = str(applied)
+            self.refreshParameters()
+            self._warn_if_changed(name, value, applied)
+            return applied
+
+        return self._safe_camera_action(action, after=after)
 
     def _warn_if_changed(self, name, requested, applied) -> None:
         try:
@@ -393,9 +411,11 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                     core.setProperty(label, PROPERTY_BINNING, previous)
                     raise
 
-        self._safe_camera_action(action)
-        super().setBinning(binning)
-        self.refreshParameters()
+        def after(_result):
+            super(MicroManagerCameraManager, self).setBinning(binning)
+            self.refreshParameters()
+
+        self._safe_camera_action(action, after=after)
 
     @staticmethod
     def _roi_fits(roi, width, height) -> bool:
@@ -434,20 +454,39 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                     self._setFullShape((full_width, full_height))
             return changed
 
-    def _safe_camera_action(self, action):
+    def _safe_camera_action(self, action, after=None):
         """stop the stream -> ``action()`` -> restart it, for settings MMCore may refuse mid-sequence.
 
         The format is re-read by ``action`` (via :meth:`_sync_geometry`) before the restart,
         so a changed frame size or pixel type is what the new sequence is started with. The
-        action's own error is the one raised; a stop that raises (:class:`FramesLostError`)
-        aborts before anything is changed.
+        action's own error is the one raised.
+
+        A stream fault found while stopping (:class:`FramesLostError`: the sequence had
+        already ended, or ended unnoticed, before this call) must not cancel the change or
+        the restart, and must not be swallowed by the caller of a settings change -- the
+        recording that lost the frames has to fail, not hang on a stream nobody restarted.
+        So the stop's fault is captured, the action runs, the stream restarts if it was
+        running, the fault is put back on the stream (:meth:`MMCoreHost.restore_fault`;
+        sticky like any other host fault, so the recording's next ``getChunk`` raises it
+        and ``stopAcquisition`` raises it too, which is what makes the lease table set the
+        hardware fault), and ``after(result)`` (the caller's bookkeeping, run only when the
+        action succeeded) still runs. Last, the fault is raised to the caller of the change
+        as well, because the recording it belongs to is lost. A fault that was already
+        recorded before the call (stream no longer streaming) is left pending as it is.
         """
         host, label = self._host, self._label
         with host.lock:
             stream = host.register_camera(label)
             was_streaming = stream.streaming
+            fault: Optional[StreamFault] = None
             if was_streaming:
-                host.stop_stream(label)
+                host.check_buffer_may_be_cleared(label)   # refuse before stopping what cannot be restarted
+                try:
+                    host.stop_stream(label)
+                except FramesLostError as exc:            # the sequence is stopped; carry on, keep the fault
+                    fault = exc.fault
+                    self.__logger.error('Camera %s lost frames before a settings change: %s '
+                                        '(stopAcquisition raises it)', label, exc)
             error: Optional[BaseException] = None
             result = None
             try:
@@ -462,8 +501,14 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                         error = exc
                     else:
                         self.__logger.error('Restarting %s after a failed setting also failed: %s', label, exc)
+            if fault is not None:
+                host.restore_fault(label, fault)
             if error is not None:
                 raise error
+            if after is not None:
+                result = after(result)
+            if fault is not None:
+                raise FramesLostError(label, fault)
             return result
 
     def crop(self, hpos, vpos, hsize, vsize):
@@ -498,13 +543,17 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             if not host.running_streams():
                 self._sync_geometry()                     # pick up changes made behind the manager's back
             host.start_stream(self._label, *self._stream_format())
+            self._clear_lost_frames_status()
 
     def stopAcquisition(self):
         """Stop the stream; MMCore errors and :class:`FramesLostError` propagate (the lease
         table turns them into the hardware fault). With the hub down nothing runs any more."""
         if not (self._ready and self._host.is_connected):
             return
-        self._host.stop_stream(self._label)
+        try:
+            self._host.stop_stream(self._label)           # raises (and consumes) a pending stream fault
+        finally:
+            self._clear_lost_frames_status()
         self._raise_staged_fault()
 
     def flushBuffers(self):
@@ -546,6 +595,13 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                 if self._lost_reported is not exc.fault:
                     self._lost_reported = exc.fault
                     self.__logger.error('Live view: %s (stopAcquisition raises it)', exc)
+                    # Live view keeps the last frame, which looks alive: say in the status that
+                    # frames were lost. Still CONNECTED (the device is fine, and a command must
+                    # not be refused for it); the supervisor and the UI read it from statusSnapshot().
+                    self._setConnectionState(
+                        DeviceConnectionState.CONNECTED,
+                        summary=f'{self.model}: {self._label} lost frames, the live image is stale',
+                        details=exc.fault.message)
                 frames = []
             self._ingest(frames, stage=bool(self._chunkConsumers))
             if self._latest is not None:
@@ -577,6 +633,14 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                     f'(memory.perDetectorQueueMB in imcontrol_options.json) because nobody read '
                     f'them; the oldest were dropped')
                 self.__logger.error('Camera %s: %s', self._label, self._staged_fault.message)
+
+    def _clear_lost_frames_status(self) -> None:
+        """The stream was restarted or its fault consumed: drop the "lost frames" status the live view set."""
+        if self._lost_reported is None:
+            return
+        self._lost_reported = None
+        if self.connectionState is DeviceConnectionState.CONNECTED:
+            self._setConnected(f'{self.model}: {self._label} connected')
 
     def _raise_staged_fault(self) -> None:
         """Raise (once) the fault recorded when staged frames were evicted."""
@@ -646,13 +710,14 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         errors: List[str] = []
         with host.lock:
             self._resolve_label()
-            host.register_camera(self._label)
+            host.register_camera(self._label, self._is_recording)
             core = host.core
             label = self._label
             expected_hw, expected_dtype = self._stream_hw, self._stream_dtype
             expected_roi = (*self._frameStart, *self._shape)
             expected_full = self.fullShape
             self._host.acknowledge_fault(label)
+            self._lost_reported = None                    # the reconnect sets the status itself
             for name, text in self._edited.items():
                 try:
                     core.setProperty(label, name, text)

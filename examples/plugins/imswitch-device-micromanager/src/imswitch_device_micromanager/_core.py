@@ -17,7 +17,10 @@ P0 probe rows). So the buffer gets exactly one owner, this class:
   "the sequence ended without anyone asking" into a recorded fault, which the
   next ``pop_frames`` / ``stop_stream`` raises as :class:`FramesLostError`;
 * a second camera may start only with the frame shape and dtype of the one
-  already streaming (MMCore does not enforce it; Micro-Manager PR #936).
+  already streaming (MMCore does not enforce it; Micro-Manager PR #936), and
+  neither a start nor a ``setROI`` is allowed while another running camera is
+  being recorded: both clear the buffer, and a frame that camera inserts after
+  the drain would vanish undetected (:meth:`MMCoreHost.check_buffer_may_be_cleared`).
 
 Every MMCore call goes through :attr:`MMCoreHost.lock`, a re-entrant lock.
 The host swallows nothing: the one place that decides to turn a startup
@@ -33,7 +36,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -160,6 +163,10 @@ class CameraStream:
     frames_lost: int = 0
     frames_dropped_consumer: int = 0
     consumer_overflow_logged: bool = False
+    #: Says whether something is recording this camera's frames right now (the camera
+    #: manager passes "leased and a raw consumer is registered"). ``None`` = never.
+    #: Read under ``host.lock`` by :meth:`MMCoreHost.check_buffer_may_be_cleared`.
+    is_recording: Optional[Callable[[], bool]] = None
 
 
 class MMCoreHost:
@@ -518,17 +525,26 @@ class MMCoreHost:
             return full_width, full_height, found
 
     # ------------------------------------------------------------ camera streams
-    def register_camera(self, label: str) -> CameraStream:
-        """The stream record for camera ``label`` (created on first call)."""
+    def register_camera(self, label: str,
+                        is_recording: Optional[Callable[[], bool]] = None) -> CameraStream:
+        """The stream record for camera ``label`` (created on first call).
+
+        ``is_recording`` (optional, called under the host lock) tells the host that
+        this camera's frames are being recorded while its stream runs; see
+        :meth:`check_buffer_may_be_cleared`. A later call with a callable replaces
+        it, a call without one leaves it as it is.
+        """
         from pymmcore_plus import DeviceType
 
         with self._lock:
             stream = self._streams.get(label)
             if stream is not None:
+                if is_recording is not None:
+                    stream.is_recording = is_recording
                 return stream
             if not self.has_device(label) or self.device_type(label) != DeviceType.Camera:
                 raise MMCoreHostError(self.missing_device_message(label, DeviceType.Camera, 'camera'))
-            stream = CameraStream(label=label)
+            stream = CameraStream(label=label, is_recording=is_recording)
             self._streams[label] = stream
             return stream
 
@@ -570,6 +586,7 @@ class MMCoreHost:
             if stream.fault is not None:
                 raise FramesLostError(label, stream.fault)
             self._check_format_against_running(stream, shape, dtype)
+            self.check_buffer_may_be_cleared(label)
             stream.shape, stream.dtype = shape, dtype
             self._reset_run_counters(stream)
             self._start_locked(stream)
@@ -628,6 +645,44 @@ class MMCoreHost:
             fault, stream.fault = stream.fault, None
             return fault
 
+    def check_buffer_may_be_cleared(self, label: str) -> None:
+        """Raise :class:`MMCoreHostError` if a state change of ``label`` would cost another
+        camera's recording frames.
+
+        ``startSequenceAcquisition`` and ``setROI`` clear MMCore's one circular buffer
+        and reset every camera's ``ImageNumber``. The host drains first, but a camera
+        that is still running can insert a frame between that drain and the clear, and
+        the frame then vanishes without a trace (the counter reset hides the gap).
+        Plan section 4.5, "loss is an error", forbids a silent hole, so while another
+        registered stream is running *and* reports that it is being recorded, the
+        change is refused. Live view or any other stream nobody records does not
+        count: a missing display frame is not data loss.
+        """
+        with self._lock:
+            for other in self._streams.values():
+                if other.label == label or not other.streaming or other.is_recording is None:
+                    continue
+                if other.is_recording():
+                    raise MMCoreHostError(
+                        f"camera {label!r} cannot start streaming or change its ROI while camera "
+                        f"{other.label!r} is recording: {_PR_936}, and starting a sequence or "
+                        f"setting an ROI clears that buffer, so frames of the recording would be "
+                        f"dropped silently. Stop the recording of {other.label!r} first, or start "
+                        f"both cameras together before the recording begins.")
+
+    def restore_fault(self, label: str, fault: StreamFault) -> None:
+        """Put back a fault that :meth:`stop_stream` or :meth:`acknowledge_fault` consumed.
+
+        For a caller that has to stop and restart a stream around a change but must
+        not make the fault disappear: the recording that lost the frames still has to
+        see it (``pop_frames`` raises it, ``stop_stream`` raises and consumes it). An
+        earlier pending fault stays: the first cause is the reported one.
+        """
+        with self._lock:
+            stream = self.stream(label)
+            if stream.fault is None:
+                stream.fault = fault
+
     def set_roi(self, label: str, x: int, y: int, w: int, h: int) -> Tuple[int, int, int, int]:
         """drain -> stop -> setROI -> read back -> restart if it was running.
 
@@ -646,6 +701,7 @@ class MMCoreHost:
             core = self.core
             stream = self.stream(label)
             self._check_format_against_running(stream, (int(h), int(w)), stream.dtype)
+            self.check_buffer_may_be_cleared(label)
             was_streaming = stream.streaming
             previous = tuple(int(v) for v in core.getROI(label))
             previous_shape = stream.shape

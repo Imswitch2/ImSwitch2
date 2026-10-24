@@ -154,7 +154,10 @@ The hub: ``micromanager.core``
 a Qt application, pymmcore-plus would otherwise pick the Qt signaler for every MMCore callback), logs
 the adapter folder it chose and the device interface version, loads ``configFile``, and turns MMCore's
 auto-shutter off so MMCore never opens and closes a shutter behind the bridge's back. On finalize it
-unloads every device; ImSwitch2 finalizes the bridged devices first and the hub last.
+unloads every device; ImSwitch2 finalizes the bridged devices first and the hub last. The hub sets the
+environment variable ``PYMM_SIGNALS_BACKEND=psygnal`` for the whole Python process, so it also affects any
+other pymmcore-plus user in the same process (napari-micromanager, for example): cores built after the hub
+connects get the psygnal signaler too.
 
 **It never aborts the app.** A missing Micro-Manager install, missing adapters or a bad ``.cfg`` becomes
 an ERROR status carrying MMCore's message in the Hardware status window, and every bridged device is
@@ -318,7 +321,9 @@ nothing is scaled. ``forScanning`` must stay ``false``: Micro-Manager stages hav
 and ImSwitch2's waveform scanning stays native.
 
 **Position.** The tracked position is what the hardware says, never a zero: it is read from the device
-at startup and after every blocking move. A stage whose hub is down at startup starts at position
+at startup and after every blocking move. A blocking move that takes longer than MMCore's device timeout
+(``getTimeoutMs``, 5 s by default) raises in the UI call but does not stop the hardware; the tracked
+position refreshes on the next read. A stage whose hub is down at startup starts at position
 ``nan`` ("unknown") and refuses every command until the hub is reconnected.
 
 **Homing.** Homing moves hardware and Micro-Manager has no query for whether an adapter supports it, so
@@ -560,7 +565,7 @@ What lands in the setup file
      - Entry
    * - (always)
      - ``rs232devices``
-     - the hub, ``configFile`` as given on the command line, ``adapterPaths``
+     - the hub, ``configFile`` as given on the command line, ``adapterPaths`` (only when ``--adapter-path`` was given)
    * - Camera
      - ``detectors``
      - ``micromanager.camera``, ``forAcquisition`` true
@@ -662,6 +667,12 @@ Known limits
   The hub therefore owns the buffer and lets a second camera start streaming only with the frame shape
   and pixel type of the one already streaming; a different size is refused with an explanation. Micro-Manager's work on
   proper multi-camera buffers (pull request 936) is still open.
+- **No second camera starts, and no ROI changes, while another camera records.** Starting a sequence or
+  setting an ROI clears MMCore's one buffer, and a frame the recording camera produces at that moment
+  would vanish without a trace. So while a camera is running and a recording is reading its frames, a
+  start (live view included) or a ROI change of any other camera is refused with an explanation; stop the
+  recording first, or start the cameras together before the recording begins. Live view of two cameras
+  without a recording is not affected.
 - **Filter wheels, turrets and light paths are deferred.** A State device with more than two positions has
   no ImSwitch2 counterpart yet: ImSwitch2 has no selector device kind. The flip mirror refuses it, and the
   converter reports it.
@@ -693,4 +704,5 @@ repository root:
 
 Use ``QT_QPA_PLATFORM=offscreen`` on a machine without a display, and do not run them with
 ``pytest-xdist``: the tests do not share an MMCore between processes. The discovery tests are skipped
-until the plugin is installed into the environment.
+until the plugin is installed into the environment. The end-to-end module shares one app between its
+tests and skips itself under ``pytest-xdist`` and ``pytest-randomly``.
