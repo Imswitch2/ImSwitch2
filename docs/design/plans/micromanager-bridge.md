@@ -1,7 +1,7 @@
 # Micro-Manager device bridge
 
 Status: Active — P0, P1 and P2 IMPLEMENTED 2026-10-24 on `feat/micromanager-bridge`
-(590 plugin tests on the real MMCore with the demo adapters; see §5 and §10);
+(620 plugin tests on the real MMCore with the demo adapters; see §5 and §10);
 P3 rig and P4 publish open. Design text below is revision 3 (two independent
 reviews the same day); implementation deviations are recorded in §10. Phase 0 spike is the first deliverable; nothing in this
 document is implemented yet.
@@ -292,14 +292,31 @@ relabels frames on the tagged-pop path (§3). So the buffer gets one owner.
   (and refuses further `getChunk` with the reason), so a leased recording
   fails loudly and the lease table sets the hardware fault; the host restarts
   nothing by itself. A deliberate capacity-overrun test (1 MB buffer, 1 ms
-  exposure, consumer sleeping 50 ms) pins this.
+  exposure, consumer sleeping 50 ms) pins this. A fault found while a
+  settings change stops and restarts the stream is restored on the stream
+  (`restore_fault`) and raised to the settings caller as well, so the
+  recording still fails instead of hanging on an empty `getChunk`
+  (688961391). A live view that hits a fault keeps its last frame and says so
+  in the status summary while staying connected.
 - **Signal handlers run on a foreign thread** (P0 probe: psygnal delivers on
   MMCore's callback thread, neither the caller's nor Qt's), so every handler
   only stores under the manager's lock; nothing else happens there.
-- **Two invariants MMCore does not enforce** live in the host lock: a second
+- **Three invariants MMCore does not enforce** live in the host lock: a second
   camera may start streaming only if its frame shape and dtype equal the
-  running one's, and an ROI change always happens inside drain → stop → set →
-  read back → restart. Violations raise with a message that names PR #936.
+  running one's; an ROI change always happens inside drain → stop → set →
+  read back → restart; and **no start and no `setROI` of any camera while
+  another running stream is being recorded** (688961391, review finding):
+  both clear the one buffer and reset every `ImageNumber`, so a frame the
+  recording camera inserts between the host's drain and MMCore's clear
+  vanishes without a trace — the counter reset hides the gap, and loss is an
+  error. "Being recorded" is what the camera manager reports through
+  `register_camera(label, is_recording)`: leased **and** a RAW chunk consumer
+  registered (live view, and the acquire window before a recording registers
+  its consumers, do not count, so cameras that run together are started
+  together before the recording begins). Violations raise with a message that
+  names PR #936. "Nothing pending is lost" above therefore holds for queued
+  frames; the sub-millisecond insert window is closed by refusal, not by
+  detection.
 - All other MMCore calls go through the same re-entrant lock. Signals are
   psygnal, emitted on the calling thread; the only consumers are position
   read-back (stage) and property echo (camera parameter refresh). Nothing
@@ -499,6 +516,15 @@ Prerequisite for installer users: the bundle moves to Python ≥ 3.11 (§6).
 - Config-editor "Import Micro-Manager configuration…" on top of `convert`.
 
 ## 10. Review log
+
+**Whole-plugin review (2026-10-24, after P2).** 12 findings, all applied in
+688961391: fault during a settings change stalled a recording silently (now
+restored + raised); the drain→clear insert window is closed by refusing
+starts/ROI changes while another camera records; the drain-order and
+`startAcquisition` re-sync invariants were untested (two mutations survived;
+now pinned, mutations confirmed failing); install hints covered 3 of 5 ids;
+live-view faults were invisible; inline bookkeeping after a hub reload; e2e
+module skips under xdist; converter wrote an empty `adapterPaths`. 620 tests.
 
 **Implementation log (2026-10-24, all on `feat/micromanager-bridge`, Sonnet
 agents from structured briefs, reviewed and fixed in-session).** Deviations
