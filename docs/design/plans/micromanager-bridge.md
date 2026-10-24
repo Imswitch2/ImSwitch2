@@ -452,9 +452,16 @@ the sidecar report, `docs/devices/micromanager.rst` (install matrix per platform
 both modes, the unmapped-type table, the mono-only limit), plans README row,
 DEVICE_PLUGINS.md status line.
 
-**P3 — Rig.** One Windows rig with a device that has both a native ImSwitch2
-manager and a Micro-Manager adapter (candidates: a Thorlabs Kinesis stage,
-a Hamamatsu camera through `HamamatsuHam`), bridged and native side by side:
+**P3 — Rig.** Lenny chose a Hamamatsu sCMOS, native `HamamatsuManager`
+versus the bridge through `HamamatsuHam`, before anything is pushed. The kit
+is in ee74b9e12: `docs/design/plans/micromanager-bridge-rig-test.md` (rows,
+property mapping, results table), the template
+`setup_templates/hamamatsu_native_vs_bridge.json` (one setup, one of the two
+cameras disabled; DCAM allows one handle, so the comparison is sequential)
+and `tools/compare_cameras.py measure|diff` (headless, never touches the
+rig's `ImSwitchConfig`; validated on the mock and demo cameras). Original
+scope: one Windows rig with a device that has both a native ImSwitch2
+manager and a Micro-Manager adapter, bridged and native side by side:
 same frames, same positions, same exposure semantics; plus the
 `adapterPaths`/DLL row from P0. Rig rows written before the visit, results
 recorded in the plan. Lenny or Guillaume on their rig, per the PR-review
@@ -483,6 +490,7 @@ Prerequisite for installer users: the bundle moves to Python ≥ 3.11 (§6).
 | Vendor adapter DLL paths on Windows | `adapterPaths` list on the hub; P0/P3 row |
 | ome-writers/tensorstore weight from pymmcore-plus | Accept for an optional plugin; note the install size in the docs |
 | Config editor shows the hub under "RS232 devices" | Cosmetic; a later editor label change, not a blocker |
+| ROI at binning > 1 doubles (rig row G3) | The Settings controller multiplies the ROI fields by the binning on Apply but not on restore, and the base `crop` contract names no unit; the bridge takes binned pixels (consistent with `shape`). This is the known core double-multiply defect, to be fixed in the core, not papered over in the bridge |
 
 ## 7. Validation
 
