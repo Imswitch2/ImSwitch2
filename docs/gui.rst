@@ -638,8 +638,11 @@ Scripts can use ``api.imcontrol.loadCalibration(path)`` (the file path without
 Flip mirror widget
 ------------------
 
-Switches motorized two-position flip mounts (Thorlabs MFF101/MFF102) and can
-tie one mirror to another so that it follows it.
+Switches devices with a fixed set of named positions: two-position flip
+mounts (Thorlabs MFF101/MFF102) and, through the Micro-Manager bridge, filter
+wheels, objective turrets and light paths. Up to four positions are buttons,
+more become a drop-down. One switch can be tied to another with the same number
+of positions so that it follows it.
 
 The panel is loaded by ``FlipMirror`` in ``availableWidgets`` and docks in the
 right-hand column as *Flip Mirrors*.  It shows one row per entry of the setup
