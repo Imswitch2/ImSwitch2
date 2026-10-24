@@ -1,10 +1,10 @@
 # ImProcess Workflow Editor 2.0: a patcher canvas and interactive runs
 
-Date: 2026-10-24 (revision 2, after independent review)
+Date: 2026-10-24 (revision 3, after two review rounds)
 
-Status: Revision 2, for re-review. Revision 1 was reviewed independently on
-2026-10-24 (verdict GREEN WITH CHANGES: four blocking and ten should-fix
-findings, all addressed in this revision; see *Review record*). The mockups
+Status: Revision 3, for final confirmation. Two independent review rounds on
+2026-10-24 (both GREEN WITH CHANGES; every finding is addressed in this
+revision, see *Review record*). The mockups
 are renders of a working spike (`tools/workflow_editor_2_mockups/`) that uses
 the real plugin catalogue, the real `WorkflowDocument` and real run results;
 the window around them is the proposal. Supersedes the "graph canvas" item of
@@ -229,22 +229,27 @@ Rules behind the gestures (document operations, Qt-free, each one undoable):
 - **Execution order is the editor's job.** Connecting reorders the step list
   to a valid order by a stable topological sort that moves as little as
   possible and **keeps the relative order of Source steps and of Save steps**
-  (the runner names files after the first source; see runner extension 4). A
+  (the runner names a run's files after the first source it opens, so keeping
+  the sources' order keeps full runs naming files as they do today). A
   connection that would make a cycle is refused while dragging, not after.
 - **Variadic and single-input steps.** A step that takes several inputs
   (*Merge channels*) shows one input per cable plus a hollow "add" input.
   Dropping a second cable on a single-input step **replaces** its input;
-  Shift-drop **adds** it, which the file format runs as fan-out (the step runs
+  Shift-drop **adds** it — for single-input *process* steps only, since only
+  those fan out — which the file format runs as fan-out (the step runs
   once per input and its ports are suffixed: `out`, `out1`, …); the box then
   shows one input per cable and its outputs grouped per input.
-- **Delete** removes the step's outgoing cables too: the inputs that pointed at
-  it become empty (an unconnected input, drawn as a red stub, listed as an
-  issue) rather than dangling text references.
+- **Delete** removes the step's outgoing cables too: the inputs of process,
+  reconstruct and consolidate steps that pointed at it become empty (an
+  unconnected input, drawn as a red stub, listed as an issue; an empty input
+  list loads and round-trips) rather than dangling text references. A Save step
+  cannot exist without its input (the format requires one), so a Save that
+  read from the deleted step is deleted in the same undoable command.
 - **Copy/paste** carries the selected steps and their positions as a YAML
   fragment. Pasted ids that collide are renamed (`smooth` → `smooth2`) and
   references inside the fragment are rewritten; references to steps outside
-  the fragment become empty inputs. Only positions come along from
-  `metadata.editor`.
+  the fragment become empty inputs, and a Save whose input is outside the
+  fragment is left out. Only positions come along from `metadata.editor`.
 - **Renames** rewrite references (as today), positions, and
   `metadata.provenance_nodes` (keyed by step id).
 - **Positions** are stored as plain floats (a numpy float does not survive the
@@ -264,15 +269,18 @@ SMLM reconstructor makes localizations. So:
 
 - **Kinds are declared, explicitly, by every built-in**, reconstructors
   included, as part of the port declaration: `OutputSpec` gains a kind per
-  port or pattern (the existing `output_spec(params, input_specs=None)`
-  signature already receives the inputs), so ports and kinds are one
-  declaration. A Source produces the pseudo-kind `recording`. A test fails
-  when a built-in declares none.
+  port or pattern, so ports and kinds are one declaration. `output_spec`
+  already accepts `input_specs`, but no caller passes them today; the runner,
+  `steps.validate()`, the catalogue and `runtime.describe_registry` are
+  changed to pass the input kinds. Reconstructors have no `output_spec` at
+  all and get one (one port, `out`, with its kind). A Source produces the
+  pseudo-kind `recording`. A test fails when a built-in declares none.
 - **"any"** is a declared kind (the Python step: what the code returns), and
   **"unknown"** is what an undeclared drop-in gets; neither ever guesses.
 - **Contract test**: each built-in runs on fixtures chosen for it (pixel size
   for deconvolution, x/y columns for table-to-localizations, a long enough
-  frame span for smlm-drift, a two-channel stack for channel-merge), skipped
+  frame span for smlm-drift, two or more single-channel images for
+  channel-merge), skipped
   when an optional dependency is missing (PyTorch for denoise, the optional
   package for smlm-drift-comet); the declared kind must match what it returned.
 - **Validation**: "this step does not accept a <kind>" is raised by
@@ -292,13 +300,19 @@ document's results between runs.
 version (built-ins carry the ImSwitch version, drop-ins a digest of their
 file), effective parameters (the Python step's code is a parameter), ROI
 restriction, and the fingerprints of the steps it reads, with ports. **Step
-ids are not part of it**, so a rename outdates nothing and undo finds the old
-result again. A source's fingerprint is its full `SourceSpec` (source kind,
-dataset, the path resolved against the workflow's folder) plus what
-`fingerprint_of()` reports for the opened data (size and modification time
-for files; the manifest fingerprint for tiling runs; Zarr folders and
-measurement runs by their identifiers), optionally a content hash as
-`hash_sources` already computes.
+ids are not part of it**, so a rename outdates nothing, and undo finds the
+old result again while it is still cached (see below: outdated entries keep
+their data until evicted). A source's fingerprint is its full `SourceSpec`
+(source kind, dataset, the path resolved against the workflow's folder) plus
+what `fingerprint_of()` reports for the opened data: size and modification
+time for a file, the manifest fingerprint for a tiling run, the run id for a
+measurement run; for a **Zarr folder only the folder's modification time plus
+shape, dtype and an attribute digest** — a known limit: a chunk rewritten in
+place without touching the folder goes unnoticed, and *Re-run from here* is
+the remedy. A content hash is optional for files, as `hash_sources` already
+computes, and unavailable for folders. `fingerprint_of()` needs the source
+open, so it is computed when the source is bound and refreshed by a cheap
+file check before each run, never on every edit on the GUI thread.
 
 **The cache is keyed by fingerprint, fixed at planning time.** The editor
 runs a copy of the document, so the user may edit during a run; results are
@@ -334,13 +348,18 @@ handle (a View-only result reads straight from the recording), and
 - the session calls `detach_sources()` on every report and keeps the handles,
   reference-counted **by object identity** per cache entry (result uids repeat
   across runs of View-only and cannot identify a handle);
-- the session registers with `WorkflowController.addHolder` so the
-  controller's `releaseUnusedSources` never closes a handle it holds;
-- an outdated entry keeps only its preview (a small uint8 array) and releases
-  its data and handles; so do eviction, re-binding a source, loading another
-  document and closing the editor;
-- *Pin* hands the result to the results list, and the handle is co-owned with
-  the controller until both let go.
+- the controller's `releaseUnusedSources` closes only handles in its own
+  retained list, which the interactive path never adds to, so the session's
+  handles are not at risk from it; the session keeps each handle until its
+  last cache entry goes;
+- an outdated entry keeps its data until the cache needs room; outdated
+  entries are evicted first, down to their preview (a small uint8 array),
+  releasing their data and handles; re-binding a source, loading another
+  document and closing the editor release them too;
+- *Pin* publishes the result to the results list, and pinned entries are never
+  evicted; when the editor closes, the session hands the handles still used
+  by pinned results to the controller's retained list, keyed by those pinned
+  results' uids, and closes the rest.
 
 **An interactive controller path.** Interactive runs use the controller's
 worker and cancel machinery but not its publishing: no `_publish`, no output
@@ -360,22 +379,28 @@ choice are asked once, when *Write files* is first turned on in a session.
 3. `write_saves: bool = True`; interactive runs pass `False` unless *Write
    files* is on, and a Save box shows the path it would write
    (`render_save_path` as a dry run).
-4. **The file-name stem comes from the first Source step in list order, by its
-   bound spec, whether it was opened in this run or not** (or from an explicit
-   `source_stem=`). Today it comes from the first source the runner *opens*,
-   so binding a cached reconstruction renames the output (`cells_diamond.h5`
-   becomes `cells-h5_diamond.h5`). The result-name fallback stays for a source
-   that is not bound at all (*Run on selected results*).
+4. **An optional `source_stem=` argument** names a run's files. Without it
+   nothing changes: the stem comes from the first source the runner opens, or
+   else from the bound result's name, which is how *Run on selected results*
+   names each run after its own result. The session passes it: the first
+   Source step's spec when the cached bindings came from that source (so
+   binding a cached reconstruction no longer turns `cells_diamond.h5` into
+   `cells-h5_diamond.h5`), or the result's name when the user bound a result
+   from the list.
 5. A failure keeps its details on `RunReport`: the exception type, and for the
    Python step `ScriptError.line`, `traceback_text` and what it printed, so the
-   editor marks the line without parsing a message.
+   editor marks the line without parsing a message. This also changes
+   `processors/run.py`, which reduces failures to text (and is used by
+   `processors/execution.py` as well), and `python_step/context.py`, whose
+   `run_script` loses what was printed when it raises.
 
 **Threading and cancel.** Runs go through `WorkflowController`'s worker;
 results come back to the GUI thread. A cancel takes effect between steps and,
 through the interrupt escalation, inside a processor step; a reconstruction or
-a save finishes first. Edits made while a run is going are **coalesced into
-one queued re-run**, started when the current run ends (the controller runs
-one workflow at a time). Thumbnails and the inspector's large preview are
+a save finishes first. Edits made while a run is going only mark steps
+outdated; when auto-run is on, or when Run is pressed again, they are
+**coalesced into one queued re-run**, started when the current run ends (the
+controller runs one workflow at a time). Thumbnails and the inspector's large preview are
 computed on the worker (a middle plane, or a sampled projection for large
 stacks, labelled "sampled"; a sparkline for curves; a colouring for labels),
 never on the GUI thread, which would contend with the worker for h5py's lock;
@@ -445,13 +470,14 @@ snippet gets the right saves too.
 
 | Where | Change |
 | --- | --- |
-| `workflows/runner.py` | extensions 1–5 (§4.5) |
-| `processors/base.py`, `reconstructors/base.py` + built-ins | kinds in `OutputSpec`, explicit declarations, `deterministic`, contract tests (§4.4, §4.5) |
+| `workflows/runner.py`, `processors/run.py`, `processors/execution.py`, `python_step/context.py` | extensions 1–5 (§4.5); failure details kept as data |
+| `processors/base.py`, `reconstructors/base.py` + built-ins | kinds in `OutputSpec`, explicit declarations, `output_spec` on reconstructors, `deterministic`, contract tests (§4.4, §4.5) |
+| `workflows/steps.py`, `workflows/runtime.py`, `model/workfloweditor/catalog.py` | pass input kinds to `output_spec` |
 | `workflows/steps.py` | kind check in `validate()` only for declared producer kinds |
-| `model/workfloweditor/document.py` | `connect` / `disconnect` / `splice` with stable topological reordering that keeps Source and Save order, cycle refusal, fan-out, delete that empties inputs, copy/paste fragments, renames that rewrite positions and `provenance_nodes`, float positions, no `editor: {}` on read, undoable commands |
+| `model/workfloweditor/document.py` | `connect` / `disconnect` / `splice` with stable topological reordering that keeps Source and Save order, cycle refusal, fan-out, delete that empties inputs and removes dependent Saves, copy/paste fragments, renames that rewrite positions and `provenance_nodes`, float positions, no `editor: {}` on read, undoable commands |
 | `model/workfloweditor/session.py` (new, Phase 2) | `RunSession`: fingerprints, cache, states, run planning, handle ownership |
-| `imcommon/model/memory_limits.py` | the `workflowCacheBytes` limit |
-| `controller/WorkflowController.py` | the interactive path (no publish/retain/dialogs), session as a holder, *Pin* |
+| `imcommon/model/memory_limits.py`, `Options.py`, `MemoryLimitsDialog.py`, `memory-budgets.md` | the `workflowCacheBytes` limit, its option field, its dialog row, and the "three limits" text |
+| `controller/WorkflowController.py` | the interactive path (no publish/retain/dialogs), *Pin*, the handover of pinned results' handles when the editor closes |
 | viewer / `ReconstructionViewController` | a temporary preview slot for *Show in viewer* |
 | `model/snippets.py`, `tools/make_python_recipe_workflows.py` | the `# curves:` header; the recipe-to-workflow logic moves into the package |
 | `examples/improcess_workflows/_synthetic.py` | an `axes=` option, so the two-channel examples run on it |
@@ -495,10 +521,14 @@ Each phase leaves the suite green and ships something usable.
     `metadata.editor` equals the original after load, edit-free save and
     reload** (comments and flow style are not preserved, as in 1.0);
   - every built-in declares kinds, matching what it returns on its fixture;
-  - a multi-port step binds from a mapping, the stem is the same with and
-    without a bound reconstruction, `on_step_done` reports bound steps as
-    cached, `write_saves=False` writes nothing, a failing Python step's line
-    is on the report.
+  - a multi-port step binds from a mapping; the stem is the same with and
+    without a bound reconstruction when the caller passes `source_stem`, and
+    *Run on selected results* still names each run after its own result;
+    `on_step_done` reports bound steps as cached; `write_saves=False` writes
+    nothing; a failing Python step's line and printed output are on the
+    report;
+  - deleting a step removes the Saves that read from it, in one undoable
+    command, and every remaining step still loads.
 
 ### Phase 1: the canvas (edit)
 
@@ -655,6 +685,18 @@ this revision changed for each finding:
 | 13 | The synthetic recording does not run the diamond as stated | Should | §3 note; `_synthetic.py` axes option in Phase 0 |
 | 14 | Phase 0 underestimated; RunSession premature; "round-trip" undefined | Should | Session moved to Phase 2; estimates raised; precise round-trip criterion |
 | 15 | Nits (palette tooltips, cache-hit counting, binding order, Save state, Phase 4 items in a mockup, provenance_nodes on rename, float positions, previews on the worker, spike not in the repository, scale test) | Nit | All applied; mockups 2, 3, 5 and 6 regenerated; spike in `tools/workflow_editor_2_mockups/` |
+
+Second round, on revision 2, 2026-10-24: **GREEN WITH CHANGES**; blockers 1,
+3 and 4 confirmed resolved. Revision 3:
+
+| # | Finding | Severity | Resolution |
+| --- | --- | --- | --- |
+| R2-1 | Extension 4 as written (stem from the first Source by spec) breaks *Run on selected results*: every result of a path-bound Source would write the same file | Blocking | Extension 4 is now only an optional `source_stem=`; the default is unchanged; the session passes it; Phase 0 exit includes *Run on selected results* naming |
+| R2-2 | The *Pin* / `addHolder` handover cannot work (the controller only closes its own retained handles; holders report uids, which repeat) | Should | The session keeps handles; pinned handles are handed to the controller's retained list at editor close |
+| R2-3 | "Undo finds the old result" contradicts outdated entries dropping their data | Should | Outdated entries keep data until evicted, and are evicted first |
+| R2-4 | Zarr folders have no identifier; `fingerprint_of()` needs the source open | Should | Stated as a known limit; computed at binding, refreshed by a file check before runs |
+| R2-5 | Delete/paste cannot leave a Save without an input | Should | Dependent Saves are deleted with the step (one command); pasted Saves with outside inputs are left out |
+| R2-6 | Smaller: no caller passes `input_specs`; reconstructors lack `output_spec`; channel-merge fixture; Shift-drop only for process steps; extension 5 touches `processors/run.py`, `execution.py`, `context.py`; the fourth limit needs `Options.py`, `MemoryLimitsDialog.py`, `memory-budgets.md`; coalescing only with auto-run or a second Run | Should | All applied in §4.3, §4.4, §4.5, §4.8 |
 
 ## Appendix: how the mockups are made
 
