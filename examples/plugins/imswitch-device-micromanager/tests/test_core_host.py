@@ -208,6 +208,33 @@ def test_frame_format_of_a_non_current_camera_needs_explicit_values_while_stream
     host.stop_stream("Camera")
 
 
+def test_sensor_geometry_of_an_untouched_camera_is_the_full_frame(host):
+    assert host.sensor_geometry("Camera") == (FRAME_SIDE, FRAME_SIDE, (0, 0, FRAME_SIDE, FRAME_SIDE))
+    assert host.call("getROI", "Camera") == [0, 0, FRAME_SIDE, FRAME_SIDE]
+
+
+def test_sensor_geometry_keeps_a_roi_that_is_already_set_and_the_camera_selection(host):
+    host.call("setROI", "Cam2", 16, 8, SMALL_SIDE, 128)      # not the current camera
+    assert host.call("getCameraDevice") == "Camera"
+    assert host.sensor_geometry("Cam2") == (FRAME_SIDE, FRAME_SIDE, (16, 8, SMALL_SIDE, 128))
+    assert host.call("getROI", "Cam2") == [16, 8, SMALL_SIDE, 128]       # restored
+    assert host.call("getCameraDevice") == "Camera"                       # selection restored
+
+
+def test_sensor_geometry_is_the_binned_image_size(host):
+    host.call("setProperty", "Camera", "Binning", 2)
+    assert host.sensor_geometry("Camera") == (FRAME_SIDE // 2, FRAME_SIDE // 2,
+                                              (0, 0, FRAME_SIDE // 2, FRAME_SIDE // 2))
+
+
+def test_sensor_geometry_is_refused_while_any_stream_runs(host):
+    start(host, "Camera")
+    with pytest.raises(MMCoreHostError, match="while .*Camera.* stream"):
+        host.sensor_geometry("Cam2")
+    host.stop_stream("Camera")
+    assert host.sensor_geometry("Cam2")[:2] == (FRAME_SIDE, FRAME_SIDE)
+
+
 # ---------------------------------------------------------------- one camera
 def test_single_camera_counted_equals_delivered_without_gaps(host):
     assert start(host, "Camera") is True

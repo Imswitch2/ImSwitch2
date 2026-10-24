@@ -482,6 +482,41 @@ class MMCoreHost:
                 if previous != label:
                     core.setCameraDevice(previous)
 
+    def sensor_geometry(self, label: str) -> Tuple[int, int, Tuple[int, int, int, int]]:
+        """``(full_width, full_height, (x, y, w, h))`` of camera ``label`` at its current binning.
+
+        The full frame is what ``clearROI`` gives, and ``clearROI`` / ``getImageWidth``
+        only act on MMCore's *current* camera, so this temporarily selects ``label``,
+        clears the ROI, reads the size and puts back both the camera's own ROI (when
+        it was not the full frame) and the previous camera selection. The last
+        element is the ROI as it was found, in the same (binned) pixel units.
+
+        Idle only: ``setROI`` / ``clearROI`` clear MMCore's whole circular buffer
+        (plan section 3, P1a rows) and MMCore cannot switch cameras during a
+        sequence, so with any stream running this raises :class:`MMCoreHostError`.
+        """
+        with self._lock:
+            core = self.core
+            if self.running_streams():
+                raise MMCoreHostError(
+                    f"cannot read the sensor geometry of camera {label!r} while "
+                    f"{self.running_streams()} stream: clearing the ROI would clear MMCore's "
+                    f"shared circular buffer and the camera selection cannot change during a sequence")
+            self._drain_locked()
+            previous = core.getCameraDevice()
+            found = tuple(int(v) for v in core.getROI(label))
+            if previous != label:
+                core.setCameraDevice(label)
+            try:
+                core.clearROI()
+                full_width, full_height = int(core.getImageWidth()), int(core.getImageHeight())
+                if found != (0, 0, full_width, full_height):
+                    core.setROI(label, *found)
+            finally:
+                if previous != label:
+                    core.setCameraDevice(previous)
+            return full_width, full_height, found
+
     # ------------------------------------------------------------ camera streams
     def register_camera(self, label: str) -> CameraStream:
         """The stream record for camera ``label`` (created on first call)."""

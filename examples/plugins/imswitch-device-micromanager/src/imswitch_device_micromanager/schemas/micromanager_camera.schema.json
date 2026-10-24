@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Micro-Manager camera managerProperties",
+  "description": "One Micro-Manager Camera device presented as an ImSwitch2 detector. System-config mode: 'label' names a camera the hub's .cfg loaded. Inline mode: 'adapter' and 'device' make the manager load the camera itself under 'label' (and unload it when it finalizes). Mono cameras only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rs232device", "label"],
+  "properties": {
+    "rs232device": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the 'micromanager.core' entry in rs232devices that owns the MMCore this camera lives in."
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Micro-Manager device label. System-config mode: a Camera device the hub's .cfg loaded (a typo is reported with the list of loaded cameras). Inline mode: the label the new device gets."
+    },
+    "adapter": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: Micro-Manager device adapter library (for example 'DemoCamera'). Must be given together with 'device'; leave both out when the .cfg already loads the label."
+    },
+    "device": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: device name inside the adapter (for example 'DCam'). Must be given together with 'adapter'."
+    },
+    "parent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: label of the hub device (Micro-Manager Hub) the camera hangs off, when the adapter needs one."
+    },
+    "preInitProperties": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] },
+      "description": "Inline mode: properties that can only be set before the device is initialised (Micro-Manager 'pre-init' properties), applied in order before initialisation."
+    },
+    "cameraPixelSizeUm": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Optically effective (sample-plane) pixel size of the unbinned camera in micrometres. Wins over Micro-Manager's pixel-size configuration, which is used (divided by the binning) when this is omitted; without either, ImSwitch2's 0.15 um placeholder applies and is flagged as an assumed default."
+    }
+  },
+  "dependentRequired": {
+    "adapter": ["device"],
+    "device": ["adapter"],
+    "parent": ["adapter"],
+    "preInitProperties": ["adapter"]
+  }
+}

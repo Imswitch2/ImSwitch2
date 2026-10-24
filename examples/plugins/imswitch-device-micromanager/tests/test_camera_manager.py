@@ -1,0 +1,688 @@
+"""MicroManagerCameraManager against the real MMCore and the DemoCamera adapters (no mocks)."""
+import threading
+
+import numpy as np
+import pytest
+
+from imswitch.imcontrol.model.SetupInfo import DetectorInfo, RS232Info
+from imswitch.imcontrol.model.devices.graph import DeviceRelationKind, DeviceRole
+from imswitch.imcontrol.model.devices.status import (
+    DeviceConnectionState, DeviceFailureKind, DeviceNotConnectedError, DeviceRuntimeMode,
+)
+from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+    CAMERA_PIXEL_SIZE_PARAM, CAMERA_PIXEL_SIZE_SOURCE_PARAM, PIXEL_SIZE_SOURCE_DEFAULT,
+    PIXEL_SIZE_SOURCE_SETUP, PIXEL_SIZE_SOURCE_USER, RawFrameUnavailableError,
+)
+from imswitch_device_micromanager import camera as camera_module
+from imswitch_device_micromanager._core import FramesLostError, FrameShapeMismatchError
+from imswitch_device_micromanager._frames import UnsupportedPixelTypeError
+from imswitch_device_micromanager.camera import (
+    ABSENT_FULL_SHAPE, PIXEL_SIZE_SOURCE_MICROMANAGER, MicroManagerCameraManager,
+)
+from imswitch_device_micromanager.core import MicroManagerCoreManager
+from mm_helpers import DEADLINE_S, DEMO_CONFIG, FRAME_SIDE, TEST_EXPOSURE_MS, wait_until
+
+LABEL = "Camera"
+
+
+# ------------------------------------------------------------------- helpers
+def make_hub(adapter_dir, **properties):
+    properties.setdefault("adapterPaths", [adapter_dir])
+    properties.setdefault("configFile", DEMO_CONFIG)
+    return MicroManagerCoreManager(
+        RS232Info(managerName="micromanager.core", managerProperties=properties), "MMCore")
+
+
+def detector_info(**properties):
+    properties.setdefault("rs232device", "MMCore")
+    properties.setdefault("label", LABEL)
+    return DetectorInfo(managerName="micromanager.camera", managerProperties=properties, forAcquisition=True)
+
+
+def make_camera(hub, name="Cam", **properties):
+    return MicroManagerCameraManager(detector_info(**properties), name, rs232sManager={"MMCore": hub})
+
+
+@pytest.fixture
+def hub(adapter_dir):
+    h = make_hub(adapter_dir)
+    yield h
+    h.finalize()
+
+
+@pytest.fixture
+def camera(hub):
+    cam = make_camera(hub)
+    cam.setParameter("Exposure", TEST_EXPOSURE_MS)
+    yield cam
+    cam.finalize()
+
+
+def frames_within_deadline(read, count=1, deadline=DEADLINE_S):
+    """Poll ``read()`` (returns a list of frames) until ``count`` frames arrived."""
+    frames = []
+
+    def enough():
+        frames.extend(read())
+        return len(frames) >= count
+
+    wait_until(enough, deadline, f"{count} frame(s)")
+    return frames
+
+
+# ------------------------------------------------------------------------ init
+def test_init_from_a_cfg_label(camera):
+    assert camera.model == "DemoCamera/DCam"
+    assert camera.fullShape == (FRAME_SIDE, FRAME_SIDE)
+    assert camera.shape == (FRAME_SIDE, FRAME_SIDE) and camera.frameStart == (0, 0)
+    assert camera.supportedBinnings == [1, 2, 4, 8]
+    assert camera.binning == 1
+    assert camera.croppable and camera.forAcquisition and camera.isScanDriven is False
+    assert camera.connectionState is DeviceConnectionState.CONNECTED
+    assert camera.backendIsReal
+    assert camera.label == LABEL
+
+
+def test_init_parameters_have_exposure_properties_and_pixel_size(camera):
+    parameters = camera.parameters
+    assert parameters["Exposure"].valueUnits == "ms" and parameters["Exposure"].group == "Timings"
+    assert parameters["Exposure"].value == TEST_EXPOSURE_MS
+    assert parameters["Gain"].group == "Camera properties"
+    assert parameters["PixelType"].value == "16bit" and "8bit" in parameters["PixelType"].options
+    assert "Binning" not in parameters                     # first-class: binning / supportedBinnings / setBinning
+    assert CAMERA_PIXEL_SIZE_PARAM in parameters and CAMERA_PIXEL_SIZE_SOURCE_PARAM in parameters
+
+
+def test_pixel_size_comes_from_micromanagers_pixel_size_config_when_the_setup_omits_it(camera):
+    assert camera.pixelSizeUm == [1.0, 1.0, 1.0]           # MMConfig_demo's Res10x
+    source = camera.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM]
+    assert source.value == PIXEL_SIZE_SOURCE_MICROMANAGER and source.value in source.options
+    assert CAMERA_PIXEL_SIZE_PARAM in camera.configOwnedParameters   # MM's config wins over a saved state
+
+
+def test_pixel_size_is_divided_by_the_binning(hub):
+    hub.host.call("setProperty", LABEL, "Binning", 2)      # MMCore reports 2.0 um for the binned pixel
+    assert hub.host.call("getPixelSizeUm") == 2.0
+    cam = make_camera(hub)
+    try:
+        assert cam.pixelSizeUm[1] == 1.0
+        assert cam.binning == 2 and cam.shape == (FRAME_SIDE // 2, FRAME_SIDE // 2)
+        assert cam.fullShape == (FRAME_SIDE // 2, FRAME_SIDE // 2)
+    finally:
+        cam.finalize()
+
+
+def test_a_setup_pixel_size_wins(hub):
+    cam = make_camera(hub, cameraPixelSizeUm=0.25)
+    try:
+        assert cam.pixelSizeUm[1] == 0.25
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_SETUP
+        assert PIXEL_SIZE_SOURCE_MICROMANAGER not in cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].options
+        assert CAMERA_PIXEL_SIZE_PARAM in cam.configOwnedParameters
+    finally:
+        cam.finalize()
+
+
+def test_no_pixel_size_anywhere_falls_back_to_the_placeholder(hub):
+    hub.host.call("setState", "Objective", 5)              # a state without a pixel-size config: 0.0
+    assert hub.host.call("getPixelSizeUm") == 0.0
+    cam = make_camera(hub)
+    try:
+        assert cam.parameters[CAMERA_PIXEL_SIZE_PARAM].value == 0.15      # makeCameraPixelSizeParameter's default
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_DEFAULT
+        assert CAMERA_PIXEL_SIZE_PARAM not in cam.configOwnedParameters
+    finally:
+        cam.finalize()
+
+
+def test_editing_the_micromanager_pixel_size_marks_it_as_the_users(camera):
+    camera.setParameter(CAMERA_PIXEL_SIZE_PARAM, 0.5)
+    assert camera.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_USER
+    assert camera.pixelSizeUm[1] == 0.5
+
+
+def test_inline_mode_loads_the_device_and_finalize_unloads_it(hub):
+    cam = make_camera(hub, label="Inline", adapter="DemoCamera", device="DCam",
+                      preInitProperties={"MaximumExposureMs": 5000})
+    try:
+        assert "Inline" in hub.host.call("getLoadedDevices")
+        assert hub.host.call("getProperty", "Inline", "MaximumExposureMs") == "5000.0000"
+        assert cam.model == "DemoCamera/DCam"
+    finally:
+        cam.finalize()
+    assert "Inline" not in hub.host.call("getLoadedDevices")
+    assert cam.connectionState is DeviceConnectionState.DISCONNECTED
+
+
+def test_inline_device_that_the_cfg_already_loaded_is_refused(hub):
+    with pytest.raises(ValueError, match="already loaded"):
+        make_camera(hub, adapter="DemoCamera", device="DCam")      # label 'Camera' is in the cfg
+
+
+def test_inline_needs_adapter_and_device_together(hub):
+    with pytest.raises(ValueError, match="both"):
+        make_camera(hub, label="Inline", adapter="DemoCamera")
+
+
+def test_missing_label_error_lists_the_camera_labels(hub):
+    hub.host.load_device("Cam2", "DemoCamera", "DCam")
+    with pytest.raises(ValueError) as caught:
+        make_camera(hub, label="Camra")
+    message = str(caught.value)
+    assert "'Camra'" in message and "Did you mean 'Camera'" in message
+    assert "Camera" in message and "Cam2" in message and "Z" not in message.split("Loaded camera devices:")[1]
+
+
+def test_a_label_that_is_not_a_camera_is_refused_naming_its_type(hub):
+    with pytest.raises(ValueError, match=r"'Z' is a Stage, not a Camera"):
+        make_camera(hub, label="Z")
+
+
+def test_a_device_that_fails_to_initialise_inline_leaves_nothing_loaded(hub):
+    with pytest.raises(Exception):
+        make_camera(hub, label="Bad", adapter="DemoCamera", device="DCam",
+                    preInitProperties={"NoSuchProperty": 1})
+    assert "Bad" not in hub.host.call("getLoadedDevices")
+
+
+def test_an_inline_device_that_is_not_a_camera_is_refused_and_unloaded(hub):
+    with pytest.raises(ValueError, match=r"'Stage' is a Stage, not a Camera"):
+        make_camera(hub, label="Stage", adapter="DemoCamera", device="DStage")
+    assert "Stage" not in hub.host.call("getLoadedDevices")
+
+
+def test_a_failure_after_the_inline_load_unloads_the_device(hub):
+    info = DetectorInfo(managerName="micromanager.camera", forAcquisition=False,        # DetectorManager refuses this
+                        managerProperties={"rs232device": "MMCore", "label": "Inline",
+                                           "adapter": "DemoCamera", "device": "DCam"})
+    with pytest.raises(ValueError, match="forAcquisition"):
+        MicroManagerCameraManager(info, "Cam", rs232sManager={"MMCore": hub})
+    assert "Inline" not in hub.host.call("getLoadedDevices")
+
+
+def test_colour_camera_from_the_cfg_is_refused(hub):
+    hub.host.load_device("Cam2", "DemoCamera", "DCam")
+    hub.host.call("setProperty", "Cam2", "PixelType", "32bitRGB")
+    with pytest.raises(UnsupportedPixelTypeError, match="mono cameras only"):
+        make_camera(hub, label="Cam2")
+
+
+def test_hub_lookup_errors_name_the_setup_fields(hub):
+    with pytest.raises(ValueError, match=r"rs232device.*'Nope'.*rs232devices"):
+        MicroManagerCameraManager(detector_info(rs232device="Nope"), "Cam", rs232sManager={"MMCore": hub})
+    with pytest.raises(ValueError, match=r"rs232device.*not a Micro-Manager hub"):
+        MicroManagerCameraManager(detector_info(), "Cam", rs232sManager={"MMCore": object()})
+    with pytest.raises(ValueError, match="rs232device"):
+        MicroManagerCameraManager(detector_info(), "Cam")
+    with pytest.raises(ValueError, match="managerProperties.label"):
+        MicroManagerCameraManager(
+            DetectorInfo(managerName="micromanager.camera", managerProperties={"rs232device": "MMCore"},
+                         forAcquisition=True), "Cam", rs232sManager={"MMCore": hub})
+
+
+# --------------------------------------------------------------- hub is down
+def test_a_camera_is_built_absent_when_the_hub_is_not_connected(adapter_dir, tmp_path):
+    hub = make_hub(adapter_dir, configFile=str(tmp_path / "nope.cfg"))
+    try:
+        cam = make_camera(hub)
+        assert cam.connectionState is DeviceConnectionState.ERROR
+        assert cam.connectionFailureKind is DeviceFailureKind.DEVICE_NOT_FOUND     # the hub's kind
+        assert "nope.cfg" in cam.connectionStatusDetails
+        assert not cam.backendIsReal and not cam.isUsable
+        assert cam.fullShape == ABSENT_FULL_SHAPE and cam.supportedBinnings == [1]
+        assert CAMERA_PIXEL_SIZE_PARAM in cam.parameters and "Exposure" not in cam.parameters
+        with pytest.raises(DeviceNotConnectedError):
+            cam.startAcquisition()
+        assert cam.getChunk() == []
+        cam.stopAcquisition()                                  # nothing runs: not an error
+        cam.finalize()
+    finally:
+        hub.finalize()
+
+
+def test_a_camera_built_while_the_hub_was_down_adopts_the_device_on_reconnect(adapter_dir, tmp_path):
+    cfg = tmp_path / "late.cfg"
+    hub = make_hub(adapter_dir, configFile=str(cfg))
+    try:
+        cam = make_camera(hub)
+        assert cam.connectionState is DeviceConnectionState.ERROR
+        cfg.write_text(open(adapter_dir + "/" + DEMO_CONFIG).read())
+        assert hub.reconnectTransport() is True
+        assert cam._onTransportReconnected(True) == []
+        assert cam.connectionState is DeviceConnectionState.CONNECTED and cam.backendIsReal
+        assert cam.model == "DemoCamera/DCam" and cam.fullShape == (FRAME_SIDE, FRAME_SIDE)
+        assert cam.supportedBinnings == [1, 2, 4, 8]
+        assert "Exposure" in cam.parameters and "Gain" in cam.parameters
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_MICROMANAGER
+        assert cam.pixelSizeUm[1] == 1.0
+        cam.startAcquisition()
+        assert frames_within_deadline(cam.getChunk)[0].shape == (FRAME_SIDE, FRAME_SIDE)
+        cam.stopAcquisition()
+        cam.finalize()
+    finally:
+        hub.finalize()
+
+
+def test_a_transient_camera_stays_absent_until_connected(hub):
+    info = DetectorInfo(managerName="micromanager.camera", forAcquisition=True, transient=True,
+                        managerProperties={"rs232device": "MMCore", "label": LABEL})
+    cam = MicroManagerCameraManager(info, "Cam", rs232sManager={"MMCore": hub})
+    try:
+        assert cam.runtimeMode is DeviceRuntimeMode.ABSENT and not cam.backendIsReal
+        result = cam.getDeviceLifecycle().connect()
+        assert result.success, result
+        assert cam.backendIsReal and cam.model == "DemoCamera/DCam" and "Exposure" in cam.parameters
+    finally:
+        cam.finalize()
+
+
+# ----------------------------------------------------------------- parameters
+def test_exposure_is_applied_and_read_back(camera, hub):
+    camera.setParameter("Exposure", 20)
+    assert hub.host.call("getExposure", LABEL) == 20.0
+    assert camera.parameters["Exposure"].value == 20.0
+
+
+def test_exposure_stores_what_the_camera_took_not_what_was_asked(camera, caplog):
+    camera.setParameter("Exposure", 1e9)                   # beyond MaximumExposureMs: the demo camera ignores it
+    assert camera.parameters["Exposure"].value == TEST_EXPOSURE_MS
+    assert any("the camera took" in r.getMessage() for r in caplog.records)
+
+
+def test_list_property_round_trips(camera, hub):
+    camera.setParameter("Mode", "Noise")
+    assert hub.host.call("getProperty", LABEL, "Mode") == "Noise"
+    assert camera.parameters["Mode"].value == "Noise"
+
+
+def test_number_property_round_trips_typed(camera, hub):
+    camera.setParameter("Gain", 3)
+    camera.setParameter("BeadSize", 4.5)
+    assert hub.host.call("getProperty", LABEL, "Gain") == "3"
+    assert camera.parameters["Gain"].value == 3 and isinstance(camera.parameters["Gain"].value, int)
+    assert camera.parameters["BeadSize"].value == 4.5
+
+
+def test_value_micromanager_refuses_raises_the_micromanager_error_and_keeps_the_cache(camera):
+    with pytest.raises(RuntimeError, match='Cannot set property "Gain"'):
+        camera.setParameter("Gain", 100)
+    assert camera.parameters["Gain"].value == 0
+    with pytest.raises(ValueError, match="not one of the allowed values"):
+        camera.setParameter("Mode", "Sparkles")
+    with pytest.raises(ValueError, match="read-only"):
+        camera.setParameter("CameraName", "x")
+
+
+def test_unknown_parameter_raises_attribute_error(camera):
+    with pytest.raises(AttributeError):
+        camera.setParameter("NoSuchParameter", 1)
+
+
+def test_dependent_parameters_are_refreshed_after_a_write(camera):
+    assert camera.parameters["BitDepth"].value == "16"
+    camera.setParameter("BitDepth", "12")
+    assert camera.parameters["BitDepth"].value == "12"
+
+
+# ------------------------------------------------------------ dtype and binning
+def test_dtype_is_known_before_any_frame_and_follows_pixel_type(camera):
+    assert camera.dtype == np.uint16 and camera.bitDepth == 16
+    camera.setParameter("PixelType", "8bit")
+    assert camera.dtype == np.uint8 and camera.bitDepth == 8
+    camera.startAcquisition()
+    frames = frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()
+    assert frames[0].dtype == np.uint8 and frames[0].shape == (FRAME_SIDE, FRAME_SIDE)
+
+
+def test_a_pixel_type_change_while_streaming_restarts_the_stream_with_the_new_format(camera):
+    camera.startAcquisition()
+    frames_within_deadline(camera.getChunk)
+    camera.setParameter("PixelType", "8bit")
+    assert camera._host.stream(LABEL).streaming
+    wait_until(lambda: any(f.dtype == np.uint8 for f in camera.getChunk()), message="8 bit frames after the restart")
+    camera.stopAcquisition()                               # no fault from the restart
+
+
+def test_switching_to_a_colour_pixel_type_is_refused_and_undone(camera, hub):
+    camera.startAcquisition()
+    with pytest.raises(UnsupportedPixelTypeError, match="mono cameras only"):
+        camera.setParameter("PixelType", "32bitRGB")
+    assert hub.host.call("getProperty", LABEL, "PixelType") == "16bit"
+    assert camera.parameters["PixelType"].value == "16bit" and camera.dtype == np.uint16
+    assert camera._host.stream(LABEL).streaming            # restarted with the old format
+    frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()
+
+
+def test_set_binning_halves_shape_and_frames(camera):
+    camera.setBinning(2)
+    assert camera.binning == 2
+    assert camera.shape == (FRAME_SIDE // 2, FRAME_SIDE // 2) and camera.fullShape == camera.shape
+    camera.startAcquisition()
+    frames = frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()
+    assert frames[0].shape == (FRAME_SIDE // 2, FRAME_SIDE // 2)
+    camera.setBinning(1)
+    assert camera.shape == (FRAME_SIDE, FRAME_SIDE) and camera.fullShape == (FRAME_SIDE, FRAME_SIDE)
+
+
+def test_set_binning_while_streaming_restarts_the_stream(camera):
+    camera.startAcquisition()
+    frames_within_deadline(camera.getChunk)
+    camera.setBinning(4)
+    side = FRAME_SIDE // 4
+    wait_until(lambda: any(f.shape == (side, side) for f in camera.getChunk()), message="binned frames")
+    camera.stopAcquisition()
+
+
+def test_set_binning_rescales_a_crop_the_way_the_adapter_does(camera):
+    camera.crop(16, 8, 128, 64)
+    camera.setBinning(2)
+    x, y = camera.frameStart
+    w, h = camera.shape
+    assert (w, h) == (64, 32) and (x, y) == (8, 4)         # DemoCamera rescales the ROI with the binning
+    assert camera._host.call("getROI", LABEL) == [8, 4, 64, 32]
+
+
+def test_unsupported_binning_is_refused(camera):
+    with pytest.raises(ValueError, match="not supported"):
+        camera.setBinning(3)
+
+
+# ----------------------------------------------------------------- acquisition
+def test_start_getchunk_stop(camera):
+    camera.startAcquisition()
+    frames = frames_within_deadline(camera.getChunk, 20)
+    camera.stopAcquisition()
+    assert isinstance(frames, list)
+    assert all(f.shape == (FRAME_SIDE, FRAME_SIDE) and f.dtype == np.uint16 for f in frames)
+    assert camera.getChunk() == [] or all(isinstance(f, np.ndarray) for f in camera.getChunk())
+
+
+def test_frames_stay_readable_after_stop(camera):
+    camera.startAcquisition()
+    frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()
+    camera.flushBuffers()
+    assert camera.getChunk() == []
+
+
+def test_get_latest_frame_without_consumers_is_the_newest_frame(camera):
+    black = camera.getLatestFrame()
+    assert black.shape == (FRAME_SIDE, FRAME_SIDE) and black.dtype == np.uint16 and not black.any()
+    with pytest.raises(RawFrameUnavailableError):
+        camera.getLatestFrame(is_save=True)               # nothing real to save yet
+    camera.startAcquisition()
+    wait_until(lambda: camera.getLatestFrame().any(), message="a live frame")
+    assert camera.getLatestFrame(is_save=True).any()
+    camera.stopAcquisition()
+    assert camera.getLatestFrame().any()                  # the last frame is kept for the viewer
+
+
+def test_live_view_survives_a_recording_that_drains_the_chunk_path(camera):
+    """The TIS pitfall: live view read the deque a recording had just emptied and went black."""
+    camera.startChunkConsumer("recording")
+    camera.startAcquisition()
+    received, stop = [], threading.Event()
+    problems = []
+
+    def recorder():
+        try:
+            while not stop.is_set():
+                received.extend(camera.readChunk("recording"))
+                stop.wait(0.001)
+        except Exception as exc:                          # noqa: BLE001 - surfaced by the assertion below
+            problems.append(exc)
+
+    thread = threading.Thread(target=recorder)
+    thread.start()
+    try:
+        direct, shared = [], []
+        for _ in range(60):
+            direct.append(camera.getLatestFrame())        # direct call, as EtSnouty/Tiling make it
+            shared.append(camera.getLatestFrameShared())  # the broker's path, as live view makes it
+            stop.wait(0.005)
+        assert len(received) > 0
+    finally:
+        stop.set()
+        thread.join(DEADLINE_S)
+    camera.stopAcquisition()
+    received.extend(camera.readChunk("recording"))
+    camera.releaseChunkConsumer("recording")
+    assert not problems
+    assert all(frame.shape == (FRAME_SIDE, FRAME_SIDE) for frame in direct + shared if frame.size)
+    assert direct[-1].any() and shared[-1].any()
+    assert sum(1 for frame in direct if frame.any()) > len(direct) // 2      # never went black while recording
+
+
+def test_a_direct_get_latest_frame_does_not_steal_frames_from_the_recording(camera):
+    camera.startChunkConsumer("recording")
+    camera.startAcquisition()
+    received = []
+    deadline = threading.Event()
+    wait_until(lambda: camera.getLatestFrame().any(), message="a frame")
+    for _ in range(100):                                  # hammer the direct path ...
+        camera.getLatestFrame()
+        deadline.wait(0.002)
+    camera.stopAcquisition()
+    received.extend(camera.readChunk("recording"))        # ... then read what the recording owns
+    received.extend(camera.readChunk("recording"))
+    delivered = camera._host.snapshot()["streams"][LABEL]["frames_received"]
+    camera.releaseChunkConsumer("recording")
+    assert len(received) == delivered                     # every frame the camera made reached the recording
+
+
+def test_two_consumers_each_see_every_frame(camera):
+    camera.startChunkConsumer("a")
+    camera.startChunkConsumer("b")
+    camera.startAcquisition()
+    got_a = frames_within_deadline(lambda: camera.readChunk("a"), 10)
+    camera.stopAcquisition()
+    got_a.extend(camera.readChunk("a"))
+    got_b = camera.readChunk("b")
+    assert len(got_b) == len(got_a)
+
+
+def test_live_view_follows_a_crop(camera):
+    camera.crop(0, 0, 128, 64)
+    camera.startAcquisition()
+    wait_until(lambda: camera.getLatestFrame().shape == (64, 128) and camera.getLatestFrame().any(),
+               message="a cropped live frame")
+    camera.stopAcquisition()
+
+
+# ------------------------------------------------------------------------ crop
+def test_crop_sets_origin_shape_and_the_next_frames(camera):
+    camera.crop(0, 0, 256, 128)
+    assert camera.frameStart == (0, 0) and camera.shape == (256, 128)
+    assert camera.fullShape == (FRAME_SIDE, FRAME_SIDE)
+    camera.startAcquisition()
+    frames = frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()
+    assert frames[0].shape == (128, 256)                  # numpy (height, width) vs ImSwitch (width, height)
+
+
+def test_crop_with_an_offset(camera):
+    camera.crop(16, 24, 100, 50)
+    assert camera.frameStart == (16, 24) and camera.shape == (100, 50)
+    camera.startAcquisition()
+    assert frames_within_deadline(camera.getChunk)[0].shape == (50, 100)
+    camera.stopAcquisition()
+
+
+def test_crop_while_streaming_keeps_streaming_with_the_new_shape(camera):
+    camera.startAcquisition()
+    frames_within_deadline(camera.getChunk)
+    camera.crop(0, 0, 128, 128)
+    assert camera._host.stream(LABEL).streaming
+    wait_until(lambda: any(f.shape == (128, 128) for f in camera.getChunk()), message="cropped frames")
+    camera.stopAcquisition()
+
+
+def test_crop_reports_the_applied_roi_and_warns_when_the_adapter_snapped(camera, caplog):
+    applied = (4, 4, 100, 50)
+    camera._host.set_roi = lambda label, *roi: applied   # an adapter that snaps every request
+    camera.crop(5, 5, 101, 51)
+    assert camera.frameStart == (4, 4) and camera.shape == (100, 50)
+    assert any("snapped" in record.getMessage() for record in caplog.records)
+
+
+def test_crop_back_to_the_full_frame(camera):
+    camera.crop(10, 10, 64, 64)
+    camera.crop(0, 0, FRAME_SIDE, FRAME_SIDE)
+    assert camera.frameStart == (0, 0) and camera.shape == (FRAME_SIDE, FRAME_SIDE)
+
+
+def test_a_second_camera_with_a_different_size_cannot_start_next_to_a_running_one(hub):
+    hub.host.load_device("Cam2", "DemoCamera", "DCam")
+    first, second = make_camera(hub, name="A"), make_camera(hub, name="B", label="Cam2")
+    try:
+        second.crop(0, 0, 128, 128)
+        first.startAcquisition()
+        with pytest.raises(FrameShapeMismatchError, match="PR #936"):
+            second.startAcquisition()
+        with pytest.raises(Exception, match="stream"):
+            second.setBinning(2)                           # would also change the shared buffer's frame size
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+# --------------------------------------------------------------------- overflow
+def test_forced_overflow_makes_stop_acquisition_raise(adapter_dir):
+    hub = make_hub(adapter_dir, circularBufferMB=1)       # 1 MB = two 512 KB frames
+    cam = make_camera(hub)
+    try:
+        cam.setParameter("Exposure", 1)
+        cam.startAcquisition()
+        with cam._host.lock:                              # a consumer that stalls: the drain thread cannot pop
+            threading.Event().wait(0.2)
+        wait_until(lambda: cam._host.snapshot()["streams"][LABEL]["fault"], message="overflow fault")
+        with pytest.raises(FramesLostError, match="overflow"):
+            cam.getChunk()                                # a recording's next read fails loudly ...
+        with pytest.raises(FramesLostError, match="overflow"):
+            cam.stopAcquisition()                         # ... and so does the stop (the lease table's fault)
+        assert cam.getChunk() is not None                 # consumed: readable again
+        cam.getLatestFrame()                              # live view never raises the stream fault
+    finally:
+        cam.finalize()
+        hub.finalize()
+
+
+def test_live_view_logs_a_stream_fault_once_and_keeps_the_last_frame(adapter_dir, caplog):
+    hub = make_hub(adapter_dir, circularBufferMB=1)
+    cam = make_camera(hub)
+    try:
+        cam.setParameter("Exposure", 1)
+        cam.startAcquisition()
+        wait_until(lambda: cam.getLatestFrame().any(), message="a frame")
+        with cam._host.lock:
+            threading.Event().wait(0.2)
+        wait_until(lambda: cam._host.snapshot()["streams"][LABEL]["fault"], message="overflow fault")
+        caplog.clear()
+        for _ in range(5):
+            assert cam.getLatestFrame().shape == (FRAME_SIDE, FRAME_SIDE)
+        assert sum("Live view" in r.getMessage() for r in caplog.records) == 1
+        with pytest.raises(FramesLostError):
+            cam.stopAcquisition()
+    finally:
+        cam.finalize()
+        hub.finalize()
+
+
+# ------------------------------------------------------------- lifecycle / graph
+def test_descriptor_depends_on_the_hub_transport(camera):
+    spec = camera.getDeviceDescriptorSpec()
+    assert spec.role is DeviceRole.PRIMARY and spec.category == "detector"
+    (dependency,) = spec.dependencies
+    assert dependency.kind is DeviceRelationKind.USES_TRANSPORT
+    assert (dependency.target.kind, dependency.target.name) == ("rs232", "MMCore")
+
+
+def test_safe_state_stops_a_running_stream(camera):
+    camera.startAcquisition()
+    assert camera._lifecycleSafeState(verified=False) == []
+    assert not camera._host.stream(LABEL).streaming
+    assert camera._lifecycleSafeState(verified=True) == []          # idempotent
+
+
+def test_reconnect_reapplies_exposure_roi_binning_and_properties(camera, hub):
+    camera.setParameter("Exposure", 30)
+    camera.setParameter("Mode", "Noise")
+    camera.setParameter("PixelType", "8bit")
+    camera.setBinning(2)
+    camera.crop(8, 8, 64, 32)
+    expected = (camera.frameStart, camera.shape, camera.fullShape, camera.dtype, camera.binning)
+
+    assert camera._lifecycleSafeState(verified=False) == []
+    assert hub.reconnectTransport() is True
+    assert hub.host.call("getExposure", LABEL) == 10.0                    # the .cfg value: a fresh core
+    assert camera._onTransportReconnected(True) == []
+
+    assert (camera.frameStart, camera.shape, camera.fullShape, camera.dtype, camera.binning) == expected
+    assert hub.host.call("getExposure", LABEL) == 30.0
+    assert hub.host.call("getProperty", LABEL, "Mode") == "Noise"
+    assert hub.host.call("getROI", LABEL) == [8, 8, 64, 32]
+    assert camera.connectionState is DeviceConnectionState.CONNECTED
+    camera.startAcquisition()
+    frames = frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()
+    assert frames[0].shape == (32, 64) and frames[0].dtype == np.uint8
+
+
+def test_reconnect_restarts_a_stream_that_was_running(camera, hub):
+    camera.startAcquisition()
+    camera._lifecycleSafeState(verified=False)
+    assert hub.reconnectTransport() is True
+    assert camera._onTransportReconnected(True) == []
+    assert camera._host.stream(LABEL).streaming
+    frames_within_deadline(camera.getChunk)
+    camera.stopAcquisition()
+
+
+def test_reconnect_reloads_an_inline_device(hub):
+    cam = make_camera(hub, label="Inline", adapter="DemoCamera", device="DCam")
+    try:
+        cam.setParameter("Exposure", 25)
+        assert hub.reconnectTransport() is True
+        assert "Inline" not in hub.host.call("getLoadedDevices")
+        assert cam._onTransportReconnected(True) == []
+        assert "Inline" in hub.host.call("getLoadedDevices")
+        assert hub.host.call("getExposure", "Inline") == 25.0
+    finally:
+        cam.finalize()
+
+
+def test_reconnect_without_a_real_transport_returns_an_error(camera):
+    errors = camera._onTransportReconnected(False)
+    assert errors and isinstance(errors[0], str)
+    assert camera.connectionState is DeviceConnectionState.ERROR
+
+
+def test_reconnect_reports_a_label_the_reloaded_core_no_longer_has(camera, hub, tmp_path):
+    cfg = tmp_path / "other.cfg"
+    cfg.write_text("Property,Core,Initialize,0\nDevice,Other,DemoCamera,DCam\nProperty,Core,Initialize,1\n")
+    hub.host.config_file = str(cfg)
+    assert hub.reconnectTransport() is True
+    errors = camera._onTransportReconnected(True)
+    assert errors and "no camera device 'Camera'" in errors[0] and "Other" in errors[0]
+    assert camera.connectionState is DeviceConnectionState.ERROR
+
+
+def test_finalize_stops_the_stream_and_is_safe_twice(hub):
+    cam = make_camera(hub)
+    cam.startAcquisition()
+    cam.finalize()
+    assert not hub.host.running_streams()
+    assert cam.connectionState is DeviceConnectionState.DISCONNECTED
+    cam.finalize()
+
+
+def test_camera_module_has_no_forbidden_core_calls():
+    source = open(camera_module.__file__, encoding="utf-8").read()
+    for forbidden in ("popNextTaggedImage", "clearCircularBuffer", "startSequenceAcquisition",
+                      "stopSequenceAcquisition", "setROI(", "time.sleep", "_hardwareFaulted", "_acquisitionLeased",
+                      ".instance()", "home("):
+        assert forbidden not in source, forbidden

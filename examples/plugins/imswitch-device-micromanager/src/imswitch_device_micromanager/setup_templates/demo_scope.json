@@ -10,5 +10,15 @@
         "adoptExistingCore": false
       }
     }
+  },
+  "detectors": {
+    "Camera": {
+      "managerName": "micromanager.camera",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "Camera"
+      },
+      "forAcquisition": true
+    }
   }
 }
