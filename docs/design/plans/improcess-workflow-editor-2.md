@@ -1,11 +1,19 @@
 # ImProcess Workflow Editor 2.0: a patcher canvas and interactive runs
 
-Date: 2026-10-24
+Date: 2026-10-24 (revision 2, after independent review)
 
-Status: Proposed. The mockups below are renders of a working spike that uses
+Status: Revision 2, for re-review. Revision 1 was reviewed independently on
+2026-10-24 (verdict GREEN WITH CHANGES: four blocking and ten should-fix
+findings, all addressed in this revision; see *Review record*). The mockups
+are renders of a working spike (`tools/workflow_editor_2_mockups/`) that uses
 the real plugin catalogue, the real `WorkflowDocument` and real run results;
 the window around them is the proposal. Supersedes the "graph canvas" item of
 Phase 4 in `improcess-workflow-editor.md`.
+
+**Decisions taken** (2026-10-24): the graph is the default mode, with the list
+one click away and the choice remembered; interactive previews stay in the
+editor until *Show in viewer* (temporary) or *Pin* (permanent); auto-run is off
+by default; Phase 4 is decided after Phase 3 ships.
 
 ## Summary
 
@@ -36,8 +44,8 @@ The proposal, in four lines:
   the core of cached re-runs; positions and other view state go under
   `Workflow.metadata["editor"]`, which round-trips and which the runner
   ignores. New code is a canvas (custom `QGraphicsScene`, no new dependency),
-  a Qt-free run session with a result cache, and three small runner and
-  document extensions.
+  a Qt-free run session with a result cache that owns the files its results
+  read from, and five small runner and document extensions.
 
 ## 1. What is hard about today's editor
 
@@ -60,9 +68,9 @@ Observed on the shipped examples:
 4. **Running is blind.** *Run* sends everything to the reconstruction list.
    There is no per-step state, no timing, no preview, and no way to run up to
    one step, look, change a parameter and try again.
-5. **Adding a step is a hunt.** The palette is a long tree with no search and
-   no descriptions; *Add step* inserts after the selection, so where a step
-   lands depends on what happened to be selected.
+5. **Adding a step is a hunt.** The palette is a long tree with no search;
+   descriptions exist only as tooltips; *Add step* inserts after the
+   selection, so where a step lands depends on what happened to be selected.
 6. **Space goes to the wrong things.** The file list and an issue panel that
    usually reads "No issues" take a third of the window; the parameter form,
    the part being edited, is a narrow column.
@@ -98,8 +106,12 @@ Ideas specific to ImSwitch that none of them has:
 
 ## 3. The 2.0 at a glance
 
-All six are rendered by the spike with the real catalogue and real results
-(the synthetic recording from `examples/improcess_workflows/_synthetic.py`).
+All six are rendered by the spike (`tools/workflow_editor_2_mockups/`) with the
+real catalogue and real results on the synthetic recording from
+`examples/improcess_workflows/_synthetic.py`. The two-channel examples use the
+recording tagged with C, Y, X axes; the shipped writer does not tag axes yet,
+so its recording reads as Frame, Y, X and the diamond's split on C fails on it
+(Phase 0 adds the option).
 
 ### 3.1 Start page
 
@@ -113,22 +125,21 @@ the inspector once something is selected.
 
 ![Graph mode after an interactive run](../../images/workflow-editor-2/2_graph_after_run.png)
 
-The diamond after *Run*: every box says what it is (plugin name, step id,
-the parameters that differ from the defaults), shows its output and how long it
-took. `C0`/`C1` are labelled outputs of *Split stack*; the cable colour is the
-kind (grey recording, blue image). The inspector holds the real parameter form
-and a large preview of the selected step's output. Nothing was written to disk:
-the Save box shows the file it *will* write.
+The diamond after *Run* with *Write files* off: every box says what it is
+(plugin name, step id, the parameters set in the file), shows its output and
+how long it took. `C0`/`C1` are labelled outputs of *Split stack*; the cable
+colour is the kind (grey recording, blue image). The inspector holds the real
+parameter form and a large preview of the selected step's output. The Save box
+did not run: it says what it *would* write.
 
 ### 3.3 Edit → outdated → Run to here
 
 ![Outdated steps and the step context menu](../../images/workflow-editor-2/3_outdated_run_to_here.png)
 
-`smooth`'s radius went from 2 to 4. `smooth`, `merge` and `out` turn orange
-(dashed border, ↻ badge, old thumbnail dimmed with "outdated"); the chip in the
-toolbar says "3 steps outdated". *Run to here* on `merge` re-runs `smooth` and
-`merge` only; `raw`, `rec`, `split` and `sharp` come from the cache. (*Bypass*
-and *Group into a sub-workflow* in this menu are Phase 4 items; see §8.)
+`smooth`'s radius went from 2 to 4. `smooth` and `merge` turn orange (dashed
+border, ↻ badge, old thumbnail dimmed with "outdated"); the chip in the toolbar
+says "2 steps outdated". *Run to here* on `merge` re-runs `smooth` and `merge`
+only; `raw`, `rec`, `split` and `sharp` come from the cache.
 
 ### 3.4 Drag a cable into empty space
 
@@ -146,17 +157,17 @@ The same document as a pipeline of cards; the gutter draws who feeds whom like
 a git graph. This run is real: the `crosstalk` recipe on a 12-frame time lapse
 fails at line 11 ("the matrix is for 2 channels, the data has 12 along axis
 0"). The error sits on the step, the steps after it say they waited, the
-inspector explains the failure in terms of the input and holds the code;
-`raw` and `rec` stay cached, so fixing the code and pressing *Run* continues
-from the failed step.
+inspector shows the error with its line, the input's shape and axes, and the
+code; `raw` and `rec` stay cached, so fixing the code and pressing *Run*
+continues from the failed step.
 
 ### 3.6 A Python step with curve outputs
 
 ![Python step with curve outputs](../../images/workflow-editor-2/6_python_curves.png)
 
-`signal_trace`: two green curve ports (`level`, `area`), a sparkline per port
-inside the box, the code's first lines on the box, the curve plotted in the
-inspector, and the two CSV files the Save steps wrote.
+`signal_trace` with *Write files* on: two green curve ports (`level`, `area`),
+a sparkline per port inside the box, the code's first lines on the box, the
+curve plotted in the inspector, and the two CSV files the Save steps wrote.
 
 ## 4. Design
 
@@ -166,34 +177,37 @@ inspector, and the two CSV files the Save steps wrote.
   the same `WorkflowDocument`; selection, undo and the inspector are shared.
   Neither view owns data.
 - **The file format does not change** in Phases 0–3. View state (positions,
-  collapsed boxes, frames, the chosen mode) lives in `metadata.editor`. A file
-  saved by 2.0 runs unchanged in every ImSwitch that runs today's files.
+  frames, the chosen mode) lives in `metadata.editor`. A file saved by 2.0 runs
+  unchanged in every ImSwitch that runs today's files.
 - **The plugin is the type authority**, as in 1.0: names, categories,
   parameter specs, arity, ports, and now output kinds come from the catalogue.
 - **Interactive runs reuse the batch runner.** No second execution engine: a
   run session decides *what* to run and binds cached results; `run()` does the
   work, through the same code paths as the GUI and the CLI.
 - **Memory policy controls automatic work, never results** (the
-  `memory-budgets.md` principle). The cache is automatic work: evicting it
-  costs a re-run, never a different answer.
-- **Words, not codes.** "Outdated", "waits for 'script'", "will write
+  `memory-budgets.md` principle). The cache is automatic work under a named
+  limit of its own; evicting it costs a re-run. For a step declared
+  nondeterministic a re-run can give a different answer, and §4.5 says how
+  the cache keeps its descendants consistent.
+- **Words, not codes.** "Outdated", "waits for 'script'", "would write
   cells_diamond.h5"; ids are shown, but under the plugin's name.
 
 ### 4.2 Layout
 
 - **Toolbar**: workflow name; New, Open, Save; **Run**, *Run to selected*,
-  *Stop*, *Auto-run*; the Graph/List switch; a status chip (ready, n outdated,
-  stopped at a step, n issues) that opens the issue list.
+  *Stop*, *Auto-run*, *Write files*; the Graph/List switch; a status chip
+  (ready, n outdated, stopped at a step, n issues) that opens the issue list.
 - **Left**: search box over a categorised palette (Recent first, colour chips
   per category, descriptions as tooltips). The workflow-file list moves to the
   start page and the Open dialog.
 - **Centre**: the canvas, with a kind legend and zoom/fit/tidy controls as
   overlays, or the card list.
 - **Right**: the inspector (§4.6).
-- **Status bar**: what the last run did ("Ran 7 steps in 0.2 s · results kept
-  in memory; nothing saved yet").
+- **Status bar**: what the last run did ("Ran 6 steps in 0.2 s · results kept
+  in memory · Write files is off: 'out' would write cells_diamond.h5") and what
+  the cache holds.
 
-### 4.3 Canvas gestures
+### 4.3 Canvas gestures and graph operations
 
 | Gesture | Effect |
 | --- | --- |
@@ -203,54 +217,109 @@ inspector, and the two CSV files the Save steps wrote.
 | Drop a cable in empty space | Quick-add picker filtered by kind and arity; the new step is connected |
 | Drag an input's cable end into empty space | Disconnect |
 | Drop a box on a cable | Splice it in between |
-| Right-click a box | Run to here, Re-run from here, Show output in viewer, Duplicate, Delete |
+| Right-click a box | Run to here, Re-run from here, Show output in viewer, Pin output, Duplicate, Delete |
 | Right-click a cable | Insert step…, Delete |
-| Del / Ctrl+D / Ctrl+C, Ctrl+V | Delete, duplicate, copy/paste (as YAML, so a fragment pastes into a text editor and back) |
+| Del / Ctrl+D / Ctrl+C, Ctrl+V | Delete, duplicate, copy/paste (as YAML) |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo of every document operation |
 | F5 / F6 / Esc | Run / Run to here / Stop |
 | F / H | Fit / tidy up (layered auto-layout) |
 
-Execution order is no longer the user's concern. Connecting reorders the
-step list to a valid order (a stable topological sort that moves as little as
-possible), and a connection that would make a cycle is refused while dragging,
-not after.
+Rules behind the gestures (document operations, Qt-free, each one undoable):
+
+- **Execution order is the editor's job.** Connecting reorders the step list
+  to a valid order by a stable topological sort that moves as little as
+  possible and **keeps the relative order of Source steps and of Save steps**
+  (the runner names files after the first source; see runner extension 4). A
+  connection that would make a cycle is refused while dragging, not after.
+- **Variadic and single-input steps.** A step that takes several inputs
+  (*Merge channels*) shows one input per cable plus a hollow "add" input.
+  Dropping a second cable on a single-input step **replaces** its input;
+  Shift-drop **adds** it, which the file format runs as fan-out (the step runs
+  once per input and its ports are suffixed: `out`, `out1`, …); the box then
+  shows one input per cable and its outputs grouped per input.
+- **Delete** removes the step's outgoing cables too: the inputs that pointed at
+  it become empty (an unconnected input, drawn as a red stub, listed as an
+  issue) rather than dangling text references.
+- **Copy/paste** carries the selected steps and their positions as a YAML
+  fragment. Pasted ids that collide are renamed (`smooth` → `smooth2`) and
+  references inside the fragment are rewritten; references to steps outside
+  the fragment become empty inputs. Only positions come along from
+  `metadata.editor`.
+- **Renames** rewrite references (as today), positions, and
+  `metadata.provenance_nodes` (keyed by step id).
+- **Positions** are stored as plain floats (a numpy float does not survive the
+  YAML dumper), and reading `metadata.editor` never creates it: a file that
+  was opened and not edited saves without an empty `editor: {}`.
 
 ### 4.4 Typed ports: output kinds
 
 Port colours and kind-aware filtering need to know what a step produces before
 it runs. Processors declare what they *accept* (`kinds`) but not what they
-produce (the 1.0 plan's §3.6). The addition:
+produce (the 1.0 plan's §3.6). Running every built-in on the kind matrix's
+representative inputs shows that no single default rule ("same as the first
+input") is right: colocalization makes a table, smlm-render turns
+localizations into an image, the axis processors turn a composite into
+images, image-calculator and the Python step turn labels into images, the
+SMLM reconstructor makes localizations. So:
 
-- `output_kinds(params, input_kinds) -> {port_or_pattern: kind}` on
-  `Processor`, defaulting to "same as the first input" for 1:1 processors,
-  with declarations on the built-ins that differ (Segmentation → labels, FRC →
-  curve, PSF resolution → table, Make RGB → rgb, Make composite → composite,
-  table-to-localizations → localization, the Python step → "any" until run).
-- A contract test runs every built-in on the representative inputs of
-  `test_result_kind_matrix.py` and holds the declared kind to the kind of
-  what it actually returned.
+- **Kinds are declared, explicitly, by every built-in**, reconstructors
+  included, as part of the port declaration: `OutputSpec` gains a kind per
+  port or pattern (the existing `output_spec(params, input_specs=None)`
+  signature already receives the inputs), so ports and kinds are one
+  declaration. A Source produces the pseudo-kind `recording`. A test fails
+  when a built-in declares none.
+- **"any"** is a declared kind (the Python step: what the code returns), and
+  **"unknown"** is what an undeclared drop-in gets; neither ever guesses.
+- **Contract test**: each built-in runs on fixtures chosen for it (pixel size
+  for deconvolution, x/y columns for table-to-localizations, a long enough
+  frame span for smlm-drift, a two-channel stack for channel-merge), skipped
+  when an optional dependency is missing (PyTorch for denoise, the optional
+  package for smlm-drift-comet); the declared kind must match what it returned.
+- **Validation**: "this step does not accept a <kind>" is raised by
+  `steps.validate()` — and so refuses a run in the GUI, the CLI and batch —
+  **only when the producer's kind is explicitly declared and is not "any" or
+  "unknown"**. Otherwise it is an editor-only warning. A test holds every
+  shipped example to validating as it does today.
 - After a run, the actual kind replaces the declared one in the view (the
   Python step's ports turn green when they produce curves).
-- Validation gains "this step does not accept a <kind>" before a run, where
-  today the runner reports it during one.
 
 ### 4.5 Interactive runs
 
-A Qt-free `RunSession` (new, `model/workfloweditor/session.py`) holds one
+A Qt-free `RunSession` (`model/workfloweditor/session.py`) holds one
 document's results between runs.
 
-**Fingerprints.** Each step's fingerprint is a hash of its kind, plugin id
-and version, effective parameters (the Python step's code is a parameter),
-ROI restriction, and the fingerprints of the steps it reads (with ports). A
-source's fingerprint adds the bound path, dataset, file size and modification
-time (optionally a content hash, as `hash_sources` already computes).
+**Fingerprints.** A step's fingerprint is a hash of its kind, plugin id and
+version (built-ins carry the ImSwitch version, drop-ins a digest of their
+file), effective parameters (the Python step's code is a parameter), ROI
+restriction, and the fingerprints of the steps it reads, with ports. **Step
+ids are not part of it**, so a rename outdates nothing and undo finds the old
+result again. A source's fingerprint is its full `SourceSpec` (source kind,
+dataset, the path resolved against the workflow's folder) plus what
+`fingerprint_of()` reports for the opened data (size and modification time
+for files; the manifest fingerprint for tiling runs; Zarr folders and
+measurement runs by their identifiers), optionally a content hash as
+`hash_sources` already computes.
+
+**The cache is keyed by fingerprint, fixed at planning time.** The editor
+runs a copy of the document, so the user may edit during a run; results are
+stored under the fingerprints computed when the run was planned, never
+recomputed afterwards, so a result made with old parameters can never be
+shown as fresh.
 
 **States.** A step is *done* when the cache holds results for its current
 fingerprint, *outdated* when it holds results for an older one (shown dimmed),
 *not run* when it holds none, *running*, *waiting* (queued behind a step), or
-*failed* (with the error). Editing a parameter changes that step's fingerprint
-and so, transitively, every step after it: "outdated" propagates without any
-bookkeeping of its own.
+*failed* (with the error). A Save step with *Write files* off is never done:
+it shows *would write <name>*. Editing a parameter changes that step's
+fingerprint and so, transitively, every step after it: "outdated" propagates
+without bookkeeping of its own.
+
+**Nondeterminism.** A step may declare `deterministic = False` (the Python
+step does: user code may draw random numbers). Recomputing such a step gives
+it a new run nonce in its fingerprint, which outdates every cached descendant,
+so a partial re-run never combines branches computed from two different
+realisations. A contract test checks that no built-in modifies its inputs,
+since cached results are handed to later runs as inputs.
 
 **Run to here.** The session takes the selected step's ancestors, keeps the
 ones whose cached results match, and hands the runner a reduced workflow with
@@ -258,43 +327,87 @@ those results **bound** (`run(bindings=...)` already skips every step that
 only fed a bound one). *Run* is *Run to here* for every sink. *Re-run from
 here* drops the cache for one step and its descendants.
 
+**Who owns the open files.** A cached result can read lazily from a source
+handle (a View-only result reads straight from the recording), and
+`RunReport.close()` closes those handles. So:
+
+- the session calls `detach_sources()` on every report and keeps the handles,
+  reference-counted **by object identity** per cache entry (result uids repeat
+  across runs of View-only and cannot identify a handle);
+- the session registers with `WorkflowController.addHolder` so the
+  controller's `releaseUnusedSources` never closes a handle it holds;
+- an outdated entry keeps only its preview (a small uint8 array) and releases
+  its data and handles; so do eviction, re-binding a source, loading another
+  document and closing the editor;
+- *Pin* hands the result to the results list, and the handle is co-owned with
+  the controller until both let go.
+
+**An interactive controller path.** Interactive runs use the controller's
+worker and cancel machinery but not its publishing: no `_publish`, no output
+folder or overwrite dialogs, no `_retain`. The output folder and the overwrite
+choice are asked once, when *Write files* is first turned on in a session.
+
 **Runner extensions** (small, backwards compatible, tested headless):
 
-1. A binding may be a `{port: result}` mapping, so a cached multi-port step
-   (`split.C0`/`C1`, a Python step's ports) can be bound; today a binding fills
-   only the `out` port.
-2. An optional `on_step_done(step_id, {port: result}, seconds)` callback, so
-   boxes update as each step finishes rather than at the end.
-3. `write_saves: bool = True`; interactive runs pass `False` unless the user
-   asks for files, and a Save box shows the path it *would* write
+1. A binding may be a `{port: result}` mapping, kept in the order the ports
+   were produced (a reference without a port resolves to the first), so a
+   cached multi-port step (`split.C0`/`C1`, a Python step's ports, fan-out's
+   suffixed ports) can be bound; today a binding fills only `out`.
+2. An optional `on_step_done(step_id, {port: result}, seconds, cached)`
+   callback, called as each step finishes and also for bound steps
+   (`cached=True`), so boxes update during a run and cache hits are counted
+   from it (`steps_run` also lists bound and skipped steps).
+3. `write_saves: bool = True`; interactive runs pass `False` unless *Write
+   files* is on, and a Save box shows the path it would write
    (`render_save_path` as a dry run).
+4. **The file-name stem comes from the first Source step in list order, by its
+   bound spec, whether it was opened in this run or not** (or from an explicit
+   `source_stem=`). Today it comes from the first source the runner *opens*,
+   so binding a cached reconstruction renames the output (`cells_diamond.h5`
+   becomes `cells-h5_diamond.h5`). The result-name fallback stays for a source
+   that is not bound at all (*Run on selected results*).
+5. A failure keeps its details on `RunReport`: the exception type, and for the
+   Python step `ScriptError.line`, `traceback_text` and what it printed, so the
+   editor marks the line without parsing a message.
 
-**Threading.** Runs go through `WorkflowController`'s existing worker and
-cancel machinery (interrupt escalation from the Phase D work); results come
-back to the GUI thread. Thumbnails are computed on the worker as small `uint8`
-arrays (a middle plane or a sampled projection for large stacks, a sparkline
-for curves, a label colouring for labels); only the `QPixmap` is made on the
-GUI thread.
+**Threading and cancel.** Runs go through `WorkflowController`'s worker;
+results come back to the GUI thread. A cancel takes effect between steps and,
+through the interrupt escalation, inside a processor step; a reconstruction or
+a save finishes first. Edits made while a run is going are **coalesced into
+one queued re-run**, started when the current run ends (the controller runs
+one workflow at a time). Thumbnails and the inspector's large preview are
+computed on the worker (a middle plane, or a sampled projection for large
+stacks, labelled "sampled"; a sparkline for curves; a colouring for labels),
+never on the GUI thread, which would contend with the worker for h5py's lock;
+only the `QPixmap` is made on the GUI thread.
 
-**Cache budget.** Results are kept up to a named budget under
-`memory_limits` (a share of `processingWorkingSetBytes`), least recently used
-first, never the selected step's; lazily backed results (an opened file) cost
-nothing. An evicted step shows as *not run* and is recomputed when needed. The
-status bar shows what the cache holds.
+**Cache budget.** A fourth named limit in `memory_limits`,
+`workflowCacheBytes` (option `workflowCacheMB`, its own literal default of
+4 GiB), bounds the results the session keeps, least recently used first.
+`memory-budgets.md` rules out pooled totals and shares, so this is a limit of
+its own, named in the status line through `settingRef`. It is not a hard cap:
+the selected step's results and pinned results are exempt, and lazily backed
+results count only what they hold in memory. An evicted step shows as *not
+run* and is recomputed when needed.
 
 **Auto-run** (off by default): 600 ms after an edit, re-run the outdated steps
-up to the selection, if their last measured time is under a threshold
-(about 2 s); an edit during a run cancels it. Slow graphs show the *Run to
-here* hint instead.
+up to the selection, if their last measured time is under a threshold (about
+2 s); slower graphs show the *Run to here* hint instead. **Auto-run never runs
+the Python steps of a file that was opened, rather than built here, until one
+explicit Run** (or the existing confirmation) has happened in the session —
+the same trust rule as *File → Run workflow…*.
 
-**Previews leave the editor only on request.** *Show in viewer* publishes a
-temporary preview result (replaced on the next run, never saved); *Pin* adds it
-to the results list as an ordinary result with its provenance.
+**Previews leave the editor only on request.** *Show in viewer* puts a
+temporary preview into the viewer, in a slot of its own that the next preview
+replaces, never saved and not in the results list (new: no such mechanism
+exists today); *Pin* adds the result to the results list as an ordinary
+result with its provenance.
 
 **Binding the source.** A Source box accepts a dropped file, *Use the
-recording that is open*, or a result from the list (binding the next step to
-an in-memory result, as *Run on selected results* does today). The binding is
-session state; the file keeps its own path, or none.
+recording that is open* (when that recording has a file path; a Source cannot
+be bound to an in-memory object), or a result from the list — which binds the
+*next* step to the in-memory result, as *Run on selected results* does today.
+The binding is session state; the file keeps its own path, or none.
 
 **Batch is unchanged.** *Run over files…* runs the document as today, with
 saves; the interactive session is for one file at a time.
@@ -305,7 +418,7 @@ Header in the step's colour with the plugin name, editable id and the
 description; then:
 
 - **Inputs**: what each input is connected to, with its kind; reorder for
-  variadic steps (Merge channels).
+  variadic steps (*Merge channels*).
 - **Parameters**: the existing `ParamForm` (field types, ranges, units,
   defaults markers, per-field reset), unchanged.
 - **Output**: a large preview of the selected port — an image with a plane
@@ -314,32 +427,41 @@ description; then:
   and *Push to table* for curves and tables.
 - **Actions**: Run to here, Show in viewer, Pin.
 - **Python step**: the shared `PythonCodeEditor`, the ports line, *Open in
-  console*, *Load snippet…*; an error shows its line in the editor.
+  console*, *Load snippet…*; a failure shows its message with the input's
+  shape and axes and marks the failing line (runner extension 5).
 
 ### 4.7 Start page
 
 From the recording that is open (Source bound, View only added), from the
 selected result's history (`workflow_from_provenance`), from a recipe (the
-installed snippets, built into Source → View only → Python step → Save, with
-CSV saves for curve ports), or a blank canvas; plus recent files and the
-workflow folder.
+installed snippets, built into Source → View only → Python step → Save), or a
+blank canvas; plus recent files and the workflow folder. Which recipe ports
+are curves, and so get CSV saves instead of TIFF, moves from a table in
+`tools/make_python_recipe_workflows.py` into the snippet itself (a
+`# curves: level, area` header line beside `# ports:`), so a user's own
+snippet gets the right saves too.
 
 ### 4.8 Changes outside the editor
 
 | Where | Change |
 | --- | --- |
-| `workflows/runner.py` | port-mapping bindings, `on_step_done`, `write_saves` (§4.5) |
-| `processors/base.py` + built-ins | `output_kinds`, declarations, contract test (§4.4) |
-| `model/workfloweditor/document.py` | `connect` / `disconnect` with stable topological reordering and cycle refusal, `insert_on(edge)`, positions and frames in `metadata.editor` kept in step with renames and removals, copy/paste as YAML fragments, undoable commands |
-| `model/workfloweditor/session.py` (new) | `RunSession`: fingerprints, cache, states, run planning |
-| `controller/WorkflowController.py` | runs a session's plan on the existing worker; previews to the viewer |
-| `tools/make_python_recipe_workflows.py` | the recipe-to-workflow logic moves into the package so the start page can use it; the tool keeps calling it |
+| `workflows/runner.py` | extensions 1–5 (§4.5) |
+| `processors/base.py`, `reconstructors/base.py` + built-ins | kinds in `OutputSpec`, explicit declarations, `deterministic`, contract tests (§4.4, §4.5) |
+| `workflows/steps.py` | kind check in `validate()` only for declared producer kinds |
+| `model/workfloweditor/document.py` | `connect` / `disconnect` / `splice` with stable topological reordering that keeps Source and Save order, cycle refusal, fan-out, delete that empties inputs, copy/paste fragments, renames that rewrite positions and `provenance_nodes`, float positions, no `editor: {}` on read, undoable commands |
+| `model/workfloweditor/session.py` (new, Phase 2) | `RunSession`: fingerprints, cache, states, run planning, handle ownership |
+| `imcommon/model/memory_limits.py` | the `workflowCacheBytes` limit |
+| `controller/WorkflowController.py` | the interactive path (no publish/retain/dialogs), session as a holder, *Pin* |
+| viewer / `ReconstructionViewController` | a temporary preview slot for *Show in viewer* |
+| `model/snippets.py`, `tools/make_python_recipe_workflows.py` | the `# curves:` header; the recipe-to-workflow logic moves into the package |
+| `examples/improcess_workflows/_synthetic.py` | an `axes=` option, so the two-channel examples run on it |
 
 ### 4.9 Module layout
 
 ```
-imswitch/improcess/model/workfloweditor/session.py     RunSession, fingerprints, cache, states
-imswitch/improcess/model/workfloweditor/graph.py       layered layout, topological helpers (Qt-free)
+imswitch/improcess/model/workfloweditor/graph.py       topological helpers, layered layout (Qt-free)
+imswitch/improcess/model/workfloweditor/commands.py    undoable document operations
+imswitch/improcess/model/workfloweditor/session.py     RunSession (Phase 2)
 imswitch/improcess/model/workfloweditor/recipes.py     recipe snippets -> documents
 imswitch/improcess/view/workfloweditor/canvas/         scene, view, node/port/edge items, quick-add, frames
 imswitch/improcess/view/workfloweditor/listview.py     cards with the lane gutter
@@ -359,22 +481,31 @@ Each phase leaves the suite green and ships something usable.
 
 ### Phase 0: foundations, Qt-free (no visible change)
 
-- Document graph operations (connect/disconnect/splice, stable topological
-  reordering, cycle refusal, positions in `metadata.editor`, undo commands).
-- `output_kinds` on processors, declarations, contract test, kind-aware
-  validation.
-- Runner extensions 1–3 (§4.5).
-- `RunSession` with fingerprints, cache, states and run planning.
-- Exit: headless tests show that editing one parameter outdates exactly its
-  descendants, that *Run to here* executes only outdated ancestors (counted),
-  that a multi-port step binds from the cache, and that every shipped example
-  round-trips unchanged with positions added.
+- Document graph operations (§4.3 rules) as undoable commands.
+- Kinds in `OutputSpec` for every built-in processor and reconstructor, the
+  Source pseudo-kind, `deterministic`, the contract tests (declared kind,
+  no input mutation), the declared-kinds-only check in `validate()`.
+- Runner extensions 1–5.
+- `_synthetic.py` axes option; the `# curves:` snippet header.
+- Exit, all headless:
+  - connect/disconnect/splice/delete/paste keep every shipped example valid,
+    refuse cycles, and keep Source and Save order (checked on
+    `consolidate_two_sources.yaml`);
+  - every shipped example still validates, and **`to_dict()` without
+    `metadata.editor` equals the original after load, edit-free save and
+    reload** (comments and flow style are not preserved, as in 1.0);
+  - every built-in declares kinds, matching what it returns on its fixture;
+  - a multi-port step binds from a mapping, the stem is the same with and
+    without a bound reconstruction, `on_step_done` reports bound steps as
+    cached, `write_saves=False` writes nothing, a failing Python step's line
+    is on the report.
 
 ### Phase 1: the canvas (edit)
 
 - Scene, view, nodes, typed ports, cables, legend, zoom/fit, layered layout
   for files without positions, palette drag, quick-add picker, connect and
-  disconnect gestures, splice, delete/duplicate, copy/paste, undo/redo.
+  disconnect gestures, splice, fan-out display, delete/duplicate, copy/paste,
+  undo/redo.
 - Inspector (header, inputs, `ParamForm`), Graph/List switch with today's
   table as the interim list.
 - Exit: the shipped examples open as graphs, can be built from an empty
@@ -382,26 +513,32 @@ Each phase leaves the suite green and ships something usable.
 
 ### Phase 2: interactive runs
 
+- `RunSession` (fingerprints, cache keyed at planning time, states,
+  nondeterminism, handle ownership), the interactive controller path, the
+  cache limit.
 - Session wired to the worker: states, timing and thumbnails on boxes,
   *Run* / *Run to here* / *Stop* / *Re-run from here*, outdated propagation,
-  errors on boxes (Python step: line in the editor), inspector previews,
-  *Show in viewer* / *Pin*, source binding (drop, open recording, result).
+  coalesced re-runs, errors on boxes (Python step: the line in the editor),
+  inspector previews, *Show in viewer* (preview slot) / *Pin*, *Write files*,
+  source binding (drop, open recording, result).
 - Exit: on the synthetic recording, change a parameter, see exactly the
   downstream steps outdated, *Run to here* refreshes them in the boxes, and
-  the cache-hit count shows the upstream steps were not re-run; cancel works
-  inside a slow step.
+  the cache-hit count (from `on_step_done`) shows the upstream steps were not
+  re-run; cancel works inside a slow **processor** step; no source handle is
+  closed while a cached result needs it, and every handle is closed after the
+  editor closes.
 
 ### Phase 3: polish and first-time use
 
 - Start page with recipes and history, list mode as cards with the lane
-  gutter, auto-run, frames/comments, the full shortcut set, tidy-up, tooltips
-  with shape/axes/dtype on ports after a run, docs with these screenshots,
-  changelog.
+  gutter, auto-run (with the Python trust rule), frames/comments, the full
+  shortcut set, tidy-up, tooltips with shape/axes/dtype on ports after a run,
+  docs with screenshots of the real editor, changelog.
 - Exit: a first-time user can go from the start page to a saved, run
   workflow with every step's output seen, without reading the manual
   (checked with two people who have not used the editor).
 
-### Phase 4: needs a file-format decision (later)
+### Phase 4: needs a file-format decision (decided after Phase 3)
 
 - **Exposed controls** (FL's *Surface*): a few parameters promoted to the
   workflow ("radius", "threshold") and set at run time, for batch runs and
@@ -420,29 +557,36 @@ needed for Phases 0–3.
 
 | Phase | New code incl. tests | Mostly |
 | --- | --- | --- |
-| 0 | ~1000–1300 lines | Qt-free model and runner, tests |
+| 0 | ~1800–2500 lines | Qt-free model and runner, kind declarations and fixtures, tests |
 | 1 | ~1800–2400 lines | Qt (`QGraphicsScene`) |
-| 2 | ~1200–1600 lines | Qt + worker wiring |
+| 2 | ~1800–2400 lines | session, handle ownership, worker wiring, preview slot |
 | 3 | ~1000–1400 lines | Qt, docs |
 | 4 | per item | format design first |
 
 ## 6. Testing
 
 - **Qt-free**: document graph operations (cycle refusal, reordering keeps the
-  file valid, renames rewrite positions), fingerprints (property test: an edit
-  outdates exactly the descendants), run planning (which steps run, which are
-  bound), runner extensions, output-kind contract test.
+  file valid and Source/Save order, renames rewrite positions and
+  `provenance_nodes`, paste renames collisions), fingerprints (property test:
+  an edit outdates exactly the descendants; a rename outdates nothing),
+  planning-time keys (an edit during a run does not mark its results fresh),
+  nondeterministic recomputation outdating descendants, run planning (which
+  steps run, which are bound), runner extensions, kind and no-mutation
+  contract tests.
+- **Handles**: a cached View-only result stays readable across runs and after
+  the controller's `releaseUnusedSources`; every handle is closed after
+  eviction, re-binding and closing the editor.
 - **Offscreen GUI (pytest-qt)**: build a graph through the scene API, connect
   by simulated drags, quick-add, undo/redo, inspector edits reaching the
   document, list/graph switch keeping the selection.
 - **End to end**: the session on the synthetic recording (states, thumbnails
-  present, cache-hit counts, cancel inside a step, a failing Python step with
-  its line), the shipped examples as graphs.
-- **Visual**: the mockup renderer becomes a screenshot smoke test under Xvfb
-  (manual lane), which also produces the documentation images.
-- **Scale**: a 100-step generated workflow renders and lays out in under
-  100 ms; thumbnails for a 2 GB lazy stack are computed without reading it
-  whole.
+  present, cache-hit counts, cancel inside a processor step, a failing Python
+  step with its line), the shipped examples as graphs.
+- **Visual**: the mockup renderer runs under Xvfb in a manual lane and is
+  replaced in Phase 3 by screenshots of the real editor.
+- **Scale** (a benchmark, not a CI assertion): a 100-step generated workflow
+  lays out and renders in about 100 ms; thumbnails for a 2 GB lazy stack are
+  computed without reading it whole.
 
 ## 7. Alternatives considered
 
@@ -466,43 +610,65 @@ needed for Phases 0–3.
   Rejected for the same reason as in 1.0: an unknown key on a step fails to
   load in every existing ImSwitch. `metadata.editor` round-trips already.
 
-## 8. Risks and open questions
-
-**Risks**
+## 8. Risks
 
 - *Memory*: caching every step of a large reconstruction chain can hold
-  several gigabytes. Mitigated by the budget, LRU eviction, lazy sources and
-  showing what the cache holds; worst case is a re-run.
+  several gigabytes. Mitigated by the named limit, LRU eviction, outdated
+  entries dropping to their previews, lazy sources, and showing what the
+  cache holds; worst case is a re-run.
 - *Stale results shown as fresh*: a fingerprint that misses an input (a file
-  rewritten in place within the same second, a plugin changed without a
-  version bump, a script reading an outside file) would reuse a wrong result.
-  Mitigated by size+mtime (optional hash) on sources and plugin versions in
-  the fingerprint; *Re-run from here* is the escape hatch; documented.
+  rewritten in place within the same second, a script reading an outside
+  file) would reuse a wrong result. Mitigated by the full source spec and
+  `fingerprint_of()` (optional hash), plugin versions (automatic for built-ins
+  and drop-ins), planning-time keys, and the nondeterminism rule; *Re-run from
+  here* is the escape hatch; documented.
+- *Handle lifetimes*: closing a handle under a cached lazy result breaks it
+  (reproduced in review); the ownership rules in §4.5 and their tests exist
+  for this.
 - *Thread safety*: results are produced on the worker and drawn on the GUI
   thread; the Phase D pattern (only plain data crosses, Qt objects stay on the
   GUI thread) applies.
+- *Kinds refusing runs that work today*: prevented by the declared-only rule
+  in `validate()` and the test that every shipped example still validates.
 - *Two views to maintain*: both are thin renderings over the document; the
   inspector, undo stack and selection are shared.
 
-**Open questions (decisions for you)**
+## Review record
 
-1. **Default mode.** Recommendation: Graph by default (that is where the
-   previews are), List one click away, the choice remembered. You suggested
-   the patcher as an alternative mode; it can equally be List by default.
-2. **Do interactive previews appear in the results list?** Recommendation:
-   no — they stay in the editor until *Show in viewer* (temporary) or *Pin*
-   (permanent), so experimenting does not flood the list.
-3. **Auto-run default.** Recommendation: off, with a toolbar toggle.
-4. **Phase 4 (exposed controls, groups, bypass, sweeps).** Recommendation:
-   decide after Phase 3 ships; they need a `schema: 2` design of their own.
+Independent review of revision 1, 2026-10-24: **GREEN WITH CHANGES**. What
+this revision changed for each finding:
 
-## Appendix: how the mockups were made
+| # | Finding | Severity | Resolution |
+| --- | --- | --- | --- |
+| 1 | Nobody owns the source handles behind cached lazy results; the controller would close them | Blocking | §4.5 *Who owns the open files*, *An interactive controller path*; Phase 2 scope and exit; handle tests |
+| 2 | Save names change when the first source is skipped | Blocking | Runner extension 4; reorder keeps Source/Save order; Phase 0 exit |
+| 3 | Cache budget as a share of `processingWorkingSetBytes` contradicts `memory-budgets.md` and is too small | Blocking | Own named limit `workflowCacheBytes` (4 GiB default), not a hard cap |
+| 4 | Kind checks would refuse runs on guessed kinds | Blocking | `validate()` only for explicitly declared producer kinds; editor warning otherwise; examples-still-validate test |
+| 5 | The default kind rule is wrong in many places; the contract test cannot run as written | Should | Explicit declarations for all built-ins incl. reconstructors, kinds in `OutputSpec`, per-processor fixtures with skips, "unknown" for drop-ins |
+| 6 | Fingerprints incomplete; keying time unspecified | Should | Planning-time keys, full source spec + `fingerprint_of()`, ids excluded |
+| 7 | Nondeterministic steps can mix realisations; inputs may be mutated | Should | `deterministic` flag with run nonce; no-mutation contract test |
+| 8 | Cancel only acts inside processor steps; no queue for re-runs | Should | Coalesced queued re-run; Phase 2 exit says "processor step" |
+| 9 | Auto-run would bypass the Python-code confirmation | Should | Trust rule for auto-run |
+| 10 | Graph operations conflict with the runner or are unspecified (source order, paste, fan-out, delete) | Should | §4.3 rules |
+| 11 | The Python error line is not carried as data; a mockup sentence had no mechanism | Should | Runner extension 5; mockup 5 regenerated without the sentence |
+| 12 | Work outside the editor missing (preview slot, recipe curve ports, open recording limits) | Should | §4.5, §4.7, §4.8 rows |
+| 13 | The synthetic recording does not run the diamond as stated | Should | §3 note; `_synthetic.py` axes option in Phase 0 |
+| 14 | Phase 0 underestimated; RunSession premature; "round-trip" undefined | Should | Session moved to Phase 2; estimates raised; precise round-trip criterion |
+| 15 | Nits (palette tooltips, cache-hit counting, binding order, Save state, Phase 4 items in a mockup, provenance_nodes on rename, float positions, previews on the worker, spike not in the repository, scale test) | Nit | All applied; mockups 2, 3, 5 and 6 regenerated; spike in `tools/workflow_editor_2_mockups/` |
 
-A throwaway spike (about 1500 lines: an 830-line canvas module and a 710-line
-mock window with the six screens; not in the repository): a `QGraphicsScene`
+## Appendix: how the mockups are made
+
+`tools/workflow_editor_2_mockups/` (about 1500 lines: an 830-line canvas
+module and a 710-line mock window with the six screens): a `QGraphicsScene`
 canvas whose boxes are built from `WorkflowDocument` + `build_catalog()`, laid
 out by longest-path layering, filled with thumbnails from a real `run()` on
 the synthetic recording (per-step times from the runner's `progress`
 callback), inside a window that reuses the real `ParamForm`, the shared
 `PythonCodeEditor` and pyqtgraph, rendered under Xvfb with ImSwitch's
-stylesheet. Phase 1 can start from it.
+stylesheet:
+
+    xvfb-run -a -s "-screen 0 1920x1080x24" \
+        python tools/workflow_editor_2_mockups/mock_screens.py OUTDIR
+
+It is throwaway: Phase 1 reimplements the canvas in the editor package, and
+Phase 3 replaces these images with screenshots of the real editor.
