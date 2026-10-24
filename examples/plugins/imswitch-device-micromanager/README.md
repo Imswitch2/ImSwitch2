@@ -6,20 +6,22 @@ Micro-Manager adapter can drive becomes an ordinary ImSwitch2 device. The design
 and the numbers behind it are in `docs/design/plans/micromanager-bridge.md` in
 the ImSwitch2 repository.
 
-## Status: Phase 1c (hub, camera and stage)
+## Status: Phase 2a (hub, camera, stage and light)
 
 | Contribution id | Kind | Class | What it is |
 |---|---|---|---|
 | `micromanager.core` | rs232 | `MicroManagerCoreManager` | The shared MMCore hub: owns the one `CMMCorePlus`, its circular buffer and the frame drain thread |
 | `micromanager.camera` | detector | `MicroManagerCameraManager` | One Micro-Manager Camera device as an ImSwitch2 detector (mono only) |
 | `micromanager.stage` | positioner | `MicroManagerStageManager` | One Micro-Manager Stage (one axis) or XYStage (axes `X`, `Y`) as an ImSwitch2 positioner |
+| `micromanager.light` | laser | `MicroManagerLightManager` | A Micro-Manager Shutter, State device position or two-valued property as an on/off light, with an optional numeric power property |
 
-Light and flip-mirror managers follow in later phases; they all name the
+A flip-mirror manager follows in a later phase; every bridged device names the
 hub in `managerProperties.rs232device`. The hub never lets a startup failure
 escape: a missing install, missing adapters or a bad `.cfg` becomes an ERROR
 status carrying the Micro-Manager message, and a dependent camera is then built
 in the same ERROR state (reconnecting the hub from Hardware status brings it
-up). A wrong label, a label that is not a camera or stage, wrong axes for the
+up). A wrong label, a label that is not a camera, stage or the device type the light's
+`enable` needs, wrong axes for the
 stage type, or a colour camera is a setup error and refuses to start with a
 message that says what to change.
 
@@ -174,6 +176,93 @@ adapter without a home command (the demo `Z`) reports Micro-Manager's own
 `homeable` the reference action does nothing. A reference position cannot be
 given: homing defines the adapter's own origin.
 
+## The light
+
+A light is an ImSwitch2 laser. `label` is the Micro-Manager device that switches
+emission, and `enable` says how. The loading modes are the camera's (`.cfg` label,
+or inline `adapter` + `device` + optional `parent` and `preInitProperties`); the
+properties are documented in `schemas/micromanager_light.schema.json`.
+
+A `Shutter` device (`setShutterOpen`), which is what the template uses:
+
+```json
+"lasers": {
+  "LED": {
+    "managerName": "micromanager.light",
+    "managerProperties": {
+      "rs232device": "MMCore", "label": "LED Shutter", "enable": {"kind": "shutter"}
+    },
+    "wavelength": 470,
+    "valueRangeMin": null,
+    "valueRangeMax": null
+  }
+}
+```
+
+A position of a `State` device (`setState`): `on` and `off` are state labels or
+state indices, and a label the device does not have is refused at startup with the
+device's labels:
+
+```json
+"managerProperties": {
+  "rs232device": "MMCore", "label": "LED",
+  "enable": {"kind": "state", "on": "470nm", "off": "Closed"}
+}
+```
+
+A property that takes one value for emission and another for dark
+(`setProperty`); when the property lists allowed values both must be among them
+(numbers match by value, so `1` is `"1"`), and a read-only property is refused:
+
+```json
+"managerProperties": {
+  "rs232device": "MMCore", "label": "White Light Shutter",
+  "enable": {"kind": "property", "name": "State", "on": "1", "off": "0"}
+}
+```
+
+The device type must fit `enable.kind` (a `Shutter` for `shutter`, a `State`
+device for `state`; `property` takes any device); a mismatch is refused naming
+the type found. Every switch is read back from the device, and a device that does
+not show the new state is a failed command: `setEnabled` logs it and returns
+`False` (the laser panel shows the light off), `applyEnabled` raises
+`RawDriveError`.
+
+**Power.** Without a `power` block the light is binary: an on/off switch, no power
+field. With one, a numeric (float or integer) property sets the output:
+
+```json
+"lasers": {
+  "LED": {
+    "managerName": "micromanager.light",
+    "managerProperties": {
+      "rs232device": "MMCore", "label": "LED Shutter", "enable": {"kind": "shutter"},
+      "power": {"label": "DA", "property": "Voltage", "units": "V", "decimals": 2}
+    },
+    "wavelength": 470,
+    "valueRangeMin": 0.0,
+    "valueRangeMax": 5.0
+  }
+}
+```
+
+`units` and `decimals` are **required** with `power`: Micro-Manager properties
+carry neither, and the bridge does not guess `mW` or a precision. `power.label`
+defaults to `label` (a power device on another label must be loaded by the hub's
+`.cfg`). `valueRangeMin` and `valueRangeMax` become required numbers: they are the
+safe range of the property, they must lie inside the limits Micro-Manager states
+for it (a range Micro-Manager cannot reach is refused at startup, both ranges in
+the message), and a value outside them is refused even where Micro-Manager would
+take it. The value is written with exactly `decimals` decimals and read back; the
+laser panel and `applyRawDrive` get what the device shows.
+
+**What it does not do.** Power and emission are separate switches: `setValue`
+writes the property and does not switch emission (the `enabled` argument is
+ignored). There is no TTL path, so a scan cannot gate the light
+(`for_scanning` is ignored), and no modulation. After a hub reconnect and when it
+finalizes, the light is switched off and must read back off before it counts as
+connected.
+
 ## Install
 
 This plugin needs **Python 3.11 or newer** (`pymmcore` does not support 3.10),
@@ -202,8 +291,8 @@ nightlies are built for Windows x64 and Intel macOS only):
 
 The bundled template `setup_templates/demo_scope.json` is a complete, bootable
 setup for the Micro-Manager demo devices (`MMConfig_demo.cfg`): the hub, the
-`Camera` (a `DemoCamera`, 512 x 512, 16 bit), a `Z` stage and a homeable `XY`
-stage. It needs `pip install mm-test-adapters` (or `pip install -e ".[test]"`
+`Camera` (a `DemoCamera`, 512 x 512, 16 bit), a `Z` stage, a homeable `XY`
+stage and an `LED` light. It needs `pip install mm-test-adapters` (or `pip install -e ".[test]"`
 from this folder) next to the plugin, and Python 3.11 or newer.
 
 1. Copy the template into ImSwitch2's setup folder (`~/ImSwitchConfig/imcontrol_setups`,
@@ -222,12 +311,13 @@ from this folder) next to the plugin, and Python 3.11 or newer.
    `XY` (axes `X` and `Y`) with step controls; `XY` starts unreferenced
    and its **Reference** action homes it (the demo `Z` has nothing to
    reference, because the template does not mark it `homeable`); the Recording
-   panel records a chosen number of frames (HDF5, TIFF or Zarr).
+   panel records a chosen number of frames (HDF5, TIFF or Zarr). The Laser panel
+   lists `LED` with an on/off switch that opens and closes the demo `LED Shutter`.
 
-Besides `rs232devices`, `detectors` and `positioners` (the plugin's own
-sections, described above) the template carries exactly one more key:
-`availableWidgets`, which lists the panels ImControl builds (Settings, View,
-Recording, Image, Positioner). ImControl builds no panel that is not listed,
+Besides `rs232devices`, `detectors`, `positioners` and `lasers` (the plugin's own
+sections, described above; the `LED` laser switches the demo `LED Shutter`) the
+template carries exactly one more key: `availableWidgets`, which lists the panels
+ImControl builds (Settings, View, Recording, Image, Positioner, Laser). ImControl builds no panel that is not listed,
 so without it (the default is an empty list) the window would have no panels at all. Every other section a
 shipped setup has (`lasers`, `scan`, `rois`, `nidaq`, `tiling`, ...) is
 optional: a missing one takes its default and the matching panels are not

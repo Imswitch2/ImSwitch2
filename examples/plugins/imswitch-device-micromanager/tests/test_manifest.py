@@ -212,3 +212,100 @@ def test_stage_schema_documents_every_property_and_its_defaults():
     assert all(spec.get("description") for spec in schema["properties"].values())
     assert schema["properties"]["waitForDevice"]["default"] is True
     assert schema["properties"]["homeable"]["default"] is False
+
+
+# ------------------------------------------------------------------- light
+SHUTTER = {"kind": "shutter"}
+
+
+def _light_schema():
+    return json.loads((resources.files("imswitch_device_micromanager")
+                       / "schemas/micromanager_light.schema.json").read_text(encoding="utf-8"))
+
+
+def test_manifest_declares_the_light_as_a_laser_contribution():
+    manager = _managers_by_id()["micromanager.light"]
+    assert manager["kind"] == "laser"
+    assert manager["python_name"] == "imswitch_device_micromanager.light:MicroManagerLightManager"
+    assert manager["manager_properties_schema"] == "schemas/micromanager_light.schema.json"
+    assert "setup_templates/demo_scope.json" in manager["setup_templates"]
+    assert manager["manager_name_aliases"] == []
+
+
+def test_setup_template_declares_a_light_that_matches_its_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    package = resources.files("imswitch_device_micromanager")
+    setup = json.loads((package / "setup_templates/demo_scope.json").read_text(encoding="utf-8"))
+    laser = setup["lasers"]["LED"]
+    assert laser["managerName"] == "micromanager.light" and laser["wavelength"] == 470
+    assert laser["valueRangeMin"] is None and laser["valueRangeMax"] is None      # binary: no power block
+    assert "power" not in laser["managerProperties"]
+    jsonschema.Draft202012Validator(_light_schema()).validate(laser["managerProperties"])
+    assert laser["managerProperties"]["rs232device"] in setup["rs232devices"]
+    assert "Laser" in setup["availableWidgets"]
+
+def _schema():
+    return json.loads((resources.files("imswitch_device_micromanager")
+                       / "schemas/micromanager_light.schema.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("properties", [
+    {"rs232device": "MMCore", "label": "LED Shutter", "enable": {"kind": "shutter"}},
+    {"rs232device": "MMCore", "label": "LED", "enable": {"kind": "state", "on": "470nm", "off": "Closed"}},
+    {"rs232device": "MMCore", "label": "LED", "enable": {"kind": "state", "on": 2, "off": 0}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "property", "name": "State", "on": "1", "off": "0"}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "property", "name": "State", "on": 1, "off": 0.5}},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER,
+     "power": {"property": "Voltage", "units": "V", "decimals": 2}},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER,
+     "power": {"label": "DA", "property": "Voltage", "units": "mW", "decimals": 0}},
+    {"rs232device": "MMCore", "label": "S", "adapter": "DemoCamera", "device": "DShutter", "parent": "DHub",
+     "preInitProperties": {"Mode": "fast", "Steps": 3, "Flag": True}, "enable": SHUTTER},
+])
+def test_light_schema_accepts_valid_properties(properties):
+    jsonschema = pytest.importorskip("jsonschema")
+    jsonschema.Draft202012Validator.check_schema(_schema())
+    jsonschema.Draft202012Validator(_schema()).validate(properties)
+
+
+@pytest.mark.parametrize("properties", [
+    {"label": "S", "enable": SHUTTER},                                              # hub missing
+    {"rs232device": "MMCore", "enable": SHUTTER},                                   # label missing
+    {"rs232device": "MMCore", "label": ""},                                         # enable missing
+    {"rs232device": "MMCore", "label": "S", "enable": {}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "relay"}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "shutter", "on": 1}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "state", "on": 1}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "state", "on": -1, "off": 0}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "state", "on": True, "off": 0}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "state", "on": 1.5, "off": 0}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "state", "on": 1, "off": 0, "name": "x"}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "property", "on": "1", "off": "0"}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "property", "name": "", "on": "1", "off": "0"}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "property", "name": "S", "on": True, "off": "0"}},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "power": {"property": "V", "decimals": 2}},         # no units
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "power": {"property": "V", "units": "V"}},          # no decimals
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "power": {"units": "V", "decimals": 2}},           # no property
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "power": {"property": "V", "units": "", "decimals": 2}},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "power": {"property": "V", "units": "V", "decimals": -1}},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "power": {"property": "V", "units": "V", "decimals": 1.5}},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "power": {"property": "V", "units": "V", "decimals": 2, "x": 1}},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "adapter": "A"},                                    # adapter without device
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "parent": "H"},
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "wavelength": 470},                                 # a LaserInfo field
+    {"rs232device": "MMCore", "label": "S", "enable": SHUTTER, "calibCsvPath": "x.csv"},                            # no calibration lookup
+])
+def test_light_schema_rejects_invalid_properties(properties):
+    jsonschema = pytest.importorskip("jsonschema")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(_schema()).validate(properties)
+
+
+def test_light_schema_documents_every_property_and_has_no_defaults_for_units_and_decimals():
+    schema = _schema()
+    assert schema["additionalProperties"] is False and schema["required"] == ["rs232device", "label", "enable"]
+    assert all(spec.get("description") for spec in schema["properties"].values())
+    power = schema["properties"]["power"]
+    assert power["required"] == ["property", "units", "decimals"] and power["additionalProperties"] is False
+    assert all(spec.get("description") for spec in power["properties"].values())
+    assert "default" not in power["properties"]["units"] and "default" not in power["properties"]["decimals"]

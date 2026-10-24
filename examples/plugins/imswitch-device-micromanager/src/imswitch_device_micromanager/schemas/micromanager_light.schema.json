@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Micro-Manager light managerProperties",
+  "description": "One Micro-Manager light source presented as an ImSwitch2 laser. 'label' is the device that switches emission, and 'enable' says how: a Shutter device, a State device position, or a property that takes one of two values. Without 'power' the light is binary (an on/off switch). With 'power' a numeric property sets the output: the laser entry's valueRangeMin/valueRangeMax must then be numbers inside the property's Micro-Manager limits, and 'units' and 'decimals' are required because Micro-Manager properties carry neither. The laser entry's 'wavelength' is required by ImSwitch2 itself. No scan gating (there is no TTL path) and no modulation. System-config mode: 'label' names a device the hub's .cfg loaded. Inline mode: 'adapter' and 'device' make the manager load the device itself under 'label' (and unload it when it finalizes).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rs232device", "label", "enable"],
+  "properties": {
+    "rs232device": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the 'micromanager.core' entry in rs232devices that owns the MMCore this light lives in."
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Micro-Manager label of the device that switches emission. System-config mode: a device the hub's .cfg loaded (a typo is reported with the list of loaded devices of the type 'enable.kind' needs). Inline mode: the label the new device gets."
+    },
+    "adapter": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: Micro-Manager device adapter library (for example 'DemoCamera'). Must be given together with 'device'; leave both out when the .cfg already loads the label."
+    },
+    "device": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: device name inside the adapter (for example 'DShutter'). Must be given together with 'adapter'."
+    },
+    "parent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline mode: label of the hub device (Micro-Manager Hub) the device hangs off, when the adapter needs one."
+    },
+    "preInitProperties": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] },
+      "description": "Inline mode: properties that can only be set before the device is initialised (Micro-Manager 'pre-init' properties), applied in order before initialisation."
+    },
+    "enable": {
+      "description": "How emission is switched on 'label'. Every switch is read back from the device; a device that does not show the new state is a failed command. Emission is switched off (and verified) after a transport reconnect and when the manager finalizes.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "const": "shutter",
+              "description": "'label' is a Micro-Manager Shutter device; on opens it (setShutterOpen true), off closes it."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "on", "off"],
+          "properties": {
+            "kind": {
+              "const": "state",
+              "description": "'label' is a Micro-Manager State device (filter wheel, LED selector ...); on and off are two of its positions."
+            },
+            "on": {
+              "type": ["string", "integer"],
+              "minimum": 0,
+              "description": "The state position that emits: a state label (string, for example '470nm') or a state index (integer). A label or index the device does not have is refused at startup with the device's state labels."
+            },
+            "off": {
+              "type": ["string", "integer"],
+              "minimum": 0,
+              "description": "The state position that is dark: a state label (for example 'Closed') or a state index. Must differ from 'on'."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "on", "off"],
+          "properties": {
+            "kind": {
+              "const": "property",
+              "description": "A property of 'label' takes one value for emission and another for dark."
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The property to write. Must exist, must not be read-only."
+            },
+            "on": {
+              "type": ["string", "number"],
+              "description": "The property value that emits. When the property lists allowed values, it must be one of them (numbers compare by value, so 1 matches '1')."
+            },
+            "off": {
+              "type": ["string", "number"],
+              "description": "The property value that is dark. Must differ from 'on'."
+            }
+          }
+        }
+      ]
+    },
+    "power": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["property", "units", "decimals"],
+      "description": "Optional output power. The light is binary when this block is absent. The laser entry's valueRangeMin and valueRangeMax (numbers, min < max) are the safe range of the property in 'units'; when Micro-Manager states limits for the property, that range must lie inside them, and a value outside the range is refused even where Micro-Manager would take it. Writing power does not switch emission: they are separate switches.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Device that has the power property. Default: the same device as 'label' above. A different device must be loaded by the hub's .cfg (inline mode loads only 'label')."
+        },
+        "property": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Numeric (float or integer) Micro-Manager property that sets the output; must exist and must not be read-only."
+        },
+        "units": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unit of the power value, shown in the laser widget (for example 'mW', 'V' or '%'). Required: Micro-Manager properties carry no unit and the bridge does not guess one."
+        },
+        "decimals": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many decimals the power value has; the value is written to Micro-Manager with exactly this many. Required: Micro-Manager properties carry no precision. Must be 0 for an integer property."
+        }
+      }
+    }
+  },
+  "dependentRequired": {
+    "adapter": ["device"],
+    "device": ["adapter"],
+    "parent": ["adapter"],
+    "preInitProperties": ["adapter"]
+  }
+}

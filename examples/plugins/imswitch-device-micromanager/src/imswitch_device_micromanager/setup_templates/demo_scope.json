@@ -42,5 +42,18 @@
       "forPositioning": true
     }
   },
-  "availableWidgets": ["Settings", "View", "Recording", "Image", "Positioner"]
+  "lasers": {
+    "LED": {
+      "managerName": "micromanager.light",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "LED Shutter",
+        "enable": {"kind": "shutter"}
+      },
+      "wavelength": 470,
+      "valueRangeMin": null,
+      "valueRangeMax": null
+    }
+  },
+  "availableWidgets": ["Settings", "View", "Recording", "Image", "Positioner", "Laser"]
 }

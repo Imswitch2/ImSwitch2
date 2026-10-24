@@ -38,6 +38,17 @@
         "setup_templates": ["setup_templates/demo_scope.json"],
         "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
         "supported_platforms": ["linux", "win32", "darwin"]
+      },
+      {
+        "id": "micromanager.light",
+        "kind": "laser",
+        "display_name": "Micro-Manager light (shutter, state or property switch, optional power property, via the shared MMCore hub)",
+        "python_name": "imswitch_device_micromanager.light:MicroManagerLightManager",
+        "manager_name_aliases": [],
+        "manager_properties_schema": "schemas/micromanager_light.schema.json",
+        "setup_templates": ["setup_templates/demo_scope.json"],
+        "docs_url": "https://github.com/Imswitch2/imswitch-device-micromanager",
+        "supported_platforms": ["linux", "win32", "darwin"]
       }
     ]
   }

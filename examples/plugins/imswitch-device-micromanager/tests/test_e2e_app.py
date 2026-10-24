@@ -3,7 +3,7 @@
 Phase 1 closes with this module (plan ``docs/design/plans/micromanager-bridge.md``
 section 5, P1). The app is the real ``ImConMainController`` / ``MasterController``
 built from ``setup_templates/demo_scope.json`` exactly as shipped: the hub, the
-camera and the two stages come out of ``RS232sManager``, ``DetectorsManager`` and
+camera, the two stages and the LED light come out of ``RS232sManager``, ``DetectorsManager`` and
 ``PositionersManager`` on the real MMCore with the ``mm-test-adapters`` demo
 devices (``MMConfig_demo.cfg``), and a recording goes through the real
 ``RecordingManager`` into a real HDF5 file that is read back. Only the napari
@@ -190,6 +190,22 @@ def test_xy_is_homeable_and_references_while_the_template_z_has_nothing_to_refer
     before = dict(z.position)
     z.reference()
     assert z.position == before and z.isReferenced
+
+
+# ------------------------------------------------------------------------ light
+def test_the_template_light_is_a_binary_laser_that_opens_the_led_shutter_in_mmcore(booted):
+    from imswitch_device_micromanager.light import MicroManagerLightManager
+
+    assert "Laser" in booted.view.widgets and "Laser" in booted.controller.controllers
+    led = booted.master.lasersManager["LED"]
+    assert type(led) is MicroManagerLightManager
+    assert led.isBinary and led.wavelength == 470 and led.hub is booted.hub
+    core = booted.hub.host.core
+    assert not core.getShutterOpen("LED Shutter")        # the laser controller switched it off at startup
+    assert led.setEnabled(True) is True
+    assert core.getShutterOpen("LED Shutter")
+    led.setEnabled(False)
+    assert not core.getShutterOpen("LED Shutter")
 
 
 # ------------------------------------------------------------------------ close
