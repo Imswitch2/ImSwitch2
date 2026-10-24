@@ -222,3 +222,21 @@ def test_template_builds_the_stages_through_positioners_manager_loading(adapter_
         for name in positioners.getAllDeviceNames():
             positioners[name].finalize()
         rs232.finalize()
+
+
+@requires_installed
+def test_cli_list_names_the_flip_mirror_contribution():
+    result = _run_cli("list")
+    assert result.returncode == 0, result.stderr
+    assert any(line.startswith("micromanager.flip-mirror") and "[flip_mirror]" in line
+               and "imswitch-device-micromanager" in line for line in result.stdout.splitlines())
+
+
+@requires_installed
+def test_multimanager_resolves_the_flip_mirror_through_the_real_loader():
+    from imswitch.imcontrol.model.managers.MultiManager import MultiManager
+    from imswitch_device_micromanager.flipmirror import MicroManagerFlipMirrorManager
+
+    cls = MultiManager._resolveManagerClass(
+        "imswitch.imcontrol.model.managers", "flipMirrors", "flip_mirror", "micromanager.flip-mirror")
+    assert cls is MicroManagerFlipMirrorManager

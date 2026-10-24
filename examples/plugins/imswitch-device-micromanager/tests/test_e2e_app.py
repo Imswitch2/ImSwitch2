@@ -3,14 +3,14 @@
 Phase 1 closes with this module (plan ``docs/design/plans/micromanager-bridge.md``
 section 5, P1). The app is the real ``ImConMainController`` / ``MasterController``
 built from ``setup_templates/demo_scope.json`` exactly as shipped: the hub, the
-camera, the two stages and the LED light come out of ``RS232sManager``, ``DetectorsManager`` and
+camera, the two stages, the LED light and the flip mirror come out of ``RS232sManager``, ``DetectorsManager`` and
 ``PositionersManager`` on the real MMCore with the ``mm-test-adapters`` demo
 devices (``MMConfig_demo.cfg``), and a recording goes through the real
 ``RecordingManager`` into a real HDF5 file that is read back. Only the napari
 canvas is replaced (no OpenGL offscreen); see ``e2e_helpers``.
 
 The tests share ONE app, built once, and run in file order: boot, live view,
-recording, stages, close. The user-files folder is moved to a scratch directory
+recording, stages, light, flip mirror, close. The user-files folder is moved to a scratch directory
 (``HOME`` is also isolated by ``conftest.py`` when imswitch is not yet imported),
 so nothing here reads or writes the real ``~/ImSwitchConfig``.
 
@@ -208,12 +208,32 @@ def test_the_template_light_is_a_binary_laser_that_opens_the_led_shutter_in_mmco
     assert not core.getShutterOpen("LED Shutter")
 
 
+# ------------------------------------------------------------------- flip mirror
+def test_the_template_flip_mirror_moves_the_white_light_shutter_in_mmcore(booted):
+    from imswitch_device_micromanager.flipmirror import MicroManagerFlipMirrorManager
+
+    assert "FlipMirror" in booted.view.widgets and "FlipMirror" in booted.controller.controllers
+    mirror = booted.master.flipMirrorsManager["WhiteLight"]
+    assert type(mirror) is MicroManagerFlipMirrorManager and mirror.hub is booted.hub
+    assert mirror.is_connected() and mirror.get_state_names() == {0: "Closed", 1: "Open"}
+    core = booted.hub.host.core
+    shutter = "White Light Shutter"
+    booted.api.move_flip("WhiteLight", 0)               # through the controller, as the widget's button does
+    assert not core.getShutterOpen(shutter) and mirror.get_state() == 0
+    mirror.move_to(1)
+    assert core.getShutterOpen(shutter) and mirror.get_state() == 1 and mirror.get_cached_state() == 1
+    assert booted.api.get_flip_state("WhiteLight") == 1
+    booted.api.move_flip("WhiteLight", 0)
+    assert not core.getShutterOpen(shutter)
+
+
 # ------------------------------------------------------------------------ close
 def test_close_finalizes_devices_first_and_the_hub_last_and_leaves_no_thread(booted):
     master, hub = booted.master, booted.hub
     host = hub.host
     camera = master.detectorsManager["Camera"]
     stages = [master.positionersManager["Z"], master.positionersManager["XY"]]
+    mirror = master.flipMirrorsManager["WhiteLight"]
 
     order = []
 
@@ -229,6 +249,7 @@ def test_close_finalizes_devices_first_and_the_hub_last_and_leaves_no_thread(boo
     spy("camera", camera, "finalize")
     spy("Z", stages[0], "finalize")
     spy("XY", stages[1], "finalize")
+    spy("flip", mirror, "finalize")
     spy("hub", hub, "finalize")
     spy("host.shutdown", host, "shutdown")
 
@@ -242,8 +263,8 @@ def test_close_finalizes_devices_first_and_the_hub_last_and_leaves_no_thread(boo
 
     # MasterController closes detectors, positioners ... then rs232sManager: the hub is last, and its
     # finalize ends in the host shutdown (drain thread stopped, devices unloaded).
-    assert sorted(order[:3]) == ["XY", "Z", "camera"], order
-    assert order[3:] == ["hub", "host.shutdown"], order
+    assert sorted(order[:4]) == ["XY", "Z", "camera", "flip"], order
+    assert order[4:] == ["hub", "host.shutdown"], order
 
     assert hub.host.is_connected is False
     assert not helpers.drain_threads()

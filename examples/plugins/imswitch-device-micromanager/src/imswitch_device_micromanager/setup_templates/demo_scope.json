@@ -55,5 +55,15 @@
       "valueRangeMax": null
     }
   },
-  "availableWidgets": ["Settings", "View", "Recording", "Image", "Positioner", "Laser"]
+  "flipMirrors": {
+    "WhiteLight": {
+      "managerName": "micromanager.flip-mirror",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "White Light Shutter"
+      },
+      "state_names": {"0": "Closed", "1": "Open"}
+    }
+  },
+  "availableWidgets": ["Settings", "View", "Recording", "Image", "Positioner", "Laser", "FlipMirror"]
 }

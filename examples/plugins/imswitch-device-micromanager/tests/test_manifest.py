@@ -309,3 +309,78 @@ def test_light_schema_documents_every_property_and_has_no_defaults_for_units_and
     assert power["required"] == ["property", "units", "decimals"] and power["additionalProperties"] is False
     assert all(spec.get("description") for spec in power["properties"].values())
     assert "default" not in power["properties"]["units"] and "default" not in power["properties"]["decimals"]
+
+
+# --------------------------------------------------------------- flip mirror
+def _flip_schema():
+    return json.loads((resources.files("imswitch_device_micromanager")
+                       / "schemas/micromanager_flip_mirror.schema.json").read_text(encoding="utf-8"))
+
+
+def test_manifest_declares_the_flip_mirror_as_a_flip_mirror_contribution():
+    manager = _managers_by_id()["micromanager.flip-mirror"]
+    assert manager["kind"] == "flip_mirror"
+    assert manager["python_name"] == "imswitch_device_micromanager.flipmirror:MicroManagerFlipMirrorManager"
+    assert manager["manager_properties_schema"] == "schemas/micromanager_flip_mirror.schema.json"
+    assert "setup_templates/demo_scope.json" in manager["setup_templates"]
+    assert manager["manager_name_aliases"] == []
+
+
+def test_setup_template_declares_a_flip_mirror_that_matches_its_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    package = resources.files("imswitch_device_micromanager")
+    setup = json.loads((package / "setup_templates/demo_scope.json").read_text(encoding="utf-8"))
+    mirror = setup["flipMirrors"]["WhiteLight"]
+    assert mirror["managerName"] == "micromanager.flip-mirror"
+    assert mirror["state_names"] == {"0": "Closed", "1": "Open"}
+    assert mirror["managerProperties"] == {"rs232device": "MMCore", "label": "White Light Shutter"}
+    jsonschema.Draft202012Validator.check_schema(_flip_schema())
+    jsonschema.Draft202012Validator(_flip_schema()).validate(mirror["managerProperties"])
+    assert mirror["managerProperties"]["rs232device"] in setup["rs232devices"]
+    assert "FlipMirror" in setup["availableWidgets"]
+
+
+@pytest.mark.parametrize("properties", [
+    {"rs232device": "MMCore", "label": "White Light Shutter"},
+    {"rs232device": "MMCore", "label": "Flip", "states": ["Out", "In"]},
+    {"rs232device": "MMCore", "label": "Flip", "states": [1, 0]},
+    {"rs232device": "MMCore", "label": "Flip", "states": ["Out", 1]},
+    {"rs232device": "MMCore", "label": "Flip", "adapter": "DemoCamera", "device": "DStateDevice",
+     "preInitProperties": {"Number of positions": 2}},
+    {"rs232device": "MMCore", "label": "S", "adapter": "DemoCamera", "device": "DShutter", "parent": "DHub"},
+])
+def test_flip_mirror_schema_accepts_valid_properties(properties):
+    jsonschema = pytest.importorskip("jsonschema")
+    jsonschema.Draft202012Validator(_flip_schema()).validate(properties)
+
+
+@pytest.mark.parametrize("properties", [
+    {"label": "S"},                                                          # hub missing
+    {"rs232device": "MMCore"},                                               # label missing
+    {"rs232device": "MMCore", "label": ""},
+    {"rs232device": "MMCore", "label": "S", "states": ["a"]},
+    {"rs232device": "MMCore", "label": "S", "states": ["a", "b", "c"]},
+    {"rs232device": "MMCore", "label": "S", "states": ["a", "a"]},
+    {"rs232device": "MMCore", "label": "S", "states": [0, -1]},
+    {"rs232device": "MMCore", "label": "S", "states": [0, 1.5]},
+    {"rs232device": "MMCore", "label": "S", "states": ["", "b"]},
+    {"rs232device": "MMCore", "label": "S", "states": "ab"},
+    {"rs232device": "MMCore", "label": "S", "invert": True},                 # a FlipMirrorInfo field
+    {"rs232device": "MMCore", "label": "S", "initial_state": 0},             # a FlipMirrorInfo field
+    {"rs232device": "MMCore", "label": "S", "state_names": {"0": "a"}},      # a FlipMirrorInfo field
+    {"rs232device": "MMCore", "label": "S", "adapter": "A"},                 # adapter without device
+    {"rs232device": "MMCore", "label": "S", "device": "D"},                  # device without adapter
+    {"rs232device": "MMCore", "label": "S", "parent": "H"},                  # inline-only without adapter
+    {"rs232device": "MMCore", "label": "S", "preInitProperties": {"a": 1}},
+    {"rs232device": "MMCore", "label": "S", "enable": {"kind": "shutter"}},  # a light key
+])
+def test_flip_mirror_schema_rejects_invalid_properties(properties):
+    jsonschema = pytest.importorskip("jsonschema")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(_flip_schema()).validate(properties)
+
+
+def test_flip_mirror_schema_documents_every_property():
+    schema = _flip_schema()
+    assert schema["additionalProperties"] is False and schema["required"] == ["rs232device", "label"]
+    assert all(spec.get("description") for spec in schema["properties"].values())

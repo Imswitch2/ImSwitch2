@@ -1,15 +1,16 @@
-"""The plumbing in ``_bridge.MicroManagerDeviceMixin``, checked once for all three managers.
+"""The plumbing in ``_bridge.MicroManagerDeviceMixin``, checked once for all four managers.
 
-The camera, stage and light managers share hub lookup, inline mode, label resolution and the
+The camera, stage, light and flip-mirror managers share hub lookup, inline mode, label resolution and the
 reconnect hook through the mixin, so these tests run the same scenario against each of them
 (the per-manager modules keep their own tests of what the managers do with the device).
 """
 import pytest
 
-from imswitch.imcontrol.model.SetupInfo import DetectorInfo, LaserInfo, PositionerInfo, RS232Info
+from imswitch.imcontrol.model.SetupInfo import DetectorInfo, FlipMirrorInfo, LaserInfo, PositionerInfo, RS232Info
 from imswitch.imcontrol.model.devices.status import DeviceConnectionState, DeviceNotConnectedError
 from imswitch_device_micromanager.camera import MicroManagerCameraManager
 from imswitch_device_micromanager.core import MicroManagerCoreManager
+from imswitch_device_micromanager.flipmirror import MicroManagerFlipMirrorManager
 from imswitch_device_micromanager.light import MicroManagerLightManager
 from imswitch_device_micromanager.stage import MicroManagerStageManager
 from mm_helpers import DEMO_CONFIG
@@ -32,11 +33,18 @@ def _light(properties):
     return lambda hubs: MicroManagerLightManager(info, "Thing", rs232sManager=hubs)
 
 
+def _flip_mirror(properties):
+    # FlipMirrorInfo is not a DeviceInfo: it has no transient / connectOnStartup, which the mixin must tolerate.
+    info = FlipMirrorInfo(managerName="micromanager.flip-mirror", managerProperties=properties)
+    return lambda hubs: MicroManagerFlipMirrorManager(info, "Thing", rs232sManager=hubs)
+
+
 #: kind -> (factory, noun in the setup-file errors, a loaded label of that kind, device type text in the errors)
 KINDS = {
     "camera": (_camera, "detector", "Camera", "camera"),
     "stage": (_stage, "positioner", "Z", "stage"),
     "light": (_light, "laser", "LED Shutter", "shutter"),
+    "flip-mirror": (_flip_mirror, "flip_mirror", "White Light Shutter", "shutter"),
 }
 
 
@@ -117,7 +125,7 @@ def test_inline_mode_needs_adapter_and_device_together(kind, hub):
 
 def test_an_inline_label_the_cfg_already_loaded_is_refused(kind, hub):
     _factory, noun, label, _type = KINDS[kind]
-    device = {"camera": "DCam", "stage": "DStage", "light": "DShutter"}[kind]
+    device = {"camera": "DCam", "stage": "DStage", "light": "DShutter", "flip-mirror": "DShutter"}[kind]
     with pytest.raises(ValueError, match=rf"{noun} 'Thing': Micro-Manager device {label!r} is already loaded by the "
                                          r"hub's configuration"):
         build(kind, {"MMCore": hub}, adapter="DemoCamera", device=device)
@@ -125,7 +133,7 @@ def test_an_inline_label_the_cfg_already_loaded_is_refused(kind, hub):
 
 def test_an_inline_device_of_the_wrong_type_is_refused_and_unloaded(kind, hub):
     _factory, noun, _label, _type = KINDS[kind]
-    wrong = {"camera": "DStage", "stage": "DCam", "light": "DStage"}[kind]
+    wrong = {"camera": "DStage", "stage": "DCam", "light": "DStage", "flip-mirror": "DStage"}[kind]
     with pytest.raises(ValueError, match=rf"{noun} 'Thing': Micro-Manager device 'Inline' is a "):
         build(kind, {"MMCore": hub}, label="Inline", adapter="DemoCamera", device=wrong)
     assert "Inline" not in hub.host.call("getLoadedDevices")
@@ -133,7 +141,7 @@ def test_an_inline_device_of_the_wrong_type_is_refused_and_unloaded(kind, hub):
 
 def test_the_wrong_device_type_names_the_type_it_found(kind, hub):
     _factory, noun, _label, _type = KINDS[kind]
-    other = {"camera": "XY", "stage": "Camera", "light": "Camera"}[kind]
+    other = {"camera": "XY", "stage": "Camera", "light": "Camera", "flip-mirror": "Camera"}[kind]
     with pytest.raises(ValueError, match=rf"{noun} 'Thing': Micro-Manager device {other!r} is a "):
         build(kind, {"MMCore": hub}, label=other)
 
@@ -169,5 +177,16 @@ def test_use_refuses_a_hub_that_went_away(kind, hub):
         hub.disconnectTransport()
         with pytest.raises(DeviceNotConnectedError, match="Micro-Manager core 'MMCore' is not connected"):
             manager._use("probe")
+    finally:
+        manager.finalize()
+
+
+def test_a_manager_whose_info_has_no_transient_flags_is_not_transient(hub):
+    """``FlipMirrorInfo`` has neither ``transient`` nor ``connectOnStartup``: the mixin uses DeviceInfo's defaults."""
+    manager = build("flip-mirror", {"MMCore": hub})
+    try:
+        holder = manager.backendHolder
+        assert not hasattr(FlipMirrorInfo(managerName="x"), "transient")
+        assert holder.transient is False and holder.connect_on_startup is False and manager.backendIsReal
     finally:
         manager.finalize()

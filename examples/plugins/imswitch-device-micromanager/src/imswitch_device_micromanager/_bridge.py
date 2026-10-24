@@ -34,6 +34,8 @@ first in the bases, so it never takes part in a constructor chain and the
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -42,7 +44,15 @@ from imswitch.imcontrol.model.devices.status import (
     DeviceFailureKind, DeviceNotConnectedError, DeviceRuntimeMode, backend_attribute,
 )
 
+from ._core import MMCoreHostError
 from .core import MicroManagerCoreManager
+
+#: How often :meth:`MicroManagerDeviceMixin._wait_until_idle` asks the device whether it is still
+#: busy. MMCore's own ``waitForDevice`` polls ``Busy()`` every 10 ms (``CMMCore::pollingIntervalMs_``);
+#: the same cadence here, but between polls the hub lock is RELEASED, so a move that takes seconds
+#: does not stall the camera drain thread (plan section 4.5: a stalled drain overflows the circular
+#: buffer and fails the recording). ``stage.py`` keeps its own copy of this loop and constant.
+BUSY_POLL_S = 0.010
 
 
 @dataclass
@@ -64,7 +74,7 @@ class MicroManagerDeviceMixin:
     Class attributes to set:
 
     - ``BRIDGE_MANAGER_ID`` -- the manifest id, for "needs managerProperties.x" messages
-    - ``BRIDGE_CATEGORY`` -- ``'detector'``, ``'positioner'`` or ``'laser'``: the noun
+    - ``BRIDGE_CATEGORY`` -- ``'detector'``, ``'positioner'``, ``'laser'`` or ``'flip_mirror'``: the noun
       of every setup-file error and the device-graph category
     - ``BRIDGE_DEVICE_NOUN`` -- what the status line and logs call the device
       (``'camera'``, ``'stage'`` ...)
@@ -98,6 +108,7 @@ class MicroManagerDeviceMixin:
         self._props = properties
         self._setupName = name
         self._label = self._required_text(properties, 'label')
+        self._idle_poll = threading.Event()          # never set: a sleep that other code could wake
 
     def _bridge_attach(self, properties, lowLevelManagers) -> None:
         """Find the hub and parse inline mode."""
@@ -116,9 +127,12 @@ class MicroManagerDeviceMixin:
         # Before the status mixin ran, its getattr default would raise for a QObject
         # (DetectorManager is one): give the holder's failure path a value to find.
         self.__dict__['_deviceRuntimeMode'] = DeviceRuntimeMode.REAL
+        # ``FlipMirrorInfo`` is not a ``DeviceInfo``: it has neither flag. A device without them is
+        # not transient; the defaults are ``DeviceInfo``'s own.
         self._installBackend(
             self._open_binding, label=f'Micro-Manager {self.BRIDGE_DEVICE_NOUN} {self._label}',
-            transient=bool(info.transient), connect_on_startup=bool(info.connectOnStartup),
+            transient=bool(getattr(info, 'transient', False)),
+            connect_on_startup=bool(getattr(info, 'connectOnStartup', False)),
             close=lambda binding: None)
 
     def _bridge_adopt(self, adopt: Callable[[], Any]) -> Any:
@@ -266,6 +280,26 @@ class MicroManagerDeviceMixin:
             raise DeviceNotConnectedError(
                 f"{self.name}: {what} refused, Micro-Manager core {self._hub.name!r} is not connected")
         return host, binding.label
+
+    def _wait_until_idle(self, host, label: str) -> None:
+        """Block until the device reports not busy, polling OUTSIDE the hub lock.
+
+        The deadline is MMCore's own device timeout (``getTimeoutMs``, the value ``waitForDevice``
+        enforces too), so a stuck device fails the same way it would in Micro-Manager.
+        """
+        with host.lock:
+            timeout_s = float(host.core.getTimeoutMs()) / 1000.0
+        deadline = time.monotonic() + timeout_s
+        while True:
+            with host.lock:
+                busy = host.core.deviceBusy(label)
+            if not busy:
+                return
+            if time.monotonic() >= deadline:
+                raise MMCoreHostError(
+                    f"{self.BRIDGE_CATEGORY} {self._setupName!r}: device {label!r} still busy after "
+                    f"{timeout_s:.1f} s (MMCore device timeout, core.setTimeoutMs)")
+            self._idle_poll.wait(BUSY_POLL_S)
 
     def getDeviceDescriptorSpec(self):
         return rs232BackedPrimarySpec(
