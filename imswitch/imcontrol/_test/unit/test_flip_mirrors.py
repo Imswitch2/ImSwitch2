@@ -1,4 +1,5 @@
-from imswitch.imcontrol.controller.controllers import FlipMirrorController
+from imswitch.imcontrol.controller.controllers import _CONTROLLER_MODULES
+from imswitch.imcontrol.controller.controllers.FlipMirrorController import FlipMirrorController
 from imswitch.imcontrol.model.SetupInfo import FlipMirrorInfo
 from imswitch.imcontrol.model.managers.FlipMirrorsManager import FlipMirrorsManager
 from imswitch.imcontrol.view.widgets import FlipMirrorWidget
@@ -55,5 +56,8 @@ def test_flip_mirrors_manager_loads_canonical_hardware_class():
 
 
 def test_flip_mirror_lazy_exports_are_registered():
+    # The package attribute is the class only until some test imports the submodule (the import
+    # system then binds the module to the same name), so check the registry and the class itself.
+    assert _CONTROLLER_MODULES["FlipMirrorController"] == "FlipMirrorController"
     assert FlipMirrorController.__name__ == "FlipMirrorController"
     assert FlipMirrorWidget.__name__ == "FlipMirrorWidget"

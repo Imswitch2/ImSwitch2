@@ -7,6 +7,7 @@ from imswitch_device_micromanager._frames import (
     UnsupportedPixelTypeError,
     dtype_for_bytes_per_pixel,
     dtype_for_pixel_type,
+    dtype_for_pixel_type_property,
     frame_bytes,
     normalize_frame,
 )
@@ -79,3 +80,16 @@ def test_real_metadata_from_mmcore_round_trips(adapter_dir):
         assert out.dtype == dtype_for_pixel_type(md["PixelType"])
     finally:
         core.unloadAllDevices()
+
+
+@pytest.mark.parametrize("text, dtype", [
+    ("8bit", np.uint8), ("16bit", np.uint16), ("8-bit", np.uint8), (" 16 bit ", np.uint16),
+    ("GRAY8", np.uint8), ("gray16", np.uint16),
+])
+def test_a_pixel_type_property_value_selects_a_dtype(text, dtype):
+    assert dtype_for_pixel_type_property(text) == np.dtype(dtype)
+
+
+@pytest.mark.parametrize("text", ["32bitRGB", "64bitRGB", "32bit", "12bit", "Mono", "", "RGB32"])
+def test_a_pixel_type_value_that_cannot_be_predicted_is_none(text):
+    assert dtype_for_pixel_type_property(text) is None

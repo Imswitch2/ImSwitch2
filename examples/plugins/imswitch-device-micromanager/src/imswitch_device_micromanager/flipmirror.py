@@ -40,10 +40,13 @@ State names (``get_state_names``). ``{i: text}`` for every position. ``FlipMirro
 per state (keys ``"0"`` to ``"N-1"``); a state it does not name is called what Micro-Manager calls the
 position behind it: its state label (State device), or ``Closed`` / ``Open`` (Shutter -- the words of
 Micro-Manager's own ``getShutterOpen``). The names describe the physical position, so with ``invert``
-they swap along with the states. They are read once, when the controller builds its widget; a manager
+they swap along with the states. They are read when the controller builds its widget; a manager
 that was not connected then names the states ``"0"`` and ``"1"`` (and any further state the setup
-names). The number of positions is fixed at startup: a reconnect that finds a different count is an
-error of this manager, because the widget was built for the old one.
+names). The number of positions is whatever the device has now: after a reconnect, or when a device
+that was absent at startup is adopted, the names are read again and ``FlipMirrorController`` rebuilds
+the widget row when they differ (a ten-position wheel replaces the two placeholder buttons). The setup
+fields that depend on the count (``invert``, ``initial_state``, ``state_names``) are checked against
+the new count and a clash is an error of this manager.
 
 Failure convention (the ThorlabsMFF one, which the controller expects). ``move_to`` and ``get_state``
 **raise** -- ``DeviceNotConnectedError`` (a ``RuntimeError``) when the device is not there, otherwise
@@ -422,15 +425,18 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
         return f'{self._adopted.model}: {self._label} reconnected'
 
     def _reinitialise(self) -> List[str]:
-        """Adopt the (re)loaded device again (re-load an inline one, check it still has the number of
-        positions the widget was built for), then read where it is. Nothing moves."""
+        """Adopt the (re)loaded device again (re-load an inline one), then read where it is. Nothing moves.
+
+        The number of positions may differ from before (a device that was absent at startup, or a
+        reconfigured one): ``get_state_names`` answers for the new count and the controller's lifecycle
+        refresh rebuilds the widget row.
+        """
         try:
             adopted = self._adopt()
             previous = self._adopted
             if previous is not None and adopted.count != previous.count:
-                raise ValueError(
-                    f"{self._where()}: Micro-Manager device {self._label!r} has {adopted.count} positions, it had "
-                    f"{previous.count} when ImSwitch2 started; restart ImSwitch2 to rebuild the selector")
+                self.__logger.warning('%s: Micro-Manager device %r has %d positions, it had %d',
+                                      self._where(), self._label, adopted.count, previous.count)
             self._adopted = adopted
             self._ready = True
             self.get_state()

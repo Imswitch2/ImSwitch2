@@ -761,3 +761,50 @@ def test_calls_are_serialised_by_the_lock(host):
     assert errors == []
     host.stop_stream("Camera")
     assert host.snapshot()["streams"]["Camera"]["fault"] is None
+
+
+# ------------------------------------------- review round 3: format changes beside a stream
+def test_a_format_change_is_checked_against_the_other_running_streams(host):
+    start(host, "Camera")
+    start(host, "Cam2")
+    collect_records(host, "Camera", 2)
+    host.check_format_change_allowed("Camera", (FRAME_SIDE, FRAME_SIDE), np.uint16)      # the same format
+    for label, other in (("Camera", "Cam2"), ("Cam2", "Camera")):
+        with pytest.raises(FrameShapeMismatchError, match=rf"{other}.*#936"):
+            host.check_format_change_allowed(label, (FRAME_SIDE, FRAME_SIDE), np.uint8)
+        with pytest.raises(FrameShapeMismatchError, match="#936"):
+            host.check_format_change_allowed(label, (SMALL_SIDE, FRAME_SIDE), np.uint16)
+    host.stop_stream("Cam2")
+    host.check_format_change_allowed("Camera", (SMALL_SIDE, SMALL_SIDE), np.uint8)       # nothing else runs
+    host.stop_stream("Camera")
+
+
+def test_a_format_change_only_concerns_a_camera_that_streams_or_is_current(host):
+    start(host, "Camera")                                         # Camera is MMCore's current camera
+    collect_records(host, "Camera", 2)
+    # Cam2 is idle and not current: the buffer is not decoded with its format; it is checked when it starts.
+    host.check_format_change_allowed("Cam2", (SMALL_SIDE, SMALL_SIDE), np.uint8)
+    start(host, "Cam2")
+    host.stop_stream("Camera")                                    # idle now, but still the current camera
+    assert host.call("getCameraDevice") == "Camera"
+    with pytest.raises(FrameShapeMismatchError, match=r"Cam2.*#936"):
+        host.check_format_change_allowed("Camera", (FRAME_SIDE, FRAME_SIDE), np.uint8)
+    host.stop_stream("Cam2")
+
+
+def test_a_camera_whose_format_changed_while_current_cannot_restart_beside_a_running_stream(host):
+    """The current camera's format decides how the buffer is decoded. If it changed behind the
+    manager's back (here: a property written directly) while another camera streams, adding a stream
+    is refused even though the caller declares the old format."""
+    start(host, "Camera")
+    start(host, "Cam2")
+    host.stop_stream("Camera")                                    # idle, still MMCore's current camera
+    host.call("setProperty", "Camera", "PixelType", "8bit")
+    with pytest.raises(FrameShapeMismatchError, match=r"current camera 'Camera'.*#936"):
+        start(host, "Camera")                                     # declares uint16: the core says 8 bit
+    assert not host.stream("Camera").streaming
+    host.call("setProperty", "Camera", "PixelType", "16bit")
+    host.acknowledge_fault("Cam2")                                # the stray write made Cam2's frames undecodable
+    host.stop_stream("Cam2")
+    assert start(host, "Camera") is True                          # matches again: allowed
+    host.stop_stream("Camera")

@@ -4,7 +4,7 @@ from typing import Any, List, Tuple, Dict
 
 import numpy as np
 
-from imswitch.imcommon.model import APIExport, RestoreWarning
+from imswitch.imcommon.model import APIExport, RestoreWarning, initLogger
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools as guitools
 from ..basecontrollers import (
@@ -46,8 +46,10 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.__logger = initLogger(self, tryInheritParent=True)
         self.settingAttr = False
         self.allParams = {}
+        self._parametersNotInTree = set()   # (detector, parameter) already reported by _updateParamsFromDetector
 
         # Set while the widget is being refreshed FROM the detector, so the
         # param handlers below can tell a readback from a user edit. See
@@ -480,6 +482,14 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         else:
             self._updateParamsFromDetector(detector)
 
+    @staticmethod
+    def _findParameterInTree(tree, group, name):
+        """The tree's row ``group`` / ``name``, or ``None`` if the tree has no such group or row."""
+        try:
+            return tree.p.param(group).param(name)
+        except KeyError:
+            return None
+
     def _updateParamsFromDetector(self, detector):
         params = self.allParams[detector.name]
 
@@ -487,11 +497,30 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
             param.setValue(value)
 
         # Detector parameters
+        tree = self._widget.trees[detector.name]
+        withoutRow = []
         for parameterName, parameter in detector.parameters.items():
-            paramInWidget = self._widget.trees[detector.name].p.param(parameter.group).param(
-                parameterName
-            )
+            paramInWidget = self._findParameterInTree(tree, parameter.group, parameterName)
+            if paramInWidget is None:
+                withoutRow.append(parameterName)
+                continue
             setValue(paramInWidget, parameter.value)
+            if parameter.editable and tree.writable and paramInWidget.readonly():
+                # A read-only placeholder the detector declared before it could be edited (the
+                # exposure of a camera that was not connected at start-up) is editable now.
+                paramInWidget.setReadonly(False)
+        if withoutRow:
+            # The tree is built once, from the parameters the detector had at start-up. A detector
+            # that gained parameters since (a camera whose hub was down at start-up and was adopted
+            # later) has some the tree has no row for: they show after the next start-up. Raising
+            # here would stop the refresh of everything else.
+            new = [name for name in withoutRow if (detector.name, name) not in self._parametersNotInTree]
+            if new:
+                self._parametersNotInTree.update((detector.name, name) for name in new)
+                self.__logger.warning(
+                    f'Detector "{detector.name}" has {len(new)} parameter(s) with no row in the Settings panel, '
+                    f'which was built before the detector had them (they appear after ImSwitch2 is '
+                    f'restarted): {", ".join(new)}')
 
         # Frame
         setValue(params.binning, detector.binning)

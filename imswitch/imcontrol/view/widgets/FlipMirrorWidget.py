@@ -1,3 +1,5 @@
+import re
+
 from qtpy import QtCore, QtWidgets
 
 from .basewidgets import Widget
@@ -140,11 +142,8 @@ class FlipMirrorWidget(Widget):
         stateLayout.setSpacing(0)
         stateWidget.setLayout(stateLayout)
 
-        row = {"states": [state for state, _ in states]}
-        if len(states) <= MAX_BUTTON_POSITIONS:
-            self._fillStateButtons(name, row, states, stateLayout)
-        else:
-            self._fillStateCombo(name, row, states, stateLayout)
+        row = {}
+        self._fillStateControls(name, row, states, stateLayout)
 
         followCheck = QtWidgets.QCheckBox()
         masterCombo = QtWidgets.QComboBox()
@@ -171,6 +170,52 @@ class FlipMirrorWidget(Widget):
 
         followCheck.toggled.connect(lambda checked, n=name: self._onFollowToggled(n, checked))
         masterCombo.currentTextChanged.connect(lambda text, n=name: self._onMasterChanged(n, text))
+
+    def _fillStateControls(self, name, row, states, stateLayout):
+        """Buttons up to ``MAX_BUTTON_POSITIONS`` positions, a drop-down beyond; records the states shown."""
+        row["states"] = [state for state, _ in states]
+        row["stateNames"] = dict(states)
+        if len(states) <= MAX_BUTTON_POSITIONS:
+            self._fillStateButtons(name, row, states, stateLayout)
+        else:
+            self._fillStateCombo(name, row, states, stateLayout)
+
+    def stateNames(self, name):
+        """``{state: text}`` of the positions row ``name`` shows (empty for an unknown row)."""
+        row = self.rows.get(name)
+        return dict(row["stateNames"]) if row is not None else {}
+
+    def rebuildFlipMirror(self, name, state_names=None):
+        """Show row ``name`` with a new set of positions: its controls are removed and built again.
+
+        For a switch whose number of positions was not known when the row was built (a device that
+        was not connected then, and is a ten-position wheel now). Name, follow and master controls
+        and the status text stay; the new state controls emit ``sigStateChanged`` exactly as the
+        old ones did, none is selected until ``setState``, and ``setRowState`` decides whether they
+        are enabled. An unknown row is added.
+        """
+        if name not in self.rows:
+            self.addFlipMirror(name, state_names)
+            return
+
+        states = parseStateNames(state_names)
+        row = self.rows[name]
+        stateLayout = row["stateWidget"].layout()
+
+        buttonGroup = row.pop("buttonGroup", None)
+        if buttonGroup is not None:
+            buttonGroup.setParent(None)
+            buttonGroup.deleteLater()
+        for key in [k for k in row if re.fullmatch(r"state\d+Btn", k)] + ["stateButtons", "stateCombo"]:
+            row.pop(key, None)
+        while stateLayout.count():
+            item = stateLayout.takeAt(0)
+            control = item.widget()
+            if control is not None:
+                control.setParent(None)
+                control.deleteLater()
+
+        self._fillStateControls(name, row, states, stateLayout)
 
     def _fillStateButtons(self, name, row, states, stateLayout):
         """One checkable button per position. The first two are ``state0Btn`` and ``state1Btn``."""

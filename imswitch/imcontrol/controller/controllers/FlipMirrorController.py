@@ -114,12 +114,34 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
             lambda: self._refreshLifecycleAffectedFlipMirrors(affected)
         )
 
+    def _rebuild_row_if_positions_changed(self, name):
+        """Rebuild the widget row of ``name`` when its manager now names other positions than the row shows.
+
+        A switch whose device was absent at startup is built with the classic two placeholder
+        positions; once the device is there it may be a ten-position wheel (or name its two
+        positions after the hardware). The rest of the controller reads the manager's count live,
+        so only the row needs to follow.
+        """
+        getNames = getattr(self._manager[name], "get_state_names", None)
+        if getNames is None:
+            return False
+        try:
+            names = {int(state): str(text) for state, text in getNames().items()}
+        except Exception as exc:
+            self.__logger.error(f"Failed to read the positions of flip mirror {name}: {exc}")
+            return False
+        if not names or names == self._widget.stateNames(name):
+            return False
+        self._widget.rebuildFlipMirror(name, names)
+        return True
+
     def _refreshLifecycleAffectedFlipMirrors(self, device_ids):
         known = set(self._names)
         for device_id in device_ids:
             if device_id.name not in known:
                 continue
             manager = self._manager[device_id.name]
+            self._rebuild_row_if_positions_changed(device_id.name)
             cached_state = getattr(manager, 'get_cached_state', lambda: None)()
             if cached_state is not None and self._is_connected(device_id.name):
                 self._widget.setState(device_id.name, cached_state)

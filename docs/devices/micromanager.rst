@@ -196,7 +196,14 @@ connects get the psygnal signaler too.
 **It never aborts the app.** A missing Micro-Manager install, missing adapters or a bad ``.cfg`` becomes
 an ERROR status carrying MMCore's message in the Hardware status window, and every bridged device is
 then built in the same ERROR state instead of crashing the startup. **Reconnect** in Hardware status
-reloads the ``.cfg`` and re-initialises every device on the hub.
+reloads the ``.cfg`` and re-initialises every device on the hub; cameras that were streaming resume in
+any order (a camera that resumes while another already streams is checked by reads only, since measuring the
+sensor would clear the shared buffer).
+
+A camera built while the hub was down shows a read-only *Exposure* row and the *Camera pixel size* in the
+Settings panel. The panel builds its tree once, at startup, so once the camera is connected the
+exposure becomes editable and the pixel size and geometry update, but the camera's other Micro-Manager
+properties get a row only after ImSwitch2 is restarted (a warning in the log lists them).
 
 **Vendor library.** ``pymmcore-plus`` (``pip`` installs it with the plugin), plus the adapters above.
 **Low-level dependencies.** None.
@@ -277,6 +284,20 @@ override it. Micro-Manager reports 0.0 when no pixel-size configuration matches 
 objective position without one); that means "unknown", not a size. If neither the setup nor
 Micro-Manager has a value, ImSwitch2's 0.15 um placeholder applies and is flagged "assumed default".
 
+The **Camera pixel size** parameter is always the *unbinned* sample-plane size. What ImSwitch2 gives to
+recordings, napari layers and tiling (``pixelSizeUm``, ``scale``) is the size of a *recorded* pixel, so it
+is the parameter times the current binning: at binning 2 a recording of a camera with a 0.5 um pixel is
+written with 1.0 um. (The other camera managers in the tree leave ``pixelSizeUm`` at the parameter whatever
+the binning; the bridge follows the contract of the pixel size instead.)
+
+While the pixel size is Micro-Manager's, it follows the **objective**: when a pixel-size configuration
+changes (an objective or configuration group is set, or a device of a pixel-size configuration changes a
+property) or when the settings are refreshed, the value is read again. If an objective position has no
+pixel-size configuration the last value stays and a warning says so. A value from the setup file or one
+the user typed is never overwritten; when Micro-Manager's calibration changes under it, one warning
+says that the setup/user value stays in effect. A placeholder gives way to Micro-Manager's value as soon as
+it has one.
+
 **What it presents.**
 
 - *Exposure* (milliseconds, Micro-Manager's unit) is a first-class parameter.
@@ -291,6 +312,14 @@ Micro-Manager has a value, ImSwitch2's 0.15 um placeholder applies and is flagge
   frame (any property, binning, ROI) stops the stream, applies the change, re-reads the frame size and
   pixel type and restarts the stream. ``dtype`` follows the camera's ``PixelType`` before the first
   frame (8-bit cameras are ``uint8``).
+- *Format changes next to a second camera.* While another camera streams, a change that would give this
+  camera another frame size or pixel type than the running one is refused before anything is written
+  (a ``PixelType`` write is known in advance; the message names the other camera and Micro-Manager pull
+  request 936). A property whose effect cannot be predicted is written, the format read back, and the
+  old value put back if the formats clash; the stream is restarted with the old format either way and
+  never left stopped. The same holds for MMCore's *current* camera even when it is idle itself: the
+  shared buffer is decoded with the current camera's format, so a stopped camera that is still current
+  must keep the running stream's format. Binning is refused outright while another camera streams.
 
 **Mono only.** Colour cameras (``32bitRGB``, ``64bitRGB``) are refused at start, and a ``PixelType``
 change that would select one is undone: ImSwitch2's chunk contract is ``(frames, height, width)``,
@@ -507,12 +536,14 @@ Thorlabs MFF), not of ``managerProperties``:
   Micro-Manager calls the position: its state label (a demo ``DWheel`` reads ``400DCLP``, ``Q505LP``,
   ...), or ``Closed`` / ``Open`` for a Shutter. A key beyond the device's positions is refused. The names
   describe the physical position, so for a two-state device they swap along with ``invert``. The widget
-  reads them once, when the panel is built; a device that was not connected then names the states ``0``
-  and ``1``.
+  reads them when the panel is built; a device that was not connected then names the states ``0``
+  and ``1`` and the row is rebuilt with the device's own positions once it is connected.
 
 A State device with fewer than two positions is refused at startup, with its position count in the message.
-The number of positions is fixed when ImSwitch2 starts: a reconnect that finds a different count is an error
-of the manager (restart ImSwitch2 to rebuild the panel). Two flip mirrors can follow each other (the panel's
+The number of positions is the device's current one: after a reconnect, or when a device that was absent at
+startup is adopted, the Flip Mirrors panel rebuilds the row (a ten-position wheel replaces the two
+placeholder buttons). ``invert``, ``initial_state`` and ``state_names`` are checked against the new count and a
+clash is an error of the manager. Two flip mirrors can follow each other (the panel's
 *Follow* column) only when they have the same number of positions; the master list of a row offers only
 those, and the link is refused otherwise.
 

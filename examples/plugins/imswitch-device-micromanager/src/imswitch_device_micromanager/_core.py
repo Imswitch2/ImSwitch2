@@ -42,6 +42,7 @@ import numpy as np
 
 from ._frames import (
     FrameFormatError,
+    UnsupportedPixelTypeError,
     dtype_for_bytes_per_pixel,
     normalize_frame,
 )
@@ -594,6 +595,7 @@ class MMCoreHost:
             if stream.fault is not None:
                 raise FramesLostError(label, stream.fault)
             self._check_format_against_running(stream, shape, dtype)
+            self._check_current_camera_against_running(stream)
             self.check_buffer_may_be_cleared(label)
             stream.shape, stream.dtype = shape, dtype
             self._reset_run_counters(stream)
@@ -677,6 +679,28 @@ class MMCoreHost:
                         f"setting an ROI clears that buffer, so frames of the recording would be "
                         f"dropped silently. Stop the recording of {other.label!r} first, or start "
                         f"both cameras together before the recording begins.")
+
+    def check_format_change_allowed(self, label: str, shape, dtype) -> None:
+        """Raise :class:`FrameShapeMismatchError` (naming the other camera and PR #936) when camera
+        ``label`` taking the frame format ``shape`` ``(height, width)`` / ``dtype`` would put
+        differently shaped frames next to another running stream.
+
+        Call it BEFORE writing a property that changes the format, with the predicted format, and
+        after writing one whose effect could not be predicted, with the format read back (then undo
+        the write when this raises). It only concerns a camera that streams, or that is MMCore's
+        *current* camera: ``popNextImageAndMD`` shapes every frame of the shared buffer by the
+        current camera's pixel size and bytes per pixel (plan section 3), so a current camera that
+        changes format corrupts the decoding of the cameras that still stream even when it is idle
+        itself. Any other idle camera is checked when it starts. With no other stream running every
+        format is allowed.
+        """
+        with self._lock:
+            stream = self.stream(label)
+            if not any(other is not stream and other.streaming for other in self._streams.values()):
+                return
+            if not (stream.streaming or self.core.getCameraDevice() == label):
+                return
+            self._check_format_against_running(stream, (int(shape[0]), int(shape[1])), np.dtype(dtype))
 
     def restore_fault(self, label: str, fault: StreamFault) -> None:
         """Put back a fault that :meth:`stop_stream` or :meth:`acknowledge_fault` consumed.
@@ -796,6 +820,34 @@ class MMCoreHost:
                     f"MMCore would drop one camera's frames silently. Stop {other.label!r} first "
                     f"or give both cameras the same ROI, binning and pixel type.")
 
+    def _check_current_camera_against_running(self, stream: CameraStream) -> None:
+        """While another stream runs, MMCore's current camera must still deliver that stream's format.
+
+        The buffer is decoded with the current camera's width, height and bytes per pixel and MMCore
+        cannot switch cameras during a sequence, so a current camera whose format changed after
+        the others started (a stopped camera whose property was written, a change made behind the
+        manager's back) would mis-shape their frames. Refuse to add a stream until it matches
+        again; the check reads the core, not the managers' bookkeeping.
+        """
+        others = [other for other in self._streams.values() if other is not stream and other.streaming]
+        core = self.core
+        current = core.getCameraDevice()
+        if not others or not current:
+            return
+        running = others[0]
+        try:
+            found = ((int(core.getImageHeight()), int(core.getImageWidth())),
+                     dtype_for_bytes_per_pixel(core.getBytesPerPixel(), core.getNumberOfComponents()))
+        except UnsupportedPixelTypeError as exc:
+            found = (None, str(exc))
+        if found != (running.shape, running.dtype):
+            raise FrameShapeMismatchError(
+                f"MMCore's current camera {current!r} now delivers {found[0]} {found[1]} frames while "
+                f"camera {running.label!r} streams {running.shape} {running.dtype}: the shared circular "
+                f"buffer is decoded with the current camera's format and cannot be switched during a "
+                f"sequence ({_PR_936}). Give {current!r} the format of the running stream again "
+                f"(ROI, binning, pixel type) or stop {running.label!r} first.")
+
     def _start_locked(self, stream: CameraStream) -> None:
         """Start the sequence; the caller has checked the format."""
         self._drain_locked()                           # MMCore clears the buffer on start: nothing may be pending
@@ -817,6 +869,12 @@ class MMCoreHost:
         slot. MMCore refuses to switch cameras while a sequence runs; every
         stream that runs alongside has the same format (checked at start), so
         whichever camera was selected first stays correct for all of them.
+
+        That only holds while the current camera keeps its format: a start is
+        refused when the core says the current camera no longer delivers the
+        running streams' format (:meth:`_check_current_camera_against_running`)
+        and a property change that would alter it is refused or rolled back by
+        the camera manager (:meth:`check_format_change_allowed`).
         """
         core = self.core
         if self.running_streams():

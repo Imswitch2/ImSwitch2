@@ -9,7 +9,8 @@ array and never from a camera property.
 """
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+import re
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -44,6 +45,28 @@ def dtype_for_pixel_type(pixel_type) -> np.dtype:
             f"carries mono cameras only ({', '.join(sorted(_DTYPE_BY_PIXEL_TYPE))}); "
             f"colour cameras need a per-component split, which is not implemented"
         ) from None
+
+
+#: The ways an adapter spells a mono ``PixelType`` property value: ``8bit`` / ``16bit`` (the
+#: DemoCamera and most adapters), ``8-bit`` / ``16 bit``, and the metadata tag's own ``GRAY8`` /
+#: ``GRAY16``. Group 1 or 2 is the bit depth.
+_PIXEL_TYPE_PROPERTY_TEXT = re.compile(r'^\s*(?:(\d+)\s*-?\s*bit|gray\s*(\d+))\s*$', re.IGNORECASE)
+
+
+def dtype_for_pixel_type_property(text) -> Optional[np.dtype]:
+    """The dtype a ``PixelType`` *property value* selects, or ``None`` if it cannot be told.
+
+    Unlike :func:`dtype_for_pixel_type` (the metadata *tag*, ``GRAY8``) this reads what a user
+    writes to the property (``8bit``). ``None`` means "do not predict": colour (``32bitRGB``)
+    or an adapter's own wording; the caller then writes the value and reads the format back.
+    """
+    match = _PIXEL_TYPE_PROPERTY_TEXT.match(str(text))
+    if match is None:
+        return None
+    bits = int(match.group(1) or match.group(2))
+    if bits % 8:
+        return None
+    return _DTYPE_BY_BYTES_PER_PIXEL.get(bits // 8)
 
 
 def dtype_for_bytes_per_pixel(bytes_per_pixel: int, n_components: int = 1) -> np.dtype:

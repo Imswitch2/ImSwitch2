@@ -27,6 +27,7 @@ wrong state) and under pytest-randomly (it reorders the tests of a module unless
 ``-p no:randomly`` or ``--randomly-dont-reorganize`` is given). Run the module
 serially, e.g. ``pytest -p no:randomly examples/plugins/imswitch-device-micromanager/tests/test_e2e_app.py``.
 """
+import json
 import os
 import subprocess
 import sys
@@ -36,6 +37,7 @@ import numpy as np
 import pytest
 
 import e2e_helpers as helpers
+from imswitch.imcontrol.model.devices import HardwareDeviceId
 
 TESTS_DIR = Path(__file__).resolve().parent
 FRAMES = 30
@@ -166,6 +168,31 @@ def test_recording_a_fixed_frame_count_while_live_view_runs_saves_exactly_that_m
     booted.api.setLiveViewActive(False)
     booted.wait_until(lambda: not host.running_streams(), "the stream to stop with the last lease")
     assert not master.detectorsManager.isDetectorFaulted("Camera")
+
+
+def test_a_binned_recording_carries_the_binned_pixel_size(booted):
+    """ImSwitch2's pixel size is the size of a RECORDED pixel: at binning 2 it is twice the unbinned
+    ``Camera pixel size`` parameter, in the file's element size and in its OME PhysicalSize."""
+    camera = booted.master.detectorsManager["Camera"]
+    camera.setParameter("Exposure", EXPOSURE_MS)
+    unbinned = camera.parameters["Camera pixel size"].value
+    camera.setBinning(2)
+    try:
+        assert camera.parameters["Camera pixel size"].value == unbinned    # the parameter stays the unbinned value
+        assert camera.pixelSizeUm == [1.0, 2 * unbinned, 2 * unbinned] and camera.scale == [2 * unbinned, 2 * unbinned]
+        path = helpers.record_frames(booted, booted.scratch / "recordings", "e2e-binned", 5)
+        import h5py
+
+        data, committed, complete = helpers.read_recording(path)
+        assert data.shape == (5, SIDE // 2, SIDE // 2) and committed == 5 and complete == 1
+        with h5py.File(path, "r") as h5:
+            assert list(h5["Camera/data"].attrs["element_size_um"]) == [1.0, 2 * unbinned, 2 * unbinned]
+            ome = h5["Camera"].attrs["ome_xml"]
+            ome = ome.decode() if isinstance(ome, bytes) else str(ome)
+            assert f'PhysicalSizeX="{2 * unbinned:g}"' in ome or f'PhysicalSizeX="{2 * unbinned}"' in ome, ome[:600]
+    finally:
+        camera.setBinning(1)
+    assert camera.pixelSizeUm[1] == unbinned
 
 
 # ------------------------------------------------------------------- positioners
@@ -310,6 +337,56 @@ def test_close_finalizes_devices_first_and_the_hub_last_and_leaves_no_thread(boo
     assert not helpers.drain_threads()
     assert host.snapshot()["drain_thread_alive"] is False
     assert master._managerFinalizationCompleted(master.rs232sManager)
+
+
+# ----------------------------------------------------- devices recovered after a hub that was down
+def test_a_camera_and_a_filter_wheel_built_while_the_hub_was_down_recover_in_the_gui(tmp_path, adapter_dir, caplog):
+    """The app starts with the hub's .cfg missing (every device absent), the file appears, and the
+    lifecycle service reconnects the hub. The Settings panel must refresh without an exception
+    (its tree was built from the empty camera and used to raise ``no child named Timings``) and the
+    recovered camera must be usable from it; the filter wheel's row, built for two placeholder
+    positions, must show the wheel's ten."""
+    cfg = tmp_path / "late.cfg"
+    setup = helpers.template_json()
+    setup["rs232devices"]["MMCore"]["managerProperties"]["configFile"] = str(cfg)
+    setup_path = tmp_path / "hub_down.json"
+    setup_path.write_text(json.dumps(setup), encoding="utf-8")
+    app = helpers.boot(tmp_path / "down", move_user_files=True, setup=setup_path)
+    try:
+        master, hub = app.master, app.hub
+        camera = master.detectorsManager["Camera"]
+        wheel = master.flipMirrorsManager["Dichroic"]
+        assert not hub.isConnected and not camera.backendIsReal and not wheel.is_connected()
+        settings = app.controller.controllers["Settings"]
+        tree = app.view.widgets["Settings"].trees["Camera"]
+        exposure_row = tree.p.param("Timings").param("Exposure")          # declared by the absent camera
+        assert exposure_row.readonly() and sorted(app.view.widgets["FlipMirror"].rows["Dichroic"]["stateButtons"]) == [0, 1]
+
+        cfg.write_text(Path(adapter_dir, "MMConfig_demo.cfg").read_text(encoding="utf-8"), encoding="utf-8")
+        service = master.deviceLifecycleService
+        result = service.reconnect(HardwareDeviceId("detector", "detector:Camera"))
+        assert result.success, result
+        app.pump(0.2)
+        assert camera.backendIsReal and wheel.is_connected() and "Gain" in camera.parameters
+
+        settings._refreshReconnectedDetectors(("Camera",))                 # the call the lifecycle listener makes
+        assert exposure_row.value() == camera.parameters["Exposure"].value == 10.0     # the .cfg's exposure
+        assert not exposure_row.readonly()                                 # editable now
+        exposure_row.setValue(25.0)                                        # as typed into the panel
+        assert camera.parameters["Exposure"].value == 25.0
+        assert app.hub.host.call("getExposure", "Camera") == 25.0
+        pixel_row = tree.p.param("Miscellaneous").param("Camera pixel size")
+        assert pixel_row.value() == camera.parameters["Camera pixel size"].value == 1.0   # Micro-Manager's Res10x
+        assert "Gain" not in [c.name() for g in tree.p.children() for c in g.children()]  # no row until a restart
+        assert any("no row in the Settings panel" in r.getMessage() and "Gain" in r.getMessage()
+                   for r in caplog.records)
+
+        row = app.view.widgets["FlipMirror"].rows["Dichroic"]
+        assert row["stateCombo"].count() == 10 and row["stateCombo"].itemText(0) == "400DCLP"
+        app.api.move_flip("Dichroic", 3)
+        assert hub.host.call("getState", "Dichroic") == 3 and row["stateCombo"].currentIndex() == 3
+    finally:
+        app.close()
 
 
 # --------------------------------------------------------------- interpreter exit

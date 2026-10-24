@@ -613,7 +613,9 @@ def test_reconnect_reports_a_device_that_changed_type(shutter, hub, tmp_path):
     assert errors and "is a Stage, not a State or Shutter" in errors[0]
 
 
-def test_reconnect_reports_a_state_device_whose_position_count_changed(hub, tmp_path):
+def test_reconnect_follows_a_state_device_whose_position_count_changed(hub, tmp_path):
+    """The count is the device's now (was: an error telling the user to restart): the names are read
+    again and the controller's lifecycle refresh rebuilds the widget row."""
     write_cfg(hub, tmp_path, "Property,Core,Initialize,0\nDevice,Flip,DemoCamera,DStateDevice\n"
                              "Property,Flip,Number of positions,2\nProperty,Core,Initialize,1\n")
     assert hub.reconnectTransport() is True
@@ -623,11 +625,49 @@ def test_reconnect_reports_a_state_device_whose_position_count_changed(hub, tmp_
         write_cfg(hub, tmp_path, "Property,Core,Initialize,0\nDevice,Flip,DemoCamera,DStateDevice\n"
                                  "Property,Flip,Number of positions,3\nProperty,Core,Initialize,1\n", name="three.cfg")
         assert hub.reconnectTransport() is True
+        assert mirror._onTransportReconnected(True) == []
+        assert mirror.get_state_names() == {0: "State-0", 1: "State-1", 2: "State-2"}
+        assert mirror.connectionState is DeviceConnectionState.CONNECTED
+        mirror.move_to(2)
+        assert mirror.get_state() == 2
+    finally:
+        mirror.finalize()
+
+
+def test_a_reconnect_that_leaves_the_setup_inconsistent_with_the_new_count_is_still_an_error(hub, tmp_path):
+    write_cfg(hub, tmp_path, "Property,Core,Initialize,0\nDevice,Flip,DemoCamera,DStateDevice\n"
+                             "Property,Flip,Number of positions,3\nProperty,Core,Initialize,1\n")
+    assert hub.reconnectTransport() is True
+    mirror = make_flip(hub, label=FLIP, initial_state=2)
+    try:
+        write_cfg(hub, tmp_path, "Property,Core,Initialize,0\nDevice,Flip,DemoCamera,DStateDevice\n"
+                                 "Property,Flip,Number of positions,2\nProperty,Core,Initialize,1\n", name="two.cfg")
+        assert hub.reconnectTransport() is True
         errors = mirror._onTransportReconnected(True)
-        assert errors and "'Flip' has 3 positions, it had 2 when ImSwitch2 started" in errors[0]
+        assert errors and "initial_state 2 is not a position of 'Flip', which has 2 positions" in errors[0]
         assert mirror.connectionState is DeviceConnectionState.ERROR
     finally:
         mirror.finalize()
+
+
+def test_a_wheel_built_while_the_hub_was_down_names_its_ten_positions_once_adopted(adapter_dir, tmp_path):
+    """Absent at startup the mirror has the two placeholder positions; adoption gives the wheel's ten
+    (the controller then rebuilds the row: see test_flipmirror_controller_positions)."""
+    cfg = tmp_path / "late.cfg"
+    hub = make_hub(adapter_dir, configFile=str(cfg))
+    try:
+        wheel = make_flip(hub, label="Dichroic")
+        assert not wheel.is_connected() and wheel.get_state_names() == {0: "0", 1: "1"}
+        cfg.write_text(open(adapter_dir + "/" + DEMO_CONFIG).read())
+        assert hub.reconnectTransport() is True
+        assert wheel._onTransportReconnected(True) == []
+        names = wheel.get_state_names()
+        assert len(names) == 10 and names[0] == "400DCLP" and names[9] == "State-9"
+        wheel.move_to(4)
+        assert wheel.get_state() == 4 and wheel.is_connected()
+        wheel.finalize()
+    finally:
+        hub.finalize()
 
 
 def test_lifecycle_reinitialise_raises_what_the_hook_would_return(shutter, hub, tmp_path):

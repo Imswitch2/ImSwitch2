@@ -12,7 +12,8 @@ Manager properties (``schemas/micromanager_camera.schema.json``):
   mode*: the manager loads the device itself and unloads it on finalize;
   without them the label must already be loaded by the hub's ``.cfg``
   (*system-config mode*)
-- ``cameraPixelSizeUm`` -- sample-plane pixel size (wins over Micro-Manager's)
+- ``cameraPixelSizeUm`` -- sample-plane pixel size of the *unbinned* camera (wins over Micro-Manager's);
+  ``pixelSizeUm`` / ``scale`` are that times the binning (the size of a recorded pixel)
 
 Frame path. The host drains MMCore's buffer into a per-camera queue; this
 manager only ever pops *its own* queue and never touches the buffer. Two
@@ -39,6 +40,7 @@ queue (which would be a consumer-overflow fault) or from hoarding memory.
 from __future__ import annotations
 
 import collections
+import threading
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
@@ -51,6 +53,7 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     CAMERA_PIXEL_SIZE_SOURCE_PARAM,
     ChunkKind,
     PIXEL_SIZE_SOURCE_DEFAULT,
+    PIXEL_SIZE_SOURCE_SETUP,
     QUEUED_FRAME_OVERHEAD_BYTES,
     RawFrameUnavailableError,
     configuredCameraPixelSize,
@@ -60,7 +63,7 @@ from imswitch.pluginapi import DetectorManager, DetectorNumberParameter
 from . import _properties
 from ._bridge import MicroManagerDeviceMixin
 from ._core import FramesLostError, MMCoreHostError, StreamFault, StreamFaultKind, queue_budget_bytes
-from ._frames import UnsupportedPixelTypeError
+from ._frames import UnsupportedPixelTypeError, dtype_for_pixel_type_property
 
 #: ``fullShape`` ``(width, height)`` of a camera that was built while its hub was
 #: not connected. DetectorManager needs a shape at construction and the sensor
@@ -75,12 +78,16 @@ ABSENT_MODEL = 'Micro-Manager camera (not connected)'
 #: MMCore property names the manager maps to first-class ImSwitch2 concepts.
 PROPERTY_EXPOSURE = 'Exposure'
 PROPERTY_BINNING = 'Binning'
+PROPERTY_PIXEL_TYPE = 'PixelType'
 
 #: Parameter that carries the exposure, and where it sits in the settings tree.
 PARAM_EXPOSURE = 'Exposure'
 EXPOSURE_GROUP = 'Timings'
 #: Micro-Manager's exposure unit (``setExposure`` / ``getExposure``).
 EXPOSURE_UNITS = 'ms'
+#: Value of the read-only ``Exposure`` placeholder a camera shows while its hub is down: "no exposure
+#: yet". It is not a setting (the row is read-only); the real value replaces it on adoption.
+ABSENT_EXPOSURE_MS = 0.0
 
 #: Group and unit of the pixel-size parameter (same as ``makeCameraPixelSizeParameter``).
 PIXEL_SIZE_GROUP = 'Miscellaneous'
@@ -112,7 +119,7 @@ class _Identity:
     binning_values: Dict[int, Optional[str]]  # binning -> the allowed-value text MMCore wants
     exposure: float
     properties: Dict[str, Any]                # mapped MM properties (parameters)
-    pixel_size_um: Optional[float]            # unbinned, from MM's pixel-size config; None = unknown
+    pixel_size_um: Optional[float]            # unbinned (MM's value divided by the binning); None = unknown
 
 
 class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
@@ -146,6 +153,14 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         self._mm_names: Tuple[str, ...] = ()      # parameter names that are Micro-Manager properties
         self._edited: Dict[str, str] = {}         # property -> text written by this session (re-applied on reconnect)
         self._mm_pixel_size = False               # the pixel size came from Micro-Manager
+        # Live calibration (plan 4.4): MMCore's pixel size follows the objective. Its callbacks only
+        # set ``_pixel_dirty`` (store-only, under ``_pixel_lock``); the value is re-read on the next
+        # use of ``pixelSizeUm`` / ``parameters`` / ``refreshParameters``.
+        self._pixel_lock = threading.Lock()
+        self._pixel_dirty = False
+        self._pixel_devices: frozenset = frozenset()   # devices behind Micro-Manager's pixel-size configs
+        self._pixel_events_core = None            # the core the handlers are connected to
+        self._pixel_conflict_logged: Optional[float] = None   # MM value last reported as overruled
         self._resume = False                      # a stream was running when the transport went down
 
         # Standard status + reconnect lifecycle; adoption (label, geometry, parameters) follows.
@@ -160,6 +175,10 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                 parameters[PARAM_EXPOSURE] = self._exposure_parameter(identity.exposure)
                 parameters.update(identity.properties)
                 self._binnings[:] = sorted(identity.binning_values)
+            else:
+                # The Settings panel builds its tree from the parameters present at start-up and has
+                # no way to add a group later: declare the ones the camera will have once adopted.
+                parameters[PARAM_EXPOSURE] = self._exposure_parameter(ABSENT_EXPOSURE_MS, editable=False)
             parameters[CAMERA_PIXEL_SIZE_PARAM] = pixel_param
             super().__init__(
                 detectorInfo, name,
@@ -174,6 +193,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         if identity is not None:
             self._finish_identity(identity)
             self._mark_pixel_size_source()
+            self._connect_pixel_events()
             self._setConnected(f'{self.model}: {self._label} connected')
 
     # ------------------------------------------------------------------ setup
@@ -262,9 +282,9 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         return size / max(1, binning)
 
     @staticmethod
-    def _exposure_parameter(value: float) -> DetectorNumberParameter:
+    def _exposure_parameter(value: float, *, editable: bool = True) -> DetectorNumberParameter:
         return DetectorNumberParameter(
-            group=EXPOSURE_GROUP, value=float(value), valueUnits=EXPOSURE_UNITS, editable=True)
+            group=EXPOSURE_GROUP, value=float(value), valueUnits=EXPOSURE_UNITS, editable=editable)
 
     def _initial_pixel_size_parameter(self, detectorInfo, identity: Optional[_Identity]) -> DetectorNumberParameter:
         """Pixel-size rule of plan 4.4: setup file > Micro-Manager's config > placeholder."""
@@ -302,6 +322,109 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         self._mm_names = tuple(identity.properties)
         self._ready = True
 
+    # ------------------------------------------------------- live pixel size
+    def _pixel_size_devices(self, core) -> frozenset:
+        """Labels of the devices Micro-Manager's pixel-size configs depend on (``Objective`` ...)."""
+        devices = set()
+        try:
+            for config in core.getAvailablePixelSizeConfigs():
+                data = core.getPixelSizeConfigData(config)
+                devices.update(data.getSetting(i).getDeviceLabel() for i in range(data.size()))
+        except Exception as exc:                          # noqa: BLE001 - fall back to following every device
+            self.__logger.warning('Could not read the pixel-size configs of %s (%s); any property change '
+                                  'will re-read the pixel size', self._label, exc)
+            return frozenset()
+        return frozenset(devices)
+
+    def _connect_pixel_events(self) -> None:
+        """Follow MMCore's pixel size: an objective change must reach the calibration (plan 4.4)."""
+        with self._host.lock:
+            self._disconnect_pixel_events()
+            core = self._host.core
+            self._pixel_devices = self._pixel_size_devices(core)
+            core.events.pixelSizeChanged.connect(self._on_pixel_size_event)
+            core.events.configSet.connect(self._on_pixel_config_event)
+            core.events.propertyChanged.connect(self._on_pixel_property_event)
+            self._pixel_events_core = core
+            self._mark_pixel_size_dirty()
+
+    def _disconnect_pixel_events(self) -> None:
+        core, self._pixel_events_core = self._pixel_events_core, None
+        if core is None:
+            return
+        for signal_name, handler in (('pixelSizeChanged', self._on_pixel_size_event),
+                                     ('configSet', self._on_pixel_config_event),
+                                     ('propertyChanged', self._on_pixel_property_event)):
+            try:
+                getattr(core.events, signal_name).disconnect(handler)
+            except Exception:                          # noqa: BLE001 - not connected, or the core is already gone
+                pass
+
+    def _mark_pixel_size_dirty(self) -> None:
+        with self._pixel_lock:
+            self._pixel_dirty = True
+
+    def _on_pixel_size_event(self, size_um) -> None:
+        """MMCore's callback thread: store only (never the hub lock, never Qt)."""
+        self._mark_pixel_size_dirty()
+
+    def _on_pixel_config_event(self, group, config) -> None:
+        """MMCore's callback thread: store only."""
+        self._mark_pixel_size_dirty()
+
+    def _on_pixel_property_event(self, device, prop, value) -> None:
+        """MMCore's callback thread: store only. Only a device behind a pixel-size config matters."""
+        if not self._pixel_devices or device in self._pixel_devices:
+            self._mark_pixel_size_dirty()
+
+    def _apply_pending_pixel_size(self) -> None:
+        """Re-read the pixel size if a callback said it may have changed (see the callbacks above)."""
+        if not self.__dict__.get('_ready'):
+            return
+        with self._pixel_lock:
+            dirty, self._pixel_dirty = self._pixel_dirty, False
+        if dirty:
+            self._reread_pixel_size()
+
+    def _reread_pixel_size(self) -> None:
+        """Take Micro-Manager's current (unbinned) pixel size into the parameter, where it is allowed to.
+
+        The source parameter decides: Micro-Manager's own value follows the objective; a placeholder
+        becomes Micro-Manager's as soon as it has a value; a setup-file or user value is never
+        overwritten (it is logged once per changed Micro-Manager value that the setup/user wins).
+        """
+        host = self._host
+        if not host.is_connected:
+            return
+        with host.lock:
+            size = self._micromanager_pixel_size(host.core)
+            parameters = super().parameters
+            param = parameters.get(CAMERA_PIXEL_SIZE_PARAM)
+            source = parameters.get(CAMERA_PIXEL_SIZE_SOURCE_PARAM)
+            if param is None or source is None:
+                return
+            if source.value == PIXEL_SIZE_SOURCE_MICROMANAGER:
+                if size is None:
+                    self.__logger.warning(
+                        'Micro-Manager has no pixel size for its current state (no pixel-size config matches, '
+                        'e.g. the objective has no calibration); keeping %.4g um', float(param.value))
+                elif size != param.value:
+                    self.__logger.info('Camera pixel size %.4g um -> %.4g um: Micro-Manager\'s pixel-size '
+                                       'config changed', float(param.value), size)
+                    param.value = size
+            elif source.value == PIXEL_SIZE_SOURCE_DEFAULT and size is not None:
+                self._mm_pixel_size = True               # the placeholder gives way to a real calibration
+                param.value = size
+                self._mark_pixel_size_source()
+                self.__logger.info('Camera pixel size %.4g um: Micro-Manager\'s pixel-size config now has one', size)
+            elif size is not None and size != param.value and size != self._pixel_conflict_logged:
+                self._pixel_conflict_logged = size
+                owner = 'the setup file' if source.value == PIXEL_SIZE_SOURCE_SETUP else 'you'
+                self.__logger.warning(
+                    "Micro-Manager's pixel size changed to %.4g um (the objective or its pixel-size config), but "
+                    "%s set %.4g um for camera %s and that value stays in effect (source: %s)",
+                    size, owner, float(param.value), self._label, source.value)
+
     # ------------------------------------------------------------- properties
     @property
     def configOwnedParameters(self) -> frozenset:
@@ -309,6 +432,27 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         reinstate an old value over the configuration that is authoritative at every start."""
         owned = super().configOwnedParameters
         return owned | {CAMERA_PIXEL_SIZE_PARAM} if self._mm_pixel_size else owned
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        """The parameters; a pixel size that Micro-Manager changed since the last read is applied first."""
+        self._apply_pending_pixel_size()
+        return super().parameters
+
+    @property
+    def pixelSizeUm(self) -> List[float]:
+        """``[1, p * b, p * b]``: the optically effective size of a *recorded* pixel.
+
+        ImSwitch2 gives this size to recording metadata (OME ``PhysicalSize``), the napari layer
+        scale and tiling unchanged, so at binning ``b`` it is ``b`` times the unbinned size ``p`` of
+        the ``Camera pixel size`` parameter, which keeps meaning the unbinned sample-plane value
+        (what the setup file, the user and Micro-Manager's pixel-size config state). ``scale``
+        follows from the base class.
+        """
+        self._apply_pending_pixel_size()
+        z, y, x = super().pixelSizeUm
+        binning = max(1, int(self.binning))
+        return [z, y * binning, x * binning]
 
     @property
     def dtype(self) -> np.dtype:
@@ -336,21 +480,49 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         return super().setParameter(name, value)
 
     def _set_property(self, name, value):
-        """Write one Micro-Manager property (stopped around the write if streaming); the value read back."""
+        """Write one Micro-Manager property (stopped around the write if streaming); the value read back.
+
+        While another camera streams, the frame format of this one must stay the other's
+        (MMCore's one buffer, Micro-Manager PR #936), and so must the format of MMCore's
+        *current* camera whichever camera that is. So a property that can change the format is
+        checked BEFORE it is written when its effect is known (``PixelType``: the dtype follows
+        from the value), and otherwise written, re-read and **rolled back** when the new
+        format clashes -- the stream is restarted with the old one either way and the refusal is
+        raised to the caller.
+        """
         host, label = self._host, self._label
         text = _properties.coerce_for_mm(self.parameters[name], value)
+        written: Dict[str, Any] = {}                 # what to put back: set once the write happened
+        # The dtype the write selects, when it is known from the value: the only way to learn it for a
+        # camera that is not MMCore's current one while another camera streams (see _sync_geometry).
+        predicted = dtype_for_pixel_type_property(text) if name == PROPERTY_PIXEL_TYPE else None
 
         def action():
             with host.lock:
                 core = host.core
                 previous = core.getProperty(label, name)
                 core.setProperty(label, name, text)          # MMCore's refusal propagates unchanged
+                written['previous'] = previous
+                written['dtype'] = self._stream_dtype
                 try:
-                    self._sync_geometry()
+                    self._sync_geometry(dtype_hint=predicted)
                 except UnsupportedPixelTypeError as exc:
                     core.setProperty(label, name, previous)  # the bridge cannot carry this: undo it
+                    del written['previous']
                     raise UnsupportedPixelTypeError(_COLOUR_REFUSAL.format(label=label, reason=exc)) from exc
                 return _properties.read_back(core, label, name)
+
+        def rollback():
+            """Put the old text back and re-read the format (after a format clash)."""
+            with host.lock:
+                previous = written.pop('previous', None)
+                if previous is not None:
+                    host.core.setProperty(label, name, previous)
+                    self._sync_geometry(dtype_hint=written.get('dtype'))
+
+        def precheck():
+            if predicted is not None and self._stream_dtype is not None:
+                host.check_format_change_allowed(label, self._stream_hw, predicted)
 
         def after(applied):
             self._edited[name] = str(applied)
@@ -358,7 +530,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             self._warn_if_changed(name, value, applied)
             return applied
 
-        return self._safe_camera_action(action, after=after)
+        return self._safe_camera_action(action, after=after, precheck=precheck, rollback=rollback)
 
     def _warn_if_changed(self, name, requested, applied) -> None:
         try:
@@ -369,12 +541,13 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             self.__logger.warning('%s: asked for %r, the camera took %r', name, requested, applied)
 
     def refreshParameters(self) -> None:
-        """Re-read every mapped Micro-Manager property and the exposure from the device."""
+        """Re-read every mapped Micro-Manager property, the exposure and Micro-Manager's pixel size."""
         self._requireConnected('refreshParameters')
         with self._host.lock:
             core = self._host.core
             _properties.refresh_parameters(core, self._label, self.parameters, self._mm_names)
             self.parameters[PARAM_EXPOSURE].value = float(core.getExposure(self._label))
+            self._reread_pixel_size()                     # the objective may have changed behind our back
 
     def setBinning(self, binning):
         """Set the ``Binning`` property to a supported value and re-read the frame geometry."""
@@ -426,8 +599,11 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         return w > 0 and h > 0 and x >= 0 and y >= 0 and x + w <= width and y + h <= height
 
     # --------------------------------------------------- geometry and format
-    def _sync_geometry(self) -> bool:
+    def _sync_geometry(self, dtype_hint=None) -> bool:
         """Re-read ROI and frame format from MMCore into the manager; True if anything changed.
+
+        ``dtype_hint`` is the dtype the caller knows the camera now delivers (a ``PixelType`` write),
+        used only when the format cannot be read because another camera streams.
 
         Called with the stream stopped (or the camera idle). A change of frame size
         also re-reads the full frame when no other camera streams (``sensor_geometry``
@@ -444,9 +620,9 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                 raise
             except MMCoreHostError:
                 # Another camera streams: MMCore cannot switch the current camera, so the dtype
-                # cannot be read. The frame size follows the ROI; the dtype stays as known and
-                # the host checks every frame against it.
-                stream_hw, dtype = (h, w), self._stream_dtype
+                # cannot be read. The frame size follows the ROI; the dtype is the caller's hint
+                # or stays as known, and the host checks every frame against it.
+                stream_hw, dtype = (h, w), (self._stream_dtype if dtype_hint is None else dtype_hint)
             self._frameStart, self._shape = (x, y), (w, h)
             self._stream_hw, self._stream_dtype = stream_hw, np.dtype(dtype)
             changed = before != (self._frameStart, self._shape, self._stream_hw, self._stream_dtype)
@@ -457,12 +633,19 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                     self._setFullShape((full_width, full_height))
             return changed
 
-    def _safe_camera_action(self, action, after=None):
+    def _safe_camera_action(self, action, after=None, *, precheck=None, rollback=None):
         """stop the stream -> ``action()`` -> restart it, for settings MMCore may refuse mid-sequence.
 
         The format is re-read by ``action`` (via :meth:`_sync_geometry`) before the restart,
         so a changed frame size or pixel type is what the new sequence is started with. The
         action's own error is the one raised.
+
+        ``precheck()`` runs first, before anything is stopped or written, and raises to refuse
+        a change whose effect is known to clash with another running stream. ``rollback()``
+        undoes the change: it runs when the format the action produced clashes with another
+        running stream (or MMCore's current camera), or the restart is refused, so the stream
+        is never left stopped and MMCore's current camera never keeps a format other than the
+        running streams'. The stream then restarts with the old format and the refusal is raised.
 
         A stream fault found while stopping (:class:`FramesLostError`: the sequence had
         already ended, or ended unnoticed, before this call) must not cancel the change or
@@ -484,6 +667,9 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             fault: Optional[StreamFault] = None
             if was_streaming:
                 host.check_buffer_may_be_cleared(label)   # refuse before stopping what cannot be restarted
+            if precheck is not None:
+                precheck()                                # refuse before anything is written
+            if was_streaming:
                 try:
                     host.stop_stream(label)
                 except FramesLostError as exc:            # the sequence is stopped; carry on, keep the fault
@@ -494,14 +680,26 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             result = None
             try:
                 result = action()
+                if self._stream_dtype is not None:
+                    host.check_format_change_allowed(label, self._stream_hw, self._stream_dtype)
             except Exception as exc:                      # noqa: BLE001 - re-raised below, after the restart
                 error = exc
+                if rollback is not None and isinstance(exc, MMCoreHostError):
+                    self._undo(rollback, 'the format clashes with another running camera')
             if was_streaming:
                 try:
                     host.start_stream(label, *self._stream_format())
                 except Exception as exc:                  # noqa: BLE001
                     if error is None:
                         error = exc
+                        if rollback is not None:
+                            # The change went through but the stream cannot run with it: undo it and
+                            # bring the old stream back instead of leaving the camera stopped.
+                            self._undo(rollback, f'restarting with the new format was refused ({exc})')
+                            try:
+                                host.start_stream(label, *self._stream_format())
+                            except Exception as again:    # noqa: BLE001
+                                self.__logger.error('Restarting %s with its old format also failed: %s', label, again)
                     else:
                         self.__logger.error('Restarting %s after a failed setting also failed: %s', label, exc)
             if fault is not None:
@@ -513,6 +711,15 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             if fault is not None:
                 raise FramesLostError(label, fault)
             return result
+
+    def _undo(self, rollback, reason: str) -> None:
+        """Run a settings rollback; a failing rollback is logged, it must not hide the original error."""
+        try:
+            rollback()
+        except Exception as exc:                          # noqa: BLE001 - the original error is raised
+            self.__logger.error('Camera %s: undoing the setting (%s) failed: %s', self._label, reason, exc)
+        else:
+            self.__logger.warning('Camera %s: the setting was undone: %s', self._label, reason)
 
     def crop(self, hpos, vpos, hsize, vsize):
         """Set the ROI through the host (drain -> stop -> setROI -> read back -> restart).
@@ -735,14 +942,25 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                 except Exception as exc:                  # noqa: BLE001
                     errors.append(f'{PROPERTY_BINNING}: {exc}')
             try:
-                full_width, full_height, _ = host.sensor_geometry(label)
-                self._setFullShape((full_width, full_height))
-                if (full_width, full_height) != tuple(expected_full):
-                    errors.append(f'the sensor is now {full_width}x{full_height}, was {expected_full[0]}x{expected_full[1]}')
+                if host.running_streams():
+                    # Another camera resumed first (the lifecycle service reconnects the cameras one
+                    # after the other). ``sensor_geometry`` is idle-only (it clears the ROI, which
+                    # clears the shared buffer), so the full frame is the one cached from the
+                    # adoption -- it does not change across a reconnect of the same device -- and
+                    # the reloaded device is checked by reads only (``getROI``).
+                    full_width, full_height = (int(v) for v in expected_full)
+                else:
+                    full_width, full_height, _ = host.sensor_geometry(label)
+                    self._setFullShape((full_width, full_height))
+                    if (full_width, full_height) != tuple(expected_full):
+                        errors.append(f'the sensor is now {full_width}x{full_height}, was {expected_full[0]}x{expected_full[1]}')
                 if expected_roi != (0, 0, full_width, full_height):
                     applied = host.set_roi(label, *expected_roi)
                     if applied != expected_roi:
                         errors.append(f'ROI {expected_roi} came back as {applied}')
+                found_roi = tuple(int(v) for v in host.call('getROI', label))
+                if found_roi != expected_roi:
+                    errors.append(f'the ROI is now {found_roi}, was {expected_roi} (x, y, width, height)')
                 self._sync_geometry()
             except Exception as exc:                      # noqa: BLE001
                 errors.append(f'geometry: {exc}')
@@ -754,6 +972,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                 errors.append(f'the frame format is now {self._stream_hw} {self._stream_dtype}, '
                               f'was {expected_hw} {expected_dtype}')
             try:
+                self._connect_pixel_events()              # the reloaded core is a new object
                 self.refreshParameters()
             except Exception as exc:                      # noqa: BLE001
                 errors.append(f'parameters: {exc}')
@@ -765,7 +984,14 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         self._setFullShape(identity.full_shape)
         self._binnings[:] = sorted(identity.binning_values)
         existing = dict(self.parameters)
-        new = {PARAM_EXPOSURE: self._exposure_parameter(identity.exposure), **identity.properties}
+        exposure = existing.pop(PARAM_EXPOSURE, None)
+        if exposure is None:
+            exposure = self._exposure_parameter(identity.exposure)
+        else:
+            # The placeholder row exists in the Settings tree already: the same parameter becomes the
+            # real one, in place, so the row's group and name stay what the tree was built with.
+            exposure.value, exposure.editable = float(identity.exposure), True
+        new = {PARAM_EXPOSURE: exposure, **identity.properties}
         self.parameters.clear()
         self.parameters.update({**new, **existing})
         source = self.parameters.get(CAMERA_PIXEL_SIZE_SOURCE_PARAM)
@@ -775,9 +1001,11 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             self.parameters[CAMERA_PIXEL_SIZE_PARAM].value = identity.pixel_size_um
             self._mark_pixel_size_source()
         self._finish_identity(identity)
+        self._connect_pixel_events()
 
     def finalize(self):
         """Stop the stream, unload an inline device, then the base class."""
+        self._disconnect_pixel_events()
         host = self._host
         if self._ready and host.is_connected:
             try:

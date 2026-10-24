@@ -107,9 +107,32 @@ def test_pixel_size_is_divided_by_the_binning(hub):
     assert hub.host.call("getPixelSizeUm") == 2.0
     cam = make_camera(hub)
     try:
-        assert cam.pixelSizeUm[1] == 1.0
+        assert cam.parameters[CAMERA_PIXEL_SIZE_PARAM].value == 1.0     # the parameter is the unbinned value
+        assert cam.pixelSizeUm[1] == 2.0                                # a recorded pixel is two unbinned ones
         assert cam.binning == 2 and cam.shape == (FRAME_SIDE // 2, FRAME_SIDE // 2)
         assert cam.fullShape == (FRAME_SIDE // 2, FRAME_SIDE // 2)
+    finally:
+        cam.finalize()
+
+
+@pytest.mark.parametrize("setup_value", [None, 0.25])
+def test_pixel_size_um_is_the_size_of_a_recorded_pixel_so_it_follows_the_binning(hub, setup_value):
+    """The ``Camera pixel size`` parameter stays the UNBINNED sample-plane value (setup file, user or
+    Micro-Manager); ``pixelSizeUm`` / ``scale`` -- what recording metadata and napari use -- are
+    multiplied by the binning because one recorded pixel covers b x b sensor pixels."""
+    cam = make_camera(hub, **({} if setup_value is None else {"cameraPixelSizeUm": setup_value}))
+    try:
+        unbinned = cam.parameters[CAMERA_PIXEL_SIZE_PARAM].value
+        assert unbinned == (1.0 if setup_value is None else setup_value)
+        assert cam.pixelSizeUm == [1.0, unbinned, unbinned]
+        for binning in (2, 4, 1):
+            cam.setBinning(binning)
+            assert cam.parameters[CAMERA_PIXEL_SIZE_PARAM].value == unbinned
+            assert cam.pixelSizeUm == [1.0, binning * unbinned, binning * unbinned]
+            assert cam.scale == [binning * unbinned, binning * unbinned]
+        cam.setParameter(CAMERA_PIXEL_SIZE_PARAM, 0.5)                        # the user states the unbinned size
+        cam.setBinning(2)
+        assert cam.pixelSizeUm == [1.0, 1.0, 1.0]
     finally:
         cam.finalize()
 
@@ -232,7 +255,13 @@ def test_a_camera_is_built_absent_when_the_hub_is_not_connected(adapter_dir, tmp
         assert "nope.cfg" in cam.connectionStatusDetails
         assert not cam.backendIsReal and not cam.isUsable
         assert cam.fullShape == ABSENT_FULL_SHAPE and cam.supportedBinnings == [1]
-        assert CAMERA_PIXEL_SIZE_PARAM in cam.parameters and "Exposure" not in cam.parameters
+        # The Settings tree is built from these at start-up: the groups the camera will have are declared,
+        # the exposure as a read-only placeholder (changed from "no Exposure parameter at all").
+        assert CAMERA_PIXEL_SIZE_PARAM in cam.parameters
+        assert cam.parameters["Exposure"].group == "Timings" and cam.parameters["Exposure"].editable is False
+        assert "Gain" not in cam.parameters
+        with pytest.raises(DeviceNotConnectedError):
+            cam.setParameter("Exposure", 5)
         with pytest.raises(DeviceNotConnectedError):
             cam.startAcquisition()
         assert cam.getChunk() == []
@@ -248,6 +277,7 @@ def test_a_camera_built_while_the_hub_was_down_adopts_the_device_on_reconnect(ad
     try:
         cam = make_camera(hub)
         assert cam.connectionState is DeviceConnectionState.ERROR
+        placeholder_exposure = cam.parameters["Exposure"]
         cfg.write_text(open(adapter_dir + "/" + DEMO_CONFIG).read())
         assert hub.reconnectTransport() is True
         assert cam._onTransportReconnected(True) == []
@@ -257,6 +287,11 @@ def test_a_camera_built_while_the_hub_was_down_adopts_the_device_on_reconnect(ad
         assert "Exposure" in cam.parameters and "Gain" in cam.parameters
         assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_MICROMANAGER
         assert cam.pixelSizeUm[1] == 1.0
+        assert cam.parameters["Exposure"] is placeholder_exposure       # updated in place: the tree row stays valid
+        assert placeholder_exposure.editable is True and placeholder_exposure.value == 10.0   # the .cfg's exposure
+        assert cam.parameters["Exposure"].group == "Timings"
+        cam.setParameter("Exposure", TEST_EXPOSURE_MS)
+        assert hub.host.call("getExposure", LABEL) == TEST_EXPOSURE_MS
         cam.startAcquisition()
         assert frames_within_deadline(cam.getChunk)[0].shape == (FRAME_SIDE, FRAME_SIDE)
         cam.stopAcquisition()
@@ -888,3 +923,297 @@ def test_evicted_staged_frames_are_a_fault_not_a_hole(camera, monkeypatch):
             camera.stopAcquisition()
         except FramesLostError:
             pass
+
+
+# ------------------------------------------------- review round 3: two-camera reconnect
+def _two_inline_cameras(hub):
+    """Two 16-bit cameras whose devices the managers load themselves (a reload brings them back)."""
+    first = make_camera(hub, name="A", label="CamA", adapter="DemoCamera", device="DCam")
+    second = make_camera(hub, name="B", label="CamB", adapter="DemoCamera", device="DCam")
+    for cam in (first, second):
+        cam.setParameter("PixelType", "16bit")
+        cam.setParameter("Exposure", TEST_EXPOSURE_MS)
+    return first, second
+
+
+def test_a_hub_reconnect_with_two_streaming_cameras_resumes_both_in_any_order(hub):
+    """The first camera resumes its stream at once; the second one's re-initialisation must not
+    need the idle-only ``sensor_geometry`` (it would clear the buffer and select the camera)."""
+    for order in (("A", "B"), ("B", "A")):
+        first, second = _two_inline_cameras(hub)
+        cams = {"A": first, "B": second}
+        try:
+            first.crop(0, 0, 128, 64)
+            second.crop(0, 0, 128, 64)
+            first.startAcquisition()
+            second.startAcquisition()
+            for cam in cams.values():
+                frames_within_deadline(cam.getChunk)
+            for cam in cams.values():
+                assert cam._lifecycleSafeState(verified=False) == []
+            assert hub.reconnectTransport() is True
+            for key in order:
+                assert cams[key]._onTransportReconnected(True) == [], key
+            assert sorted(hub.host.running_streams()) == ["CamA", "CamB"]
+            for cam in cams.values():
+                assert cam.connectionState is DeviceConnectionState.CONNECTED
+                assert cam.shape == (128, 64) and cam.fullShape == (FRAME_SIDE, FRAME_SIDE)
+                frames = frames_within_deadline(cam.getChunk, count=3)
+                assert frames[-1].shape == (64, 128) and frames[-1].dtype == np.uint16
+            first.stopAcquisition()
+            second.stopAcquisition()
+        finally:
+            first.finalize()
+            second.finalize()
+
+
+def test_a_reconnect_beside_a_running_stream_reports_a_sensor_that_changed(hub):
+    """With a stream running the sensor cannot be re-measured (that would clear the buffer), but a
+    reloaded device whose ROI no longer matches what the manager reports is still found, by a read."""
+    first, second = _two_inline_cameras(hub)
+    try:
+        first.startAcquisition()
+        frames_within_deadline(first.getChunk)
+        for cam in (first, second):
+            cam._lifecycleSafeState(verified=False)
+        assert hub.reconnectTransport() is True
+        second._edited["OnCameraCCDXSize"] = str(FRAME_SIDE // 2)   # re-applied on the reloaded device: it comes back narrower
+        assert first._onTransportReconnected(True) == []
+        errors = second._onTransportReconnected(True)
+        assert errors and any("ROI is now" in e for e in errors), errors
+        assert second.connectionState is DeviceConnectionState.ERROR
+        frames_within_deadline(first.getChunk)              # the camera that was fine kept streaming
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+# ------------------------------------------------- review round 3: format change beside a stream
+def _both_stream_equal_frames(first, second):
+    """Both cameras deliver 16-bit frames of the demo size; a chunk from each proves it."""
+    for cam in (first, second):
+        frame = frames_within_deadline(cam.getChunk)[-1]
+        assert frame.shape == (FRAME_SIDE, FRAME_SIDE) and frame.dtype == np.uint16
+
+
+@pytest.mark.parametrize("changing", ["first", "second"])
+def test_a_pixel_type_change_beside_a_streaming_camera_is_refused_and_leaves_both_streams_alone(hub, changing):
+    """With two 16-bit cameras streaming, writing 8bit to either one used to stop it (the restart was
+    refused by the format guard) and, when it was MMCore's current camera, made the OTHER camera's
+    frames decode wrongly. Now nothing is written."""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.startAcquisition()
+        assert host.call("getCameraDevice") == LABEL           # the first one started is MMCore's current camera
+        victim, other_label = (first, "Cam2") if changing == "first" else (second, LABEL)
+        with pytest.raises(MMCoreHostError, match=rf"{other_label}.*#936"):
+            victim.setParameter("PixelType", "8bit")
+        assert host.call("getProperty", victim.label, "PixelType") == "16bit"
+        assert victim.parameters["PixelType"].value == "16bit" and victim.dtype == np.uint16
+        assert "PixelType" not in victim._edited
+        assert sorted(host.running_streams()) == sorted([LABEL, "Cam2"])
+        assert host.call("getCameraDevice") == LABEL and host.call("getBytesPerPixel") == 2
+        _both_stream_equal_frames(first, second)
+        first.stopAcquisition()
+        second.stopAcquisition()                               # no stream fault from any of it
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_pixel_type_change_of_the_current_camera_is_refused_even_when_it_is_idle(hub):
+    """The current camera that stopped while the other one streams still decides how the buffer is
+    decoded: its pixel type must not change until the other stream is gone."""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.startAcquisition()
+        first.stopAcquisition()                                # idle now, still MMCore's current camera
+        assert host.call("getCameraDevice") == LABEL and host.running_streams() == ["Cam2"]
+        with pytest.raises(MMCoreHostError, match=r"Cam2.*#936"):
+            first.setParameter("PixelType", "8bit")
+        assert host.call("getProperty", LABEL, "PixelType") == "16bit"
+        frame = frames_within_deadline(second.getChunk)[-1]
+        assert frame.dtype == np.uint16 and frame.shape == (FRAME_SIDE, FRAME_SIDE)
+        second.stopAcquisition()
+        first.setParameter("PixelType", "8bit")                # nothing streams any more: allowed
+        assert first.dtype == np.uint8
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_pixel_type_change_of_an_idle_camera_that_is_not_current_is_allowed_beside_a_stream(hub):
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.setParameter("PixelType", "8bit")               # idle and not current: the buffer is not decoded with it
+        assert host.call("getProperty", "Cam2", "PixelType") == "8bit"
+        assert host.call("getBytesPerPixel") == 2
+        frame = frames_within_deadline(first.getChunk)[-1]
+        assert frame.dtype == np.uint16
+        with pytest.raises(MMCoreHostError, match="#936"):
+            second.startAcquisition()                          # it may not start with the other format
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_change_that_cannot_be_predicted_is_rolled_back_when_the_format_clashes(hub):
+    """``OnCameraCCDXSize`` changes the frame width and is not a pixel type: it is written, the
+    format read back, and when the restart would clash the old value is put back and the stream
+    restarted. (A camera that is not MMCore's current one cannot be read during a sequence, so
+    for it the host's per-frame check is the guard; this is the current camera's case.)"""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.startAcquisition()
+        assert "OnCameraCCDXSize" in first.parameters
+        with pytest.raises(FrameShapeMismatchError, match=r"Cam2.*#936"):
+            first.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)
+        assert host.call("getProperty", LABEL, "OnCameraCCDXSize") == str(FRAME_SIDE)
+        assert first.parameters["OnCameraCCDXSize"].value == FRAME_SIDE and "OnCameraCCDXSize" not in first._edited
+        assert first.shape == (FRAME_SIDE, FRAME_SIDE)
+        assert sorted(host.running_streams()) == sorted([LABEL, "Cam2"])      # restarted with the old format
+        assert host.call("getCameraDevice") == LABEL and host.call("getImageWidth") == FRAME_SIDE
+        _both_stream_equal_frames(first, second)
+        first.stopAcquisition()
+        second.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_pixel_type_change_of_a_single_streaming_camera_still_works(camera):
+    camera.startAcquisition()
+    frames_within_deadline(camera.getChunk)
+    camera.setParameter("PixelType", "8bit")
+    assert camera._host.stream(LABEL).streaming and camera.dtype == np.uint8
+    wait_until(lambda: any(f.dtype == np.uint8 for f in camera.getChunk()), message="8 bit frames")
+    camera.setParameter("PixelType", "16bit")
+    wait_until(lambda: any(f.dtype == np.uint16 for f in camera.getChunk()), message="16 bit frames")
+    camera.stopAcquisition()
+
+
+# ------------------------------------------------- review round 3: live pixel-size calibration
+OBJECTIVE_40X = "Nikon 40X Plan Fluor ELWD"
+
+
+def _px(cam):
+    return cam.parameters[CAMERA_PIXEL_SIZE_PARAM].value
+
+
+def test_an_objective_change_reaches_the_micromanager_supplied_pixel_size(hub):
+    cam = make_camera(hub)
+    try:
+        assert _px(cam) == 1.0
+        hub.host.call("setConfig", "Objective", "20X")               # Res20x: 0.5 um
+        assert wait_until(lambda: _px(cam) == 0.5, message="the new calibration")
+        assert cam.pixelSizeUm == [1.0, 0.5, 0.5] and cam.scale == [0.5, 0.5]
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_MICROMANAGER
+        assert CAMERA_PIXEL_SIZE_PARAM in cam.configOwnedParameters
+        hub.host.call("setProperty", "Objective", "Label", OBJECTIVE_40X)           # a property write, no config
+        assert cam.pixelSizeUm[1] == 0.25
+        hub.host.call("setState", "Objective", 1)                                    # a State write: back to 10X
+        assert cam.pixelSizeUm[1] == 1.0
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_MICROMANAGER
+    finally:
+        cam.finalize()
+
+
+def test_the_live_pixel_size_stays_unbinned_and_the_recorded_pixel_follows_the_binning(hub):
+    cam = make_camera(hub)
+    try:
+        cam.setBinning(2)
+        hub.host.call("setConfig", "Objective", "20X")                # MMCore now says 1.0 um for a binned pixel
+        assert hub.host.call("getPixelSizeUm") == 1.0
+        assert _px(cam) == 0.5 and cam.pixelSizeUm[1] == 1.0
+    finally:
+        cam.finalize()
+
+
+def test_refresh_parameters_rereads_the_pixel_size_even_without_the_event(hub):
+    cam = make_camera(hub)
+    try:
+        assert _px(cam) == 1.0
+        cam._disconnect_pixel_events()                                # as if the callback never came
+        hub.host.call("setConfig", "Objective", "40X")
+        assert cam._pixel_dirty is False and _px(cam) == 1.0
+        cam.refreshParameters()
+        assert _px(cam) == 0.25
+    finally:
+        cam.finalize()
+
+
+def test_a_setup_pixel_size_wins_over_a_changed_objective_and_says_so_once(hub, caplog):
+    cam = make_camera(hub, cameraPixelSizeUm=0.3)
+    try:
+        with caplog.at_level("WARNING"):
+            hub.host.call("setConfig", "Objective", "20X")
+            assert cam.pixelSizeUm[1] == 0.3 and _px(cam) == 0.3
+            cam.refreshParameters()
+            assert cam.pixelSizeUm[1] == 0.3
+        warnings = [r.getMessage() for r in caplog.records if "pixel size changed" in r.getMessage()]
+        assert len(warnings) == 1 and "setup file" in warnings[0] and "0.5" in warnings[0] and "0.3" in warnings[0]
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_SETUP
+    finally:
+        cam.finalize()
+
+
+def test_a_user_pixel_size_wins_over_a_changed_objective(camera, hub, caplog):
+    camera.setParameter(CAMERA_PIXEL_SIZE_PARAM, 0.33)
+    assert camera.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_USER
+    with caplog.at_level("WARNING"):
+        hub.host.call("setConfig", "Objective", "20X")
+        assert camera.pixelSizeUm[1] == 0.33
+    assert any("you set" in r.getMessage() for r in caplog.records)
+    assert camera.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_USER
+
+
+def test_a_placeholder_pixel_size_gives_way_when_micromanager_gets_a_calibration(hub):
+    hub.host.call("setState", "Objective", 5)                         # no pixel-size config for this state
+    cam = make_camera(hub)
+    try:
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_DEFAULT
+        hub.host.call("setConfig", "Objective", "20X")
+        assert cam.pixelSizeUm[1] == 0.5
+        assert cam.parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value == PIXEL_SIZE_SOURCE_MICROMANAGER
+        assert CAMERA_PIXEL_SIZE_PARAM in cam.configOwnedParameters
+    finally:
+        cam.finalize()
+
+
+def test_a_state_without_a_pixel_size_config_keeps_the_last_calibration_and_warns(camera, hub, caplog):
+    with caplog.at_level("WARNING"):
+        hub.host.call("setState", "Objective", 5)
+        assert camera.pixelSizeUm[1] == 1.0
+    assert any("no pixel size" in r.getMessage() for r in caplog.records)
+
+
+def test_the_live_pixel_size_follows_the_objective_after_a_hub_reconnect(camera, hub):
+    assert camera._lifecycleSafeState(verified=False) == []
+    assert hub.reconnectTransport() is True
+    assert camera._onTransportReconnected(True) == []
+    hub.host.call("setConfig", "Objective", "20X")
+    assert camera.pixelSizeUm[1] == 0.5
+
+
+def test_a_late_adopted_camera_follows_the_objective_too(adapter_dir, tmp_path):
+    cfg = tmp_path / "late.cfg"
+    hub = make_hub(adapter_dir, configFile=str(cfg))
+    try:
+        cam = make_camera(hub)
+        cfg.write_text(open(adapter_dir + "/" + DEMO_CONFIG).read())
+        assert hub.reconnectTransport() is True and cam._onTransportReconnected(True) == []
+        hub.host.call("setConfig", "Objective", "40X")
+        assert cam.pixelSizeUm[1] == 0.25
+        cam.finalize()
+    finally:
+        hub.finalize()
