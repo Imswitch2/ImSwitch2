@@ -10,7 +10,7 @@ readme = "README.md"
 # pymmcore (a pymmcore-plus dependency) requires Python >= 3.11; ImSwitch2 itself still supports 3.10.
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }
-keywords = ["imswitch", "imswitch-plugin", "micro-manager", "mmcore", "pymmcore-plus", "camera", "stage"]
+keywords = ["imswitch", "imswitch-plugin", "micro-manager", "mmcore", "pymmcore-plus", "camera", "stage", "flip-mirror"]
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",

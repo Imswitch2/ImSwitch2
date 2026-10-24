@@ -17,6 +17,7 @@ one "card" per manager class, with:
 | [positioners.rst](positioners.rst) | Stages and piezos |
 | [rotators.rst](rotators.rst) | Rotation mounts |
 | [stands.rst](stands.rst) | Microscope stand integrations |
+| [micromanager.rst](micromanager.rst) | Micro-Manager device adapters through the `imswitch-device-micromanager` plugin: camera, stage, light, flip mirror, `.cfg` converter |
 
 These pages are rendered as part of the official Sphinx docs site
 (see `../index.rst`).  For "how do I add a new device manager

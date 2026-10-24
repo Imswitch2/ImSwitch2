@@ -281,9 +281,16 @@ Examples and template
   separately). It is a rewrite rather than an extraction and declares no
   aliases, so a setup naming ``TISManager`` keeps loading the in-tree manager,
   which uses the older IC Imaging Control 3 library (see :doc:`detectors`).
+* **Micro-Manager bridge** — ``examples/plugins/imswitch-device-micromanager/``
+  makes any Micro-Manager device adapter usable through one shared MMCore hub
+  (``micromanager.core``): a camera, stage, light and two-position flip mirror
+  (``micromanager.camera``, ``.stage``, ``.light``, ``.flip-mirror``), plus a
+  converter from a Micro-Manager ``.cfg`` to a setup file. It needs Python 3.11
+  or newer and runs on the real MMCore with the pip-installable demo adapters.
+  See :doc:`micromanager`.
 
 These are verified to be discovered and loaded by the registry with no changes
-to the ImSwitch2 core.  None of the three is published on PyPI: install one
+to the ImSwitch2 core.  None of the four is published on PyPI: install one
 from a source checkout, for example
 ``pip install "./examples/plugins/imswitch-device-tis[hardware]"``.  The error
 for a setup that names one of their managers says so and gives that command.

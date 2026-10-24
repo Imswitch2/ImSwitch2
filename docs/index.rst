@@ -156,6 +156,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/rotators
     devices/stands
     devices/instruments
+    devices/micromanager
     Hdf5datafile
 
 .. toctree::
