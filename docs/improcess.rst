@@ -1313,6 +1313,10 @@ plain Python file whose first line may name the ports::
     ...
 
 That line is the only part that is not the code, and it is removed on load.  A
+comment line ``# curves: level, area`` among the first comments says which of
+those ports are curves (one-dimensional outputs); it stays in the code as a
+note, and a workflow built around the snippet saves those ports as CSV, since
+a curve cannot be written as TIFF.  A
 snippet that turns out to be useful beyond one session can become a drop-in
 plugin by the template in *Drop-in analysis plugins*; nothing forces that step.
 
