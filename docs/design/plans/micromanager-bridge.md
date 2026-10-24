@@ -4,8 +4,9 @@ Status: Active — P0, P1 and P2 IMPLEMENTED 2026-10-24 on `feat/micromanager-br
 (616 plugin tests on the real MMCore with the demo adapters, plus N-position
 flip mirrors and the config-editor import/label picker; see §5 and §10);
 P3 rig and P4 publish open. Design text below is revision 3 (two independent
-reviews the same day); implementation deviations are recorded in §10. Phase 0 spike is the first deliverable; nothing in this
-document is implemented yet.
+reviews the same day); implementation deviations are recorded in §10.
+Documentation: `docs/devices/micromanager.rst` (user reference, quick start,
+troubleshooting), changelog entries, the plugin README; polished f029fd1ab.
 Branch: `feat/micromanager-bridge` (worktree `../Imswitch2-micromanager`), one
 branch for the whole effort.
 
@@ -530,7 +531,8 @@ starts/ROI changes while another camera records; the drain-order and
 `startAcquisition` re-sync invariants were untested (two mutations survived;
 now pinned, mutations confirmed failing); install hints covered 3 of 5 ids;
 live-view faults were invisible; inline bookkeeping after a hub reload; e2e
-module skips under xdist; converter wrote an empty `adapterPaths`. 620 tests.
+module skips under xdist; converter wrote an empty `adapterPaths`. 620 tests
+then; 616 after the flip-mirror generalisation replaced the refusal tests.
 
 **Implementation log (2026-10-24, all on `feat/micromanager-bridge`, Sonnet
 agents from structured briefs, reviewed and fixed in-session).** Deviations
