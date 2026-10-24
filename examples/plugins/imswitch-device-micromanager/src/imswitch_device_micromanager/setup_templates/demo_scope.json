@@ -41,5 +41,6 @@
       "axes": ["X", "Y"],
       "forPositioning": true
     }
-  }
+  },
+  "availableWidgets": ["Settings", "View", "Recording", "Image", "Positioner"]
 }

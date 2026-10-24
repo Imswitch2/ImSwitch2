@@ -101,6 +101,57 @@ jobs:
             --timeout=180 \
             -v
 
+  micromanager-plugin:
+    # The first plugin lane in this file, and the first lane that installs
+    # imswitch2 itself on Python >= 3.11 (every other job is 3.10). The plugin
+    # needs 3.11: pymmcore, which pymmcore-plus builds on, does not support 3.10.
+    # It runs the plugin's own tests (examples/plugins/imswitch-device-micromanager/
+    # tests) against the real MMCore with the mm-test-adapters demo devices, including
+    # the end-to-end test that boots ImControl headlessly on the plugin's demo setup
+    # template (docs/design/plans/micromanager-bridge.md, section 5, P1).
+    name: Micro-Manager plugin (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            setup.cfg
+            pyproject.toml
+            examples/plugins/imswitch-device-micromanager/pyproject.toml
+      - name: Install ImSwitch2, then the plugin
+        # ImSwitch2 first, so the plugin's `imswitch2>=0.1` requirement is met by
+        # this checkout (the distribution is named imswitch2, see setup.cfg) and
+        # the plugin installs WITH its dependencies -- no --no-deps: pymmcore-plus
+        # comes from the plugin's own pin. The `test` extra of the plugin adds
+        # mm-test-adapters (the demo adapters), pytest and jsonschema.
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[test]"
+          pip install -e "examples/plugins/imswitch-device-micromanager[test]"
+      - name: Check the plugin is installed and discoverable
+        # Fail here, loudly, instead of letting a missing install turn the
+        # plugin's tests into skips.
+        run: |
+          python -c "import pymmcore_plus, mm_test_adapters, imswitch_device_micromanager"
+          python -m imswitch.imcontrol.model.plugins list | grep micromanager.core
+      - name: Run the plugin tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MPLBACKEND: Agg
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        # No xdist (unlike the lanes above): the tests share one MMCore per
+        # process and the end-to-end module boots one app for several tests, in
+        # order. A fresh runner's HOME is empty, so nothing needs isolating; the
+        # tests move the user-files folder themselves anyway.
+        run: |
+          pytest -p pytestqt.plugin -p pytest_timeout \
+            examples/plugins/imswitch-device-micromanager/tests \
+            --timeout=300 \
+            -v
+
   build:
     name: Package Build
     runs-on: ubuntu-latest

@@ -198,10 +198,54 @@ nightlies are built for Windows x64 and Intel macOS only):
 `SequenceTester` adapters and `MMConfig_demo.cfg`. The bundled setup template
 (`setup_templates/demo_scope.json`) points the hub at that demo configuration.
 
+## Run the demo in ImSwitch2
+
+The bundled template `setup_templates/demo_scope.json` is a complete, bootable
+setup for the Micro-Manager demo devices (`MMConfig_demo.cfg`): the hub, the
+`Camera` (a `DemoCamera`, 512 x 512, 16 bit), a `Z` stage and a homeable `XY`
+stage. It needs `pip install mm-test-adapters` (or `pip install -e ".[test]"`
+from this folder) next to the plugin, and Python 3.11 or newer.
+
+1. Copy the template into ImSwitch2's setup folder (`~/ImSwitchConfig/imcontrol_setups`,
+   or `Documents\ImSwitchConfig\imcontrol_setups` on Windows):
+
+   ```
+   python -c "import shutil, pathlib, imswitch_device_micromanager as m; shutil.copy(pathlib.Path(m.__file__).parent / 'setup_templates/demo_scope.json', pathlib.Path.home() / 'ImSwitchConfig/imcontrol_setups')"
+   ```
+
+2. Start ImSwitch2 (`imswitch`) and choose the setup: on the very first start
+   the setup chooser opens by itself, afterwards use **Hardware > Pick hardware
+   setup...** (ImSwitch2 restarts).
+3. What you should see: the Settings panel with the camera's Exposure and the
+   "Camera properties" group; **Live view** shows the DemoCamera's test image
+   in the Image panel; the Positioner panel lists `Z` and
+   `XY` (axes `X` and `Y`) with step controls; `XY` starts unreferenced
+   and its **Reference** action homes it (the demo `Z` has nothing to
+   reference, because the template does not mark it `homeable`); the Recording
+   panel records a chosen number of frames (HDF5, TIFF or Zarr).
+
+Besides `rs232devices`, `detectors` and `positioners` (the plugin's own
+sections, described above) the template carries exactly one more key:
+`availableWidgets`, which lists the panels ImControl builds (Settings, View,
+Recording, Image, Positioner). ImControl builds no panel that is not listed,
+so without it (the default is an empty list) the window would have no panels at all. Every other section a
+shipped setup has (`lasers`, `scan`, `rois`, `nidaq`, `tiling`, ...) is
+optional: a missing one takes its default and the matching panels are not
+listed. The template validates with
+`python -m imswitch.imcontrol.model.plugins validate-setup <template>`, and
+`tests/test_e2e_app.py` boots the real app on it unchanged (live view, a
+30-frame recording read back, both stages, the close order, and a clean
+interpreter exit).
+
 ## Tests
 
 The tests run against the real MMCore with the demo adapters; no hardware and no
-mocks.
+mocks. `tests/test_e2e_app.py` goes all the way: it boots ImControl headlessly
+on the demo template (only the napari canvas is replaced, it cannot get an
+OpenGL context offscreen), so it needs the same environment as ImSwitch2's own
+UI tests: `QT_QPA_PLATFORM=offscreen` on a machine without a display. The
+tests do not share the MMCore between processes, so do not run them with
+`pytest-xdist`.
 
 ```
 pip install -e ".[test]"
