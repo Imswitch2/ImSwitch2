@@ -75,7 +75,14 @@ def load_plugin_templates(
     catalog: "ManagerCatalog",
 ) -> tuple[list[PluginTemplate], list[PluginTemplateError]]:
     """Load all setup_templates declared by catalog managers via importlib.resources.
-    
+
+    A template resource may be shared by several contributions of one plugin
+    (the Micro-Manager template declares devices for five managers). While a
+    manager's resources are processed, a device whose ``managerName`` resolves
+    to *another contribution of the same plugin* is skipped silently: it is
+    loaded when that manager is processed. Only a ``managerName`` that resolves
+    to a manager of a different plugin, or to nothing, is an error.
+
     Args:
         catalog: A ManagerCatalog instance from which to load templates.
     
@@ -134,6 +141,15 @@ def load_plugin_templates(
                     # in a plugin resource can insert a device into the owning
                     # category even though its manager belongs elsewhere.
                     template_manager = catalog.get(str(device["managerName"]))
+                    if (
+                        template_manager is not None
+                        and template_manager.manager_name != manager_info.manager_name
+                        and manager_info.plugin_name is not None
+                        and template_manager.plugin_name == manager_info.plugin_name
+                    ):
+                        # Another contribution of the same plugin: it loads
+                        # this device itself when it is processed.
+                        continue
                     if (
                         template_manager is None
                         or template_manager.manager_name != manager_info.manager_name

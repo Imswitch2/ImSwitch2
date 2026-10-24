@@ -340,6 +340,21 @@ device is the string `"TODO"`. Exit code 0 when the setup was written, 2 on a
 malformed `.cfg` (the message names the line). The output passes
 `python -m imswitch.imcontrol.model.plugins validate-setup`.
 
+## In the config editor
+
+Config Studio (Hardware > Edit hardware configuration...) lists the five managers
+in its palette and builds their forms from the schemas in this package.
+
+- **Import Micro-Manager...** (toolbar, and under the setup list) takes a `.cfg`,
+  runs the converter above and merges the hub, the devices and `availableWidgets`
+  into the open config. Taken names get a suffix (`Camera_1`), nothing is
+  overwritten, and a window shows the conversion report: written entries, TODOs
+  and the devices that were not written. Without the adapters on the machine only
+  the hub is imported and the window says so.
+- The `label` field of a bridge device is a drop-down of the labels in the hub's
+  `.cfg`, narrowed to the manager's device types when they can be classified;
+  free text stays possible. `rs232device` lists the `micromanager.core` hubs.
+
 ## Install
 
 This plugin needs **Python 3.11 or newer** (`pymmcore` does not support 3.10),

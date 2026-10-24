@@ -669,6 +669,29 @@ The template carries one key besides the device sections, ``availableWidgets``: 
 panel that is not listed.
 
 
+In the config editor
+====================
+
+Hardware > Edit hardware configuration... (Config Studio) knows the five managers: they are in the device
+palette by category, their forms come from the plugin's schemas, and the plugin's ``demo_scope.json`` is
+offered under *Plugin Templates*.
+
+- **Import Micro-Manager...** (toolbar, and under the setup list) asks for a ``.cfg``, runs the converter
+  above on it and merges the result into the open config: the hub into ``rs232devices``, each device into its
+  own section, and the matching entries into ``availableWidgets``. A name that is already taken is suffixed
+  (``Camera_1``) and the new devices follow their renamed hub, so nothing is overwritten. A window then shows
+  the conversion report: what was written, the ``TODO`` lines, and the devices that were *not* written. The
+  hub's ``configFile`` is the path you chose. Where the adapters are not installed on the machine, device
+  types cannot be read: only the hub is imported and the window says so. The entry is greyed out, with the
+  package name in its tooltip, when ``imswitch-device-micromanager`` is not installed.
+- **Label picker.** In the form of a bridge device, ``label`` is a drop-down of the device labels in the hub's
+  ``.cfg`` (read from ``configFile`` of the ``rs232devices`` entry named in ``rs232device``, relative names
+  resolved like MMCore does), narrowed to the types the manager accepts when the adapters can classify them.
+  You can still type any text. ``rs232device`` lists the ``micromanager.core`` entries. The labels are read
+  when a device is selected and again when you pick another hub in the form; with no hub, no ``configFile`` or
+  an unreadable file the field is plain text with a hint saying why.
+
+
 Known limits
 ============
 
