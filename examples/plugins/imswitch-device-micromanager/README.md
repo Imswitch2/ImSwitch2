@@ -14,7 +14,7 @@ the ImSwitch2 repository.
 | `micromanager.camera` | detector | `MicroManagerCameraManager` | One Micro-Manager Camera device as an ImSwitch2 detector (mono only) |
 | `micromanager.stage` | positioner | `MicroManagerStageManager` | One Micro-Manager Stage (one axis) or XYStage (axes `X`, `Y`) as an ImSwitch2 positioner |
 | `micromanager.light` | laser | `MicroManagerLightManager` | A Micro-Manager Shutter, State device position or two-valued property as an on/off light, with an optional numeric power property |
-| `micromanager.flip-mirror` | flip_mirror | `MicroManagerFlipMirrorManager` | A Micro-Manager State device with exactly two positions, or a Shutter as a switch, as a flip mirror |
+| `micromanager.flip-mirror` | flip_mirror | `MicroManagerFlipMirrorManager` | A Micro-Manager State device with two or more positions (flip mount, filter wheel, objective turret, light path), or a Shutter as a two-state switch, as a flip mirror (an N-position selector) |
 
 Every bridged device names the hub in `managerProperties.rs232device`. The user
 documentation (install matrix per platform, every manager, the converter, known
@@ -291,22 +291,29 @@ connected.
 }
 ```
 
-`label` is a Micro-Manager **State device with exactly two positions** (a flip
-mount, a two-way light path) or a **Shutter** presented as a switch (closed is
-state 0, open is state 1). The loading modes are the camera's; the properties are
+A flip mirror is a switch with N named positions. `label` is a Micro-Manager
+**State device with two or more positions** (a flip mount, a filter wheel, an
+objective turret, a multi-way light path) or a **Shutter** presented as a
+two-state switch (closed is state 0, open is state 1). Every position of a State
+device is the state of the same number (Micro-Manager's state index) and is named
+by its state label; the Flip Mirrors panel shows up to four positions as buttons
+and more as a drop-down. The loading modes are the camera's; the properties are
 documented in `schemas/micromanager_flip_mirror.schema.json`. The `FlipMirrorInfo`
-fields work as for the Thorlabs MFF: `invert` swaps logical states 0 and 1,
-`initial_state` moves the mirror at startup (`null` leaves it), and `state_names`
-names the two buttons. A state it does not name is called what Micro-Manager calls
-the position: its state label, or `Closed` / `Open` for a Shutter.
+fields work as for the Thorlabs MFF: `initial_state` moves the device at startup
+to a state `0` to `N-1` (`null` leaves it), and `state_names` (keys `"0"` to
+`"N-1"`) renames positions. A state it does not name is called what Micro-Manager
+calls the position: its state label, or `Closed` / `Open` for a Shutter.
 
-**Two positions only.** A State device with more or fewer than two positions (a
-filter wheel, an objective turret, a multi-way light path) is **refused at startup**
-with its position count; the optional `states: [a, b]` (two state labels or
-indices used as logical 0 and 1) orders the two positions of a two-position device
-and never turns a wheel into a switch. ImSwitch2 has no selector device kind yet.
+`invert` swaps logical states 0 and 1 and exists for **two-state devices only**:
+it is refused for a device with more positions. The optional
+`states: [a, b]` (two state labels or indices used as logical 0 and 1) only orders
+the two positions of a **two-position** device; a device with more positions
+exposes every position, so `states` is refused there. A State device with fewer
+than two positions is refused with its count, and the number of positions is
+fixed at startup (a reconnect that finds another count is an error). Two flip
+mirrors can follow each other only when they have the same number of positions.
 A move is waited for and read back: a device that does not show the new position
-is a failed move and raises. A reconnect only observes where the mirror is; it
+is a failed move and raises. A reconnect only observes where the device is; it
 never moves it.
 
 ## The converter
@@ -317,12 +324,13 @@ python -m imswitch_device_micromanager convert MMConfig_scope.cfg -o scope_setup
 
 turns a Micro-Manager `.cfg` into a setup-file skeleton: the hub, plus one entry
 per Camera (`detectors`), Stage / XYStage (`positioners`), Shutter (`lasers`) and
-two-position State device (`flipMirrors`). Device types come from the adapter
+State device with a known count of two or more positions (`flipMirrors`: filter
+wheels, turrets and light paths are presented as multi-position switches). Device types come from the adapter
 libraries (`getAvailableDeviceTypes`, nothing is loaded or initialised);
 `--type LABEL=camera|stage|xystage|shutter|state` supplies or overrides one,
 `--no-classify` skips the lookup, `--adapter-path DIR` names the adapter folder.
-Everything else (multi-position State devices, AutoFocus, SignalIO, Hubs,
-unresolved devices ...) goes only to the sidecar `scope_setup.conversion-report.txt`
+Everything else (State devices with fewer than two or an unknown number of positions,
+AutoFocus, SignalIO, Hubs, unresolved devices ...) goes only to the sidecar `scope_setup.conversion-report.txt`
 (also printed), one line per device with its label, library, device name, type
 and the reason. Values the converter cannot derive are never invented and the
 JSON never carries comments: `cameraPixelSizeUm` and a light's `wavelength` are
@@ -361,7 +369,8 @@ nightlies are built for Windows x64 and Intel macOS only):
 The bundled template `setup_templates/demo_scope.json` is a complete, bootable
 setup for the Micro-Manager demo devices (`MMConfig_demo.cfg`): the hub, the
 `Camera` (a `DemoCamera`, 512 x 512, 16 bit), a `Z` stage, a homeable `XY`
-stage, an `LED` light and a `WhiteLight` flip mirror. It needs `pip install mm-test-adapters` (or `pip install -e ".[test]"`
+stage, an `LED` light, a `WhiteLight` flip mirror and a `Dichroic` flip mirror
+(the demo's ten-position filter wheel). It needs `pip install mm-test-adapters` (or `pip install -e ".[test]"`
 from this folder) next to the plugin, and Python 3.11 or newer.
 
 1. Copy the template into ImSwitch2's setup folder (`~/ImSwitchConfig/imcontrol_setups`,
@@ -383,7 +392,8 @@ from this folder) next to the plugin, and Python 3.11 or newer.
    panel records a chosen number of frames (HDF5, TIFF or Zarr). The Laser panel
    lists `LED` with an on/off switch that opens and closes the demo `LED Shutter`; the
    Flip Mirrors panel lists `WhiteLight` with the buttons *Closed* and *Open* for the
-   demo `White Light Shutter` (the demo configuration leaves it open).
+   demo `White Light Shutter` (the demo configuration leaves it open) and `Dichroic`
+   as a drop-down of the wheel's ten positions (`400DCLP`, `Q505LP`, ...).
 
 The template has the plugin's own sections (`rs232devices`, `detectors`,
 `positioners`, `lasers`, `flipMirrors`; described above) and exactly one more key:

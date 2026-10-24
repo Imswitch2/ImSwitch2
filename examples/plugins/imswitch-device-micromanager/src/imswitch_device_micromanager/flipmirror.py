@@ -1,4 +1,8 @@
-"""MicroManagerFlipMirrorManager: a two-position Micro-Manager device as an ImSwitch2 flip mirror.
+"""MicroManagerFlipMirrorManager: a Micro-Manager State device or Shutter as an ImSwitch2 flip mirror.
+
+A flip mirror is a switch with N named positions: two for a mirror or a shutter, more for a filter
+wheel, an objective turret or a light path. They are the same thing to ImSwitch2 -- the user picks one of
+N named positions -- so every Micro-Manager State device is presented through this kind.
 
 Built on the hub :class:`~.core.MicroManagerCoreManager` and the shared plumbing
 :class:`~._bridge.MicroManagerDeviceMixin`; see plan ``micromanager-bridge.md``
@@ -7,33 +11,39 @@ sections 4.2, 4.4 (flip-mirror row) and 4.7.
 There is no flip-mirror base class in ImSwitch2. ``FlipMirrorsManager`` instantiates
 ``cls(info, name, **lowLevelManagers)`` and ``FlipMirrorController`` duck-types
 ``move_to(state)``, ``get_state()``, ``get_state_names()``, ``is_connected()``,
-``get_cached_state()``, ``get_last_error()`` and ``finalize()``; ``FlipMirrorWidget`` draws exactly
-two buttons. ``ThorlabsMFF`` is the precedent for ``invert``, ``initial_state`` and
-``state_names``, which are fields of ``FlipMirrorInfo`` (not of ``managerProperties``).
+``get_cached_state()``, ``get_last_error()`` and ``finalize()``; ``FlipMirrorWidget`` draws one button
+per position (a drop-down above its button limit). ``ThorlabsMFF`` is the precedent for ``invert``,
+``initial_state`` and ``state_names``, which are fields of ``FlipMirrorInfo`` (not of
+``managerProperties``).
 
 Manager properties (``schemas/micromanager_flip_mirror.schema.json``):
 
 - ``rs232device`` -- name of the ``micromanager.core`` hub in ``rs232devices``
-- ``label`` -- the Micro-Manager device: a **State** device with exactly two positions, or a
-  **Shutter** presented as a switch
+- ``label`` -- the Micro-Manager device: a **State** device with two or more positions, or a
+  **Shutter** presented as a two-state switch
 - ``adapter`` + ``device`` (+ ``parent``, ``preInitProperties``) -- *inline mode* for that device
   (see :class:`~._bridge.MicroManagerDeviceMixin`)
-- ``states`` (optional, State devices only) -- ``[a, b]``: the two Micro-Manager positions (state
-  labels or indices) used as logical state 0 and 1. Without it, position 0 is state 0 and position 1
-  is state 1. It orders the two positions of a two-position device; it does **not** turn a wheel into
-  a switch, a device with more than two positions is refused whatever ``states`` says.
+- ``states`` (optional, State devices with exactly two positions only) -- ``[a, b]``: the two
+  Micro-Manager positions (state labels or indices) used as logical state 0 and 1. Without it,
+  position 0 is state 0 and position 1 is state 1. It only orders the two positions of a two-position
+  device. A device with more positions exposes every position as the state of the same number, and
+  ``states`` is refused there.
 
-Logical and hardware state. ``FlipMirrorInfo.invert`` swaps logical states 0 and 1 against the
-device, exactly as ``ThorlabsMFF`` does: logical ``L`` is hardware slot ``1 - L`` when inverted.
-Slot 0 and 1 are the two Micro-Manager positions in ``states`` order (State device) or *closed* and
-*open* (Shutter: ``setShutterOpen``).
+Logical and hardware state. For a State device with N positions, logical state ``L`` is Micro-Manager
+position ``L`` (``setState`` / ``getState``). ``FlipMirrorInfo.invert`` swaps logical states 0 and 1
+against the device, exactly as ``ThorlabsMFF`` does, and is meaningful for **two-state devices only**:
+it is refused for a device with more positions. Slot 0 and 1 of a two-state device are the two
+Micro-Manager positions in ``states`` order (State device) or *closed* and *open* (Shutter:
+``setShutterOpen``).
 
-Button names (``get_state_names``). ``FlipMirrorInfo.state_names`` wins per state; a state it does not
-name is called what Micro-Manager calls the position behind it: its state label (State device), or
-``Closed`` / ``Open`` (Shutter -- the words of Micro-Manager's own ``getShutterOpen``). The names
-describe the physical position, so with ``invert`` they swap along with the states. They are read once,
-when the controller builds its widget; a manager that was not connected then names the states ``"0"``
-and ``"1"``.
+State names (``get_state_names``). ``{i: text}`` for every position. ``FlipMirrorInfo.state_names`` wins
+per state (keys ``"0"`` to ``"N-1"``); a state it does not name is called what Micro-Manager calls the
+position behind it: its state label (State device), or ``Closed`` / ``Open`` (Shutter -- the words of
+Micro-Manager's own ``getShutterOpen``). The names describe the physical position, so with ``invert``
+they swap along with the states. They are read once, when the controller builds its widget; a manager
+that was not connected then names the states ``"0"`` and ``"1"`` (and any further state the setup
+names). The number of positions is fixed at startup: a reconnect that finds a different count is an
+error of this manager, because the widget was built for the old one.
 
 Failure convention (the ThorlabsMFF one, which the controller expects). ``move_to`` and ``get_state``
 **raise** -- ``DeviceNotConnectedError`` (a ``RuntimeError``) when the device is not there, otherwise
@@ -42,9 +52,10 @@ waiting) and **read back**: a device that does not show the new position is a fa
 successful one. The reason of the last failure is :meth:`get_last_error`. A refused command does not
 change the connection status.
 
-``initial_state`` is applied once, at startup, when the device is there. A move that fails then is a
-connection error of this manager (the mirror is in an unknown place); nothing replays it on reconnect:
-the controller's contract is that a reconnect only observes the mirror.
+``initial_state`` is applied once, at startup, when the device is there; it must be a position of the
+device (``0`` to ``N-1``). A move that fails then is a connection error of this manager (the mirror is
+in an unknown place); nothing replays it on reconnect: the controller's contract is that a reconnect
+only observes the mirror.
 
 Lifecycle. The manager keeps the default backend-holder lifecycle of ``DeviceManagerStatusMixin`` (the
 other three bridged managers do the same): a reconnect of the shared hub runs through the lifecycle
@@ -63,12 +74,12 @@ from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin, De
 
 from ._bridge import MicroManagerDeviceMixin
 
-#: Logical states of a flip mirror: the two buttons of ``FlipMirrorWidget``.
-LOGICAL_STATES = (0, 1)
+#: Positions a switch needs: with fewer than two there is nothing to switch between.
+MIN_POSITIONS = 2
 
-#: Positions a Micro-Manager State device must have to be a flip mirror. Same number as
-#: ``len(LOGICAL_STATES)``: the widget has two buttons and no way to show a third position.
-POSITION_COUNT = len(LOGICAL_STATES)
+#: The one count for which ``invert`` and ``states`` mean something: both pick which of *two* positions
+#: is logical state 0 and which is 1.
+TWO_STATE = 2
 
 KIND_STATE = 'state'
 KIND_SHUTTER = 'shutter'
@@ -83,11 +94,16 @@ class _Adopted:
     """What was read from Micro-Manager when the device was adopted."""
 
     kind: str
-    #: Micro-Manager state index behind hardware slot 0 and 1 (State device); empty for a Shutter.
+    #: Micro-Manager state index behind each hardware slot (State device); empty for a Shutter.
     positions: Tuple[int, ...]
-    #: Micro-Manager's word for hardware slot 0 and 1.
-    labels: Tuple[str, str]
+    #: Micro-Manager's word for each hardware slot (two for a Shutter, one per position of a State device).
+    labels: Tuple[str, ...]
     model: str
+
+    @property
+    def count(self) -> int:
+        """Number of positions (states ``0`` to ``count - 1``)."""
+        return len(self.labels)
 
 
 def _is_index(value: Any) -> bool:
@@ -95,7 +111,7 @@ def _is_index(value: Any) -> bool:
 
 
 class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatusMixin):
-    """A Micro-Manager two-position State device or Shutter as a flip mirror."""
+    """A Micro-Manager State device (any number of positions >= 2) or Shutter as a flip mirror."""
 
     BRIDGE_MANAGER_ID = 'micromanager.flip-mirror'
     BRIDGE_CATEGORY = 'flip_mirror'
@@ -137,24 +153,26 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
         return f"flip_mirror {self._setupName!r}"
 
     def _parse_initial_state(self, value) -> Optional[int]:
+        """The shape of ``initial_state``; checking it against the device's position count needs the device."""
         if value is None:
             return None
-        if isinstance(value, bool) or value not in LOGICAL_STATES:
-            raise ValueError(f"{self._where()}: initial_state must be 0, 1 or null, got {value!r}")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{self._where()}: initial_state must be a state number (0, 1, ...) or null, got {value!r}")
         return int(value)
 
     def _parse_state_names(self, names) -> Dict[int, str]:
-        """``{logical state: text}`` of the names the setup gives; the states it does not name are absent."""
+        """``{logical state: text}`` of the names the setup gives; the states it does not name are absent.
+        Whether each key is a position of the device is checked at adoption."""
         if not names:
             return {}
         if not isinstance(names, dict):
             raise ValueError(f"{self._where()}: state_names must be an object like {{\"0\": \"..\", \"1\": \"..\"}}")
         parsed: Dict[int, str] = {}
         for key, text in names.items():
-            if str(key) not in {str(state) for state in LOGICAL_STATES}:
+            if isinstance(key, bool) or not (isinstance(key, int) or (isinstance(key, str) and key.isdigit())):
                 raise ValueError(
-                    f"{self._where()}: state_names has the key {key!r}; a flip mirror has the states "
-                    f"{list(map(str, LOGICAL_STATES))}")
+                    f"{self._where()}: state_names has the key {key!r}; the keys are state numbers "
+                    f"(\"0\", \"1\", ...)")
             parsed[int(key)] = str(text)
         return parsed
 
@@ -163,9 +181,9 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
         if states is None:
             return None
         where = f"{self._where()}: managerProperties.states"
-        if not isinstance(states, (list, tuple)) or len(states) != POSITION_COUNT:
+        if not isinstance(states, (list, tuple)) or len(states) != TWO_STATE:
             raise ValueError(
-                f"{where} must list exactly {POSITION_COUNT} Micro-Manager positions (state labels or "
+                f"{where} must list exactly {TWO_STATE} Micro-Manager positions (state labels or "
                 f"indices), got {states!r}")
         for entry in states:
             if not ((isinstance(entry, str) and entry) or _is_index(entry)):
@@ -202,8 +220,11 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
                         raise ValueError(
                             f"{self._where()}: managerProperties.states is for State devices; {label!r} is a "
                             f"Shutter (closed is state 0, open is state 1; use invert to swap them)")
-                    return _Adopted(KIND_SHUTTER, (), SHUTTER_LABELS, model)
-                return self._adopt_state_device(core, model)
+                    adopted = _Adopted(KIND_SHUTTER, (), SHUTTER_LABELS, model)
+                else:
+                    adopted = self._adopt_state_device(core, model)
+            self._check_setup_against(adopted)
+            return adopted
         except BaseException:
             if self._inline_loaded and not loaded_before:
                 self._unload_inline()
@@ -212,15 +233,20 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
     def _adopt_state_device(self, core, model: str) -> _Adopted:
         label = self._label
         count = int(core.getNumberOfStates(label))
-        if count != POSITION_COUNT:
+        if count < MIN_POSITIONS:
             raise ValueError(
-                f"{self._where()}: Micro-Manager device {label!r} has {count} positions; a flip mirror has "
-                f"exactly {POSITION_COUNT}. Filter wheels, objective turrets and multi-way light paths are "
-                f"not supported (ImSwitch2 has no selector device kind yet), and managerProperties.states "
-                f"does not turn them into a switch")
+                f"{self._where()}: Micro-Manager device {label!r} has {count} positions; a flip mirror "
+                f"needs at least {MIN_POSITIONS}")
         labels = list(core.getStateLabels(label))
+        if count != TWO_STATE:
+            if self._states is not None:
+                raise ValueError(
+                    f"{self._where()}: managerProperties.states only orders the two positions of a "
+                    f"two-position device; {label!r} has {count} positions and every position is exposed "
+                    f"as the state of the same number. Remove states (state_names renames positions)")
+            return _Adopted(KIND_STATE, tuple(range(count)), tuple(labels), model)
         if self._states is None:
-            positions: Tuple[int, ...] = tuple(range(POSITION_COUNT))
+            positions: Tuple[int, ...] = tuple(range(TWO_STATE))
         else:
             positions = tuple(self._position_of(ref, labels, count) for ref in self._states)
             if positions[0] == positions[1]:
@@ -228,6 +254,23 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
                     f"{self._where()}: managerProperties.states {list(self._states)!r} are both position "
                     f"{positions[0]} of {label!r}; the two must differ. Its state labels are {labels}")
         return _Adopted(KIND_STATE, positions, (labels[positions[0]], labels[positions[1]]), model)
+
+    def _check_setup_against(self, adopted: _Adopted) -> None:
+        """The setup fields that depend on the number of positions, checked once it is known."""
+        count, label = adopted.count, self._label
+        if self.invert and count != TWO_STATE:
+            raise ValueError(
+                f"{self._where()}: invert swaps the two states of a two-state device; {label!r} has {count} "
+                f"positions. Remove invert (state_names renames positions)")
+        if self.initial_state is not None and self.initial_state >= count:
+            raise ValueError(
+                f"{self._where()}: initial_state {self.initial_state} is not a position of {label!r}, which "
+                f"has {count} positions (0 to {count - 1})")
+        beyond = sorted(state for state in self._configured_names if state >= count)
+        if beyond:
+            raise ValueError(
+                f"{self._where()}: state_names has the key {str(beyond[0])!r}; {label!r} has {count} positions, "
+                f"the states {[str(i) for i in range(count)]}")
 
     def _position_of(self, ref, labels: List[str], count: int) -> int:
         label = self._label
@@ -247,38 +290,42 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
 
     # ------------------------------------------------------------- state maps
     def _to_hw_state(self, state) -> int:
+        """The hardware slot behind logical ``state``. Needs the adopted device (the position count)."""
         state = int(state)
-        if state not in LOGICAL_STATES:
-            raise ValueError("Flip mirror state must be 0 or 1")
+        count = self._adopted.count
+        if not 0 <= state < count:
+            raise ValueError(f"Flip mirror state must be a position 0 to {count - 1}, got {state}")
         return 1 - state if self.invert else state
 
     def _from_hw_state(self, slot: int) -> int:
         return 1 - int(slot) if self.invert else int(slot)
 
     def get_state_names(self) -> Dict[int, str]:
-        """``{0: text, 1: text}``: the setup's ``state_names``, else Micro-Manager's own words."""
+        """``{state: text}`` for every position: the setup's ``state_names``, else Micro-Manager's own words."""
         adopted = self._adopted
+        if adopted is None:
+            # Not adopted: the count is unknown. The two classic states, plus any the setup names.
+            count = max(MIN_POSITIONS, max(self._configured_names, default=-1) + 1)
+            return {state: self._configured_names.get(state, str(state)) for state in range(count)}
         names: Dict[int, str] = {}
-        for state in LOGICAL_STATES:
+        for state in range(adopted.count):
             if state in self._configured_names:
                 names[state] = self._configured_names[state]
-            elif adopted is not None:
-                names[state] = adopted.labels[self._to_hw_state(state)]
             else:
-                names[state] = str(state)
+                names[state] = adopted.labels[self._to_hw_state(state)]
         return names
 
     # -------------------------------------------------------------- hardware
     def _read_slot(self, core) -> int:
-        """The hardware slot (0 or 1) the device shows now. Hub lock held."""
+        """The hardware slot the device shows now. Hub lock held."""
         adopted = self._adopted
         if adopted.kind == KIND_SHUTTER:
             return int(bool(core.getShutterOpen(self._label)))
         position = int(core.getState(self._label))
         if position not in adopted.positions:
             raise RuntimeError(
-                f"{self._label!r} shows position {position}, which is neither of the two this flip mirror "
-                f"uses ({adopted.positions[0]} and {adopted.positions[1]})")
+                f"{self._label!r} shows position {position}, which this flip mirror does not use "
+                f"(it uses {list(adopted.positions)})")
         return adopted.positions.index(position)
 
     def _command(self, slot: int) -> None:
@@ -331,7 +378,10 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
         return self._last_state
 
     def move_to(self, state) -> None:
-        """Move to logical state 0 or 1, wait for the device and check it shows the new position."""
+        """Move to a logical state (``0`` to ``N-1``), wait for the device and check it shows the new position."""
+        if self._adopted is None:
+            self._use('move')                                 # raises DeviceNotConnectedError
+            raise DeviceNotConnectedError(f"{self.name}: move refused, the device was never adopted")
         slot = self._to_hw_state(state)
         logical = int(state)
         try:
@@ -372,10 +422,16 @@ class MicroManagerFlipMirrorManager(MicroManagerDeviceMixin, DeviceManagerStatus
         return f'{self._adopted.model}: {self._label} reconnected'
 
     def _reinitialise(self) -> List[str]:
-        """Adopt the (re)loaded device again (re-load an inline one, check it still has two positions),
-        then read where it is. Nothing moves."""
+        """Adopt the (re)loaded device again (re-load an inline one, check it still has the number of
+        positions the widget was built for), then read where it is. Nothing moves."""
         try:
-            self._adopted = self._adopt()
+            adopted = self._adopt()
+            previous = self._adopted
+            if previous is not None and adopted.count != previous.count:
+                raise ValueError(
+                    f"{self._where()}: Micro-Manager device {self._label!r} has {adopted.count} positions, it had "
+                    f"{previous.count} when ImSwitch2 started; restart ImSwitch2 to rebuild the selector")
+            self._adopted = adopted
             self._ready = True
             self.get_state()
         except Exception as exc:                          # noqa: BLE001 - reported to the lifecycle

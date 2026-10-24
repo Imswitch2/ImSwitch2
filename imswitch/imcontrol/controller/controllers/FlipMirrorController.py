@@ -9,8 +9,35 @@ from ..basecontrollers import (
 )
 
 
+#: Positions of a flip mirror whose manager does not name its states: the classic two-state mirror.
+DEFAULT_POSITION_COUNT = 2
+
+
+def _position_count(device):
+    """How many positions (states ``0..N-1``) a flip-mirror device has, from its ``get_state_names()``."""
+    getNames = getattr(device, "get_state_names", None)
+    if getNames is None:
+        return DEFAULT_POSITION_COUNT
+    try:
+        return len(getNames())
+    except Exception:
+        return DEFAULT_POSITION_COUNT
+
+
+def _position_count_mismatch(manager, follower_name, master_name):
+    """``(follower count, master count)`` when the two flip mirrors differ in positions, else ``None``."""
+    counts = (_position_count(manager[follower_name]), _position_count(manager[master_name]))
+    return counts if counts[0] != counts[1] else None
+
+
 class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
-    """Controller for FlipMirrorWidget."""
+    """Controller for FlipMirrorWidget.
+
+    A flip mirror is a switch with N named positions (two for a classic mirror, more for a filter
+    wheel, turret or light path). A follower copies its master's state, so a link needs the same
+    number of positions on both: ``set_link`` refuses a mismatched pair and a follower's master
+    choices list only the mirrors with its own number of positions.
+    """
 
     # StatefulComponentMixin attributes
     componentName = 'FlipMirror'
@@ -176,6 +203,10 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
                 if savedState is None:
                     continue
                 
+                if not self._is_position_of(name, savedState):
+                    warnings.append(self._not_a_position_message(name, savedState, 'not applied'))
+                    continue
+
                 # Check if current state differs from saved state
                 try:
                     currentState = int(self._manager[name].get_state())
@@ -213,6 +244,10 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
 
                 if savedState is None:
                     warnings.append(f'Flip mirror "{name}" has no saved state.')
+                    continue
+
+                if not self._is_position_of(name, savedState):
+                    warnings.append(self._not_a_position_message(name, savedState, 'not moved'))
                     continue
 
                 if not self._safe_move_one(name, int(savedState)):
@@ -288,6 +323,19 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
             Empty list (no hazards reported for flip mirrors)
         """
         return []
+
+    def _is_position_of(self, name, state):
+        """Whether ``state`` is one of the positions ``0..N-1`` of flip mirror ``name``."""
+        try:
+            state = int(state)
+        except (TypeError, ValueError):
+            return False
+        return 0 <= state < _position_count(self._manager[name])
+
+    def _not_a_position_message(self, name, state, outcome):
+        count = _position_count(self._manager[name])
+        return (f'Flip mirror "{name}" {outcome}: saved state {state!r} is not one of its '
+                f'{count} positions (0 to {count - 1}).')
 
     def _is_connected(self, name):
         try:
@@ -369,6 +417,10 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
             if not self._is_connected(candidate):
                 continue
 
+            # A follower copies its master's state, so both need the same positions.
+            if _position_count_mismatch(self._manager, follower_name, candidate):
+                continue
+
             # No chains: a follower cannot be used as a master.
             if candidate in self._master_by_follower:
                 continue
@@ -392,6 +444,9 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
         if follower_name == master_name:
             return False
 
+        if _position_count_mismatch(self._manager, follower_name, master_name):
+            return False
+
         if not self._is_connected(follower_name) or not self._is_connected(master_name):
             return False
 
@@ -407,7 +462,7 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
 
     @APIExport(runOnUIThread=True)
     def move_flip(self, name, state):
-        """Move one flip mirror and all linked followers to state 0 or 1."""
+        """Move one flip mirror and all linked followers to a state (0 or 1 for a two-state mirror, 0..N-1 for a selector)."""
         state = int(state)
 
         if name in self._master_by_follower:
@@ -447,6 +502,17 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
             return True
 
         # Link
+        if master_name in self._names:
+            mismatch = _position_count_mismatch(self._manager, follower_name, master_name)
+            if mismatch:
+                self.__logger.error(
+                    f"Cannot link flip mirror {follower_name} ({mismatch[0]} positions) to {master_name} "
+                    f"({mismatch[1]} positions): a follower copies its master's state, so both need the "
+                    f"same number of positions"
+                )
+                self._refresh_link_ui()
+                return False
+
         if not self._is_valid_link(follower_name, master_name):
             self.__logger.error(
                 f"Invalid flip mirror link: {follower_name} -> {master_name}"

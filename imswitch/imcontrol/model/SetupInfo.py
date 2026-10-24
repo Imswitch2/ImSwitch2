@@ -624,6 +624,9 @@ class TriggerScopeInfo:
 
 @dataclass(frozen=True)
 class FlipMirrorInfo:
+    """ A switch with N named positions: a two-state flip mirror, or a filter wheel, objective turret or
+    light path presented the same way. The states are the whole numbers ``0`` to ``N-1``. """
+
     managerName: str
     """ Flip mirror manager class name. """
 
@@ -631,13 +634,15 @@ class FlipMirrorInfo:
     """ Serial number used by hardware managers to find the device. """
 
     invert: bool = False
-    """ Whether logical states 0 and 1 are swapped from hardware states. """
+    """ Whether logical states 0 and 1 are swapped from hardware states. Applies to two-state devices
+    only; a device with more positions does not support it. """
 
     initial_state: Optional[int] = None
-    """ Optional state to move to at startup. ``None`` keeps the current state. """
+    """ Optional state (``0`` to ``N-1``) to move to at startup. ``None`` keeps the current state. """
 
     state_names: Dict[str, str] = field(default_factory=dict)
-    """ Optional display names for logical states 0 and 1. """
+    """ Optional display names, keyed by the state numbers as strings ("0" to "N-1"). A state it does
+    not name keeps its manager's own name. """
 
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Optional manager-specific properties. """

@@ -248,6 +248,25 @@ def test_the_template_flip_mirror_moves_the_white_light_shutter_in_mmcore(booted
     assert not core.getShutterOpen(shutter)
 
 
+def test_the_template_filter_wheel_is_a_ten_position_flip_mirror_row(booted):
+    from imswitch_device_micromanager.flipmirror import MicroManagerFlipMirrorManager
+
+    wheel = booted.master.flipMirrorsManager["Dichroic"]
+    assert type(wheel) is MicroManagerFlipMirrorManager and wheel.is_connected()
+    names = wheel.get_state_names()
+    assert len(names) == 10 and names[0] == "400DCLP" and names[1] == "Q505LP" and names[9] == "State-9"
+    core = booted.hub.host.core
+    assert list(names.values()) == list(core.getStateLabels("Dichroic"))
+    row = booted.view.widgets["FlipMirror"].rows["Dichroic"]
+    assert row["stateCombo"].count() == 10 and row["stateCombo"].itemText(0) == "400DCLP"    # one row, ten positions
+    booted.api.move_flip("Dichroic", 3)                 # through the controller, as the widget's drop-down does
+    assert core.getState("Dichroic") == 3 and wheel.get_state() == 3
+    assert booted.api.get_flip_state("Dichroic") == 3
+    assert row["stateCombo"].currentIndex() == 3        # the widget follows the device
+    booted.api.move_flip("Dichroic", 0)
+    assert core.getState("Dichroic") == 0
+
+
 # ------------------------------------------------------------------------ close
 def test_close_finalizes_devices_first_and_the_hub_last_and_leaves_no_thread(booted):
     master, hub = booted.master, booted.hub

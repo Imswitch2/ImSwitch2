@@ -53,7 +53,7 @@
       {
         "id": "micromanager.flip-mirror",
         "kind": "flip_mirror",
-        "display_name": "Micro-Manager flip mirror (two-position State device or Shutter, via the shared MMCore hub)",
+        "display_name": "Micro-Manager flip mirror (N-position State device or Shutter, via the shared MMCore hub)",
         "python_name": "imswitch_device_micromanager.flipmirror:MicroManagerFlipMirrorManager",
         "manager_name_aliases": [],
         "manager_properties_schema": "schemas/micromanager_flip_mirror.schema.json",

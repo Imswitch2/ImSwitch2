@@ -63,6 +63,13 @@
         "label": "White Light Shutter"
       },
       "state_names": {"0": "Closed", "1": "Open"}
+    },
+    "Dichroic": {
+      "managerName": "micromanager.flip-mirror",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "Dichroic"
+      }
     }
   },
   "availableWidgets": ["Settings", "View", "Recording", "Image", "Positioner", "Laser", "FlipMirror"]

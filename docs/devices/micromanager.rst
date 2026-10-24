@@ -5,7 +5,8 @@ Micro-Manager devices (bridge)
 The ``imswitch-device-micromanager`` plugin lets a setup file use any device that a
 `Micro-Manager <https://micro-manager.org>`_ device adapter can drive. It is built on
 `pymmcore-plus <https://github.com/pymmcore-plus/pymmcore-plus>`_, which wraps MMCore, the C++ core of
-Micro-Manager. A camera, stage, shutter or two-position switch that Micro-Manager can drive becomes an
+Micro-Manager. A camera, stage, shutter or multi-position switch (flip mount, filter wheel, objective
+turret, light path) that Micro-Manager can drive becomes an
 ordinary ImSwitch2 detector, positioner, laser or flip mirror, and a converter turns an existing
 Micro-Manager hardware configuration (``*.cfg``) into a setup-file skeleton.
 
@@ -96,7 +97,7 @@ core. The setup sections that hold the bridged devices are the usual ones:
      - Shutter, a State device position or a two-valued property, with an optional power property
    * - ``micromanager.flip-mirror``
      - ``flipMirrors``
-     - State device with exactly two positions, or a Shutter used as a switch
+     - State device with two or more positions (flip mount, filter wheel, turret, light path), or a Shutter used as a switch
 
 The ids live in the ``micromanager.`` namespace and claim no in-tree manager name, so installing the
 plugin never re-routes an existing setup.
@@ -420,9 +421,13 @@ counts as connected. ``wavelength`` is ImSwitch2's own field (it colours the pan
 Flip mirror: ``micromanager.flip-mirror``
 -----------------------------------------
 
-A **two-position** Micro-Manager device as an ImSwitch2 flip mirror: a State device with exactly two
-positions (a flip mount, a two-way light path), or a Shutter presented as a switch (closed is state 0,
-open is state 1).
+A Micro-Manager device as an ImSwitch2 flip mirror. In ImSwitch2 a flip mirror is a **switch with N named
+positions**: two for a mirror, more for a filter wheel, an objective turret or a multi-way light path, which
+differ from a mirror only in the number of positions. The ``label`` is a State device with two or more
+positions, or a Shutter presented as a two-state switch (closed is state 0, open is state 1). The Flip
+Mirrors panel shows one row per device: a group of buttons for up to four positions, a drop-down list for
+more (a ten-position wheel is one row, not ten buttons). A State device's state ``N`` is Micro-Manager's
+state index ``N``.
 
 .. code-block:: json
 
@@ -450,26 +455,33 @@ open is state 1).
        ``Number of positions`` set to 2).
    * - ``states``
      - list of 2
-     - Optional, State devices only. The two Micro-Manager positions (state labels or indices) used as
-       logical states 0 and 1; default: position 0 is state 0 and position 1 is state 1. It orders the
-       two positions; it never turns a wheel into a switch. Refused for a Shutter (use ``invert``).
+     - Optional, State devices with exactly two positions only. The two Micro-Manager positions (state
+       labels or indices) used as logical states 0 and 1; default: position 0 is state 0 and position 1
+       is state 1. It only orders the two positions. A device with more positions exposes every position,
+       so ``states`` is refused there (every position is exposed now); refused for a Shutter too (use
+       ``invert``).
 
 ``invert``, ``initial_state`` and ``state_names`` are fields of the flip-mirror entry itself (as for the
 Thorlabs MFF), not of ``managerProperties``:
 
-- ``invert`` (default ``false``) swaps logical states 0 and 1 against the device.
-- ``initial_state`` (``0``, ``1`` or ``null``): the state to move to at startup; ``null`` leaves the mirror
-  where it is. A move that fails at startup is a connection error of this manager. A reconnect never
-  replays it: it only observes where the mirror is.
-- ``state_names`` names the two buttons (``"0"`` and ``"1"``). A state it does not name is called what
-  Micro-Manager calls the position: its state label, or ``Closed`` / ``Open`` for a Shutter. The names
-  describe the physical position, so they swap along with ``invert``. The widget reads them once, when
-  the panel is built; a mirror that was not connected then names the states ``0`` and ``1``.
+- ``invert`` (default ``false``) swaps logical states 0 and 1 against the device. It is meaningful for
+  two-state devices only and is **refused** (the setup does not load) for a device with more positions.
+- ``initial_state`` (a state number ``0`` to ``N-1``, or ``null``): the state to move to at startup;
+  ``null`` leaves the device where it is. A number the device does not have is refused at startup with
+  the device's position count. A move that fails at startup is a connection error of this manager. A
+  reconnect never replays it: it only observes where the device is.
+- ``state_names`` names the positions, keyed ``"0"`` to ``"N-1"``. A state it does not name is called what
+  Micro-Manager calls the position: its state label (a demo ``DWheel`` reads ``400DCLP``, ``Q505LP``,
+  ...), or ``Closed`` / ``Open`` for a Shutter. A key beyond the device's positions is refused. The names
+  describe the physical position, so for a two-state device they swap along with ``invert``. The widget
+  reads them once, when the panel is built; a device that was not connected then names the states ``0``
+  and ``1``.
 
-**Two positions only.** A State device with more or fewer than two positions (a filter wheel, an
-objective turret, a multi-way light path) is **refused at startup**, with its position count in the
-message; ``states`` does not change that. ImSwitch2 has no selector device kind yet, and squeezing ten
-positions into two buttons would misrepresent the hardware (see *Known limits*).
+A State device with fewer than two positions is refused at startup, with its position count in the message.
+The number of positions is fixed when ImSwitch2 starts: a reconnect that finds a different count is an error
+of the manager (restart ImSwitch2 to rebuild the panel). Two flip mirrors can follow each other (the panel's
+*Follow* column) only when they have the same number of positions; the master list of a row offers only
+those, and the link is refused otherwise.
 
 **Moves** are waited for (without holding the hub lock, so a slow mount does not stall the camera) and
 read back: a device that does not show the new position is a failed move and raises. The reason of the
@@ -489,9 +501,6 @@ lists it in its report:
 
    * - Micro-Manager type
      - Why it is not mapped
-   * - State device with more than two positions
-     - Filter wheels, objective turrets and multi-way light paths need a selector device kind that
-       ImSwitch2 does not have yet; deferred (see *Known limits*).
    * - Hub, Serial, Core
      - Micro-Manager's own plumbing: peripherals name the hub as their parent and the ``.cfg`` opens
        serial ports; there is nothing to control.
@@ -580,14 +589,15 @@ What lands in the setup file
      - ``lasers``
      - ``micromanager.light``, ``enable`` ``{"kind": "shutter"}``, ``valueRangeMin`` / ``valueRangeMax``
        ``null`` (a binary light)
-   * - State device with two positions
+   * - State device with two or more positions
      - ``flipMirrors``
-     - ``micromanager.flip-mirror``
+     - ``micromanager.flip-mirror`` (filter wheels, turrets and light paths included)
 
 The position count of a State device comes from the ``.cfg`` alone: the pre-init property
 ``Number of positions`` when there is one, else the ``Label`` lines. If the ``.cfg`` says neither, the
-device is listed with "position count unknown" and you add the ``flipMirrors`` entry yourself. A wheel
-that is written as a flip mirror by mistake fails loudly at startup with its real count.
+device is listed with "position count unknown" and you add the ``flipMirrors`` entry yourself if it has
+two or more positions; a State device with fewer than two is listed as not written. The manager reads
+the real count when it starts.
 ``availableWidgets`` holds Settings, View, Recording and Image, plus Positioner, Laser and FlipMirror
 when the setup has entries for them. Entries are keyed by the Micro-Manager label.
 
@@ -595,8 +605,8 @@ What lands in the report
 ------------------------
 
 Every device that was **not** written gets one line with its label, adapter library and device name, its
-type and the reason (multi-position State devices with their position count, Hub, AutoFocus, unresolved
-devices ...), and every value the converter could not derive is a ``TODO`` line. A value it cannot derive
+type and the reason (a State device with fewer than two positions or an unknown count, Hub, AutoFocus,
+unresolved devices ...), and every value the converter could not derive is a ``TODO`` line. A value it cannot derive
 is never invented, and the JSON never carries comments (``validate-setup`` reads it with ``json.load``):
 
 - ``cameraPixelSizeUm`` is **omitted**. When the ``.cfg`` defines pixel-size configurations the report
@@ -611,8 +621,10 @@ devices):
 
 .. code-block:: text
 
-   Written to the setup file: hub rs232devices['MMCore'] + 5 device(s)
+   Written to the setup file: hub rs232devices['MMCore'] + 11 device(s)
      detectors['Camera']  DemoCamera/DCam  Camera  -> micromanager.camera
+     flipMirrors['Dichroic']  DemoCamera/DWheel  State, 10 positions (10 Label line(s))  -> micromanager.flip-mirror
+     ... Emission, Excitation, Objective (6), Path (3), LED (10) ...
      positioners['Z']  DemoCamera/DStage  Stage  -> micromanager.stage, axes ['Z']
      positioners['XY']  DemoCamera/DXYStage  XYStage  -> micromanager.stage, axes ['X', 'Y']
      lasers['White Light Shutter']  DemoCamera/DShutter  Shutter  -> micromanager.light, binary light
@@ -622,10 +634,8 @@ devices):
      TODO lasers['White Light Shutter']: wavelength is not written ...
      TODO lasers['LED Shutter']: wavelength is not written ...
 
-   Not written (8)
+   Not written (2)
      'DHub'  DemoCamera/DHub  Hub  not written: ...
-     'Dichroic'  DemoCamera/DWheel  State, 10 positions (10 Label line(s))  not written: multi-position State device ...
-     ... Emission, Excitation, Objective (6), Path (3), LED (10) ...
      'Autofocus'  DemoCamera/DAutoFocus  AutoFocus  not written: no ImSwitch2 contract for it yet ...
 
 Check the result with ``python -m imswitch.imcontrol.model.plugins validate-setup scope_setup.json``: it
@@ -640,8 +650,8 @@ The demo setup template
 ``setup_templates/demo_scope.json`` in the plugin is a complete, bootable setup for the Micro-Manager
 demo devices (``MMConfig_demo.cfg``). It needs ``mm-test-adapters`` and Python 3.11 or newer. It defines the
 hub, a ``Camera`` (a ``DemoCamera``, 512 x 512, 16 bit), a ``Z`` stage, a homeable ``XY`` stage, an
-``LED`` light on the demo ``LED Shutter`` and a ``WhiteLight`` flip mirror on the demo ``White Light
-Shutter``.
+``LED`` light on the demo ``LED Shutter``, a ``WhiteLight`` flip mirror on the demo ``White Light
+Shutter`` and a ``Dichroic`` flip mirror on the demo ten-position filter wheel of the same name.
 
 1. Copy the template into ImSwitch2's setup folder (``~/ImSwitchConfig/imcontrol_setups``, or
    ``Documents\ImSwitchConfig\imcontrol_setups`` on Windows).
@@ -651,7 +661,8 @@ Shutter``.
    view** showing the DemoCamera's test image; the Positioner panel with ``Z`` and ``XY`` (``XY`` starts
    unreferenced and its Reference action homes it; the demo ``Z`` has nothing to reference); the Laser
    panel with an on/off switch for ``LED``; the Flip Mirrors panel with ``WhiteLight`` and its buttons
-   *Closed* and *Open* (the demo configuration leaves the shutter open); and the Recording panel, which
+   *Closed* and *Open* (the demo configuration leaves the shutter open) and ``Dichroic`` as a drop-down of its
+   ten positions (``400DCLP``, ``Q505LP``, ...); and the Recording panel, which
    records a chosen number of frames to HDF5, TIFF or Zarr.
 
 The template carries one key besides the device sections, ``availableWidgets``: ImControl builds no
@@ -673,9 +684,6 @@ Known limits
   start (live view included) or a ROI change of any other camera is refused with an explanation; stop the
   recording first, or start the cameras together before the recording begins. Live view of two cameras
   without a recording is not affected.
-- **Filter wheels, turrets and light paths are deferred.** A State device with more than two positions has
-  no ImSwitch2 counterpart yet: ImSwitch2 has no selector device kind. The flip mirror refuses it, and the
-  converter reports it.
 - **Colour cameras are deferred.** Cameras with colour frames are refused at start.
 - **Lights are not scan-gated.** There is no TTL path from a bridged light, and no modulation; stages have
   no analog scan line. Scanning stays with ImSwitch2's native waveform generation.

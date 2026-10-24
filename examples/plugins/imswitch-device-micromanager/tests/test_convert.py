@@ -4,7 +4,8 @@
 ``Camera``, ``Z`` (Stage), ``XY`` (XYStage), ``White Light Shutter`` and ``LED Shutter`` (Shutters),
 ``Dichroic`` / ``Emission`` / ``Excitation`` (10-position wheels), ``Objective`` (6), ``Path`` (3),
 ``LED`` (State, 10 positions through the pre-init property), ``Autofocus`` (AutoFocus). The demo has
-no two-position device, so those cases use small ``.cfg`` texts of their own.
+no two-position device, so the two-position and the too-few-positions cases use small ``.cfg`` texts of
+their own.
 """
 import json
 import os
@@ -53,6 +54,8 @@ Device,Mount,DemoCamera,DWheel
 Device,Wheel3,DemoCamera,DWheel
 Device,Lonely,DemoCamera,DStateDevice
 Device,Clash,DemoCamera,DStateDevice
+Device,Single,DemoCamera,DStateDevice
+Property,Single,Number of positions,1
 Property,Flip,Number of positions,2
 Property,Wheel3,Number of positions,3
 Property,Clash,Number of positions,2
@@ -197,7 +200,7 @@ def test_adapter_path_resolution_is_the_hubs_explicit_then_env_then_search(monke
 # ------------------------------------------------------------------ build_setup
 def test_build_setup_on_the_demo_maps_camera_stages_and_shutters(demo_model, demo_types, demo_cfg_path):
     setup, report = build_setup(demo_model, demo_types, config_file=demo_cfg_path)
-    assert list(setup) == ["rs232devices", "detectors", "positioners", "lasers", "availableWidgets"]
+    assert list(setup) == ["rs232devices", "detectors", "positioners", "lasers", "flipMirrors", "availableWidgets"]
     assert setup["rs232devices"] == {"MMCore": {"managerName": "micromanager.core", "managerProperties": {
         "configFile": demo_cfg_path}}}                       # no adapterPaths key when none were given
     assert setup["detectors"] == {"Camera": {
@@ -214,27 +217,28 @@ def test_build_setup_on_the_demo_maps_camera_stages_and_shutters(demo_model, dem
                          "managerProperties": {"rs232device": "MMCore", "label": label, "enable": {"kind": "shutter"}},
                          "valueRangeMin": None, "valueRangeMax": None}
         assert "wavelength" not in entry
-    assert "flipMirrors" not in setup                           # the demo has no two-position device
-    assert setup["availableWidgets"] == ["Settings", "View", "Recording", "Image", "Positioner", "Laser"]
+    assert set(setup["flipMirrors"]) == {"Dichroic", "Emission", "Excitation", "Objective", "Path", "LED"}
+    for label, entry in setup["flipMirrors"].items():          # wheels, turret, light path and LED: all selectors
+        assert entry == {"managerName": "micromanager.flip-mirror",
+                         "managerProperties": {"rs232device": "MMCore", "label": label}}
+    assert setup["availableWidgets"] == ["Settings", "View", "Recording", "Image", "Positioner", "Laser", "FlipMirror"]
     json.dumps(setup)                                           # plain data, no comments, no sentinels
 
 
 def test_the_report_lists_what_was_not_written_and_why(demo_model, demo_types):
     _setup, report = build_setup(demo_model, demo_types)
     text = "\n".join(report)
-    for label in ("Dichroic", "Emission", "Excitation", "Objective", "Path", "LED"):
-        line = next(l for l in report if l.strip().startswith(f"'{label}'"))
-        assert "State" in line and "multi-position State device" in line and "selector device kind" in line
-    assert "'Dichroic'  DemoCamera/DWheel  State, 10 positions" in text
-    assert "'Objective'  DemoCamera/DObjective  State, 6 positions" in text
-    assert "'Path'  DemoCamera/DLightPath  State, 3 positions" in text
-    assert "'LED'  DemoCamera/DStateDevice  State, 10 positions (property 'Number of positions')" in text
+    assert "multi-position State device" not in text and "selector device kind" not in text
+    assert "flipMirrors['Dichroic']  DemoCamera/DWheel  State, 10 positions" in text
+    assert "flipMirrors['Objective']  DemoCamera/DObjective  State, 6 positions" in text
+    assert "flipMirrors['Path']  DemoCamera/DLightPath  State, 3 positions" in text
+    assert "flipMirrors['LED']  DemoCamera/DStateDevice  State, 10 positions (property 'Number of positions')" in text
     assert "'Autofocus'  DemoCamera/DAutoFocus  AutoFocus  not written: no ImSwitch2 contract" in text
     assert "'DHub'  DemoCamera/DHub  Hub  not written" in text
-    assert "Not written (8)" in text and f"{DEMO_DEVICES} device(s)" in text
+    assert "Not written (2)" in text and f"{DEMO_DEVICES} device(s)" in text
     # nothing written is also listed as skipped, and nothing skipped was written
     setup, _ = build_setup(demo_model, demo_types)
-    written_labels = {l for s in ("detectors", "positioners", "lasers") for l in setup[s]}
+    written_labels = {l for s in ("detectors", "positioners", "lasers", "flipMirrors") for l in setup[s]}
     assert not any(f"'{label}'  " in text.split("Not written")[1] for label in written_labels)
 
 
@@ -275,17 +279,19 @@ def test_a_stage_that_is_not_the_focus_device_gets_a_todo_axis_name():
     assert not any("positioners['Focus']" in l and "TODO" in l for l in report)
 
 
-def test_two_position_state_devices_become_flip_mirrors_and_others_are_reported():
+def test_state_devices_with_two_or_more_positions_become_flip_mirrors_and_others_are_reported():
     model = parse_cfg_text(FLIP_CFG)
     setup, report = build_setup(model, classify(model))
-    assert set(setup["flipMirrors"]) == {"Flip", "Mount"}
+    assert set(setup["flipMirrors"]) == {"Flip", "Mount", "Wheel3"}
     assert setup["flipMirrors"]["Flip"] == {
         "managerName": "micromanager.flip-mirror", "managerProperties": {"rs232device": "MMCore", "label": "Flip"}}
     assert setup["availableWidgets"][-1] == "FlipMirror"
     text = "\n".join(report)
     assert "flipMirrors['Flip']  DemoCamera/DStateDevice  State, 2 positions (property 'Number of positions')" in text
     assert "flipMirrors['Mount']  DemoCamera/DWheel  State, 2 positions (2 Label line(s))" in text
-    assert "'Wheel3'  DemoCamera/DWheel  State, 3 positions" in text
+    assert "flipMirrors['Wheel3']  DemoCamera/DWheel  State, 3 positions (property 'Number of positions')" in text
+    assert "'Single'  DemoCamera/DStateDevice  State, 1 position(s)" in text and "at least 2 positions" in text
+    assert "'Single'" not in json.dumps(setup)
     assert "'Lonely'  DemoCamera/DStateDevice  State  position count unknown" in text
     assert "add a flipMirrors entry by hand" in text
     assert "'Clash'" in text and "says 2 but the Label lines go up to state 4" in text
@@ -465,7 +471,7 @@ def test_the_cli_writes_the_setup_and_the_sidecar_report_and_prints_the_report(t
     assert out.is_file() and report_file.is_file()
     printed = capsys.readouterr().out
     assert report_file.read_text(encoding="utf-8").strip() in printed
-    assert "Not written (8)" in printed and f"Wrote {out} and {report_file}" in printed
+    assert "Not written (2)" in printed and f"Wrote {out} and {report_file}" in printed
     assert json.loads(out.read_text(encoding="utf-8"))["rs232devices"]["MMCore"]["managerProperties"]["configFile"] == demo_cfg_path
 
 

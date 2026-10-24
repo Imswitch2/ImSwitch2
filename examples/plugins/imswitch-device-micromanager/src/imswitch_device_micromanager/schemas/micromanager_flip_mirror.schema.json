@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Micro-Manager flip mirror managerProperties",
-  "description": "One two-position Micro-Manager device presented as an ImSwitch2 flip mirror: a State device with exactly two positions (a flip mount, a two-way light path), or a Shutter presented as a switch (closed is state 0, open is state 1). A State device with more than two positions (filter wheel, objective turret, multi-way light path) is refused at startup with its position count: ImSwitch2 has no selector device kind yet, and 'states' does not turn a wheel into a switch. 'invert', 'initial_state' and 'state_names' are fields of the flip-mirror entry itself, not of managerProperties. System-config mode: 'label' names a device the hub's .cfg loaded. Inline mode: 'adapter' and 'device' make the manager load the device itself under 'label' (and unload it when it finalizes).",
+  "description": "One Micro-Manager device presented as an ImSwitch2 flip mirror, a switch with N named positions: a State device with two or more positions (a flip mount, a filter wheel, an objective turret, a multi-way light path), or a Shutter presented as a two-state switch (closed is state 0, open is state 1). Every position of a State device is state of the same number (Micro-Manager's state index) and is named by its Micro-Manager state label unless 'state_names' renames it. 'invert', 'initial_state' and 'state_names' are fields of the flip-mirror entry itself, not of managerProperties; 'invert' applies to two-state devices only. System-config mode: 'label' names a device the hub's .cfg loaded. Inline mode: 'adapter' and 'device' make the manager load the device itself under 'label' (and unload it when it finalizes).",
   "type": "object",
   "additionalProperties": false,
   "required": ["rs232device", "label"],
@@ -14,7 +14,7 @@
     "label": {
       "type": "string",
       "minLength": 1,
-      "description": "Micro-Manager label of the State or Shutter device. System-config mode: a device the hub's .cfg loaded (a typo is reported with the list of loaded State and Shutter devices). Inline mode: the label the new device gets."
+      "description": "Micro-Manager label of the State or Shutter device (a State device needs at least two positions). System-config mode: a device the hub's .cfg loaded (a typo is reported with the list of loaded State and Shutter devices). Inline mode: the label the new device gets."
     },
     "states": {
       "type": "array",
@@ -26,7 +26,7 @@
         "minimum": 0,
         "minLength": 1
       },
-      "description": "State devices only: the two Micro-Manager positions (state labels, or state indices) used as logical state 0 and logical state 1. Default: position 0 is state 0 and position 1 is state 1. It orders the two positions of a two-position device and never turns a wheel into a switch: a device with more than two positions is refused. Refused for a Shutter (closed is 0, open is 1; use 'invert' to swap them)."
+      "description": "State devices only: the two Micro-Manager positions (state labels, or state indices) used as logical state 0 and logical state 1. Default: position 0 is state 0 and position 1 is state 1. It only orders the two positions of a two-position device; a device with more than two positions exposes every position as the state of the same number, and 'states' is refused there. Refused for a Shutter (closed is 0, open is 1; use 'invert' to swap them)."
     },
     "adapter": {
       "type": "string",

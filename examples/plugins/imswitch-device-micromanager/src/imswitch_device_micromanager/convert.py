@@ -5,7 +5,8 @@ configuration with the grammar MMCore's ``loadSystemConfiguration`` parses and w
 
 - ``setup.json``: the hub (``rs232devices``, pointing at the ``.cfg``) and one entry per device the
   bridge can map: Camera -> ``detectors``, Stage / XYStage -> ``positioners``, Shutter -> ``lasers``,
-  two-position State device -> ``flipMirrors``;
+  State device with a known count of two or more positions (mirror, filter wheel, objective turret,
+  light path) -> ``flipMirrors``, the N-position selector kind;
 - ``setup.conversion-report.txt`` (also printed): one line per device that was not written, with its
   label, adapter library, device name, type and the reason, and one line per value the converter could
   not derive (a TODO).
@@ -405,6 +406,8 @@ def apply_type_overrides(model: CfgModel, types: Classification, overrides: Mapp
 # ----------------------------------------------------------------- build_setup
 SECTION_HUB, SECTION_DETECTORS, SECTION_POSITIONERS = 'rs232devices', 'detectors', 'positioners'
 SECTION_LASERS, SECTION_FLIP_MIRRORS = 'lasers', 'flipMirrors'
+#: Positions a State device needs to be a switch (``flipMirrors`` entry); fewer leave nothing to switch between.
+MIN_POSITIONS = 2
 
 MANAGER_HUB = 'micromanager.core'
 MANAGER_CAMERA = 'micromanager.camera'
@@ -517,17 +520,17 @@ def build_setup(model: CfgModel, types: Mapping[str, Any], hub_name: str = 'MMCo
             count, problem = model.position_count(label)
             if count is None:
                 skipped.append(
-                    f'{label!r}  {what}  State  position count unknown: {problem}. If it has exactly two '
+                    f'{label!r}  {what}  State  position count unknown: {problem}. If it has two or more '
                     f'positions add a flipMirrors entry by hand ({MANAGER_FLIP_MIRROR}).')
-            elif count.count == 2:
+            elif count.count >= MIN_POSITIONS:
                 sections[SECTION_FLIP_MIRRORS][label] = _entry(MANAGER_FLIP_MIRROR, hub_name, label)
                 written.append(
-                    f'flipMirrors[{label!r}]  {what}  State, 2 positions ({count.source})  -> {MANAGER_FLIP_MIRROR}')
+                    f'flipMirrors[{label!r}]  {what}  State, {count.count} positions ({count.source})  '
+                    f'-> {MANAGER_FLIP_MIRROR}')
             else:
                 skipped.append(
-                    f'{label!r}  {what}  State, {count.count} positions ({count.source})  not written: '
-                    f'multi-position State device (filter wheel, turret, light path); ImSwitch2 has no '
-                    f'selector device kind yet, a flip mirror has exactly two positions')
+                    f'{label!r}  {what}  State, {count.count} position(s) ({count.source})  not written: '
+                    f'a flip mirror switches between at least {MIN_POSITIONS} positions')
         else:
             reason = _UNMAPPED.get(kind, f'a {kind} device has no ImSwitch2 mapping')
             skipped.append(f'{label!r}  {what}  {kind}  not written: {reason}')

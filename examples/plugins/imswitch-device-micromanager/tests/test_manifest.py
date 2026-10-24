@@ -338,6 +338,10 @@ def test_setup_template_declares_a_flip_mirror_that_matches_its_schema():
     jsonschema.Draft202012Validator(_flip_schema()).validate(mirror["managerProperties"])
     assert mirror["managerProperties"]["rs232device"] in setup["rs232devices"]
     assert "FlipMirror" in setup["availableWidgets"]
+    wheel = setup["flipMirrors"]["Dichroic"]                  # a 10-position State device: a selector row
+    assert wheel["managerName"] == "micromanager.flip-mirror"
+    assert wheel["managerProperties"] == {"rs232device": "MMCore", "label": "Dichroic"}
+    jsonschema.Draft202012Validator(_flip_schema()).validate(wheel["managerProperties"])
 
 
 @pytest.mark.parametrize("properties", [

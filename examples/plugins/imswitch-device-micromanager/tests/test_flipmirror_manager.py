@@ -7,8 +7,9 @@ Demo devices used (``MMConfig_demo.cfg`` plus what the tests load):
 - ``Flip`` (loaded inline from ``DemoCamera`` / ``DStateDevice`` with the pre-init property
   ``Number of positions`` = 2): a State device with exactly two positions, labels ``State-0`` and
   ``State-1`` until a test defines its own;
-- ``Dichroic`` (10 positions), ``Path`` (3 positions) and ``LED`` (10 positions): State devices a flip
-  mirror must refuse.
+- ``Dichroic`` (a ``DWheel`` with 10 positions, labels ``400DCLP, Q505LP, Q585LP, 89402bs, State-4 ...``),
+  ``Path`` (a ``DLightPath`` with 3 positions, ``State-0`` .. ``State-2``) and ``LED`` (10 positions):
+  State devices with more than two positions, presented as N-position selectors.
 """
 import pytest
 
@@ -150,9 +151,16 @@ def test_setup_state_names_win_per_state_and_the_other_keeps_micro_managers_word
         one.finalize()
 
 
-def test_state_names_with_an_unknown_key_are_refused(hub):
-    with pytest.raises(ValueError, match=r"state_names has the key '2'; a flip mirror has the states \['0', '1'\]"):
+def test_state_names_with_a_key_beyond_the_positions_are_refused(hub):
+    with pytest.raises(ValueError, match=r"state_names has the key '2'; 'White Light Shutter' has 2 positions, "
+                                         r"the states \['0', '1'\]"):
         make_flip(hub, state_names={"0": "a", "2": "b"})
+
+
+@pytest.mark.parametrize("key", ["left", "-1", "1.5", True, None])
+def test_state_names_keys_that_are_not_state_numbers_are_refused(hub, key):
+    with pytest.raises(ValueError, match="the keys are state numbers"):
+        make_flip(hub, state_names={key: "a"})
 
 
 def test_creating_a_flip_mirror_does_not_move_it(hub):
@@ -269,36 +277,133 @@ def test_a_malformed_states_property_is_refused_before_anything_loads(hub, state
     assert FLIP not in hub.host.call("getLoadedDevices")
 
 
-# ------------------------------------------------------------------ refusals
-@pytest.mark.parametrize("label, count", [("Dichroic", 10), ("Path", 3), ("LED", 10)])
-def test_a_device_with_more_than_two_positions_is_refused_with_its_count(hub, label, count):
-    with pytest.raises(ValueError) as excinfo:
-        make_flip(hub, label=label)
-    message = str(excinfo.value)
-    assert f"{label!r} has {count} positions; a flip mirror has exactly 2" in message
-    assert "Filter wheels, objective turrets and multi-way light paths are not supported" in message
+# ------------------------------------------------------------ N positions
+DICHROIC_LABELS = ["400DCLP", "Q505LP", "Q585LP", "89402bs"] + [f"State-{i}" for i in range(4, 10)]
 
 
-def test_states_does_not_turn_a_wheel_into_a_switch(hub):
-    with pytest.raises(ValueError, match="'Dichroic' has 10 positions") as excinfo:
-        make_flip(hub, label="Dichroic", states=[0, 1])
-    assert "does not turn them into a switch" in str(excinfo.value)
-    with pytest.raises(ValueError, match="'Dichroic' has 10 positions"):
-        make_flip(hub, label="Dichroic", states=["400DCLP", "Q505LP"])
+def test_a_ten_position_wheel_exposes_every_position_named_by_micro_managers_labels(hub):
+    mirror = make_flip(hub, label="Dichroic")
+    try:
+        names = mirror.get_state_names()
+        assert names == dict(enumerate(DICHROIC_LABELS)) and len(names) == 10
+        assert mirror.get_state() == 0 and mirror.get_cached_state() == 0
+        assert mirror.move_to(3) is None
+        assert core_of(hub).getState("Dichroic") == 3 and core_of(hub).getStateLabel("Dichroic") == "89402bs"
+        assert mirror.get_state() == 3 and mirror.get_cached_state() == 3 and mirror.get_last_error() is None
+        mirror.move_to(9)
+        assert core_of(hub).getState("Dichroic") == 9 and mirror.get_state() == 9
+        mirror.move_to("0")                                           # numeric text like the other flip mirrors
+        assert core_of(hub).getState("Dichroic") == 0
+    finally:
+        mirror.finalize()
+
+
+def test_a_three_position_light_path_and_a_ten_position_led_are_selectors_too(hub):
+    for label, count in (("Path", 3), ("LED", 10)):
+        mirror = make_flip(hub, label=label)
+        try:
+            assert list(mirror.get_state_names()) == list(range(count))
+            mirror.move_to(count - 1)
+            assert core_of(hub).getState(label) == count - 1 and mirror.get_state() == count - 1
+        finally:
+            mirror.finalize()
+    path = make_flip(hub, label="Path")
+    try:
+        assert path.get_state_names() == {0: "State-0", 1: "State-1", 2: "State-2"}
+    finally:
+        path.finalize()
+
+
+def test_state_names_override_per_position_and_the_rest_keep_micro_managers_labels(hub):
+    mirror = make_flip(hub, label="Dichroic", state_names={"0": "Open", "9": "Dark"})
+    try:
+        names = mirror.get_state_names()
+        assert names[0] == "Open" and names[9] == "Dark" and names[1] == "Q505LP" and names[8] == "State-8"
+    finally:
+        mirror.finalize()
+
+
+def test_a_state_number_beyond_the_positions_is_refused_and_nothing_moves(hub):
+    mirror = make_flip(hub, label="Dichroic")
+    try:
+        mirror.move_to(2)
+        for state in (10, -1, "x", None):
+            with pytest.raises((ValueError, TypeError)):
+                mirror.move_to(state)
+        assert core_of(hub).getState("Dichroic") == 2
+        with pytest.raises(ValueError, match=r"a position 0 to 9, got 10"):
+            mirror.move_to(10)
+    finally:
+        mirror.finalize()
+
+
+def test_a_wheel_move_the_device_does_not_show_is_a_failed_move(hub, monkeypatch):
+    mirror = make_flip(hub, label="Dichroic")
+    try:
+        monkeypatch.setattr(mirror, "_read_slot", lambda core: 0)
+        with pytest.raises(RuntimeError, match=r"was told to move to state 4 but shows state 0"):
+            mirror.move_to(4)
+        assert mirror.get_cached_state() == 0
+    finally:
+        mirror.finalize()
+
+
+def test_an_inline_three_position_device_is_loaded_exposed_and_unloaded(hub):
+    mirror = make_flip(hub, **{**INLINE_TWO, "preInitProperties": {"Number of positions": 3}})
+    try:
+        assert FLIP in hub.host.call("getLoadedDevices")
+        assert mirror.get_state_names() == {0: "State-0", 1: "State-1", 2: "State-2"}
+        mirror.move_to(2)
+        assert core_of(hub).getState(FLIP) == 2
+    finally:
+        mirror.finalize()
+    assert FLIP not in hub.host.call("getLoadedDevices")
+
+
+def test_invert_is_refused_for_more_than_two_positions(hub):
+    with pytest.raises(ValueError, match=r"invert swaps the two states of a two-state device; 'Dichroic' has 10 positions"):
+        make_flip(hub, label="Dichroic", invert=True)
+    with pytest.raises(ValueError, match="invert swaps the two states"):
+        make_flip(hub, **{**INLINE_TWO, "preInitProperties": {"Number of positions": 3}}, invert=True)
+    assert FLIP not in hub.host.call("getLoadedDevices")             # the inline device is unloaded again
+
+
+def test_initial_state_is_checked_against_the_position_count(hub):
+    with pytest.raises(ValueError, match=r"initial_state 10 is not a position of 'Dichroic', which has 10 positions \(0 to 9\)"):
+        make_flip(hub, label="Dichroic", initial_state=10)
+    with pytest.raises(ValueError, match=r"initial_state 2 is not a position of 'White Light Shutter', which has 2 positions"):
+        make_flip(hub, initial_state=2)
+    mirror = make_flip(hub, label="Dichroic", initial_state=9)
+    try:
+        assert core_of(hub).getState("Dichroic") == 9 and mirror.get_cached_state() == 9
+    finally:
+        mirror.finalize()
+
+
+def test_state_names_beyond_the_wheel_are_refused(hub):
+    with pytest.raises(ValueError, match=r"state_names has the key '10'; 'Dichroic' has 10 positions"):
+        make_flip(hub, label="Dichroic", state_names={"10": "x"})
+
+
+def test_states_is_refused_for_a_device_with_more_than_two_positions(hub):
+    for states in ([0, 1], ["400DCLP", "Q505LP"]):
+        with pytest.raises(ValueError) as excinfo:
+            make_flip(hub, label="Dichroic", states=states)
+        message = str(excinfo.value)
+        assert "only orders the two positions of a two-position device" in message
+        assert "'Dichroic' has 10 positions and every position is exposed" in message
+    with pytest.raises(ValueError, match="every position is exposed"):
+        make_flip(hub, **{**INLINE_TWO, "preInitProperties": {"Number of positions": 3}}, states=[0, 1])
+    assert FLIP not in hub.host.call("getLoadedDevices")
 
 
 def test_a_one_position_device_is_refused_with_its_count(hub):
-    with pytest.raises(ValueError, match=r"'Flip' has 1 positions; a flip mirror has exactly 2"):
+    with pytest.raises(ValueError, match=r"'Flip' has 1 positions; a flip mirror needs at least 2"):
         make_flip(hub, **{**INLINE_TWO, "preInitProperties": {"Number of positions": 1}})
     assert FLIP not in hub.host.call("getLoadedDevices")             # refused after the load: unloaded again
 
 
-def test_an_inline_wheel_is_refused_and_unloaded(hub):
-    with pytest.raises(ValueError, match="has 3 positions"):
-        make_flip(hub, **{**INLINE_TWO, "preInitProperties": {"Number of positions": 3}})
-    assert FLIP not in hub.host.call("getLoadedDevices")
-
-
+# ------------------------------------------------------------------ refusals
 def test_a_device_of_another_type_is_refused_naming_its_type(hub):
     with pytest.raises(ValueError, match=r"flip_mirror 'Mirror': Micro-Manager device 'Camera' is a Camera, "
                                          r"not a State or Shutter"):
@@ -339,9 +444,9 @@ def test_no_initial_state_leaves_the_mirror_where_it_is(hub):
     assert shutter_open(hub)
 
 
-@pytest.mark.parametrize("value", [2, -1, 1.5, "1", True])
-def test_an_initial_state_that_is_not_0_or_1_is_refused(hub, value):
-    with pytest.raises(ValueError, match="initial_state must be 0, 1 or null"):
+@pytest.mark.parametrize("value", [-1, 1.5, "1", True])
+def test_an_initial_state_that_is_not_a_state_number_is_refused(hub, value):
+    with pytest.raises(ValueError, match=r"initial_state must be a state number \(0, 1, ...\) or null"):
         make_flip(hub, initial_state=value)
 
 
@@ -358,7 +463,7 @@ def test_a_failed_initial_move_is_a_connection_error_not_a_crash(hub, monkeypatc
 
 # ------------------------------------------------------------------ commands
 @pytest.mark.parametrize("state", [2, -1, "x", None])
-def test_a_state_that_is_not_0_or_1_is_refused_and_nothing_moves(shutter, hub, state):
+def test_a_state_beyond_a_two_state_device_is_refused_and_nothing_moves(shutter, hub, state):
     with pytest.raises((ValueError, TypeError)):
         shutter.move_to(state)
     assert not shutter_open(hub)
@@ -508,7 +613,7 @@ def test_reconnect_reports_a_device_that_changed_type(shutter, hub, tmp_path):
     assert errors and "is a Stage, not a State or Shutter" in errors[0]
 
 
-def test_reconnect_reports_a_state_device_that_now_has_more_positions(hub, tmp_path):
+def test_reconnect_reports_a_state_device_whose_position_count_changed(hub, tmp_path):
     write_cfg(hub, tmp_path, "Property,Core,Initialize,0\nDevice,Flip,DemoCamera,DStateDevice\n"
                              "Property,Flip,Number of positions,2\nProperty,Core,Initialize,1\n")
     assert hub.reconnectTransport() is True
@@ -519,7 +624,7 @@ def test_reconnect_reports_a_state_device_that_now_has_more_positions(hub, tmp_p
                                  "Property,Flip,Number of positions,3\nProperty,Core,Initialize,1\n", name="three.cfg")
         assert hub.reconnectTransport() is True
         errors = mirror._onTransportReconnected(True)
-        assert errors and "'Flip' has 3 positions" in errors[0]
+        assert errors and "'Flip' has 3 positions, it had 2 when ImSwitch2 started" in errors[0]
         assert mirror.connectionState is DeviceConnectionState.ERROR
     finally:
         mirror.finalize()
