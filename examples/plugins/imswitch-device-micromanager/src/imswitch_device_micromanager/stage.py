@@ -40,17 +40,13 @@ import difflib
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
-from imswitch.imcontrol.model.devices.status import (
-    DeviceFailureKind, DeviceNotConnectedError, DeviceRuntimeMode, backend_attribute,
-)
 from imswitch.pluginapi import PositionerManager
 
+from ._bridge import MicroManagerDeviceMixin
 from ._core import MMCoreHostError
-from .core import MicroManagerCoreManager
 
 #: Axis names of a Micro-Manager XYStage, in the order ``getXYPosition`` returns them.
 XY_AXES = ['X', 'Y']
@@ -72,14 +68,6 @@ BUSY_POLL_S = 0.010
 
 
 @dataclass
-class _Binding:
-    """What the backend holder keeps as "the connected backend": the stage's label on the host."""
-
-    label: str
-    host: Any
-
-
-@dataclass
 class _Adopted:
     """Everything read from Micro-Manager when the device is adopted."""
 
@@ -88,29 +76,26 @@ class _Adopted:
     position: Dict[str, float]
 
 
-class MicroManagerStageManager(PositionerManager):
+class MicroManagerStageManager(MicroManagerDeviceMixin, PositionerManager):
     """A Micro-Manager Stage (one axis) or XYStage (X and Y) as a positioner."""
 
-    #: The backend holder's current backend: the :class:`_Binding`, or the absent stand-in
-    #: that raises ``DeviceNotConnectedError`` on any use.
-    _binding = backend_attribute()
+    BRIDGE_MANAGER_ID = 'micromanager.stage'
+    BRIDGE_CATEGORY = 'positioner'
+    BRIDGE_DEVICE_NOUN = 'stage'
+    BRIDGE_DEVICE_TYPES = ('Stage', 'XYStage')
+    BRIDGE_TYPE_NOUN = 'stage'
 
     def __init__(self, positionerInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
         properties = dict(positionerInfo.managerProperties or {})
-        self._props = properties
-        self._setupName = name
-        self._label = self._required_text(properties, 'label')
+        self._bridge_identify(properties, name, self.__logger)
         if positionerInfo.forScanning:
             raise ValueError(
                 f"positioner {name!r}: forScanning must be false for a Micro-Manager stage; Micro-Manager "
                 f"stages have no analog scan line (scanning stays with ImSwitch2's own waveform scanners)")
         self._axes = list(positionerInfo.axes)    # the base class only has them after its __init__
         self._check_axes_shape(self._axes)
-        self._hub = self._find_hub(properties, lowLevelManagers)
-        self._host = self._hub.host
-        self._inline = self._parse_inline(properties)
-        self._inline_loaded = False
+        self._bridge_attach(properties, lowLevelManagers)
         self._wait_for_device = self._bool_property(properties, 'waitForDevice', True)
         self._homeable = self._bool_property(properties, 'homeable', False)
         #: Per instance, from the setup: the class attribute of PositionerManager stays False.
@@ -125,19 +110,10 @@ class MicroManagerStageManager(PositionerManager):
         self._model = ABSENT_MODEL
         self._events_core = None                  # the core the event handlers are connected to
 
-        # Before the first status write the mixin's getattr default is enough, but the holder's
-        # failure path reads the runtime mode: give it a value (same as the camera manager).
-        self.__dict__['_deviceRuntimeMode'] = DeviceRuntimeMode.REAL
-        self._installBackend(
-            self._open_binding, label=f'Micro-Manager stage {self._label}',
-            transient=bool(positionerInfo.transient), connect_on_startup=bool(positionerInfo.connectOnStartup),
-            close=lambda binding: None)
+        self._bridge_install_backend(positionerInfo)
         adopted: Optional[_Adopted] = None
         try:
-            if self.backendIsReal:
-                adopted = self._adopt()
-            elif self.runtimeMode is not DeviceRuntimeMode.ABSENT:
-                self._mirror_hub_status()
+            adopted = self._bridge_adopt(self._adopt)
             initial = adopted.position if adopted else {axis: UNKNOWN_POSITION for axis in self._axes}
             super().__init__(positionerInfo, name, initialPosition=initial)
         except BaseException:
@@ -152,13 +128,6 @@ class MicroManagerStageManager(PositionerManager):
             self._setConnected(f'{self._model}: {self._label} connected')
 
     # ------------------------------------------------------------------ setup
-    @staticmethod
-    def _required_text(properties, key) -> str:
-        value = properties.get(key)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"micromanager.stage needs managerProperties.{key} (a non-empty string)")
-        return value
-
     def _bool_property(self, properties, key, default: bool) -> bool:
         value = properties.get(key, default)
         if not isinstance(value, bool):
@@ -173,53 +142,6 @@ class MicroManagerStageManager(PositionerManager):
         raise ValueError(
             f"positioner {self._setupName!r}: axes {axes} do not fit a Micro-Manager stage; "
             f"a Stage needs exactly one axis (any name, for example ['Z']) and an XYStage exactly {XY_AXES}")
-
-    def _find_hub(self, properties, lowLevelManagers) -> MicroManagerCoreManager:
-        hub_name = self._required_text(properties, 'rs232device')
-        hubs = lowLevelManagers.get('rs232sManager')
-        try:
-            hub = hubs[hub_name]
-        except (KeyError, TypeError, IndexError):
-            raise ValueError(
-                f"positioner {self._setupName!r}: managerProperties.rs232device is {hub_name!r}, but no "
-                f"rs232devices entry of that name exists; declare the Micro-Manager hub there "
-                f"(managerName 'micromanager.core')") from None
-        if not isinstance(hub, MicroManagerCoreManager):
-            raise ValueError(
-                f"positioner {self._setupName!r}: rs232devices[{hub_name!r}] is a {type(hub).__name__}, not a "
-                f"Micro-Manager hub; managerProperties.rs232device must name an entry with "
-                f"managerName 'micromanager.core'")
-        return hub
-
-    def _parse_inline(self, properties):
-        """``(adapter, device, parent, preInit)`` in inline mode, else ``None``."""
-        adapter, device = properties.get('adapter'), properties.get('device')
-        if bool(adapter) != bool(device):
-            raise ValueError(
-                f"positioner {self._setupName!r}: inline mode needs both managerProperties.adapter and "
-                f"managerProperties.device (got adapter={adapter!r}, device={device!r})")
-        if not adapter:
-            return None
-        return adapter, device, properties.get('parent') or None, dict(properties.get('preInitProperties') or {})
-
-    def _open_binding(self) -> _Binding:
-        """``open_real`` of the backend holder: the hub must be connected."""
-        if not self._hub.isConnected:
-            details = self._hub.connectionStatusDetails or self._hub.connectionStatusSummary
-            raise DeviceNotConnectedError(
-                f"Micro-Manager core {self._hub.name!r} is not connected"
-                + (f": {details}" if details else ''))
-        return _Binding(self._label, self._host)
-
-    def _mirror_hub_status(self) -> None:
-        """Carry the hub's failure (kind and message) as this stage's status."""
-        hub = self._hub
-        details = hub.connectionStatusDetails or hub.connectionStatusSummary or 'not connected'
-        summary = f'{self._label}: Micro-Manager core {hub.name} is not connected'
-        if hub.connectionFailureKind is DeviceFailureKind.DEVICE_NOT_FOUND:
-            self._setDeviceNotFound(details, summary=summary)
-        else:
-            self._setConnectionError(details, summary=summary)
 
     def _missing_message(self, label: str) -> str:
         """The "did you mean" error for a label the core has no stage under."""
@@ -237,49 +159,21 @@ class MicroManagerStageManager(PositionerManager):
         """Make sure the label is a loaded Stage or XYStage that fits ``axes`` (inline mode loads it)."""
         from pymmcore_plus import DeviceType
 
-        host, label = self._host, self._label
-        with host.lock:
-            loaded = host.has_device(label)
-            if loaded and self._inline is not None and not self._inline_loaded:
-                raise ValueError(
-                    f"positioner {self._setupName!r}: Micro-Manager device {label!r} is already loaded by the "
-                    f"hub's configuration, so managerProperties.adapter/device would load it a second "
-                    f"time; remove adapter/device (system-config mode) or use another label")
-            if not loaded:
-                if self._inline is None:
-                    raise ValueError(
-                        f"positioner {self._setupName!r} (managerProperties.label): "
-                        + self._missing_message(label) + "; or give adapter and device to load it inline")
-                adapter, device, parent, pre_init = self._inline
-                host.load_device(label, adapter, device, parent, pre_init)
-                self._inline_loaded = True
-            device_type = host.device_type(label)
-            axes = self._axes
+        with self._host.lock:
+            self._ensure_loaded()
+            device_type = self._expect_device_type()
+            label, axes = self._label, self._axes
             if device_type == DeviceType.Stage:
                 if len(axes) != 1:
                     raise ValueError(
                         f"positioner {self._setupName!r}: Micro-Manager device {label!r} is a Stage (one axis), "
                         f"but axes is {axes}; give it exactly one axis, for example ['Z']")
                 return False
-            if device_type == DeviceType.XYStage:
-                if axes != XY_AXES:
-                    raise ValueError(
-                        f"positioner {self._setupName!r}: Micro-Manager device {label!r} is an XYStage, which "
-                        f"needs axes {XY_AXES}, but axes is {axes}")
-                return True
-            raise ValueError(
-                f"positioner {self._setupName!r}: Micro-Manager device {label!r} is a "
-                f"{device_type.name.removesuffix('Device')}, not a Stage or XYStage")
-
-    def _unload_inline(self) -> None:
-        if not self._inline_loaded:
-            return
-        self._inline_loaded = False
-        try:
-            if self._host.is_connected and self._host.has_device(self._label):
-                self._host.unload_device(self._label)
-        except Exception as exc:                      # noqa: BLE001 - the caller is already failing or finalizing
-            self.__logger.warning('Unloading inline stage %s failed: %s', self._label, exc)
+            if axes != XY_AXES:
+                raise ValueError(
+                    f"positioner {self._setupName!r}: Micro-Manager device {label!r} is an XYStage, which "
+                    f"needs axes {XY_AXES}, but axes is {axes}")
+            return True
 
     def _adopt(self) -> _Adopted:
         """Resolve the label and read the device's identity and position; an inline device loaded
@@ -308,23 +202,9 @@ class MicroManagerStageManager(PositionerManager):
 
     # ------------------------------------------------------------- properties
     @property
-    def label(self) -> str:
-        """The Micro-Manager device label."""
-        return self._label
-
-    @property
-    def hub(self) -> MicroManagerCoreManager:
-        return self._hub
-
-    @property
     def homeable(self) -> bool:
         """Whether the setup declares that the adapter can home and the reference action may do so."""
         return self._homeable
-
-    def getDeviceDescriptorSpec(self):
-        return rs232BackedPrimarySpec(
-            category='positioner', rs232_name=str(self._props['rs232device']),
-            display_name=f'{self._setupName} (Micro-Manager {self._label})')
 
     # ----------------------------------------------------------------- events
     def _connect_events(self) -> None:
@@ -362,15 +242,6 @@ class MicroManagerStageManager(PositionerManager):
             self.updateTrackedPosition(positions)
 
     # ----------------------------------------------------------------- motion
-    def _use(self, what: str):
-        """``(host, label)`` of the connected device; ``DeviceNotConnectedError`` when it is not there."""
-        self._requireConnected(what)
-        binding = self._binding                       # the absent stand-in raises on any attribute
-        host = binding.host
-        if not host.is_connected:
-            raise DeviceNotConnectedError(f"{self.name}: {what} refused, Micro-Manager core {self._hub.name!r} is not connected")
-        return host, binding.label
-
     def _check_axis(self, axis: str) -> None:
         if axis not in self.axes:
             raise ValueError(f'Axis {axis} not available. Available axes: {self.axes}')
@@ -469,30 +340,8 @@ class MicroManagerStageManager(PositionerManager):
     def _lifecycleSafeState(self, *, verified: bool):
         return []                       # a stage does not move by itself
 
-    def _onTransportReconnected(self, real: bool):
-        """After the hub reloaded the core: adopt the device again; the errors found, if any."""
-        if not real:
-            details = self._hub.connectionStatusDetails or 'transport unavailable'
-            self._setConnectionError(details, summary=f'{self._label}: Micro-Manager core did not reconnect')
-            return [details]
-        errors: List[str] = []
-        try:
-            self.backendHolder.reopen()
-            if not self.backendIsReal:
-                raise DeviceNotConnectedError(self.connectionStatusDetails or 'the hub is not connected')
-            errors.extend(self._reinitialise())
-        except Exception as exc:                          # noqa: BLE001 - reported to the lifecycle
-            errors.append(f'{type(exc).__name__}: {exc}')
-        if errors:
-            self._setConnectionError('; '.join(errors), summary=f'{self._label}: reconnected but not usable')
-            return errors
-        self._setConnected(f'{self._model}: {self._label} reconnected')
-        return errors
-
-    def _lifecycleReinitialise(self) -> None:
-        errors = self._reinitialise()
-        if errors:
-            raise RuntimeError('; '.join(errors))
+    def _reconnected_summary(self) -> str:
+        return f'{self._model}: {self._label} reconnected'
 
     def _reinitialise(self) -> List[str]:
         """Adopt the (re)loaded device: re-load an inline one, verify type and axes, re-read the

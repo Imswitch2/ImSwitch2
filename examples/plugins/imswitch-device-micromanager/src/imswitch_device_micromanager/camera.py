@@ -45,8 +45,6 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
-from imswitch.imcontrol.model.devices.status import DeviceFailureKind, DeviceNotConnectedError, DeviceRuntimeMode
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     CAMERA_PIXEL_SIZE_PARAM,
     CAMERA_PIXEL_SIZE_SOURCE_PARAM,
@@ -58,9 +56,9 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
 from imswitch.pluginapi import DetectorManager, DetectorNumberParameter
 
 from . import _properties
+from ._bridge import MicroManagerDeviceMixin
 from ._core import FramesLostError, MMCoreHostError, StreamFault, StreamFaultKind, queue_budget_bytes
 from ._frames import UnsupportedPixelTypeError
-from .core import MicroManagerCoreManager
 
 #: ``fullShape`` ``(width, height)`` of a camera that was built while its hub was
 #: not connected. DetectorManager needs a shape at construction and the sensor
@@ -100,14 +98,6 @@ _COLOUR_REFUSAL = (
 
 
 @dataclass
-class _Binding:
-    """What the backend holder keeps as "the connected backend": the camera's label on the host."""
-
-    label: str
-    host: Any
-
-
-@dataclass
 class _Identity:
     """Everything read from Micro-Manager when the device is adopted."""
 
@@ -123,19 +113,20 @@ class _Identity:
     pixel_size_um: Optional[float]            # unbinned, from MM's pixel-size config; None = unknown
 
 
-class MicroManagerCameraManager(DetectorManager):
+class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
     """A Micro-Manager Camera device as a detector (mono only)."""
+
+    BRIDGE_MANAGER_ID = 'micromanager.camera'
+    BRIDGE_CATEGORY = 'detector'
+    BRIDGE_DEVICE_NOUN = 'camera'
+    BRIDGE_DEVICE_TYPES = ('Camera',)
+    BRIDGE_TYPE_NOUN = 'camera'
 
     def __init__(self, detectorInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
         properties = dict(detectorInfo.managerProperties or {})
-        self._props = properties
-        self._setupName = name
-        self._label = self._required_text(properties, 'label')
-        self._hub = self._find_hub(properties, lowLevelManagers)
-        self._host = self._hub.host
-        self._inline = self._parse_inline(properties)
-        self._inline_loaded = False
+        self._bridge_identify(properties, name, self.__logger)
+        self._bridge_attach(properties, lowLevelManagers)
 
         # Manager-local state. Everything that touches frames or MMCore is guarded by
         # ``host.lock`` (one lock, so there is no lock order to get wrong).
@@ -155,21 +146,11 @@ class MicroManagerCameraManager(DetectorManager):
         self._mm_pixel_size = False               # the pixel size came from Micro-Manager
         self._resume = False                      # a stream was running when the transport went down
 
-        # Before DetectorManager.__init__ ran, the status mixin's getattr(...) default raises
-        # (SignalInterface is a QObject): give the holder's failure path a value to find.
-        self.__dict__['_deviceRuntimeMode'] = DeviceRuntimeMode.REAL
-        # The backend holder gives the manager the standard status + reconnect lifecycle.
-        # ``open_real`` only binds to the hub; adoption (label, geometry, parameters) follows.
-        self._installBackend(
-            self._open_binding, label=f'Micro-Manager camera {self._label}',
-            transient=bool(detectorInfo.transient), connect_on_startup=bool(detectorInfo.connectOnStartup),
-            close=lambda binding: None)
+        # Standard status + reconnect lifecycle; adoption (label, geometry, parameters) follows.
+        self._bridge_install_backend(detectorInfo)
         identity: Optional[_Identity] = None
         try:
-            if self.backendIsReal:
-                identity = self._adopt_label()
-            elif self.runtimeMode is not DeviceRuntimeMode.ABSENT:
-                self._mirror_hub_status()
+            identity = self._bridge_adopt(self._adopt_label)
 
             parameters: Dict[str, Any] = {}
             pixel_param = self._initial_pixel_size_parameter(detectorInfo, identity)
@@ -194,97 +175,6 @@ class MicroManagerCameraManager(DetectorManager):
             self._setConnected(f'{self.model}: {self._label} connected')
 
     # ------------------------------------------------------------------ setup
-    @staticmethod
-    def _required_text(properties, key) -> str:
-        value = properties.get(key)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"micromanager.camera needs managerProperties.{key} (a non-empty string)")
-        return value
-
-    def _find_hub(self, properties, lowLevelManagers) -> MicroManagerCoreManager:
-        hub_name = self._required_text(properties, 'rs232device')
-        hubs = lowLevelManagers.get('rs232sManager')
-        try:
-            hub = hubs[hub_name]
-        except (KeyError, TypeError, IndexError):
-            raise ValueError(
-                f"detector {self._setupName!r}: managerProperties.rs232device is {hub_name!r}, but no "
-                f"rs232devices entry of that name exists; declare the Micro-Manager hub there "
-                f"(managerName 'micromanager.core')") from None
-        if not isinstance(hub, MicroManagerCoreManager):
-            raise ValueError(
-                f"detector {self._setupName!r}: rs232devices[{hub_name!r}] is a {type(hub).__name__}, not a "
-                f"Micro-Manager hub; managerProperties.rs232device must name an entry with "
-                f"managerName 'micromanager.core'")
-        return hub
-
-    def _parse_inline(self, properties):
-        """``(adapter, device, parent, preInit)`` in inline mode, else ``None``."""
-        adapter, device = properties.get('adapter'), properties.get('device')
-        if bool(adapter) != bool(device):
-            raise ValueError(
-                f"detector {self._setupName!r}: inline mode needs both managerProperties.adapter and "
-                f"managerProperties.device (got adapter={adapter!r}, device={device!r})")
-        if not adapter:
-            return None
-        return adapter, device, properties.get('parent') or None, dict(properties.get('preInitProperties') or {})
-
-    def _open_binding(self) -> _Binding:
-        """``open_real`` of the backend holder: the hub must be connected."""
-        if not self._hub.isConnected:
-            details = self._hub.connectionStatusDetails or self._hub.connectionStatusSummary
-            raise DeviceNotConnectedError(
-                f"Micro-Manager core {self._hub.name!r} is not connected"
-                + (f": {details}" if details else ''))
-        return _Binding(self._label, self._host)
-
-    def _mirror_hub_status(self) -> None:
-        """Carry the hub's failure (kind and message) as this camera's status."""
-        hub = self._hub
-        details = hub.connectionStatusDetails or hub.connectionStatusSummary or 'not connected'
-        summary = f'{self._label}: Micro-Manager core {hub.name} is not connected'
-        if hub.connectionFailureKind is DeviceFailureKind.DEVICE_NOT_FOUND:
-            self._setDeviceNotFound(details, summary=summary)
-        else:
-            self._setConnectionError(details, summary=summary)
-
-    def _resolve_label(self) -> None:
-        """Make sure the label is a loaded Camera device (inline mode loads it)."""
-        from pymmcore_plus import DeviceType
-
-        host, label = self._host, self._label
-        with host.lock:
-            loaded = host.has_device(label)
-            if loaded and self._inline is not None and not self._inline_loaded:
-                raise ValueError(
-                    f"detector {self._setupName!r}: Micro-Manager device {label!r} is already loaded by the "
-                    f"hub's configuration, so managerProperties.adapter/device would load it a second "
-                    f"time; remove adapter/device (system-config mode) or use another label")
-            if not loaded:
-                if self._inline is None:
-                    raise ValueError(
-                        f"detector {self._setupName!r} (managerProperties.label): "
-                        + host.missing_device_message(label, DeviceType.Camera, 'camera')
-                        + "; or give adapter and device to load it inline")
-                adapter, device, parent, pre_init = self._inline
-                host.load_device(label, adapter, device, parent, pre_init)
-                self._inline_loaded = True
-            device_type = host.device_type(label)
-            if device_type != DeviceType.Camera:
-                raise ValueError(
-                    f"detector {self._setupName!r}: Micro-Manager device {label!r} is a {device_type.name.removesuffix('Device')}, "
-                    f"not a Camera")
-
-    def _unload_inline(self) -> None:
-        if not self._inline_loaded:
-            return
-        self._inline_loaded = False
-        try:
-            if self._host.is_connected and self._host.has_device(self._label):
-                self._host.unload_device(self._label)
-        except Exception as exc:                      # noqa: BLE001 - the caller is already failing or finalizing
-            self.__logger.warning('Unloading inline camera %s failed: %s', self._label, exc)
-
     def _adopt_label(self) -> _Identity:
         """Resolve the label, register it with the host and read everything from Micro-Manager."""
         with self._host.lock:
@@ -398,15 +288,6 @@ class MicroManagerCameraManager(DetectorManager):
 
     # ------------------------------------------------------------- properties
     @property
-    def label(self) -> str:
-        """The Micro-Manager device label."""
-        return self._label
-
-    @property
-    def hub(self) -> MicroManagerCoreManager:
-        return self._hub
-
-    @property
     def configOwnedParameters(self) -> frozenset:
         """Also the pixel size when Micro-Manager supplied it: a saved widget state must not
         reinstate an old value over the configuration that is authoritative at every start."""
@@ -418,11 +299,6 @@ class MicroManagerCameraManager(DetectorManager):
         """The dtype the camera delivers now (``PixelType``), known before the first frame."""
         cached = self.__dict__.get('_stream_dtype')
         return cached if cached is not None else super().dtype
-
-    def getDeviceDescriptorSpec(self):
-        return rs232BackedPrimarySpec(
-            category='detector', rs232_name=str(self._props['rs232device']),
-            display_name=f'{self._setupName} (Micro-Manager {self._label})')
 
     def _stream_format(self) -> Tuple[Tuple[int, int], np.dtype]:
         return self._stream_hw, self._stream_dtype
@@ -737,38 +613,22 @@ class MicroManagerCameraManager(DetectorManager):
         self._resume = running if not verified else False
         return errors
 
+    def _reconnected_summary(self) -> str:
+        return f'{self.model}: {self._label} reconnected'
+
     def _onTransportReconnected(self, real: bool):
-        """After the hub reloaded the core: adopt the device again; the errors found, if any."""
+        """After the hub reloaded the core (plumbing in the mixin): restart the stream that was running."""
         resume = self._resume or self.acquisitionLeased
         self._resume = False
-        if not real:
-            details = self._hub.connectionStatusDetails or 'transport unavailable'
-            self._setConnectionError(details, summary=f'{self._label}: Micro-Manager core did not reconnect')
-            return [details]
-        errors: List[str] = []
-        try:
-            self.backendHolder.reopen()
-            if not self.backendIsReal:
-                raise DeviceNotConnectedError(self.connectionStatusDetails or 'the hub is not connected')
-            errors.extend(self._reinitialise())
-        except Exception as exc:                          # noqa: BLE001 - reported to the lifecycle
-            errors.append(f'{type(exc).__name__}: {exc}')
-        if errors:
-            self._setConnectionError('; '.join(errors), summary=f'{self._label}: reconnected but not usable')
+        errors = super()._onTransportReconnected(real)
+        if errors or not real or not resume:
             return errors
-        self._setConnected(f'{self.model}: {self._label} reconnected')
-        if resume:
-            try:
-                self.startAcquisition()
-            except Exception as exc:                      # noqa: BLE001
-                errors.append(f'could not restart the stream: {exc}')
-                self._setConnectionError(errors[-1], summary=f'{self._label}: reconnected but not usable')
+        try:
+            self.startAcquisition()
+        except Exception as exc:                          # noqa: BLE001
+            errors.append(f'could not restart the stream: {exc}')
+            self._setConnectionError(errors[-1], summary=f'{self._label}: reconnected but not usable')
         return errors
-
-    def _lifecycleReinitialise(self) -> None:
-        errors = self._reinitialise()
-        if errors:
-            raise RuntimeError('; '.join(errors))
 
     def _reinitialise(self) -> List[str]:
         """Put the device in the state this manager reports; the errors found.
