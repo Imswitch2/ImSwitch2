@@ -315,7 +315,7 @@ def validate(program: ScanProgram) -> ScanProgram:
             _finite(problems, where, f'table entry {index}', value)
         if (drive.table_um is None) != (drive.table_loop is None):
             problems.append(f'{where}: a table needs both table_loop and table_um')
-        if drive.table_loop is not None:
+        elif drive.table_loop is not None:
             if drive.table_loop not in ids:
                 problems.append(f'{where}: table on unknown loop {drive.table_loop!r}')
             elif len(drive.table_um) != program.loop(drive.table_loop).count:
