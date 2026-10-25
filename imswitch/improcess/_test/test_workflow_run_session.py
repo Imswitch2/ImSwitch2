@@ -8,6 +8,7 @@ it."""
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from imswitch.improcess.model.workfloweditor import WorkflowDocument, build_catalog
@@ -292,3 +293,160 @@ def test_previews_describe_what_each_output_is(catalog, recording):
     assert all(p.kind == "curve" and p.curve is not None for p in entry.previews.values())
     split = session.states(document)["rec"].entry.previews["out"]
     assert split.rgb is not None and split.rgb.dtype.name == "uint8" and split.describe()
+
+
+# -- what the independent review found ------------------------------------------------------
+
+def test_a_preview_reads_the_recording_lazily(catalog, recording):
+    document = _diamond(catalog)
+    session = RunSession(catalog.registry)
+    session.bind_source(document, "raw", recording)
+    seen = {}
+
+    def on_step(step_id, ports, seconds, cached, previews):
+        seen[step_id] = ports
+        session.step_done(step_id, ports, seconds, cached, previews)
+
+    plan = session.plan(document, ["rec"])
+    session.begin(plan)
+    report, error = execute(plan, catalog.registry, on_step=on_step)
+    session.finish(report, error, document=document)
+    assert error is None
+    # Its preview was made, from one plane: the recording was not decoded...
+    assert session.states(document)["raw"].entry.previews["data"].rgb is not None
+    assert seen["raw"]["data"].dataLoaded is False
+    # ...so the reconstruction after it is still a view of the file.
+    assert not isinstance(session.result(document, "rec").data, np.ndarray)
+    session.close()
+
+
+def test_a_run_keeps_open_what_it_reads_whatever_is_done_meanwhile(catalog, recording):
+    document = _diamond(catalog)
+    session = RunSession(catalog.registry)
+    session.bind_source(document, "raw", recording)
+    _run(session, document, ["rec"])
+    plan = session.plan(document, ["split"])
+    assert plan.cached == ["rec"]
+    session.begin(plan)
+    session.rerun_from(document, "rec")         # drops every entry made from the file, while the run reads one
+    assert len(session.open_handles()) == 1
+    report, error = execute(plan, catalog.registry, on_step=session.step_done)
+    summary = session.finish(report, error, document=document)
+    assert summary.error is None
+    assert np.asarray(session.result(document, "split").data).shape == (96, 96)
+    session.rerun_from(document, "split")
+    assert session.open_handles() == []         # nothing needs it any more
+    session.close()
+
+
+def test_two_pinned_results_of_one_file_hand_it_over_once(catalog, recording):
+    document = _diamond(catalog)
+    session = RunSession(catalog.registry)
+    session.bind_source(document, "raw", recording)
+    _run(session, document)
+    rec = session.pin(document, "rec")
+    split = session.pin(document, "split")
+    handover = session.close()
+    assert len(handover) == 1                   # the controller closes it once neither is loaded
+    uids, handles = handover[0]
+    assert uids == {rec.result_uid, split.result_uid} and len(handles) == 1
+    from imswitch.improcess.workflows.sources import close_source
+
+    close_source(handles[0])
+
+
+def test_a_save_that_wrote_holds_no_result_and_no_file(catalog, recording, tmp_path):
+    document = _diamond(catalog)
+    session = RunSession(catalog.registry)
+    session.bind_source(document, "raw", recording)
+    _run(session, document, write_saves=True, out_dir=tmp_path / "out", overwrite=True)
+    assert session.states(document)["out"].status == "done"
+    assert session.states(document)["out"].entry is None
+    assert len(session._cache) == len(document.steps) - 1
+    session.rerun_from(document, "raw")
+    assert session.open_handles() == []         # no Save entry keeps the recording open
+
+
+def test_a_bound_file_is_read_at_the_dataset_it_was_bound_with(catalog, recording):
+    import h5py
+
+    with h5py.File(recording, "a") as handle:
+        handle.create_dataset("other", data=np.zeros((3, 40, 40), np.float32)).attrs["axes"] = "CYX"
+    document = _diamond(catalog)
+    session = RunSession(catalog.registry)
+    session.bind_source(document, "raw", recording)
+    default = session.fingerprints(document)["raw"]
+    session.bind_source(document, "raw", recording, dataset="other")
+    assert session.fingerprints(document)["raw"] != default
+    plan, summary = _run(session, document, ["rec"])
+    assert plan.bindings["raw"].dataset == "other" and summary.error is None
+    assert np.asarray(session.result(document, "rec").data).shape == (3, 40, 40)
+    session.close()
+
+
+def test_a_plan_that_is_not_run_changes_nothing(catalog, recording):
+    document = WorkflowDocument(Workflow("w", [
+        Source("raw", path=recording), Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("py", "python", {"code": "out = data + np.random.random(data.shape)", "ports": "out"}, inputs=["rec"]),
+        Process("blur", "filter", inputs=["py"]), Process("sharp", "filter", {"method": "median"}, inputs=["py"]),
+    ]), catalog=catalog)
+    session = RunSession(catalog.registry)
+    _run(session, document)
+    session.rerun_from(document, "sharp")
+    session._evict(session.states(document)["py"].entry, keep_preview=True)    # trimmed, say
+    before, statuses = session.fingerprints(document), _statuses(session, document)
+    plan = session.plan(document, ["sharp"])     # "py" is realised again, so "blur" would be outdated...
+    assert plan.to_run == ["py", "sharp"] and plan.nonces != session._nonces
+    # ...but only once the plan runs: one that is dropped (auto-run declined) changes nothing.
+    assert session.fingerprints(document) == before and _statuses(session, document) == statuses
+    assert statuses["blur"] == "done"
+    session.begin(plan)
+    assert _statuses(session, document)["blur"] == "outdated"
+    session.finish(None, "cancelled", document=document)
+
+
+def test_a_rename_keeps_what_the_session_bound_to_the_step(catalog, recording):
+    document = _diamond(catalog)
+    session = RunSession(catalog.registry)
+    session.bind_source(document, "raw", recording)
+    _run(session, document, ["rec"])
+    document.rename_step("raw", "input")
+    session.rename_step("raw", "input")
+    assert session.source_bindings == {"input": recording}
+    assert _statuses(session, document)["rec"] == "done"
+    plan = session.plan(document, ["split"])
+    assert plan.to_run == ["split"] and plan.cached == ["rec"]
+    session.close()
+
+
+def test_a_stop_that_lands_between_steps_ends_the_run_cancelled(catalog, recording, monkeypatch):
+    from imswitch.imcommon.model import OperationCancelled
+    from imswitch.improcess.workflows import runner
+
+    document = _diamond(catalog)
+    session = RunSession(catalog.registry)
+    session.bind_source(document, "raw", recording)
+    plan = session.plan(document, ["rec"])
+
+    def stopped(*_args, **_kwargs):
+        raise OperationCancelled()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner, "run", stopped)
+        assert execute(plan, catalog.registry) == (None, "cancelled")
+
+    # One landing while a finished step is reported stops the run with its
+    # report, so the sources it opened can be closed.
+    def on_step_done(step_id, _ports, _seconds, _cached):
+        if step_id == "rec":
+            raise OperationCancelled()
+
+    with pytest.raises(runner.RunError) as caught:
+        runner.run(plan.workflow, registry=catalog.registry, bindings=plan.bindings, out_dir=plan.out_dir,
+                   on_step_done=on_step_done, write_saves=False)
+    report = caught.value.report
+    assert report.error == "rec: cancelled" and report.failure["type"] == "OperationCancelled"
+    from imswitch.improcess.workflows.sources import close_source
+
+    for handle in report.detach_sources():
+        close_source(handle)

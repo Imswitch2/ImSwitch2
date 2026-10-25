@@ -12,7 +12,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy import QtCore, QtGui, QtWidgets  # noqa: E402
+from qtpy import QtCore, QtGui, QtTest, QtWidgets  # noqa: E402
 
 from imswitch.improcess.model.workfloweditor import WorkflowDocument, build_catalog  # noqa: E402
 from imswitch.improcess.model.workfloweditor.preferences import EditorPreferences  # noqa: E402
@@ -541,3 +541,116 @@ def test_undoing_a_code_edit_is_not_overwritten_by_the_code_box(editor, qapp):
     assert editor.document.history.can_redo
     editor.redo()
     assert editor.document.step("script").params["code"] == "out = data\n"
+
+
+# -- what the independent review found ------------------------------------------------------
+
+def _line_edit(editor, text):
+    return next(e for e in editor.inspector.widget().findChildren(QtWidgets.QLineEdit) if e.text() == text)
+
+
+def _type(qapp, edit, text):
+    edit.window().activateWindow()
+    edit.setFocus()
+    _settle(qapp)
+    edit.selectAll()
+    QtTest.QTest.keyClicks(edit, text)
+    assert edit.isModified()
+
+
+def test_typing_left_in_a_field_is_not_written_over_an_undo(editor, qapp):
+    editor.open_file(str(_EXAMPLE))
+    editor.edit("radius", lambda: editor.document.set_param("smooth", "radius", 4.0))
+    editor.select_step("out")
+    template = editor.document.step("out").path_template
+    _type(qapp, _line_edit(editor, template), "typed_{source_stem}")
+    editor.undo()                     # hides the field, which must not finish into the document
+    _settle(qapp)
+    assert editor.document.step("smooth").params.get("radius") == 2.0
+    assert editor.document.step("out").path_template == template
+    assert editor.document.history.can_redo
+    editor.select_step("smooth")      # the rebuilt inspector works
+    editor.inspector.param_form.set_value("amount", 0.9)
+    assert editor.document.step("smooth").params["amount"] == 0.9
+
+
+def test_an_undo_with_nothing_to_undo_leaves_the_inspector_working(editor, qapp):
+    editor.open_file(str(_EXAMPLE))
+    editor.select_step("smooth")
+    editor.undo()
+    editor.redo()
+    editor.inspector.param_form.set_value("amount", 0.9)
+    assert editor.document.step("smooth").params["amount"] == 0.9
+
+
+def test_typing_is_written_to_its_own_step_when_the_program_selects_another(editor, qapp):
+    editor.open_file(str(_EXAMPLES / "python_step_signal_trace.yaml"))
+    editor.select_step("script")
+    raw_before = editor.document.step("raw").to_dict()
+    _type(qapp, editor.inspector.ports_edit, "level")
+    editor.select_step("raw")         # by the program: no focus moved first
+    _settle(qapp)
+    assert editor.document.step("script").params["ports"] == "level"
+    assert editor.document.step("raw").to_dict() == raw_before
+    assert editor.inspector.step_id == "raw"
+
+
+def test_typing_left_in_a_field_stays_with_its_document(editor, qapp):
+    editor.open_file(str(_EXAMPLES / "python_step_signal_trace.yaml"))
+    editor.select_step("script")
+    _type(qapp, editor.inspector.ports_edit, "level")
+    editor.inspector.python_editor.setText("out = data\n")
+    editor.inspector._code_dirty = True      # as typing sets it
+    editor.document.dirty = False
+    assert editor.open_file(str(_EXAMPLES / "python_step_signal_trace.yaml"))
+    _settle(qapp)
+    params = editor.document.step("script").params
+    assert params["ports"] != "level" and params["code"] != "out = data\n"
+    assert not editor.document.dirty and not editor.document.history.can_undo
+
+
+def test_a_frame_dragged_right_after_framing_carries_its_boxes(editor, qapp):
+    editor.open_file(str(_EXAMPLE))
+    editor.scene.select_steps(["smooth", "sharp"])
+    assert editor.frame_selection("filters")
+    _settle(qapp)
+    assert set(editor.selected_step_ids()) == {"smooth", "sharp"}     # still selected, as after Ctrl+G
+    frame = editor.scene.frames[0]
+    before = {sid: editor.scene.node(sid).pos() for sid in ("smooth", "sharp", "merge")}
+    grip = frame.mapToScene(QtCore.QPointF(40, frame.TITLE_H / 2))
+    _drag(qapp, editor.view, grip, grip + QtCore.QPointF(120, 80))
+    _settle(qapp)
+    for sid in ("smooth", "sharp"):
+        moved = editor.scene.node(sid).pos() - before[sid]
+        assert (round(moved.x()), round(moved.y())) == (120, 80), sid
+        assert editor.document.positions[sid] == pytest.approx(
+            (before[sid].x() + 120, before[sid].y() + 80), abs=0.5)
+    assert editor.scene.node("merge").pos() == before["merge"]
+
+
+def test_a_cable_end_dropped_back_on_its_own_box_changes_nothing(editor, qapp):
+    editor.open_file(str(_EXAMPLE))
+    body = editor.scene.node("merge").mapToScene(QtCore.QPointF(100, 70))
+    _drag(qapp, editor.view, _in(editor, "merge", 0), body)     # not moved to the free input
+    assert _refs(editor, "merge") == ["smooth", "sharp"]
+    assert not editor.document.history.can_undo
+
+
+def test_runs_asked_for_during_a_run_are_merged_into_one(editor):
+    editor._queue(["smooth"])
+    editor._queue(["sharp", "smooth"])
+    assert editor._queued == (["smooth", "sharp"],)
+    editor._queue(None)               # everything
+    editor._queue(["merge"])
+    assert editor._queued == (None,)
+
+
+def test_python_code_that_came_with_a_document_waits_for_one_run(editor, catalog):
+    python = Workflow("w", [Source("raw"), Reconstruct("rec", "view-only", inputs=["raw"]),
+                            Process("py", "python", {"code": "out = data\n"}, inputs=["rec"])])
+    assert editor.load_document(WorkflowDocument(python, catalog=catalog), confirm=False)
+    assert editor._python_trusted is False         # e.g. a result's history
+    assert editor.load_document(WorkflowDocument(Workflow.from_dict(python.to_dict()), catalog=catalog),
+                                confirm=False, trusted=True)
+    assert editor._python_trusted is True          # e.g. a recipe from the user's own snippets
+    assert editor.new_blank() and editor._python_trusted is True

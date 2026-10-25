@@ -581,12 +581,14 @@ class FrameItem(QtWidgets.QGraphicsItem):
             self._resizing = (event.scenePos(), QtCore.QSizeF(self.size))
             event.accept()
             return
+        # The base press settles the selection first (a plain click clears it):
+        # what is still selected afterwards moves with the frame by itself.
+        super().mousePressEvent(event)
         scene = self.scene()
         area = self.sceneBoundingRect()
         self._carried = [node for node in getattr(scene, "nodes", {}).values()
                          if area.contains(node.sceneBoundingRect().center()) and not node.isSelected()]
         self._last = QtCore.QPointF(self.pos())
-        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         if self._resizing is not None:

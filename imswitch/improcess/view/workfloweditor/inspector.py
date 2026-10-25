@@ -96,6 +96,8 @@ class Inspector(QtWidgets.QScrollArea):
         self.show_step(None)
 
     def set_document(self, document) -> None:
+        if document is not self._document:
+            self.discard_pending()        # typing belongs to the document it was typed into
         self._document = document
         self.show_step(None)
 
@@ -117,8 +119,23 @@ class Inspector(QtWidgets.QScrollArea):
 
     # -- building ----------------------------------------------------------------------
 
+    def discard_pending(self) -> None:
+        """Forget typing not yet written to the document (before an undo, a
+        redo or another document, which replace what the fields show). The
+        fields stay silent until ``show_step`` builds new ones: call it next."""
+        self._code_timer.stop()
+        self._code_dirty = False
+        body = self.widget()
+        if body is not None:
+            for widget in body.findChildren(QtWidgets.QWidget):
+                if not (self.output_area.isAncestorOf(widget) or self.binding_area.isAncestorOf(widget)):
+                    widget.blockSignals(True)
+
     def show_step(self, step_id: str | None) -> None:
+        if step_id != self._step_id:
+            self._finish_typing()
         self._commit_code()
+        self._retire_body()
         document = self._document
         self._step_id = step_id if step_id and document is not None and document.has(step_id) else None
         self._param_form = None
@@ -152,18 +169,42 @@ class Inspector(QtWidgets.QScrollArea):
                 layout.insertWidget(1, self.binding_area)
             layout.addWidget(self.output_area)
         layout.addStretch(1)
-        old = self.takeWidget()
-        if old is not None:
-            # The output and binding areas outlive the bodies they are shown in.
-            for area in (self.output_area, self.binding_area):
-                if old.isAncestorOf(area):
-                    area.setParent(None)
-            # The old body may hold the widget whose signal brought us here:
-            # let the event loop delete it.
-            old.hide()
-            old.setParent(None)
-            old.deleteLater()
         self.setWidget(body)
+
+    def _finish_typing(self) -> None:
+        """Write what was typed into the focused field to its own step before
+        another is shown: a selection made by a shortcut or the program moves
+        no focus, so the field would not finish by itself. A new name is the
+        exception (renaming selects the renamed step); it is dropped."""
+        body = self.widget()
+        focused = QtWidgets.QApplication.focusWidget()
+        if body is None or not isinstance(focused, QtWidgets.QLineEdit) or not body.isAncestorOf(focused):
+            return
+        if focused.isModified() and focused is not getattr(self, "id_edit", None):
+            focused.setModified(False)
+            focused.editingFinished.emit()
+
+    def _retire_body(self) -> None:
+        """Take the shown body out before the next is built.
+
+        The output and binding areas outlive the bodies they are shown in.
+        The old fields are silenced first: hiding a focused line edit makes
+        it emit ``editingFinished``, which would otherwise write its text to
+        whatever step is shown next, or over an undo. The body may hold the
+        widget whose signal brought us here, so the event loop deletes it.
+        """
+        old = self.takeWidget()
+        if old is None:
+            return
+        for area in (self.output_area, self.binding_area):
+            if old.isAncestorOf(area):
+                area.setParent(None)
+        old.blockSignals(True)
+        for widget in old.findChildren(QtWidgets.QWidget):
+            widget.blockSignals(True)
+        old.hide()
+        old.setParent(None)
+        old.deleteLater()
 
     def _build_header(self, layout, step) -> None:
         document = self._document
@@ -252,13 +293,15 @@ class Inspector(QtWidgets.QScrollArea):
 
     def _build_source(self, form, step: Source) -> None:
         spec = step.source
+        sid = step.id
         path_row = QtWidgets.QWidget()
         path_layout = QtWidgets.QHBoxLayout(path_row)
         path_layout.setContentsMargins(0, 0, 0, 0)
         self.path_edit = QtWidgets.QLineEdit(spec.path or "")
         self.path_edit.setPlaceholderText("No file: bound when the workflow runs")
-        self.path_edit.editingFinished.connect(lambda: self._edit(
-            "Change the recording", lambda: self._document.set_source(self._step_id, path=self.path_edit.text().strip() or None),
+        path_edit = self.path_edit
+        path_edit.editingFinished.connect(lambda: self._edit(
+            "Change the recording", lambda: self._document.set_source(sid, path=path_edit.text().strip() or None),
             structural=True))
         browse = QtWidgets.QPushButton("Browse…")
         browse.clicked.connect(self._browse_source)
@@ -268,13 +311,13 @@ class Inspector(QtWidgets.QScrollArea):
         dataset = QtWidgets.QLineEdit(spec.dataset or "")
         dataset.setPlaceholderText("Only when the file holds several datasets")
         dataset.editingFinished.connect(lambda e=dataset: self._edit(
-            "Change the dataset", lambda: self._document.set_source(self._step_id, dataset=e.text().strip() or None)))
+            "Change the dataset", lambda: self._document.set_source(sid, dataset=e.text().strip() or None)))
         form.addRow("Dataset", dataset)
         kind = QtWidgets.QComboBox()
         kind.addItems(list(SOURCE_KINDS))
         kind.setCurrentText(spec.source_kind)
         kind.activated.connect(lambda _index, c=kind: self._edit(
-            "Change the source kind", lambda: self._document.set_source(self._step_id, source_kind=c.currentText())))
+            "Change the source kind", lambda: self._document.set_source(sid, source_kind=c.currentText())))
         form.addRow("Kind", kind)
         if spec.fingerprint:
             form.addRow(_muted("Carries a recorded fingerprint; a replay checks the file against it."))
@@ -407,11 +450,13 @@ class Inspector(QtWidgets.QScrollArea):
         self._python = editor
         layout.addWidget(editor, 1)
         row = QtWidgets.QFormLayout()
-        self.ports_edit = QtWidgets.QLineEdit(str(params.get("ports", DEFAULT_PORTS)))
-        self.ports_edit.setToolTip("Comma-separated names the code sets in `outputs`; each is an output of the box")
-        self.ports_edit.editingFinished.connect(lambda: self._edit(
-            "Change the output ports", lambda: self._document.set_param(self._step_id, "ports", self.ports_edit.text()),
+        ports_edit = QtWidgets.QLineEdit(str(params.get("ports", DEFAULT_PORTS)))
+        ports_edit.setToolTip("Comma-separated names the code sets in `outputs`; each is an output of the box")
+        sid = step.id
+        ports_edit.editingFinished.connect(lambda: self._edit(
+            "Change the output ports", lambda: self._document.set_param(sid, "ports", ports_edit.text()),
             structural=True))
+        self.ports_edit = ports_edit
         row.addRow("Output ports", self.ports_edit)
         layout.addLayout(row)
         buttons = QtWidgets.QHBoxLayout()
@@ -505,6 +550,7 @@ class Inspector(QtWidgets.QScrollArea):
 
     def _build_save(self, form, step: Save) -> None:
         catalog = self._document.catalog
+        sid = step.id
         input_combo = _combo()
         input_combo.setEditable(True)
         for option in self._document.port_options(None):
@@ -518,11 +564,11 @@ class Inspector(QtWidgets.QScrollArea):
         fmt.addItems(list(catalog.save_formats) if catalog else [step.fmt])
         fmt.setCurrentText(step.fmt)
         fmt.activated.connect(lambda _i, c=fmt: self._edit(
-            "Change the format", lambda: self._document.set_save(self._step_id, fmt=c.currentText()), structural=True))
+            "Change the format", lambda: self._document.set_save(sid, fmt=c.currentText()), structural=True))
         form.addRow("Format", fmt)
         template = QtWidgets.QLineEdit(step.path_template)
         template.editingFinished.connect(lambda e=template: self._edit(
-            "Change the file name", lambda: self._document.set_save(self._step_id, path_template=e.text()),
+            "Change the file name", lambda: self._document.set_save(sid, path_template=e.text()),
             structural=True))
         form.addRow("File name", template)
         form.addRow(_muted(f"Writes {save_file_name(step)} in the output folder."))

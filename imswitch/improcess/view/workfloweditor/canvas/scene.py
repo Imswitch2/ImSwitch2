@@ -285,8 +285,8 @@ class WorkflowScene(QtWidgets.QGraphicsScene):
         producer, ref = drag["producer"], drag["ref"]
         self.cancel_cable()
         if mode == "detach":
-            if port is drag["port"]:
-                return
+            if port is drag["port"] or (port is None and node is not None and node.step_id == drag["step"]):
+                return      # dropped back where it came from: nothing changes
             if node is None or node.step_id == producer:
                 step = self.document.step(drag["step"])
                 if isinstance(step, Save):

@@ -579,6 +579,8 @@ class ReconstructionViewController(ImProcessWidgetController):
         else:
             self._widget.setImageDisplayLevels(minimum, maximum)
 
+        if self.__dict__.get("_previewing") is not None:
+            return          # a preview's contrast belongs to no list entry
         result = self.getActiveResult()
         self._storeActiveDisplayLevels(result, (minimum, maximum))
 
@@ -594,6 +596,8 @@ class ReconstructionViewController(ImProcessWidgetController):
         if hasattr(self._widget, "setActiveImageColormap"):
             self._widget.setActiveImageColormap(colormap)
 
+        if self.__dict__.get("_previewing") is not None:
+            return
         result = self.getActiveResult()
         self._storeActiveColormap(result, colormap)
 
@@ -605,6 +609,8 @@ class ReconstructionViewController(ImProcessWidgetController):
     def setDisplayLayerVisible(self, layer_id: str, visible: bool) -> None:
         if hasattr(self._widget, "setImageLayerVisible"):
             self._widget.setImageLayerVisible(layer_id, visible)
+        if self.__dict__.get("_previewing") is not None:
+            return
         result = self.getActiveResult()
         if result is not None and hasattr(result, "setDisplayLayerVisible"):
             result.setDisplayLayerVisible(layer_id, visible)
@@ -612,6 +618,8 @@ class ReconstructionViewController(ImProcessWidgetController):
     def setDisplayLayerColormap(self, layer_id: str, colormap: str) -> None:
         if hasattr(self._widget, "setImageLayerColormap"):
             self._widget.setImageLayerColormap(layer_id, colormap)
+        if self.__dict__.get("_previewing") is not None:
+            return
         result = self.getActiveResult()
         if result is not None and hasattr(result, "setDisplayLayerColormap"):
             result.setDisplayLayerColormap(layer_id, colormap)

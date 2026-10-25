@@ -18,6 +18,7 @@ workflow to whoever connected ``sig_run_requested``.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -78,22 +79,6 @@ QLabel#wfTitle { font-weight: bold; font-size: 11pt; padding: 0 8px; }
 """
 
 
-class _PreviewSignals(QtCore.QObject):
-    done = QtCore.Signal(object, object)     # token, Preview
-
-
-class _PreviewJob(QtCore.QRunnable):
-    """A larger preview (or another plane) of a cached result, off the GUI thread."""
-
-    def __init__(self, token, result, size: int, plane):
-        super().__init__()
-        self.token, self.result, self.size, self.plane = token, result, size, plane
-        self.signals = _PreviewSignals()
-
-    def run(self) -> None:
-        self.signals.done.emit(self.token, make_preview(self.result, self.size, self.plane))
-
-
 class MainWindow(QtWidgets.QMainWindow):
     """See the module docstring."""
 
@@ -124,7 +109,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._active_plan = None
         self._pixmaps: dict = {}
         self._preview_token = None
-        self._preview_jobs: list = []
+        #: Larger previews (another plane) are made on a plain Python thread
+        #: and collected by a GUI timer: no Qt object changes threads (a
+        #: runnable's QObject freed by a pool thread corrupts Qt's state).
+        self._preview_pool: ThreadPoolExecutor | None = None
+        self._preview_jobs: list = []       # (token, future)
+        self._preview_timer = QtCore.QTimer(self)
+        self._preview_timer.setInterval(30)
+        self._preview_timer.timeout.connect(self._collect_previews)
         #: Auto-run may run this document's Python steps: built here, or run once on purpose.
         self._python_trusted = True
         self._auto_timer = QtCore.QTimer(self)
@@ -210,7 +202,7 @@ class MainWindow(QtWidgets.QMainWindow):
         page.sigOpenFile.connect(self.open_file)
         page.sigOpenDialog.connect(lambda: self.open_file())
         self.inspector.sigMessage.connect(self.show_status)
-        self.inspector.sigRenamed.connect(lambda _old, new: self.select_step(new))
+        self.inspector.sigRenamed.connect(self._on_renamed)
         output = self.inspector.output
         output.sigRunToHere.connect(self.run_to_selected)
         output.sigShowInViewer.connect(lambda port: self.show_in_viewer(port=port))
@@ -432,7 +424,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -- documents -----------------------------------------------------------------------
 
-    def load_document(self, document: WorkflowDocument, *, confirm: bool = True) -> bool:
+    def load_document(self, document: WorkflowDocument, *, confirm: bool = True, trusted: bool | None = None) -> bool:
         """Show ``document``; asks first when the current one has unsaved edits."""
         if confirm and not self._maybe_discard():
             return False
@@ -445,7 +437,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.session = RunSession(self.catalog.registry)
         self._pixmaps = {}
         self.document = document
-        self._python_trusted = not _has_python(document) or (document.path is None and not document.notes)
+        # Python code made here (a blank canvas, a recipe from the user's own
+        # snippets) may auto-run; code that came in with a file or a result's
+        # history waits for one Run, as File > Run workflow asks first.
+        self._python_trusted = bool(trusted) if trusted is not None else not _has_python(document)
         self.inspector.set_document(document)
         self.scene.set_document(document)
         self.refresh(inspector=True)
@@ -460,7 +455,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_document(WorkflowDocument(catalog=self.catalog))
 
     def new_blank(self) -> bool:
-        return self.load_document(WorkflowDocument(catalog=self.catalog))
+        return self.load_document(WorkflowDocument(catalog=self.catalog), trusted=True)
 
     def new_from_recording(self) -> bool:
         """A source bound to the open recording, shown as it is (View only)."""
@@ -475,9 +470,9 @@ class MainWindow(QtWidgets.QMainWindow):
         document = WorkflowDocument(Workflow(f"from-{stem}", [
             Source("raw"), Reconstruct("rec", "view-only", inputs=["raw"]),
         ]), catalog=self.catalog)
-        if not self.load_document(document):
+        if not self.load_document(document, trusted=True):
             return False
-        self.bind_source("raw", path)
+        self.bind_source("raw", path, dataset=recording[1])
         self.select_step("rec")
         return True
 
@@ -498,7 +493,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError as exc:
             self.show_status(str(exc))
             return False
-        if not self.load_document(document):
+        if not self.load_document(document, trusted=True):
             return False
         self.select_step("script")
         self.show_status(f"Recipe '{recipe.title}': drop a recording on 'raw', then Run (F5).")
@@ -561,6 +556,10 @@ class MainWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         self.release_session()
+        self._preview_timer.stop()
+        if self._preview_pool is not None:
+            self._preview_pool.shutdown(wait=False, cancel_futures=True)
+            self._preview_pool = None
         super().closeEvent(event)
         self.sig_closed.emit()
 
@@ -735,16 +734,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.view.fit()
 
     def undo(self) -> None:
-        label = self.document.history.undo()
-        if label is None:
+        history = self.document.history
+        if not history.can_undo:
             return
+        self.inspector.discard_pending()      # silences the fields; the refresh rebuilds them
+        label = history.undo()
         self.refresh(inspector=True)
         self.show_status(f"Undid: {label}")
 
     def redo(self) -> None:
-        label = self.document.history.redo()
-        if label is None:
+        history = self.document.history
+        if not history.can_redo:
             return
+        self.inspector.discard_pending()
+        label = history.redo()
         self.refresh(inspector=True)
         self.show_status(f"Redid: {label}")
 
@@ -862,6 +865,11 @@ class MainWindow(QtWidgets.QMainWindow):
             created.append(step.id)
 
         self.edit("Add a recording", action, select=created)
+
+    def _on_renamed(self, old: str, new: str) -> None:
+        self.session.rename_step(old, new)
+        self.refresh(inspector=False)
+        self.select_step(new)
 
     def _on_activated(self, step_id: str) -> None:
         self.select_step(step_id)
@@ -1075,7 +1083,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not targets:
             return False
         if self._running:
-            self._queued = (targets,)
+            self._queue(targets)
             return True
         if self._issues_for(targets):
             return False
@@ -1115,6 +1123,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh(inspector=False)
         return self._start_run(list(step_ids))
 
+    def _queue(self, targets) -> None:
+        """One re-run after this one, covering everything asked for meanwhile
+        (``None``, everything, absorbs any narrower request)."""
+        if self._queued is None:
+            self._queued = (list(targets) if targets else None,)
+            return
+        (queued,) = self._queued
+        if queued is None or not targets:
+            self._queued = (None,)
+        else:
+            self._queued = (list(dict.fromkeys(list(queued) + list(targets))),)
+
     def _issues_for(self, targets) -> list:
         if not targets:
             return list(self._issues)
@@ -1130,7 +1150,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._running:
             # Edits made meanwhile only mark steps outdated; one queued re-run
             # picks them all up when this run ends.
-            self._queued = (targets,)
+            self._queue(targets)
             self.show_status("The workflow will run again when this run ends.")
             return True
         self._issues = self.document.issues()
@@ -1312,16 +1332,22 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         token = (step_id, port, plane, entry.key)
         self._preview_token = token
-        job = _PreviewJob(token, result, 480, None if plane < 0 else plane)
-        job.signals.done.connect(self._preview_ready)
-        self._preview_jobs.append(job)
-        QtCore.QThreadPool.globalInstance().start(job)
+        if self._preview_pool is None:
+            self._preview_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workflow-preview")
+        future = self._preview_pool.submit(make_preview, result, 480, None if plane < 0 else plane)
+        self._preview_jobs.append((token, future))
+        self._preview_timer.start()
 
-    def _preview_ready(self, token, preview) -> None:
-        self._preview_jobs = [job for job in self._preview_jobs if job.token != token]
-        if token != self._preview_token:
-            return
-        self.inspector.output.set_preview(token[1], preview)
+    def _collect_previews(self) -> None:
+        pending = []
+        for token, future in self._preview_jobs:
+            if not future.done():
+                pending.append((token, future))
+            elif token == self._preview_token and not future.cancelled() and future.exception() is None:
+                self.inspector.output.set_preview(token[1], future.result())
+        self._preview_jobs = pending
+        if not pending:
+            self._preview_timer.stop()
 
     def _update_binding(self, step_id: str, state) -> None:
         area = self.inspector.binding_area
@@ -1352,7 +1378,7 @@ class MainWindow(QtWidgets.QMainWindow):
             open_button = QtWidgets.QPushButton("Use the open recording")
             open_button.setEnabled(recording is not None)
             open_button.setToolTip(f"Run on {recording[0]}" if recording else "No recording with a file is open in ImProcess")
-            open_button.clicked.connect(lambda: recording and self.bind_source(step_id, recording[0]))
+            open_button.clicked.connect(lambda: recording and self.bind_source(step_id, recording[0], recording[1]))
             row.addWidget(open_button)
             if bound:
                 unbind = QtWidgets.QPushButton("Unbind")
@@ -1388,9 +1414,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if path:
             self.bind_source(step_id, path)
 
-    def bind_source(self, step_id: str, path) -> None:
-        """Run ``step_id`` on ``path`` in this session (``None`` unbinds)."""
-        self.session.bind_source(self.document, step_id, path, self._source_root())
+    def bind_source(self, step_id: str, path, dataset: str | None = None) -> None:
+        """Run ``step_id`` on ``path`` (at ``dataset``) in this session (``None`` unbinds)."""
+        self.session.bind_source(self.document, step_id, path, self._source_root(), dataset=dataset)
         self.refresh(inspector=False)
         self.show_status(f"'{step_id}' runs on {Path(path).name} in this session." if path else f"'{step_id}' unbound.")
 

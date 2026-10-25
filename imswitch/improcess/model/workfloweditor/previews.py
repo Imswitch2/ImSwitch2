@@ -70,10 +70,21 @@ def result_kind_of(result) -> str:
 
 
 def _array(result):
-    data = getattr(result, "data", None)
-    if data is None and type(result).__name__ == "DataObj":
-        data = getattr(result, "getData", lambda: None)()
-    return data
+    """What to read pixels from, without reading the whole of it.
+
+    A recording's ``data`` would decode the whole dataset (and keep it, so the
+    reconstruction after it would get an in-memory copy instead of a lazy
+    view): use its lazy handle, which reads one plane at a time, or nothing
+    when even a plane read would decode the whole series.
+    """
+    if type(result).__name__ == "DataObj":
+        if getattr(result, "dataLoaded", False):
+            return result.data
+        bounded = getattr(result, "planeReadIsBounded", None)
+        if callable(bounded) and not bounded():
+            return None
+        return getattr(result, "data_handle", None)
+    return getattr(result, "data", None)
 
 
 def _axes(result, ndim: int) -> tuple:
@@ -123,7 +134,7 @@ def _plane(data, index: int, keep: int = 2) -> np.ndarray:
     shape = tuple(data.shape)
     lead = shape[: len(shape) - keep]
     if not lead:
-        return np.asarray(data[...])
+        return np.asarray(data[(slice(None),) * len(shape)])
     where = np.unravel_index(int(index), lead)
     return np.asarray(data[tuple(int(i) for i in where)])
 
@@ -206,13 +217,12 @@ def _make(result, kind: str, size: int, plane: int | None) -> Preview:
         moved = np.moveaxis(np.asarray(data), channel, 0) if small else None
         count = shape[channel]
         if moved is None:
-            # A lazy composite: one plane per channel, from the middle of the rest.
+            # A lazy composite: one plane per channel, from the middle of the
+            # other stack axes -- never more than those planes are read.
             planes = []
             for c in range(count):
-                index = [slice(None)] * len(shape)
-                index[channel] = c
-                sub = data[tuple(index)]
-                planes.append(_plane(sub, _plane_count(tuple(sub.shape), 2) // 2))
+                index = [c if axis == channel else shape[axis] // 2 for axis in range(len(shape) - 2)]
+                planes.append(np.asarray(data[tuple(index) + (slice(None), slice(None))]))
             rgb = _composite(planes)
             return Preview(kind=kind, rgb=_shrink(rgb, size), shape=shape, axes=axes, dtype=dtype, sampled=True,
                            extra=extra)

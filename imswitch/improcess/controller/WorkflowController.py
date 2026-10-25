@@ -157,9 +157,13 @@ class _InteractiveWorker(_RunWorker):
         from imswitch.improcess.model.workfloweditor.session import execute
 
         report, error = execute(self._plan, self._registry, on_step=self.sigStep.emit, progress=self._progress,
-                                cancel=self._should_stop)
+                                cancel=self._should_stop, interrupts=self._allow_interrupts)
         self.sigEnded.emit(report, error)
         self.sigDone.emit(0 if error else 1, 1 if error else 0)
+
+    def _allow_interrupts(self, allowed: bool) -> None:
+        # A finished step's previews and report are not a processor to interrupt.
+        self._interruptible = bool(allowed) and self._interruptible
 
 
 #: Workflow threads that did not stop within the shutdown wait; referenced

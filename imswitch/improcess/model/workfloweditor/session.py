@@ -121,6 +121,9 @@ class RunPlan:
     write_saves: bool
     source_stem: str | None
     source_root: str | None
+    #: The nonces the plan's fingerprints use; adopted by the session only
+    #: when the plan is run (a plan made and dropped changes nothing).
+    nonces: dict = field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
@@ -162,6 +165,11 @@ class RunSession:
         self._plan: RunPlan | None = None
         self._created: list[str] = []
         self.source_bindings: dict[str, str] = {}
+        #: The dataset a bound file is read at (None: the step's own).
+        self.source_datasets: dict[str, str | None] = {}
+        #: Handles the running plan reads through its cached results, held
+        #: until the run ends so that nothing done meanwhile closes them.
+        self._plan_handles: list = []
         self.result_bindings: dict[str, object] = {}
         self.summary: RunSummary | None = None
         self.closed = False
@@ -203,14 +211,23 @@ class RunSession:
                 stat = [int(info.st_size), int(info.st_mtime_ns)]
             except OSError:
                 stat = None
-        return {"kind": "source", "path": os.path.abspath(path) if path else None, "dataset": spec.dataset,
+        dataset = self.source_datasets.get(step.id) or spec.dataset
+        return {"kind": "source", "path": os.path.abspath(path) if path else None, "dataset": dataset,
                 "source_kind": spec.source_kind, "stat": stat}
 
-    def fingerprints(self, document, source_root=None) -> dict[str, str]:
-        """Every step's fingerprint, with the nonces assigned so far."""
+    def binding_spec(self, step: Source):
+        """The spec a bound source runs on: its own, with the bound file (and dataset)."""
+        path = self.source_bindings.get(step.id)
+        if not path:
+            return None
+        return step.source.with_path(path, self.source_datasets.get(step.id))
+
+    def fingerprints(self, document, source_root=None, nonces=None) -> dict[str, str]:
+        """Every step's fingerprint, with the nonces assigned so far (or ``nonces``)."""
+        nonces = self._nonces if nonces is None else nonces
         prints: dict[str, str] = {}
         for step in document.steps:
-            prints[step.id] = self._fingerprint(document, step, prints, source_root)
+            prints[step.id] = self._fingerprint(document, step, prints, source_root, nonces)
         return prints
 
     def _base(self, document, step, prints, source_root) -> dict:
@@ -230,11 +247,11 @@ class RunSession:
             "restriction": getattr(step, "restriction", None), "inputs": inputs,
         }
 
-    def _fingerprint(self, document, step, prints, source_root) -> str:
+    def _fingerprint(self, document, step, prints, source_root, nonces) -> str:
         base = _digest(self._base(document, step, prints, source_root))
         if isinstance(step, (Source, Save)) or step.id in self.result_bindings or self.deterministic(step):
             return base
-        return _digest({"base": base, "nonce": self._nonces.get(base, "unrun")})
+        return _digest({"base": base, "nonce": nonces.get(base, "unrun")})
 
     def _base_key(self, document, step, prints, source_root) -> str:
         return _digest(self._base(document, step, prints, source_root))
@@ -303,8 +320,9 @@ class RunSession:
             targets = [step.id for step in steps if not descendants(steps, step.id)]
         sub = [step for step in steps if step.id in wanted]
         renewed: set[str] = set()
+        nonces = dict(self._nonces)
         while True:
-            prints = self.fingerprints(document, source_root)
+            prints = self.fingerprints(document, source_root, nonces)
             cached = {step.id for step in sub if self._bindable(step) and self._held(prints[step.id])}
             cached |= {step.id for step in sub if step.id in self.result_bindings}
             runs = self._runs(sub, set(targets), cached)
@@ -315,7 +333,7 @@ class RunSession:
                 break
             for step in fresh:
                 base = self._base_key(document, step, prints, source_root)
-                self._nonces[base] = uuid.uuid4().hex
+                nonces[base] = uuid.uuid4().hex
                 renewed.add(step.id)
         bindings = {}
         for step in sub:
@@ -326,7 +344,7 @@ class RunSession:
                 entry.last_used = time.monotonic()
                 bindings[step.id] = dict(entry.ports)
             elif isinstance(step, Source) and step.id in self.source_bindings:
-                bindings[step.id] = str(self.source_bindings[step.id])
+                bindings[step.id] = self.binding_spec(step)
         workflow = Workflow.from_dict({**document.workflow.to_dict(), "steps": [s.to_dict() for s in sub]})
         self._run_id += 1
         return RunPlan(
@@ -336,7 +354,7 @@ class RunSession:
             targets=list(targets),
             out_dir=Path(out_dir) if out_dir else Path(tempfile.gettempdir()) / "imswitch-workflow-preview",
             overwrite=bool(overwrite), write_saves=bool(write_saves),
-            source_stem=self._stem(document, source_root), source_root=source_root,
+            source_stem=self._stem(document, source_root), source_root=source_root, nonces=nonces,
         )
 
     @staticmethod
@@ -380,7 +398,16 @@ class RunSession:
     # -- a run -------------------------------------------------------------------------
 
     def begin(self, plan: RunPlan) -> None:
+        self._nonces = dict(plan.nonces) if plan.nonces else self._nonces
         self._plan = plan
+        held = []
+        for step_id in plan.cached:
+            entry = self._cache.get(plan.keys.get(step_id, ""))
+            if entry is not None:
+                held.extend(entry.handles)
+        self._plan_handles = _unique(held)
+        for handle in self._plan_handles:
+            self._retain(handle)
         self._created = []
         self._running = None
         self._waiting = set(plan.to_run)
@@ -419,6 +446,8 @@ class RunSession:
             summary.ran.append(step_id)
             summary.seconds += float(seconds)
         step = plan.workflow.step(step_id)
+        if isinstance(step, Save):
+            return          # what a Save wrote is in finish(); it holds no result
         if previews is None:
             previews = {port: make_preview(result) for port, result in ports.items()}
         keep = None if isinstance(step, Source) else dict(ports)
@@ -443,11 +472,7 @@ class RunSession:
             return summary
         summary.error = error
         handles = list(report.detach_sources()) if report is not None else []
-        inherited = []
-        for step_id in plan.cached:
-            entry = self._cache.get(plan.keys.get(step_id, ""))
-            if entry is not None:
-                inherited.extend(entry.handles)
+        inherited, self._plan_handles = self._plan_handles, []
         created = [self._cache[key] for key in self._created if key in self._cache]
         for entry in created:
             for handle in _unique(handles + inherited):
@@ -455,6 +480,8 @@ class RunSession:
         if handles and not created:
             for handle in handles:
                 self._close(handle)
+        for handle in inherited:
+            self._release(handle)
         if report is not None:
             for step_id, path in getattr(report, "would_write", {}).items():
                 self._would_write[step_id] = (plan.keys.get(step_id, ""), Path(path))
@@ -500,14 +527,18 @@ class RunSession:
             self._nonces.pop(self._base_key(document, step, prints, source_root), None)
         return sorted(dropped)
 
-    def bind_source(self, document, step_id: str, path: str | None, source_root=None) -> None:
-        """Run ``step_id`` on ``path`` in this session (``None`` unbinds); the
-        file keeps its own path. Results of the old binding are released."""
+    def bind_source(self, document, step_id: str, path: str | None, source_root=None, *,
+                    dataset: str | None = None) -> None:
+        """Run ``step_id`` on ``path`` (at ``dataset``, else the step's own) in
+        this session (``None`` unbinds); the file keeps its own path. Results
+        of the old binding are released."""
         before = self.fingerprints(document, source_root)
         if path:
             self.source_bindings[step_id] = str(path)
+            self.source_datasets[step_id] = str(dataset) if dataset else None
         else:
             self.source_bindings.pop(step_id, None)
+            self.source_datasets.pop(step_id, None)
         self._release_below(document, step_id, before)
 
     def bind_result(self, document, step_id: str, result, source_root=None) -> None:
@@ -525,6 +556,20 @@ class RunSession:
             entry = self._cache.get(before.get(sid, ""))
             if entry is not None and not entry.pinned:
                 self._evict(entry, keep_preview=True)
+
+    def rename_step(self, old: str, new: str) -> None:
+        """A step was renamed: its bindings and states follow it (fingerprints
+        do not name steps, so its results do anyway)."""
+        for table in (self.source_bindings, self.source_datasets, self.result_bindings, self._failed,
+                      self._last_key, self._would_write, self._wrote):
+            if old in table:
+                table[new] = table.pop(old)
+        for group in (self._cached_last, self._waiting):
+            if old in group:
+                group.discard(old)
+                group.add(new)
+        if self._running == old:
+            self._running = new
 
     def pin(self, document, step_id: str, port: str | None = None, source_root=None):
         """The result to publish for ``step_id`` (its first port, or ``port``),
@@ -587,6 +632,9 @@ class RunSession:
         if any(h is handle for h in entry.handles):
             return
         entry.handles.append(handle)
+        self._retain(handle)
+
+    def _retain(self, handle) -> None:
         slot = self._handle_refs.setdefault(id(handle), [handle, 0])
         slot[1] += 1
 
@@ -615,18 +663,20 @@ class RunSession:
         """Release everything; returns ``(uids, handles)`` for the pinned
         results, whose handles the caller must keep open as long as they are
         loaded (the controller's retained list). Every other handle is closed."""
-        handover = []
-        kept: set[int] = set()
+        # One entry per file, naming every pinned result that may read it: the
+        # controller closes an entry once none of its results is loaded, so a
+        # file two pinned results share must not be handed over twice.
+        readers: dict[int, tuple] = {}
         for entry in self._cache.values():
-            if entry.pinned and entry.held:
-                uids = frozenset(str(getattr(entry.ports[port], "result_uid", "") or id(entry.ports[port]))
-                                 for port in entry.pinned if port in entry.ports)
-                handles = list(entry.handles)
-                if handles:
-                    handover.append((uids, handles))
-                    kept |= {id(h) for h in handles}
+            if not (entry.pinned and entry.held):
+                continue
+            uids = {str(getattr(entry.ports[port], "result_uid", "") or id(entry.ports[port]))
+                    for port in entry.pinned if port in entry.ports}
+            for handle in entry.handles:
+                readers.setdefault(id(handle), (handle, set()))[1].update(uids)
+        handover = [(frozenset(uids), [handle]) for handle, uids in readers.values()]
         for slot in list(self._handle_refs.values()):
-            if id(slot[0]) not in kept:
+            if id(slot[0]) not in readers:
                 self._close(slot[0])
         self._handle_refs = {}
         self._cache = {}
@@ -634,15 +684,21 @@ class RunSession:
         return handover
 
 
-def execute(plan: RunPlan, registry, *, on_step=None, progress=None, cancel=None, preview_size: int = 192):
+def execute(plan: RunPlan, registry, *, on_step=None, progress=None, cancel=None, preview_size: int = 192,
+            interrupts=None):
     """Run ``plan`` on the calling thread; returns ``(report, error)``.
 
     ``on_step(step_id, ports, seconds, cached, previews)`` is called as each
     step finishes, with previews made here (a worker thread, in the editor).
+    ``interrupts(False)`` is called first: a step that finished is no longer
+    one a Stop may interrupt (the caller allows it again at the next step).
     """
+    from imswitch.imcommon.model import OperationCancelled
     from imswitch.improcess.workflows.runner import RunError, run
 
     def done(step_id, ports, seconds, cached):
+        if interrupts is not None:
+            interrupts(False)
         if on_step is None:
             return
         previews = {} if cached else {port: make_preview(result, preview_size) for port, result in ports.items()}
@@ -656,6 +712,10 @@ def execute(plan: RunPlan, registry, *, on_step=None, progress=None, cancel=None
         )
     except RunError as exc:
         return getattr(exc, "report", None), str(exc)
+    except OperationCancelled:
+        # Landed outside a step (the runner turns one inside a step into a
+        # RunError with its report): the run is over, cancelled.
+        return None, "cancelled"
     except Exception as exc:  # noqa: BLE001 - reported in the editor
         return None, str(exc)
     return report, None

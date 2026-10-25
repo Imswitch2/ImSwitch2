@@ -8,6 +8,10 @@ cache, previews, Show in viewer and Pin (Phase 2), the start page, list
 cards, auto-run, frames and the docs with screenshots of the real editor
 (Phase 3); every exit item is covered by headless tests except Phase 3's
 check with two people who have not used the editor, which is still to do.
+An independent review of the implementation (2026-10-25) found eleven
+defects (among them previews that decoded the whole recording, a file a
+running plan reads closed by an edit made meanwhile, typing written over an
+undo); each is fixed and has a regression test that fails without the fix.
 Phase 4 is to be decided now that Phase 3 has shipped. Three independent
 review rounds on 2026-10-24 approved the plan (see *Review record*). The
 mockups below are renders of the spike that preceded the editor

@@ -479,7 +479,17 @@ def run(
             raise error from exc
         report.steps_run.append(step.id)
         if not reported:
-            report_done(step.id, keys_before, started)
+            try:
+                report_done(step.id, keys_before, started)
+            except OperationCancelled as exc:
+                # An interruption meant for the step that just ended, landing
+                # while it is reported: the run stops here, report attached,
+                # so its open sources are closed rather than lost.
+                report.error = f"{step.id}: cancelled"
+                report.failure = failure_details(step.id, exc)
+                error = RunError(report.error)
+                error.report = report      # type: ignore[attr-defined]
+                raise error from exc
     if progress is not None:
         progress(total, total, "done")
     return report

@@ -283,3 +283,89 @@ def test_a_workflow_preview_is_shown_without_entering_the_list_or_taking_its_con
     controller.listItemChanged()                          # ...is not the listed result's
     assert view.imgLayer.name == "listed"
     assert tuple(view.imgLayer.contrast_limits) == (2.0, 9.0)
+
+
+# -- what the independent review found ------------------------------------------------------
+
+def test_a_renamed_source_still_runs_on_its_bound_recording(rig):
+    editor = _diamond(rig)
+    assert editor.run_to("rec")
+    _wait(rig)
+    editor.select_step("raw")
+    editor.inspector.id_edit.setText("input")
+    editor.inspector.id_edit.editingFinished.emit()
+    rig.app.processEvents()
+    assert editor.session.source_bindings == {"input": rig.recording}
+    assert _status(editor, "rec") == "done"            # a rename outdates nothing
+    assert editor.run()
+    _wait(rig)
+    assert _status(editor, "merge") == "done"
+
+
+def test_the_open_recording_is_used_at_its_dataset(rig):
+    import h5py
+    import numpy as np
+
+    with h5py.File(rig.recording, "a") as handle:
+        handle.create_dataset("other", data=np.zeros((3, 40, 40), np.float32)).attrs["axes"] = "CYX"
+    editor = rig.editor
+    editor.open_file(str(_EXAMPLES / "split_process_merge_diamond.yaml"))
+    rig.controller._onCurrentData(SimpleNamespace(dataPath=rig.recording, datasetName="other"))
+    editor.select_step("raw")
+    buttons = editor.inspector.binding_area.findChildren(QtWidgets.QPushButton)
+    next(b for b in buttons if b.text() == "Use the open recording").click()
+    assert editor.session.source_datasets == {"raw": "other"}
+    assert editor.run_to("rec")
+    _wait(rig)
+    assert np.asarray(editor.session.result(editor.document, "rec").data).shape == (3, 40, 40)
+    editor.document.dirty = False
+    assert editor.new_from_recording()
+    assert editor.session.source_bindings == {"raw": rig.recording}
+    assert editor.session.source_datasets == {"raw": "other"}
+
+
+def test_viewer_settings_made_on_a_preview_are_not_stored_on_the_listed_result():
+    from imswitch.improcess._test.test_display_levels_memory import _controller, _dim, _View
+
+    view = _View()
+    controller = _controller(view)
+    listed = _dim("listed", 1.0)
+    view.add(listed)
+    controller.listItemChanged()
+    stored = []
+    controller._storeActiveDisplayLevels = lambda result, levels: stored.append(("levels", result))
+    controller._storeActiveColormap = lambda result, colormap: stored.append(("colormap", result))
+    calls = []
+    listed.setDisplayLayerVisible = lambda *args: calls.append(("visible", args))
+    listed.setDisplayLayerColormap = lambda *args: calls.append(("layer colormap", args))
+    controller.showWorkflowPreview(_dim("preview", 10.0), "preview")
+    stored.clear(), calls.clear()                         # the listed result's own, kept on leaving it
+    controller.setActiveImageDisplayLevels(1.0, 2.0)
+    controller.setActiveImageColormap("magma")
+    controller.setDisplayLayerVisible("layer", False)
+    controller.setDisplayLayerColormap("layer", "magma")
+    assert stored == [] and calls == []
+    controller.listItemChanged()                          # back on the list: stored again
+    stored.clear(), calls.clear()
+    controller.setActiveImageColormap("magma")
+    controller.setDisplayLayerVisible("layer", False)
+    assert stored == [("colormap", listed)] and calls == [("visible", ("layer", False))]
+
+
+def test_another_plane_is_made_off_the_gui_thread_and_shown_on_it(rig, monkeypatch):
+    import threading
+
+    editor = _diamond(rig)
+    editor.bind_source("raw", str(write_synthetic_recording(rig.tmp / "frames.h5", frames=12, seed=3)))
+    assert editor.run_to("rec")
+    _wait(rig)
+    output = editor.inspector.output
+    shown = []
+    monkeypatch.setattr(output, "set_preview", lambda port, preview: shown.append(
+        (port, preview.plane, threading.current_thread() is threading.main_thread())))
+    editor.select_step("rec")
+    assert output._planes == 12
+    output.plane.setValue(3)
+    _wait_for(rig, lambda: ("out", 3, True) in shown and not editor._preview_jobs)
+    assert all(on_gui for *_rest, on_gui in shown)
+    assert not editor._preview_timer.isActive()
