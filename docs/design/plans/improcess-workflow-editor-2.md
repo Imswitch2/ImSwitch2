@@ -2,9 +2,11 @@
 
 Date: 2026-10-24 (revision 4, after three review rounds)
 
-Status: Approved for implementation, starting with Phase 0. Three independent
-review rounds on 2026-10-24; the third ended "Fix that sentence and Phase 0 is
-GREEN", and revision 4 makes that fix (see *Review record*). The mockups
+Status: Approved for implementation; **Phase 0 is done** (2026-10-24: kinds,
+runner extensions 1–5, document graph operations with undo, every exit item
+covered by a headless test), Phase 1 is next. Three independent review rounds
+on 2026-10-24; the third ended "Fix that sentence and Phase 0 is GREEN", and
+revision 4 makes that fix (see *Review record*). The mockups
 are renders of a working spike (`tools/workflow_editor_2_mockups/`) that uses
 the real plugin catalogue, the real `WorkflowDocument` and real run results;
 the window around them is the proposal. Supersedes the "graph canvas" item of

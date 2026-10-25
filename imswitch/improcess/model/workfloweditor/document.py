@@ -10,11 +10,19 @@ runtime's own :func:`validate` first, then what the editor can add to it
 (a value that is not one of its field, a path template with a placeholder
 nobody fills, two saves writing one file).
 
+Graph operations -- connect, disconnect, splice, delete, copy and paste --
+keep the file runnable as a graph editor uses it: the list is put back in a
+valid order after a connection (moving as little as possible and keeping the
+order of Source and Save steps), a loop is refused, a Save never loses its
+input, and positions live in ``metadata.editor``. ``history`` undoes and redoes
+any edit made inside ``history.edit(label)``.
+
 Qt-free, so the same object serves a test, a command line and a window.
 """
 
 from __future__ import annotations
 
+import copy
 import re
 import string
 from dataclasses import dataclass
@@ -23,6 +31,8 @@ from typing import Any, Iterable, Mapping
 
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.workfloweditor.catalog import PROCESSOR, RECONSTRUCTOR, Catalog, PluginEntry
+from imswitch.improcess.model.workfloweditor.commands import DocumentHistory
+from imswitch.improcess.model.workfloweditor.graph import CycleError, ancestors, is_ordered, stable_order
 from imswitch.improcess.workflows.sources import SourceSpec
 from imswitch.improcess.workflows.steps import (
     DEFAULT_PORT,
@@ -38,6 +48,7 @@ from imswitch.improcess.workflows.steps import (
     Workflow,
     WorkflowError,
     parse_ref,
+    step_from_dict,
     validate,
 )
 
@@ -89,6 +100,17 @@ def _set_refs(step, refs: list[Ref]) -> None:
         step.inputs = list(refs)
 
 
+def _prune_editor_state(metadata) -> None:
+    """Drop an empty ``positions`` and then an empty ``editor`` from ``metadata``."""
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("editor"), dict):
+        return
+    editor = metadata["editor"]
+    if editor.get("positions") == {}:
+        del editor["positions"]
+    if not editor:
+        del metadata["editor"]
+
+
 def _refs_point_backwards(steps: list) -> str | None:
     """Why the order is wrong (a reference to a later or missing step), or None."""
     seen: set[str] = set()
@@ -112,6 +134,8 @@ class WorkflowDocument:
         self.revision = 0
         #: Notes from the last import (replay warnings); informational.
         self.notes: list[str] = []
+        #: Undo/redo of edits made inside ``history.edit(label)``.
+        self.history = DocumentHistory(self)
 
     # -- files ------------------------------------------------------------------
 
@@ -123,16 +147,33 @@ class WorkflowDocument:
         target = Path(path) if path else self.path
         if target is None:
             raise DocumentError("no file name to save to")
+        self._prune_empty_editor_state()
         written = self.workflow.save(target)
         self.path = written
         self.dirty = False
         return written
 
     def to_dict(self) -> dict:
+        self._prune_empty_editor_state()
         return self.workflow.to_dict()
 
     def to_yaml(self) -> str:
+        self._prune_empty_editor_state()
         return self.workflow.to_yaml()
+
+    def snapshot(self) -> dict:
+        """A deep copy of :meth:`to_dict` that leaves the document as it is
+        (what undo records: reading :attr:`editor_metadata` is not an edit)."""
+        payload = copy.deepcopy(self.workflow.to_dict())
+        _prune_editor_state(payload.get("metadata"))
+        if payload.get("metadata") == {}:
+            del payload["metadata"]
+        return payload
+
+    def _prune_empty_editor_state(self) -> None:
+        """Reading :attr:`editor_metadata` creates it; a file nobody laid out
+        must not gain an empty ``editor: {}`` just because it was opened."""
+        _prune_editor_state(self.workflow.metadata)
 
     @property
     def name(self) -> str:
@@ -349,7 +390,8 @@ class WorkflowDocument:
         self._touch()
 
     def rename_step(self, step_id: str, new_id: str) -> None:
-        """Rename a step and every reference to it."""
+        """Rename a step and every reference to it, its position, and the
+        provenance node a replayed workflow recorded for it."""
         if new_id == step_id:
             return
         new_id = self._check_free_id(new_id)
@@ -359,6 +401,12 @@ class WorkflowDocument:
             refs = _refs_of(later)
             if any(ref.step == step_id for ref in refs):
                 _set_refs(later, [Ref(new_id, ref.port) if ref.step == step_id else ref for ref in refs])
+        positions = self._stored_positions()
+        if positions is not None and step_id in positions:
+            positions[new_id] = positions.pop(step_id)
+        nodes = self.workflow.metadata.get("provenance_nodes")
+        if isinstance(nodes, dict) and step_id in nodes:
+            nodes[new_id] = nodes.pop(step_id)
         self._touch()
 
     def _check_free_id(self, step_id: str) -> str:
@@ -488,6 +536,211 @@ class WorkflowDocument:
             raise DocumentError(f"{step_id} is not a process step")
         step.restriction = dict(restriction) if restriction else None
         self._touch()
+
+    # -- graph operations -------------------------------------------------------
+
+    def _stored_positions(self) -> dict | None:
+        editor = self.workflow.metadata.get("editor")
+        positions = editor.get("positions") if isinstance(editor, dict) else None
+        return positions if isinstance(positions, dict) else None
+
+    @property
+    def positions(self) -> dict[str, tuple[float, float]]:
+        """Where each step is drawn (step id -> (x, y)); empty for a file nobody
+        laid out. An entry that is not two numbers is skipped (the step is then
+        placed as if it had none)."""
+        found: dict[str, tuple[float, float]] = {}
+        for step_id, xy in (self._stored_positions() or {}).items():
+            try:
+                x, y = xy
+                found[str(step_id)] = (float(x), float(y))
+            except (TypeError, ValueError):
+                continue
+        return found
+
+    def set_position(self, step_id: str, x, y) -> None:
+        """Remember where ``step_id`` is drawn, as plain floats (a numpy number
+        would not survive the YAML writer)."""
+        self.step(step_id)
+        positions = self.editor_metadata.setdefault("positions", {})
+        positions[step_id] = [float(x), float(y)]
+        self._touch()
+
+    def connect(self, source, step_id: str, *, index: int | None = None, add: bool = False) -> None:
+        """Make ``step_id`` read from ``source`` (``step`` or ``step.port``).
+
+        ``index`` replaces that input. Otherwise a step that takes several
+        inputs gains one, and a single-input step has its input **replaced** --
+        unless ``add``, which makes a single-input *process* step run once per
+        input (fan-out; its ports gain the input's position: ``out1``, ...).
+        The list is reordered when the connection needs it; a connection that
+        would make a loop is refused.
+        """
+        ref = parse_ref(source)
+        target = self.step(step_id)
+        producer = self.step(ref.step)
+        if isinstance(producer, Save):
+            raise DocumentError(f"{ref.step!r} is a save step and produces nothing to connect")
+        if isinstance(target, Source):
+            raise DocumentError("a source has no inputs")
+        if ref.step == step_id or step_id in ancestors(self.steps, ref.step):
+            raise DocumentError(f"connecting {ref} to {step_id!r} would make a loop")
+        if isinstance(target, Reconstruct) and not isinstance(producer, Source):
+            raise DocumentError("a reconstruction reads from a source step")
+        refs = _refs_of(target)
+        if isinstance(target, (Save, Reconstruct)):
+            refs = [ref]
+        elif index is not None and 0 <= index < len(refs):
+            refs[index] = ref
+        elif isinstance(target, Consolidate) or self._takes_several(target):
+            refs.append(ref)
+        elif add and isinstance(target, Process):
+            refs.append(ref)
+        else:
+            refs = [ref] + refs[1:] if refs else [ref]
+        _set_refs(target, refs)
+        self._reorder()
+        self._touch()
+
+    def disconnect(self, step_id: str, index: int = 0) -> None:
+        """Remove one input of ``step_id``; refused for a Save, which needs one."""
+        target = self.step(step_id)
+        if isinstance(target, Save):
+            raise DocumentError("a save step needs an input; delete the save instead")
+        if isinstance(target, Source):
+            raise DocumentError("a source has no inputs")
+        refs = _refs_of(target)
+        if not 0 <= index < len(refs):
+            raise DocumentError(f"{step_id!r} has no input {index}")
+        del refs[index]
+        _set_refs(target, refs)
+        self._touch()
+
+    def splice(self, step_id: str, target_id: str, index: int = 0) -> None:
+        """Put ``step_id`` on the cable into input ``index`` of ``target_id``:
+        it reads what that input read, and the input reads from it."""
+        inserted = self.step(step_id)
+        if not isinstance(inserted, Process):
+            raise DocumentError("only a processing step can be put on a cable")
+        target = self.step(target_id)
+        if isinstance(target, Reconstruct):
+            raise DocumentError("a reconstruction reads from a source step")
+        refs = _refs_of(target)
+        if not 0 <= index < len(refs):
+            raise DocumentError(f"{target_id!r} has no input {index}")
+        upstream = refs[index]
+        if step_id in (target_id, upstream.step) or step_id in ancestors(self.steps, upstream.step):
+            raise DocumentError(f"putting {step_id!r} on that cable would make a loop")
+        inserted.inputs = [upstream]
+        refs[index] = Ref(step_id)
+        _set_refs(target, refs)
+        self._reorder()
+        self._touch()
+
+    def delete_step(self, step_id: str) -> list[str]:
+        """Delete a step, and every Save that read from it; returns the ids removed.
+
+        A Save cannot exist without its input. Any other step that read from
+        the deleted one loses that input (an empty input list loads, and is
+        reported), rather than keeping a reference to nothing.
+        """
+        self.step(step_id)
+        doomed = {step_id} | {step.id for step in self.steps
+                              if isinstance(step, Save) and step.input.step == step_id}
+        for step in self.steps:
+            if step.id in doomed or isinstance(step, (Source, Save)):
+                continue
+            kept = [ref for ref in step.inputs if ref.step not in doomed]
+            if len(kept) != len(step.inputs):
+                step.inputs = kept
+        self.steps[:] = [step for step in self.steps if step.id not in doomed]
+        positions = self._stored_positions()
+        if positions is not None:
+            for removed in doomed:
+                positions.pop(removed, None)
+        self._touch()
+        return [step_id] + sorted(doomed - {step_id})
+
+    def fragment(self, step_ids: Iterable[str]) -> str:
+        """The selected steps, in file order, with their positions, as YAML text."""
+        import yaml
+
+        wanted = set(step_ids)
+        steps = [step.to_dict() for step in self.steps if step.id in wanted]
+        positions = {sid: list(xy) for sid, xy in self.positions.items() if sid in wanted}
+        return yaml.safe_dump({"steps": steps, "positions": positions}, sort_keys=False)
+
+    def paste(self, text: str, *, offset: tuple[float, float] = (30.0, 30.0)) -> list[str]:
+        """Add the steps in a :meth:`fragment`; returns their ids in this document.
+
+        A pasted id that is taken gets a number (``smooth`` -> ``smooth2``) and
+        the fragment's references follow it. A reference to a step outside the
+        fragment becomes an empty input; a Save whose input is outside it is
+        left out, since a Save needs one.
+        """
+        import yaml
+
+        try:
+            payload = yaml.safe_load(text)
+            dicts = list(payload.get("steps") or [])
+            positions = dict(payload.get("positions") or {})
+        except Exception as exc:
+            raise DocumentError(f"not a workflow fragment: {exc}") from exc
+        try:
+            steps = [step_from_dict(item) for item in dicts]
+        except WorkflowError as exc:
+            raise DocumentError(f"not a workflow fragment: {exc}") from exc
+        if len({step.id for step in steps}) != len(steps):
+            raise DocumentError("not a workflow fragment: two steps share an id")
+        renamed: dict[str, str] = {}
+        taken = {step.id for step in self.steps}
+        for step in steps:
+            new_id = step.id
+            number = 2
+            while new_id in taken:
+                new_id = f"{step.id}{number}"
+                number += 1
+            renamed[step.id] = new_id
+            taken.add(new_id)
+        added: list = []
+        placed: dict[str, list[float]] = {}
+        try:
+            for step in steps:
+                old_id = step.id
+                if isinstance(step, Save):
+                    if step.input.step not in renamed:
+                        continue
+                    step.input = Ref(renamed[step.input.step], step.input.port)
+                elif not isinstance(step, Source):
+                    step.inputs = [Ref(renamed[ref.step], ref.port) for ref in step.inputs if ref.step in renamed]
+                step.id = renamed[old_id]
+                added.append(step)
+                if old_id in positions:
+                    x, y = positions[old_id]
+                    placed[step.id] = [float(x) + offset[0], float(y) + offset[1]]
+            ordered = stable_order(self.steps + added)
+        except CycleError as exc:
+            raise DocumentError(f"not a workflow fragment: {exc}") from exc
+        except (TypeError, ValueError) as exc:
+            raise DocumentError(f"not a workflow fragment: bad position ({exc})") from exc
+        self.steps[:] = ordered
+        if placed:
+            self.editor_metadata.setdefault("positions", {}).update(placed)
+        self._touch()
+        return [step.id for step in added]
+
+    def _takes_several(self, step) -> bool:
+        entry = self.entry_for(step)
+        return entry is not None and (entry.max_inputs is None or entry.max_inputs > 1)
+
+    def _reorder(self) -> None:
+        """Put the list back in a runnable order if an edit broke it."""
+        if is_ordered(self.steps):
+            return
+        try:
+            self.steps[:] = stable_order(self.steps)
+        except CycleError as exc:                  # pragma: no cover - refused before
+            raise DocumentError(str(exc)) from exc
 
     # -- import -----------------------------------------------------------------
 
