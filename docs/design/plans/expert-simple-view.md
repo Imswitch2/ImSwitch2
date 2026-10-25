@@ -611,6 +611,60 @@ after P2 an independent review of the whole.
   from the Simple view without help (the request came from users): what they
   had to ask is the result.
 
+## As built (2026-10-25)
+
+P1 is `faa187b3a`, P2 the commit after it. What differs from this draft, or
+was not foreseen, found while building:
+
+- **`_reattach` runs in `updateReport()`**, after `getParameters()`, not inside
+  it (D4b): an existing test pins that `getParameters()` returns the tables as
+  they read. A value typed back in the listing therefore makes the scan its
+  template's output again at the next report, and the card turns into the
+  template's form under the waiting rule, not at the keystroke.
+- **The two cards are not symmetric in Expert.** The template's form is built
+  and kept current while hidden in Expert (the card refreshes in both views);
+  the scan's own values are built in Simple only (`listsValues()`), so editing
+  in Expert pays nothing for a listing nobody sees, and entering Simple builds it.
+- **The note of an event** (*last of each cycle*, *phase 1*) is the drawing's
+  `tag` without the value it opens with for a power level or a move: the value
+  is a field of the listing. `stepContent()` gives each event a `where`, the
+  tag's other half; the drawing's tags are as they were.
+- **A listing the card keeps while the user is in it writes nowhere once the
+  tables have another structure** (its rows would be other rows: a count
+  could land on another dimension). The card keeps a different structure off
+  until the focus leaves, as D4b says, so this is a guard, not a feature:
+  every field writes through one place that checks it, which is also how a
+  listing taken away is cut off (`detach()`) instead of disconnecting every
+  field one by one.
+- **A count that reads but is not a count** (0) is red with the table's text,
+  as one that does not read is; the Expert block's box clamps it to 1 without
+  a word.
+- **Wording the mockup did not settle.** A trigger is a line (*Before each
+  timepoint: wait for a trigger*) over its three rows; a camera says *frames
+  per step* as the mockup does, whatever the count; a point detector's phases
+  are text when set; the red text of an unusual window or assembly says *set in
+  Tables, in the Expert view*, Tables not being in Simple.
+- **The range note, exactly** (D7a): sums are exact for any float (the decimal
+  arithmetic runs at the module's largest precision, so nothing is rounded), a
+  position that is the only one says
+  *Stays at* (a table of equal entries said *3 positions from 1 to 1 µm*), and
+  values that do not read, or no positions, say nothing.
+- **The inline pulse table's blank strip** (left from P1) is Qt 5.15's: a scroll
+  area's size hint adds the room of a horizontal scroll bar it has not shown,
+  19 px here. The table is capped at its header, its rows and its frame; the
+  cap follows `setRows`.
+- **Two P1 assertions changed**, the ones that said the card shows nothing for a
+  scan that is not its template's output (the edited-scan test, the card-waits
+  test): P2 makes the card list its own values there.
+
+Found, not changed: `scan_program.program.validate` raises `TypeError`
+(`len(None)`) for a positioner that follows a table whose values are blank,
+on the line after the one that adds *a table needs both table_loop and
+table_um*. The Tables view could always do this; the listing's *Positions over
+…* field now can too, and the report then raises in the Qt event loop instead
+of refusing the scan. The one-line fix is in the model (`drive.table_um is not
+None and`), outside this effort's files.
+
 ## Review round 1 (2026-10-25)
 
 Two reviewers, one on the request and the user, one on the code (probes in

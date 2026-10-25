@@ -10,6 +10,7 @@ the unreferenced-axes question -- a modal would hold the run at 0 % CPU.
 """
 
 import copy
+import dataclasses
 import json
 import random
 import struct
@@ -31,8 +32,11 @@ from imswitch.imcontrol.model.scan_program.serialize import program_to_dict
 from imswitch.imcontrol.view import guitools
 from imswitch.imcontrol.view.widgets.ScanWidgetAdvanced import ScanWidgetAdvanced
 from imswitch.imcontrol.view.widgets.ScanWidgetExpert import (
-    MS, VIEW_EXPERT, VIEW_SIMPLE, VIEWS, PresetDialog, TemplateForm, _Column, _RowTable,
-    _SummaryEditor, exact_text, stored,
+    MS, VIEW_EXPERT, VIEW_SIMPLE, VIEWS, PresetDialog, TemplateForm, _Column, _range_note,
+    _RowTable, _SummaryEditor, exact_text, stored,
+)
+from imswitch.imcontrol.view.widgets._expert_simple_view import (
+    ScanValuesForm, values_signature,
 )
 
 from .test_scan_controller_expert import ExpertRig, _advanced_state, _ms_resolft, _setup_dict
@@ -503,8 +507,9 @@ def test_an_edited_scan_is_not_its_templates_and_an_edit_undone_is_again(rig, qt
     assert rig.scan.program().requested_as is None
     assert w.titleLabel.text() == f'{TEMPLATE}, edited' and w.template() is None
     assert not w.templateValuesButton.isHidden()
-    assert _simple(rig) is None                              # P1: nothing is listed for it
-    assert w.parameters.isHidden() and not w.step.isHidden()
+    assert _simple(rig) is None                              # no template form for it ...
+    assert w.parameters.showsValues() and not w.parameters.isHidden()    # ... its own values
+    assert not w.step.isHidden()
     w.setView(VIEW_EXPERT)
     _chips(rig)[1].count.setValue(2)                         # the edit undone
     _settle(rig, qtbot)
@@ -1194,7 +1199,8 @@ def test_the_card_waits_for_the_focus_to_leave_before_it_changes_by_itself(shown
     _editor(form, 'cycles').setFocus()           # moved inside the card: it still waits
     assert w.parameters.form() is form and card._waiting
     w.repeatBox.setFocus()                       # the focus leaves: the change is made
-    assert not card._waiting and w.parameters.form() is None and card.isHidden()
+    assert not card._waiting and w.parameters.form() is None
+    assert card.showsValues() and not card.isHidden()          # the scan is no template's: its values
     # an edit still waiting for its report leaves the change pending: the report decides
     rig.scan.updateReport()                      # the scan is its template's again
     form = w.parameters.form()
@@ -1245,6 +1251,776 @@ def test_a_view_change_arranges_the_columns_again_for_the_cards_it_shows(shown, 
     assert w.columns.twoColumns()
     w.resize(w.columns.threshold() // 2, 900)
     qtbot.waitUntil(lambda: not w.columns.twoColumns(), timeout=2000)
+
+
+# ---------------------------------------------------------------------------
+# P2. The scan's own values
+# ---------------------------------------------------------------------------
+
+def _edit_cycles(rig, qtbot, cycles=3, **changes):
+    """An MS-RESOLFT scan edited by hand in the Expert view -- its cycles --
+    so that it is no template's output any more."""
+    rig.scan.setProgram(_ms_resolft(rig, **changes))
+    _chips(rig)[1].count.setValue(cycles)
+    _settle(rig, qtbot)
+    assert rig.scan.program().requested_as is None and rig.widget.template() is None
+
+
+def _edit_weight(rig, qtbot, weight='0.6', **changes):
+    """An MS-RESOLFT scan edited by hand in the Expert view -- how far a plane
+    moves Z, typed into the Positions card -- so that it is no template's
+    output any more."""
+    rig.scan.setProgram(_ms_resolft(rig, **changes))
+    _leave(rig.widget.positions._editors[0].weights['plane'][1], weight)
+    _settle(rig, qtbot)
+    assert rig.scan.program().requested_as is None and rig.widget.template() is None
+
+
+def _own(rig):
+    """Enter the Simple view: the listing of the scan's own values."""
+    rig.widget.setView(VIEW_SIMPLE)
+    return rig.widget.parameters.values()
+
+
+def _hand_built_raster(rig):
+    """What a user builds in the Expert view: two positioners, Y stepped
+    slowly and X quickly and in serpentine, a pulse and a pause."""
+    w = rig.widget
+    rig.scan.setProgram(None)
+    w.addLoop('scan_y')
+    w.addLoop('scan_x')
+    w.setTableValue('loops', 0, 'count', '3')
+    w.setTableValue('loops', 1, 'count', '4')
+    w.setLoopOrder(1, 'serpentine')
+    for index, (device, loop) in enumerate((('X', 'scan_x'), ('Y', 'scan_y'))):
+        w.addDrive(device)
+        w.setTableValue('drives', index, f'w:{loop}', '0.5')
+    w.stepPar.setText('1')
+    w.addEvent(rig.lasers[0], 'ttl')
+    w.addWait('time')
+    w.setTableValue('waits', 0, 'interval_s', '0.5')
+
+
+def _names(layout):
+    """A section's rows as one reads them: each row's label; a row that spans
+    (a positioner's heading, where a trigger is) by its text."""
+    out = []
+    for row in range(layout.rowCount()):
+        span = layout.itemAt(row, QtWidgets.QFormLayout.SpanningRole)
+        if span is None:
+            out.append(layout.itemAt(row, QtWidgets.QFormLayout.LabelRole).widget().text())
+        else:
+            widget = span.widget()
+            out.append(widget.text() if isinstance(widget, QtWidgets.QLabel)
+                       else widget.findChildren(QtWidgets.QLabel)[0].text())
+    return out
+
+
+def _field_of(layout, label):
+    """The field of the row with this label."""
+    for row in range(layout.rowCount()):
+        item = layout.itemAt(row, QtWidgets.QFormLayout.LabelRole)
+        if item is not None and item.widget().text() == label:
+            return layout.itemAt(row, QtWidgets.QFormLayout.FieldRole).widget()
+    raise AssertionError(f'no row {label!r} in {_names(layout)}')
+
+
+def _text_of(widget):
+    """The words a field of text says."""
+    if isinstance(widget, QtWidgets.QLabel):
+        return widget.text()
+    return ' '.join(label.text() for label in widget.findChildren(QtWidgets.QLabel))
+
+
+def _held(widget):
+    """What a field of the listing shows, as the table holds it."""
+    if isinstance(widget, QtWidgets.QSpinBox):
+        return str(widget.value())
+    if isinstance(widget, QtWidgets.QComboBox):
+        return widget.currentData()
+    return widget.text()
+
+
+def _choices(combo):
+    return [combo.itemData(index) for index in range(combo.count())]
+
+
+def _in_tables(w, table, row, key):
+    return w.stepPar.text() if table == 'step' else w.tableRows(table)[row][key]
+
+
+def _no_button(values):
+    """The listing adds, removes, renames and reorders nothing: no push button,
+    no tool button, no radio button -- a check box is all a field may be."""
+    buttons = [b for b in values.findChildren(QtWidgets.QAbstractButton)
+               if not isinstance(b, QtWidgets.QCheckBox)]
+    assert buttons == [], [(type(b).__name__, b.text()) for b in buttons]
+
+
+EDITED = ('Edited since it was made from MS-RESOLFT (cycles x planes): its values are listed. '
+          'Change template values… makes it again from the template, without the edits.')
+
+
+def test_an_edited_ms_resolft_scan_lists_its_own_values_in_sections(rig, qtbot):
+    w = rig.widget
+    _edit_weight(rig, qtbot, pause_s=0.1)
+    values = _own(rig)
+    card = w.parameters
+    assert isinstance(values, ScanValuesForm) and card.form() is None and card.showsValues()
+    assert not card.isHidden() and card.valuesLabel.text() == "the scan's values"
+    assert w.titleLabel.text() == f'{TEMPLATE}, edited' and not w.templateValuesButton.isHidden()
+    assert card.editedLabel.text() == EDITED and not card.editedLabel.isHidden()
+    assert w.subtitleLabel.text() == '2 timepoints › 2 cycles › 3 planes'
+    assert list(values.sections) == ['Scan order', 'Within one step', 'Positions',
+                                     'Pauses and triggers', 'Recording']
+    assert [(title, heading.text(), heading.objectName()) for title, heading
+            in values.headings.items()] == [(title, title, 'expertCardTitle')
+                                            for title in values.sections]
+    forms = values.sections
+    assert _names(forms['Scan order']) == ['Timepoints', 'Cycles', 'Planes']
+    assert _names(forms['Within one step']) == [
+        'Dwell (ms)', '405 (ON) pulse', '488 (EXC) pulse (pulse2)', '488 (EXC) pulse (pulse3)',
+        'Camera exposure']
+    assert _names(forms['Positions']) == [
+        'Z', 'Starts at (µm)', 'Moves per timepoint (µm)', 'Moves per cycle (µm)',
+        'Moves per plane (µm)', 'Moves', 'Move time (ms)', 'Settle time (ms)',
+        'Line return (ms)', 'Positions are', 'After the scan']
+    assert _names(forms['Pauses and triggers']) == [
+        'Before each timepoint: pause (ms)', 'Meanwhile the lasers are']
+    assert _names(forms['Recording']) == ['Camera']
+    # every value the Expert parts edit -- and no other -- is a field, shown as the tables hold it
+    expected = {('loops', i, key) for i in range(3) for key in ('count', 'traversal')}
+    expected |= {('step', 0, 'step_s')}
+    expected |= {('timeline', i, key) for i in range(4) for key in ('start_s', 'end_s')}
+    expected |= {('drives', 0, key) for key in (
+        'offset_um', 'w:time', 'w:cycle', 'w:plane', 'transition', 'placement', 'move_s',
+        'settle_s', 'return_s', 'origin', 'restore')}
+    expected |= {('waits', 0, 'interval_s'), ('waits', 0, 'hold'), ('detectors', 0, 'per_step')}
+    assert set(values.fields) == expected
+    for (table, row, key), widget in values.fields.items():
+        assert _held(widget) == _in_tables(w, table, row, key), (table, row, key)
+    fields = values.fields
+    assert fields[('loops', 1, 'count')].value() == 2 and fields[('step', 0, 'step_s')].text() == '7'
+    assert fields[('timeline', 1, 'end_s')].text() == '4'
+    assert fields[('drives', 0, 'w:cycle')].text() == '0.25'
+    assert fields[('drives', 0, 'w:plane')].text() == '0.6'       # the edit
+    assert fields[('drives', 0, 'w:time')].text() == ''           # blank: it does not move it
+    assert fields[('drives', 0, 'w:time')].placeholderText() == '0'
+    assert fields[('waits', 0, 'interval_s')].text() == '100'
+    assert _choices(fields[('drives', 0, 'restore')]) == ['captured', 'first', 'park', 'hold']
+    assert fields[('drives', 0, 'restore')].currentText() == 'back to its first position'
+    assert fields[('drives', 0, 'transition')].currentText() == 'jumps'
+    assert fields[('drives', 0, 'placement')].currentText() == 'at the end of each step'
+    assert fields[('waits', 0, 'hold')].currentText() == 'off'
+    assert values.ranges[0].text() == '6 positions from 1 to 2.45 µm.'     # not evenly spaced
+    assert _text_of(_field_of(forms['Recording'], 'Camera')) == \
+        'frames per step, triggered by exposure'
+    _no_button(values)
+    assert w.parameters.values() is values                          # a report changes no structure
+    w.setView(VIEW_EXPERT)
+    assert card.values() is None and card.isHidden()                # Expert holds no listing
+
+
+def test_a_hand_built_raster_lists_two_positioners_and_a_serpentine_x(rig, qtbot):
+    w = rig.widget
+    _hand_built_raster(rig)
+    _settle(rig, qtbot)
+    assert w.titleLabel.text() == 'New scan' and w.statusChip.text().startswith('Ready to run')
+    values = _own(rig)
+    assert w.parameters.editedLabel.isHidden()          # it was made from no template
+    forms = values.sections
+    assert _names(forms['Scan order']) == ['Y positions', 'X positions']
+    y_order, x_order = (values.fields[('loops', i, 'traversal')] for i in (0, 1))
+    assert _choices(y_order) == ['forward', 'reverse']               # the slowest: never a serpentine
+    assert _choices(x_order) == ['forward', 'reverse', 'serpentine']
+    assert x_order.currentData() == 'serpentine' and x_order.currentText() == 'serpentine'
+    assert x_order.toolTip() == 'Order: serpentine, alternating with scan_y.'
+    assert values.fields[('loops', 0, 'count')].value() == 3
+    assert values.fields[('loops', 1, 'count')].value() == 4
+    block = ['Starts at (µm)', 'Moves per Y position (µm)', 'Moves per X position (µm)', 'Moves',
+             'Move time (ms)', 'Settle time (ms)', 'Line return (ms)', 'Positions are',
+             'After the scan']
+    assert _names(forms['Positions']) == ['X'] + block + ['Y'] + block
+    assert [values.fields[('drives', 0, f'w:{loop}')].text() for loop in ('scan_y', 'scan_x')] == [
+        '', '0.5']
+    assert [values.fields[('drives', 1, f'w:{loop}')].text() for loop in ('scan_y', 'scan_x')] == [
+        '0.5', '']
+    assert values.ranges[0].text() == '4 positions from 0 to 1.5 µm, 0.5 µm apart.'
+    assert values.ranges[1].text() == '3 positions from 0 to 1 µm, 0.5 µm apart.'
+    assert values.fields[('drives', 0, 'transition')].currentText() == 'moves smoothly'
+    assert values.fields[('drives', 0, 'origin')].currentText() == 'relative to where it starts'
+    assert _names(forms['Within one step']) == ['Dwell (ms)', f'{rig.lasers[0]} pulse']
+    assert _names(forms['Pauses and triggers']) == [
+        'Before each Y position: pause (ms)', 'Meanwhile the lasers are']
+    assert 'Recording' not in forms                                  # nothing to record: left out
+    _no_button(values)
+
+
+def test_values_typed_in_the_listing_land_in_the_tables_and_the_expert_parts_show_them(
+        shown, qtbot):
+    rig, w = shown, shown.widget
+    _edit_cycles(rig, qtbot, pause_s=0.1)
+    values = _own(rig)
+    fields = values.fields
+    fields[('loops', 1, 'count')].setValue(4)                             # a count
+    _enter(fields[('drives', 0, 'w:plane')], '0.75')                      # a weight
+    _enter(fields[('timeline', 1, 'end_s')], '4.5')                       # an event's end
+    _enter(fields[('waits', 0, 'interval_s')], '50')                      # a pause
+    fields[('detectors', 0, 'per_step')].setValue(2)                      # a camera's frames
+    _enter(fields[('step', 0, 'step_s')], '8')                            # the dwell
+    assert [row['count'] for row in w.tableRows('loops')] == ['2', '4', '3']
+    assert w.tableRows('drives')[0]['w:plane'] == '0.75'
+    assert w.tableRows('timeline')[1]['end_s'] == '4.5'
+    assert w.tableRows('waits')[0]['interval_s'] == '50'
+    assert w.tableRows('detectors')[0]['per_step'] == '2' and w.stepPar.text() == '8'
+    _settle(rig, qtbot)
+    program = rig.scan.program()
+    assert program.loop('cycle').count == 4 and program.step_s == 8e-3
+    assert program.drives[0].weights_um['plane'] == 0.75
+    assert program.timeline[1].end_s == 4.5e-3 and program.waits[0].interval_s == 0.05
+    assert program.detectors[0].per_step == 2
+    assert w.parameters.values() is values              # the same listing, its values written
+    w.setView(VIEW_EXPERT)                              # the same values in the Expert parts
+    assert _chips(rig)[1].count.value() == 4
+    assert w.positions._editors[0].weights['plane'][1].text() == '0.75'
+    assert _event(rig, 1)['end_s'] == pytest.approx(4.5e-3)
+    assert w.waitsCard._editors[0].interval.text() == '50'
+    assert w.recording._editors[0].perStep.value() == 2
+    assert w.step.stepField.text() == '8'
+
+
+def test_serpentine_on_the_second_dimension_alternates_with_the_first(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    values = _own(rig)
+    second = values.fields[('loops', 1, 'traversal')]
+    second.setCurrentIndex(second.findData('serpentine'))
+    row = w.tableRows('loops')[1]
+    assert (row['traversal'], row['parity_loops']) == ('serpentine', 'time')    # the first's id
+    _settle(rig, qtbot)
+    assert w.statusChip.text().startswith('Ready to run')
+    assert rig.scan.program().loop('cycle').traversal == 'serpentine'
+    assert tuple(rig.scan.program().loop('cycle').parity_loops) == ('time',)
+    third = values.fields[('loops', 2, 'traversal')]
+    third.setCurrentIndex(third.findData('serpentine'))
+    assert w.tableRows('loops')[2]['parity_loops'] == 'cycle'                  # only the one outside
+    second.setCurrentIndex(second.findData('reverse'))                         # another order: none
+    assert w.tableRows('loops')[1]['parity_loops'] == ''
+    assert w.tableRows('loops')[1]['traversal'] == 'reverse'
+
+
+def test_set_loop_order_writes_the_parity_a_serpentine_takes(rig):
+    w = rig.widget
+    w.setLoopOrder(1, 'serpentine')                               # right outside it: one dimension
+    assert w.tableRows('loops')[1]['parity_loops'] == 'time'
+    w.setLoopOrder(2, 'serpentine', 2)                            # two dimensions outside
+    assert w.tableRows('loops')[2]['parity_loops'] == 'time, cycle'
+    w.setLoopOrder(2, 'reverse', 2)                               # any other order: none
+    assert w.tableRows('loops')[2]['parity_loops'] == '' and w.tableRows('loops')[2][
+        'traversal'] == 'reverse'
+    # the block of the Expert view writes it through the panel
+    chip = _chips(rig)[2]
+    chip.order.setCurrentIndex(chip.order.findData('serpentine'))
+    assert w.tableRows('loops')[2]['parity_loops'] == 'cycle'
+
+
+def test_a_cleared_moves_per_field_keeps_its_row_and_the_positioner_stops_moving_with_it(
+        rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    values = _own(rig)
+    field = values.fields[('drives', 0, 'w:cycle')]
+    rows = _names(values.sections['Positions'])
+    _leave(field, '')
+    _settle(rig, qtbot)
+    assert w.tableRows('drives')[0]['w:cycle'] == ''
+    assert w.parameters.values() is values and _names(values.sections['Positions']) == rows
+    assert field.text() == '' and field.placeholderText() == '0'     # blank: its row is still there
+    assert dict(rig.scan.program().drives[0].weights_um) == {'plane': 0.5}
+    assert values.ranges[0].text() == '3 positions from 1 to 2 µm, 0.5 µm apart.'
+    _leave(field, '0.25')                                            # typed again: it moves it
+    _settle(rig, qtbot)
+    assert dict(rig.scan.program().drives[0].weights_um) == {'cycle': 0.25, 'plane': 0.5}
+    assert values.ranges[0].text() == ('7 positions from 1 to 2.5 µm, 0.25 µm apart; '
+                                       '2 of them visited twice.')
+    assert w.parameters.values() is values
+
+
+def test_two_events_of_one_device_and_kind_are_told_apart_by_their_id_or_their_number(rig, qtbot):
+    w = rig.widget
+    rig.scan.setProgram(None)
+    w.addLoop('cycle')
+    w.stepPar.setText('4')
+    device = rig.lasers[0]
+    w.addEvent(device, 'ttl')
+    w.addEvent(device, 'ttl')
+    w.addEvent(rig.lasers[1], 'ttl')
+    w.addEvent(device, 'level')
+    values = _own(rig)
+    assert _names(values.sections['Within one step']) == [
+        'Dwell (ms)', f'{device} pulse 1', f'{device} pulse 2', f'{rig.lasers[1]} pulse',
+        f'{device} power']                                           # alone: no number, no id
+    w.setTableValue('timeline', 0, 'id', 'first')                     # one has an id, one has none
+    w.flushRefresh()
+    assert w.parameters.values() is not values                        # the structure is another
+    values = w.parameters.values()
+    assert _names(values.sections['Within one step'])[1:3] == [
+        f'{device} pulse (first)', f'{device} pulse 2']               # its number among them
+    w.setTableValue('timeline', 1, 'id', 'second')
+    w.flushRefresh()
+    assert _names(w.parameters.values().sections['Within one step'])[1:3] == [
+        f'{device} pulse (first)', f'{device} pulse (second)']
+
+
+def test_a_new_scan_with_another_structure_rebuilds_the_listing_whole(shown, qtbot):
+    rig, w = shown, shown.widget
+    _edit_cycles(rig, qtbot)
+    values = _own(rig)
+    assert 'Pauses and triggers' not in values.sections
+    field = values.fields[('drives', 0, 'offset_um')]
+    _type(field, '9')                                           # typed, not left
+    pause = dataclasses.replace(_ms_resolft(rig, pause_s=0.1), requested_as=None)
+    rig.scan.setProgram(pause)                                  # a pause: another structure
+    new = w.parameters.values()
+    assert new is not values and 'Pauses and triggers' in new.sections
+    assert w.tableRows('drives')[0]['offset_um'] == '1'         # the scan's value, not the typed one
+    assert not rig.scan._edited                                 # the old listing wrote nowhere
+    qtbot.wait(20)
+    assert sip.isdeleted(values)
+    # the same structure with other values is a new scan too: the field typed in is replaced
+    field = new.fields[('drives', 0, 'offset_um')]
+    _type(field, '9')
+    rig.scan.setProgram(dataclasses.replace(_ms_resolft(rig, pause_s=0.1, start_um=3.0),
+                                            requested_as=None))
+    assert w.parameters.values() is not new
+    assert w.parameters.values().fields[('drives', 0, 'offset_um')].text() == '3'
+
+
+def test_a_value_typed_back_makes_the_card_its_templates_form_once_the_focus_has_left_it(
+        shown, qtbot):
+    rig, w = shown, shown.widget
+    _edit_cycles(rig, qtbot)                                    # cycles 3: no template's output
+    values = _own(rig)
+    spin = values.fields[('loops', 1, 'count')]
+    _type(spin.lineEdit(), '2')                                 # typed back: the template's again
+    QtTest.QTest.keyClick(spin.lineEdit(), QtCore.Qt.Key_Tab)   # to the next field of the listing
+    focus = QtWidgets.QApplication.focusWidget()
+    assert focus is not None and w.parameters.isAncestorOf(focus) and focus is not spin.lineEdit()
+    _settle(rig, qtbot)
+    assert rig.scan.program().requested_as is not None and w.template() is not None
+    assert w.parameters.values() is values and w.parameters.form() is None    # still the listing
+    assert spin.lineEdit().text() == '2' and spin.value() == 2                # the typed text intact
+    w.repeatBox.setFocus()                                      # the focus leaves the card
+    assert w.parameters.form() is not None and w.parameters.values() is None
+    assert _editor(w.parameters.form(), 'cycles').text() == '2'
+    assert w.templateValuesButton.isHidden() and w.titleLabel.text() == TEMPLATE
+    qtbot.wait(20)
+    assert sip.isdeleted(values)
+
+
+def test_a_value_typed_back_with_no_focus_in_the_card_turns_it_into_the_form_at_once(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    values = _own(rig)
+    values.fields[('loops', 1, 'count')].setValue(2)
+    _settle(rig, qtbot)
+    assert w.template() is not None and w.parameters.values() is None
+    assert w.parameters.form() is not None and w.parameters.editedLabel.isHidden()
+
+
+def test_the_wheel_over_a_field_of_the_listing_scrolls_the_panel_not_the_field(shown, qtbot):
+    rig, w = shown, shown.widget
+    _edit_cycles(rig, qtbot)
+    w.resize(900, 300)                                          # more than fits: it scrolls
+    values = _own(rig)
+    qtbot.wait(50)
+    bar = w.scrollArea.verticalScrollBar()
+    assert bar.maximum() > 0 and bar.value() == 0
+    spin = values.fields[('loops', 1, 'count')]
+    before = w.tableRows('loops')
+    assert not spin.hasFocus()
+    _wheel(spin)
+    assert spin.value() == 3 and w.tableRows('loops') == before
+    assert bar.value() > 0                                      # the panel scrolled instead
+    combo = values.fields[('drives', 0, 'transition')]
+    bar.setValue(0)
+    _wheel(combo)
+    assert combo.currentData() == 'jump' and bar.value() > 0
+
+
+def test_the_range_note_says_when_positions_repeat_in_both_views(rig, qtbot):
+    w = rig.widget
+    note = lambda: w.positions._editors[0].range.text()           # the Expert Positions card
+    # cycles 2 -> 3 by hand with the planes still 0.5 µm apart: 9 visits of 7 positions
+    _edit_cycles(rig, qtbot)
+    twice = '7 positions from 1 to 2.5 µm, 0.25 µm apart; 2 of them visited twice.'
+    assert note() == twice and w.driveRange(0) == twice
+    assert _own(rig).ranges[0].text() == twice
+    # a position visited three times (2 µm), and others twice
+    w.setView(VIEW_EXPERT)
+    _chips(rig)[1].count.setValue(5)
+    w.flushRefresh()
+    assert note() == ('9 positions from 1 to 3 µm, 0.25 µm apart; 4 of them visited twice, '
+                      '1 of them visited 3 times.')
+    # exact: 0.1 * 3 and 0.3 are one position (as floats they are two)
+    assert len({0.1 * c + 0.3 * p for c in range(4) for p in range(2)}) == 8
+    w.setTableValue('drives', 0, 'offset_um', '0')
+    w.setTableValue('drives', 0, 'w:cycle', '0.1')
+    w.setTableValue('drives', 0, 'w:plane', '0.3')
+    w.setTableValue('loops', 1, 'count', '4')
+    w.setTableValue('loops', 2, 'count', '2')
+    w.flushRefresh()
+    assert note() == '7 positions from 0 to 0.6 µm, 0.1 µm apart; 1 of them visited twice.'
+    assert _own(rig).ranges[0].text() == note()
+
+
+def test_the_range_note_of_a_scan_that_repeats_nothing_is_as_it_was_in_both_views(rig, qtbot):
+    w = rig.widget
+    assert w.positions._editors[0].range.text() == '6 positions from 1 to 2.25 µm, 0.25 µm apart.'
+    # the same scan, no template's: its values are listed
+    rig.scan.setProgram(dataclasses.replace(_ms_resolft(rig), requested_as=None))
+    _settle(rig, qtbot)
+    assert w.positions._editors[0].range.text() == '6 positions from 1 to 2.25 µm, 0.25 µm apart.'
+    assert _own(rig).ranges[0].text() == '6 positions from 1 to 2.25 µm, 0.25 µm apart.'
+    for weights, counts, text in (
+            ({}, {}, 'Stays at 1 µm.'),
+            ({'cycle': '0.25'}, {'cycle': '1'}, 'Stays at 1 µm.'),
+            ({'cycle': '0.25'}, {'cycle': '4'}, '4 positions from 1 to 1.75 µm, 0.25 µm apart.'),
+            ({'cycle': '-0.25'}, {'cycle': '3'}, '3 positions from 0.5 to 1 µm, 0.25 µm apart.'),
+            ({'cycle': '0.25', 'plane': '0.7'}, {'cycle': '2', 'plane': '2'},
+             '4 positions from 1 to 1.95 µm.')):                   # not evenly spaced: no spacing
+        w.setView(VIEW_EXPERT)
+        for loop in ('time', 'cycle', 'plane'):
+            w.setTableValue('drives', 0, f'w:{loop}', weights.get(loop, ''))
+        for row, loop in enumerate(('time', 'cycle', 'plane')):
+            w.setTableValue('loops', row, 'count', counts.get(loop, '1'))
+        assert w.driveRange(0) == text, (weights, counts)
+    w.setTableValue('drives', 0, 'w:cycle', 'x')                     # a value that does not read
+    assert w.driveRange(0) == ''
+    w.setTableValue('drives', 0, 'w:cycle', '0.25')
+    w.setTableValue('drives', 0, 'table_loop', 'cycle')              # a table of positions
+    w.setTableValue('drives', 0, 'table_um', '0, 1, 0, 1')
+    assert w.driveRange(0) == '2 positions from 1 to 2 µm, 1 µm apart; 2 of them visited twice.'
+    _settle(rig, qtbot)                                              # (the check says it is too long)
+    with pytest.raises(ValueError):                                  # no positions: nothing to say
+        _range_note(dict(w.tableRows('drives')[0], table_um=''), {'cycle': 2})
+
+
+def test_an_event_says_where_it_plays_and_a_power_level_has_its_value_and_shape(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    w.setTableValue('timeline', 3, 'anchor', 'pass-end:cycle')
+    w.setTableValue('timeline', 1, 'phases', '1, 0')
+    w.setTableValue('timeline', 2, 'anchor', 'pass-start:plane')
+    w.setTableValue('timeline', 2, 'phases', '2')
+    power = w.addEvent(rig.lasers[2], 'level')
+    w.setTableValue('timeline', power, 'value', '0.5')
+    w.setTableValue('timeline', power, 'anchor', 'pass-end:plane')
+    values = _own(rig)
+    assert [values.notes[i].text() for i in range(5)] == [
+        '', 'phase 0, 1', 'first of each plane phase 2', 'last of each cycle',
+        'last of each plane']                      # where it plays; the value is a field
+    assert [values.notes[i].isHidden() for i in range(5)] == [True, False, False, False, False]
+    assert _names(values.sections['Within one step'])[-1] == f'{rig.lasers[2]} power'
+    assert values.fields[('timeline', power, 'value')].text() == '0.5'
+    assert values.fields[('timeline', power, 'shape')].currentText() == 'held'
+    assert _choices(values.fields[('timeline', power, 'shape')]) == ['hold', 'ramp']
+    assert ('timeline', 0, 'value') not in values.fields          # a pulse has none
+    values.fields[('timeline', power, 'shape')].setCurrentIndex(1)
+    _leave(values.fields[('timeline', power, 'value')], '0.75')
+    assert w.tableRows('timeline')[power]['shape'] == 'ramp'
+    assert w.tableRows('timeline')[power]['value'] == '0.75'
+    # the drawing's tag still opens with the value, as it did
+    assert next(e for e in w.stepContent()[0] if e['row'] == power)['tag'] == \
+        '0.75 last of each plane'
+    # a move has them too; a pulse that holds a value shows it so it can be taken off
+    move = w.addEvent('Z', 'offset')
+    w.setTableValue('timeline', 0, 'value', '1')
+    w.flushRefresh()                                              # the structure is another
+    values = w.parameters.values()
+    assert ('timeline', move, 'value') in values.fields and ('timeline', 0, 'value') in values.fields
+    assert _names(values.sections['Within one step'])[-1] == 'Z move'
+
+
+def test_every_kind_of_pause_and_trigger_is_listed_where_it_waits(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot, pause_s=0.1)
+    w.addWait('external')                                          # before each timepoint
+    w.addWait('external')
+    w.setTableValue('waits', 2, 'at', 'start')
+    w.addWait('time')
+    w.setTableValue('waits', 3, 'at', 'step')
+    w.addLoop('cycle')                                             # two dimensions of one kind
+    w.addWait('time')
+    w.setTableValue('waits', 4, 'at', 'cycle2')
+    values = _own(rig)
+    forms = values.sections
+    assert forms['Scan order'] and _names(forms['Scan order'])[1::2] == [
+        'Cycles (cycle)', 'Cycles (cycle2)']
+    assert _names(forms['Pauses and triggers']) == [
+        'Before each timepoint: pause (ms)', 'Meanwhile the lasers are',
+        'Before each timepoint: wait for a trigger', 'Shortest time between triggers (ms)',
+        'Give up after (ms)', 'Meanwhile the lasers are',
+        'Before the scan starts: wait for a trigger', 'Shortest time between triggers (ms)',
+        'Give up after (ms)', 'Meanwhile the lasers are',
+        'Before every step: pause (ms)', 'Meanwhile the lasers are',
+        'Before each cycle (cycle2): pause (ms)', 'Meanwhile the lasers are']
+    fields = values.fields
+    assert fields[('waits', 0, 'interval_s')].placeholderText() == 'set'
+    assert fields[('waits', 1, 'timeout_s')].placeholderText() == 'never'
+    assert _choices(fields[('waits', 1, 'on_timeout')]) == ['fail', 'continue']
+    assert fields[('waits', 1, 'on_timeout')].currentText() == 'the scan fails'
+    assert _choices(fields[('waits', 1, 'hold')]) == ['idle', 'hold']
+    # a pause has no time-out, a trigger has
+    assert [key for key in fields if key[0] == 'waits' and key[1] == 0] == [
+        ('waits', 0, 'interval_s'), ('waits', 0, 'hold')]
+    _leave(fields[('waits', 1, 'timeout_s')], '20')
+    fields[('waits', 1, 'on_timeout')].setCurrentIndex(1)
+    fields[('waits', 1, 'hold')].setCurrentIndex(1)
+    _leave(fields[('waits', 1, 'interval_s')], '2')
+    row = w.tableRows('waits')[1]
+    assert (row['timeout_s'], row['on_timeout'], row['hold'], row['interval_s']) == (
+        '20', 'continue', 'hold', '2')
+    _no_button(values)
+
+
+def test_a_detector_is_listed_as_what_it_records(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    w.setTableValue('detectors', 0, 'phases', '0, 2')
+    w.addBinding('APD')                                        # a point detector: an image
+    w.addBinding('APD 2')
+    w.setTableValue('detectors', 2, 'window', 'event')         # ... not what the model takes
+    values = _own(rig)
+    forms = values.sections
+    assert _names(forms['Recording']) == ['Camera', 'APD', 'APD 2']
+    camera, point, odd = (_field_of(forms['Recording'], name) for name in ('Camera', 'APD', 'APD 2'))
+    assert _text_of(camera) == 'frames per step, triggered by exposure, in phases 0, 2'
+    assert values.fields[('detectors', 0, 'per_step')].value() == 1
+    assert _text_of(point) == 'integrates each whole step into one pixel of an image'
+    assert ('detectors', 1, 'per_step') not in values.fields      # nothing to count
+    assert odd.objectName() == 'expertProblems'
+    assert _text_of(odd) == ("window 'event', assembly 'image' (set in Tables, in the Expert "
+                             "view): the check says whether the model takes it")
+    assert ('detectors', 2, 'per_step') not in values.fields
+    values.fields[('detectors', 0, 'per_step')].setValue(3)
+    assert w.tableRows('detectors')[0]['per_step'] == '3'
+    w.setTableValue('detectors', 0, 'per_step', 'many')           # a count that does not read
+    w.flushRefresh()
+    spin = values.fields[('detectors', 0, 'per_step')]
+    assert 'color' in spin.styleSheet() and spin.toolTip() == "The table holds 'many', not a count."
+    w.setTableValue('detectors', 0, 'per_step', '2')
+    w.flushRefresh()
+    assert spin.styleSheet() == '' and spin.value() == 2
+    _no_button(values)
+
+
+def test_the_dwell_and_a_count_that_do_not_read_are_red(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    values = _own(rig)
+    dwell = values.fields[('step', 0, 'step_s')]
+    assert dwell.styleSheet() == '' and dwell.placeholderText() == 'set'
+    _leave(dwell, 'soon')
+    w.flushRefresh()
+    assert dwell.styleSheet().startswith('border: 1px solid') and w.stepPar.text() == 'soon'
+    _leave(dwell, '7')
+    w.flushRefresh()
+    assert dwell.styleSheet() == '' and w.stepPar.text() == '7'
+    w.setTableValue('loops', 1, 'count', 'x')
+    w.flushRefresh()
+    spin = values.fields[('loops', 1, 'count')]
+    assert 'color' in spin.styleSheet() and spin.toolTip() == "The table holds 'x', not a count."
+    w.setTableValue('loops', 1, 'count', '0')                     # reads, but is not a count
+    w.flushRefresh()
+    assert 'color' in spin.styleSheet() and spin.toolTip() == "The table holds '0', not a count."
+    w.setTableValue('loops', 1, 'count', '3')
+    w.flushRefresh()
+    assert spin.styleSheet() == '' and spin.value() == 3 and spin.toolTip() == 'How many iterations.'
+
+
+def test_a_positioner_that_follows_a_table_has_the_table_as_a_field(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    w.setTableValue('drives', 0, 'table_loop', 'cycle')
+    w.setTableValue('drives', 0, 'table_um', '0, 1, 0.5')
+    values = _own(rig)
+    names = _names(values.sections['Positions'])
+    assert names[:3] == ['Z', 'Starts at (µm)', 'Positions over cycle (µm)']
+    assert 'Moves per cycle (µm)' not in names and 'Moves' in names
+    field = values.fields[('drives', 0, 'table_um')]
+    assert field.text() == '0, 1, 0.5'
+    assert values.ranges[0].text() == '3 positions from 1 to 2 µm, 0.5 µm apart.'
+    _leave(field, '0, 1, 0')
+    assert w.tableRows('drives')[0]['table_um'] == '0, 1, 0'
+    w.flushRefresh()
+    assert values.ranges[0].text() == '2 positions from 1 to 2 µm, 1 µm apart; 1 of them visited twice.'
+    assert ('drives', 0, 'w:cycle') not in values.fields
+
+
+def test_a_form_taken_away_writes_nowhere_and_one_kept_for_other_tables_writes_nowhere(
+        shown, qtbot):
+    rig, w = shown, shown.widget
+    _edit_cycles(rig, qtbot)
+    values = _own(rig)
+    edits = []
+    w.sigProgramEdited.connect(lambda: edits.append(True))
+    # taken away (another scan arrives): a field that commits as it goes writes nothing
+    field = values.fields[('drives', 0, 'offset_um')]
+    _type(field, '9')
+    spin = values.fields[('loops', 1, 'count')]
+    rig.scan.setProgram(_ms_resolft(rig))
+    edits.clear()
+    for emit in (field.editingFinished.emit, lambda: spin.valueChanged.emit(7)):
+        emit()
+    assert edits == [] and w.tableRows('drives')[0]['offset_um'] == '1'
+    assert w.tableRows('loops')[1]['count'] == '2'
+    # kept while the user is in it, though its rows are no longer the tables': it writes nothing
+    w.setTableValue('loops', 1, 'count', '3')
+    _settle(rig, qtbot)
+    values = w.parameters.values()
+    assert values is not None
+    spin = values.fields[('loops', 0, 'count')]
+    spin.lineEdit().setFocus()
+    assert spin.hasFocus()
+    w.addLoop('tile')                                              # a dimension more
+    _settle(rig, qtbot)
+    assert w.parameters.values() is values                         # held: the focus is in it
+    assert values.signature() != values_signature(w)
+    before = w.tableRows('loops')
+    spin.setValue(5)
+    values.fields[('loops', 1, 'count')].setValue(9)
+    assert w.tableRows('loops') == before                          # not a row of another table
+    w.repeatBox.setFocus()                                         # the focus leaves: it is replaced
+    _settle(rig, qtbot)
+    new = w.parameters.values()
+    assert new is not values and _names(new.sections['Scan order'])[-1] == 'Tiles'
+    qtbot.wait(20)
+    assert sip.isdeleted(values)
+
+
+def test_expert_holds_no_listing_and_simple_builds_it_when_entered(rig, qtbot):
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    assert w.view() == VIEW_EXPERT and w.parameters.values() is None and w.parameters.isHidden()
+    w.setTableValue('loops', 1, 'count', '4')                      # edited in Expert: nothing built
+    w.flushRefresh()
+    assert w.parameters.values() is None
+    values = _own(rig)
+    assert values is not None and values.fields[('loops', 1, 'count')].value() == 4
+    w.setView(VIEW_EXPERT)
+    assert w.parameters.values() is None and w.parameters.isHidden()
+    qtbot.wait(20)
+    assert sip.isdeleted(values)
+    # a path or an empty scan has none, in Simple either
+    rig.scan.setProgram(None)
+    w.setView(VIEW_SIMPLE)
+    assert w.parameters.values() is None and w.parameters.isHidden()
+
+
+def test_an_ms_resolft_scan_is_the_templates_form_until_edited_then_its_own_values(rig, qtbot):
+    w = rig.widget
+    form = _simple(rig)
+    assert form is not None and w.parameters.values() is None
+    assert w.parameters.valuesLabel.text() == "the template's values"
+    assert w.parameters.editedLabel.isHidden()
+    w.setView(VIEW_EXPERT)
+    _chips(rig)[1].count.setValue(3)
+    _settle(rig, qtbot)
+    values = _own(rig)
+    assert w.parameters.form() is None and values is not None
+    assert w.parameters.valuesLabel.text() == "the scan's values"
+    assert w.parameters.editedLabel.text() == EDITED
+    w.setView(VIEW_EXPERT)
+    _chips(rig)[1].count.setValue(2)                               # the edit undone
+    _settle(rig, qtbot)
+    form = _simple(rig)
+    assert form is not None and w.parameters.values() is None and w.parameters.editedLabel.isHidden()
+
+
+def test_the_inline_pulse_table_is_as_tall_as_its_header_and_rows_and_no_taller(shown, qtbot):
+    """Qt's own size hint of a scroll area adds the room of a horizontal scroll
+    bar it has not shown: a blank strip under the last row of the form's table."""
+    rig = shown
+    form = _simple(rig)
+    table = _editor(form, 'pulses').table
+    qtbot.wait(50)
+
+    def fitted():
+        return (table.horizontalHeader().height() + table.verticalHeader().length()
+                + 2 * table.frameWidth())
+
+    assert table.height() == fitted() and table.viewport().height() == \
+        table.verticalHeader().length()
+    assert table.sizeHint().height() > table.height()           # the hint it would have had
+    params = copy.deepcopy(rig.scan.program().requested_as['params'])
+    params['pulses'] = params['pulses'] + [[rig.lasers[2], 1e-3, 0.0]] * 2
+    form.setValues(params)                                      # more pulses: it follows its rows
+    qtbot.wait(50)
+    assert table.rowCount() == 5 and table.height() == fitted()
+
+
+def test_undo_in_expert_makes_an_edited_scan_its_templates_output_again(rig, qtbot):
+    """What the documentation says: Undo after a hand edit is the way back to
+    the template's form."""
+    w = rig.widget
+    _edit_cycles(rig, qtbot)
+    assert w.titleLabel.text() == f'{TEMPLATE}, edited'
+    w.undo()
+    _settle(rig, qtbot)
+    assert w.titleLabel.text() == TEMPLATE and w.template() is not None
+    assert rig.scan.program() == _ms_resolft(rig)                # requested_as and all
+    form = _simple(rig)
+    assert form is not None and w.parameters.values() is None
+
+
+def test_the_listing_builds_for_every_shape_of_scan_a_template_makes(rig):
+    """With no positioner, with two, with a camera: whatever the structure, the
+    fields show what the tables hold, and a path has its Path card instead."""
+    w = rig.widget
+    w.setView(VIEW_SIMPLE)
+    seen = {}
+    for preset_id, program in _all_templates(rig).items():
+        rig.scan.setProgram(dataclasses.replace(program, requested_as=None))   # no template's
+        values = w.parameters.values()
+        if preset_id.startswith('trajectory-'):
+            assert values is None and w.mode() == 'trajectory', preset_id
+            assert not w.trajectoryCard.isHidden() and w.parameters.isHidden(), preset_id
+            continue
+        assert values is not None and w.parameters.form() is None, preset_id
+        for (table, row, key), widget in values.fields.items():
+            assert _held(widget) == _in_tables(w, table, row, key), (preset_id, table, row, key)
+        _no_button(values)
+        seen[preset_id] = list(values.sections)
+    assert seen == {
+        'ms-resolft': ['Scan order', 'Within one step', 'Positions', 'Recording'],
+        'pulse-sequence': ['Scan order', 'Within one step'],      # no positioner, no camera
+        'raster': ['Scan order', 'Within one step', 'Positions'],
+    }
+
+
+def test_an_advanced_file_opened_in_the_expert_panel_lists_its_own_values(qtbot):
+    setup, state, _signals = _advanced_state()
+    setup['scan']['scanWidgetType'] = 'Expert'
+    expert = ExpertRig(setup)
+    try:
+        assert expert.scan.applyComponentState(state, applyMode=SETUP_MODE) == []
+        w = expert.widget
+        w.setView(VIEW_SIMPLE)
+        values = w.parameters.values()
+        assert values is not None and w.parameters.editedLabel.isHidden()     # no template's
+        forms = values.sections
+        assert _names(forms['Scan order']) == ['Z positions', 'Y positions', 'X positions']
+        assert _names(forms['Within one step'])[1:] == [
+            '405 (ON) pulse', '488 (EXC) pulse', '561 (EXC) pulse', 'Camera pulse',
+            'line_clock marker', 'frame_start_clock marker', 'frame_end_clock marker']
+        assert [name for name in _names(forms['Positions']) if name in ('X', 'Y', 'Z')] == [
+            'X', 'Y', 'Z']
+        for (table, row, key), widget in values.fields.items():
+            assert _held(widget) == _in_tables(w, table, row, key), (table, row, key)
+        _no_button(values)
+    finally:
+        expert.close()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

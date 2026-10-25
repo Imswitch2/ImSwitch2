@@ -36,9 +36,10 @@ and its dimensions (*2 timepoints › 2 cycles › 3 planes*); says whether it
 can run and on which engine (*Ready to run on triggerscope*; red, with the
 first reason on the line under it, when it cannot -- click it for the whole
 check); and shows its steps, duration, frames per camera and the engine's
-clock. **Run**, **New from template** (the templates and trajectories,
-below), **Open…**, **Save…**, **Undo** and **Redo** (Ctrl+Z, Ctrl+Shift+Z),
-**Repeat** and **Tables** are next to it. An empty panel shows only **Start
+clock. **Run**, **Simple | Expert** (the first of the tools: the view the
+panel shows the scan in, below), **New from template** (the templates and
+trajectories, below), **Open…**, **Save…**, **Undo** and **Redo** (Ctrl+Z,
+Ctrl+Shift+Z), **Repeat** and **Tables** are next to it. An empty panel shows only **Start
 from a template**: the templates as buttons, a **Trajectory** menu, and **+
 Dimension** to build the scan by hand. A trajectory is shown as its path,
 with **Edit the path…** to change it.
@@ -63,7 +64,13 @@ moves 0.25 µm per cycle and 0.5 µm per plane*; a dimension that does not
 move it is behind **+ also per…** -- with where that takes it (*6 positions
 from 1 to 2.25 µm, 0.25 µm apart*), and how it moves: *jumps, at the end of
 each step, taking 0.5 ms, then settles 0.5 ms; return to the line start 1
-ms; positions are absolute; after the scan back to its first position*.
+ms; positions are absolute; after the scan back to its first position*. The
+note counts positions, not steps (the header's steps count every dimension,
+those that do not move the positioner too), and says when a position is
+visited more than once: after the cycles of that scan are set to 3 by hand,
+nine steps visit seven positions, and it reads *7 positions from 1 to 2.5 µm,
+0.25 µm apart; 2 of them visited twice*. Positions are compared exactly, as
+the decimals they are written as: 0.1 × 3 and 0.3 are one position.
 
 **Within one step** draws one step: its **dwell**, and each event a bar on
 its device's row, in the colour of the laser's light. Drag a bar to move
@@ -107,6 +114,98 @@ for a trigger is drawn up to that wait.
 
 **Tables** shows the same scan as tables, every field of it, as the parts
 above edit them: one program, two views.
+
+
+The Simple view
+===============
+
+**Simple | Expert**, the first of the tools in the header, is a second way to
+read the same scan -- not a second scan, so nothing is translated and nothing
+is lost on the way back. **Expert** is the panel described above. **Simple**
+lists the scan's values, one labelled field each, the way the original
+MS-RESOLFT widgets did, and leaves out whatever adds, removes, renames or
+reorders: **Tables**, **Undo** and **Redo** (and Ctrl+Z, Ctrl+Shift+Z), the
+**+** buttons, the **⋯** of a dimension and the **✕** of a row. The panel
+opens in Expert until the switch is used; the view is remembered when
+ImSwitch is closed and opened again, and opening a scan file never changes it,
+so a file saved by someone else does not change the panel under you.
+Switching during a run changes nothing about the run: **Run**, **Stop** and
+the progress are in the header of both.
+
+**A scan made from a template** lists the template's own form in
+**Parameters** -- the same sections, labels and units as **New from
+template** -- with the scan's values. Change a field (press Return or leave a
+field you typed in, pick a choice, tick a box, edit a pulse cell) and the
+scan is made again from the template with the form's values, as **OK** in the
+template's form does: the title stays the template's, the values are
+remembered for the template, and **Undo** starts again. Only what you change
+changes: a field you left alone gives back the value it was shown with, and
+every number is shown exactly -- the shortest decimal that reads back as the
+same number, times in ms -- so what is shown is what runs. A value the
+template refuses (not a number, *Cycles* 0, an exposure during a pulse the
+sequence does not have) leaves the scan as it was and **not runnable**: the
+reason is under the form and in the header (*Cannot run*), and **Run**,
+**Show preview** and **Save…** refuse with it, rather than run old values
+behind a form that shows new ones. A value the template accepts clears it, and
+so does switching to Expert. The pulse table has no **Add**, **Remove**,
+**Up** or **Down**: how many pulses there are is the scan's structure, so
+**New from template** with the same template opens its full form with the
+scan's values, to add or remove one. A trajectory's points and Python code
+are a summary (*12 points*, *a Python path, 14 lines*) with **Edit…**, which
+opens the template's full form, where code is approved as before.
+
+**Any other scan** -- built by hand, edited in the Expert view, an Advanced
+file -- lists its own values in **Parameters**: every number and choice the
+Expert parts edit, as label and field, in sections in the order the scan
+happens, a section with nothing in it left out.
+
+* *Scan order*: each dimension's count and order (a *serpentine* alternates
+  with the dimension right outside it; the slowest one cannot be one).
+* *Within one step*: the dwell; each event by its device and kind (*405
+  pulse*, *Camera exposure*; its id, or its number, when two are alike) with
+  where it plays when that is not every step (*last of each cycle*, *phase
+  1*), from and to in ms, and the value and shape of a power level or a move.
+* *Positions*: each positioner with where it goes (the note of the
+  Positions part: *7 positions from 1 to 2.5 µm, 0.25 µm apart; 2 of them
+  visited twice*), where it starts, how far each dimension moves it, or its
+  table of positions, how it moves, its move, settle and line-return times,
+  whether positions are absolute or relative to where it starts, and where it
+  goes after the scan. Every dimension has its *moves per* field: **blank
+  means the dimension does not move it**, and the field stays, so it can be
+  typed in again.
+* *Pauses and triggers*: where each is (*Before each timepoint*), a pause's
+  length; for a trigger, the shortest time between triggers, when to give up
+  and what then; and what the lasers do meanwhile.
+* *Recording*: each detector, with a camera's frames per step, what triggers
+  it and its phases as text, and a point detector as *integrates each whole
+  step into one pixel of an image*.
+
+A field writes the same tables the Expert part writes, so a value typed here is
+the value the Expert view shows, and one that does not read is reported where
+it is read. What names the structure -- a dimension's kind and id, a
+positioner's device, an event's device, kind, anchor and phases, where a pause
+is, a detector and what triggers it -- is a label and not a field: to change
+it, switch to Expert. A scan that was made from a template and edited since
+says so above its values (*Edited since it was made from MS-RESOLFT (cycles x
+planes): its values are listed. Change template values… makes it again from
+the template, without the edits.*), and **Change template values…** in the
+header makes it again, without the edits. Typing the values back -- or **Undo**
+in the Expert view -- makes the scan the template's output again, and
+**Parameters** turns into the template's form once the focus has left it
+(moving to another field of the listing does not count). A trajectory that is not its template's any more (edited in Tables)
+has no such listing: its **Path** card shows, as in Expert.
+
+**The rest of the Simple view.** **Within one step** is only drawn: no add
+buttons, no inspector, no dragging and no keys; the dwell is text, and a note
+that offers a button in Expert says its words only. **Can it run?** shows when
+there is something to know -- the scan cannot run for a reason other than the
+form's own refused value, or it plays something differently (the amber chip in
+the header) -- and when you click the status chip; **Ready to run** in the
+header is the verdict otherwise. **Preview** is the same as in Expert, with
+**Show preview**, **Auto-update** and the zoom. **Run**, **Show preview** and
+**Save…** first commit the field you are typing in -- in both views: where
+a click does not move the focus to a button (macOS), the value typed last used
+to be left out of the run.
 
 
 The program

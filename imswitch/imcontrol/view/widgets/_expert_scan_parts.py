@@ -565,12 +565,8 @@ class _LoopChip(QtWidgets.QFrame):
     def _setOrder(self, traversal, outside):
         """``traversal``; a serpentine alternates with the ``outside``
         dimensions right outside it, outermost first -- the only parity the
-        model takes."""
-        loops = self._panel.tableRows('loops')
-        parity = ([loop['id'] for loop in loops[self._index - outside:self._index]]
-                  if traversal == 'serpentine' else [])
-        self._panel.setTableValue('loops', self._index, 'parity_loops', ', '.join(parity))
-        self._panel.setTableValue('loops', self._index, 'traversal', traversal)
+        model takes (the panel writes it)."""
+        self._panel.setLoopOrder(self._index, traversal, outside)
 
     def _fillMenu(self):
         menu = self.more.menu()

@@ -25,8 +25,9 @@ positions in µm.
 **Simple | Expert** (docs/design/plans/expert-simple-view.md) is a second
 way to read the same scan, not a second state: Expert shows every part, to
 edit and to extend; Simple lists the scan's values -- a scan made from a
-template shows the template's own form -- with the pulses drawn and the
-preview, and leaves out whatever adds, removes or reorders.
+template shows the template's own form, any other scan its own values, every
+one the Expert parts edit -- with the pulses drawn and the preview, and
+leaves out whatever adds, removes, renames or reorders.
 """
 
 from __future__ import annotations
@@ -34,7 +35,8 @@ from __future__ import annotations
 import copy
 import dataclasses
 import math
-from decimal import Decimal, InvalidOperation, localcontext
+from collections import Counter
+from decimal import MAX_PREC, Context, Decimal, InvalidOperation, localcontext
 from typing import Callable, Dict, List, Optional, Sequence
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -87,6 +89,66 @@ def exact_text(value, scale=1.0) -> str:
         return '0'
     text = format(product, 'f')
     return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
+def _decimal(text) -> Decimal:
+    """A number as the decimal it reads as -- its float's shortest ``repr``,
+    which is how the templates add times -- so that sums of such numbers are
+    exact. ``ValueError`` for what is not a finite number."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f'{text!r} is not a finite number')
+    return Decimal(repr(value))
+
+
+def _visited(times: int) -> str:
+    """How often a position is visited, in words: *twice*, *3 times*."""
+    return 'twice' if times == 2 else f'{times} times'
+
+
+def _range_note(row: Dict, counts: Dict[str, int]) -> str:
+    """Where one positioner (a row of the drives table) goes over the whole
+    scan, from the counts of its dimensions: *7 positions from 1 to 2.5 µm,
+    0.25 µm apart; 2 of them visited twice.* The positions are the distinct
+    ones, not the header's steps (which count the dimensions that do not move
+    it too), and a position visited more than once says how often.
+
+    Positions are compared exactly: each is the decimal sum of the offset and
+    the weights as written, so 0.1 * 3 and 0.3 are one position -- as floats
+    they are two, and the spacing needed a rounding to say 'even'. Raises
+    ``ValueError`` for a value that does not read."""
+    with localcontext(Context(prec=MAX_PREC)):          # sums of decimals are exact
+        offset = _decimal(row['offset_um'])
+        if row['table_loop']:
+            visits = Counter(offset + _decimal(v) for v in row['table_um'].split(',')
+                             if v.strip())
+        else:
+            visits = Counter({offset: 1})
+            for loop, count in counts.items():
+                text = row.get(f'w:{loop}', '').strip()
+                if not text or _decimal(text) == 0:
+                    continue                            # this dimension does not move it
+                weight = _decimal(text)
+                along = Counter()
+                for position, times in visits.items():
+                    for k in range(count):
+                        along[position + weight * k] += times
+                visits = along
+        if not visits:
+            raise ValueError('no positions')
+        positions = sorted(visits)
+        low, high = float(positions[0]), float(positions[-1])
+        if len(positions) == 1:
+            return f'Stays at {low:.6g} µm.'
+        text = f'{len(positions)} positions from {low:.6g} to {high:.6g} µm'
+        gaps = {b - a for a, b in zip(positions, positions[1:])}
+        if len(gaps) == 1:
+            text += f', {float(gaps.pop()):.6g} µm apart'
+        repeated = Counter(times for times in visits.values() if times > 1)
+        if repeated:
+            text += '; ' + ', '.join(f'{number} of them visited {_visited(times)}'
+                                     for times, number in sorted(repeated.items()))
+        return text + '.'
 
 
 #: Choices the model accepts (scan_program.program), repeated here so the
@@ -419,6 +481,15 @@ def _line_text(field, value) -> str:
     return str(value)
 
 
+def _fit_rows(table: _RowTable):
+    """An inline table as tall as its header, its rows and its frame. The
+    scroll area's own size hint adds the room of a horizontal scroll bar it
+    has not shown (Qt 5.15), a blank strip under the last row."""
+    area = table.table
+    area.setMaximumHeight(area.horizontalHeader().sizeHint().height()
+                          + area.verticalHeader().length() + 2 * area.frameWidth())
+
+
 def _preset_editor(field, value, devices: Dict[str, Sequence[str]], *, inline=False):
     """The editor of one template field, holding ``value``. Numbers are shown
     exactly (``exact_text``), so what is shown is what runs. ``inline``: for
@@ -456,6 +527,7 @@ def _preset_editor(field, value, devices: Dict[str, Sequence[str]], *, inline=Fa
             # in a form, not a scrolling table
             table.table.resizeColumnsToContents()
             table.table.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
+            _fit_rows(table)
         return table
     if field.kind in ('points', 'code'):
         if inline:
@@ -785,6 +857,7 @@ class TemplateForm(QtWidgets.QWidget):
             elif isinstance(editor, _RowTable):
                 editor.setRows([{'device': device, 'on': on_s, 'gap': gap_s}
                                 for device, on_s, gap_s in (value or ())])
+                _fit_rows(editor)
             else:
                 editor.setText(display)
         finally:
@@ -1312,6 +1385,22 @@ class ScanWidgetExpert(SuperScanWidget):
         ``'empty'``."""
         return self._mode()
 
+    def listsValues(self) -> bool:
+        """Whether the Parameters card lists the scan's own values now: in the
+        Simple view, for a scan (not a path, not an empty one) that is not
+        its template's output -- which the card tells from ``template()``."""
+        return self._view == VIEW_SIMPLE and self._mode() == 'program'
+
+    def editedTemplateTitle(self) -> str:
+        """The title of the template the scan was made from when it has been
+        edited since -- the scan whose header offers *Change template
+        values…* to make it again without the edits -- else ``''``."""
+        check = self._check
+        preset = check.get('preset') or ''
+        if preset and check.get('edited') and self._mode() == 'program':
+            return self._presets.get(preset, '')
+        return ''
+
     # -- program <-> tables -----------------------------------------------------
 
     def setProgramDict(self, data: Optional[Dict]):
@@ -1534,6 +1623,17 @@ class ScanWidgetExpert(SuperScanWidget):
             return
         self.setTableValue('loops', index, 'id', name)
 
+    def setLoopOrder(self, index, traversal, outside=1):
+        """A dimension's order. A serpentine alternates with the ``outside``
+        dimensions right outside it, outermost first -- the only parity the
+        model takes; any other order alternates with none. The block's order
+        box and the Simple view's listing both write it."""
+        loops = self.tableRows('loops')
+        parity = ([loop['id'] for loop in loops[index - outside:index]]
+                  if traversal == 'serpentine' else [])
+        self.setTableValue('loops', index, 'parity_loops', ', '.join(parity))
+        self.setTableValue('loops', index, 'traversal', traversal)
+
     def addDrive(self, device):
         # the model's defaults, as a drive written without them gets
         self.addTableRow('drives', {'device': device, 'offset_um': 0.0,
@@ -1638,19 +1738,24 @@ class ScanWidgetExpert(SuperScanWidget):
                 phases = None
             anchor = row['anchor'] or 'step'
             tag = {'level': row['value'], 'offset': f'{row["value"]} µm'}.get(row['kind'], '')
+            # where it plays, in words: the tag without the value it opens with
+            # (the Simple view lists the value as a field)
+            where = ''
             if anchor.startswith('pass-start:'):
-                tag = (tag + ' ' if tag else '') + f'first of each {anchor.split(":", 1)[1]}'
+                where = f'first of each {anchor.split(":", 1)[1]}'
             elif anchor.startswith('pass-end:'):
-                tag = (tag + ' ' if tag else '') + f'last of each {anchor.split(":", 1)[1]}'
+                where = f'last of each {anchor.split(":", 1)[1]}'
             if phases is not None:
-                tag = (tag + ' ' if tag else '') + 'phase ' + ', '.join(
+                where = (where + ' ' if where else '') + 'phase ' + ', '.join(
                     str(p) for p in sorted(phases))
+            tag = f'{tag} {where}' if tag and where else tag or where
             if anchor == 'step':
                 latest = end if latest is None else max(latest, end)
             events.append({'row': index, 'device': row['device'], 'label': row['device'],
                            'kind': row['kind'], 'start_s': start, 'end_s': end,
                            'from_end': anchor.startswith('pass-end:'), 'phases': phases,
-                           'color': self.deviceColor(row['device']), 'tag': tag})
+                           'color': self.deviceColor(row['device']), 'tag': tag,
+                           'where': where})
         moving = []
         step = self.stepSeconds()
         if step is None:
@@ -1676,39 +1781,15 @@ class ScanWidgetExpert(SuperScanWidget):
     def driveRange(self, index) -> str:
         """Where a positioner goes over the whole scan: from its dimensions'
         counts and weights (every order visits the same counters), or its
-        table; and how far apart its positions are when they are evenly
-        spaced."""
+        table; how far apart its positions are when they are evenly spaced;
+        and, when it comes back to a position, how often it visits it (see
+        :func:`_range_note`). ``''`` when the values do not read."""
         try:
             row = self.tableRows('drives')[index]
             counts = {loop['id']: int(loop['count']) for loop in self.tableRows('loops')}
-            offset = float(row['offset_um'])
-            if row['table_loop']:
-                table = [float(v) for v in row['table_um'].split(',') if v.strip()]
-                low, high = offset + min(table), offset + max(table)
-                steps = counts.get(row['table_loop'], len(table))
-                positions = sorted(set(offset + v for v in table))
-            else:
-                low = high = offset
-                steps = 1
-                positions = [offset]
-                for loop, count in counts.items():
-                    text = row.get(f'w:{loop}', '').strip()
-                    if not text or float(text) == 0:
-                        continue
-                    reach = float(text) * (count - 1)
-                    low, high = low + min(0.0, reach), high + max(0.0, reach)
-                    steps *= count
-                    positions = sorted({p + float(text) * k for p in positions
-                                        for k in range(count)})
-        except (ValueError, KeyError, IndexError):
+            return _range_note(row, counts)
+        except (ValueError, KeyError, IndexError, ArithmeticError):
             return ''
-        if steps <= 1:
-            return f'Stays at {low:.6g} µm.'
-        text = f'{steps} positions from {low:.6g} to {high:.6g} µm'
-        gaps = {round(b - a, 9) for a, b in zip(positions, positions[1:])}
-        if len(gaps) == 1:
-            text += f', {gaps.pop():.6g} µm apart'
-        return text + '.'
 
     def visitStrip(self, fit):
         """The positions the first positioner visits over the two fastest
@@ -1791,7 +1872,9 @@ class ScanWidgetExpert(SuperScanWidget):
         self.parameters.refresh()
         mode = self._mode()
         form = simple and self.parameters.showsTemplate()
-        self.parameters.setVisible(form)
+        # ... and it shows whenever it has something: the template's form, or
+        # the scan's own values
+        self.parameters.setVisible(simple and self.parameters.shows())
         if mode == 'trajectory':
             self.trajectoryCard.setTrajectory(self._check['trajectory'])
         if simple:

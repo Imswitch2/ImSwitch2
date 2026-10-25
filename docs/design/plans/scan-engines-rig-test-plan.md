@@ -136,6 +136,20 @@ active-low one if the rig has it) and on a galvo's AO.
 |---|---|---|
 | E1 | EtSnouty **Slow scan** set to `Scan`: let detected events run the Expert program | It runs once per event; its recording carries `ScanEvent:triggeredBy` (pipeline, detector, position, time), blank again after the run; Stop during the program ends it cleanly |
 
+## P3 -- the Expert panel's Simple view (plan `expert-simple-view.md`, 2026-10-25)
+
+Software-verified on the simulated rig (the whole view, both phases). What the
+rig answers: that a scan changed from the Simple view is the scan that runs,
+that the view survives a restart, and that someone who did not build the panel
+can use it. Scope on a laser TTL for V1; lasers at minimum power.
+
+| # | Rig | Do | Passes if |
+|---|---|---|---|
+| V1 | Snouty (stage, camera), scope on a laser line | **Simple** view, **MS-RESOLFT** from the template: change *Cycles*, *Planes per cycle*, a pulse's *On (ms)* and the *Pause before each timepoint*; **Run** | The scope shows the new pulse times; the recording opens with the new cycles and planes in SNOUTY |
+| V2 | Any | Switch to **Simple**, restart ImSwitch; then open a scan file that was saved in the other view | The panel opens in the view it was left in; opening the file keeps it |
+| V3 | Any | The same scan in **Simple** and in **Expert**: **Show preview** in each; then in **Simple** type a value the template refuses (*Cycles* `x`) and press **Run** | The preview is the Expert view's (same scan, same drawing); **Run** is refused with the reason, under the form and in the header, and nothing runs |
+| V4 | Any, with someone who has not used the Expert panel | They run an MS-RESOLFT scan from the **Simple** view without help (the request came from users) | What they had to ask is the result: write it down, it is what the view still needs |
+
 ## Blocked until the TriggerScope speaks the step protocol
 
 The step-engine protocol (`IMSWITCH_STEP/1`), its engine, leader/follower
