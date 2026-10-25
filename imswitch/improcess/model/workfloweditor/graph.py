@@ -141,4 +141,71 @@ def layers(steps) -> list[list[str]]:
     return result
 
 
-__all__ = ["CycleError", "ancestors", "descendants", "is_ordered", "layers", "refs_of", "stable_order"]
+def layered_positions(steps, heights: dict[str, float], *, width: float = 210.0, h_gap: float = 64.0,
+                      v_gap: float = 36.0) -> dict[str, tuple[float, float]]:
+    """Top-left corners for a left-to-right drawing of every step.
+
+    Columns from :func:`layers`; inside a column the boxes are stacked around
+    the mean height of what they read from, so a chain runs straight and a
+    split fans out around it.
+    """
+    positions: dict[str, tuple[float, float]] = {}
+    centres: dict[str, float] = {}
+    by_id = {step.id: step for step in steps}
+    for number, ids in enumerate(layers(steps)):
+        def anchor(step_id):
+            upstream = [centres[ref.step] for ref in refs_of(by_id[step_id]) if ref.step in centres]
+            return sum(upstream) / len(upstream) if upstream else None
+
+        boxes = [heights.get(step_id, 120.0) for step_id in ids]
+        total = sum(boxes) + v_gap * (len(ids) - 1)
+        anchors = [a for a in (anchor(step_id) for step_id in ids) if a is not None]
+        middle = sum(anchors) / len(anchors) if anchors else total / 2
+        y = middle - total / 2
+        for step_id, box in zip(ids, boxes):
+            positions[step_id] = (number * (width + h_gap), y)
+            centres[step_id] = y + box / 2
+            y += box + v_gap
+    return positions
+
+
+def place_missing(steps, positions: dict, heights: dict[str, float], *, width: float = 210.0,
+                  h_gap: float = 64.0, v_gap: float = 36.0) -> dict[str, tuple[float, float]]:
+    """``positions`` completed for the steps that have none.
+
+    A step without a place goes right of the first step it reads from, or
+    under everything when it reads from nothing, moved down until it overlaps
+    no other box.
+    """
+    placed = {key: (float(x), float(y)) for key, (x, y) in positions.items()}
+    if not placed:
+        return layered_positions(steps, heights, width=width, h_gap=h_gap, v_gap=v_gap)
+
+    def overlaps(x, y, h, own):
+        for other, (ox, oy) in placed.items():
+            if other == own:
+                continue
+            oh = heights.get(other, 120.0)
+            if x < ox + width + 8 and ox < x + width + 8 and y < oy + oh + 8 and oy < y + h + 8:
+                return True
+        return False
+
+    for step in steps:
+        if step.id in placed:
+            continue
+        h = heights.get(step.id, 120.0)
+        upstream = [ref.step for ref in refs_of(step) if ref.step in placed]
+        if upstream:
+            ux, uy = placed[upstream[0]]
+            x, y = ux + width + h_gap, uy
+        else:
+            x = min(px for px, _py in placed.values())
+            y = max(py + heights.get(key, 120.0) for key, (_px, py) in placed.items()) + v_gap
+        while overlaps(x, y, h, step.id):
+            y += 40.0
+        placed[step.id] = (x, y)
+    return placed
+
+
+__all__ = ["CycleError", "ancestors", "descendants", "is_ordered", "layered_positions", "layers",
+           "place_missing", "refs_of", "stable_order"]

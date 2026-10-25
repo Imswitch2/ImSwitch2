@@ -15,11 +15,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Entry:
     label: str
     before: dict
     after: dict
+    merge: object = None
 
 
 class DocumentHistory:
@@ -33,7 +34,8 @@ class DocumentHistory:
     An operation that raises inside the block records nothing and leaves the
     document as it was before the block. A block inside another one is part
     of it: a gesture made of several operations (add a step, then connect it)
-    is undone in one go.
+    is undone in one go. Edits given the same ``merge`` key one after the
+    other (typing into one field) are one entry.
     """
 
     def __init__(self, document, limit: int = 200):
@@ -44,7 +46,7 @@ class DocumentHistory:
         self._depth = 0
 
     @contextmanager
-    def edit(self, label: str):
+    def edit(self, label: str, merge=None):
         if self._depth:
             self._depth += 1
             try:
@@ -65,9 +67,18 @@ class DocumentHistory:
             self._depth = 0
         after = self._snapshot()
         if after != before:
-            self._undo.append(_Entry(str(label), before, after))
-            del self._undo[: max(0, len(self._undo) - self._limit)]
+            last = self._undo[-1] if self._undo else None
+            if merge is not None and last is not None and last.merge == merge and not self._redo:
+                last.after = after
+            else:
+                self._undo.append(_Entry(str(label), before, after, merge))
+                del self._undo[: max(0, len(self._undo) - self._limit)]
             self._redo.clear()
+
+    def seal(self) -> None:
+        """End merging: the next edit is a new entry even with the same key."""
+        if self._undo:
+            self._undo[-1].merge = None
 
     def undo(self) -> str | None:
         """Go back one edit; returns its label, or ``None`` when there is none."""
