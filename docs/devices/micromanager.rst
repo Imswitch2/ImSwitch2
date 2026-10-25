@@ -323,12 +323,12 @@ it has one.
   camera another frame size or pixel type than the running one is refused before anything is written
   (a ``PixelType`` write is known in advance; the message names the other camera and Micro-Manager pull
   request 936). A colour or otherwise unsupported ``PixelType`` is refused with the mono-only message
-  whatever else streams. A property whose effect cannot be predicted is written only when the format can
-  be read back afterwards, that is when this camera is MMCore's current one or no other camera streams;
-  MMCore reports only its current camera and cannot switch it during a sequence, so for any other camera
-  beside a running stream such a write is refused before anything is written (stop the other camera
-  first). When it is allowed, the format is read back and the old value put back if the formats clash;
-  the stream is restarted with the old format either way and never left stopped. The same holds for MMCore's *current* camera even when it is idle itself: the
+  whatever else streams. A property whose effect cannot be predicted (``Gain``, ``OnCameraCCDXSize``, ...) is
+  written, the format read back and the old value put back if the formats clash. MMCore reports the frame size and
+  bytes per pixel of its *current* camera only, so for any other camera beside a running stream the format is read
+  per camera instead (its ROI, which follows the sensor size and binning, and its ``PixelType`` property); such a
+  write is refused before anything is written only if that camera's ``PixelType`` wording is one the bridge cannot
+  interpret, because then nothing could verify the result. The stream is restarted with the old format either way and never left stopped. The same holds for MMCore's *current* camera even when it is idle itself: the
   shared buffer is decoded with the current camera's format, so a stopped camera that is still current
   must keep the running stream's format. Binning is refused outright while another camera streams.
 

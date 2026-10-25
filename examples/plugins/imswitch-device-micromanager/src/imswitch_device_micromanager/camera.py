@@ -62,8 +62,11 @@ from imswitch.pluginapi import DetectorManager, DetectorNumberParameter
 
 from . import _properties
 from ._bridge import MicroManagerDeviceMixin
-from ._core import FramesLostError, MMCoreHostError, StreamFault, StreamFaultKind, queue_budget_bytes
-from ._frames import UnsupportedPixelTypeError, predict_pixel_type_property
+from ._core import (
+    _PR_936, FormatNotVerifiableError, FramesLostError, MMCoreHostError, StreamFault, StreamFaultKind,
+    queue_budget_bytes,
+)
+from ._frames import PROPERTY_PIXEL_TYPE, UnsupportedPixelTypeError, predict_pixel_type_property
 
 #: ``fullShape`` ``(width, height)`` of a camera that was built while its hub was
 #: not connected. DetectorManager needs a shape at construction and the sensor
@@ -78,7 +81,6 @@ ABSENT_MODEL = 'Micro-Manager camera (not connected)'
 #: MMCore property names the manager maps to first-class ImSwitch2 concepts.
 PROPERTY_EXPOSURE = 'Exposure'
 PROPERTY_BINNING = 'Binning'
-PROPERTY_PIXEL_TYPE = 'PixelType'
 
 #: Parameter that carries the exposure, and where it sits in the settings tree.
 PARAM_EXPOSURE = 'Exposure'
@@ -490,12 +492,13 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         (a) its effect on the format is predictable and compatible: written;
         (b) predictable and incompatible -- including *predictably unsupported* (colour, an
             unsupported depth; refused with the mono-only message whatever else streams): refused;
-        (c) not predictable (any property but a ``PixelType`` the bridge understands): written only
-            when the format can be VERIFIED afterwards, i.e. this camera is MMCore's current one or
-            nothing else streams (:meth:`MMCoreHost.can_verify_format`); otherwise refused, because a
-            format that cannot be read back cannot be checked against the running stream. A verified
-            write that clashes is re-read and **rolled back** -- the stream is restarted with the old
-            format either way and the refusal is raised to the caller.
+        (c) not predictable (any property but a ``PixelType`` the bridge understands): written, the
+            format re-read and, when it clashes with a running stream, **rolled back** -- the stream
+            is restarted with the old format either way and the refusal is raised to the caller. The
+            re-read is per label for a camera that is not MMCore's current one
+            (:meth:`MMCoreHost.frame_format_from_properties`: ``getROI(label)`` and the ``PixelType``
+            property), so the write is refused before it happens ONLY when that path cannot verify,
+            i.e. the camera's ``PixelType`` wording is one the bridge cannot interpret.
         """
         host, label = self._host, self._label
         text = _properties.coerce_for_mm(self.parameters[name], value)
@@ -546,7 +549,16 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                 if self._stream_dtype is not None:
                     host.check_format_change_allowed(label, self._stream_hw, predicted)
             else:
-                # (c) unpredictable: written only when the format can be read back and checked afterwards.
+                # (c) unpredictable: written, re-read and rolled back if it clashes -- which needs the format
+                #     to be readable afterwards. Beside a stream a camera that is not MMCore's current one is
+                #     read per label, which cannot interpret a PixelType wording the bridge does not know:
+                #     refused before the write (also when the NEW value is such a wording).
+                if name == PROPERTY_PIXEL_TYPE and host.format_read_is_per_label(label):
+                    raise FormatNotVerifiableError(
+                        f"cannot set {PROPERTY_PIXEL_TYPE} of camera {label!r} to {text!r} while another camera "
+                        f"streams: the bridge cannot tell which frame format that value gives, and it cannot "
+                        f"be read back for a camera that is not MMCore's current one ({_PR_936}). Stop the "
+                        f"other camera first.")
                 host.check_format_verifiable(label, name)
 
         def after(applied):

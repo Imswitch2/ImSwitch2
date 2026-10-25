@@ -13,6 +13,7 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     CAMERA_PIXEL_SIZE_PARAM, CAMERA_PIXEL_SIZE_SOURCE_PARAM, ChunkKind, PIXEL_SIZE_SOURCE_DEFAULT,
     PIXEL_SIZE_SOURCE_SETUP, PIXEL_SIZE_SOURCE_USER, RawFrameUnavailableError,
 )
+from imswitch_device_micromanager import _core as _core_module
 from imswitch_device_micromanager import camera as camera_module
 from imswitch_device_micromanager._core import (
     FormatNotVerifiableError, FramesLostError, FrameShapeMismatchError, MMCoreHostError, StreamFaultKind,
@@ -1249,18 +1250,19 @@ def test_a_colour_pixel_type_on_the_camera_that_is_not_current_is_refused_before
         second.finalize()
 
 
-def test_an_unpredictable_property_on_the_camera_that_is_not_current_is_refused_before_the_write(hub):
-    """``OnCameraCCDXSize`` can change the frame width and nothing says so beforehand; the non-current
-    camera's format cannot be read back while the other one streams, so the write is refused."""
+def test_an_ordinary_property_of_the_camera_that_is_not_current_is_written_beside_a_stream(hub):
+    """``Gain`` cannot change the frame format; its format is verified per label (``getROI(label)`` and
+    ``PixelType``) after the write, so it is allowed on the second camera while the first streams, and
+    both keep streaming correct frames. (The broader round-4 rule refused it.)"""
     first, second = _two_cameras(hub)
     host = hub.host
     try:
         first.startAcquisition()
         second.startAcquisition()
-        with pytest.raises(FormatNotVerifiableError, match=rf"cannot be verified.*'{LABEL}'|'{LABEL}'.*cannot be verified"):
-            second.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)
-        assert host.call("getProperty", "Cam2", "OnCameraCCDXSize") == str(FRAME_SIDE)
-        assert "OnCameraCCDXSize" not in second._edited and second.shape == (FRAME_SIDE, FRAME_SIDE)
+        assert host.call("getCameraDevice") == LABEL
+        gain = float(second.parameters["Gain"].value) + 1
+        second.setParameter("Gain", gain)
+        assert float(host.call("getProperty", "Cam2", "Gain")) == gain
         assert sorted(host.running_streams()) == sorted([LABEL, "Cam2"])
         _both_stream_equal_frames(first, second)
         first.stopAcquisition()
@@ -1270,23 +1272,77 @@ def test_an_unpredictable_property_on_the_camera_that_is_not_current_is_refused_
         second.finalize()
 
 
-def test_an_unpredictable_property_is_refused_on_an_idle_camera_that_is_not_current_too(hub):
+def test_a_property_that_changes_the_roi_of_the_camera_that_is_not_current_is_detected_and_rolled_back(hub):
+    """``OnCameraCCDXSize`` changes the frame width. For the camera that is not MMCore's current one the
+    new size is read with ``getROI(label)``; it clashes with the running stream, so the old value is put
+    back and both streams restart with the old format."""
     first, second = _two_cameras(hub)
     host = hub.host
     try:
         first.startAcquisition()
-        with pytest.raises(FormatNotVerifiableError):
-            second.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)       # idle, but its cached format could go stale
+        second.startAcquisition()
+        with pytest.raises(FrameShapeMismatchError, match=r"Camera.*#936"):
+            second.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)
         assert host.call("getProperty", "Cam2", "OnCameraCCDXSize") == str(FRAME_SIDE)
+        assert "OnCameraCCDXSize" not in second._edited and second.shape == (FRAME_SIDE, FRAME_SIDE)
+        assert second.parameters["OnCameraCCDXSize"].value == FRAME_SIDE
+        assert sorted(host.running_streams()) == sorted([LABEL, "Cam2"])
+        _both_stream_equal_frames(first, second)
+        first.stopAcquisition()
+        second.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_roi_changing_property_of_an_idle_camera_that_is_not_current_updates_its_format_and_its_start_is_refused(hub):
+    """The idle camera's cached format follows the write (read per label), so the guard that runs at its
+    start sees the real format instead of a stale one."""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)
+        assert host.call("getProperty", "Cam2", "OnCameraCCDXSize") == str(FRAME_SIDE // 2)
+        assert second.shape == (FRAME_SIDE // 2, FRAME_SIDE)
+        with pytest.raises(FrameShapeMismatchError, match="#936"):
+            second.startAcquisition()
         first.stopAcquisition()
     finally:
         first.finalize()
         second.finalize()
 
 
+def test_a_write_is_refused_before_it_happens_only_when_the_per_label_read_cannot_interpret_the_pixel_type(hub, monkeypatch):
+    """With a PixelType wording the bridge cannot interpret (``12bit``-like), the format of a camera that is
+    not MMCore's current one cannot be verified beside a stream: both a PixelType write and an ordinary
+    property are refused before anything is written."""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.startAcquisition()
+        monkeypatch.setattr(camera_module, "predict_pixel_type_property", lambda text: None)
+        monkeypatch.setattr(_core_module, "predict_pixel_type_property", lambda text: None)
+        with pytest.raises(FormatNotVerifiableError, match="cannot set PixelType"):
+            second.setParameter("PixelType", "8bit")
+        assert host.call("getProperty", "Cam2", "PixelType") == "16bit"
+        with pytest.raises(FormatNotVerifiableError, match=r"cannot change Gain.*cannot be interpreted"):
+            second.setParameter("Gain", float(second.parameters["Gain"].value) + 1)
+        first.setParameter("Gain", float(first.parameters["Gain"].value) + 1)     # the current camera is read directly
+        assert sorted(host.running_streams()) == sorted([LABEL, "Cam2"])
+        monkeypatch.undo()
+        _both_stream_equal_frames(first, second)
+        first.stopAcquisition()
+        second.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
 def test_an_unpredictable_property_is_written_when_nothing_else_streams(hub):
-    """The same write is allowed when the format can be verified afterwards: the other camera is
-    stopped (second streams alone) -- and it is also allowed for the current camera beside a stream
+    """With the other camera stopped (second streams alone) the format is read from the core directly and the
+    write stands -- as it does for the current camera beside a stream
     (see ``test_a_change_that_cannot_be_predicted_is_rolled_back_when_the_format_clashes``)."""
     first, second = _two_cameras(hub)
     host = hub.host

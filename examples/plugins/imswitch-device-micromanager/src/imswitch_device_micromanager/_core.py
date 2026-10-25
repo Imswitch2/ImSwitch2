@@ -41,10 +41,12 @@ from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence
 import numpy as np
 
 from ._frames import (
+    PROPERTY_PIXEL_TYPE,
     FrameFormatError,
     UnsupportedPixelTypeError,
     dtype_for_bytes_per_pixel,
     normalize_frame,
+    predict_pixel_type_property,
 )
 
 #: ``startSequenceAcquisition`` takes a C ``long`` for the image count; ``inf``
@@ -494,22 +496,20 @@ class MMCoreHost:
     def frame_format(self, label: str) -> Tuple[Tuple[int, int], np.dtype]:
         """``((height, width), dtype)`` camera ``label`` delivers now, from the core.
 
-        MMCore only answers for the *current* camera and refuses to switch it
-        while a sequence runs, so this temporarily selects ``label`` (and puts
-        the previous selection back) and is refused while any stream runs --
-        then the camera manager, which knows its own format, keeps it itself.
-        Raises
-        :class:`~._frames.UnsupportedPixelTypeError` for colour cameras.
+        MMCore's ``getImageWidth/Height`` and ``getBytesPerPixel`` answer for the *current* camera
+        only, and the current camera cannot be switched while a sequence runs. So with no stream
+        running (or ``label`` current) the core is asked directly, temporarily selecting ``label``;
+        while another stream runs the format is computed per label instead
+        (:meth:`frame_format_from_properties`).
+        Raises :class:`~._frames.UnsupportedPixelTypeError` for colour cameras and
+        :class:`FormatNotVerifiableError` when the per-label path cannot tell.
         """
         with self._lock:
             core = self.core
             previous = core.getCameraDevice()
             if previous != label:
                 if self.running_streams():
-                    raise MMCoreHostError(
-                        f"cannot read camera {label!r}'s frame format while "
-                        f"{self.running_streams()} stream: MMCore only reports the current "
-                        f"camera and cannot switch it during a sequence")
+                    return self.frame_format_from_properties(label)
                 core.setCameraDevice(label)
             try:
                 dtype = dtype_for_bytes_per_pixel(
@@ -518,6 +518,34 @@ class MMCoreHost:
             finally:
                 if previous != label:
                     core.setCameraDevice(previous)
+
+    def frame_format_from_properties(self, label: str) -> Tuple[Tuple[int, int], np.dtype]:
+        """``((height, width), dtype)`` of camera ``label`` from per-label reads, valid beside a running stream.
+
+        ``getROI(label)`` is per device and in binned pixels, so its width and height are the frame
+        size (the ROI follows the CCD-size properties and the binning; probe, MMCore 12.5), and the
+        dtype is predicted from ``getProperty(label, 'PixelType')`` with
+        :func:`~._frames.predict_pixel_type_property`. Raises
+        :class:`~._frames.UnsupportedPixelTypeError` for colour and :class:`FormatNotVerifiableError`
+        when the camera has no ``PixelType`` property or its wording is one the bridge cannot
+        interpret (``12bit``, an adapter's own name): then only the current camera's bytes per pixel
+        would tell, and that cannot be read for this camera while another streams.
+        """
+        with self._lock:
+            core = self.core
+            if not core.hasProperty(label, PROPERTY_PIXEL_TYPE):
+                raise FormatNotVerifiableError(
+                    f"camera {label!r} has no {PROPERTY_PIXEL_TYPE} property, so its frame format cannot be "
+                    f"verified while another camera streams")
+            text = core.getProperty(label, PROPERTY_PIXEL_TYPE)
+            dtype = predict_pixel_type_property(text)
+            if dtype is None:
+                raise FormatNotVerifiableError(
+                    f"the {PROPERTY_PIXEL_TYPE} {text!r} of camera {label!r} cannot be interpreted, so its "
+                    f"frame format cannot be verified while another camera streams (MMCore reports bytes per "
+                    f"pixel only for its current camera, and cannot switch it during a sequence)")
+            _x, _y, width, height = (int(v) for v in core.getROI(label))
+            return (height, width), dtype
 
     def sensor_geometry(self, label: str) -> Tuple[int, int, Tuple[int, int, int, int]]:
         """``(full_width, full_height, (x, y, w, h))`` of camera ``label`` at its current binning.
@@ -724,39 +752,50 @@ class MMCoreHost:
                 return
             self._check_format_against_running(stream, (int(shape[0]), int(shape[1])), np.dtype(dtype))
 
-    def can_verify_format(self, label: str) -> bool:
-        """Whether the frame format of camera ``label`` can be read back from the core right now.
+    def format_read_is_per_label(self, label: str) -> bool:
+        """True when another camera streams and ``label`` is not MMCore's current camera: the format of
+        ``label`` can then be determined only per label (:meth:`frame_format_from_properties`)."""
+        with self._lock:
+            return (any(s.label != label and s.streaming for s in self._streams.values())
+                    and self.core.getCameraDevice() != label)
 
-        MMCore answers for its *current* camera only and cannot switch it during a sequence
-        (:meth:`frame_format`), so the format of ``label`` is readable when no OTHER camera streams
-        (``label``'s own stream is stopped around any change) or when ``label`` is the current camera.
+    def can_verify_format(self, label: str) -> bool:
+        """Whether the frame format of camera ``label`` can be determined right now.
+
+        Always, unless the per-label path (:meth:`frame_format_from_properties`) is the only one
+        available -- another camera streams and ``label`` is not MMCore's current camera -- and it
+        cannot interpret the camera's ``PixelType`` wording.
         """
         with self._lock:
-            if not any(s.label != label and s.streaming for s in self._streams.values()):
+            if not self.format_read_is_per_label(label):
                 return True
-            return self.core.getCameraDevice() == label
+            try:
+                self.frame_format_from_properties(label)
+            except FormatNotVerifiableError:
+                return False
+            return True
 
     def check_format_verifiable(self, label: str, what: str) -> None:
         """Raise :class:`FormatNotVerifiableError` when a change of ``what`` on camera ``label`` could not be checked.
 
-        For a write whose effect on the frame format is NOT predictable from its value (any
-        property but a ``PixelType`` the bridge understands): it may only happen when the format
-        can be read back afterwards and compared with the running streams, because a format
-        that differs from them makes MMCore drop or mis-shape frames silently
-        (:data:`_PR_936`). Refusing before the write leaves everything as it was.
+        For a write whose effect on the frame format is not predictable from its value: it is
+        written, the format re-read and compared with the running streams, and undone if it clashes
+        (:data:`_PR_936`). That needs the format to be readable afterwards. It is, beside a running
+        stream, for every camera whose ``PixelType`` wording the bridge can interpret; for any other
+        the write is refused before it happens, because a format that differs from the running
+        stream's would drop or mis-shape frames silently.
         """
         with self._lock:
             if self.can_verify_format(label):
                 return
             others = sorted(s.label for s in self._streams.values() if s.label != label and s.streaming)
-            current = self.core.getCameraDevice()
-            raise FormatNotVerifiableError(
-                f"cannot change {what} of camera {label!r} while camera {', '.join(map(repr, others))} "
-                f"streams: the frame format the change produces cannot be verified (MMCore reports only "
-                f"its current camera, {current!r}, and cannot switch it during a sequence), and a format "
-                f"that differs from the running stream's would drop or mis-shape frames silently "
-                f"({_PR_936}). Stop {', '.join(map(repr, others))} first, or change this setting before "
-                f"it starts.")
+            try:
+                self.frame_format_from_properties(label)
+            except FormatNotVerifiableError as exc:
+                raise FormatNotVerifiableError(
+                    f"cannot change {what} of camera {label!r} while camera {', '.join(map(repr, others))} "
+                    f"streams: {exc}. Stop {', '.join(map(repr, others))} first, or change this setting "
+                    f"before it starts ({_PR_936}).") from exc
 
     # ------------------------------------------------------ reconnect resume barrier
     def registered_cameras(self) -> List[str]:

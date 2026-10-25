@@ -216,11 +216,29 @@ def test_frame_format_reads_the_core_and_restores_the_camera_selection(host):
     assert host.call("getCameraDevice") == "Camera"          # selection put back
 
 
-def test_frame_format_of_a_non_current_camera_needs_explicit_values_while_streaming(host):
+def test_frame_format_of_a_non_current_camera_is_read_per_label_while_another_streams(host):
+    """MMCore's ``getImageWidth`` and ``getBytesPerPixel`` answer for the current camera only, but
+    ``getROI(label)`` and the ``PixelType`` property are per device: the host computes the format from them."""
+    host.call("setProperty", "Cam2", "PixelType", "8bit")
+    host.call("setProperty", "Cam2", "OnCameraCCDXSize", SMALL_SIDE)
     start(host, "Camera")
-    with pytest.raises(MMCoreHostError, match="cannot switch it during a sequence"):
-        host.frame_format("Cam2")
+    assert host.call("getCameraDevice") == "Camera"
+    assert host.frame_format("Cam2") == ((FRAME_SIDE, SMALL_SIDE), np.dtype(np.uint8))
+    assert host.frame_format_from_properties("Camera") == ((FRAME_SIDE, FRAME_SIDE), np.dtype(np.uint16))
+    assert host.call("getCameraDevice") == "Camera" and host.running_streams() == ["Camera"]
     host.stop_stream("Camera")
+
+
+def test_frame_format_per_label_refuses_colour_and_says_when_it_cannot_tell(host, monkeypatch):
+    from imswitch_device_micromanager._frames import UnsupportedPixelTypeError
+
+    host.call("setProperty", "Cam2", "PixelType", "32bitRGB")
+    with pytest.raises(UnsupportedPixelTypeError):
+        host.frame_format_from_properties("Cam2")
+    host.call("setProperty", "Cam2", "PixelType", "16bit")
+    monkeypatch.setattr(_core, "predict_pixel_type_property", lambda text: None)
+    with pytest.raises(_core.FormatNotVerifiableError, match="cannot be interpreted"):
+        host.frame_format_from_properties("Cam2")
 
 
 def test_sensor_geometry_of_an_untouched_camera_is_the_full_frame(host):
@@ -887,17 +905,21 @@ def test_resume_barrier_is_dropped_by_shutdown(host):
     assert not host.reconnect_round_open
 
 
-def test_can_verify_format_is_false_only_for_a_non_current_camera_beside_another_stream(host):
+def test_a_format_is_verifiable_beside_a_stream_unless_the_pixel_type_wording_is_unknown(host, monkeypatch):
     assert host.can_verify_format("Cam2") is True                          # nothing streams
     start(host, "Camera")
-    assert host.call("getCameraDevice") == "Camera"
+    assert host.format_read_is_per_label("Cam2") and not host.format_read_is_per_label("Camera")
     assert host.can_verify_format("Camera") is True                        # the current camera
-    assert host.can_verify_format("Cam2") is False                         # not current while Camera streams
-    with pytest.raises(_core.FormatNotVerifiableError, match="cannot be verified"):
-        host.check_format_verifiable("Cam2", "OnCameraCCDXSize")
-    host.check_format_verifiable("Camera", "OnCameraCCDXSize")
+    assert host.can_verify_format("Cam2") is True                          # per label: 16bit is known
+    host.check_format_verifiable("Cam2", "Gain")
+    monkeypatch.setattr(_core, "predict_pixel_type_property", lambda text: None)
+    assert host.can_verify_format("Cam2") is False
+    with pytest.raises(_core.FormatNotVerifiableError, match="cannot be interpreted"):
+        host.check_format_verifiable("Cam2", "Gain")
+    host.check_format_verifiable("Camera", "Gain")
+    monkeypatch.undo()
     host.stop_stream("Camera")
-    assert host.can_verify_format("Cam2") is True
+    assert not host.format_read_is_per_label("Cam2")
 
 
 def test_unregistering_a_camera_forgets_it(host):

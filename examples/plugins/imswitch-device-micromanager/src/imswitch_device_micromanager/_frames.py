@@ -14,6 +14,9 @@ from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
+#: The Micro-Manager property that selects the pixel format of a camera.
+PROPERTY_PIXEL_TYPE = 'PixelType'
+
 #: ``PixelType`` metadata tag -> numpy dtype, for the mono types MMCore delivers.
 #: Anything else (``RGB32``, ``RGB64``, 32-bit float, ...) is refused.
 _DTYPE_BY_PIXEL_TYPE = {
