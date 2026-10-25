@@ -2,15 +2,21 @@
 
 Date: 2026-10-24 (revision 4, after three review rounds)
 
-Status: Approved for implementation; **Phase 0 is done** (2026-10-24: kinds,
-runner extensions 1–5, document graph operations with undo, every exit item
-covered by a headless test), Phase 1 is next. Three independent review rounds
-on 2026-10-24; the third ended "Fix that sentence and Phase 0 is GREEN", and
-revision 4 makes that fix (see *Review record*). The mockups
-are renders of a working spike (`tools/workflow_editor_2_mockups/`) that uses
-the real plugin catalogue, the real `WorkflowDocument` and real run results;
-the window around them is the proposal. Supersedes the "graph canvas" item of
-Phase 4 in `improcess-workflow-editor.md`.
+Status: **Phases 0–3 implemented** (2026-10-25): kinds and runner extensions
+(Phase 0), the canvas and inspector (Phase 1), interactive runs with the
+cache, previews, Show in viewer and Pin (Phase 2), the start page, list
+cards, auto-run, frames and the docs with screenshots of the real editor
+(Phase 3); every exit item is covered by headless tests except Phase 3's
+check with two people who have not used the editor, which is still to do.
+Phase 4 is to be decided now that Phase 3 has shipped. Three independent
+review rounds on 2026-10-24 approved the plan (see *Review record*). The
+mockups below are renders of the spike that preceded the editor
+(`tools/workflow_editor_2_mockups/`, removed once the real editor could
+render its own: `docs/images/workflow-editor/`, made by
+`tools/workflow_editor_screenshots.py`); the spike used the real plugin
+catalogue, the real `WorkflowDocument` and real run results, and the window
+around them was the proposal. Supersedes the "graph canvas" item of Phase 4
+in `improcess-workflow-editor.md`.
 
 **Decisions taken** (2026-10-24): the graph is the default mode, with the list
 one click away and the choice remembered; interactive previews stay in the

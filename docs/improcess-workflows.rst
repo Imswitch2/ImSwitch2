@@ -368,62 +368,171 @@ plugin whose widget was found to disagree with its declaration. See
 The workflow editor
 ===================
 
-**File → Workflow editor…** opens a window to build, edit, validate and
-run workflow files without writing YAML by hand. It is a sibling of the
-hardware configuration editor and works the same way: what it offers comes
-from the code, not from a list of its own.
+**File → Workflow editor…** opens a window to build, run and save workflows
+without writing YAML. A workflow is drawn as a graph: every step is a box,
+what it reads comes in on the left and what it makes goes out on the right,
+and the cables between them are coloured by what they carry — grey for a
+recording, blue for an image, orange for labels, green for a curve, purple
+for a table. What the editor offers comes from the code (the same registry a
+run uses), so a step it offers is one the runner will find.
 
-* The **palette** on the left lists every step kind and every installed
-  plugin — built-in reconstructors and processors by category, drop-in
-  plugins under their own heading — as the same registry a run uses sees
-  them. A plugin that cannot run headlessly (see
-  :ref:`improcess-headless-contract`) is listed greyed, with the reason.
-  Double-click an entry, or select it and press **Add step**, to add a
-  step after the selected one; a processing or save step takes the step it
-  follows as its input.
-* The **step list** in the middle shows the steps in execution order, with
-  the plugin, the inputs and an issue marker; **▲ Up**, **▼ Down** and
-  **Remove** reorder and delete. A step is never moved in front of one of
-  its inputs.
-* The **step form** on the right edits the selected step: a source's path
-  and dataset (or nothing, to bind it when the workflow runs), a
-  reconstruction's reconstructor and source, a processing step's
-  processor, ordered inputs (with the ports the earlier steps declare: a
-  channel split's ``C0, C1, …`` are typed after the step id) and
-  parameters, a save's input, format and path template. Parameter forms
-  are built from each plugin's ``param_spec()``: choices are combo boxes,
-  bounded numbers spin boxes with their unit, and a value that differs
-  from the plugin's default shows a *back to default* button. Only what
-  differs from the defaults is written to the file, as when the file is
-  written by hand.
-* The **issues** panel lists everything ``validate`` would report — an
-  unknown plugin, a reference to a port nobody produces, a parameter the
-  plugin does not take, a wrong arity — plus what the editor can add to
-  it: a value that is not one of its field's, a path template with a
-  placeholder nobody fills, two saves writing one file. Clicking an issue
-  selects its step. **Run…** refuses while any remain.
+.. image:: ./images/workflow-editor/graph.png
+   :alt: The workflow editor showing the split-process-merge example after a run
 
-**Run…** runs the workflow exactly as **File → Run workflow…** runs a
-file: it asks for the output folder and whether saves may overwrite, runs
-on a worker thread, adds every result to the reconstruction list, shows
-each step in the editor's status bar, and **Cancel run** stops it at the
-next step, or inside a running processor step (a Python step's loop included:
-it is interrupted after a moment; a save or a reconstruction finishes first). **Run on selected results…** is the editor's form of *Run
-workflow on selected results…*. Relative source paths in a saved workflow
-resolve against the file's folder, in the editor and in the File menu
-actions alike, as they do on the command line.
+Starting
+--------
 
-**File → Edit workflow of current result…** opens the editor on the steps
-that made the current result — the replay of its provenance, with
-parameters equal to the plugin defaults dropped — so a recipe can be
-changed and run again, or saved for other data. It refuses, with every
-reason, exactly when ``replay`` would.
+The editor opens on a **start page** with four ways in:
 
-Workflow files open from and save to ``~/ImSwitchConfig/improcess_workflows``
-by default (the folder next to ``improcess_plugins``); the editor's file
-list shows what is there. Saving rewrites the file from the steps: a
-hand-written file's comments and layout are not kept, as a setup file's
-are not kept by the configuration editor.
+* **From the recording that is open** in ImProcess: a source bound to it and
+  *View only* after it, so the first run works on real data straight away;
+* **From what you did to a result**: the steps that made the result selected
+  in the reconstruction list, from its history (as **File → Edit workflow of
+  current result…** does), with parameters equal to the defaults dropped;
+* **From a recipe**: every Python-step snippet in the snippet folder, built
+  into *Recording → View only → Python step → Save* (a curve output is saved
+  as CSV, anything else as TIFF);
+* **A blank canvas**.
+
+Below are the workflows used last and the files in the workflow folder
+(``~/ImSwitchConfig/improcess_workflows`` by default). **File → New…** comes
+back to this page.
+
+.. image:: ./images/workflow-editor/start.png
+   :alt: The start page
+
+Building
+--------
+
+* **Add** a step by dragging it from the list on the left onto the canvas
+  (the search box narrows the list; recently used steps come first), by
+  double-clicking the canvas, or by pressing **Tab** there and typing.
+* **Connect** by dragging from an output to an input. While you drag, inputs
+  that can take what the cable carries light up and the others dim; a cable
+  that does not fit (an image into a step that takes tables, a loop) is
+  refused with the reason in the status bar. Dropping a cable on a box
+  connects it to the box's first free input. A second cable on a step that
+  takes one input **replaces** it; with **Shift** it is **added**, and the
+  step then runs once per cable (its outputs are numbered ``out``, ``out1``,
+  …). A step that takes several inputs (*Merge channels*) shows a hollow
+  input for the next one.
+* **Drop a cable in empty space** to pick a step that takes it: the list
+  offers only steps that accept what the cable carries — a recording offers
+  reconstructions, an image the processing steps that take images, and Save.
+
+  .. image:: ./images/workflow-editor/quick_add.png
+     :alt: The step picker offered for an image cable
+
+* **Disconnect** by dragging an input's cable end away (a Save keeps its
+  input: delete the Save instead), or move the cable by dropping its end on
+  another input. **Drop a new box on a cable** to put it in between.
+* A split's outputs (``C0, C1, …``) depend on the data; the box shows the
+  ones in use and a hollow next one to drag from.
+* **Delete**, **Ctrl+D** (duplicate), **Ctrl+C / Ctrl+X / Ctrl+V** (the
+  steps travel as YAML text, so they paste into another workflow too),
+  **Ctrl+Z / Ctrl+Shift+Z** for every edit. **Ctrl+G** puts a labelled
+  **frame** around the selected steps; drag its title to move it with what
+  it holds, its corner to resize it, double-click the title to rename it.
+* **F** fits the workflow in the window, **H** (*Tidy up*) lays it out left
+  to right; the wheel zooms, the middle button or Space+drag pans. **Help →
+  Keyboard shortcuts** lists them all.
+
+The **inspector** on the right shows the selected step in words — what it
+does, what it takes and makes — then what it reads (each input with its
+kind, in order, reorderable for steps that take several), its parameters
+(choices are combo boxes, bounded numbers spin boxes with their unit, and a
+value that differs from the default can be reset), and for a Python step the
+code and its output ports. Only what differs from the defaults is written to
+the file. The chip at the top right says whether the workflow can run, or
+lists what stops it; clicking an issue selects its step.
+
+**List** (Ctrl+2) shows the same workflow as cards in run order, with who
+feeds whom drawn in the gutter; selection, the inspector and undo are
+shared with the graph (Ctrl+1). The editor remembers which you used last.
+
+.. _workflows-editor-runs:
+
+Running in the editor
+---------------------
+
+**Run** (F5) runs every step that is not up to date; **Run to selected**
+(F6) runs the selected step and what it needs. Results stay in the editor:
+each box shows its state — done ✓, outdated ↻, running, waiting, failed ✕ —
+how long it took, its output (an image, labels in colour, a curve's
+sparkline, a table's first rows) and, after a run, a port's tooltip says
+what it carried (shape, axes, data type). The inspector shows the selected
+step's output larger, with a slider through the planes of a stack, a plot
+for a curve or the first rows of a table.
+
+Changing a parameter marks that step and **everything after it outdated**
+(dashed, with the old picture dimmed); the next run re-runs only those, and
+takes the rest from the cache — the status bar counts them::
+
+    Ran 2 steps in 0.15 s · 3 from the cache
+
+.. image:: ./images/workflow-editor/outdated.png
+   :alt: Two steps outdated after a parameter change
+
+A step's results are kept under a fingerprint of everything they depend on:
+the plugin and its version, the parameters (a Python step's code is one),
+any ROI restriction, and what the step reads — for a source, the file's
+path, size and modification time. Renaming a step therefore outdates
+nothing. A step whose result may differ from run to run (the Python step:
+code may draw random numbers) outdates everything after it each time it is
+recomputed, so a partial re-run never mixes results of two runs of it. A
+Zarr folder counts by its modification time, so a chunk rewritten in place
+without touching the folder goes unnoticed: **Re-run from selected** (or
+*Re-run from here* on a box) forgets a step's results and everything after
+it and runs it again. The cache is bounded by ``memory.workflowCacheMB``
+(see :ref:`improcess-memory-limits`).
+
+**Stop** (Esc) ends a run at the next step, or inside a processing step (a
+Python step's loop included); what was made so far stays. Pressing **Run**
+during a run queues one more run, which picks up everything changed
+meanwhile. When a step fails, its box says why and the steps after it wait;
+for a Python step the inspector marks the failing line in the code and shows
+what it printed. Fix it and press **Run**: what came before comes from the
+cache.
+
+.. image:: ./images/workflow-editor/list_error.png
+   :alt: List mode, stopped at a failing Python step
+
+A source runs on its file, or on a recording given **for this session
+only** (the file keeps its own setting): drop a file on the source box, or
+use *Run on a file…*, *Use the open recording* or *Start from the selected
+result* (which uses a result from the reconstruction list instead of
+reconstructing, as *Run workflow on selected results…* does) in the
+inspector. A workflow whose source has no file says so when it is run.
+
+**Write files** is off by default: a Save step then only says which file it
+would write. Turned on, it asks once for the output folder (and whether
+files of the same name may be replaced) and Save steps write there.
+
+.. image:: ./images/workflow-editor/curves.png
+   :alt: A Python step with curve outputs, files written
+
+Results leave the editor only when you ask: **Show in viewer** shows an
+output in the viewer (or a curve in the Graph panel) until the next preview,
+without adding it to the reconstruction list; **Pin** adds it to the list as
+an ordinary result, with its history. **Auto-run** (off by default) re-runs
+the outdated steps up to the selection a moment after each edit, when they
+took less than about two seconds last time; it never runs the Python code
+of a workflow file you opened until you have run it once yourself, the same
+rule as **File → Run workflow…**.
+
+**Run → Run and add every result to the list…** runs the whole workflow as
+**File → Run workflow…** does, and **Run on selected results…** applies its
+processing to every result selected in the reconstruction list. Relative
+source paths in a saved workflow resolve against the file's folder.
+
+The file
+--------
+
+Saving writes the steps as the YAML described above; where the boxes are,
+and the frames, are kept under ``metadata.editor``, which the runner ignores,
+so a file saved by the editor runs unchanged everywhere a workflow runs, and
+a file nobody laid out is laid out automatically. Saving rewrites the file:
+comments and layout of a hand-written file are not kept.
 
 .. _workflows-replay:
 

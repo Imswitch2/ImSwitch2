@@ -2208,7 +2208,7 @@ How much RAM ImSwitch2 may spend on buffering and on automatic work is a
 property of the computer, so it lives in the per-machine options file
 ``imcontrol_options.json`` (under the user config directory) rather than in
 the setup file, which travels between machines. The ``memory`` group holds
-three limits in MiB, each named for the one thing it bounds; the values
+four limits in MiB, each named for the one thing it bounds; the values
 shown are the defaults. Edit them in ImControl under **Preferences → Memory
 limits…**, which saves this file and applies the new limits at once, or edit
 the file by hand and restart::
@@ -2218,7 +2218,8 @@ the file by hand and restart::
         "memory": {
             "writerQueueMB": 512,
             "perDetectorQueueMB": 256,
-            "processingWorkingSetMB": 1024
+            "processingWorkingSetMB": 1024,
+            "workflowCacheMB": 4096
         }
     }
 
@@ -2251,6 +2252,15 @@ the file by hand and restart::
     request. Opening a dataset whose decoded size exceeds it is announced in
     the status bar before decoding starts, naming the size and whether
     *Open virtual* offers a lazy path for that source. Nothing is refused.
+
+``workflowCacheMB``
+    The results the workflow editor keeps between interactive runs, so that
+    changing one step re-runs only what follows it (see
+    :ref:`workflows-editor-runs`). Above it, outdated results go first, then
+    the least recently used; a dropped result is recomputed when needed. It
+    is not a hard cap: the selected step's results and pinned ones are kept,
+    and a result that reads lazily from its file counts only what it holds
+    in memory.
 
 None of these is a process limit and ImSwitch2 claims none: camera drivers
 allocate their own buffers, datasets and results are as large as the data.

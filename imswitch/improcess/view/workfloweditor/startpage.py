@@ -13,13 +13,14 @@ from pathlib import Path
 
 from qtpy import QtCore, QtWidgets
 
+# Colours only by transparency, so the page reads in ImSwitch's dark style
+# sheet and in a light desktop theme alike.
 _STYLE = """
-QWidget#startPage { background: palette(window); }
 QLabel#startTitle { font-size: 18pt; font-weight: bold; }
-QFrame#startCard { border: 1px solid rgba(127,140,155,90); border-radius: 10px; background: rgba(127,140,155,22); }
-QFrame#startCard:hover { border: 1px solid #6666cc; background: rgba(102,102,204,40); }
+QFrame#startCard { border: 1px solid rgba(127,140,155,110); border-radius: 10px; background: rgba(127,140,155,28); }
+QFrame#startCard:hover { border: 1px solid #6666cc; background: rgba(102,102,204,45); }
+QFrame#startCard:disabled { border: 1px dashed rgba(127,140,155,80); background: transparent; }
 QLabel#cardTitle { font-size: 12pt; font-weight: bold; }
-QLabel#cardText { color: palette(mid); }
 """
 
 
@@ -43,6 +44,7 @@ class _Card(QtWidgets.QFrame):
         self.text = QtWidgets.QLabel(text)
         self.text.setObjectName("cardText")
         self.text.setWordWrap(True)
+        self.text.setTextFormat(QtCore.Qt.RichText)
         layout.addWidget(self.text)
         self.extra = QtWidgets.QVBoxLayout()
         layout.addLayout(self.extra)
