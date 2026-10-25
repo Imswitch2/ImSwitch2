@@ -505,6 +505,120 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             painter.drawPath(self.path())
 
 
+class FrameItem(QtWidgets.QGraphicsItem):
+    """A labelled area behind a group of boxes; moving it moves what it holds.
+
+    Its bottom-right corner resizes it; a double-click on its title renames it.
+    """
+
+    GRIP = 16.0
+    TITLE_H = 26.0
+
+    def __init__(self, index: int, frame: dict):
+        super().__init__()
+        self.index = index
+        self.title = frame.get("title", "")
+        self.colour = QtGui.QColor(frame.get("colour") or "#6c7c8c")
+        x, y, w, h = frame["rect"]
+        self.size = QtCore.QSizeF(w, h)
+        self.setPos(x, y)
+        self.setZValue(-2)
+        self.setFlags(QtWidgets.QGraphicsItem.ItemIsSelectable | QtWidgets.QGraphicsItem.ItemIsMovable
+                      | QtWidgets.QGraphicsItem.ItemSendsGeometryChanges)
+        self.setAcceptHoverEvents(True)
+        self.setToolTip("A frame: drag its title to move it with the steps inside, its corner to resize it, "
+                        "double-click the title to rename it")
+        self._carried: list = []
+        self._resizing = None
+
+    def rect(self) -> list[float]:
+        return [float(self.pos().x()), float(self.pos().y()), float(self.size.width()), float(self.size.height())]
+
+    def boundingRect(self) -> QtCore.QRectF:
+        return QtCore.QRectF(-2, -2, self.size.width() + 4, self.size.height() + 4)
+
+    def shape(self) -> QtGui.QPainterPath:
+        # Only the title bar and the grip take the mouse: a press inside the
+        # frame belongs to the canvas (rubber band) or the boxes on it.
+        path = QtGui.QPainterPath()
+        path.addRect(QtCore.QRectF(0, 0, self.size.width(), self.TITLE_H))
+        path.addRect(QtCore.QRectF(self.size.width() - self.GRIP, self.size.height() - self.GRIP, self.GRIP, self.GRIP))
+        return path
+
+    def paint(self, painter, option, widget=None) -> None:
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        rect = QtCore.QRectF(0, 0, self.size.width(), self.size.height())
+        fill = QtGui.QColor(self.colour)
+        fill.setAlpha(28)
+        border = QtGui.QColor(self.colour)
+        border.setAlpha(150 if not self.isSelected() else 255)
+        painter.setPen(QtGui.QPen(st.colour(st.NODE_SELECTED) if self.isSelected() else border, 1.4,
+                                  QtCore.Qt.SolidLine))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, 10, 10)
+        bar = QtGui.QColor(self.colour)
+        bar.setAlpha(70)
+        title = QtGui.QPainterPath()
+        title.addRoundedRect(QtCore.QRectF(0, 0, rect.width(), self.TITLE_H + 10), 10, 10)
+        clip = QtGui.QPainterPath()
+        clip.addRect(QtCore.QRectF(0, 0, rect.width(), self.TITLE_H))
+        painter.fillPath(title.intersected(clip), bar)
+        painter.setPen(st.colour(st.TEXT))
+        painter.setFont(st.font(9.5, bold=True))
+        painter.drawText(QtCore.QRectF(12, 0, rect.width() - 24, self.TITLE_H), QtCore.Qt.AlignVCenter,
+                         _elide(painter, self.title or "Frame", rect.width() - 24))
+        painter.setPen(QtGui.QPen(border, 1.2))
+        corner = rect.bottomRight()
+        for offset in (5, 10):
+            painter.drawLine(QtCore.QPointF(corner.x() - offset, corner.y() - 3),
+                             QtCore.QPointF(corner.x() - 3, corner.y() - offset))
+
+    def _in_grip(self, pos: QtCore.QPointF) -> bool:
+        return pos.x() > self.size.width() - self.GRIP and pos.y() > self.size.height() - self.GRIP
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == QtCore.Qt.LeftButton and self._in_grip(event.pos()):
+            self._resizing = (event.scenePos(), QtCore.QSizeF(self.size))
+            event.accept()
+            return
+        scene = self.scene()
+        area = self.sceneBoundingRect()
+        self._carried = [node for node in getattr(scene, "nodes", {}).values()
+                         if area.contains(node.sceneBoundingRect().center()) and not node.isSelected()]
+        self._last = QtCore.QPointF(self.pos())
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._resizing is not None:
+            start, size = self._resizing
+            delta = event.scenePos() - start
+            self.prepareGeometryChange()
+            self.size = QtCore.QSizeF(max(120.0, size.width() + delta.x()), max(80.0, size.height() + delta.y()))
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._resizing = None
+        self._carried = []
+        super().mouseReleaseEvent(event)
+
+    def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged and self._carried:
+            delta = self.pos() - self._last
+            self._last = QtCore.QPointF(self.pos())
+            for node in self._carried:
+                node.setPos(node.pos() + delta)
+        return super().itemChange(change, value)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        scene = self.scene()
+        if scene is not None and event.pos().y() <= self.TITLE_H:
+            scene.sigFrameRename.emit(self.index)
+        event.accept()
+
+
 class CableItem(QtWidgets.QGraphicsPathItem):
     """The cable being dragged, from a port to the pointer."""
 
@@ -533,4 +647,4 @@ def cable_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPath
     return path
 
 
-__all__ = ["CableItem", "EdgeItem", "NodeItem", "PortItem", "RunView", "STATES", "cable_path"]
+__all__ = ["CableItem", "EdgeItem", "FrameItem", "NodeItem", "PortItem", "RunView", "STATES", "cable_path"]

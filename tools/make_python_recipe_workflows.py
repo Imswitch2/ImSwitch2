@@ -37,39 +37,16 @@ def recipes() -> list[str]:
 def workflow_text(recipe: str) -> str:
     """The workflow file for the snippet ``recipe``: its header comment, then the steps."""
     from imswitch.improcess.model.snippets import parse_snippet, snippet_curves
-    from imswitch.improcess.processors.python_step.context import parse_ports
-    from imswitch.improcess.workflows import Process, Reconstruct, Save, Source, Workflow
+    from imswitch.improcess.model.workfloweditor.recipes import recipe_workflow, snippet_about
 
     text = (SNIPPETS / f"{recipe}.py").read_text(encoding="utf-8")
     code, ports_text = parse_snippet(text)
-    ports = parse_ports(ports_text)
-    about = []
-    for line in code.splitlines():
-        if not line.startswith("#"):
-            break
-        if line[1:].strip().lower().startswith("curves:"):
-            continue                      # the header naming the curve ports, not prose
-        about.append(line[1:].strip())
-
-    slug = recipe.replace("_", "-")
-    steps = [
-        Source("raw"),
-        Reconstruct("rec", "view-only", inputs=["raw"]),
-        Process("script", "python", {"ports": ports_text, "code": code}, inputs=["rec"]),
-    ]
-    # Which ports are curves the snippet says itself ("# curves: a, b"): a step
-    # does not declare what an output will be, and a curve cannot be a TIFF.
+    about = snippet_about(code)
     curves = snippet_curves(code)
-    unknown = [port for port in curves if port not in ports]
-    if unknown:
-        raise SystemExit(f"{recipe}: '# curves:' names {unknown}, which the snippet does not declare ({', '.join(ports)})")
-    for port in ports:
-        suffix = recipe if len(ports) == 1 else f"{recipe}_{port}"
-        steps.append(Save(
-            f"save_{port}", input=f"script.{port}", fmt="csv" if port in curves else "tiff",
-            path_template=f"{{out_dir}}/{{source_stem}}_{suffix}{{ext}}",
-        ))
-    workflow = Workflow(f"python-{slug}", steps, description=about[0] if about else "")
+    try:
+        workflow = recipe_workflow(recipe, code, ports_text)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     frames = TRY_FRAMES.get(recipe, DEFAULT_TRY_FRAMES)
     header = [f"# {line}".rstrip() for line in about]

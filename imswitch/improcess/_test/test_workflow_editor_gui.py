@@ -526,3 +526,18 @@ def test_the_editor_remembers_its_settings_in_the_options_file(tmp_path):
     assert '"dataFolder": "/data"' in path.read_text(encoding="utf-8")
     path.write_text("not json", encoding="utf-8")
     assert EditorPreferences(path).mode == "graph"
+
+
+def test_undoing_a_code_edit_is_not_overwritten_by_the_code_box(editor, qapp):
+    editor.open_file(str(_EXAMPLES / "python_step_signal_trace.yaml"))
+    editor.select_step("script")
+    original = editor.document.step("script").params["code"]
+    editor.inspector.python_editor.setText("out = data\n")
+    editor.inspector._commit_code()
+    assert editor.document.step("script").params["code"] == "out = data\n"
+    editor.undo()                     # rebuilds the inspector, which must not write its old text back
+    assert editor.document.step("script").params["code"] == original
+    assert editor.inspector.python_editor.text() == original
+    assert editor.document.history.can_redo
+    editor.redo()
+    assert editor.document.step("script").params["code"] == "out = data\n"

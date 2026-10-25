@@ -387,6 +387,18 @@ class WorkflowController(QtCore.QObject):
     def selectedResults(self) -> list:
         return self._selectedResults(None)
 
+    def activeResultName(self):
+        """The name of the result selected in the list, when it has a history to replay."""
+        from imswitch.improcess.model.provenance import graph_of
+
+        try:
+            result = self._reconstructionController.getActiveResult()
+        except Exception:  # noqa: BLE001 - a stand-in controller in tests
+            return None
+        if result is None or graph_of(result) is None:
+            return None
+        return str(getattr(result, "name", "") or "result")
+
     def _onCurrentData(self, data) -> None:
         self._currentData = data
 

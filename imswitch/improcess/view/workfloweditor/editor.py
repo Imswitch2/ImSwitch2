@@ -34,10 +34,32 @@ from imswitch.improcess.workflows.steps import Reconstruct, Save, Source, Workfl
 from .canvas import CanvasView, EdgeItem, NodeItem, QuickAddPopup, RunView, WorkflowScene
 from .canvas import style as st
 from .inspector import Inspector
+from .listview import StepListView
 from .outputpanel import failure_text
 from .palette import StepPalette
-from .steplist import StepList
+from .startpage import StartPage
 from .thumbnails import box_pixmap
+
+#: Auto-run waits this long after the last edit, and runs only what took less than this last time.
+AUTO_RUN_DELAY_MS = 600
+AUTO_RUN_BUDGET_S = 2.0
+
+_SHORTCUTS = (
+    ("Tab, double-click", "Search for a step to add"),
+    ("Drag output → input", "Connect (Shift: add the cable instead of replacing the input)"),
+    ("Drag a cable into empty space", "Pick a step that takes it"),
+    ("Drag an input's end away", "Disconnect"),
+    ("Drop a new box on a cable", "Put it in between"),
+    ("Del / Backspace", "Delete the selected steps, cables or frames"),
+    ("Ctrl+D", "Duplicate"),
+    ("Ctrl+C, Ctrl+X, Ctrl+V", "Copy, cut, paste (as text you can also paste elsewhere)"),
+    ("Ctrl+G", "Put a frame around the selected steps"),
+    ("Ctrl+Z, Ctrl+Shift+Z", "Undo, redo"),
+    ("F5 / F6 / Esc", "Run / Run to selected / Stop"),
+    ("F / H", "Fit everything / tidy up"),
+    ("Wheel, middle button, Space+drag", "Zoom, pan"),
+    ("Ctrl+1 / Ctrl+2", "Graph / List"),
+)
 
 _FILTER = "Workflow (*.yaml *.yml *.json)"
 _SUFFIXES = (".yaml", ".yml", ".json")
@@ -103,9 +125,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pixmaps: dict = {}
         self._preview_token = None
         self._preview_jobs: list = []
+        #: Auto-run may run this document's Python steps: built here, or run once on purpose.
+        self._python_trusted = True
+        self._auto_timer = QtCore.QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.setInterval(AUTO_RUN_DELAY_MS)
+        self._auto_timer.timeout.connect(self._auto_run)
         self._build_ui()
         self.load_document(self.document, confirm=False)
         self.set_mode(self.preferences.mode, remember=False)
+        self.show_start_page()
 
     # -- ui -------------------------------------------------------------------------
 
@@ -113,7 +142,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._actions: dict[str, QtWidgets.QAction] = {}
         self.scene = WorkflowScene(self)
         self.view = CanvasView(self.scene)
-        self.list_view = StepList()
+        self.list_view = StepListView()
+        self.start_page = StartPage()
         self.inspector = Inspector()
         self.inspector.set_editor(lambda label, action, structural=False, merge=None: self.edit(
             label, action, inspector=structural, merge=merge))
@@ -127,6 +157,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.centre = QtWidgets.QStackedWidget()
         self.centre.addWidget(self.view)
         self.centre.addWidget(self.list_view)
+        self.centre.addWidget(self.start_page)
 
         left = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left)
@@ -149,6 +180,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._progress.hide()
         self.statusBar().addPermanentWidget(self._progress)
 
+        auto = self._actions["auto_run"]
+        auto.blockSignals(True)
+        auto.setChecked(bool(self.preferences.get("autoRun", False)))
+        auto.blockSignals(False)
         self.palette.sigAddRequested.connect(self.add_step)
         self.scene.selectionChanged.connect(self._on_scene_selection)
         self.scene.sigConnect.connect(self._on_connect)
@@ -164,6 +199,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view.sigContextMenu.connect(self._on_context_menu)
         self.view.sigTidyRequested.connect(self.tidy_up)
         self.list_view.sigStepSelected.connect(self._on_list_selection)
+        self.list_view.sigActivated.connect(self._on_activated)
+        self.list_view.sigContextMenu.connect(self._on_list_menu)
+        self.scene.sigFrameRename.connect(self.rename_frame)
+        page = self.start_page
+        page.sigBlank.connect(self.new_blank)
+        page.sigFromRecording.connect(self.new_from_recording)
+        page.sigFromResult.connect(self.new_from_result)
+        page.sigRecipe.connect(self.new_from_recipe)
+        page.sigOpenFile.connect(self.open_file)
+        page.sigOpenDialog.connect(lambda: self.open_file())
         self.inspector.sigMessage.connect(self.show_status)
         self.inspector.sigRenamed.connect(lambda _old, new: self.select_step(new))
         output = self.inspector.output
@@ -185,16 +230,22 @@ class MainWindow(QtWidgets.QMainWindow):
         if tip:
             act.setToolTip(tip)
             act.setStatusTip(tip)
-        if context is not None:
-            act.setShortcutContext(context)
         self._actions[name] = act
-        self.addAction(act)
+        if context is not None:
+            # Canvas keys (Del, F, Ctrl+C...) act where the steps are shown, not
+            # in the inspector's fields or the palette.
+            act.setShortcutContext(context)
+            self.view.addAction(act)
+            self.list_view.addAction(act)
+        else:
+            self.addAction(act)
         return act
 
     def _build_actions(self) -> None:
         canvas = QtCore.Qt.WidgetWithChildrenShortcut
         a = self._action
-        a("new", "New", self.new_document, "Ctrl+N", "Start an empty workflow")
+        a("new", "New…", self.show_start_page, "Ctrl+N", "Start a workflow: from the open recording, a result, "
+          "a recipe, or a blank canvas")
         a("open", "Open…", self.open_file, "Ctrl+O", "Open a workflow file")
         a("save", "Save", self.save, "Ctrl+S", "Save the workflow")
         a("save_as", "Save as…", self.save_as, "Ctrl+Shift+S")
@@ -215,6 +266,9 @@ class MainWindow(QtWidgets.QMainWindow):
         a("zoom_out", "Zoom out", lambda: self.view.zoom_by(1 / 1.2), QtGui.QKeySequence.ZoomOut, context=canvas)
         a("quick_add", "Add a step…", lambda: self._on_quick_add(None, self._canvas_point()), None,
           "Search for a step to add (Tab on the canvas)")
+        a("frame", "Frame the selection", self.frame_selection, "Ctrl+G",
+          "Put a labelled frame around the selected steps", context=canvas)
+        a("shortcuts", "Keyboard shortcuts", self.show_shortcuts, QtGui.QKeySequence.HelpContents)
         a("graph", "Graph", lambda checked: checked and self.set_mode("graph"), "Ctrl+1",
           "Show the workflow as boxes and cables", checkable=True)
         a("list", "List", lambda checked: checked and self.set_mode("list"), "Ctrl+2",
@@ -232,6 +286,9 @@ class MainWindow(QtWidgets.QMainWindow):
         a("cancel", "■  Stop", self.cancel_run, "Esc", "Stop the running workflow")
         a("write_files", "⤓  Write files", self.set_write_files, None,
           "Off: runs keep results in memory and Save steps only say what they would write", checkable=True)
+        a("auto_run", "⟳  Auto-run", self.set_auto_run, None,
+          f"Re-run outdated steps a moment after each edit, when they took less than {AUTO_RUN_BUDGET_S:g} s last "
+          "time", checkable=True)
         a("run_publish", "Run and add every result to the list…", self.run_and_publish, None,
           "Run the whole workflow as File → Run workflow does: every result goes to the reconstruction list")
         a("run_on_results", "Run on selected results…", self.run_on_results, None,
@@ -251,18 +308,20 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addAction(self._actions["close"])
         edit_menu = menus.addMenu("&Edit")
         for name in ("undo", "redo", None, "cut", "copy", "paste", "duplicate", "delete", None, "select_all",
-                     "quick_add"):
+                     "quick_add", "frame"):
             edit_menu.addSeparator() if name is None else edit_menu.addAction(self._actions[name])
         view_menu = menus.addMenu("&View")
         for name in ("graph", "list", None, "fit", "tidy", "zoom_in", "zoom_out"):
             view_menu.addSeparator() if name is None else view_menu.addAction(self._actions[name])
         run_menu = menus.addMenu("&Run")
         self.run_menu = run_menu
-        for name in ("run", "run_to", "rerun", "cancel", None, "write_files", None, "run_publish", "run_on_results",
-                     None, "validate"):
+        for name in ("run", "run_to", "rerun", "cancel", None, "write_files", "auto_run", None, "run_publish",
+                     "run_on_results", None, "validate"):
             run_menu.addSeparator() if name is None else run_menu.addAction(self._actions[name])
         plugins = menus.addMenu("&Plugins")
         plugins.addAction(self._actions["reload"])
+        help_menu = menus.addMenu("&Help")
+        help_menu.addAction(self._actions["shortcuts"])
 
     def _build_toolbar(self) -> None:
         bar = self.addToolBar("Workflow")
@@ -287,6 +346,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bar.widgetForAction(self._actions["run"]).setObjectName("runButton")
         bar.addAction(self._actions["run_to"])
         bar.addAction(self._actions["cancel"])
+        bar.addAction(self._actions["auto_run"])
         bar.addAction(self._actions["write_files"])
         self._toolbar_run_slot = bar.addSeparator()
         spacer = QtWidgets.QWidget()
@@ -334,6 +394,32 @@ class MainWindow(QtWidgets.QMainWindow):
     def mode(self) -> str:
         return "list" if self.centre.currentWidget() is self.list_view else "graph"
 
+    def show_start_page(self) -> None:
+        """Offer the ways into a workflow (and recent files) in the centre."""
+        host = self.host
+        recording = host.currentRecording() if callable(getattr(host, "currentRecording", None)) else None
+        result = host.activeResultName() if callable(getattr(host, "activeResultName", None)) else None
+        try:
+            from imswitch.improcess.model.workfloweditor.recipes import installed_recipes
+
+            recipes = installed_recipes()
+        except Exception:  # noqa: BLE001 - the page still offers the rest
+            recipes = []
+        try:
+            folder_files = sorted(str(p) for p in self._folder.iterdir() if p.suffix.lower() in _SUFFIXES)
+        except OSError:
+            folder_files = []
+        recent = [path for path in self.preferences.recent_files() if Path(path).exists()]
+        self.start_page.set_state(recording=recording[0] if recording else None, result=result, recipes=recipes,
+                                  recent=recent, folder=str(self._folder), folder_files=folder_files)
+        self.centre.setCurrentWidget(self.start_page)
+        for name in ("graph", "list"):
+            self._actions[name].setChecked(False)
+
+    def _leave_start_page(self) -> None:
+        if self.centre.currentWidget() is self.start_page:
+            self.set_mode(self.preferences.mode, remember=False)
+
     def set_mode(self, mode: str, *, remember: bool = True) -> None:
         mode = "list" if mode == "list" else "graph"
         self._actions[mode].setChecked(True)
@@ -359,6 +445,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.session = RunSession(self.catalog.registry)
         self._pixmaps = {}
         self.document = document
+        self._python_trusted = not _has_python(document) or (document.path is None and not document.notes)
         self.inspector.set_document(document)
         self.scene.set_document(document)
         self.refresh(inspector=True)
@@ -366,10 +453,56 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view.fit()
         for note in document.notes:
             self.show_status(note)
+        self._leave_start_page()
         return True
 
     def new_document(self) -> None:
         self.load_document(WorkflowDocument(catalog=self.catalog))
+
+    def new_blank(self) -> bool:
+        return self.load_document(WorkflowDocument(catalog=self.catalog))
+
+    def new_from_recording(self) -> bool:
+        """A source bound to the open recording, shown as it is (View only)."""
+        from imswitch.improcess.workflows.steps import Workflow
+
+        recording = self.host.currentRecording() if callable(getattr(self.host, "currentRecording", None)) else None
+        if not recording:
+            self.show_status("Open a recording in ImProcess first.")
+            return False
+        path = recording[0]
+        stem = Path(path).stem.replace(" ", "-") or "recording"
+        document = WorkflowDocument(Workflow(f"from-{stem}", [
+            Source("raw"), Reconstruct("rec", "view-only", inputs=["raw"]),
+        ]), catalog=self.catalog)
+        if not self.load_document(document):
+            return False
+        self.bind_source("raw", path)
+        self.select_step("rec")
+        return True
+
+    def new_from_result(self) -> bool:
+        edit = getattr(self.host, "editWorkflowOfResult", None)
+        if not callable(edit):
+            self.show_status("Select a result in ImProcess first.")
+            return False
+        return edit() is not None
+
+    def new_from_recipe(self, recipe) -> bool:
+        from imswitch.improcess.model.workfloweditor.recipes import recipe_document
+
+        if recipe is None:
+            return False
+        try:
+            document = recipe_document(recipe, self.catalog)
+        except ValueError as exc:
+            self.show_status(str(exc))
+            return False
+        if not self.load_document(document):
+            return False
+        self.select_step("script")
+        self.show_status(f"Recipe '{recipe.title}': drop a recording on 'raw', then Run (F5).")
+        return True
 
     def open_file(self, path=None) -> bool:
         if path is None:
@@ -460,6 +593,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.refresh(inspector=True)
             return False
         self.refresh(inspector=inspector, select=select)
+        if self._actions["auto_run"].isChecked():
+            self._auto_timer.start()
         return True
 
     def _freeze_positions(self) -> None:
@@ -506,6 +641,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def delete_selected(self) -> None:
         steps = self.selected_step_ids()
         edges = [edge for edge in self.scene.selected_edges() if edge.target.step_id not in steps]
+        frames = self.scene.selected_frames() if self.mode == "graph" else []
+        if frames and not steps and not edges:
+            def remove():
+                for index in sorted(frames, reverse=True):
+                    self.document.remove_frame(index)
+
+            self.edit("Delete a frame", remove, inspector=False)
+            return
         if not steps and not edges:
             return
         if any(isinstance(self.document.step(edge.target.step_id), Save) for edge in edges) and not steps:
@@ -628,16 +771,52 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_disconnect(self, step_id: str, index: int) -> None:
         self.edit("Disconnect", lambda: self.document.disconnect(step_id, index))
 
-    def _on_moved(self, moved: dict, splice) -> None:
+    def _on_moved(self, moved: dict, splice, frames=None) -> None:
         def action():
             self._freeze_positions()
             for step_id, (x, y) in moved.items():
                 if self.document.has(step_id):
                     self.document.set_position(step_id, x, y)
+            for index, rect in (frames or {}).items():
+                self.document.set_frame(index, rect=rect)
             if splice is not None:
                 self.document.splice(*splice)
 
         self.edit("Put on the cable" if splice else "Move", action, inspector=bool(splice))
+
+    def frame_selection(self, title: str | None = None) -> bool:
+        """A frame around the selected steps (or in the middle of the view)."""
+        selected = [self.scene.nodes[s] for s in self.selected_step_ids() if s in self.scene.nodes]
+        if selected:
+            area = QtCore.QRectF()
+            for node in selected:
+                area = area.united(node.sceneBoundingRect())
+            area = area.adjusted(-24, -48, 24, 24)
+        else:
+            centre = self._canvas_point()
+            area = QtCore.QRectF(centre.x() - 220, centre.y() - 140, 440, 280)
+        if title is None:
+            title, accepted = QtWidgets.QInputDialog.getText(self, "Frame", "What does this part do?", text="")
+            if not accepted:
+                return False
+        rect = [area.x(), area.y(), area.width(), area.height()]
+        return self.edit("Add a frame", lambda: (self._freeze_positions(), self.document.add_frame(title, rect)),
+                         inspector=False)
+
+    def rename_frame(self, index: int, title: str | None = None) -> bool:
+        frames = self.document.frames
+        if not 0 <= index < len(frames):
+            return False
+        if title is None:
+            title, accepted = QtWidgets.QInputDialog.getText(self, "Frame", "Title:", text=frames[index]["title"])
+            if not accepted:
+                return False
+        return self.edit("Rename a frame", lambda: self.document.set_frame(index, title=title), inspector=False)
+
+    def show_shortcuts(self) -> None:
+        rows = "".join(f"<tr><td style='padding-right:18px'><b>{keys}</b></td><td>{what}</td></tr>"
+                       for keys, what in _SHORTCUTS)
+        QtWidgets.QMessageBox.information(self, "Keyboard shortcuts", f"<table>{rows}</table>")
 
     def _on_quick_add(self, ref, pos: QtCore.QPointF) -> None:
         kind = producer = None
@@ -710,8 +889,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._context_menu = menu
         menu.popup(global_pos)
 
+    def _on_list_menu(self, step_id: str, global_pos: QtCore.QPoint) -> None:
+        menu = QtWidgets.QMenu(self)
+        self._step_menu(menu, step_id)
+        self._context_menu = menu
+        menu.popup(global_pos)
+
     def _node_menu(self, menu: QtWidgets.QMenu, node: NodeItem) -> None:
-        step_id = node.step_id
+        self._step_menu(menu, node.step_id)
+
+    def _step_menu(self, menu: QtWidgets.QMenu, step_id: str) -> None:
         for text, slot in (("▶|  Run to here", lambda: self.run_to(step_id)),
                            ("↻  Re-run from here", lambda: self.rerun_from(step_id))):
             menu.addAction(text).triggered.connect(lambda _c=False, s=slot: s())
@@ -789,9 +976,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh(self, *, inspector: bool = True, select=None) -> None:
         self._issues = self.document.issues()
         keep = list(select) if select else self.selected_step_ids()
-        self.scene.runs = self._run_views()
+        runs = self._run_views()
+        self.scene.runs = runs
         self.scene.refresh(self._issues)
-        self.list_view.refresh(self.document, self._issues)
+        self.list_view.refresh(self.document, self._issues, runs)
         if keep:
             self.scene.select_steps([s for s in keep if self.document.has(s)])
             if len(keep) == 1 and self.document.has(keep[0]):
@@ -859,14 +1047,56 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def run(self) -> bool:
         """Run every step that is not up to date."""
-        return self._start_run(None)
+        return self._start_run(None, explicit=True)
 
     def run_to_selected(self) -> bool:
         selected = self.selected_step_ids()
         if not selected:
             self.show_status("Select the step to run to.")
             return False
-        return self._start_run(selected)
+        return self._start_run(selected, explicit=True)
+
+    def set_auto_run(self, on: bool) -> None:
+        self.preferences.set("autoRun", bool(on))
+        self.show_status("Auto-run is on: outdated steps run again a moment after each edit." if on else
+                         "Auto-run is off.")
+        if on:
+            self._auto_timer.start()
+
+    def _auto_run(self) -> bool:
+        """After an edit: re-run the outdated steps up to the selection, when
+        that is quick; never an opened file's Python code before one Run."""
+        if not self._actions["auto_run"].isChecked() or not self.document.steps:
+            return False
+        states = self.session.states(self.document, self._source_root())
+        selected = [s for s in self.selected_step_ids() if self.document.has(s)]
+        outdated = [sid for sid, state in states.items() if state.status == "outdated"]
+        targets = selected or outdated
+        if not targets:
+            return False
+        if self._running:
+            self._queued = (targets,)
+            return True
+        if self._issues_for(targets):
+            return False
+        plan = self.session.plan(self.document, targets, write_saves=False, out_dir=self._out_dir,
+                                 source_root=self._source_root())
+        if plan.empty:
+            return False
+        steps = [self.document.step(sid) for sid in plan.to_run if self.document.has(sid)]
+        if not self._python_trusted and any(getattr(step, "processor", "") == "python" for step in steps):
+            self.show_status("Auto-run waits for one Run (F5) before it runs this file's Python code.")
+            return False
+        last = []
+        for step in steps:
+            if isinstance(step, (Source, Save)):
+                continue
+            entry = states[step.id].entry
+            last.append(entry.seconds if entry is not None else None)
+        if any(seconds is None for seconds in last) or sum(s for s in last if s) > AUTO_RUN_BUDGET_S:
+            self.show_status("Auto-run skipped: these steps were slow, or have not run yet. Run to here: F6.")
+            return False
+        return self._start_run(targets)
 
     def run_to(self, step_id: str) -> bool:
         self.select_step(step_id)
@@ -893,7 +1123,7 @@ class MainWindow(QtWidgets.QMainWindow):
             needed |= ancestors(self.document.steps, target)
         return [issue for issue in self._issues if issue.step in needed]
 
-    def _start_run(self, targets) -> bool:
+    def _start_run(self, targets, *, explicit: bool = False) -> bool:
         if self.host is None or not callable(getattr(self.host, "runInteractive", None)):
             self.show_status("Runs need ImProcess: open the editor from ImProcess (Workflow → Workflow editor).")
             return False
@@ -921,10 +1151,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.show_status(f"'{step_id}' has no recording yet: drop a file on it, or choose one in the inspector.")
                 self.select_step(step_id)
                 return False
+        if explicit:
+            self._python_trusted = True
         self.session.begin(plan)
         self._active_plan = plan
         self._run_started = time.monotonic()
-        self.scene.set_runs(self._run_views())
+        self._show_runs()
         if not self.host.runInteractive(plan, self.catalog.registry):
             self.session.finish(None, "not started")
             self._active_plan = None
@@ -939,13 +1171,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.session.step_started(step_id)
         self._set_chip(f"Running {min(index + 1, total)}/{total} · {step_id}", "chipBusy")
-        self.scene.set_runs(self._run_views())
+        self._show_runs()
 
     def on_run_step(self, step_id: str, ports, seconds: float, cached: bool, previews) -> None:
         if self._active_plan is None:
             return
         self.session.step_done(step_id, dict(ports or {}), float(seconds), bool(cached), dict(previews or {}))
-        self.scene.set_runs(self._run_views())
+        self._show_runs()
         if step_id == self.selected_step_id():
             self._update_output()
 
@@ -959,6 +1191,14 @@ class MainWindow(QtWidgets.QMainWindow):
         failure = summary.failure
         if failure and not summary.cancelled and failure.get("step") and self.document.has(failure["step"]):
             self.select_step(failure["step"])
+
+    def _show_runs(self) -> None:
+        runs = self._run_views()
+        self.scene.set_runs(runs)
+        if self.mode == "list":
+            self.list_view.set_runs(runs)
+        else:
+            self.list_view._runs = runs
 
     def _summary_text(self, summary) -> str:
         from imswitch.imcommon.model.memory_limits import describeBytes, settingRef
@@ -1013,6 +1253,14 @@ class MainWindow(QtWidgets.QMainWindow):
                      if preview.kind not in ("recording",)}
             tips = {port: preview.describe() + (" · a projection over sampled planes" if preview.sampled else "")
                     for port, preview in (entry.previews.items() if entry else ())}
+            step = self.document.step(step_id) if self.document.has(step_id) else None
+            refs = [step.input] if isinstance(step, Save) else list(getattr(step, "inputs", []) or [])
+            for index, ref in enumerate(refs):
+                producer = states.get(ref.step)
+                previews = producer.entry.previews if producer is not None and producer.entry is not None else {}
+                preview = previews.get(ref.port) if ref.port else next(iter(previews.values()), None)
+                if preview is not None:
+                    tips[f"in{index}"] = f"Last run: {preview.describe()}"
             views[step_id] = RunView(status=state.status, thumbnail=thumbnail, footer=footer, error=error,
                                      summary=summary, kinds=kinds, tips=tips,
                                      line=state.error.get("line") if state.error else None)
@@ -1302,6 +1550,10 @@ class MainWindow(QtWidgets.QMainWindow):
 def _seconds(value: float) -> str:
     value = float(value)
     return f"{value * 1000:.0f} ms" if value < 1 else f"{value:.1f} s"
+
+
+def _has_python(document) -> bool:
+    return any(getattr(step, "processor", "") == "python" for step in document.steps)
 
 
 __all__ = ["MainWindow"]

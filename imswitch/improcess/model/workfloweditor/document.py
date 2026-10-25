@@ -101,12 +101,14 @@ def _set_refs(step, refs: list[Ref]) -> None:
 
 
 def _prune_editor_state(metadata) -> None:
-    """Drop an empty ``positions`` and then an empty ``editor`` from ``metadata``."""
+    """Drop an empty ``positions`` or ``frames`` and then an empty ``editor`` from ``metadata``."""
     if not isinstance(metadata, dict) or not isinstance(metadata.get("editor"), dict):
         return
     editor = metadata["editor"]
     if editor.get("positions") == {}:
         del editor["positions"]
+    if editor.get("frames") == []:
+        del editor["frames"]
     if not editor:
         del metadata["editor"]
 
@@ -565,6 +567,57 @@ class WorkflowDocument:
         positions = self.editor_metadata.setdefault("positions", {})
         positions[step_id] = [float(x), float(y)]
         self._touch()
+
+    # -- frames: labelled areas behind groups of steps (editor state only) ----------
+
+    @property
+    def frames(self) -> list[dict]:
+        """``[{"title", "rect": [x, y, w, h], "colour"}]``; malformed entries are skipped."""
+        editor = self.workflow.metadata.get("editor")
+        stored = editor.get("frames") if isinstance(editor, dict) else None
+        found = []
+        for frame in stored if isinstance(stored, list) else []:
+            try:
+                x, y, w, h = (float(v) for v in frame["rect"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            found.append({"title": str(frame.get("title", "")), "rect": [x, y, w, h],
+                          "colour": str(frame.get("colour", "") or "")})
+        return found
+
+    def _store_frames(self, frames: list[dict]) -> None:
+        self.editor_metadata["frames"] = frames
+        self._touch()
+
+    def add_frame(self, title: str, rect, colour: str = "") -> int:
+        """Add a frame; returns its index."""
+        x, y, w, h = (float(v) for v in rect)
+        if w <= 0 or h <= 0:
+            raise DocumentError("a frame needs a width and a height")
+        frames = self.frames
+        frames.append({"title": str(title), "rect": [x, y, w, h], "colour": str(colour or "")})
+        self._store_frames(frames)
+        return len(frames) - 1
+
+    def set_frame(self, index: int, *, title=None, rect=None, colour=None) -> None:
+        frames = self.frames
+        if not 0 <= index < len(frames):
+            raise DocumentError(f"there is no frame {index}")
+        if title is not None:
+            frames[index]["title"] = str(title)
+        if rect is not None:
+            x, y, w, h = (float(v) for v in rect)
+            frames[index]["rect"] = [x, y, max(w, 40.0), max(h, 40.0)]
+        if colour is not None:
+            frames[index]["colour"] = str(colour)
+        self._store_frames(frames)
+
+    def remove_frame(self, index: int) -> None:
+        frames = self.frames
+        if not 0 <= index < len(frames):
+            raise DocumentError(f"there is no frame {index}")
+        del frames[index]
+        self._store_frames(frames)
 
     def connect(self, source, step_id: str, *, index: int | None = None, add: bool = False) -> None:
         """Make ``step_id`` read from ``source`` (``step`` or ``step.port``).

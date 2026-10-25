@@ -26,7 +26,7 @@ from imswitch.improcess.model.workfloweditor.nodes import can_feed, kind_fits, k
 from imswitch.improcess.workflows.steps import Save
 
 from . import style as st
-from .items import CableItem, EdgeItem, NodeItem, PortItem, RunView
+from .items import CableItem, EdgeItem, FrameItem, NodeItem, PortItem, RunView
 
 _SNAP = 18.0     # how near a port a cable end counts as on it
 
@@ -41,8 +41,10 @@ class WorkflowScene(QtWidgets.QGraphicsScene):
     sigDisconnect = QtCore.Signal(str, int)
     #: source ref (or None for "anything"), scene position
     sigQuickAdd = QtCore.Signal(object, QtCore.QPointF)
-    #: {step id: (x, y)} of boxes the user moved, and a splice (step, target, index) or None
-    sigMoved = QtCore.Signal(dict, object)
+    #: {step id: (x, y)} of boxes the user moved, a splice (step, target, index) or None,
+    #: and {frame index: [x, y, w, h]} of frames moved or resized
+    sigMoved = QtCore.Signal(dict, object, dict)
+    sigFrameRename = QtCore.Signal(int)
     sigActivated = QtCore.Signal(str)
     sigMessage = QtCore.Signal(str)
 
@@ -51,6 +53,8 @@ class WorkflowScene(QtWidgets.QGraphicsScene):
         self.document = None
         self.nodes: dict[str, NodeItem] = {}
         self.edges: list[EdgeItem] = []
+        self.frames: list[FrameItem] = []
+        self._pressed_frames: dict[int, list] = {}
         self.infos = {}
         self.runs: dict[str, RunView] = {}
         self._kinds: dict[str, str] = {}
@@ -74,9 +78,13 @@ class WorkflowScene(QtWidgets.QGraphicsScene):
         self.blockSignals(True)
         try:
             self.clear()
-            self.nodes, self.edges = {}, []
+            self.nodes, self.edges, self.frames = {}, [], []
             if self.document is None:
                 return
+            for index, frame in enumerate(self.document.frames):
+                item = FrameItem(index, frame)
+                self.frames.append(item)
+                self.addItem(item)
             self.infos = node_infos(self.document, issues)
             self._kinds = kinds_of(self.document)
             for step_id, info in self.infos.items():
@@ -156,6 +164,9 @@ class WorkflowScene(QtWidgets.QGraphicsScene):
 
     def selected_edges(self) -> list[EdgeItem]:
         return [item for item in self.selectedItems() if isinstance(item, EdgeItem)]
+
+    def selected_frames(self) -> list[int]:
+        return sorted(item.index for item in self.selectedItems() if isinstance(item, FrameItem))
 
     def select_steps(self, step_ids, *, only: bool = True) -> None:
         wanted = set(step_ids)
@@ -392,12 +403,17 @@ class WorkflowScene(QtWidgets.QGraphicsScene):
         super().mousePressEvent(event)
         if event.button() == QtCore.Qt.LeftButton:
             self._pressed = {step_id: QtCore.QPointF(node.pos()) for step_id, node in self.nodes.items()}
+            self._pressed_frames = {frame.index: frame.rect() for frame in self.frames}
 
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
         pressed, self._pressed = self._pressed, {}
+        pressed_frames, self._pressed_frames = self._pressed_frames, {}
         if not pressed or event.button() != QtCore.Qt.LeftButton:
             return
+        frames = {frame.index: frame.rect() for frame in self.frames
+                  if frame.index in pressed_frames and any(abs(a - b) > 0.5 for a, b in
+                                                           zip(frame.rect(), pressed_frames[frame.index]))}
         moved = {}
         for step_id, node in self.nodes.items():
             before = pressed.get(step_id)
@@ -410,8 +426,8 @@ class WorkflowScene(QtWidgets.QGraphicsScene):
                 splice = (node.step_id, edge.target.step_id, edge.index)
                 edge.set_hot(False)
                 node.splice_target = None
-        if moved or splice:
-            self._later(self.sigMoved.emit, moved, splice)
+        if moved or splice or frames:
+            self._later(self.sigMoved.emit, moved, splice, frames)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == QtCore.Qt.Key_Escape and self._drag is not None:

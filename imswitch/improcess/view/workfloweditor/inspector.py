@@ -76,6 +76,8 @@ class Inspector(QtWidgets.QScrollArea):
         self._step_id: str | None = None
         self._param_form: ParamForm | None = None
         self._python = None
+        #: The code box holds typing the document has not seen yet.
+        self._code_dirty = False
         self._code_timer = QtCore.QTimer(self)
         self._code_timer.setSingleShot(True)
         self._code_timer.setInterval(500)
@@ -400,7 +402,8 @@ class Inspector(QtWidgets.QScrollArea):
         editor = PythonCodeEditor()
         editor.setText(str(params.get("code", DEFAULT_CODE)))
         editor.setMinimumHeight(220)
-        editor.textChanged.connect(self._code_timer.start)
+        self._code_dirty = False
+        editor.textChanged.connect(self._code_typed)
         self._python = editor
         layout.addWidget(editor, 1)
         row = QtWidgets.QFormLayout()
@@ -453,9 +456,19 @@ class Inspector(QtWidgets.QScrollArea):
             selections.append(selection)
         editor.setExtraSelections(selections)
 
+    def _code_typed(self) -> None:
+        self._code_dirty = True
+        self._code_timer.start()
+
     def _commit_code(self) -> None:
+        """Write what was typed into the code box to the document. Only typing:
+        an edit made elsewhere (an undo, a loaded snippet) is never overwritten
+        with the text the box still shows."""
         self._code_timer.stop()
         editor = self._python
+        if not self._code_dirty:
+            return
+        self._code_dirty = False
         if editor is None or self._step_id is None or self._document is None or not self._document.has(self._step_id):
             return
         try:
