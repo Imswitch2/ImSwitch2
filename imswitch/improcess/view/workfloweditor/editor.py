@@ -1351,11 +1351,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_binding(self, step_id: str, state) -> None:
         area = self.inspector.binding_area
-        layout = area.layout()
-        while layout.count():
-            item = layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+        # The old contents go as one widget, deleted by the event loop: one of
+        # their buttons may be what brought us here. (Taking items out of the
+        # layout one by one left the buttons of a nested row behind, without a
+        # layout and with their Python wrappers gone.)
+        old = area.findChild(QtWidgets.QWidget, "bindingContent", QtCore.Qt.FindDirectChildrenOnly)
+        if old is not None:
+            area.layout().removeWidget(old)
+            old.setObjectName("")
+            old.hide()
+            old.deleteLater()
+        content = QtWidgets.QWidget(area)
+        content.setObjectName("bindingContent")
+        layout = QtWidgets.QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        area.layout().addWidget(content)
         step = self.document.step(step_id)
         host = self.host
         if isinstance(step, Source):
@@ -1370,6 +1380,7 @@ class MainWindow(QtWidgets.QMainWindow):
             label.setWordWrap(True)
             layout.addWidget(label)
             row = QtWidgets.QHBoxLayout()
+            layout.addLayout(row)
             choose = QtWidgets.QPushButton("Run on a file…")
             choose.setToolTip("Choose a recording to run this workflow on, in this session")
             choose.clicked.connect(lambda: self._choose_binding(step_id))
@@ -1384,7 +1395,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 unbind = QtWidgets.QPushButton("Unbind")
                 unbind.clicked.connect(lambda: self.bind_source(step_id, None))
                 row.addWidget(unbind)
-            layout.addLayout(row)
             consumers = [s.id for s in self.document.steps if isinstance(s, Reconstruct)
                          and any(ref.step == step_id for ref in s.inputs)]
             if consumers and callable(getattr(host, "selectedResults", None)):
@@ -1402,6 +1412,7 @@ class MainWindow(QtWidgets.QMainWindow):
             unbind = QtWidgets.QPushButton("Reconstruct again")
             unbind.clicked.connect(lambda: self.bind_result(step_id, None))
             layout.addWidget(unbind)
+        content.show()          # with everything in it: shown now, not by a queued event
 
     def _choose_binding(self, step_id: str) -> None:
         try:

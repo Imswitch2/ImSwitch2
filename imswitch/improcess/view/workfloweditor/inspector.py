@@ -78,6 +78,9 @@ class Inspector(QtWidgets.QScrollArea):
         self._python = None
         #: The code box holds typing the document has not seen yet.
         self._code_dirty = False
+        #: The fields shown write nothing (they are being replaced): set while
+        #: a body is retired or after discard_pending, cleared by show_step.
+        self._silent = False
         self._code_timer = QtCore.QTimer(self)
         self._code_timer.setSingleShot(True)
         self._code_timer.setInterval(500)
@@ -125,11 +128,7 @@ class Inspector(QtWidgets.QScrollArea):
         fields stay silent until ``show_step`` builds new ones: call it next."""
         self._code_timer.stop()
         self._code_dirty = False
-        body = self.widget()
-        if body is not None:
-            for widget in body.findChildren(QtWidgets.QWidget):
-                if not (self.output_area.isAncestorOf(widget) or self.binding_area.isAncestorOf(widget)):
-                    widget.blockSignals(True)
+        self._silent = True
 
     def show_step(self, step_id: str | None) -> None:
         if step_id != self._step_id:
@@ -170,6 +169,7 @@ class Inspector(QtWidgets.QScrollArea):
             layout.addWidget(self.output_area)
         layout.addStretch(1)
         self.setWidget(body)
+        self._silent = False
 
     def _finish_typing(self) -> None:
         """Write what was typed into the focused field to its own step before
@@ -188,20 +188,19 @@ class Inspector(QtWidgets.QScrollArea):
         """Take the shown body out before the next is built.
 
         The output and binding areas outlive the bodies they are shown in.
-        The old fields are silenced first: hiding a focused line edit makes
-        it emit ``editingFinished``, which would otherwise write its text to
-        whatever step is shown next, or over an undo. The body may hold the
-        widget whose signal brought us here, so the event loop deletes it.
+        The old fields are silenced first (``_edit`` refuses while
+        ``_silent``): hiding a focused line edit makes it emit
+        ``editingFinished``, which would otherwise write its text to whatever
+        step is shown next, or over an undo. The body may hold the widget
+        whose signal brought us here, so the event loop deletes it.
         """
+        self._silent = True
         old = self.takeWidget()
         if old is None:
             return
         for area in (self.output_area, self.binding_area):
             if old.isAncestorOf(area):
                 area.setParent(None)
-        old.blockSignals(True)
-        for widget in old.findChildren(QtWidgets.QWidget):
-            widget.blockSignals(True)
         old.hide()
         old.setParent(None)
         old.deleteLater()
@@ -589,7 +588,7 @@ class Inspector(QtWidgets.QScrollArea):
     # -- edits --------------------------------------------------------------------------
 
     def _edit(self, label, action, *, structural: bool = False, merge=None) -> bool:
-        if self._editor is None or self._document is None or self._step_id is None:
+        if self._silent or self._editor is None or self._document is None or self._step_id is None:
             return False
         return bool(self._editor(label, action, structural=structural, merge=merge))
 

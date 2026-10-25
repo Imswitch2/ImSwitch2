@@ -97,6 +97,12 @@ def _diamond(rig):
     return editor
 
 
+def _binding_button(editor, text):
+    """A button the binding area shows now (contents it replaced wait hidden for deletion)."""
+    area = editor.inspector.binding_area
+    return next(b for b in area.findChildren(QtWidgets.QPushButton) if b.text() == text and b.isVisibleTo(area))
+
+
 def _status(editor, step_id):
     node = editor.scene.node(step_id)
     return node.run.status if node.run is not None else ""
@@ -260,11 +266,19 @@ def test_the_open_recording_can_be_used(rig):
     editor.open_file(str(_EXAMPLES / "split_process_merge_diamond.yaml"))
     rig.controller._onCurrentData(SimpleNamespace(dataPath=rig.recording, datasetName=None))
     editor.select_step("raw")
-    buttons = editor.inspector.binding_area.findChildren(QtWidgets.QPushButton)
-    use = next(b for b in buttons if b.text() == "Use the open recording")
+    use = _binding_button(editor, "Use the open recording")
     assert use.isEnabled()
     use.click()
     assert editor.session.source_bindings == {"raw": rig.recording}
+    # The click rebuilt the area: one set of buttons shows, none is left over.
+    area = editor.inspector.binding_area
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+    shown = sorted(b.text() for b in area.findChildren(QtWidgets.QPushButton))
+    assert shown == ["Run on a file…", "Start 'rec' from the selected result", "Unbind", "Use the open recording"]
+    editor.refresh(inspector=False)
+    editor.refresh(inspector=False)
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+    assert sorted(b.text() for b in area.findChildren(QtWidgets.QPushButton)) == shown
 
 
 def test_a_workflow_preview_is_shown_without_entering_the_list_or_taking_its_contrast():
@@ -312,8 +326,7 @@ def test_the_open_recording_is_used_at_its_dataset(rig):
     editor.open_file(str(_EXAMPLES / "split_process_merge_diamond.yaml"))
     rig.controller._onCurrentData(SimpleNamespace(dataPath=rig.recording, datasetName="other"))
     editor.select_step("raw")
-    buttons = editor.inspector.binding_area.findChildren(QtWidgets.QPushButton)
-    next(b for b in buttons if b.text() == "Use the open recording").click()
+    _binding_button(editor, "Use the open recording").click()
     assert editor.session.source_datasets == {"raw": "other"}
     assert editor.run_to("rec")
     _wait(rig)
