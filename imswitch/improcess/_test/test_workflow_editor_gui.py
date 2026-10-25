@@ -420,22 +420,22 @@ def test_an_issue_is_listed_on_the_chip_and_selects_the_step(editor, qapp):
     assert editor.run() is False
 
 
-def test_run_emits_a_copy_of_the_workflow_and_its_folder(editor):
+def test_run_and_publish_emits_a_copy_of_the_workflow_and_its_folder(editor):
     editor.open_file(str(_EXAMPLE))
     got = []
     editor.sig_run_requested.connect(lambda workflow, root: got.append((workflow, root)))
-    assert editor.run()
+    assert editor.run_and_publish()
     assert got and got[0][1] == str(_EXAMPLE.parent)
     assert got[0][0] is not editor.document.workflow
     assert got[0][0].to_dict() == editor.document.to_dict()
     editor.set_running(True)
-    assert editor.run() is False and not editor._actions["run"].isEnabled()
+    assert editor.run_and_publish() is False and not editor._actions["run_publish"].isEnabled()
     cancelled = []
     editor.sig_cancel_requested.connect(lambda: cancelled.append(True))
     editor.cancel_run()
     assert cancelled
     editor.set_running(False)
-    assert editor._actions["run"].isEnabled()
+    assert editor._actions["run_publish"].isEnabled()
 
 
 # -- through the controller ----------------------------------------------------------
@@ -471,9 +471,9 @@ def test_the_controller_opens_one_editor_and_runs_its_workflow(qapp, qtbot, monk
         Process("blur", "filter", {"radius": 1.5}, inputs=["rec"]),
     ]), catalog=editor.catalog), confirm=False)
     assert controller.runWorkflowObject(editor.document.workflow, None, out_dir=str(tmp_path / "out"), overwrite=True)
-    assert not editor._actions["run"].isEnabled()
+    assert not editor._actions["run_publish"].isEnabled()
     qtbot.waitUntil(lambda: controller._thread is None, timeout=60000)
-    assert editor._actions["run"].isEnabled()
+    assert editor._actions["run_publish"].isEnabled()
     assert any(name.startswith("made:") for name, _r in loaded)
     assert any("done" in message for message in messages)
     editor.document.dirty = False

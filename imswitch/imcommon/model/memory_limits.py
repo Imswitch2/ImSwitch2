@@ -1,6 +1,6 @@
 """Settable memory limits for buffering and automatic work.
 
-Three limits, each named for the one thing it bounds and each defaulting to
+Four limits, each named for the one thing it bounds and each defaulting to
 the literal the code already carried:
 
 - ``writerQueueMB`` -- how much backlog the recording writer may hold before
@@ -9,7 +9,11 @@ the literal the code already carried:
   chunk queue may hold before that consumer's stream is declared incomplete
   (``MAX_QUEUED_CONSUMER_BYTES``);
 - ``processingWorkingSetMB`` -- the working set ImProcess may spend on
-  *automatic* work: contrast sampling and the mean preview.
+  *automatic* work: contrast sampling and the mean preview;
+- ``workflowCacheMB`` -- the results the workflow editor keeps between
+  interactive runs so a re-run starts from them (``DEFAULT_CACHE_BYTES`` in
+  ``improcess.model.workfloweditor.session``). Not a hard cap: the selected
+  step's results and pinned ones are exempt, and evicting costs a re-run.
 
 They live on ``Options.memory`` in ``imcontrol_options.json`` -- a property
 of the computer, not of the microscope, so never in a setup file -- and are
@@ -42,6 +46,7 @@ SETTING_FIELDS: Dict[str, str] = {
     'writerQueueBytes': 'writerQueueMB',
     'perDetectorQueueBytes': 'perDetectorQueueMB',
     'processingWorkingSetBytes': 'processingWorkingSetMB',
+    'workflowCacheBytes': 'workflowCacheMB',
 }
 
 _lock = threading.Lock()

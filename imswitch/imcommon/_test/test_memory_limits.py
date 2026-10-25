@@ -49,6 +49,7 @@ def test_options_configure_the_limits_in_mib():
         'writerQueueBytes': 128 * MIB,
         'perDetectorQueueBytes': 64 * MIB,
         'processingWorkingSetBytes': 32 * MIB,
+        'workflowCacheBytes': 4096 * MIB,
     }
     assert memory_limits.effectiveBytes('perDetectorQueueBytes', 256 * MIB) == 64 * MIB
     assert len(log.infos) == 1 and 'perDetectorQueueMB = 64 MiB' in log.infos[0]
@@ -62,7 +63,7 @@ def test_an_options_file_without_the_group_gets_todays_defaults():
     options = Options.from_json('{"setupFileName": "x.json"}', infer_missing=True)
 
     assert (options.memory.writerQueueMB, options.memory.perDetectorQueueMB,
-            options.memory.processingWorkingSetMB) == (512, 256, 1024)
+            options.memory.processingWorkingSetMB, options.memory.workflowCacheMB) == (512, 256, 1024, 4096)
     memory_limits.configure(options.memory, logger=_Log())
     assert memory_limits.effectiveBytes('writerQueueBytes', 1) == 512 * MIB
     assert memory_limits.effectiveBytes('perDetectorQueueBytes', 1) == 256 * MIB
@@ -86,6 +87,8 @@ def test_the_options_defaults_and_the_code_literals_are_the_same_numbers():
     assert defaults.processingWorkingSetMB * MIB == data_obj._PROCESSING_WORKING_SET_BYTES
     assert defaults.writerQueueMB * MIB == writer.WRITER_QUEUE_MAX_BYTES
     assert defaults.perDetectorQueueMB * MIB == detector.MAX_QUEUED_CONSUMER_BYTES
+    session = importlib.import_module('imswitch.improcess.model.workfloweditor.session')
+    assert defaults.workflowCacheMB * MIB == session.DEFAULT_CACHE_BYTES
 
 
 def test_the_group_round_trips_through_the_options_file():

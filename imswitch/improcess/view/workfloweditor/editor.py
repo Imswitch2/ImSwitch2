@@ -6,28 +6,38 @@ on the right; all over one Qt-free :class:`WorkflowDocument`. Every edit,
 from whichever view, is one ``document.history.edit``: undoable, and
 followed by one refresh of every view.
 
-The window owns no batch run: *Run and publish* hands the workflow to whoever
-connected ``sig_run_requested`` (the ``WorkflowController``, which runs it as
-*File → Run workflow…* does).
+**Runs happen in the editor.** *Run* and *Run to here* go through a
+:class:`RunSession`: what is up to date comes from its cache, the rest runs on
+the ``WorkflowController``'s worker (the window's ``host``), and every box
+shows its state, timing and output as the run goes. Results stay in the editor
+until *Show in viewer* (temporary) or *Pin* (into the results list). *Run and
+add every result to the list* is the batch run of before: it hands the
+workflow to whoever connected ``sig_run_requested``.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.improcess.model.workfloweditor import DocumentError, WorkflowDocument, build_catalog
 from imswitch.improcess.model.workfloweditor.folders import workflows_directory
+from imswitch.improcess.model.workfloweditor.graph import ancestors
 from imswitch.improcess.model.workfloweditor.nodes import kinds_of
 from imswitch.improcess.model.workfloweditor.preferences import EditorPreferences
-from imswitch.improcess.workflows.steps import Save, WorkflowError
+from imswitch.improcess.model.workfloweditor.previews import make_preview
+from imswitch.improcess.model.workfloweditor.session import RunSession
+from imswitch.improcess.workflows.steps import Reconstruct, Save, Source, WorkflowError
 
-from .canvas import CanvasView, EdgeItem, NodeItem, QuickAddPopup, WorkflowScene
+from .canvas import CanvasView, EdgeItem, NodeItem, QuickAddPopup, RunView, WorkflowScene
 from .canvas import style as st
 from .inspector import Inspector
+from .outputpanel import failure_text
 from .palette import StepPalette
 from .steplist import StepList
+from .thumbnails import box_pixmap
 
 _FILTER = "Workflow (*.yaml *.yml *.json)"
 _SUFFIXES = (".yaml", ".yml", ".json")
@@ -44,6 +54,22 @@ QToolButton#chipWarn { background: #3d2c17; color: #f5c48a; border: 1px solid #7
 QToolButton#chipBusy { background: #16283a; color: #9fd0f5; border: 1px solid #2a5a85; border-radius: 10px; padding: 3px 10px; }
 QLabel#wfTitle { font-weight: bold; font-size: 11pt; padding: 0 8px; }
 """
+
+
+class _PreviewSignals(QtCore.QObject):
+    done = QtCore.Signal(object, object)     # token, Preview
+
+
+class _PreviewJob(QtCore.QRunnable):
+    """A larger preview (or another plane) of a cached result, off the GUI thread."""
+
+    def __init__(self, token, result, size: int, plane):
+        super().__init__()
+        self.token, self.result, self.size, self.plane = token, result, size, plane
+        self.signals = _PreviewSignals()
+
+    def run(self) -> None:
+        self.signals.done.emit(self.token, make_preview(self.result, self.size, self.plane))
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -66,6 +92,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.document = WorkflowDocument(catalog=self.catalog)
         self._running = False
         self._issues = []
+        #: Whoever runs interactive runs (the WorkflowController); None standalone.
+        self.host = None
+        self.session = RunSession(self.catalog.registry)
+        self._write_files = False
+        self._out_dir = None
+        self._overwrite = False
+        self._queued = None
+        self._active_plan = None
+        self._pixmaps: dict = {}
+        self._preview_token = None
+        self._preview_jobs: list = []
         self._build_ui()
         self.load_document(self.document, confirm=False)
         self.set_mode(self.preferences.mode, remember=False)
@@ -129,6 +166,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.list_view.sigStepSelected.connect(self._on_list_selection)
         self.inspector.sigMessage.connect(self.show_status)
         self.inspector.sigRenamed.connect(lambda _old, new: self.select_step(new))
+        output = self.inspector.output
+        output.sigRunToHere.connect(self.run_to_selected)
+        output.sigShowInViewer.connect(lambda port: self.show_in_viewer(port=port))
+        output.sigPin.connect(lambda port: self.pin(port=port))
+        output.sigPreviewWanted.connect(self._want_preview)
         self.set_running(False)
 
     def _action(self, name, text, slot, shortcut=None, tip="", *, checkable=False, context=None) -> QtWidgets.QAction:
@@ -181,10 +223,19 @@ class MainWindow(QtWidgets.QMainWindow):
         group.addAction(self._actions["graph"])
         group.addAction(self._actions["list"])
         a("validate", "Check", self.validate_now, "F7", "List everything that would stop the run")
-        a("run", "▶  Run", self.run, "F5", "Run the workflow; results go to the reconstruction list")
+        a("run", "▶  Run", self.run, "F5",
+          "Run every step that is not up to date; results stay in the editor (Pin adds one to the list)")
+        a("run_to", "▶|  Run to selected", self.run_to_selected, "F6",
+          "Run the selected step and what it needs; what is up to date comes from the cache")
+        a("rerun", "↻  Re-run from selected", self.rerun_from_selected, None,
+          "Forget the selected step's results and everything after it, and run to it again")
+        a("cancel", "■  Stop", self.cancel_run, "Esc", "Stop the running workflow")
+        a("write_files", "⤓  Write files", self.set_write_files, None,
+          "Off: runs keep results in memory and Save steps only say what they would write", checkable=True)
+        a("run_publish", "Run and add every result to the list…", self.run_and_publish, None,
+          "Run the whole workflow as File → Run workflow does: every result goes to the reconstruction list")
         a("run_on_results", "Run on selected results…", self.run_on_results, None,
           "Apply the processing steps to every result selected in the reconstruction list")
-        a("cancel", "■  Stop", self.cancel_run, "Esc", "Stop the running workflow")
         a("reload", "Reload plugins", self.reload_plugins, None, "Re-scan the drop-in plugins folder")
 
     def _build_menus(self) -> None:
@@ -207,7 +258,8 @@ class MainWindow(QtWidgets.QMainWindow):
             view_menu.addSeparator() if name is None else view_menu.addAction(self._actions[name])
         run_menu = menus.addMenu("&Run")
         self.run_menu = run_menu
-        for name in ("run", "run_on_results", "cancel", None, "validate"):
+        for name in ("run", "run_to", "rerun", "cancel", None, "write_files", None, "run_publish", "run_on_results",
+                     None, "validate"):
             run_menu.addSeparator() if name is None else run_menu.addAction(self._actions[name])
         plugins = menus.addMenu("&Plugins")
         plugins.addAction(self._actions["reload"])
@@ -233,7 +285,9 @@ class MainWindow(QtWidgets.QMainWindow):
         bar.addSeparator()
         bar.addAction(self._actions["run"])
         bar.widgetForAction(self._actions["run"]).setObjectName("runButton")
+        bar.addAction(self._actions["run_to"])
         bar.addAction(self._actions["cancel"])
+        bar.addAction(self._actions["write_files"])
         self._toolbar_run_slot = bar.addSeparator()
         spacer = QtWidgets.QWidget()
         spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
@@ -298,6 +352,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         if document.catalog is None:
             document.catalog = self.catalog
+        if self._running:
+            self.show_status("Stop the run before opening another workflow.")
+            return False
+        self.release_session()
+        self.session = RunSession(self.catalog.registry)
+        self._pixmaps = {}
         self.document = document
         self.inspector.set_document(document)
         self.scene.set_document(document)
@@ -359,11 +419,32 @@ class MainWindow(QtWidgets.QMainWindow):
         return answer == QtWidgets.QMessageBox.Discard
 
     def closeEvent(self, event) -> None:
+        if self._running:
+            self.cancel_run()
+            self.show_status("Stopping the run; close the editor again once it has stopped.")
+            event.ignore()
+            return
         if not self._maybe_discard():
             event.ignore()
             return
+        self.release_session()
         super().closeEvent(event)
         self.sig_closed.emit()
+
+    def release_session(self) -> None:
+        """Hand the session's open files over: pinned results' to the host
+        (which keeps them while those results are loaded), the rest closed."""
+        session = getattr(self, "session", None)
+        if session is None or session.closed:
+            return
+        handover = session.close()
+        adopt = getattr(self.host, "adoptHandles", None)
+        if callable(adopt):
+            adopt(handover)
+        else:
+            for _uids, handles in handover:
+                for handle in handles:
+                    session._close(handle)
 
     # -- editing ---------------------------------------------------------------------------
 
@@ -590,7 +671,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         node = self.scene.node_at(pos)
         if node is not None and node.info.step_kind == "source":
-            self.edit("Change the recording", lambda: self.document.set_source(node.step_id, path=paths[0]))
+            self.bind_source(node.step_id, paths[0])
             return
         created = []
 
@@ -630,6 +711,18 @@ class MainWindow(QtWidgets.QMainWindow):
         menu.popup(global_pos)
 
     def _node_menu(self, menu: QtWidgets.QMenu, node: NodeItem) -> None:
+        step_id = node.step_id
+        for text, slot in (("▶|  Run to here", lambda: self.run_to(step_id)),
+                           ("↻  Re-run from here", lambda: self.rerun_from(step_id))):
+            menu.addAction(text).triggered.connect(lambda _c=False, s=slot: s())
+        held = self.session.result(self.document, step_id, source_root=self._source_root()) is not None
+        view = menu.addAction("Show output in viewer")
+        view.setEnabled(held)
+        view.triggered.connect(lambda: self.show_in_viewer(step_id))
+        pin = menu.addAction("Pin output to the results list")
+        pin.setEnabled(held)
+        pin.triggered.connect(lambda: self.pin(step_id))
+        menu.addSeparator()
         menu.addAction(self._actions["duplicate"])
         menu.addAction(self._actions["copy"])
         menu.addAction(self._actions["delete"])
@@ -685,6 +778,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # Typing into another step's fields is another undo entry.
             self.document.history.seal()
             self.inspector.show_step(current)
+            self._update_output()
 
     @property
     def step_form(self) -> Inspector:
@@ -695,6 +789,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh(self, *, inspector: bool = True, select=None) -> None:
         self._issues = self.document.issues()
         keep = list(select) if select else self.selected_step_ids()
+        self.scene.runs = self._run_views()
         self.scene.refresh(self._issues)
         self.list_view.refresh(self.document, self._issues)
         if keep:
@@ -704,6 +799,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view.set_empty_hint(not self.document.steps)
         if inspector or self.inspector.step_id != self.selected_step_id():
             self.inspector.show_step(self.selected_step_id())
+        self._update_output()
         self._update_chip()
         self._update_title()
         self._update_undo()
@@ -713,10 +809,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._running:
             return
         steps = len(self.document.steps)
+        states = self.session.states(self.document, self._source_root())
+        failed = [sid for sid, state in states.items() if state.status == "failed"]
+        outdated = [sid for sid, state in states.items() if state.status == "outdated"]
         if not steps:
             text, name = "Empty: add a step", "chipOk"
         elif issues:
             text, name = f"⚠  {len(issues)} issue{'s' if len(issues) != 1 else ''}", "chipWarn"
+        elif failed:
+            text, name = f"✕  Stopped at '{failed[0]}'", "chipWarn"
+        elif outdated:
+            text, name = f"↻  {len(outdated)} step{'s' if len(outdated) != 1 else ''} outdated", "chipWarn"
         else:
             text, name = f"✓  Ready to run · {steps} step{'s' if steps != 1 else ''}", "chipOk"
         self._set_chip(text, name)
@@ -751,14 +854,387 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -- running -------------------------------------------------------------------------------
 
+    def _source_root(self):
+        return str(self.document.path.parent) if self.document.path else None
+
     def run(self) -> bool:
+        """Run every step that is not up to date."""
+        return self._start_run(None)
+
+    def run_to_selected(self) -> bool:
+        selected = self.selected_step_ids()
+        if not selected:
+            self.show_status("Select the step to run to.")
+            return False
+        return self._start_run(selected)
+
+    def run_to(self, step_id: str) -> bool:
+        self.select_step(step_id)
+        return self._start_run([step_id])
+
+    def rerun_from_selected(self) -> bool:
+        selected = self.selected_step_ids()
+        if not selected:
+            self.show_status("Select the step to re-run from.")
+            return False
+        return self.rerun_from(*selected)
+
+    def rerun_from(self, *step_ids: str) -> bool:
+        for step_id in step_ids:
+            self.session.rerun_from(self.document, step_id, self._source_root())
+        self.refresh(inspector=False)
+        return self._start_run(list(step_ids))
+
+    def _issues_for(self, targets) -> list:
+        if not targets:
+            return list(self._issues)
+        needed = set(targets)
+        for target in targets:
+            needed |= ancestors(self.document.steps, target)
+        return [issue for issue in self._issues if issue.step in needed]
+
+    def _start_run(self, targets) -> bool:
+        if self.host is None or not callable(getattr(self.host, "runInteractive", None)):
+            self.show_status("Runs need ImProcess: open the editor from ImProcess (Workflow → Workflow editor).")
+            return False
+        if self._running:
+            # Edits made meanwhile only mark steps outdated; one queued re-run
+            # picks them all up when this run ends.
+            self._queued = (targets,)
+            self.show_status("The workflow will run again when this run ends.")
+            return True
+        self._issues = self.document.issues()
+        issues = self._issues_for(targets)
+        if issues:
+            self.show_status(f"Cannot run: {issues[0]}")
+            self.select_step(issues[0].step)
+            return False
+        root = self._source_root()
+        plan = self.session.plan(self.document, targets, write_saves=self._write_files, out_dir=self._out_dir,
+                                 overwrite=self._overwrite, source_root=root)
+        if plan.empty:
+            self.show_status("Everything you asked for is up to date.")
+            return False
+        for step_id in plan.to_run:
+            step = self.document.step(step_id) if self.document.has(step_id) else None
+            if isinstance(step, Source) and not step.source.path and step_id not in self.session.source_bindings:
+                self.show_status(f"'{step_id}' has no recording yet: drop a file on it, or choose one in the inspector.")
+                self.select_step(step_id)
+                return False
+        self.session.begin(plan)
+        self._active_plan = plan
+        self._run_started = time.monotonic()
+        self.scene.set_runs(self._run_views())
+        if not self.host.runInteractive(plan, self.catalog.registry):
+            self.session.finish(None, "not started")
+            self._active_plan = None
+            self.refresh(inspector=False)
+            return False
+        return True
+
+    # Called by the host, on the GUI thread, as the run goes.
+
+    def on_run_progress(self, index: int, total: int, step_id: str) -> None:
+        if step_id == "done" or self._active_plan is None:
+            return
+        self.session.step_started(step_id)
+        self._set_chip(f"Running {min(index + 1, total)}/{total} · {step_id}", "chipBusy")
+        self.scene.set_runs(self._run_views())
+
+    def on_run_step(self, step_id: str, ports, seconds: float, cached: bool, previews) -> None:
+        if self._active_plan is None:
+            return
+        self.session.step_done(step_id, dict(ports or {}), float(seconds), bool(cached), dict(previews or {}))
+        self.scene.set_runs(self._run_views())
+        if step_id == self.selected_step_id():
+            self._update_output()
+
+    def on_run_ended(self, report, error) -> None:
+        if self._active_plan is None:
+            return
+        self._active_plan = None
+        summary = self.session.finish(report, error, document=self.document, keep=self.selected_step_ids())
+        self.refresh(inspector=False)
+        self.show_status(self._summary_text(summary), 20000)
+        failure = summary.failure
+        if failure and not summary.cancelled and failure.get("step") and self.document.has(failure["step"]):
+            self.select_step(failure["step"])
+
+    def _summary_text(self, summary) -> str:
+        from imswitch.imcommon.model.memory_limits import describeBytes, settingRef
+
+        if summary.cancelled:
+            text = "Stopped."
+        elif summary.failure:
+            failure = summary.failure
+            where = f" at line {failure['line']}" if failure.get("line") else ""
+            text = f"'{failure.get('step')}' failed{where}: {failure_text(failure, with_line=False)}"
+        elif summary.error:
+            text = f"The run failed: {summary.error}"
+        else:
+            text = f"Ran {len(summary.ran)} step{'s' if len(summary.ran) != 1 else ''} in {summary.seconds:.2f} s"
+        if summary.cached:
+            text += f" · {len(summary.cached)} from the cache"
+        for step_id, path in list(summary.would_write.items())[:2]:
+            text += f" · Write files is off: '{step_id}' would write {Path(path).name}"
+        if summary.wrote:
+            count = sum(len(files) for files in summary.wrote.values())
+            text += f" · wrote {count} file{'s' if count != 1 else ''} to {self._out_dir}"
+        text += (f" · cache {describeBytes(self.session.cache_bytes())} of {describeBytes(self.session.budget)}"
+                 f" ({settingRef('workflowCacheBytes')})")
+        return text
+
+    def _run_views(self) -> dict:
+        states = self.session.states(self.document, self._source_root(), write_saves=self._write_files)
+        views = {}
+        for step_id, state in states.items():
+            entry = state.entry
+            if not state.status and not state.bound and entry is None:
+                continue
+            thumbnail = self._thumbnail(entry) if entry is not None and state.status != "running" else None
+            footer = ""
+            if entry is not None and state.status in ("done", "outdated"):
+                first = next(iter(entry.previews.values()), None)
+                described = first.describe() if first is not None else ""
+                footer = _seconds(entry.seconds) + (f"   {described}" if described else "")
+                if state.cached and state.status == "done":
+                    footer += "   · cached"
+            summary = None
+            if state.status == "would-write" and state.would_write is not None:
+                summary = ("would write", Path(state.would_write).name)
+            elif state.wrote:
+                summary = ("wrote",) + tuple(Path(p).name for p in state.wrote[:2])
+            elif state.bound and self.document.has(step_id):
+                step = self.document.step(step_id)
+                name = Path(state.bound).name if isinstance(step, Source) else state.bound
+                summary = (f"runs on {name}", "(this session)")
+            error = failure_text(state.error) if state.error else ""
+            kinds = {port: preview.kind for port, preview in (entry.previews.items() if entry else ())
+                     if preview.kind not in ("recording",)}
+            tips = {port: preview.describe() + (" · a projection over sampled planes" if preview.sampled else "")
+                    for port, preview in (entry.previews.items() if entry else ())}
+            views[step_id] = RunView(status=state.status, thumbnail=thumbnail, footer=footer, error=error,
+                                     summary=summary, kinds=kinds, tips=tips,
+                                     line=state.error.get("line") if state.error else None)
+        return views
+
+    def _thumbnail(self, entry):
+        key = (entry.key, entry.run_id)
+        if key not in self._pixmaps:
+            if len(self._pixmaps) > 400:
+                self._pixmaps.clear()
+            self._pixmaps[key] = box_pixmap(entry.previews)
+        return self._pixmaps[key]
+
+    def _update_output(self) -> None:
+        step_id = self.selected_step_id()
+        panel = self.inspector.output
+        if step_id is None or not self.document.has(step_id):
+            panel.clear()
+            return
+        root = self._source_root()
+        state = self.session.states(self.document, root, write_saves=self._write_files).get(step_id)
+        if state is None:
+            panel.clear()
+            return
+        panel.show_state(state.status, state.entry, state.error, cached=state.cached,
+                         would_write=state.would_write, wrote=state.wrote)
+        self.inspector.mark_line(state.error.get("line") if state.error else None)
+        self._update_binding(step_id, state)
+
+    def _want_preview(self, port: str, plane: int) -> None:
+        step_id = self.selected_step_id()
+        if step_id is None:
+            return
+        state = self.session.states(self.document, self._source_root()).get(step_id)
+        entry = state.entry if state is not None else None
+        if entry is None or not entry.held or port not in (entry.ports or {}):
+            return
+        result = entry.ports[port]
+        preview = entry.previews.get(port)
+        if preview is not None and preview.curve is not None:
+            x = getattr(result, "x_values", None)
+            try:
+                import numpy as np
+
+                y = np.asarray(result.data, dtype=float)
+                self.inspector.output.show_full_curve(np.asarray(x) if x is not None else np.arange(y.size), y)
+            except Exception:  # noqa: BLE001 - the sparkline stays
+                pass
+            return
+        token = (step_id, port, plane, entry.key)
+        self._preview_token = token
+        job = _PreviewJob(token, result, 480, None if plane < 0 else plane)
+        job.signals.done.connect(self._preview_ready)
+        self._preview_jobs.append(job)
+        QtCore.QThreadPool.globalInstance().start(job)
+
+    def _preview_ready(self, token, preview) -> None:
+        self._preview_jobs = [job for job in self._preview_jobs if job.token != token]
+        if token != self._preview_token:
+            return
+        self.inspector.output.set_preview(token[1], preview)
+
+    def _update_binding(self, step_id: str, state) -> None:
+        area = self.inspector.binding_area
+        layout = area.layout()
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        step = self.document.step(step_id)
+        host = self.host
+        if isinstance(step, Source):
+            bound = self.session.source_bindings.get(step_id)
+            if bound:
+                text = f"In this session it runs on <b>{Path(bound).name}</b>; the file keeps its own setting."
+            elif step.source.path:
+                text = f"Runs on its file, <b>{Path(step.source.path).name}</b>."
+            else:
+                text = "No recording yet: drop a file on the box, or choose what to run it on."
+            label = QtWidgets.QLabel(text)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            row = QtWidgets.QHBoxLayout()
+            choose = QtWidgets.QPushButton("Run on a file…")
+            choose.setToolTip("Choose a recording to run this workflow on, in this session")
+            choose.clicked.connect(lambda: self._choose_binding(step_id))
+            row.addWidget(choose)
+            recording = host.currentRecording() if callable(getattr(host, "currentRecording", None)) else None
+            open_button = QtWidgets.QPushButton("Use the open recording")
+            open_button.setEnabled(recording is not None)
+            open_button.setToolTip(f"Run on {recording[0]}" if recording else "No recording with a file is open in ImProcess")
+            open_button.clicked.connect(lambda: recording and self.bind_source(step_id, recording[0]))
+            row.addWidget(open_button)
+            if bound:
+                unbind = QtWidgets.QPushButton("Unbind")
+                unbind.clicked.connect(lambda: self.bind_source(step_id, None))
+                row.addWidget(unbind)
+            layout.addLayout(row)
+            consumers = [s.id for s in self.document.steps if isinstance(s, Reconstruct)
+                         and any(ref.step == step_id for ref in s.inputs)]
+            if consumers and callable(getattr(host, "selectedResults", None)):
+                use = QtWidgets.QPushButton(f"Start '{consumers[0]}' from the selected result")
+                use.setToolTip("Use a result from the reconstruction list instead of reconstructing, as "
+                               "Run on selected results does")
+                use.clicked.connect(lambda: self.bind_selected_result(consumers[0]))
+                layout.addWidget(use)
+        elif isinstance(step, Reconstruct) and step_id in self.session.result_bindings:
+            result = self.session.result_bindings[step_id]
+            label = QtWidgets.QLabel(f"In this session it starts from the result "
+                                     f"<b>{getattr(result, 'name', 'result')}</b> and is not run.")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            unbind = QtWidgets.QPushButton("Reconstruct again")
+            unbind.clicked.connect(lambda: self.bind_result(step_id, None))
+            layout.addWidget(unbind)
+
+    def _choose_binding(self, step_id: str) -> None:
+        try:
+            from imswitch.improcess.model.dataset_sources import SOURCE_SPECS, file_dialog_filter
+
+            name_filter = file_dialog_filter(SOURCE_SPECS)
+        except Exception:
+            name_filter = "All files (*)"
+        path, _filter = QtWidgets.QFileDialog.getOpenFileName(self, "Run on which recording?", "", name_filter)
+        if path:
+            self.bind_source(step_id, path)
+
+    def bind_source(self, step_id: str, path) -> None:
+        """Run ``step_id`` on ``path`` in this session (``None`` unbinds)."""
+        self.session.bind_source(self.document, step_id, path, self._source_root())
+        self.refresh(inspector=False)
+        self.show_status(f"'{step_id}' runs on {Path(path).name} in this session." if path else f"'{step_id}' unbound.")
+
+    def bind_result(self, step_id: str, result) -> None:
+        self.session.bind_result(self.document, step_id, result, self._source_root())
+        self.refresh(inspector=False)
+
+    def bind_selected_result(self, step_id: str) -> bool:
+        results = self.host.selectedResults() if callable(getattr(self.host, "selectedResults", None)) else []
+        if not results:
+            return False
+        self.bind_result(step_id, results[0])
+        self.show_status(f"'{step_id}' starts from {getattr(results[0], 'name', 'the selected result')} in this session.")
+        return True
+
+    def show_in_viewer(self, step_id: str | None = None, port: str = "") -> bool:
+        step_id = step_id or self.selected_step_id()
+        if step_id is None:
+            return False
+        result = self.session.result(self.document, step_id, port or None, self._source_root())
+        show = getattr(self.host, "showPreview", None)
+        if result is None or not callable(show):
+            self.show_status("Run the step first: nothing to show yet.")
+            return False
+        show(result, f"{step_id}{'.' + port if port else ''} (workflow preview)")
+        self.show_status(f"Showing '{step_id}' in the viewer until the next preview; it is not in the results list.")
+        return True
+
+    def pin(self, step_id: str | None = None, port: str = "") -> bool:
+        step_id = step_id or self.selected_step_id()
+        if step_id is None:
+            return False
+        publish = getattr(self.host, "pinResult", None)
+        result = self.session.pin(self.document, step_id, port or None, self._source_root())
+        if result is None or not callable(publish):
+            self.show_status("Run the step first: nothing to pin yet.")
+            return False
+        publish(result, f"{self.document.name}:{step_id}{'.' + port if port else ''}")
+        self.show_status(f"Pinned '{step_id}' to the results list.")
+        return True
+
+    def set_write_files(self, on: bool, *, folder=None, overwrite=None) -> bool:
+        """Turn *Write files* on (asking once for the folder) or off."""
+        if on and (self._out_dir is None or folder is not None):
+            if folder is None:
+                folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Folder for the files Save steps write",
+                                                                    str(self._folder))
+            if not folder:
+                self._actions["write_files"].blockSignals(True)
+                self._actions["write_files"].setChecked(False)
+                self._actions["write_files"].blockSignals(False)
+                return False
+            if overwrite is None:
+                overwrite = self._ask_overwrite(Path(folder))
+                if overwrite is None:
+                    self._actions["write_files"].blockSignals(True)
+                    self._actions["write_files"].setChecked(False)
+                    self._actions["write_files"].blockSignals(False)
+                    return False
+            self._out_dir, self._overwrite = Path(folder), bool(overwrite)
+        self._write_files = bool(on)
+        self._actions["write_files"].blockSignals(True)
+        self._actions["write_files"].setChecked(self._write_files)
+        self._actions["write_files"].blockSignals(False)
+        self.refresh(inspector=False)
+        self.show_status(f"Save steps write to {self._out_dir}." if on else
+                         "Write files is off: runs keep results in memory and Saves say what they would write.")
+        return True
+
+    def _ask_overwrite(self, folder: Path):
+        try:
+            occupied = any(folder.iterdir())
+        except OSError:
+            occupied = False
+        if not occupied:
+            return False
+        answer = QtWidgets.QMessageBox.question(
+            self, "The folder is not empty", f"{folder} already holds files. Overwrite files of the same name?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.No)
+        if answer == QtWidgets.QMessageBox.Cancel:
+            return None
+        return answer == QtWidgets.QMessageBox.Yes
+
+    def run_and_publish(self) -> bool:
+        """The batch run: the whole workflow, every result into the list."""
         if self._running:
             self.show_status("A workflow is already running.")
             return False
         if self.validate_now():
             return False
-        root = str(self.document.path.parent) if self.document.path else None
-        self.sig_run_requested.emit(self._snapshot(), root)
+        self.sig_run_requested.emit(self._snapshot(), self._source_root())
         return True
 
     def run_on_results(self) -> bool:
@@ -779,18 +1255,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def cancel_run(self) -> None:
         if self._running:
+            self._queued = None
             self.sig_cancel_requested.emit()
 
     def set_running(self, running: bool) -> None:
         self._running = bool(running)
-        self._actions["run"].setEnabled(not running)
-        self._actions["run_on_results"].setEnabled(not running)
+        for name in ("run", "run_to", "rerun", "run_publish", "run_on_results"):
+            self._actions[name].setEnabled(not running or name in ("run", "run_to"))
         self._actions["cancel"].setEnabled(bool(running))
         if running:
             self._set_chip("Running…", "chipBusy")
-        else:
-            self._progress.hide()
-            self._update_chip()
+            return
+        self._progress.hide()
+        if self._active_plan is not None:
+            # The worker ended without saying how (it was torn down): what it
+            # made so far stays, the rest is not run.
+            self._active_plan = None
+            self.session.finish(None, "stopped", document=self.document, keep=self.selected_step_ids())
+            self.refresh(inspector=False)
+        self._update_chip()
+        if self._queued is not None:
+            (targets,), self._queued = self._queued, None
+            QtCore.QTimer.singleShot(0, lambda: self._start_run(targets))
 
     def set_progress(self, index: int, total: int, step_id: str) -> None:
         self._progress.setMaximum(max(int(total), 1))
@@ -807,9 +1293,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def reload_plugins(self) -> None:
         self.catalog = build_catalog()
         self.document.catalog = self.catalog
+        self.session.registry = self.catalog.registry
         self.palette.set_catalog(self.catalog, self.preferences.recent_steps())
         self.refresh(inspector=True)
         self.show_status(f"{len(self.catalog.processors)} processors, {len(self.catalog.reconstructors)} reconstructors.")
+
+
+def _seconds(value: float) -> str:
+    value = float(value)
+    return f"{value * 1000:.0f} ms" if value < 1 else f"{value:.1f} s"
 
 
 __all__ = ["MainWindow"]

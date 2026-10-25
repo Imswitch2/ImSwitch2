@@ -22,6 +22,7 @@ from imswitch.improcess.workflows.sources import SOURCE_KINDS
 from imswitch.improcess.workflows.steps import Consolidate, Process, Reconstruct, Save, Source
 
 from .canvas import style as st
+from .outputpanel import OutputPanel
 from .paramform import ParamForm
 
 _HELP = (
@@ -34,6 +35,14 @@ _HELP = (
     "purple tables.</p>"
     "<p><b>Select</b> a box to edit it here. Del deletes, Ctrl+Z undoes.</p>"
 )
+
+
+def _combo() -> QtWidgets.QComboBox:
+    """A combo box that does not widen the inspector to its longest entry."""
+    combo = QtWidgets.QComboBox()
+    combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(10)
+    return combo
 
 
 def _muted(text: str) -> QtWidgets.QLabel:
@@ -71,10 +80,17 @@ class Inspector(QtWidgets.QScrollArea):
         self._code_timer.setSingleShot(True)
         self._code_timer.setInterval(500)
         self._code_timer.timeout.connect(self._commit_code)
-        #: Filled by the window after a run: what the selected step made.
+        #: What the selected step made in this session (filled by the window).
+        self.output = OutputPanel()
         self.output_area = QtWidgets.QWidget()
         self.output_area.setLayout(QtWidgets.QVBoxLayout())
         self.output_area.layout().setContentsMargins(0, 0, 0, 0)
+        self.output_area.layout().addWidget(self.output)
+        #: What a source (or a step started from a result) runs on in this
+        #: session, and the buttons that change it (filled by the window).
+        self.binding_area = QtWidgets.QWidget()
+        self.binding_area.setLayout(QtWidgets.QVBoxLayout())
+        self.binding_area.layout().setContentsMargins(0, 0, 0, 0)
         self.show_step(None)
 
     def set_document(self, document) -> None:
@@ -130,13 +146,16 @@ class Inspector(QtWidgets.QScrollArea):
                 self._build_process(layout, form, step)
             elif isinstance(step, Save):
                 self._build_save(form, step)
+            if isinstance(step, (Source, Reconstruct, Process)):
+                layout.insertWidget(1, self.binding_area)
             layout.addWidget(self.output_area)
         layout.addStretch(1)
         old = self.takeWidget()
         if old is not None:
-            # The output area outlives the bodies it is shown in.
-            if old.isAncestorOf(self.output_area):
-                self.output_area.setParent(None)
+            # The output and binding areas outlive the bodies they are shown in.
+            for area in (self.output_area, self.binding_area):
+                if old.isAncestorOf(area):
+                    area.setParent(None)
             # The old body may hold the widget whose signal brought us here:
             # let the event loop delete it.
             old.hide()
@@ -210,7 +229,7 @@ class Inspector(QtWidgets.QScrollArea):
         return f"makes {makes_words}" if makes else ""
 
     def _plugin_combo(self, entries, current: str, *, by_category: bool = False) -> QtWidgets.QComboBox:
-        combo = QtWidgets.QComboBox()
+        combo = _combo()
         found = False
         for entry in entries:
             label = f"{entry.category} · {entry.name}" if by_category and entry.kind == PROCESSOR else entry.name
@@ -262,7 +281,7 @@ class Inspector(QtWidgets.QScrollArea):
         catalog = self._document.catalog
         form.addRow("Reconstructor", self._plugin_combo(catalog.reconstructors if catalog else (), step.reconstructor))
         sources = [s.id for s in self._document.steps if isinstance(s, Source)]
-        combo = QtWidgets.QComboBox()
+        combo = _combo()
         combo.addItem("(not connected)", "")
         for source_id in sources:
             combo.addItem(source_id, source_id)
@@ -331,7 +350,7 @@ class Inspector(QtWidgets.QScrollArea):
             dot.setStyleSheet(f"color: {st.KIND_COLOURS.get(kind, st.KIND_COLOURS['unknown'])};")
             dot.setToolTip(st.KIND_WORDS.get(kind, kind))
             row.addWidget(dot)
-            combo = QtWidgets.QComboBox()
+            combo = _combo()
             combo.setEditable(True)
             for option in options:
                 combo.addItem(option.ref if not option.pattern else option.label, option.ref)
@@ -362,7 +381,7 @@ class Inspector(QtWidgets.QScrollArea):
         if not refs:
             box.addWidget(_muted("Not connected: drag a cable onto this box, or pick an input below."))
         if not refs or several or (entry is not None and entry.max_inputs == 1):
-            add = QtWidgets.QComboBox()
+            add = _combo()
             add.addItem("+ Read from…", "")
             for option in options:
                 if not option.pattern:
@@ -401,6 +420,38 @@ class Inspector(QtWidgets.QScrollArea):
         layout.addLayout(buttons)
         layout.addWidget(_muted("Names: np, data (the first input's array), inputs, axes, scales, unit, axis('Z'), "
                                 "results, make_result, make_labels. Set outputs = {port: array} or out = array."))
+
+    def mark_line(self, line: int | None) -> None:
+        """Mark the line a Python step failed at (``None`` clears the mark)."""
+        editor = self._python
+        if editor is None:
+            return
+        try:
+            from imswitch.imcommon.view.guitools.CodeEditor import QSCI_AVAILABLE
+        except ImportError:  # pragma: no cover
+            QSCI_AVAILABLE = False
+        if QSCI_AVAILABLE and hasattr(editor, "markerDefine"):
+            from qtpy import QtGui
+
+            marker = 8
+            editor.markerDefine(editor.Background, marker)
+            editor.setMarkerBackgroundColor(QtGui.QColor("#5a1f22"), marker)
+            editor.markerDeleteAll(marker)
+            if line:
+                editor.markerAdd(int(line) - 1, marker)
+                editor.ensureLineVisible(int(line) - 1)
+            return
+        selections = []
+        if line:
+            from qtpy import QtGui
+
+            block = editor.document().findBlockByNumber(int(line) - 1)
+            selection = QtWidgets.QTextEdit.ExtraSelection()
+            selection.format.setBackground(QtGui.QColor("#5a1f22"))
+            selection.format.setProperty(QtGui.QTextFormat.FullWidthSelection, True)
+            selection.cursor = QtGui.QTextCursor(block)
+            selections.append(selection)
+        editor.setExtraSelections(selections)
 
     def _commit_code(self) -> None:
         self._code_timer.stop()
@@ -441,7 +492,7 @@ class Inspector(QtWidgets.QScrollArea):
 
     def _build_save(self, form, step: Save) -> None:
         catalog = self._document.catalog
-        input_combo = QtWidgets.QComboBox()
+        input_combo = _combo()
         input_combo.setEditable(True)
         for option in self._document.port_options(None):
             if option.step != step.id:

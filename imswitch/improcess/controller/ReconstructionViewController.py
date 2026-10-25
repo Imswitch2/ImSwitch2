@@ -64,6 +64,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigLiveTimepointUpdated.connect(self.liveTimepointUpdated)
         self._commChannel.sigSaveLiveResult.connect(self.saveLiveResult)
         self._commChannel.sigLiveTimepointDone.connect(self._onLiveTimepointDone)
+        preview = getattr(self._commChannel, "sigWorkflowPreview", None)
+        if preview is not None:
+            preview.connect(self.showWorkflowPreview)
+        # A workflow-editor preview on screen instead of the list's entry.
+        self._previewing = None
         # Results that have ever arrived as a live update. Their pixels can be
         # rewritten between render passes, so they never get a mutation token
         # and nothing downstream caches a measurement of them.
@@ -166,7 +171,28 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
         display.retain_only(results)
 
+    def showWorkflowPreview(self, result, displayName=""):
+        """Show a workflow-editor result until the next preview or list selection.
+
+        Not added to the list and never saved; the contrast set on it is not
+        filed against whichever list entry is selected.
+        """
+        if result is None:
+            return
+        displayed = self.__dict__.get("_displayedResult")
+        if displayed is not None and displayed is not result:
+            self._persistActiveViewerSettings(displayed)
+        self.__dict__["_displayedResult"] = None
+        self.__dict__["_previewing"] = result
+        try:
+            self._setProcessingResultSlice(result, autoLevels=True)
+            self._widget.resetView()
+        except Exception as exc:  # noqa: BLE001 - a preview must not break the viewer
+            self._logger.warning("Could not show the workflow preview %r: %s", displayName, exc)
+            self.__dict__["_previewing"] = None
+
     def listItemChanged(self):
+        self.__dict__["_previewing"] = None
         currItem = self._widget.getCurrentItemData()
         # Read through __dict__: on a controller whose base __init__ has not
         # run, plain getattr raises rather than falling back to the default.
@@ -238,12 +264,15 @@ class ReconstructionViewController(ImProcessWidgetController):
         operation re-renders first and overwrites what was never saved. This
         runs on the change itself, so there is no window to lose it in.
         """
+        if self.__dict__.get("_previewing") is not None:
+            return          # a preview's contrast belongs to no list entry
         result = self.getActiveResult()
         if result is None or levels is None:
             return
         self._storeDisplayLevels(result, layerMetadata, levels)
 
     def fullUpdate(self, autoLevels=False, levels=None):
+        self.__dict__["_previewing"] = None
         reconObj = self._widget.getCurrentItemData()
         if reconObj is not None:
             self.setImgSlice(autoLevels=autoLevels, levels=levels)
