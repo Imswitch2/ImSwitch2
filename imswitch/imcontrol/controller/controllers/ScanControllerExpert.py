@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Dict
 
 import copy
+import dataclasses
 import math
 import time
 import traceback
@@ -35,6 +36,7 @@ import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.model.acquisition_layout import LOOP_KIND_ADVANCES_POSITION
+from imswitch.imcommon.model.state_contracts import ComponentStateApplyMode, RestoreWarning
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.errors import ScanDesignRefusedError
 from imswitch.imcontrol.model.scan_program import (
@@ -66,6 +68,7 @@ from imswitch.imcontrol.model.scan_program.schedule import approach_span, format
 from imswitch.imcontrol.model.scan_program.serialize import (
     FORMAT, program_from_dict, program_to_dict,
 )
+from imswitch.imcontrol.view.widgets.ScanWidgetExpert import VIEWS, VIEW_SIMPLE
 from ..basecontrollers import SuperScanController, same_run_signals
 from .ScanControllerAdvanced import SCAN_PROGRESS_INTERVAL_MS, scan_progress
 from ._acquisition_layout_source import (
@@ -188,6 +191,11 @@ class ScanControllerExpert(SuperScanController):
         # The program is authoritative; the tables are read back only after
         # an edit, so an opened file's request is never re-rounded by them.
         self._edited = False
+        # Simple view: why the template's form last refused a value (the scan
+        # stays as it was and cannot run until a value is accepted), and the
+        # template and values the scan was last made from.
+        self._templateProblem = ''
+        self._madeFrom = None
 
         # Drop-in trajectory patterns join the Make… presets; a file that
         # does not load is skipped with the reason.
@@ -225,6 +233,8 @@ class ScanControllerExpert(SuperScanController):
         self._widget.sigProgramEdited.connect(self._onEdited)
         self._widget.sigPresetRequested.connect(self.makeFromPreset)
         self._widget.sigPlotClicked.connect(self.plotProgram)
+        self._widget.sigTemplateEdited.connect(self._onTemplateEdited)
+        self._widget.sigViewChanged.connect(self._onViewChanged)
 
         # Progress while a run of this panel's lasts: a step engine counts its
         # steps (waits included), the rest by time against the duration.
@@ -252,16 +262,117 @@ class ScanControllerExpert(SuperScanController):
 
     def setProgram(self, program, *, advancedOrigin=None):
         """Show ``program`` in the panel (``None`` for an empty one)."""
+        # It rewrites the tables: an edit of the old ones still waiting for
+        # its report is moot, and would make the new scan "edited".
+        self._edited = False
+        self._templateProblem = ''
         self._program = program
-        made_from = presets.preset_of(program)[0] if program is not None else ''
-        self._titleBase = presets.PRESETS[made_from].title if made_from in presets.PRESETS \
-            else None
+        made_from, made_params = presets.preset_of(program) if program is not None else ('', {})
+        known = made_from in presets.PRESETS
+        self._titleBase = presets.PRESETS[made_from].title if known else None
+        self._madeFrom = (made_from, made_params) if known else None
         self._advancedOrigin = advancedOrigin
-        self._programError = '' if program is not None else self._EMPTY
+        self._programError = '' if program is not None else self._emptyText()
+        # the panel knows the new scan's template before it writes its tables,
+        # so the refresh inside already shows the right content
+        self._pushTemplate()
+        self._widget.programShown()
         self.setParameters()
         self.updateReport()
 
     _EMPTY = 'The scan has no dimensions yet: start from a template, or add a dimension.'
+    _EMPTY_SIMPLE = 'The scan has no dimensions yet: start from a template.'
+
+    def _emptyText(self):
+        """Why the scan is empty, in the words of the view: the Simple view
+        cannot add a dimension."""
+        return self._EMPTY_SIMPLE if self._widget.view() == VIEW_SIMPLE else self._EMPTY
+
+    # ------------------------------------------------------------------
+    # The template a scan is made from (the Simple view's Parameters)
+    # ------------------------------------------------------------------
+
+    def _templateOf(self, program):
+        """``(preset, params, made)`` when ``program`` is a template's output,
+        else None: the program the template makes from values it names -- the
+        scan's own ``requested_as``, else the values it was last made from --
+        is the program, compared without ``requested_as``. ``params`` are the
+        values ``make`` recorded (a field the template gained after the scan
+        was saved is there with what it meant before). ``make`` builds and
+        validates; it compiles nothing and never calls a trajectory's path,
+        so no script runs. A scan whose values no longer make it -- edited by
+        hand, or written by an older template -- is none's, never silently
+        made again."""
+        if program is None:
+            return None
+        candidates = []
+        made_from, params = presets.preset_of(program)
+        if made_from in presets.PRESETS:
+            candidates.append((made_from, params))
+        if self._madeFrom is not None:
+            candidates.append(self._madeFrom)
+        plain = dataclasses.replace(program, requested_as=None)
+        for preset_id, values in candidates:
+            try:
+                made = presets.make(preset_id, values)
+                if dataclasses.replace(made, requested_as=None) != plain:
+                    continue
+            except (presets.PresetError, ProgramError, ValueError, TypeError):
+                continue
+            return presets.PRESETS[preset_id], dict(made.requested_as['params']), made
+        return None
+
+    def _reattach(self, program):
+        """A program read back from the tables (it has no ``requested_as``) is
+        its template's output again when it is -- an edit undone, a value
+        typed back -- ``requested_as`` and all; otherwise it is as read.
+        Applied at the report, not in ``getParameters``, which keeps returning
+        the tables as they read. A program that holds its request keeps it:
+        requested values are never rewritten."""
+        if program is None or program.requested_as is not None:
+            return program
+        template = self._templateOf(program)
+        return template[2] if template is not None else program
+
+    def _pushTemplate(self):
+        """Tell the panel which template the scan is made from."""
+        template = self._templateOf(self._program)
+        if template is None:
+            self._widget.setTemplate(None)
+        else:
+            self._widget.setTemplate(template[0], template[1], self._templateProblem)
+
+    def _onTemplateEdited(self, preset_id):
+        """The template's form committed a field: the scan is made again from
+        the template with its values. A value that does not make a program
+        leaves the scan as it was, not runnable, with the reason."""
+        try:
+            params = self._widget.templateParams()
+            program = presets.make(preset_id, params)
+        except (presets.PresetError, ProgramError, ValueError, TypeError) as error:
+            self._templateProblem = str(error)
+            self.updateReport()
+            return
+        self._templateValues[preset_id] = copy.deepcopy(params)
+        self.setProgram(program)
+
+    def _onViewChanged(self, view):
+        report = False
+        if self._program is None and self._programError in (self._EMPTY, self._EMPTY_SIMPLE):
+            text = self._emptyText()
+            report = text != self._programError
+            self._programError = text
+        if view == VIEW_SIMPLE:
+            # an Expert edit still waiting is read first: the template is current
+            self._widget.flushRefresh()
+            self.updateReport()
+            return
+        # a refused value belongs to the form; Expert has none
+        if self._templateProblem:
+            self._templateProblem = ''
+            report = True
+        if report:
+            self.updateReport()
 
     def getParameters(self):
         if getattr(self, 'settingParameters', False):
@@ -271,7 +382,7 @@ class ScanControllerExpert(SuperScanController):
             try:
                 data = self._widget.programDict()
                 if not data.get('loops') and not carried.get('trajectory'):
-                    self._program, self._programError = None, self._EMPTY
+                    self._program, self._programError = None, self._emptyText()
                 else:
                     self._program = program_from_dict({'format': FORMAT, **data, **carried})
                     self._programError = ''
@@ -280,7 +391,7 @@ class ScanControllerExpert(SuperScanController):
                 self._programError = str(error)
             self._edited = False
         elif self._program is None and not self._programError:
-            self._programError = self._EMPTY
+            self._programError = self._emptyText()
         program = self._program
         devices = self._movedDevices(program)
         # What the base reads: the actuators and the positions to capture.
@@ -322,12 +433,17 @@ class ScanControllerExpert(SuperScanController):
         if preset is None:
             return
         made_from, params = presets.preset_of(self._program) if self._program else ('', {})
-        # The form opens with the values this scan was made from, else the
-        # last values used for the template; what is still empty is filled
-        # from the rig (tracked positions, declared setup times), never
-        # guessed (§7.12).
-        initial = params if made_from == preset_id else dict(
-            self._templateValues.get(preset_id) or {})
+        # The form opens with the values this scan was made from -- its own
+        # request, else the ones it was last made from (an edited scan opened
+        # from a file has no request left) -- else the last values used for
+        # the template; what is still empty is filled from the rig (tracked
+        # positions, declared setup times), never guessed (§7.12).
+        if made_from == preset_id:
+            initial = params
+        elif self._madeFrom is not None and self._madeFrom[0] == preset_id:
+            initial = dict(self._madeFrom[1])
+        else:
+            initial = dict(self._templateValues.get(preset_id) or {})
 
         def validate(candidate):
             try:
@@ -464,6 +580,10 @@ class ScanControllerExpert(SuperScanController):
         """The compile of the current program on the engine its devices
         choose, or ScanDesignRefusedError with every reason."""
         self.getParameters()
+        if self._templateProblem:
+            # the form shows a value the scan does not hold: nothing runs the
+            # old one behind it (the check, Run and the preview all end here)
+            raise ScanDesignRefusedError(self._templateProblem)
         if self._program is None:
             raise ScanDesignRefusedError(self._programError)
         choice = self._choice(self._program)
@@ -565,13 +685,18 @@ class ScanControllerExpert(SuperScanController):
         return signals, info
 
     def _title(self, program):
-        """What the panel calls the program: its template, or ``…, edited``."""
+        """What the panel calls the program: its template when it is that
+        template's output, else ``…, edited`` -- also for a file whose request
+        names a template that no longer makes the scan."""
         if program is not None and program.trajectory is not None:
             preset = presets.PRESETS.get(f'trajectory-{program.trajectory.pattern}')
             return preset.title if preset else f'Trajectory: {program.trajectory.pattern}'
+        template = self._templateOf(program)
+        if template is not None:
+            return template[0].title
         made_from = presets.preset_of(program)[0] if program is not None else ''
         if made_from in presets.PRESETS:
-            return presets.PRESETS[made_from].title
+            return f'{presets.PRESETS[made_from].title}, edited'
         return f'{self._titleBase}, edited' if self.__dict__.get('_titleBase') else \
             'New scan'
 
@@ -607,6 +732,8 @@ class ScanControllerExpert(SuperScanController):
         """Compile what the panel shows and say what the engine makes of it:
         as text (the report) and as data (the header and the check)."""
         self.getParameters()
+        self._program = self._reattach(self._program)
+        self._pushTemplate()
         choice = self._choice(self._program)
         title = self._title(self._program)
         check = {'title': title,
@@ -778,6 +905,14 @@ class ScanControllerExpert(SuperScanController):
         # The Start button: someone is at the panel to approve a script.
         if self._approveScript():
             super().runScan()
+
+    def saveScan(self):
+        # The form shows a value the scan does not hold: saving now would
+        # write the old scan silently, behind a form that shows another.
+        if self._templateProblem:
+            self._widget.showNotice(f'Not saved: {self._templateProblem}')
+            return
+        super().saveScan()
 
     def loadScan(self):
         before = self._program
@@ -1083,6 +1218,7 @@ class ScanControllerExpert(SuperScanController):
             'timingPolicy': program.timing_policy if program is not None else None,
             'mode': {'repeatEnabled': self._widget.repeatEnabled()},
             'templateValues': copy.deepcopy(self._templateValues),
+            'view': self._widget.view(),
             'requiredFeatures': {PROGRAM_FEATURE: PROGRAM_FEATURE_REASON},
         }
         origin = self._advancedOrigin
@@ -1098,10 +1234,22 @@ class ScanControllerExpert(SuperScanController):
             return ['Scan is currently running; scan parameters were not changed.']
         if not isinstance(state, dict):
             return ['Saved scan state is not a dictionary.']
+        # The view the panel was left in is restored at startup only: a scan
+        # file or a setup-mode switch never changes the panel under the user.
+        # A scan that does not apply still opens in it. Anything but a known
+        # view is a warning, never an exception, which would drop the state.
+        warnings = []
+        view = state.get('view')
+        if applyMode in (None, ComponentStateApplyMode.STARTUP_RESTORE) and view is not None:
+            if view in VIEWS:
+                self._widget.setView(view)
+            else:
+                warnings.append(RestoreWarning(
+                    f'Unknown panel view {view!r}; kept the {self._widget.view()} view.',
+                    critical=False))
         refusal = self._unsupportedStateFeatureRefusal(state)
         if refusal:
-            return [refusal]
-        warnings = []
+            return warnings + [refusal]
         remembered = state.get('templateValues')
         if isinstance(remembered, dict):
             self._templateValues = {str(k): dict(v) for k, v in remembered.items()
@@ -1116,12 +1264,13 @@ class ScanControllerExpert(SuperScanController):
             elif is_legacy_advanced_state(state):
                 program, origin = self._programFromAdvanced(state)
             else:
-                return ['Saved scan state holds no scan program; it was not applied.']
+                return warnings + ['Saved scan state holds no scan program; it was not applied.']
         except (ProgramError, AdvancedConversionError, KeyError, ValueError) as error:
-            return [f'{error} Scan state was not applied.']
+            return warnings + [f'{error} Scan state was not applied.']
         missing = self._missingDevices(program)
         if missing:
-            return [f'This setup has no {", ".join(missing)}. Scan state was not applied.']
+            return warnings + [
+                f'This setup has no {", ".join(missing)}. Scan state was not applied.']
         mode = state.get('mode') or {}
         if mode.get('repeatEnabled') is not None:
             self._widget.setRepeatEnabled(bool(mode['repeatEnabled']))

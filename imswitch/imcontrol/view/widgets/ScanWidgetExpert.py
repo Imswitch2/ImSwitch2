@@ -21,13 +21,20 @@ the parts above edit (``_expert_scan_parts``). The panel edits the program's
 JSON form (``scan_program.serialize``); the controller turns it into a
 program and says what the scan engine makes of it. Times are shown in ms,
 positions in µm.
+
+**Simple | Expert** (docs/design/plans/expert-simple-view.md) is a second
+way to read the same scan, not a second state: Expert shows every part, to
+edit and to extend; Simple lists the scan's values -- a scan made from a
+template shows the template's own form -- with the pulses drawn and the
+preview, and leaves out whatever adds, removes or reorders.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import math
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Callable, Dict, List, Optional, Sequence
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -38,8 +45,9 @@ from imswitch.imcontrol.model.scan_program.serialize import FORMAT, program_from
 from ._expert_scan_parts import (
     KIND_NAMES, AdaptiveColumns, CheckCard, Chip, FlowLayout, LanePreview, OrderCard,
     PositionsCard, RecordingCard, StartCard, StepCard, TrajectoryCard, WaitsCard, WheelGuard,
-    device_color, duration_text, ms_text, role_color,
+    _group, _on_commit, device_color, duration_text, ms_text, role_color,
 )
+from ._expert_simple_view import ParametersCard
 from .ScanWidgetBase import SuperScanWidget
 
 #: Shown units per stored unit: times are stored in s and shown in ms. A
@@ -58,6 +66,28 @@ def stored(text, scale):
     except InvalidOperation:
         raise ValueError(f'{text!r} is not a number') from None
     return float(value)
+
+
+def exact_text(value, scale=1.0) -> str:
+    """A stored value as shown (``scale`` shown units per stored unit): the
+    inverse of :func:`stored`. The shortest decimal that reads back as the
+    same float (its ``repr``) times ``scale``, exactly, as plain decimal
+    text -- no exponent, no trailing zeros, ``-0`` as ``0``. So
+    ``stored(exact_text(v, s), s) == v`` and ``float(exact_text(v)) == v``
+    for every finite float, and what is shown is what runs."""
+    number = float(value)
+    if not math.isfinite(number):
+        return repr(number)
+    shown, unit = Decimal(repr(number)), Decimal(repr(float(scale)))
+    with localcontext() as context:
+        # the product of two decimals needs no more digits than both have
+        context.prec = len(shown.as_tuple().digits) + len(unit.as_tuple().digits)
+        product = shown * unit
+    if not product:
+        return '0'
+    text = format(product, 'f')
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
 
 #: Choices the model accepts (scan_program.program), repeated here so the
 #: panel offers exactly them; a test holds the two together.
@@ -83,6 +113,11 @@ _PROGRESS_RANGE = 1000
 #: The timing policy a scan built by hand gets: the model's own default.
 DEFAULT_POLICY = 'strict-v1'
 
+#: The two ways the panel shows the same scan.
+VIEW_SIMPLE = 'simple'
+VIEW_EXPERT = 'expert'
+VIEWS = (VIEW_SIMPLE, VIEW_EXPERT)
+
 
 class _Column:
     """One table column: how a cell reads and writes a value.
@@ -91,11 +126,12 @@ class _Column:
     'choice', 'names' (comma-separated text), 'optional-names' (the same,
     blank = not given), 'ints' (comma-separated integers, blank = none),
     'floats'. ``scale``: shown units per stored
-    unit (``MS``: ms shown, s stored)."""
+    unit (``MS``: ms shown, s stored). ``exact``: a number column shows its
+    values exactly (``exact_text``) instead of with 12 digits."""
 
-    def __init__(self, key, label, kind='text', choices=(), scale=1.0):
+    def __init__(self, key, label, kind='text', choices=(), scale=1.0, exact=False):
         self.key, self.label, self.kind = key, label, kind
-        self.choices, self.scale = choices, scale
+        self.choices, self.scale, self.exact = choices, scale, exact
 
 
 #: What a cell of each kind takes, in a message.
@@ -169,7 +205,7 @@ class _RowTable(QtWidgets.QWidget):
 
     def addRow(self, values: Dict, raw=False):
         row = self.table.rowCount()
-        self._quiet = True
+        quiet, self._quiet = self._quiet, True
         try:
             self.table.insertRow(row)
             for col, column in enumerate(self._columns):
@@ -189,8 +225,16 @@ class _RowTable(QtWidgets.QWidget):
                     self.table.setItem(row, col, QtWidgets.QTableWidgetItem(
                         '' if shown is None else str(shown)))
         finally:
-            self._quiet = False
+            # a row added while the table is being written (setRows, setColumns)
+            # leaves it quiet: one edit, reported by whoever wrote it
+            self._quiet = quiet
         self._edited()
+
+    def setRowButtonsVisible(self, on):
+        """Show or hide Add, Remove, Up and Down: a table whose rows are the
+        structure of something else (a template's pulses) edits cells only."""
+        for button in (self.addButton, self.removeButton, self.upButton, self.downButton):
+            button.setVisible(on)
 
     def setRows(self, rows: Sequence[Dict]):
         self._quiet = True
@@ -227,10 +271,14 @@ class _RowTable(QtWidgets.QWidget):
         if value is None:
             return ''
         if column.kind in ('float', 'optional-float'):
+            if column.exact:
+                return exact_text(value, column.scale)
             return f'{float(value) * column.scale:.12g}'
         if column.kind in ('names', 'optional-names', 'ints'):
             return ', '.join(str(v) for v in value)
         if column.kind == 'floats':
+            if column.exact:
+                return ', '.join(exact_text(v, column.scale) for v in value)
             return ', '.join(f'{float(v) * column.scale:.12g}' for v in value)
         return value
 
@@ -309,6 +357,180 @@ class _RowTable(QtWidgets.QWidget):
             self._quiet = False
         self.table.setCurrentCell(target, 0)
         self._edited()
+
+
+# ---------------------------------------------------------------------------
+# A template's fields: one editor each, in the template dialog and in the
+# panel's Simple view (TemplateForm)
+# ---------------------------------------------------------------------------
+
+class _SummaryEditor(QtWidgets.QWidget):
+    """A path's points or code in the inline form: what it holds in a few
+    words, and *Edit…*, which asks for the template's full form. A multi-line
+    text has no natural commit, and code runs whenever the scan is checked, so
+    it is approved in that form, when OK is pressed."""
+
+    def __init__(self, field, value, parent=None):
+        super().__init__(parent)
+        self._field = field
+        self.summary = QtWidgets.QLabel()
+        self.summary.setWordWrap(True)
+        self.editButton = QtWidgets.QToolButton()
+        self.editButton.setText('Edit…')
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.summary, 1)
+        layout.addWidget(self.editButton)
+        self.setValue(value)
+
+    def setValue(self, value):
+        if not value:
+            text = 'none'
+        elif self._field.kind == 'points':
+            text = f'{len(value)} point{"" if len(value) == 1 else "s"}'
+        else:
+            lines = len(str(value).splitlines())
+            text = f'a Python path, {lines} line{"" if lines == 1 else "s"}'
+        self.summary.setText(text)
+
+
+def _number_text(value, scale=1.0) -> str:
+    """A number as the template's fields show it; what is not a number is
+    shown as it is, so the user sees what the scan holds."""
+    try:
+        return exact_text(value, scale)
+    except (TypeError, ValueError, ArithmeticError):
+        return str(value)
+
+
+def _line_text(field, value) -> str:
+    """What a one-line field shows for ``value``: numbers exactly, seconds in
+    ms."""
+    if value in (None, ''):
+        return ''
+    if field.kind == 'pair':
+        return ', '.join(_number_text(v) for v in value) if value else ''
+    if field.kind == 'seconds':
+        return _number_text(value, MS)
+    if field.kind in ('micrometres', 'number'):
+        return _number_text(value)
+    if field.kind == 'count':
+        return str(value) if isinstance(value, int) else _number_text(value)
+    return str(value)
+
+
+def _preset_editor(field, value, devices: Dict[str, Sequence[str]], *, inline=False):
+    """The editor of one template field, holding ``value``. Numbers are shown
+    exactly (``exact_text``), so what is shown is what runs. ``inline``: for
+    the panel's form, where the pulse table has no Add, Remove, Up or Down
+    (how many pulses there are is the scan's structure) and points and code
+    are a summary with *Edit…*."""
+    if field.kind in ('positioner', 'laser', 'detector', 'optional-laser', 'choice'):
+        combo = QtWidgets.QComboBox()
+        kind = 'laser' if field.kind == 'optional-laser' else field.kind
+        choices = list(field.choices) if field.kind == 'choice' else \
+            list(devices.get(kind, ()))
+        if field.kind in ('detector', 'optional-laser'):
+            choices = [''] + choices
+        combo.addItems(choices)
+        if value not in (None, '') and combo.findText(str(value)) < 0:
+            combo.addItem(str(value))
+        if value not in (None, ''):
+            combo.setCurrentText(str(value))
+        return combo
+    if field.kind == 'flag':
+        box = QtWidgets.QCheckBox()
+        box.setChecked(bool(value))
+        return box
+    if field.kind == 'pulses':
+        table = _RowTable([
+            _Column('device', 'Laser', 'choice', tuple(devices.get('laser', ()))),
+            _Column('on', 'On (ms)', 'float', scale=MS, exact=True),
+            _Column('gap', 'Gap after (ms)', 'float', scale=MS, exact=True)],
+            title=field.label)
+        for device, on_s, gap_s in (value or ()):
+            table.addRow({'device': device, 'on': on_s, 'gap': gap_s})
+        if inline:
+            table.setRowButtonsVisible(False)
+            # as wide and tall as its rows (a laser box included): it is a list
+            # in a form, not a scrolling table
+            table.table.resizeColumnsToContents()
+            table.table.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
+        return table
+    if field.kind in ('points', 'code'):
+        if inline:
+            return _SummaryEditor(field, value)
+        text = QtWidgets.QPlainTextEdit()
+        if field.kind == 'points' and value:
+            text.setPlainText('\n'.join(f'{_number_text(x)}, {_number_text(y)}'
+                                        for x, y in value))
+        elif value:
+            text.setPlainText(str(value))
+        return text
+    line = QtWidgets.QLineEdit()
+    line.setPlaceholderText('required')
+    shown = _line_text(field, value)
+    if shown:
+        line.setText(shown)
+    return line
+
+
+#: What a one-line field must read as, in a message that names the field.
+_FIELD_WORDS = {'pair': 'two numbers', 'number': 'a number', 'seconds': 'a number',
+                'micrometres': 'a number', 'count': 'a whole number'}
+
+
+def _preset_params(editors: Dict) -> Dict:
+    """The values the editors show, by field name (``editors``:
+    ``{name: (field, editor)}``). A value that does not read raises
+    ``ValueError`` naming the field. The inline summaries of points and code
+    are not read: the form that holds them gives their values."""
+    out = {}
+    for name, (field, editor) in editors.items():
+        if isinstance(editor, _SummaryEditor):
+            continue
+        if isinstance(editor, QtWidgets.QCheckBox):
+            out[name] = editor.isChecked()
+        elif isinstance(editor, QtWidgets.QComboBox):
+            out[name] = editor.currentText()
+        elif isinstance(editor, _RowTable):
+            out[name] = [[r['device'], r['on'], r['gap']] for r in editor.rows()]
+        elif isinstance(editor, QtWidgets.QPlainTextEdit):
+            text = editor.toPlainText()
+            if field.kind == 'points':
+                points = []
+                for line in text.splitlines():
+                    if line.strip():
+                        try:
+                            points.append([float(v) for v in line.replace(',', ' ').split()])
+                        except ValueError:
+                            raise ValueError(f'{field.label}: {line.strip()!r} is not a list of '
+                                             'x, y points') from None
+                out[name] = points or None
+            else:
+                out[name] = text if text.strip() else None
+        else:
+            text = editor.text().strip()
+            if text == '':
+                out[name] = None
+                continue
+            try:
+                if field.kind == 'pair':
+                    out[name] = [float(v) for v in text.replace(',', ' ').split()]
+                elif field.kind == 'number':
+                    out[name] = float(text)
+                elif field.kind == 'seconds':
+                    out[name] = stored(text, MS)
+                elif field.kind == 'micrometres':
+                    out[name] = float(text)
+                elif field.kind == 'count':
+                    out[name] = int(text)
+                else:
+                    out[name] = text
+            except ValueError:
+                raise ValueError(f'{field.label}: {text!r} is not '
+                                 f'{_FIELD_WORDS.get(field.kind, "valid")}') from None
+    return out
 
 
 class PresetDialog(QtWidgets.QDialog):
@@ -392,80 +614,10 @@ class PresetDialog(QtWidgets.QDialog):
                              f'Where {combo.currentText()} is now is not known.'))
 
     def _editor(self, field, value):
-        if field.kind in ('positioner', 'laser', 'detector', 'optional-laser', 'choice'):
-            combo = QtWidgets.QComboBox()
-            devices = 'laser' if field.kind == 'optional-laser' else field.kind
-            choices = list(field.choices) if field.kind == 'choice' else \
-                list(self._devices.get(devices, ()))
-            if field.kind in ('detector', 'optional-laser'):
-                choices = [''] + choices
-            combo.addItems(choices)
-            if value not in (None, '') and combo.findText(str(value)) < 0:
-                combo.addItem(str(value))
-            if value not in (None, ''):
-                combo.setCurrentText(str(value))
-            return combo
-        if field.kind == 'flag':
-            box = QtWidgets.QCheckBox()
-            box.setChecked(bool(value))
-            return box
-        if field.kind == 'pulses':
-            table = _RowTable([
-                _Column('device', 'Laser', 'choice', tuple(self._devices.get('laser', ()))),
-                _Column('on', 'On (ms)', 'float', scale=MS),
-                _Column('gap', 'Gap after (ms)', 'float', scale=MS)])
-            for device, on_s, gap_s in (value or ()):
-                table.addRow({'device': device, 'on': on_s, 'gap': gap_s})
-            return table
-        if field.kind in ('points', 'code'):
-            text = QtWidgets.QPlainTextEdit()
-            if field.kind == 'points' and value:
-                text.setPlainText('\n'.join(f'{x:g}, {y:g}' for x, y in value))
-            elif value:
-                text.setPlainText(str(value))
-            return text
-        line = QtWidgets.QLineEdit()
-        line.setPlaceholderText('required')
-        if field.kind == 'pair' and value:
-            line.setText(', '.join(f'{float(v):g}' for v in value))
-            return line
-        if value not in (None, ''):
-            line.setText(f'{float(value) * MS:.12g}' if field.kind == 'seconds' else str(value))
-        return line
+        return _preset_editor(field, value, self._devices)
 
     def params(self) -> Dict:
-        out = {}
-        for name, (field, editor) in self._editors.items():
-            if isinstance(editor, QtWidgets.QCheckBox):
-                out[name] = editor.isChecked()
-            elif isinstance(editor, QtWidgets.QComboBox):
-                out[name] = editor.currentText()
-            elif isinstance(editor, _RowTable):
-                out[name] = [[r['device'], r['on'], r['gap']] for r in editor.rows()]
-            elif isinstance(editor, QtWidgets.QPlainTextEdit):
-                text = editor.toPlainText()
-                if field.kind == 'points':
-                    out[name] = [[float(v) for v in line.replace(',', ' ').split()]
-                                 for line in text.splitlines() if line.strip()] or None
-                else:
-                    out[name] = text if text.strip() else None
-            else:
-                text = editor.text().strip()
-                if text == '':
-                    out[name] = None
-                elif field.kind == 'pair':
-                    out[name] = [float(v) for v in text.replace(',', ' ').split()]
-                elif field.kind == 'number':
-                    out[name] = float(text)
-                elif field.kind == 'seconds':
-                    out[name] = stored(text, MS)
-                elif field.kind == 'micrometres':
-                    out[name] = float(text)
-                elif field.kind == 'count':
-                    out[name] = int(text)
-                else:
-                    out[name] = text
-        return out
+        return _preset_params(self._editors)
 
     def _accept(self):
         try:
@@ -476,6 +628,188 @@ class PresetDialog(QtWidgets.QDialog):
             self.error.setText(problem)
             return
         self.accept()
+
+
+class TemplateForm(QtWidgets.QWidget):
+    """A template's fields as a form in the panel (the Simple view, plan
+    D5, D6, D8): the dialog's groups, labels, units and tooltips, every
+    number shown exactly, each committed field announced by ``sigCommitted``.
+
+    The form keeps, per field, the value it was given and how that value is
+    shown, set together and only together. ``params()`` gives a field's
+    given value back as long as its editor still shows that: a field the user
+    left alone is never read again from its text. A field they changed is
+    read, and a value that does not read raises ``ValueError`` naming it."""
+
+    sigCommitted = QtCore.Signal()
+    sigEditRequested = QtCore.Signal()
+
+    def __init__(self, preset, devices: Dict[str, Sequence[str]], values: Dict, parent=None):
+        super().__init__(parent)
+        self.preset = preset
+        self.editors = {}                # {name: (field, editor)}
+        self._given = {}                 # {name: (the value given, how it is shown, given at all)}
+        self._committing = False
+        # a field the template gained after the values were saved means what
+        # the template did before it
+        values = {**{f.name: f.absent for f in preset.fields if f.absent is not None},
+                  **values}
+        form = QtWidgets.QFormLayout()
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
+        group = None
+        for field in preset.fields:
+            if field.group and field.group != group:
+                group = field.group
+                title = QtWidgets.QLabel(group)
+                title.setObjectName('expertCardTitle')
+                form.addRow(title)
+            editor = _preset_editor(field, values.get(field.name), devices, inline=True)
+            if field.help:
+                editor.setToolTip(field.help)
+            unit = {'seconds': ' (ms)', 'micrometres': ' (µm)'}.get(field.kind, '')
+            form.addRow(field.label + unit, editor)
+            self.editors[field.name] = (field, editor)
+            self._watch(editor)
+        self.problem = QtWidgets.QLabel('')
+        self.problem.setObjectName('expertProblems')
+        self.problem.setWordWrap(True)
+        self.problem.setVisible(False)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(form)
+        layout.addWidget(self.problem)
+        self.setValues(values)
+
+    # -- commits ------------------------------------------------------------------
+
+    def _watch(self, editor):
+        """A field is committed when the user leaves a value they typed (or
+        presses Return), picks a choice, ticks a box or edits a pulse cell."""
+        if isinstance(editor, _SummaryEditor):
+            editor.editButton.clicked.connect(lambda _c=False: self.sigEditRequested.emit())
+        elif isinstance(editor, QtWidgets.QCheckBox):
+            editor.toggled.connect(lambda _on: self._commit())
+        elif isinstance(editor, QtWidgets.QComboBox):
+            editor.currentIndexChanged.connect(lambda _i: self._commit())
+        elif isinstance(editor, _RowTable):
+            editor.sigEdited.connect(self._commit)
+        else:
+            _on_commit(editor, lambda _text: self._commit())
+
+    def _commit(self):
+        # the scan is made again inside this call, from the editor that
+        # emitted it: until it returns, the form writes nothing (setValues)
+        was, self._committing = self._committing, True
+        try:
+            self.sigCommitted.emit()
+        finally:
+            self._committing = was
+
+    def isCommitting(self) -> bool:
+        return self._committing
+
+    # -- the values ---------------------------------------------------------------
+
+    @staticmethod
+    def _shown(editor):
+        """What an editor shows now, in the form of a field's display."""
+        if isinstance(editor, QtWidgets.QCheckBox):
+            return editor.isChecked()
+        if isinstance(editor, QtWidgets.QComboBox):
+            return editor.currentText()
+        if isinstance(editor, _RowTable):
+            return editor.rows(raw=True)
+        if isinstance(editor, _SummaryEditor):
+            return None
+        return editor.text()
+
+    @staticmethod
+    def _display(field, editor, value):
+        """How ``value`` is shown in ``editor``: worked out from the value,
+        never read from the editor."""
+        if isinstance(editor, QtWidgets.QCheckBox):
+            return bool(value)
+        if isinstance(editor, QtWidgets.QComboBox):
+            return '' if value in (None, '') else str(value)
+        if isinstance(editor, _RowTable):
+            columns = {column.key: column for column in editor.columns()}
+            return [{'device': str(device), 'on': editor._show(columns['on'], on_s),
+                     'gap': editor._show(columns['gap'], gap_s)}
+                    for device, on_s, gap_s in (value or ())]
+        if isinstance(editor, _SummaryEditor):
+            return None
+        return _line_text(field, value)
+
+    @staticmethod
+    def _focused(editor) -> bool:
+        """Whether the user is in the field: a table counts when a cell or
+        its editor has the focus, or a cell is being edited."""
+        if isinstance(editor, _RowTable):
+            focus = QtWidgets.QApplication.focusWidget()
+            return (focus is not None and editor.isAncestorOf(focus)) \
+                or editor.table.state() == QtWidgets.QAbstractItemView.EditingState
+        return editor.hasFocus()
+
+    def setValues(self, values: Dict):
+        """Show a scan's values. Writes nothing while the form is committing
+        (the field just committed holds the value), and leaves the field the
+        user is in as it is, with the pair it had; every other field gets the
+        new pair, and the display where it shows something else."""
+        if self._committing:
+            return
+        for name, (field, editor) in self.editors.items():
+            if self._focused(editor):
+                continue
+            value = values.get(name)
+            display = self._display(field, editor, value)
+            self._given[name] = (value, display, name in values)
+            if isinstance(editor, _SummaryEditor):
+                editor.setValue(value)
+            elif self._shown(editor) != display:
+                self._write(editor, value, display)
+
+    @staticmethod
+    def _write(editor, value, display):
+        """Put a value's display into its editor, without a commit."""
+        blockers = [QtCore.QSignalBlocker(editor)]
+        if isinstance(editor, _RowTable):
+            blockers.append(QtCore.QSignalBlocker(editor.table))
+        try:
+            if isinstance(editor, QtWidgets.QCheckBox):
+                editor.setChecked(display)
+            elif isinstance(editor, QtWidgets.QComboBox):
+                if display and editor.findText(display) < 0:
+                    editor.addItem(display)          # a value the setup lacks stays visible
+                if editor.findText(display) >= 0:
+                    editor.setCurrentIndex(editor.findText(display))
+            elif isinstance(editor, _RowTable):
+                editor.setRows([{'device': device, 'on': on_s, 'gap': gap_s}
+                                for device, on_s, gap_s in (value or ())])
+            else:
+                editor.setText(display)
+        finally:
+            del blockers
+
+    def params(self) -> Dict:
+        """The values the form holds: each field's given value while its
+        editor shows what it showed for it (always for points and code), else
+        what the editor now shows. A field the scan was not given (a flag it
+        never set) and the user left alone stays out: nothing is invented.
+        ``ValueError`` names a field that does not read."""
+        out = {}
+        for name, (field, editor) in self.editors.items():
+            value, display, given = self._given[name]
+            if isinstance(editor, _SummaryEditor) or self._shown(editor) == display:
+                if given:
+                    out[name] = copy.deepcopy(value)
+            else:
+                out.update(_preset_params({name: (field, editor)}))
+        return out
+
+    def setProblem(self, text: str):
+        """Say why the last value was refused, under the form (``''``: none)."""
+        self.problem.setText(text)
+        self.problem.setVisible(bool(text))
 
 
 def _style() -> str:
@@ -517,6 +851,10 @@ class ScanWidgetExpert(SuperScanWidget):
     sigProgramEdited = QtCore.Signal()
     sigPresetRequested = QtCore.Signal(str)
     sigPlotClicked = QtCore.Signal()
+    #: The view changed (after the parts it hides were hidden).
+    sigViewChanged = QtCore.Signal(str)
+    #: The template's form committed a field; the template's id.
+    sigTemplateEdited = QtCore.Signal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -530,6 +868,15 @@ class ScanWidgetExpert(SuperScanWidget):
         self._undo: List[Dict] = []
         self._redo: List[Dict] = []
         self._restoring = False
+        self._view = VIEW_EXPERT
+        #: The template the scan is made from, its values and the refusal of
+        #: the form's last value: ``(preset, params, problem)`` or None.
+        self._template = None
+        #: The check card was asked for (the status chip); Simple shows it
+        #: until the view changes.
+        self._checkRequested = False
+        #: An edit of the tables is waiting for its report (``setCheck``).
+        self._editPending = False
 
         # -- the tables: the one state every part edits ------------------------
         self.loops = _RowTable([
@@ -597,6 +944,27 @@ class ScanWidgetExpert(SuperScanWidget):
         self.redoButton.setText('Redo')
         self.redoButton.setToolTip('Redo (Ctrl+Shift+Z).')
         self.redoButton.clicked.connect(self.redo)
+        # the switch between the two views of the same scan (first in the
+        # toolbar: it stays where the cursor is when the view hides the
+        # buttons after it)
+        self.simpleViewButton = QtWidgets.QToolButton()
+        self.simpleViewButton.setText('Simple')
+        self.simpleViewButton.setObjectName('expertViewSimple')
+        self.simpleViewButton.setToolTip(
+            'The scan\'s values as a list -- its template\'s form, or its own values -- with '
+            'the pulses drawn and the preview. Nothing is added or removed here.')
+        self.expertViewButton = QtWidgets.QToolButton()
+        self.expertViewButton.setText('Expert')
+        self.expertViewButton.setObjectName('expertViewExpert')
+        self.expertViewButton.setToolTip('Every part of the scan, to edit and to extend.')
+        self._viewGroup = QtWidgets.QButtonGroup(self)
+        self._viewGroup.setExclusive(True)
+        for button in (self.simpleViewButton, self.expertViewButton):
+            button.setCheckable(True)
+            self._viewGroup.addButton(button)
+        self.expertViewButton.setChecked(True)
+        self.simpleViewButton.clicked.connect(lambda _c=False: self.setView(VIEW_SIMPLE))
+        self.expertViewButton.clicked.connect(lambda _c=False: self.setView(VIEW_EXPERT))
         self.engineLabel = QtWidgets.QLabel('')
         self.engineLabel.setObjectName('expertMuted')
         self.scanButton.setText('Run')
@@ -629,8 +997,15 @@ class ScanWidgetExpert(SuperScanWidget):
         self.plotButton.setToolTip('Draw what every device does, from the same compile the '
                                    'run uses.')
         self.plotButton.clicked.connect(self.sigPlotClicked)
+        # A value typed but not yet left is committed before the button acts:
+        # the pressed button takes the focus, which ends the field's editing as
+        # leaving it would (plan D5a). Where buttons take no focus on a click
+        # (macOS), the click alone would run the scan without it.
+        for button in (self.scanButton, self.plotButton, self.saveScanBtn):
+            button.pressed.connect(lambda b=button: self.commitEditing(b))
         self.start = StartCard(self)
         self.trajectoryCard = TrajectoryCard(self)
+        self.parameters = ParametersCard(self, TemplateForm)
         self.order = OrderCard(self)
         self.positions = PositionsCard(self)
         self.step = StepCard(self)
@@ -640,8 +1015,8 @@ class ScanWidgetExpert(SuperScanWidget):
         self.preview = LanePreview(self.plotButton)
         self.plot = self.preview.plot
         self.columns = AdaptiveColumns(
-            [self.start, self.trajectoryCard, self.order, self.positions, self.step,
-             self.waitsCard, self.recording], [self.check, self.preview])
+            [self.start, self.trajectoryCard, self.parameters, self.order, self.positions,
+             self.step, self.waitsCard, self.recording], [self.check, self.preview])
         tablesPage = QtWidgets.QWidget()
         tablesLayout = QtWidgets.QGridLayout(tablesPage)
         tablesLayout.setContentsMargins(0, 0, 0, 0)
@@ -657,11 +1032,13 @@ class ScanWidgetExpert(SuperScanWidget):
         self.statusChip.clicked.connect(self._showCheck)
         self.setStyleSheet(_style())
         self.wheelGuard = WheelGuard(self.scrollArea, self)
+        self._shortcuts = []
         for keys, slot in ((QtGui.QKeySequence.Undo, self.undo),
                            (QtGui.QKeySequence.Redo, self.redo)):
             shortcut = QtWidgets.QShortcut(keys, self)
             shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
             shortcut.activated.connect(slot)
+            self._shortcuts.append(shortcut)
 
         self._refreshTimer = QtCore.QTimer(self)
         self._refreshTimer.setSingleShot(True)
@@ -696,7 +1073,8 @@ class ScanWidgetExpert(SuperScanWidget):
         headerLayout.addWidget(self.factsHost)
         toolsHost = QtWidgets.QWidget()
         tools = FlowLayout(toolsHost)
-        for widget in (self.templateButton, self.loadScanBtn, self.saveScanBtn,
+        for widget in (_group(self.simpleViewButton, self.expertViewButton),
+                       self.templateButton, self.loadScanBtn, self.saveScanBtn,
                        self.undoButton, self.redoButton, self.repeatBox, self.tablesButton):
             tools.addWidget(widget)
         headerLayout.addWidget(toolsHost)
@@ -835,15 +1213,104 @@ class ScanWidgetExpert(SuperScanWidget):
                                     ', '.join(renamed.get(p, p) for p in parity))
 
     def _edited(self):
+        self._editPending = True
         self.sigProgramEdited.emit()
         self.preview.setStale(True)
         self._refreshTimer.start()
+
+    def editPending(self) -> bool:
+        """Whether an edit of the tables has not been reported yet: what the
+        scan is made of is known only when its report comes (``setCheck``)."""
+        return self._editPending
 
     def flushRefresh(self):
         """Draw the parts now if an edit is waiting to be drawn: a click that
         commits a field acts on the program as it now is."""
         if self._refreshTimer.isActive():
             self.refreshParts()
+
+    # -- the two views ------------------------------------------------------------
+
+    def view(self) -> str:
+        """``VIEW_SIMPLE`` or ``VIEW_EXPERT``."""
+        return self._view
+
+    def setView(self, view: str):
+        """Show the scan in the Simple or the Expert view: the same scan, the
+        same state, with other parts. ``sigViewChanged`` comes after the parts
+        the view hides were hidden, so a field that commits as it is hidden
+        has committed by then."""
+        if view not in VIEWS:
+            raise ValueError(f'Unknown view {view!r}; there are {", ".join(VIEWS)}.')
+        if view == self._view:
+            self._showViewButtons()
+            return
+        self._view = view
+        self._showViewButtons()
+        if view == VIEW_SIMPLE:
+            self.tablesButton.setChecked(False)
+            self.parameters.invalidate()
+        else:
+            # a field being typed in commits as it is hidden: before the parts
+            # are drawn again, not in the middle of it
+            self.parameters.hide()
+        for shortcut in self._shortcuts:
+            shortcut.setEnabled(view == VIEW_EXPERT)
+        self._checkRequested = False
+        self.refreshParts()
+        self.columns.rearrange()
+        self.sigViewChanged.emit(view)
+
+    def _showViewButtons(self):
+        """The switch shows the view, without a click."""
+        blockers = [QtCore.QSignalBlocker(b) for b in (self.simpleViewButton,
+                                                       self.expertViewButton)]
+        try:
+            (self.simpleViewButton if self._view == VIEW_SIMPLE
+             else self.expertViewButton).setChecked(True)
+        finally:
+            del blockers
+
+    def commitEditing(self, button: QtWidgets.QAbstractButton):
+        """Commit the field being typed in, because ``button`` is being pressed.
+        The button takes the focus, which ends the field's editing as leaving
+        it would; a button that has the focus already (a press where buttons
+        take it, the space bar) is left as it is. The field's focus is not
+        cleared instead: where buttons take the focus on a press it is the
+        button's by then, and losing it releases the button, so the click
+        would never come."""
+        if not button.hasFocus():
+            button.setFocus(QtCore.Qt.OtherFocusReason)
+
+    def setTemplate(self, preset, params: Optional[Dict] = None, problem: str = ''):
+        """The template the scan is made from (``None``: it is not the output
+        of one), the values it was made from, and why the form's last value
+        was refused (``''``: none)."""
+        self._template = (preset, dict(params or {}), problem or '') \
+            if preset is not None else None
+
+    def template(self):
+        """``(preset, params, problem)`` of the scan's template, or None."""
+        return self._template
+
+    def templateParams(self) -> Dict:
+        """The values the template's form holds; ``ValueError`` names a field
+        that does not read."""
+        form = self.parameters.form()
+        if form is None:
+            raise ValueError('No template form is shown.')
+        return form.params()
+
+    def programShown(self):
+        """A new scan is being shown (the controller calls this before it
+        writes the tables): the Parameters card replaces its content, the
+        field being typed in too."""
+        self.parameters.programShown()
+
+    def mode(self) -> str:
+        """What the tables hold: ``'program'``, ``'trajectory'`` or
+        ``'empty'``."""
+        return self._mode()
 
     # -- program <-> tables -----------------------------------------------------
 
@@ -1313,21 +1780,66 @@ class ScanWidgetExpert(SuperScanWidget):
         return 'program'
 
     def refreshParts(self):
+        """Draw the parts for the view, from the tables. Expert shows every
+        part, as it always did. Simple shows the Parameters card, the drawing
+        of the step as a view, the preview, and *Can it run?* only when there
+        is something to know; whatever adds, removes or reorders is hidden."""
         self._refreshTimer.stop()
+        simple = self._view == VIEW_SIMPLE
+        # The Parameters card first: what the other parts show depends on
+        # whether it shows the template's form. In Expert it shows nothing.
+        self.parameters.refresh()
         mode = self._mode()
-        self.start.setVisible(mode == 'empty')
-        self.trajectoryCard.setVisible(mode == 'trajectory')
+        form = simple and self.parameters.showsTemplate()
+        self.parameters.setVisible(form)
         if mode == 'trajectory':
             self.trajectoryCard.setTrajectory(self._check['trajectory'])
-        for part in (self.order, self.positions, self.step):
-            part.setVisible(mode == 'program')
-        for part in (self.waitsCard, self.recording):
-            part.setVisible(mode != 'empty')
-        for part in (self.order, self.positions, self.step, self.waitsCard, self.recording):
-            part.refresh()
+        if simple:
+            # what adds, removes or restructures is not there; the drawing is
+            # a view, the values are in Parameters (plan D3)
+            self.start.setVisible(mode == 'empty')
+            self.start.setBuildVisible(False)
+            self.trajectoryCard.setVisible(mode == 'trajectory' and not form)
+            for part in (self.order, self.positions, self.waitsCard, self.recording):
+                part.setVisible(False)
+            self.step.setVisible(mode == 'program' and bool(self.tableRows('timeline')))
+            self.step.setReadOnly(True)
+            for button in (self.undoButton, self.redoButton, self.tablesButton):
+                button.setVisible(False)
+            self.check.setVisible(self._simpleShowsCheck(mode))
+            if not self.step.isHidden():
+                self.step.refresh()
+        else:
+            self.start.setVisible(mode == 'empty')
+            self.start.setBuildVisible(True)
+            self.trajectoryCard.setVisible(mode == 'trajectory')
+            for part in (self.order, self.positions, self.step):
+                part.setVisible(mode == 'program')
+            for part in (self.waitsCard, self.recording):
+                part.setVisible(mode != 'empty')
+            self.step.setReadOnly(False)
+            self.check.setVisible(True)
+            for button in (self.undoButton, self.redoButton, self.tablesButton):
+                button.setVisible(True)
+            for part in (self.order, self.positions, self.step, self.waitsCard, self.recording):
+                part.refresh()
         self._refreshHeader()
         self.wheelGuard.watch(self.columns)
         self._remember()
+
+    def _simpleShowsCheck(self, mode) -> bool:
+        """Whether *Can it run?* shows in the Simple view: when a scan cannot
+        run for a reason other than the form's own refused value (that one is
+        under the form and in the header already), when it plays something
+        differently, or when the status chip asked for it. Otherwise the
+        header's chip is the verdict."""
+        check = self._check
+        problems = [str(p) for p in (check.get('problems') or [])]
+        own = self._template[2] if self._template else ''
+        cannot = (mode != 'empty' and bool(check) and not check.get('runnable')
+                  and not (own and problems == [own]))
+        return cannot or bool((check.get('facts') or {}).get('changes')) \
+            or self._checkRequested
 
     def _refreshHeader(self):
         check = self._check
@@ -1340,7 +1852,10 @@ class ScanWidgetExpert(SuperScanWidget):
         self.subtitleLabel.setText(' › '.join(parts) if parts else
                                    check.get('subtitle') or 'Nothing to scan yet')
         preset = check.get('preset') or ''
-        self.templateValuesButton.setVisible(bool(preset) and self._mode() != 'empty')
+        # beside the template's own form it would only repeat it
+        own_form = self._view == VIEW_SIMPLE and self.parameters.showsTemplate()
+        self.templateValuesButton.setVisible(bool(preset) and self._mode() != 'empty'
+                                             and not own_form)
         self.templateValuesButton.setToolTip(
             'Open the template\'s form with the values this scan was made from. The scan has '
             'been edited since: the form holds the template\'s values, not the edits.'
@@ -1412,6 +1927,10 @@ class ScanWidgetExpert(SuperScanWidget):
     def _showCheck(self):
         if self.tablesButton.isChecked():
             self.tablesButton.setChecked(False)
+        if self._view == VIEW_SIMPLE:
+            # asked for: the card shows until the view changes
+            self._checkRequested = True
+            self.refreshParts()
         self.scrollArea.ensureWidgetVisible(self.check)
 
     def setCheck(self, check: Dict):
@@ -1422,6 +1941,7 @@ class ScanWidgetExpert(SuperScanWidget):
         (``steps``, ``duration_s``, ``frames``, ``grid_s``, ``policy``) and,
         for a path, ``trajectory`` (``text``, ``events``, ``preset``)."""
         self._check = dict(check or {})
+        self._editPending = False        # what was edited is reported: the parts follow
         grid = (self._check.get('facts') or {}).get('grid_s')
         if grid:
             self._lastGrid = grid
