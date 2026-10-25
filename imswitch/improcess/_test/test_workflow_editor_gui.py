@@ -654,3 +654,53 @@ def test_python_code_that_came_with_a_document_waits_for_one_run(editor, catalog
                                 confirm=False, trusted=True)
     assert editor._python_trusted is True          # e.g. a recipe from the user's own snippets
     assert editor.new_blank() and editor._python_trusted is True
+
+
+def test_a_python_steps_inputs_say_the_name_the_code_reads_them_by(editor, catalog):
+    from imswitch.improcess.model.workfloweditor.nodes import node_infos
+    from imswitch.improcess.view.workfloweditor.inspector import python_names_text
+
+    document = WorkflowDocument(Workflow("w", [
+        Source("raw"), Reconstruct("rec", "view-only", inputs=["raw"]),
+        Reconstruct("rec2", "view-only", inputs=["raw"]),
+        Process("script", "python", {"code": "out = data + inputs[1]\n"}, inputs=["rec", "rec2"]),
+        Process("blur", "filter", inputs=["rec"]),
+    ]), catalog=catalog)
+    infos = node_infos(document)
+    assert [slot.code for slot in infos["script"].inputs] == ["data (inputs[0])", "inputs[1]", "inputs[2]"]
+    assert all(not slot.code for slot in infos["blur"].inputs)
+    assert editor.load_document(document, confirm=False)
+    editor.select_step("script")
+    names = [w.text() for w in editor.inspector.widget().findChildren(QtWidgets.QLabel, "codeName")]
+    assert names == ["data", "inputs[1]"]
+    text = python_names_text(document.step("script"))
+    assert "data = inputs[0] (reads rec)" in text and "inputs[1] (reads rec2)" in text
+    port = editor.scene.node("script").inputs[1]
+    assert "In the code: inputs[1]" in port.toolTip()
+    editor.select_step("blur")
+    assert not editor.inspector.widget().findChildren(QtWidgets.QLabel, "codeName")
+
+
+def test_the_workflow_commands_have_a_menu_of_their_own(qapp):
+    from imswitch.improcess.view.ImProcessMainView import ImProcessMainView
+
+    class Host(QtCore.QObject):
+        sigOpenWorkflowEditor = QtCore.Signal()
+        sigEditWorkflowOfResultRequested = QtCore.Signal()
+        sigExportWorkflowRequested = QtCore.Signal()
+        sigRunWorkflowRequested = QtCore.Signal()
+        sigRunWorkflowOnResultsRequested = QtCore.Signal()
+        sigRunWorkflowOverFilesRequested = QtCore.Signal()
+
+    host = Host()
+    menu = QtWidgets.QMenu()
+    ImProcessMainView._buildWorkflowsMenu(host, menu)
+    assert [a.text() or "—" for a in menu.actions()] == [
+        "Workflow editor…", "Edit workflow of current result…", "—", "Export workflow of current result…", "—",
+        "Run workflow…", "Run workflow on selected results…", "Run workflow over files…"]
+    fired = []
+    host.sigOpenWorkflowEditor.connect(lambda: fired.append("editor"))
+    host.sigRunWorkflowOverFilesRequested.connect(lambda: fired.append("over files"))
+    menu.actions()[0].trigger()
+    menu.actions()[-1].trigger()
+    assert fired == ["editor", "over files"]

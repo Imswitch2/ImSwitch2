@@ -17,7 +17,7 @@ from pathlib import Path
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.model.workfloweditor.catalog import PROCESSOR
-from imswitch.improcess.model.workfloweditor.nodes import kinds_of, save_file_name, title_of
+from imswitch.improcess.model.workfloweditor.nodes import code_name, kinds_of, save_file_name, title_of
 from imswitch.improcess.workflows.sources import SOURCE_KINDS
 from imswitch.improcess.workflows.steps import Consolidate, Process, Reconstruct, Save, Source
 
@@ -58,6 +58,19 @@ def _section(title: str) -> QtWidgets.QLabel:
     label.setStyleSheet("font-weight: bold; letter-spacing: 1px; padding-top: 8px;")
     label.setEnabled(False)
     return label
+
+
+def python_names_text(step) -> str:
+    """The names a Python step's code starts with, its inputs by what they read."""
+    refs = [str(ref) for ref in step.inputs]
+    if refs:
+        named = [f"data = inputs[0] (reads {refs[0]})"]
+        named += [f"inputs[{i}] (reads {ref})" for i, ref in enumerate(refs[1:], start=1)]
+        inputs = "Inputs: " + ", ".join(named) + "; results[i] is input i's result."
+    else:
+        inputs = "Inputs: none connected yet; the first becomes data (inputs[0]), the next inputs[1]."
+    return (f"{inputs} Also np, axes / scales / unit (the first input's), axis('Z'), make_result, "
+            "make_labels. Set outputs = {port: array} or out = array.")
 
 
 class Inspector(QtWidgets.QScrollArea):
@@ -387,6 +400,7 @@ class Inspector(QtWidgets.QScrollArea):
         refs = [str(ref) for ref in step.inputs]
         entry = document.entry_for(step)
         several = entry is not None and (entry.max_inputs is None or entry.max_inputs > 1)
+        python = isinstance(step, Process) and step.processor == "python"
         for index, ref in enumerate(refs):
             row = QtWidgets.QHBoxLayout()
             dot = QtWidgets.QLabel("●")
@@ -394,6 +408,16 @@ class Inspector(QtWidgets.QScrollArea):
             dot.setStyleSheet(f"color: {st.KIND_COLOURS.get(kind, st.KIND_COLOURS['unknown'])};")
             dot.setToolTip(st.KIND_WORDS.get(kind, kind))
             row.addWidget(dot)
+            if python:
+                # The name the code reads this input by, beside what it reads.
+                name = QtWidgets.QLabel("data" if index == 0 else f"inputs[{index}]")
+                name.setObjectName("codeName")
+                name.setStyleSheet("font-family: monospace;")
+                # One width for all, so the inputs line up whatever their names.
+                name.setMinimumWidth(name.fontMetrics().horizontalAdvance(f"inputs[{max(10, len(refs))}]"))
+                name.setToolTip(f"In the code: {code_name(index)}; results[{index}] is its result "
+                                "(name, axes, scales)")
+                row.addWidget(name)
             combo = _combo()
             combo.setEditable(True)
             for option in options:
@@ -465,8 +489,7 @@ class Inspector(QtWidgets.QScrollArea):
         buttons.addWidget(load)
         buttons.addStretch(1)
         layout.addLayout(buttons)
-        layout.addWidget(_muted("Names: np, data (the first input's array), inputs, axes, scales, unit, axis('Z'), "
-                                "results, make_result, make_labels. Set outputs = {port: array} or out = array."))
+        layout.addWidget(_muted(python_names_text(step)))
 
     def mark_line(self, line: int | None) -> None:
         """Mark the line a Python step failed at (``None`` clears the mark)."""

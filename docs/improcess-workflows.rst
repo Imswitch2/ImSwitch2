@@ -368,8 +368,9 @@ plugin whose widget was found to disagree with its declaration. See
 The workflow editor
 ===================
 
-**File → Workflow editor…** opens a window to build, run and save workflows
-without writing YAML. A workflow is drawn as a graph: every step is a box,
+**Workflows → Workflow editor…** (the *Workflows* menu, between *Tools* and
+*Plugins*, holds every workflow command) opens a window to build, run and save
+workflows without writing YAML. A workflow is drawn as a graph: every step is a box,
 what it reads comes in on the left and what it makes goes out on the right,
 and the cables between them are coloured by what they carry — grey for a
 recording, blue for an image, orange for labels, green for a curve, purple
@@ -387,7 +388,7 @@ The editor opens on a **start page** with four ways in:
 * **From the recording that is open** in ImProcess: a source bound to it and
   *View only* after it, so the first run works on real data straight away;
 * **From what you did to a result**: the steps that made the result selected
-  in the reconstruction list, from its history (as **File → Edit workflow of
+  in the reconstruction list, from its history (as **Workflows → Edit workflow of
   current result…** does), with parameters equal to the defaults dropped;
 * **From a recipe**: every Python-step snippet in the snippet folder, built
   into *Recording → View only → Python step → Save* (a curve output is saved
@@ -395,7 +396,7 @@ The editor opens on a **start page** with four ways in:
 * **A blank canvas**.
 
 Below are the workflows used last and the files in the workflow folder
-(``~/ImSwitchConfig/improcess_workflows`` by default). **File → New…** comes
+(``~/ImSwitchConfig/improcess_workflows`` by default). **Workflows → New…** comes
 back to this page.
 
 .. image:: ./images/workflow-editor/start.png
@@ -442,7 +443,11 @@ does, what it takes and makes — then what it reads (each input with its
 kind, in order, reorderable for steps that take several), its parameters
 (choices are combo boxes, bounded numbers spin boxes with their unit, and a
 value that differs from the default can be reset), and for a Python step the
-code and its output ports. Only what differs from the defaults is written to
+code and its output ports. A Python step's inputs say the name the code
+reads them by, next to each input in the inspector and on its ports: the
+first is ``data`` (also ``inputs[0]``), the second ``inputs[1]``, and so on
+in the order listed (``results[1]`` is the second input's result, for its
+name, axes and scales). Only what differs from the defaults is written to
 the file. The chip at the top right says whether the workflow can run, or
 lists what stops it; clicking an issue selects its step.
 
@@ -518,10 +523,10 @@ an ordinary result, with its history. **Auto-run** (off by default) re-runs
 the outdated steps up to the selection a moment after each edit, when they
 took less than about two seconds last time; it never runs the Python code
 of a workflow file you opened until you have run it once yourself, the same
-rule as **File → Run workflow…**.
+rule as **Workflows → Run workflow…**.
 
 **Run → Run and add every result to the list…** runs the whole workflow as
-**File → Run workflow…** does, and **Run on selected results…** applies its
+**Workflows → Run workflow…** does, and **Run on selected results…** applies its
 processing to every result selected in the reconstruction list. Relative
 source paths in a saved workflow resolve against the file's folder.
 
@@ -570,8 +575,8 @@ From Python:
    with run(replay.workflow, registry=registry, out_dir="replayed", mode="replay") as report:
        print(report.receipts[0].files)
 
-In the GUI, **File → Export workflow of current result…** writes the same
-workflow from the result in memory (no file needed), and **File → Run
+In the GUI, **Workflows → Export workflow of current result…** writes the same
+workflow from the result in memory (no file needed), and **Workflows → Run
 workflow…** runs a workflow file and adds its results to the reconstruction
 list. Both see every installed plugin, built-in or drop-in, whatever the
 setup file's ``processing`` block lists: that block chooses what the panels
@@ -582,7 +587,7 @@ files, the run asks whether saves may overwrite files of the same name.
 Two batch forms run the same workflow file many times, each run reporting
 and publishing on its own so one failure does not hide the rest:
 
-* **File → Run workflow on selected results…** applies the workflow's
+* **Workflows → Run workflow on selected results…** applies the workflow's
   *processing* to every result selected in the reconstruction list. The
   workflow must have exactly one reconstruction step; that step is bound
   to each result in turn — it is not run, its source is not opened, and
@@ -592,7 +597,7 @@ and publishing on its own so one failure does not hide the rest:
   bindings={"rec": result})``; the runner accepts an in-memory result for
   any reconstruct, consolidate or process step, and ``report.bound`` lists
   the ports that were handed in rather than produced.)
-* **File → Run workflow over files…** runs a one-source workflow once per
+* **Workflows → Run workflow over files…** runs a one-source workflow once per
   chosen recording, the GUI counterpart of ``run --input``.
 
 A row that fails — a result a step refuses (an image handed to a

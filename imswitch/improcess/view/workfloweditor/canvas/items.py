@@ -88,6 +88,9 @@ class PortItem(QtWidgets.QGraphicsItem):
             text = f"Not connected: needs a {words}" if self.slot.required else f"Not connected ({words})"
         else:
             text = f"Reads {self.slot.ref} · {words}\nDrag the end away to disconnect it"
+        code = getattr(self.slot, "code", "")
+        if self.side == "in" and code:
+            text += f"\nIn the code: {code}"
         run = self.node.run
         extra = run.tips.get(self.slot.port if self.side == "out" else f"in{self.slot.index}") if run else None
         return f"{text}\n{extra}" if extra else text

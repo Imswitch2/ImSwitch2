@@ -282,7 +282,7 @@ class MainWindow(QtWidgets.QMainWindow):
           f"Re-run outdated steps a moment after each edit, when they took less than {AUTO_RUN_BUDGET_S:g} s last "
           "time", checkable=True)
         a("run_publish", "Run and add every result to the list…", self.run_and_publish, None,
-          "Run the whole workflow as File → Run workflow does: every result goes to the reconstruction list")
+          "Run the whole workflow as Workflows → Run workflow… does: every result goes to the reconstruction list")
         a("run_on_results", "Run on selected results…", self.run_on_results, None,
           "Apply the processing steps to every result selected in the reconstruction list")
         a("reload", "Reload plugins", self.reload_plugins, None, "Re-scan the drop-in plugins folder")
@@ -439,7 +439,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.document = document
         # Python code made here (a blank canvas, a recipe from the user's own
         # snippets) may auto-run; code that came in with a file or a result's
-        # history waits for one Run, as File > Run workflow asks first.
+        # history waits for one Run, as Workflows → Run workflow… asks first.
         self._python_trusted = bool(trusted) if trusted is not None else not _has_python(document)
         self.inspector.set_document(document)
         self.scene.set_document(document)
@@ -1145,7 +1145,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_run(self, targets, *, explicit: bool = False) -> bool:
         if self.host is None or not callable(getattr(self.host, "runInteractive", None)):
-            self.show_status("Runs need ImProcess: open the editor from ImProcess (Workflow → Workflow editor).")
+            self.show_status("Runs need ImProcess: open the editor from ImProcess (Workflows → Workflow editor…).")
             return False
         if self._running:
             # Edits made meanwhile only mark steps outdated; one queued re-run

@@ -27,9 +27,11 @@ STDOUT_LIMIT = 4000
 
 _CODE_HELP = (
     "Python run over the input. Names: np, data (the first input's array, read-only: "
-    "change data.copy()), inputs (every input's array, read-only), "
+    "change data.copy()), inputs (every input's array in order, read-only: inputs[1] "
+    "is the second input; data is inputs[0]), "
     "axes / scales / unit (the first input's), "
-    "axis('Z') (an axis index by label), results (the input results), "
+    "axis('Z') (an axis index by label), results (the input results, results[1] the "
+    "second's), "
     "make_result(array, axes=[...]) and make_labels(array) for an output whose "
     "dimensions differ from the input's. Set outputs = {port: array} with one "
     "entry for each output port, or out = array for a single port. print() "

@@ -1176,6 +1176,8 @@ The code starts with these names, and no others:
        that line.  Change a copy instead (``work = data.copy()``).
    * - ``inputs``
      - The array of every input, in the order listed; read-only like ``data``.
+       ``inputs[0]`` is ``data``, ``inputs[1]`` the second input, and so on
+       (the workflow editor shows each input's name beside it).
    * - ``axes``, ``scales``, ``unit``
      - The first input's axis labels, pixel scales and scale unit.
    * - ``axis(label_or_index)``
@@ -1183,8 +1185,9 @@ The code starts with these names, and no others:
        itself when given a number.  An unknown axis is an error listing the
        labels.
    * - ``results``
-     - The input result objects themselves, for their metadata.  Read them;
-       do not change them.
+     - The input result objects themselves, for their metadata, in the same
+       order (``results[1]`` is the second input's).  Read them; do not
+       change them.
    * - ``make_result(array, *, axes=None, scales=None, name=None)``
      - An output with axes you name, for an array whose number of dimensions
        differs from the input's.

@@ -39,7 +39,8 @@ class InputSlot:
 
     ``index`` is the position in the step's inputs (``None`` for the hollow
     slot that adds one); ``ref`` what it reads, ``None`` when unconnected.
-    ``required`` marks an empty input the step cannot run without.
+    ``required`` marks an empty input the step cannot run without. ``code``
+    is the name a Python step's code reads it by (see :func:`code_name`).
     """
 
     index: int | None
@@ -48,6 +49,7 @@ class InputSlot:
     kind: str
     required: bool = False
     adds: bool = False
+    code: str = ""
 
 
 @dataclass(frozen=True)
@@ -269,22 +271,34 @@ def _takes_several(document, step) -> bool:
     return entry is not None and (entry.max_inputs is None or entry.max_inputs > 1)
 
 
+def code_name(index: int) -> str:
+    """The name a Python step's code reads input ``index`` by: ``data`` is
+    the first input's array, ``inputs[i]`` any input's (``results[i]`` its
+    result object)."""
+    return "data (inputs[0])" if index == 0 else f"inputs[{index}]"
+
+
 def _inputs(document, step, kinds) -> tuple[InputSlot, ...]:
     if isinstance(step, Source):
         return ()
     refs = [step.input] if isinstance(step, Save) else list(step.inputs)
+    python = isinstance(step, Process) and step.processor == "python"
+
+    def code(index):
+        return code_name(index) if python else ""
+
     slots = []
     for index, ref in enumerate(refs):
         label = ref.port if ref.port and ref.port not in (DEFAULT_PORT, SOURCE_PORT) else ""
-        slots.append(InputSlot(index, ref, label, kinds.get(ref.step, UNKNOWN_KIND)))
+        slots.append(InputSlot(index, ref, label, kinds.get(ref.step, UNKNOWN_KIND), code=code(index)))
     entry = document.entry_for(step)
     needed = 1
     if isinstance(step, Process) and entry is not None:
         needed = max(1, entry.min_inputs)
     for index in range(len(slots), needed):
-        slots.append(InputSlot(index, None, "", _accepted_kind(document, step), required=True))
+        slots.append(InputSlot(index, None, "", _accepted_kind(document, step), required=True, code=code(index)))
     if _takes_several(document, step) and len(slots) >= needed:
-        slots.append(InputSlot(None, None, "", _accepted_kind(document, step), adds=True))
+        slots.append(InputSlot(None, None, "", _accepted_kind(document, step), adds=True, code=code(len(slots))))
     return tuple(slots)
 
 
@@ -419,6 +433,7 @@ __all__ = [
     "RESULT_KINDS",
     "can_feed",
     "candidates",
+    "code_name",
     "kind_fits",
     "kinds_of",
     "matches",
