@@ -704,6 +704,13 @@ Not taken: naming the listing's field widths (6, 5, 4 characters) once for
 both the listing and the Expert parts -- they are the parts' own widths,
 mirrored (D8), and naming them would touch every Expert part for no change.
 
+The reviewer then checked the fixes (`71400621a`): **ship**, with two small
+points, both taken: the switch takes the focus only from a field of the panel
+(a restore's switch took it from a field elsewhere in the window, committing
+it), and the inline pulse table is at least as wide as its columns, so below
+about 365 px the panel scrolls sideways with every pulse in view instead of
+the table hiding part of its last row.
+
 ## Review round 1 (2026-10-25)
 
 Two reviewers, one on the request and the user, one on the code (probes in

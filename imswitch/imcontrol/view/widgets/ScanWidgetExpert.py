@@ -501,12 +501,16 @@ def _line_text(field, value) -> str:
 
 
 def _fit_rows(table: _RowTable):
-    """An inline table as tall as its header, its rows and its frame. The
-    scroll area's own size hint adds the room of a horizontal scroll bar it
-    has not shown (Qt 5.15), a blank strip under the last row."""
+    """An inline table as tall as its header, its rows and its frame, and at
+    least as wide as its columns and frame. The scroll area's own size hint
+    adds the room of a horizontal scroll bar it has not shown (Qt 5.15), a
+    blank strip under the last row; and narrower than its columns, in a
+    narrow dock, it scrolled and hid part of its last row -- the panel
+    scrolls sideways instead, every row in view."""
     area = table.table
     area.setMaximumHeight(area.horizontalHeader().sizeHint().height()
                           + area.verticalHeader().length() + 2 * area.frameWidth())
+    area.setMinimumWidth(area.horizontalHeader().length() + 2 * area.frameWidth())
 
 
 def _preset_editor(field, value, devices: Dict[str, Sequence[str]], *, inline=False):
@@ -1356,8 +1360,12 @@ class ScanWidgetExpert(SuperScanWidget):
         # Hidden while focused, the field would hand the focus to the next
         # widget -- inside the Parameters card, which then holds on to what it
         # shows as if the user were working in it (final review, 2026-10-25).
-        self.commitEditing(self.simpleViewButton if view == VIEW_SIMPLE
-                           else self.expertViewButton)
+        # Only a focus in this panel: a switch made by a restore takes none
+        # from a field elsewhere in the window.
+        focus = QtWidgets.QApplication.focusWidget()
+        if focus is not None and self.isAncestorOf(focus):
+            self.commitEditing(self.simpleViewButton if view == VIEW_SIMPLE
+                               else self.expertViewButton)
         self._view = view
         self._showViewButtons()
         if view == VIEW_SIMPLE:

@@ -2102,11 +2102,13 @@ def test_entering_simple_with_an_expert_edit_not_yet_reported_lists_that_edit(
     assert program.step_s == 0.008 and held(program)
 
 
-@pytest.mark.parametrize('width', [520, 380])
-def test_the_inline_pulse_table_shows_every_row_in_a_narrow_dock(shown, qtbot, width):
+@pytest.mark.parametrize('width, sideways', [(520, False), (380, False), (330, True)])
+def test_the_inline_pulse_table_shows_every_row_in_a_narrow_dock(shown, qtbot, width,
+                                                                 sideways):
     """Beside the widest label the table was squeezed below its columns, and
     scrolled, hiding part of its last pulse; and the hidden Tables page kept
-    the whole panel scrolling sideways."""
+    the whole panel scrolling sideways. Narrower than the table's columns,
+    the panel scrolls sideways, and every pulse is still in view."""
     rig, w = shown, shown.widget
     form = _simple(rig)
     w.resize(width, 900)
@@ -2115,7 +2117,40 @@ def test_the_inline_pulse_table_shows_every_row_in_a_narrow_dock(shown, qtbot, w
     assert table.viewport().height() >= table.verticalHeader().length()    # every row
     assert not table.verticalScrollBar().isVisible()
     assert not table.horizontalScrollBar().isVisible()
-    assert w.scrollArea.horizontalScrollBar().maximum() == 0               # no sideways scroll
+    assert (w.scrollArea.horizontalScrollBar().maximum() > 0) == sideways
+
+
+def test_a_switch_made_by_a_restore_takes_no_focus_from_elsewhere(rig, qtbot):
+    """The switch commits a field of the panel being typed in by giving the
+    focus to the view's button; a field elsewhere in the window -- another
+    dock, the scan's tabbed away -- keeps its focus and is not committed by a
+    restore's switch."""
+    w = rig.widget
+    host = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(host)
+    other = QtWidgets.QLineEdit()
+    layout.addWidget(other)
+    layout.addWidget(w)
+    host.resize(900, 900)
+    host.show()
+    qtbot.waitExposed(host)
+    host.activateWindow()
+    qtbot.waitUntil(host.isActiveWindow, timeout=5000)
+    w.hide()                                        # the scan's dock tabbed away
+    left = []
+    other.editingFinished.connect(lambda: left.append(True))
+    other.setFocus()
+    qtbot.waitUntil(other.hasFocus, timeout=5000)
+    QtTest.QTest.keyClicks(other, 'typing')
+    try:
+        state = rig.scan.getComponentState()
+        state['view'] = VIEW_SIMPLE
+        assert rig.scan.applyComponentState(state, applyMode=STARTUP) == []
+        assert w.view() == VIEW_SIMPLE
+        assert other.hasFocus() and left == [] and not w.simpleViewButton.hasFocus()
+    finally:
+        w.setParent(None)                           # the rig closes its own widget
+        host.close()
 
 
 def test_only_the_page_shown_asks_for_room(rig):
