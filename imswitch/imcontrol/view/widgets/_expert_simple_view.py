@@ -493,6 +493,7 @@ class ParametersCard(Card):
         self._form = None           # the template's form
         self._values = None         # the scan's own values
         self._invalid = False       # the next refresh replaces the content, whatever has the focus
+        self._decide = False        # the next refresh shows what is wanted, whatever has the focus
         self._pending = False       # a change of content was put off
         self._waiting = False       # ... and the card listens for the focus to leave
 
@@ -520,6 +521,14 @@ class ParametersCard(Card):
         """The next refresh replaces the content, whatever has the focus
         (entering the view)."""
         self._invalid = True
+
+    def decideNow(self):
+        """The next refresh shows what the card should show, whatever has the
+        focus -- the controller's report on entering the view decides, not
+        what the card was drawn from before it -- but replaces nothing that
+        is right already: a listing built twice loses its place in the
+        window's tab order."""
+        self._decide = True
 
     def programShown(self):
         """A new scan is shown: its content replaces this one, the field being
@@ -553,7 +562,7 @@ class ParametersCard(Card):
         preset, params, problem = self._panel.template() or (None, {}, '')
         wanted, shown = self._wanted(), self._shown()
         if wanted != shown or (wanted is not None and self._invalid):
-            if self._invalid or self._mayChange():
+            if self._invalid or self._decide or self._mayChange():
                 self._replace(wanted, preset, params, problem)
             else:
                 self._putOff()
@@ -566,7 +575,7 @@ class ParametersCard(Card):
                     self._form.setValues(params)
             elif self._values is not None:
                 self._values.refresh()
-        self._invalid = False
+        self._invalid = self._decide = False
         self._showHeader()
 
     def _showHeader(self):

@@ -144,9 +144,10 @@ every number is shown exactly -- the shortest decimal that reads back as the
 same number, times in ms -- so what is shown is what runs. A value the
 template refuses (not a number, *Cycles* 0, an exposure during a pulse the
 sequence does not have) leaves the scan as it was and **not runnable**: the
-reason is under the form and in the header (*Cannot run*), and **Run**,
-**Show preview** and **Save…** refuse with it, rather than run old values
-behind a form that shows new ones. A value the template accepts clears it, and
+reason is under the form and in the header (*Cannot run*), a preview already
+drawn says it is out of date, and **Run**, **Show preview** and **Save…** (a
+script's save too) refuse with it, rather than run old values behind a form
+that shows new ones. A value the template accepts clears it, and
 so does switching to Expert. The pulse table has no **Add**, **Remove**,
 **Up** or **Down**: how many pulses there are is the scan's structure, so
 **New from template** with the same template opens its full form with the

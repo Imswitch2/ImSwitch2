@@ -1168,6 +1168,7 @@ class StepCard(Card):
         self.phase.currentIndexChanged.connect(lambda _i: self.refresh())
         self.addButtons: Dict[str, QtWidgets.QToolButton] = {}
         self._readOnly = False
+        self._keptSelection = -1
         self.dwellGroup = _group('dwell', self.stepField, 'ms')
         self.dwellText = _muted('')
         self.dwellText.setVisible(False)
@@ -1227,7 +1228,12 @@ class StepCard(Card):
         if on == self._readOnly:
             return
         self._readOnly = on
+        if on:
+            # the event the inspector was on, selected again on the way back
+            self._keptSelection = self.canvas.selected()
         self.canvas.setEditable(not on)
+        if not on:
+            self.canvas.setSelected(self._keptSelection)
         self.dwellGroup.setVisible(not on)
         for button in self.addButtons.values():
             button.setVisible(not on)

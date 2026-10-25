@@ -147,12 +147,17 @@ def _shown_values(form):
 
 
 def _labels(form_layout):
-    """A form layout's rows as one reads them: a group title, or a label."""
+    """A form layout's rows as one reads them: a group title, or a label. A
+    label on a row of its own over its field (the inline pulse table) reads
+    as the label beside its field does; the field's own row is no label."""
     out = []
     for row in range(form_layout.rowCount()):
         span = form_layout.itemAt(row, QtWidgets.QFormLayout.SpanningRole)
         if span is not None:
-            out.append(('title', span.widget().text()))
+            widget = span.widget()
+            if isinstance(widget, QtWidgets.QLabel):
+                out.append(('title' if widget.objectName() == 'expertCardTitle' else 'label',
+                            widget.text()))
         else:
             out.append(('label', form_layout.itemAt(
                 row, QtWidgets.QFormLayout.LabelRole).widget().text()))
@@ -2021,6 +2026,148 @@ def test_an_advanced_file_opened_in_the_expert_panel_lists_its_own_values(qtbot)
         _no_button(values)
     finally:
         expert.close()
+
+
+# ---------------------------------------------------------------------------
+# The final review (2026-10-25)
+# ---------------------------------------------------------------------------
+
+def _offset(rig):
+    return rig.widget.positions._editors[0].offset
+
+
+def _typing_the_offset(rig):
+    _type(_offset(rig), '1.5')                      # typed, not left
+
+
+def _offset_with_return(rig):
+    _enter(_offset(rig), '1.5')
+    assert rig.scan._reportTimer.isActive()          # committed, not reported yet
+
+
+def _offset_in_a_cell(rig):
+    w = rig.widget
+    w.tablesButton.setChecked(True)
+    table = w.drives.table
+    col = next(i for i, c in enumerate(w.drives.columns()) if c.key == 'offset_um')
+    table.setCurrentCell(0, col)
+    table.editItem(table.item(0, col))
+    QtTest.QTest.qWait(50)
+    editor = QtWidgets.QApplication.focusWidget()
+    assert isinstance(editor, QtWidgets.QLineEdit)   # the cell's own editor
+    editor.selectAll()
+    QtTest.QTest.keyClicks(editor, '1.5')
+
+
+def _typing_a_count(rig):
+    spin = _chips(rig)[1].count
+    spin.setFocus()
+    spin.selectAll()
+    QtTest.QTest.keyClicks(spin, '3')                # cycles, typed, not left
+
+
+@pytest.mark.parametrize('edit, field, expected, held', [
+    (_typing_the_offset, ('drives', 0, 'offset_um'), '1.5',
+     lambda p: p.drives[0].offset_um == 1.5),
+    (_offset_with_return, ('drives', 0, 'offset_um'), '1.5',
+     lambda p: p.drives[0].offset_um == 1.5),
+    (_offset_in_a_cell, ('drives', 0, 'offset_um'), '1.5',
+     lambda p: p.drives[0].offset_um == 1.5),
+    (_typing_a_count, ('loops', 1, 'count'), 3, lambda p: p.loop('cycle').count == 3),
+], ids=['typed', 'return', 'cell', 'count'])
+def test_entering_simple_with_an_expert_edit_not_yet_reported_lists_that_edit(
+        shown, qtbot, edit, field, expected, held):
+    """An Expert edit typed, or committed but not reported, when Simple is
+    clicked: the card showed the template's form from before the edit, the
+    focus fell into it, and the next commit there made the scan again from
+    the template -- the edit gone without a word. The switch commits the field
+    first and keeps the focus; the report decides what the card shows."""
+    rig, w = shown, shown.widget
+    _settle(rig, qtbot)
+    edit(rig)
+    QtTest.QTest.mouseClick(w.simpleViewButton, QtCore.Qt.LeftButton)
+    _settle(rig, qtbot)
+    card = w.parameters
+    assert card.showsValues() and not card.showsTemplate()   # the scan's own values ...
+    assert not card._holdsFocus() and w.simpleViewButton.hasFocus()     # ... the switch's focus
+    assert w.titleLabel.text() == f'{TEMPLATE}, edited' and held(rig.scan.program())
+    widget = card.values().fields[field]
+    assert (widget.value() if isinstance(widget, QtWidgets.QSpinBox) else widget.text()) \
+        == expected
+    # a value committed in the listing keeps the edit: nothing makes the scan
+    # again from the template's values behind it
+    _enter(card.values().fields[('step', 0, 'step_s')], '8')
+    _settle(rig, qtbot)
+    program = rig.scan.program()
+    assert program.step_s == 0.008 and held(program)
+
+
+@pytest.mark.parametrize('width', [520, 380])
+def test_the_inline_pulse_table_shows_every_row_in_a_narrow_dock(shown, qtbot, width):
+    """Beside the widest label the table was squeezed below its columns, and
+    scrolled, hiding part of its last pulse; and the hidden Tables page kept
+    the whole panel scrolling sideways."""
+    rig, w = shown, shown.widget
+    form = _simple(rig)
+    w.resize(width, 900)
+    qtbot.wait(150)
+    table = _editor(form, 'pulses').table
+    assert table.viewport().height() >= table.verticalHeader().length()    # every row
+    assert not table.verticalScrollBar().isVisible()
+    assert not table.horizontalScrollBar().isVisible()
+    assert w.scrollArea.horizontalScrollBar().maximum() == 0               # no sideways scroll
+
+
+def test_only_the_page_shown_asks_for_room(rig):
+    w = rig.widget
+    pages = w.pages
+    policy = lambda index: pages.widget(index).sizePolicy().horizontalPolicy()   # noqa: E731
+    assert pages.currentIndex() == 0
+    assert policy(0) == QtWidgets.QSizePolicy.Preferred
+    assert policy(1) == QtWidgets.QSizePolicy.Ignored
+    w.tablesButton.setChecked(True)
+    assert pages.currentIndex() == 1
+    assert policy(1) == QtWidgets.QSizePolicy.Preferred
+    assert policy(0) == QtWidgets.QSizePolicy.Ignored
+    w.tablesButton.setChecked(False)
+    assert pages.currentIndex() == 0 and policy(1) == QtWidgets.QSizePolicy.Ignored
+
+
+def test_a_refused_value_marks_the_drawn_preview_out_of_date(shown, qtbot):
+    rig, w = shown, shown.widget
+    form = _simple(rig)
+    w.plotButton.click()
+    assert not w.plot.isHidden() and w.preview.stale.text() == ''
+    _enter(_editor(form, 'cycles'), 'x')
+    assert rig.scan._templateProblem and w.preview.stale.text() == 'out of date'
+
+
+def test_coming_back_to_expert_keeps_the_event_the_inspector_was_on(rig):
+    w = rig.widget
+    w.step._select(2)
+    w.refreshParts()
+    assert w.step.canvas.selected() == 2
+    w.setView(VIEW_SIMPLE)
+    assert w.step.canvas.selected() == -1                     # a view: nothing selected
+    w.setView(VIEW_EXPERT)
+    assert w.step.canvas.selected() == 2 and w.step.inspector._row == 2
+
+
+def test_a_script_cannot_save_the_old_scan_behind_a_refused_value(rig, tmp_path):
+    """The panel's Save refuses while the form holds a value the template
+    refused; the API's save did not, and wrote the old scan."""
+    from imswitch.imcontrol.controller.controllers.ScanControllerExpert import (
+        ScanControllerExpert,
+    )
+    assert getattr(ScanControllerExpert.saveScanParamsToFile, '_APIExport', False)
+    form = _simple(rig)
+    _leave(_editor(form, 'cycles'), 'x')
+    path = tmp_path / 'scan.json'
+    rig.scan.saveScanParamsToFile(str(path))
+    assert not path.exists()
+    _leave(_editor(form, 'cycles'), '3')
+    rig.scan.saveScanParamsToFile(str(path))
+    assert json.loads(path.read_text())['program']['loops'][1]['count'] == 3
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -115,40 +115,59 @@ def _range_note(row: Dict, counts: Dict[str, int]) -> str:
 
     Positions are compared exactly: each is the decimal sum of the offset and
     the weights as written, so 0.1 * 3 and 0.3 are one position -- as floats
-    they are two, and the spacing needed a rounding to say 'even'. Raises
-    ``ValueError`` for a value that does not read."""
-    with localcontext(Context(prec=MAX_PREC)):          # sums of decimals are exact
-        offset = _decimal(row['offset_um'])
-        if row['table_loop']:
-            visits = Counter(offset + _decimal(v) for v in row['table_um'].split(',')
-                             if v.strip())
-        else:
-            visits = Counter({offset: 1})
-            for loop, count in counts.items():
-                text = row.get(f'w:{loop}', '').strip()
-                if not text or _decimal(text) == 0:
-                    continue                            # this dimension does not move it
-                weight = _decimal(text)
-                along = Counter()
-                for position, times in visits.items():
-                    for k in range(count):
-                        along[position + weight * k] += times
-                visits = along
-        if not visits:
-            raise ValueError('no positions')
-        positions = sorted(visits)
-        low, high = float(positions[0]), float(positions[-1])
-        if len(positions) == 1:
-            return f'Stays at {low:.6g} µm.'
-        text = f'{len(positions)} positions from {low:.6g} to {high:.6g} µm'
-        gaps = {b - a for a, b in zip(positions, positions[1:])}
-        if len(gaps) == 1:
-            text += f', {float(gaps.pop()):.6g} µm apart'
-        repeated = Counter(times for times in visits.values() if times > 1)
-        if repeated:
-            text += '; ' + ', '.join(f'{number} of them visited {_visited(times)}'
-                                     for times, number in sorted(repeated.items()))
-        return text + '.'
+    they are two, and the spacing needed a rounding to say 'even'. The sums
+    are made in whole units of the finest decimal place written (integers):
+    exact, and as quick as the float sums were (decimal sums took six times
+    as long, on a positioner moved by two dimensions of hundreds of counts).
+    Raises ``ValueError`` for a value that does not read."""
+    offset = _decimal(row['offset_um'])
+    if row['table_loop']:
+        entries = [_decimal(v) for v in row['table_um'].split(',') if v.strip()]
+        numbers = [offset, *entries]
+    else:
+        moving = []
+        for loop, count in counts.items():
+            text = row.get(f'w:{loop}', '').strip()
+            if text and _decimal(text) != 0:            # else: this dimension does not move it
+                moving.append((_decimal(text), count))
+        numbers = [offset, *(weight for weight, _count in moving)]
+    places = max(0, *(-number.as_tuple().exponent for number in numbers))
+
+    def whole(number: Decimal) -> int:
+        # exact: a decimal with at most ``places`` fractional digits, scaled
+        with localcontext(Context(prec=MAX_PREC)):
+            return int(number.scaleb(places))
+
+    def shown(units: int) -> float:
+        with localcontext(Context(prec=MAX_PREC)):
+            return float(Decimal(units).scaleb(-places))
+
+    if row['table_loop']:
+        visits = Counter(whole(offset) + whole(entry) for entry in entries)
+    else:
+        visits = Counter({whole(offset): 1})
+        for weight, count in moving:
+            step = whole(weight)
+            along = Counter()
+            for position, times in visits.items():
+                for k in range(count):
+                    along[position + step * k] += times
+            visits = along
+    if not visits:
+        raise ValueError('no positions')
+    positions = sorted(visits)
+    low, high = shown(positions[0]), shown(positions[-1])
+    if len(positions) == 1:
+        return f'Stays at {low:.6g} µm.'
+    text = f'{len(positions)} positions from {low:.6g} to {high:.6g} µm'
+    gaps = {b - a for a, b in zip(positions, positions[1:])}
+    if len(gaps) == 1:
+        text += f', {shown(gaps.pop()):.6g} µm apart'
+    repeated = Counter(times for times in visits.values() if times > 1)
+    if repeated:
+        text += '; ' + ', '.join(f'{number} of them visited {_visited(times)}'
+                                 for times, number in sorted(repeated.items()))
+    return text + '.'
 
 
 #: Choices the model accepts (scan_program.program), repeated here so the
@@ -739,7 +758,16 @@ class TemplateForm(QtWidgets.QWidget):
             if field.help:
                 editor.setToolTip(field.help)
             unit = {'seconds': ' (ms)', 'micrometres': ' (µm)'}.get(field.kind, '')
-            form.addRow(field.label + unit, editor)
+            if isinstance(editor, _RowTable):
+                # A table gets the form's whole width, under its label: beside
+                # the widest label it was squeezed below its columns in a
+                # narrow dock, scrolling and hiding part of its last row.
+                label = QtWidgets.QLabel(field.label + unit)
+                label.setToolTip(field.help)
+                form.addRow(label)
+                form.addRow(editor)
+            else:
+                form.addRow(field.label + unit, editor)
             self.editors[field.name] = (field, editor)
             self._watch(editor)
         self.problem = QtWidgets.QLabel('')
@@ -1101,7 +1129,12 @@ class ScanWidgetExpert(SuperScanWidget):
         self.pages = QtWidgets.QStackedWidget()
         self.pages.addWidget(self.columns)
         self.pages.addWidget(tablesPage)
-        self.tablesButton.toggled.connect(lambda on: self.pages.setCurrentIndex(1 if on else 0))
+        self.tablesButton.toggled.connect(self._showPage)
+        self._showPage(False)
+        # A commit of the template's form makes the scan again, or is refused:
+        # either way the drawing is of the scan before it (connected before
+        # the controller, so an accepted value redraws it fresh).
+        self.sigTemplateEdited.connect(lambda _preset: self.preview.setStale(True))
         self.statusChip.clicked.connect(self._showCheck)
         self.setStyleSheet(_style())
         self.wheelGuard = WheelGuard(self.scrollArea, self)
@@ -1310,23 +1343,26 @@ class ScanWidgetExpert(SuperScanWidget):
 
     def setView(self, view: str):
         """Show the scan in the Simple or the Expert view: the same scan, the
-        same state, with other parts. ``sigViewChanged`` comes after the parts
-        the view hides were hidden, so a field that commits as it is hidden
-        has committed by then."""
+        same state, with other parts. A field being typed in is committed
+        first, before anything is hidden, so ``sigViewChanged`` comes with
+        the edit made."""
         if view not in VIEWS:
             raise ValueError(f'Unknown view {view!r}; there are {", ".join(VIEWS)}.')
         if view == self._view:
             self._showViewButtons()
             return
+        # The view's own button takes the focus: the field being typed in
+        # commits as it would on leaving it, and the focus stays on the switch.
+        # Hidden while focused, the field would hand the focus to the next
+        # widget -- inside the Parameters card, which then holds on to what it
+        # shows as if the user were working in it (final review, 2026-10-25).
+        self.commitEditing(self.simpleViewButton if view == VIEW_SIMPLE
+                           else self.expertViewButton)
         self._view = view
         self._showViewButtons()
         if view == VIEW_SIMPLE:
             self.tablesButton.setChecked(False)
             self.parameters.invalidate()
-        else:
-            # a field being typed in commits as it is hidden: before the parts
-            # are drawn again, not in the middle of it
-            self.parameters.hide()
         for shortcut in self._shortcuts:
             shortcut.setEnabled(view == VIEW_EXPERT)
         self._checkRequested = False
@@ -1373,6 +1409,12 @@ class ScanWidgetExpert(SuperScanWidget):
         if form is None:
             raise ValueError('No template form is shown.')
         return form.params()
+
+    def decideParameters(self):
+        """The next refresh shows in the Parameters card what the scan wants,
+        whatever has the focus: the controller's report on entering the Simple
+        view decides, not what the card was drawn from before it."""
+        self.parameters.decideNow()
 
     def programShown(self):
         """A new scan is being shown (the controller calls this before it
@@ -2006,6 +2048,17 @@ class ScanWidgetExpert(SuperScanWidget):
     def showNotice(self, text):
         """Say one thing under the header until the next check."""
         self._setNotice(text)
+
+    def _showPage(self, tables):
+        """The parts, or the tables. Only the page shown asks for room: a
+        stacked widget's minimum is its widest page's, shown or not, and the
+        tables' minimum kept a narrow dock scrolling sideways in the Simple
+        view, which never shows them (final review, 2026-10-25)."""
+        self.pages.setCurrentIndex(1 if tables else 0)
+        for index in range(self.pages.count()):
+            policy = (QtWidgets.QSizePolicy.Preferred if index == self.pages.currentIndex()
+                      else QtWidgets.QSizePolicy.Ignored)
+            self.pages.widget(index).setSizePolicy(policy, policy)
 
     def _showCheck(self):
         if self.tablesButton.isChecked():

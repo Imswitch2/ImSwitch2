@@ -35,6 +35,7 @@ import traceback
 import numpy as np
 from qtpy import QtCore
 
+from imswitch.imcommon.model import APIExport
 from imswitch.imcommon.model.acquisition_layout import LOOP_KIND_ADVANCES_POSITION
 from imswitch.imcommon.model.state_contracts import ComponentStateApplyMode, RestoreWarning
 from imswitch.imcontrol.model import getWidgetStatePersistence
@@ -363,8 +364,11 @@ class ScanControllerExpert(SuperScanController):
             report = text != self._programError
             self._programError = text
         if view == VIEW_SIMPLE:
-            # an Expert edit still waiting is read first: the template is current
+            # an Expert edit still waiting is read first: the template is current,
+            # and the report decides what Parameters shows (the card may have
+            # been drawn from the template as it was before the edit)
             self._widget.flushRefresh()
+            self._widget.decideParameters()
             self.updateReport()
             return
         # a refused value belongs to the form; Expert has none
@@ -913,6 +917,19 @@ class ScanControllerExpert(SuperScanController):
             self._widget.showNotice(f'Not saved: {self._templateProblem}')
             return
         super().saveScan()
+
+    # The override keeps the base's export: the API collects the method the
+    # controller has, and an undecorated one would drop it from the API.
+    @APIExport(runOnUIThread=True)
+    def saveScanParamsToFile(self, filePath: str) -> None:
+        """ Saves the set scanning parameters to the specified file -- not
+        while the Simple view's form holds a value the template refused: the
+        file would hold the old scan behind a form that shows another, as Save
+        on the panel refuses to write. """
+        if self._templateProblem:
+            self._logger.warning(f'Scan not saved to {filePath}: {self._templateProblem}')
+            return
+        super().saveScanParamsToFile(filePath)
 
     def loadScan(self):
         before = self._program

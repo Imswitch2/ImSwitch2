@@ -644,8 +644,9 @@ was not foreseen, found while building:
   per step* as the mockup does, whatever the count; a point detector's phases
   are text when set; the red text of an unusual window or assembly says *set in
   Tables, in the Expert view*, Tables not being in Simple.
-- **The range note, exactly** (D7a): sums are exact for any float (the decimal
-  arithmetic runs at the module's largest precision, so nothing is rounded), a
+- **The range note, exactly** (D7a): sums are exact for any float (made in
+  whole units of the finest decimal place written, since the final review:
+  integers, as quick as the float sums were), a
   position that is the only one says
   *Stays at* (a table of equal entries said *3 positions from 1 to 1 µm*), and
   values that do not read, or no positions, say nothing.
@@ -657,13 +658,51 @@ was not foreseen, found while building:
   scan that is not its template's output (the edited-scan test, the card-waits
   test): P2 makes the card list its own values there.
 
-Found, not changed: `scan_program.program.validate` raises `TypeError`
-(`len(None)`) for a positioner that follows a table whose values are blank,
-on the line after the one that adds *a table needs both table_loop and
-table_um*. The Tables view could always do this; the listing's *Positions over
-…* field now can too, and the report then raises in the Qt event loop instead
-of refusing the scan. The one-line fix is in the model (`drive.table_um is not
-None and`), outside this effort's files.
+Found while building, fixed after it (`101ee79c7`): `scan_program.program.validate`
+raised `TypeError` (`len(None)`) for a positioner that follows a table whose
+values are blank, on the line after the one that adds *a table needs both
+table_loop and table_um*. The Tables view could always do this; the listing's
+*Positions over …* field made it one keystroke away, and the report raised in
+the Qt event loop instead of refusing the scan. The length is now checked only
+when both are there.
+
+## Final review (2026-10-25)
+
+An independent reviewer of the whole (P1, P2, the fix; probes in
+`/private/tmp/claude-501/expert-simple-final-review/`): fix first. Taken:
+
+- **An Expert edit lost on the way into Simple** (blocking). A field typed in
+  but not left, a Tables cell open, a count typed, or a value committed less
+  than a report period before **Simple** was clicked: the card was drawn from
+  the template as it was before the edit, the field, hidden while focused,
+  handed the focus into it, and the card held on to that stale form as if the
+  user were working in it. The next commit there made the scan again from the
+  template, the edit gone without a word. Now the view's own button takes the
+  focus first (`commitEditing`, as Run does), so the field commits before
+  anything is hidden and the focus stays on the switch; and the report on
+  entering Simple decides what the card shows whatever has the focus
+  (`decideNow()`, which rebuilds nothing that is right: forcing a rebuild
+  there built the listing twice and broke its tab order).
+- **The inline pulse table squeezed in a narrow dock**: beside the widest label
+  it got less than its columns, scrolled and hid part of its last pulse. It
+  now takes the form's whole width, on its own row under its label. And the
+  page of tables, never shown in Simple, set the panel's minimum width (a
+  stacked widget's minimum is its widest page's): only the page shown asks for
+  room now, so the Simple view fits a dock down to its own parts' width.
+- A refused value left a drawn preview unmarked → *out of date*.
+- The range note took six times as long as the float code on a positioner moved
+  by two dimensions of hundreds of counts → integer sums, exact and as quick.
+- A negative or not-a-number pause made a scan without a pause while the form
+  showed it (and a not-a-number pulse time passed the pulse check) → refused
+  by the templates.
+- Coming back to Expert selected the first event → the event the inspector was
+  on.
+- A script's save (`saveScanParamsToFile`) wrote the old scan behind a refused
+  value → refused, logged, still exported to the API.
+
+Not taken: naming the listing's field widths (6, 5, 4 characters) once for
+both the listing and the Expert parts -- they are the parts' own widths,
+mirrored (D8), and naming them would touch every Expert part for no change.
 
 ## Review round 1 (2026-10-25)
 
