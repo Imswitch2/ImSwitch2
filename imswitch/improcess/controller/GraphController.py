@@ -9,9 +9,7 @@ class GraphController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
-        preview = getattr(self._commChannel, "sigWorkflowPreview", None)
-        if preview is not None:
-            preview.connect(self.workflowPreview)
+        self._commChannel.sigWorkflowPreview.connect(self.workflowPreview)
 
     def workflowPreview(self, result, _name="") -> None:
         """A workflow-editor preview: plot it when it has something to plot."""

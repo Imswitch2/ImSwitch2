@@ -355,10 +355,9 @@ class WorkflowController(QtCore.QObject):
 
     def showPreview(self, result, name: str) -> bool:
         """Show an editor result in the viewer's preview slot (not the list)."""
-        signal = getattr(self._commChannel, "sigWorkflowPreview", None)
-        if signal is None:
+        if not hasattr(self._commChannel, "sigWorkflowPreview"):
             return False
-        signal.emit(result, str(name))
+        self._commChannel.sigWorkflowPreview.emit(result, str(name))
         return True
 
     def adoptHandles(self, handover) -> None:

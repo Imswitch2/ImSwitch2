@@ -64,9 +64,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigLiveTimepointUpdated.connect(self.liveTimepointUpdated)
         self._commChannel.sigSaveLiveResult.connect(self.saveLiveResult)
         self._commChannel.sigLiveTimepointDone.connect(self._onLiveTimepointDone)
-        preview = getattr(self._commChannel, "sigWorkflowPreview", None)
-        if preview is not None:
-            preview.connect(self.showWorkflowPreview)
+        self._commChannel.sigWorkflowPreview.connect(self.showWorkflowPreview)
         # A workflow-editor preview on screen instead of the list's entry.
         self._previewing = None
         # Results that have ever arrived as a live update. Their pixels can be
