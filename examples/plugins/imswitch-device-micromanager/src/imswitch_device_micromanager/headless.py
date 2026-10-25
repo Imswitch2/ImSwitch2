@@ -182,6 +182,25 @@ def install_gui_stubs() -> None:
     _install_gui_dependency_stubs(matplotlib=False)
 
 
+def application():
+    """The process's ``QApplication``: the one that already exists, else a new one made the way the app makes it.
+
+    ``prepareApp()`` always constructs a ``QApplication``. A second one next to a live one is
+    undefined in Qt: nothing fails at the time, but PyQt5's exit walker later destroys the pair and
+    ``~QGuiApplication`` segfaults (exit code 139 after "N passed"). Found when a test that had
+    created a bare ``QApplication`` ran before the end-to-end tests in one pytest process
+    (attributed by bisection: that one test plus ``test_e2e_app.py`` reproduce it, either alone exits 0).
+    """
+    from qtpy import QtWidgets
+
+    existing = QtWidgets.QApplication.instance()
+    if existing is not None:
+        return existing
+    from imswitch.imcommon import prepareApp
+
+    return prepareApp()
+
+
 def boot(scratch: Optional[Path] = None, *, move_user_files: bool, setup: Union[str, Path, None] = None,
          restore_widget_state: bool = True, hub: Optional[str] = None) -> BootedApp:
     """Build ImControl on a setup file.
@@ -197,7 +216,6 @@ def boot(scratch: Optional[Path] = None, *, move_user_files: bool, setup: Union[
     install_gui_stubs()
 
     from imswitch import imcontrol
-    from imswitch.imcommon import prepareApp
     from imswitch.imcommon.controller import ModuleCommunicationChannel
     from imswitch.imcommon.model import dirtools, getWidgetStatePersistence
     from imswitch.imcontrol.controller.ImConMainController import ImConMainController
@@ -229,7 +247,7 @@ def boot(scratch: Optional[Path] = None, *, move_user_files: bool, setup: Union[
         path = Path(setup)
         text, file_name = path.read_text(encoding="utf-8"), path.name
     setup_info = ViewSetupInfo.from_json(text, infer_missing=True)
-    app = prepareApp()
+    app = application()
     channel = ModuleCommunicationChannel()
     channel.register(imcontrol)
     view, controller = imcontrol.getMainViewAndController(

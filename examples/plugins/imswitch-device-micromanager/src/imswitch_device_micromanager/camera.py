@@ -63,7 +63,7 @@ from imswitch.pluginapi import DetectorManager, DetectorNumberParameter
 from . import _properties
 from ._bridge import MicroManagerDeviceMixin
 from ._core import FramesLostError, MMCoreHostError, StreamFault, StreamFaultKind, queue_budget_bytes
-from ._frames import UnsupportedPixelTypeError, dtype_for_pixel_type_property
+from ._frames import UnsupportedPixelTypeError, predict_pixel_type_property
 
 #: ``fullShape`` ``(width, height)`` of a camera that was built while its hub was
 #: not connected. DetectorManager needs a shape at construction and the sensor
@@ -484,18 +484,33 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
 
         While another camera streams, the frame format of this one must stay the other's
         (MMCore's one buffer, Micro-Manager PR #936), and so must the format of MMCore's
-        *current* camera whichever camera that is. So a property that can change the format is
-        checked BEFORE it is written when its effect is known (``PixelType``: the dtype follows
-        from the value), and otherwise written, re-read and **rolled back** when the new
-        format clashes -- the stream is restarted with the old one either way and the refusal is
-        raised to the caller.
+        *current* camera whichever camera that is. A write is therefore decided in three ways,
+        all BEFORE anything is stopped or written (``precheck``):
+
+        (a) its effect on the format is predictable and compatible: written;
+        (b) predictable and incompatible -- including *predictably unsupported* (colour, an
+            unsupported depth; refused with the mono-only message whatever else streams): refused;
+        (c) not predictable (any property but a ``PixelType`` the bridge understands): written only
+            when the format can be VERIFIED afterwards, i.e. this camera is MMCore's current one or
+            nothing else streams (:meth:`MMCoreHost.can_verify_format`); otherwise refused, because a
+            format that cannot be read back cannot be checked against the running stream. A verified
+            write that clashes is re-read and **rolled back** -- the stream is restarted with the old
+            format either way and the refusal is raised to the caller.
         """
         host, label = self._host, self._label
         text = _properties.coerce_for_mm(self.parameters[name], value)
         written: Dict[str, Any] = {}                 # what to put back: set once the write happened
-        # The dtype the write selects, when it is known from the value: the only way to learn it for a
-        # camera that is not MMCore's current one while another camera streams (see _sync_geometry).
-        predicted = dtype_for_pixel_type_property(text) if name == PROPERTY_PIXEL_TYPE else None
+        # What the write does to the frame format, when the value says (see predict_pixel_type_property):
+        # the dtype it selects, ``refused`` when it predictably selects a format the bridge cannot carry,
+        # neither when it cannot be told. The dtype is also the only way to learn the new format of a camera
+        # that is not MMCore's current one while another camera streams (see _sync_geometry).
+        predicted: Optional[np.dtype] = None
+        refused: Optional[UnsupportedPixelTypeError] = None
+        if name == PROPERTY_PIXEL_TYPE:
+            try:
+                predicted = predict_pixel_type_property(text)
+            except UnsupportedPixelTypeError as exc:
+                refused = exc
 
         def action():
             with host.lock:
@@ -521,8 +536,18 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                     self._sync_geometry(dtype_hint=written.get('dtype'))
 
         def precheck():
-            if predicted is not None and self._stream_dtype is not None:
-                host.check_format_change_allowed(label, self._stream_hw, predicted)
+            # Three cases, decided before anything is stopped or written:
+            if refused is not None:
+                # (b) predictably unsupported (colour, an unsupported depth): refused on its own,
+                #     whatever else streams -- the bridge could not carry those frames.
+                raise UnsupportedPixelTypeError(_COLOUR_REFUSAL.format(label=label, reason=refused)) from refused
+            if predicted is not None:
+                # (a)/(b) predictable: written only when it keeps the running streams' format.
+                if self._stream_dtype is not None:
+                    host.check_format_change_allowed(label, self._stream_hw, predicted)
+            else:
+                # (c) unpredictable: written only when the format can be read back and checked afterwards.
+                host.check_format_verifiable(label, name)
 
         def after(applied):
             self._edited[name] = str(applied)
@@ -750,6 +775,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         self._requireConnected('startAcquisition')
         host = self._host
         with host.lock:
+            host.end_reconnect_round()                    # an explicit start: do not wait for cameras that never reported
             host.register_camera(self._label)
             if not host.running_streams():
                 self._sync_geometry()                     # pick up changes made behind the manager's back
@@ -761,6 +787,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         table turns them into the hardware fault). With the hub down nothing runs any more."""
         if not (self._ready and self._host.is_connected):
             return
+        self._host.end_reconnect_round()
         try:
             self._host.stop_stream(self._label)           # raises (and consumes) a pending stream fault
         finally:
@@ -893,18 +920,44 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
         return f'{self.model}: {self._label} reconnected'
 
     def _onTransportReconnected(self, real: bool):
-        """After the hub reloaded the core (plumbing in the mixin): restart the stream that was running."""
+        """After the hub reloaded the core (plumbing in the mixin): re-verify the format, then ask to resume.
+
+        The stream is not restarted here. The lifecycle service runs the dependents' hooks one after
+        the other, and a camera that resumed at once would stream while the next one re-reads its
+        format, which MMCore cannot do beside a running sequence. So the host holds a resume
+        barrier (:meth:`MMCoreHost.begin_reconnect_round`): this camera re-verifies its format on
+        the idle core (in :meth:`_reinitialise`), reports ``resume`` with the format it verified,
+        and the host starts every stream that asked once the last camera has reported. A camera
+        that finds a problem reports no resume and returns the errors.
+        """
         resume = self._resume or self.acquisitionLeased
         self._resume = False
-        errors = super()._onTransportReconnected(real)
-        if errors or not real or not resume:
-            return errors
+        host, reported = self._host, False
         try:
-            self.startAcquisition()
-        except Exception as exc:                          # noqa: BLE001
-            errors.append(f'could not restart the stream: {exc}')
-            self._setConnectionError(errors[-1], summary=f'{self._label}: reconnected but not usable')
-        return errors
+            errors = super()._onTransportReconnected(real)
+            wants = bool(resume and real and not errors and self._ready)
+            if not (self._ready and host.is_connected):
+                return errors
+            reported = True
+            handled = host.reconnect_done(self._label, resume=wants, shape=self._stream_hw, dtype=self._stream_dtype)
+            if not handled and wants:
+                try:
+                    self.startAcquisition()               # no round awaits this camera: restart it directly
+                except Exception as exc:                  # noqa: BLE001
+                    errors.append(f'could not restart the stream: {exc}')
+            elif handled and wants:
+                # The last camera to report starts everyone's stream; a refusal of this camera's own start
+                # is raised here, one of another camera's waits on its stream for its next getChunk.
+                refusal = host.stream(self._label).fault
+                if refusal is not None and refusal.kind is StreamFaultKind.RESUME_REFUSED:
+                    host.acknowledge_fault(self._label)
+                    errors.append(f'could not restart the stream: {refusal.message}')
+            if errors and wants:
+                self._setConnectionError('; '.join(errors), summary=f'{self._label}: reconnected but not usable')
+            return errors
+        finally:
+            if not reported and self._ready and host.is_connected:
+                host.reconnect_done(self._label, resume=False)   # an errored hook must not stall the others
 
     def _reinitialise(self) -> List[str]:
         """Put the device in the state this manager reports; the errors found.
@@ -943,9 +996,10 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
                     errors.append(f'{PROPERTY_BINNING}: {exc}')
             try:
                 if host.running_streams():
-                    # Another camera resumed first (the lifecycle service reconnects the cameras one
-                    # after the other). ``sensor_geometry`` is idle-only (it clears the ROI, which
-                    # clears the shared buffer), so the full frame is the one cached from the
+                    # Not during a hub reconnect (the resume barrier keeps every stream stopped until the
+                    # last camera has verified its format), but when this one device is re-initialised
+                    # beside a camera that streams. ``sensor_geometry`` is idle-only (it clears the ROI,
+                    # which clears the shared buffer), so the full frame is the one cached from the
                     # adoption -- it does not change across a reconnect of the same device -- and
                     # the reloaded device is checked by reads only (``getROI``).
                     full_width, full_height = (int(v) for v in expected_full)
@@ -1013,5 +1067,7 @@ class MicroManagerCameraManager(MicroManagerDeviceMixin, DetectorManager):
             except Exception as exc:                      # noqa: BLE001 - finalizing must go on
                 self.__logger.error('Stopping %s at finalize failed: %s', self._label, exc)
         self._unload_inline()
+        if self._ready:
+            host.unregister_camera(self._label)
         super().finalize()
         self._setFinalizedStatus()

@@ -360,6 +360,13 @@ def test_a_camera_and_a_filter_wheel_built_while_the_hub_was_down_recover_in_the
         settings = app.controller.controllers["Settings"]
         tree = app.view.widgets["Settings"].trees["Camera"]
         exposure_row = tree.p.param("Timings").param("Exposure")          # declared by the absent camera
+        binning_row = tree.p.param("Image frame").param("Binning")
+
+        def binning_items():
+            combo = next(iter(binning_row.items)).widget
+            return [combo.itemText(i) for i in range(combo.count())]
+
+        assert binning_items() == ["1"]                                    # the placeholder list of a camera that was absent
         assert exposure_row.readonly() and sorted(app.view.widgets["FlipMirror"].rows["Dichroic"]["stateButtons"]) == [0, 1]
 
         cfg.write_text(Path(adapter_dir, "MMConfig_demo.cfg").read_text(encoding="utf-8"), encoding="utf-8")
@@ -371,6 +378,12 @@ def test_a_camera_and_a_filter_wheel_built_while_the_hub_was_down_recover_in_the
 
         settings._refreshReconnectedDetectors(("Camera",))                 # the call the lifecycle listener makes
         assert exposure_row.value() == camera.parameters["Exposure"].value == 10.0     # the .cfg's exposure
+        assert camera.supportedBinnings == [1, 2, 4, 8] and binning_items() == ["1", "2", "4", "8"]   # review round 4
+        camera.setBinning(2)
+        settings._refreshReconnectedDetectors(("Camera",))
+        assert next(iter(binning_row.items)).widget.currentText() == "2"     # a camera at 2x shows 2x, not 1x
+        camera.setBinning(1)
+        settings._refreshReconnectedDetectors(("Camera",))
         assert not exposure_row.readonly()                                 # editable now
         exposure_row.setValue(25.0)                                        # as typed into the panel
         assert camera.parameters["Exposure"].value == 25.0

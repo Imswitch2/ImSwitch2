@@ -36,7 +36,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -97,6 +97,10 @@ class FrameShapeMismatchError(MMCoreHostError):
     """A start or ROI change would put differently sized frames in the shared buffer."""
 
 
+class FormatNotVerifiableError(MMCoreHostError):
+    """A change was refused because the frame format it produces could not be read back and checked."""
+
+
 class FramesLostError(MMCoreHostError):
     """A camera's stream lost frames (or ended without being asked to).
 
@@ -124,6 +128,8 @@ class StreamFaultKind(str, enum.Enum):
     FRAME_FORMAT = 'frame_format'
     #: The drain thread itself failed.
     DRAIN_FAILED = 'drain_failed'
+    #: The stream was meant to resume after a hub reconnect and the host refused to start it.
+    RESUME_REFUSED = 'resume_refused'
 
 
 @dataclass
@@ -171,6 +177,19 @@ class CameraStream:
     is_recording: Optional[Callable[[], bool]] = None
 
 
+@dataclass
+class _ReconnectRound:
+    """One hub reconnect in progress: the cameras whose hooks are awaited and what each reported."""
+
+    expected: Set[str]
+    #: label -> ``(shape, dtype)`` to resume with, or ``None`` (does not resume), in the order reported.
+    reports: Dict[str, Optional[Tuple[Tuple[int, int], np.dtype]]] = field(default_factory=dict)
+
+    @property
+    def complete(self) -> bool:
+        return self.expected <= set(self.reports)
+
+
 class MMCoreHost:
     """Owns one ``CMMCorePlus`` plus its circular buffer, drain thread and per-camera queues.
 
@@ -205,6 +224,8 @@ class MMCoreHost:
         self._unrouted: Dict[str, int] = {}
         # Camera that was MMCore's current one before a stream selected another (see _select_camera_locked).
         self._camera_before: Optional[str] = None
+        # The hub reconnect in progress, if any (see begin_reconnect_round).
+        self._round: Optional[_ReconnectRound] = None
         self._frame_overhead_bytes = 0
         self.adapter_source: Optional[str] = None
         self.resolved_adapter_paths: Tuple[str, ...] = ()
@@ -403,6 +424,7 @@ class MMCoreHost:
             # to build a new one, and dropping the last reference makes MMCore
             # unload whatever is left. The failures are reported below.
             self._inline_labels.clear()
+            self._drop_round_locked('the core shut down')
             for stream in self._streams.values():
                 self._reset_stream_state(stream)
             self._thread = None
@@ -701,6 +723,138 @@ class MMCoreHost:
             if not (stream.streaming or self.core.getCameraDevice() == label):
                 return
             self._check_format_against_running(stream, (int(shape[0]), int(shape[1])), np.dtype(dtype))
+
+    def can_verify_format(self, label: str) -> bool:
+        """Whether the frame format of camera ``label`` can be read back from the core right now.
+
+        MMCore answers for its *current* camera only and cannot switch it during a sequence
+        (:meth:`frame_format`), so the format of ``label`` is readable when no OTHER camera streams
+        (``label``'s own stream is stopped around any change) or when ``label`` is the current camera.
+        """
+        with self._lock:
+            if not any(s.label != label and s.streaming for s in self._streams.values()):
+                return True
+            return self.core.getCameraDevice() == label
+
+    def check_format_verifiable(self, label: str, what: str) -> None:
+        """Raise :class:`FormatNotVerifiableError` when a change of ``what`` on camera ``label`` could not be checked.
+
+        For a write whose effect on the frame format is NOT predictable from its value (any
+        property but a ``PixelType`` the bridge understands): it may only happen when the format
+        can be read back afterwards and compared with the running streams, because a format
+        that differs from them makes MMCore drop or mis-shape frames silently
+        (:data:`_PR_936`). Refusing before the write leaves everything as it was.
+        """
+        with self._lock:
+            if self.can_verify_format(label):
+                return
+            others = sorted(s.label for s in self._streams.values() if s.label != label and s.streaming)
+            current = self.core.getCameraDevice()
+            raise FormatNotVerifiableError(
+                f"cannot change {what} of camera {label!r} while camera {', '.join(map(repr, others))} "
+                f"streams: the frame format the change produces cannot be verified (MMCore reports only "
+                f"its current camera, {current!r}, and cannot switch it during a sequence), and a format "
+                f"that differs from the running stream's would drop or mis-shape frames silently "
+                f"({_PR_936}). Stop {', '.join(map(repr, others))} first, or change this setting before "
+                f"it starts.")
+
+    # ------------------------------------------------------ reconnect resume barrier
+    def registered_cameras(self) -> List[str]:
+        """Labels of the registered cameras, in registration order."""
+        with self._lock:
+            return list(self._streams)
+
+    def unregister_camera(self, label: str) -> None:
+        """Forget camera ``label`` (its manager was finalized); an open reconnect round stops waiting for it."""
+        with self._lock:
+            self._streams.pop(label, None)
+            rnd = self._round
+            if rnd is not None:
+                rnd.expected.discard(label)
+                rnd.reports.pop(label, None)
+                if rnd.complete:
+                    self._finish_round_locked()
+
+    @property
+    def reconnect_round_open(self) -> bool:
+        with self._lock:
+            return self._round is not None
+
+    def begin_reconnect_round(self, expected_labels: Sequence[str]) -> None:
+        """Open a resume barrier: the core was rebuilt and ``expected_labels`` will each report once.
+
+        The lifecycle service re-initialises the dependents one after the other, so a camera that
+        resumed at once would stream while the next one re-reads its format -- which MMCore cannot
+        do beside a running sequence (:meth:`frame_format`), so the next camera would trust its
+        cached format even when the hardware config changed. During a round NOTHING is started:
+        every camera re-verifies its format on the idle core and calls :meth:`reconnect_done`; when
+        the last expected camera has reported, the host starts every stream that asked to resume.
+
+        A round that is still open when the next one begins (a camera never reported) is dropped
+        without starting anything: its reports describe a core that no longer exists.
+        """
+        with self._lock:
+            self._drop_round_locked('a new reconnect round began')
+            expected = set(expected_labels)
+            if expected:
+                self._round = _ReconnectRound(expected=expected)
+
+    def reconnect_done(self, label: str, resume: bool, shape=None, dtype=None) -> bool:
+        """Camera ``label`` finished re-initialising; it wants to stream again with ``shape`` / ``dtype`` if ``resume``.
+
+        Returns False when no open round awaits ``label`` (a single device reconnect, or a camera
+        adopted after the round began): the caller then restarts itself. Otherwise True: the
+        report is recorded and, when it was the last one expected, every stream that asked to
+        resume is started in registration order with the usual format guard
+        (:meth:`start_stream`). A start the guard refuses is recorded as that stream's fault
+        (``RESUME_REFUSED``), so the camera's next ``getChunk`` / ``stopAcquisition`` raises it;
+        the camera that made the final report finds its own in ``stream(label).fault``.
+        """
+        with self._lock:
+            rnd = self._round
+            if rnd is None or label not in rnd.expected or label in rnd.reports:
+                return False
+            rnd.reports[label] = ((int(shape[0]), int(shape[1])), np.dtype(dtype)) if resume else None
+            if rnd.complete:
+                self._finish_round_locked()
+            return True
+
+    def end_reconnect_round(self) -> None:
+        """Stop waiting for cameras that have not reported; start the ones that have asked to resume.
+
+        A camera that is used while a round is open (``startAcquisition`` / ``stopAcquisition``)
+        calls this, so a camera whose hook never ran cannot keep the others stopped.
+        """
+        with self._lock:
+            if self._round is not None:
+                missing = sorted(self._round.expected - set(self._round.reports))
+                self._logger.warning("Resuming after the reconnect without waiting for %s", missing)
+                self._finish_round_locked()
+
+    def _drop_round_locked(self, reason: str) -> None:
+        rnd, self._round = self._round, None
+        if rnd is not None:
+            self._logger.warning("Reconnect round dropped (%s); not reported: %s, resume not started: %s", reason,
+                                 sorted(rnd.expected - set(rnd.reports)),
+                                 sorted(label for label, report in rnd.reports.items() if report is not None))
+
+    def _finish_round_locked(self) -> None:
+        rnd, self._round = self._round, None
+        if rnd is None:
+            return
+        for label in list(self._streams):
+            report = rnd.reports.get(label)
+            if report is None:
+                continue
+            stream = self._streams[label]
+            try:
+                self.start_stream(label, *report)
+            except Exception as exc:                  # noqa: BLE001 - recorded on the stream, see reconnect_done
+                self._logger.error("Resuming %s after the reconnect was refused: %s", label, exc)
+                if stream.fault is None:
+                    stream.fault = StreamFault(
+                        StreamFaultKind.RESUME_REFUSED,
+                        f"the stream could not be resumed after the Micro-Manager core reconnected: {exc}")
 
     def restore_fault(self, label: str, fault: StreamFault) -> None:
         """Put back a fault that :meth:`stop_stream` or :meth:`acknowledge_fault` consumed.

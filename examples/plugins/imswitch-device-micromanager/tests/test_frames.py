@@ -8,6 +8,7 @@ from imswitch_device_micromanager._frames import (
     dtype_for_bytes_per_pixel,
     dtype_for_pixel_type,
     dtype_for_pixel_type_property,
+    predict_pixel_type_property,
     frame_bytes,
     normalize_frame,
 )
@@ -93,3 +94,19 @@ def test_a_pixel_type_property_value_selects_a_dtype(text, dtype):
 @pytest.mark.parametrize("text", ["32bitRGB", "64bitRGB", "32bit", "12bit", "Mono", "", "RGB32"])
 def test_a_pixel_type_value_that_cannot_be_predicted_is_none(text):
     assert dtype_for_pixel_type_property(text) is None
+
+
+@pytest.mark.parametrize("text, dtype", [("8bit", np.uint8), ("16bit", np.uint16), ("GRAY8", np.uint8), (" 16 bit ", np.uint16)])
+def test_predict_gives_the_dtype_of_a_mono_value(text, dtype):
+    assert predict_pixel_type_property(text) == np.dtype(dtype)
+
+
+@pytest.mark.parametrize("text", ["32bitRGB", "64bitRGB", "RGB32", "BGR24", "Colour", "color", "32bit", "24bit", "64bit"])
+def test_predict_refuses_a_value_that_predictably_selects_what_the_bridge_cannot_carry(text):
+    with pytest.raises(UnsupportedPixelTypeError, match="mono cameras only|8-bit and 16-bit"):
+        predict_pixel_type_property(text)
+
+
+@pytest.mark.parametrize("text", ["12bit", "10bit", "Mono", "", "Raw", "Packed"])
+def test_predict_says_none_when_only_the_adapter_knows(text):
+    assert predict_pixel_type_property(text) is None

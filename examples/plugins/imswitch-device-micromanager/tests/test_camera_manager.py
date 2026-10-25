@@ -15,7 +15,7 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
 )
 from imswitch_device_micromanager import camera as camera_module
 from imswitch_device_micromanager._core import (
-    FramesLostError, FrameShapeMismatchError, MMCoreHostError, StreamFaultKind,
+    FormatNotVerifiableError, FramesLostError, FrameShapeMismatchError, MMCoreHostError, StreamFaultKind,
 )
 from imswitch_device_micromanager._frames import UnsupportedPixelTypeError
 from imswitch_device_micromanager.camera import (
@@ -967,9 +967,11 @@ def test_a_hub_reconnect_with_two_streaming_cameras_resumes_both_in_any_order(hu
             second.finalize()
 
 
-def test_a_reconnect_beside_a_running_stream_reports_a_sensor_that_changed(hub):
-    """With a stream running the sensor cannot be re-measured (that would clear the buffer), but a
-    reloaded device whose ROI no longer matches what the manager reports is still found, by a read."""
+def test_a_reconnect_reports_a_sensor_that_changed_and_the_camera_that_was_fine_still_resumes(hub):
+    """A reloaded device whose sensor no longer matches what the manager reports is found. (Review round 4:
+    the resume barrier keeps every stream stopped until all cameras have re-verified, so the sensor is
+    re-measured on the idle core -- before, the camera beside a running stream could only be checked by
+    reads and reported "ROI is now".)"""
     first, second = _two_inline_cameras(hub)
     try:
         first.startAcquisition()
@@ -979,10 +981,12 @@ def test_a_reconnect_beside_a_running_stream_reports_a_sensor_that_changed(hub):
         assert hub.reconnectTransport() is True
         second._edited["OnCameraCCDXSize"] = str(FRAME_SIDE // 2)   # re-applied on the reloaded device: it comes back narrower
         assert first._onTransportReconnected(True) == []
+        assert hub.host.running_streams() == []             # the barrier: nothing resumes before every camera reported
         errors = second._onTransportReconnected(True)
-        assert errors and any("ROI is now" in e for e in errors), errors
+        assert errors and any("sensor is now" in e for e in errors), errors
         assert second.connectionState is DeviceConnectionState.ERROR
-        frames_within_deadline(first.getChunk)              # the camera that was fine kept streaming
+        assert hub.host.running_streams() == ["CamA"]       # the one that was fine resumed, the failed one did not
+        frames_within_deadline(first.getChunk)
         first.stopAcquisition()
     finally:
         first.finalize()
@@ -1217,3 +1221,219 @@ def test_a_late_adopted_camera_follows_the_objective_too(adapter_dir, tmp_path):
         cam.finalize()
     finally:
         hub.finalize()
+
+
+# ------------------------------------------------- review round 4: formats that cannot be verified
+@pytest.mark.parametrize("value", ["32bitRGB", "64bitRGB"])
+def test_a_colour_pixel_type_on_the_camera_that_is_not_current_is_refused_before_the_write(hub, value):
+    """Two 16-bit cameras stream; the second is not MMCore's current camera, so its format cannot be read
+    back. Colour is predictably unsupported: refused with the mono-only message, nothing written, nothing
+    stopped (it used to be written, and the second camera's frames then faulted)."""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.startAcquisition()
+        assert host.call("getCameraDevice") == LABEL
+        with pytest.raises(UnsupportedPixelTypeError, match="mono cameras only"):
+            second.setParameter("PixelType", value)
+        assert host.call("getProperty", "Cam2", "PixelType") == "16bit"
+        assert second.parameters["PixelType"].value == "16bit" and "PixelType" not in second._edited
+        assert second.dtype == np.uint16
+        assert sorted(host.running_streams()) == sorted([LABEL, "Cam2"])
+        _both_stream_equal_frames(first, second)
+        first.stopAcquisition()
+        second.stopAcquisition()                               # no fault from any of it
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_an_unpredictable_property_on_the_camera_that_is_not_current_is_refused_before_the_write(hub):
+    """``OnCameraCCDXSize`` can change the frame width and nothing says so beforehand; the non-current
+    camera's format cannot be read back while the other one streams, so the write is refused."""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.startAcquisition()
+        with pytest.raises(FormatNotVerifiableError, match=rf"cannot be verified.*'{LABEL}'|'{LABEL}'.*cannot be verified"):
+            second.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)
+        assert host.call("getProperty", "Cam2", "OnCameraCCDXSize") == str(FRAME_SIDE)
+        assert "OnCameraCCDXSize" not in second._edited and second.shape == (FRAME_SIDE, FRAME_SIDE)
+        assert sorted(host.running_streams()) == sorted([LABEL, "Cam2"])
+        _both_stream_equal_frames(first, second)
+        first.stopAcquisition()
+        second.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_an_unpredictable_property_is_refused_on_an_idle_camera_that_is_not_current_too(hub):
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        with pytest.raises(FormatNotVerifiableError):
+            second.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)       # idle, but its cached format could go stale
+        assert host.call("getProperty", "Cam2", "OnCameraCCDXSize") == str(FRAME_SIDE)
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_an_unpredictable_property_is_written_when_nothing_else_streams(hub):
+    """The same write is allowed when the format can be verified afterwards: the other camera is
+    stopped (second streams alone) -- and it is also allowed for the current camera beside a stream
+    (see ``test_a_change_that_cannot_be_predicted_is_rolled_back_when_the_format_clashes``)."""
+    first, second = _two_cameras(hub)
+    host = hub.host
+    try:
+        first.startAcquisition()
+        second.startAcquisition()
+        first.stopAcquisition()
+        assert host.running_streams() == ["Cam2"]
+        second.setParameter("OnCameraCCDXSize", FRAME_SIDE // 2)
+        assert host.call("getProperty", "Cam2", "OnCameraCCDXSize") == str(FRAME_SIDE // 2)
+        assert second.shape == (FRAME_SIDE // 2, FRAME_SIDE) and host.stream("Cam2").shape == (FRAME_SIDE, FRAME_SIDE // 2)
+        wait_until(lambda: any(f.shape == (FRAME_SIDE, FRAME_SIDE // 2) for f in second.getChunk()),
+                   message="frames of the new width")
+        second.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_colour_pixel_type_is_refused_for_a_single_camera_without_stopping_it(camera, hub):
+    camera.startAcquisition()
+    frames_within_deadline(camera.getChunk)
+    with pytest.raises(UnsupportedPixelTypeError, match="mono cameras only"):
+        camera.setParameter("PixelType", "32bitRGB")
+    assert hub.host.call("getProperty", LABEL, "PixelType") == "16bit"
+    assert camera._host.stream(LABEL).streaming
+    camera.stopAcquisition()
+
+
+# ------------------------------------------------- review round 4: the reconnect resume barrier
+def _streaming_inline_pair(hub):
+    first, second = _two_inline_cameras(hub)
+    for cam in (first, second):
+        cam.crop(0, 0, 128, 64)
+        cam.startAcquisition()
+    for cam in (first, second):
+        frames_within_deadline(cam.getChunk)
+    for cam in (first, second):
+        assert cam._lifecycleSafeState(verified=False) == []
+    return first, second
+
+
+def test_a_camera_whose_hardware_changed_during_the_reconnect_is_refused_and_never_streams_a_wrong_frame(hub):
+    """B's configuration came back 8-bit (re-applied on the reloaded device). A's hook runs first: before the
+    barrier A resumed at once and B, unable to read its format beside A's stream, trusted its cached 16-bit and
+    resumed too -- then its frames faulted. Now nothing resumes until B has re-verified: B's hook names the
+    mismatch and B stays stopped, A streams."""
+    first, second = _streaming_inline_pair(hub)
+    try:
+        assert hub.reconnectTransport() is True
+        second._edited["PixelType"] = "8bit"
+        assert first._onTransportReconnected(True) == []
+        assert hub.host.running_streams() == []                      # A waits for B
+        errors = second._onTransportReconnected(True)
+        assert errors and any("frame format is now" in e and "uint8" in e for e in errors), errors
+        assert second.connectionState is DeviceConnectionState.ERROR
+        assert hub.host.running_streams() == ["CamA"]
+        frames = frames_within_deadline(first.getChunk, count=3)
+        assert all(f.shape == (64, 128) and f.dtype == np.uint16 for f in frames)
+        assert hub.host.stream("CamB").fault is None and not hub.host.stream("CamB").streaming
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_the_plain_two_camera_reconnect_resumes_both_when_the_last_one_reports_in_either_order(hub):
+    for order in (("A", "B"), ("B", "A")):
+        first, second = _streaming_inline_pair(hub)
+        cams = {"A": first, "B": second}
+        try:
+            assert hub.reconnectTransport() is True
+            assert hub.host.reconnect_round_open
+            for position, key in enumerate(order):
+                assert cams[key]._onTransportReconnected(True) == [], key
+                expected = [] if position == 0 else ["CamA", "CamB"]
+                assert sorted(hub.host.running_streams()) == expected
+            assert not hub.host.reconnect_round_open
+            for cam in cams.values():
+                frames = frames_within_deadline(cam.getChunk, count=3)
+                assert frames[-1].shape == (64, 128) and frames[-1].dtype == np.uint16
+            first.stopAcquisition()
+            second.stopAcquisition()
+        finally:
+            first.finalize()
+            second.finalize()
+
+
+def test_a_camera_that_never_reports_does_not_keep_the_others_stopped_for_good(hub):
+    """Rule: a round ends when every expected camera reported, or when a camera is started or stopped
+    explicitly (the ones that already reported then resume; the missing one is not waited for), and it is
+    dropped without starting anything by the hub's next reconnect or by shutdown."""
+    first, second = _streaming_inline_pair(hub)
+    try:
+        assert hub.reconnectTransport() is True
+        assert first._onTransportReconnected(True) == []             # B's hook never runs
+        assert hub.host.running_streams() == [] and hub.host.reconnect_round_open
+        first.startAcquisition()                                     # explicit use ends the round
+        assert not hub.host.reconnect_round_open
+        assert hub.host.running_streams() == ["CamA"]                # A resumed; B (no device back yet) was not waited for
+        frames_within_deadline(first.getChunk)
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_the_next_reconnect_drops_a_round_that_never_completed_and_starts_nothing_from_it(hub):
+    first, second = _streaming_inline_pair(hub)
+    try:
+        assert hub.reconnectTransport() is True
+        assert first._onTransportReconnected(True) == []             # only A reports
+        assert hub.reconnectTransport() is True                       # the next reconnect: a fresh round
+        assert hub.host.running_streams() == []                      # A's old report did not start anything
+        first._resume = second._resume = True                        # (the safe-state hook records this on a real reconnect)
+        assert first._onTransportReconnected(True) == []
+        assert second._onTransportReconnected(True) == []
+        assert sorted(hub.host.running_streams()) == ["CamA", "CamB"]
+        first.stopAcquisition()
+        second.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_hook_that_raises_still_reports_so_the_others_resume(hub, monkeypatch):
+    first, second = _streaming_inline_pair(hub)
+    try:
+        assert hub.reconnectTransport() is True
+        monkeypatch.setattr(second, "_reinitialise", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert first._onTransportReconnected(True) == []
+        errors = second._onTransportReconnected(True)
+        assert errors and "boom" in errors[0]
+        assert hub.host.running_streams() == ["CamA"]
+        first.stopAcquisition()
+    finally:
+        first.finalize()
+        second.finalize()
+
+
+def test_a_finalized_camera_is_no_longer_awaited_by_a_round(hub):
+    first, second = _streaming_inline_pair(hub)
+    try:
+        assert hub.reconnectTransport() is True
+        second.finalize()                                            # it will never report
+        assert first._onTransportReconnected(True) == []
+        assert hub.host.running_streams() == ["CamA"]
+        first.stopAcquisition()
+    finally:
+        first.finalize()

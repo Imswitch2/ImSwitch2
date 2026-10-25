@@ -48,6 +48,21 @@ def test_signaler_is_psygnal_with_a_qapplication_alive(adapter_dir):
 _KEEP_ALIVE = []
 
 
+def test_the_headless_app_reuses_a_qapplication_that_exists_instead_of_making_a_second(monkeypatch):
+    """Review round 4, the shutdown crash (exit 139 after "N passed"): the test above leaves a bare
+    ``QApplication``; ``boot()`` then called ``prepareApp()``, which constructs another one. Two
+    ``QApplication``s in one process do nothing visible until PyQt5's exit walker destroys them
+    (``~QGuiApplication`` segfaults). This test plus ``test_e2e_app.py`` reproduced it; either alone exits 0."""
+    qtwidgets = pytest.importorskip("PyQt5.QtWidgets")
+    from imswitch_device_micromanager import headless
+    import imswitch.imcommon as imcommon
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    _KEEP_ALIVE.append(app)
+    monkeypatch.setattr(imcommon, "prepareApp", lambda *a, **k: pytest.fail("prepareApp() would construct a second QApplication"))
+    assert headless.application() is app
+
+
 def test_circular_buffer_size_is_applied_only_when_given(adapter_dir):
     h = MMCoreHost("buf", adapter_paths=(adapter_dir,), circular_buffer_mb=33)
     h.connect()
@@ -808,3 +823,86 @@ def test_a_camera_whose_format_changed_while_current_cannot_restart_beside_a_run
     host.stop_stream("Cam2")
     assert start(host, "Camera") is True                          # matches again: allowed
     host.stop_stream("Camera")
+
+
+# ------------------------------------------------- review round 4: reconnect resume barrier
+def test_resume_barrier_starts_nothing_until_every_expected_camera_reported(host):
+    host.begin_reconnect_round(CAMERAS)
+    assert host.reconnect_round_open
+    assert host.reconnect_done("Camera", True, (FRAME_SIDE, FRAME_SIDE), "uint16") is True
+    assert host.running_streams() == []
+    assert host.reconnect_done("Cam2", True, (FRAME_SIDE, FRAME_SIDE), "uint16") is True
+    assert sorted(host.running_streams()) == sorted(CAMERAS) and not host.reconnect_round_open
+    for label in CAMERAS:
+        collect_records(host, label, 3)
+        host.stop_stream(label)
+
+
+def test_resume_barrier_records_a_refused_start_as_that_streams_fault(host):
+    """A camera that reported a format the first one's stream forbids is refused by the usual guard; the
+    refusal is its fault, raised by its next pop and by its stop, and the other stream is untouched."""
+    host.begin_reconnect_round(CAMERAS)
+    host.reconnect_done("Camera", True, (FRAME_SIDE, FRAME_SIDE), "uint16")
+    host.reconnect_done("Cam2", True, (SMALL_SIDE, SMALL_SIDE), "uint16")
+    assert host.running_streams() == ["Camera"]
+    fault = host.stream("Cam2").fault
+    assert fault is not None and fault.kind is StreamFaultKind.RESUME_REFUSED and "#936" in fault.message
+    with pytest.raises(FramesLostError, match="could not be resumed"):
+        host.pop_frames("Cam2")
+    with pytest.raises(FramesLostError):
+        host.stop_stream("Cam2")
+    collect_records(host, "Camera", 3)
+    host.stop_stream("Camera")
+
+
+def test_resume_barrier_reports_without_resume_do_not_start_and_unknown_labels_are_not_handled(host):
+    host.begin_reconnect_round(CAMERAS)
+    assert host.reconnect_done("nobody", True, (1, 1), "uint8") is False       # not awaited: the caller restarts itself
+    assert host.reconnect_done("Camera", False) is True
+    assert host.reconnect_done("Camera", True, (FRAME_SIDE, FRAME_SIDE), "uint16") is False   # reports count once
+    assert host.reconnect_done("Cam2", False) is True
+    assert host.running_streams() == [] and not host.reconnect_round_open
+    assert host.reconnect_done("Camera", True, (FRAME_SIDE, FRAME_SIDE), "uint16") is False   # no round at all
+
+
+def test_resume_barrier_end_starts_the_reported_and_drop_starts_nothing(host):
+    host.begin_reconnect_round(CAMERAS)
+    host.reconnect_done("Camera", True, (FRAME_SIDE, FRAME_SIDE), "uint16")
+    host.end_reconnect_round()
+    assert host.running_streams() == ["Camera"] and not host.reconnect_round_open
+    host.stop_stream("Camera")
+
+    host.begin_reconnect_round(CAMERAS)
+    host.reconnect_done("Camera", True, (FRAME_SIDE, FRAME_SIDE), "uint16")
+    host.begin_reconnect_round(CAMERAS)                  # the next round drops the old one without starting it
+    assert host.running_streams() == [] and host.reconnect_round_open
+    host.reconnect_done("Cam2", True, (FRAME_SIDE, FRAME_SIDE), "uint16")
+    assert host.running_streams() == []                  # the new round still awaits "Camera"
+
+
+def test_resume_barrier_is_dropped_by_shutdown(host):
+    host.begin_reconnect_round(CAMERAS)
+    host.reconnect_done("Camera", True, (FRAME_SIDE, FRAME_SIDE), "uint16")
+    host.shutdown()
+    assert not host.reconnect_round_open
+
+
+def test_can_verify_format_is_false_only_for_a_non_current_camera_beside_another_stream(host):
+    assert host.can_verify_format("Cam2") is True                          # nothing streams
+    start(host, "Camera")
+    assert host.call("getCameraDevice") == "Camera"
+    assert host.can_verify_format("Camera") is True                        # the current camera
+    assert host.can_verify_format("Cam2") is False                         # not current while Camera streams
+    with pytest.raises(_core.FormatNotVerifiableError, match="cannot be verified"):
+        host.check_format_verifiable("Cam2", "OnCameraCCDXSize")
+    host.check_format_verifiable("Camera", "OnCameraCCDXSize")
+    host.stop_stream("Camera")
+    assert host.can_verify_format("Cam2") is True
+
+
+def test_unregistering_a_camera_forgets_it(host):
+    host.unregister_camera("Cam2")
+    assert host.registered_cameras() == ["Camera"]
+    with pytest.raises(MMCoreHostError, match="not registered"):
+        host.stream("Cam2")
+    host.unregister_camera("Cam2")                       # twice is fine

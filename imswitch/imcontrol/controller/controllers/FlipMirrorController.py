@@ -133,7 +133,30 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
         if not names or names == self._widget.stateNames(name):
             return False
         self._widget.rebuildFlipMirror(name, names)
+        self._drop_incompatible_links_of(name)
         return True
+
+    def _drop_incompatible_links_of(self, name):
+        """Remove every link involving ``name`` whose two mirrors no longer have the same number of positions.
+
+        ``set_link`` refuses a pair with different position counts, but a link made while both were
+        compatible survives a recovered device that now has other positions: commanding the master
+        to a position the follower does not have would move the master and fail on the follower.
+        The same rule as ``set_link`` decides; a removed link is logged and the widget updated.
+        """
+        incompatible = [
+            (follower, master)
+            for follower, master in self._master_by_follower.items()
+            if name in (follower, master) and _position_count_mismatch(self._manager, follower, master)
+        ]
+        for follower, master in incompatible:
+            mismatch = _position_count_mismatch(self._manager, follower, master)
+            self.__logger.warning(
+                f"Removed the link of flip mirror {follower} to {master}: {follower} now has {mismatch[0]} "
+                f"positions and {master} {mismatch[1]}, and a follower copies its master's state, so both "
+                f"need the same number of positions"
+            )
+            self.set_link(follower, None)
 
     def _refreshLifecycleAffectedFlipMirrors(self, device_ids):
         known = set(self._names)

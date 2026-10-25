@@ -306,7 +306,14 @@ it has one.
   number, a free-text property a read-only entry, and a read-only property stays read-only. Pre-init
   properties are skipped (they belong in ``preInitProperties``). Micro-Manager properties carry no
   units, so none are shown. A value is always read back, so the settings show what the camera took.
-- *Binning*: the allowed values of the ``Binning`` property are the supported binnings.
+- *Binning*: the allowed values of the ``Binning`` property are the supported binnings. The Settings panel
+  lists the camera's current supported binnings and shows its current binning, also for a camera that was
+  absent at start-up and adopted later (and the options of its list parameters).
+- *Reconnect with several cameras.* After a hub reconnect no stream restarts until every camera has
+  re-verified its frame format on the idle core; then all streams that were running restart together. A
+  camera whose hardware now delivers another format reports it and stays stopped, the others resume. A
+  restart the format guard refuses becomes that stream's fault (its next read raises it). If a camera never
+  reports, starting or stopping any camera ends the wait; the next hub reconnect drops it.
 - *Frame size and ROI*: ``fullShape`` is the full frame at the current binning. ``crop`` stores the ROI
   the adapter applied (adapters snap), in Micro-Manager's binned pixels. A change that may alter the
   frame (any property, binning, ROI) stops the stream, applies the change, re-reads the frame size and
@@ -315,9 +322,13 @@ it has one.
 - *Format changes next to a second camera.* While another camera streams, a change that would give this
   camera another frame size or pixel type than the running one is refused before anything is written
   (a ``PixelType`` write is known in advance; the message names the other camera and Micro-Manager pull
-  request 936). A property whose effect cannot be predicted is written, the format read back, and the
-  old value put back if the formats clash; the stream is restarted with the old format either way and
-  never left stopped. The same holds for MMCore's *current* camera even when it is idle itself: the
+  request 936). A colour or otherwise unsupported ``PixelType`` is refused with the mono-only message
+  whatever else streams. A property whose effect cannot be predicted is written only when the format can
+  be read back afterwards, that is when this camera is MMCore's current one or no other camera streams;
+  MMCore reports only its current camera and cannot switch it during a sequence, so for any other camera
+  beside a running stream such a write is refused before anything is written (stop the other camera
+  first). When it is allowed, the format is read back and the old value put back if the formats clash;
+  the stream is restarted with the old format either way and never left stopped. The same holds for MMCore's *current* camera even when it is idle itself: the
   shared buffer is decoded with the current camera's format, so a stopped camera that is still current
   must keep the running stream's format. Binning is refused outright while another camera streams.
 
@@ -545,7 +556,9 @@ startup is adopted, the Flip Mirrors panel rebuilds the row (a ten-position whee
 placeholder buttons). ``invert``, ``initial_state`` and ``state_names`` are checked against the new count and a
 clash is an error of the manager. Two flip mirrors can follow each other (the panel's
 *Follow* column) only when they have the same number of positions; the master list of a row offers only
-those, and the link is refused otherwise.
+those, and the link is refused otherwise. A link that exists when one of its mirrors comes back with another
+number of positions is removed (with a warning in the log), so the master cannot be commanded to a position its
+follower does not have.
 
 **Moves** are waited for (without holding the hub lock, so a slow mount does not stall the camera) and
 read back: a device that does not show the new position is a failed move and raises. The reason of the

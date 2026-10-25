@@ -105,7 +105,12 @@ class MicroManagerCoreManager(DeviceManagerStatusMixin):
             self._host.shutdown()
         except Exception as exc:                      # noqa: BLE001 - the host is unconnected after shutdown either way
             self.__logger.warning('Shutting down the Micro-Manager core before reconnecting failed: %s', exc)
-        return self._connect(context='reconnect')
+        connected = self._connect(context='reconnect')
+        if connected:
+            # The dependents re-initialise one after the other: the cameras resume together once the
+            # last has re-verified its format (MMCoreHost.begin_reconnect_round).
+            self._host.begin_reconnect_round(self._host.registered_cameras())
+        return connected
 
     def finalize(self) -> None:
         """Unload every device and release the core; the dependents are finalized before the hub."""

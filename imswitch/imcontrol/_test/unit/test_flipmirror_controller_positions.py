@@ -199,3 +199,43 @@ def test_a_lifecycle_refresh_survives_a_device_that_cannot_name_its_positions(co
     controller._manager.devices["A"].get_state_names = broken
     controller._refreshLifecycleAffectedFlipMirrors([SimpleNamespace(name="A")])
     assert controller._widget.stateNames("A") == {0: "p0", 1: "p1"}
+
+
+def test_a_recovered_follower_with_other_positions_loses_its_link_and_the_master_no_longer_drags_it(controller, caplog):
+    """Two ten-position wheels linked; the follower is recovered with two positions. The link must not
+    survive: commanding position 7 would move the master and fail on the follower."""
+    devices = controller._manager.devices
+    assert controller.set_link("Wheel2", "Wheel") is True
+    assert controller.getComponentState()["links"] == {"Wheel2": "Wheel"}
+    devices["Wheel2"].count = 2                                          # recovered with two positions
+    caplog.set_level(logging.WARNING, logger="test.flipmirror")
+
+    controller._refreshLifecycleAffectedFlipMirrors([SimpleNamespace(name="Wheel2")])
+
+    assert controller.getComponentState()["links"] == {}
+    assert controller._followers_by_master == {}
+    assert any("Removed the link" in r.getMessage() and "Wheel2" in r.getMessage() for r in caplog.records)
+    assert controller._widget.stateNames("Wheel2") == {0: "p0", 1: "p1"}
+    assert controller._widget.rows["Wheel2"]["masterCombo"].currentText() == "—"      # the widget shows it
+    moves_before = list(devices["Wheel2"].moves)
+    controller.move_flip("Wheel", 7)
+    assert devices["Wheel"].state == 7 and devices["Wheel2"].moves == moves_before   # the follower is not touched
+    assert choices(controller, "Wheel") == []                                        # and no longer offered as a partner
+
+
+def test_a_recovered_master_with_other_positions_loses_the_links_of_its_followers(controller):
+    devices = controller._manager.devices
+    devices["Wheel2"].count = 10
+    assert controller.set_link("Wheel2", "Wheel") is True
+    devices["Wheel"].count = 2
+    controller._refreshLifecycleAffectedFlipMirrors([SimpleNamespace(name="Wheel")])
+    assert controller.getComponentState()["links"] == {}
+
+
+def test_a_recovered_mirror_with_the_same_positions_keeps_its_links(controller):
+    devices = controller._manager.devices
+    assert controller.set_link("Wheel2", "Wheel") is True
+    devices["Wheel2"].get_state_names = lambda: {i: f"renamed{i}" for i in range(10)}
+    controller._refreshLifecycleAffectedFlipMirrors([SimpleNamespace(name="Wheel2")])
+    assert controller._widget.stateNames("Wheel2")[0] == "renamed0"
+    assert controller.getComponentState()["links"] == {"Wheel2": "Wheel"}
