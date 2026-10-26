@@ -198,24 +198,54 @@ def plane_order(n_frames: int, n_slices: int, n_channels: int) -> Iterator[tuple
 # --------------------------------------------------------------------------
 
 class EventLog:
-    """What ImageJ did, in order, with the time since host start in seconds."""
+    """What ImageJ did, in order, with the time since host start in seconds.
+
+    Every event carries a ``seq``, an increasing integer that survives a
+    consumer filtering the list. A command event also gets an ``end`` when its
+    command finishes; the commands that run on ImageJ's own threads finish
+    later than they start, so the end is stamped by :meth:`end_command` and is
+    ``None`` until then.
+    """
 
     def __init__(self, clock=time.monotonic, origin: float | None = None):
         self._clock = clock
         self._origin = clock() if origin is None else origin
         self._events: list[dict] = []
+        self._by_seq: dict[int, dict] = {}
+        self._next_seq = 0
         self._lock = threading.Lock()
 
-    def record(self, kind: str, **fields) -> None:
-        event = {"time": round(self._clock() - self._origin, 3), "kind": kind, **fields}
+    def _now(self) -> float:
+        return round(self._clock() - self._origin, 3)
+
+    def record(self, kind: str, **fields) -> int:
         with self._lock:
+            seq = self._next_seq
+            self._next_seq += 1
+            event = {"seq": seq, "time": self._now(), "kind": kind, **fields}
             self._events.append(event)
+            if kind == "command":
+                self._by_seq[seq] = event
+        return seq
+
+    def begin_command(self, command: str, **fields) -> int:
+        """Record that ``command`` starts now; the returned ``seq`` is the handle for :meth:`end_command`."""
+        return self.record("command", command=command, end=None, **fields)
+
+    def end_command(self, seq: int) -> None:
+        """Stamp the end of a command begun earlier. A seq already cleared from the log is ignored."""
+        with self._lock:
+            event = self._by_seq.get(seq)
+            if event is not None and event.get("end") is None:
+                event["end"] = self._now()
 
     def snapshot(self, clear: bool = False) -> list[dict]:
+        """Copies of the events, each with its ``end`` as known right now."""
         with self._lock:
-            out = list(self._events)
+            out = [dict(event) for event in self._events]
             if clear:
                 self._events.clear()
+                self._by_seq.clear()
             return out
 
 
@@ -228,6 +258,10 @@ def _jimport(name: str):
     return scyjava.jimport(name)
 
 
+class _RunLocal(threading.local):
+    seqs: list | None = None
+
+
 class FijiState:
     """The live ImageJ plus the things that must stay referenced for Java."""
 
@@ -235,6 +269,10 @@ class FijiState:
         self.ij = ij
         self.events = EventLog(origin=_T0)
         self.recorder = None
+        self._jar_cache: dict[str, str | None] = {}
+        # ``seqs`` is a list while run_command is on this thread (so the probe
+        # knows who stamps the end), None otherwise.
+        self._run_local = _RunLocal()
         # Java only holds a weak-ish handle to a JImplements proxy; dropping
         # ours would let Python collect it under a live listener.
         self._proxies: list = []
@@ -246,12 +284,29 @@ class FijiState:
         Executer = _jimport("ij.Executer")
         ImagePlus = _jimport("ij.ImagePlus")
         Macro = _jimport("ij.Macro")
+        Menus = _jimport("ij.Menus")
         Recorder = _jimport("ij.plugin.frame.Recorder")
         Thread = _jimport("java.lang.Thread")
         events = self.events
+        state = self
 
         def thread_name() -> str:
             return str(Thread.currentThread().getName())
+
+        def recorder_offset() -> int | None:
+            if state.recorder is None:
+                return None
+            try:
+                return len(str(state.recorder.getText()))
+            except Exception:  # noqa: BLE001  (a recorder that cannot be read must not break the command)
+                return None
+
+        def plugin_class(command: str) -> str | None:
+            try:
+                found = Menus.getCommands().get(command)
+                return str(found) if found is not None else None
+            except Exception:  # noqa: BLE001
+                return None
 
         @JImplements("ij.CommandListener")
         class CommandProbe:
@@ -259,27 +314,42 @@ class FijiState:
             def commandExecuting(self, command):
                 imp = WindowManager.getCurrentImage()
                 options = Macro.getOptions()
-                events.record(
-                    "command", command=str(command),
+                name = str(command)
+                class_name = plugin_class(name)
+                seq = events.begin_command(
+                    name,
                     current_id=int(imp.getID()) if imp is not None else None,
                     options=str(options) if options is not None else None,
                     thread=thread_name(),
+                    recorder_offset=recorder_offset(),
+                    plugin_class=class_name,
+                    plugin_jar=state.plugin_jar(class_name),
                 )
+                if state._run_local.seqs is not None:
+                    # Started by run_command on this very thread: it stamps the end itself.
+                    state._run_local.seqs.append(seq)
+                else:
+                    # Started by ImageJ's own Executer thread (menu use): the command
+                    # is over when that Java thread is.
+                    state.watch_end(seq, Thread.currentThread())
                 return command
 
         @JImplements("ij.ImageListener")
         class ImageProbe:
             @JOverride
             def imageOpened(self, imp):
-                events.record("opened", id=int(imp.getID()), title=str(imp.getTitle()), thread=thread_name())
+                events.record("opened", id=int(imp.getID()), title=str(imp.getTitle()), thread=thread_name(),
+                              changes=bool(imp.changes))
 
             @JOverride
             def imageClosed(self, imp):
-                events.record("closed", id=int(imp.getID()), title=str(imp.getTitle()), thread=thread_name())
+                events.record("closed", id=int(imp.getID()), title=str(imp.getTitle()), thread=thread_name(),
+                              changes=bool(imp.changes))
 
             @JOverride
             def imageUpdated(self, imp):
-                events.record("updated", id=int(imp.getID()), title=str(imp.getTitle()), thread=thread_name())
+                events.record("updated", id=int(imp.getID()), title=str(imp.getTitle()), thread=thread_name(),
+                              changes=bool(imp.changes))
 
         command_probe, image_probe = CommandProbe(), ImageProbe()
         self._proxies.extend([command_probe, image_probe])
@@ -293,6 +363,53 @@ class FijiState:
         except Exception as exc:  # noqa: BLE001  (Java exceptions have no common Python base)
             self.recorder = None
             log("Recorder failed:", exc)
+
+    def plugin_jar(self, class_name: str | None) -> str | None:
+        """File name of the jar (or directory) a plugin class was loaded from, cached per class."""
+        if class_name is None:
+            return None
+        key = class_name.split("(", 1)[0]
+        if key not in self._jar_cache:
+            self._jar_cache[key] = self._lookup_jar(key)
+        return self._jar_cache[key]
+
+    @staticmethod
+    def _lookup_jar(class_name: str) -> str | None:
+        try:
+            JClass = _jimport("java.lang.Class")
+            loader = _jimport("ij.IJ").getClassLoader()
+            try:
+                cls = JClass.forName(class_name, False, loader)
+            except Exception:  # noqa: BLE001  (not on the plugin loader: try the default one)
+                cls = JClass.forName(class_name)
+            location = cls.getProtectionDomain().getCodeSource().getLocation()
+            return os.path.basename(str(location.getPath()).split("!", 1)[0].rstrip("/")) or None
+        except Exception:  # noqa: BLE001  (no code source, a bootstrap class, a missing class: all "unknown")
+            return None
+
+    def watch_end(self, seq: int, java_thread) -> None:
+        """Stamp ``seq``'s end when ``java_thread`` (the thread running a menu command) dies."""
+        def wait() -> None:
+            try:
+                java_thread.join()
+                self.drain_edt()
+            except Exception:  # noqa: BLE001  (the end stays None: "not known", which the tracker handles)
+                return
+            self.events.end_command(seq)
+
+        threading.Thread(target=wait, name=f"fiji-end-{seq}", daemon=True).start()
+
+    @staticmethod
+    def drain_edt() -> None:
+        """Wait until the AWT event thread has delivered everything queued so far.
+
+        ImageJ hands ImageListener notifications to it with invokeLater, so an
+        "opened" for a duplicate made by a command that already returned may
+        still be queued.
+        """
+        from jpype import JProxy
+
+        _jimport("java.awt.EventQueue").invokeAndWait(JProxy("java.lang.Runnable", dict(run=lambda: None)))
 
     # -- handlers ---------------------------------------------------------
 
@@ -338,10 +455,21 @@ class FijiState:
     def run_command(self, req: RunCommand) -> dict:
         IJ = _jimport("ij.IJ")
         WindowManager = _jimport("ij.WindowManager")
-        if req.image_id is not None:
-            IJ.run(self._image(req.image_id), req.command, req.options)
-        else:
-            IJ.run(req.command, req.options)
+        seqs: list[int] = []
+        self._run_local.seqs = seqs
+        try:
+            if req.image_id is not None:
+                IJ.run(self._image(req.image_id), req.command, req.options)
+            else:
+                IJ.run(req.command, req.options)
+            try:
+                self.drain_edt()          # so every image event of this command precedes its end
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            self._run_local.seqs = None
+            for seq in seqs:
+                self.events.end_command(seq)
         current = WindowManager.getCurrentImage()
         return {"current_id": int(current.getID()) if current is not None else None}
 
@@ -352,13 +480,9 @@ class FijiState:
         return {}
 
     def events_reply(self, req: Events) -> dict:
-        # ImageJ hands ImageListener notifications to the AWT event thread
-        # with invokeLater, so "opened" for a duplicate made by the request
-        # just before this one may still be queued. Draining the queue first
-        # makes a snapshot complete for every request that already returned.
-        from jpype import JProxy
-
-        _jimport("java.awt.EventQueue").invokeAndWait(JProxy("java.lang.Runnable", dict(run=lambda: None)))
+        # Draining the AWT queue first makes a snapshot complete for every
+        # request that already returned.
+        self.drain_edt()
         text = self.recorder.getText() if self.recorder is not None else None
         return {"events": self.events.snapshot(clear=req.clear), "recorder": str(text) if text is not None else None}
 

@@ -165,3 +165,43 @@ def test_a_killed_host_is_reported_dead():
         assert second.state == "dead"
     finally:
         second.stop()
+
+
+def test_a_run_command_event_carries_options_end_plugin_and_recorder_offset(session):
+    source = _result((40, 50), "YX", np.uint16, scales=[0.2, 0.1])
+    image_id = session.send(plan_send(source))
+    session.events(clear=True)
+    session.run_command(image_id, "Gaussian Blur...", "sigma=2")
+
+    reply = session.events()
+    command = next(e for e in reply["events"] if e["kind"] == "command" and e["command"] == "Gaussian Blur...")
+    assert command["options"].strip() == "sigma=2" and command["current_id"] == image_id
+    assert command["end"] is not None and command["end"] >= command["time"]
+    assert command["plugin_class"] and command["plugin_jar"] and command["plugin_jar"].endswith(".jar")
+    assert isinstance(command["recorder_offset"], int) and command["recorder_offset"] <= len(reply["recorder"])
+    assert any(e["kind"] == "updated" and e["id"] == image_id and e["changes"] is True for e in reply["events"])
+    # The scripted call is not in the recorder (P0): the offset only marks where it would start.
+    assert 'run("Gaussian Blur...", "sigma=2")' not in reply["recorder"]
+    seqs = [e["seq"] for e in reply["events"]]
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+
+
+def test_display_only_actions_fire_updated_with_the_change_flag_unset(session):
+    """The tracker's "possible unrecorded change" rule rests on this observation.
+
+    ImageJ1 fires ``imageUpdated`` for a slice change and for Enhance Contrast
+    (which only changes display ranges), but ``imp.changes`` stays False. So an
+    ``updated`` alone is weak evidence; ``changes`` turning True without a
+    command is the strong one.
+    """
+    source = _result((4, 40, 50), "ZYX", np.uint16, scales=[0.5, 0.2, 0.1])
+    image_id = session.send(plan_send(source))
+    session.events(clear=True)
+    for command, options in (("Next Slice [>]", ""), ("Enhance Contrast", "saturated=0.35")):
+        session.run_command(image_id, command, options)
+        events = session.events(clear=True)["events"]
+        updated = [e for e in events if e["kind"] == "updated" and e["id"] == image_id]
+        assert updated and all(e["changes"] is False for e in updated), (command, events)
+    # Contrast is display-only: the pixels are untouched.
+    data, _ = session.fetch(image_id)
+    assert np.array_equal(data[0, :, 0], source.data)

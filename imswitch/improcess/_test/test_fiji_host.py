@@ -100,6 +100,38 @@ def test_event_log_stamps_ms_since_origin_and_clears_on_request():
     assert len(log.snapshot(clear=True)) == 2 and log.snapshot() == []
 
 
+def test_event_log_numbers_events_and_stamps_command_ends():
+    now = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+    log = host.EventLog(clock=lambda: next(now), origin=0.0)
+    first = log.begin_command("Gaussian Blur...", current_id=-2)
+    log.record("updated", id=-2)
+    second = log.begin_command("Crop", current_id=-2)
+    assert first < second
+    before = log.snapshot()
+    assert [e["seq"] for e in before] == sorted(e["seq"] for e in before)
+    assert before[0]["end"] is None and before[2]["end"] is None
+
+    log.end_command(first)
+    assert log.snapshot()[0]["end"] == 3.0 and log.snapshot()[0]["end"] >= log.snapshot()[0]["time"]
+    assert log.snapshot()[2]["end"] is None
+    # An end is stamped once, and an unknown seq is ignored.
+    log.end_command(first)
+    log.end_command(99)
+    assert log.snapshot()[0]["end"] == 3.0
+
+
+def test_event_log_snapshot_is_a_copy_and_clearing_drops_pending_ends():
+    log = host.EventLog()
+    seq = log.begin_command("Crop")
+    taken = log.snapshot()
+    taken[0]["command"] = "tampered"
+    taken[0]["end"] = 123.0
+    assert log.snapshot()[0]["command"] == "Crop" and log.snapshot()[0]["end"] is None
+    log.snapshot(clear=True)
+    log.end_command(seq)              # the command's event is gone; nothing to stamp
+    assert log.snapshot() == []
+
+
 def test_importing_the_host_loads_no_java_bridge_and_no_model():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     code = ("import sys; import imswitch.improcess.fiji.host; "
