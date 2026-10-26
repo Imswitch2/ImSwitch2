@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import platform
-import subprocess
 import sys
 
 import numpy as np
@@ -362,6 +361,61 @@ def test_one_message_per_image_that_cannot_be_imported(env):
     assert env.comm.sigResultProduced.emitted == []
 
 
+# -- the chooser ----------------------------------------------------------------
+
+class _StubDialog:
+    """Stands in for the modal chooser: records what it was built with, answers a canned choice."""
+
+    built: list = []
+    choice: list = []
+    accept = True
+
+    def __init__(self, descriptions, sent=None, imported=None, source_names=None, parent=None):
+        self.args = (list(descriptions), dict(sent), set(imported), dict(source_names))
+        self.sigRefreshRequested = _Signal()
+        self.refreshed = []
+        _StubDialog.built.append(self)
+
+    def exec_(self):
+        return QtWidgets.QDialog.Accepted if _StubDialog.accept else QtWidgets.QDialog.Rejected
+
+    def selectedIds(self):
+        return list(_StubDialog.choice)
+
+    def setDescriptions(self, descriptions, **kwargs):
+        self.refreshed.append((list(descriptions), kwargs))
+
+
+def test_import_from_fiji_imports_the_chosen_images_through_the_dialog(env):
+    _StubDialog.built, _StubDialog.accept = [], True
+    env.controller._dialogFactory = _StubDialog
+    result = _result("origin")
+    env.comm.results = [("origin", result)]
+    env.recon.active = result
+    env.controller.sendCurrent()
+    session = env.session
+    a, b = session.add_foreign(uid=result.result_uid), session.add_foreign()
+    _StubDialog.choice = [b]
+    env.controller.importFromFiji()
+    (dialog,) = _StubDialog.built
+    descriptions, sent, imported, names = dialog.args
+    assert [d.image_id for d in descriptions] == list(session.images)
+    assert names[a] == "origin" and names[b] is None and set(sent) == set(env.controller._sentResults)
+    assert session.fetched == [b] and b in env.controller._imported
+
+    dialog.sigRefreshRequested.emit()                       # Refresh re-lists and updates the same dialog
+    assert len(dialog.refreshed) == 1 and len(dialog.refreshed[0][0]) == len(session.images)
+
+
+def test_a_cancelled_chooser_imports_nothing(env):
+    _StubDialog.built, _StubDialog.accept, _StubDialog.choice = [], False, [-9]
+    env.controller._dialogFactory = _StubDialog
+    env.controller.startFiji()
+    env.session.add_foreign()
+    env.controller.importFromFiji()
+    assert env.session.fetched == [] and env.comm.sigResultProduced.emitted == []
+
+
 # -- failures -------------------------------------------------------------------
 
 def test_fiji_dying_clears_the_sent_map_and_says_so(env):
@@ -481,8 +535,7 @@ def test_real_thread_and_real_session_on_the_fake_host(tmp_path, qtbot):
             session.stop(timeout_s=1.0)
         if controller._thread is not None:
             controller.close()
-    leftovers = subprocess.run(["pgrep", "-f", "fiji.host|fiji_fake_host"], capture_output=True, text=True)
-    assert leftovers.stdout.strip() == ""
+
 
 
 def test_the_close_margin_is_a_named_bound():

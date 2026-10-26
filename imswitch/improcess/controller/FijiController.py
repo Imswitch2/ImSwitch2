@@ -43,6 +43,7 @@ from imswitch.improcess.fiji.session import (
     FijiStartError,
 )
 from imswitch.improcess.model.napari_import import NotImportable
+from imswitch.improcess.view.FijiImportDialog import FijiImportDialog
 
 #: Time allowed, on top of the session's own stop bound, for the worker to
 #: finish a stop and for its thread to exit when ImProcess closes. The stop
@@ -117,6 +118,7 @@ class FijiController(QtCore.QObject):
         session_factory=FijiSession,
         job_runner=None,
         find_spec=None,
+        import_dialog_factory=FijiImportDialog,
         parent=None,
     ):
         super().__init__(parent)
@@ -127,6 +129,7 @@ class FijiController(QtCore.QObject):
         self._preferencesPath = preferences_path
         self._sessionFactory = session_factory
         self._findSpec = find_spec
+        self._dialogFactory = import_dialog_factory
         self._jobRunner = job_runner or self._runThreaded
         self._session = None
         self._starting = False
@@ -366,13 +369,45 @@ class FijiController(QtCore.QObject):
             self._importIds(ids)
 
     def _chooseImages(self, descriptions) -> list:
-        # The chooser dialog replaces this next.
-        return self._newIds(descriptions)
+        """Open the chooser (modal) and return the image ids the user picked."""
+        session = self._session
+        dialog = self._dialogFactory(
+            descriptions, sent=dict(session.sent), imported=set(self._imported),
+            source_names=self._sourceNames(descriptions), parent=self._dialogParent(),
+        )
+
+        def refresh():
+            def done(fresh):
+                try:
+                    dialog.setDescriptions(
+                        fresh, sent=dict(session.sent), imported=set(self._imported),
+                        source_names=self._sourceNames(fresh),
+                    )
+                except RuntimeError:       # the dialog closed while the list was on its way
+                    pass
+
+            self._submit("list", lambda: self._session.list_images(), done)
+
+        dialog.sigRefreshRequested.connect(refresh)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return []
+        return dialog.selectedIds()
+
+    def _sourceNames(self, descriptions) -> dict:
+        """Image id -> name of the ImProcess result it comes from, None when unknown."""
+        by_uid = self._resultsByUid()
+        sent_ids = set(self._session.sent) if self._session is not None else set()
+        names = {}
+        for desc in descriptions:
+            source = resolve_source(desc.image_id, desc, sent_ids, self._sentResults, by_uid)
+            names[desc.image_id] = getattr(source, "name", None) if source is not None else None
+        return names
+
+    def _resultsByUid(self) -> dict:
+        return {uid: r for r in self._allResults() if (uid := getattr(r, "result_uid", ""))}
 
     def _importIds(self, ids) -> None:
-        results_by_uid = {
-            uid: r for r in self._allResults() if (uid := getattr(r, "result_uid", ""))
-        }
+        results_by_uid = self._resultsByUid()
         sent_results = dict(self._sentResults)
         for image_id in ids:
             self._submit(

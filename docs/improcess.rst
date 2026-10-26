@@ -25,6 +25,7 @@ layer controls in the middle.
 
     improcess-workflows
     improcess-napari-plugins
+    improcess-fiji
 
 Launching ImProcess
 ===================
@@ -2813,6 +2814,7 @@ See also
 
 * :doc:`improcess-napari-plugins` — sending results to installed napari
   plugins (dock widgets and readers), and taking layers back
+* :doc:`improcess-fiji` — sending results to Fiji and importing its images
 * :doc:`improcess-workflows` — reconstructing and processing without the
   GUI: batch workflows, ports, saves, binding, replay
 * :doc:`imcontrol` — the ImControl module (hardware control)
