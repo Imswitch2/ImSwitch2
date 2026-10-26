@@ -23,6 +23,16 @@ class PositionerManager(DeviceManagerStatusMixin, ABC):
     referenceWaitAfterS: float = 0.3
     persistsLastPosition: bool = False
 
+    #: Mutating commands admitted through the resource registry
+    #: (``imcontrol/model/resources.py``): refused while another owner
+    #: reserves this device; ``owner=<token>`` passes a reservation.
+    _GUARDED_METHODS = ('move', 'setPosition')
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from imswitch.imcontrol.model.resources import guard_methods, positioner_key
+        guard_methods(cls, _resource_key_for(positioner_key), cls._GUARDED_METHODS)
+
     @abstractmethod
     def __init__(self, positionerInfo, name: str, initialPosition: Dict[str, float]):
         """
@@ -350,6 +360,16 @@ class PositionerManager(DeviceManagerStatusMixin, ABC):
                     f'Axis {ax} not available for reference. Available axis:{self.axes}'
                 )
             self.__referencedAxes[ax] = bool(referenced)
+
+
+def _resource_key_for(key_of_name):
+    def key(manager):
+        try:
+            name = manager.name
+        except Exception:
+            name = f'{type(manager).__name__}@{id(manager):x}'
+        return key_of_name(name)
+    return key
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -78,6 +78,7 @@ Each detector takes:
 * ``managerName`` (required): Manager class (e.g., ``"HamamatsuManager"``, ``"AVManager"``)
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/detectors`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``forAcquisition``: ``true`` if used for live imaging (default ``false``)
 * ``forFocusLock``: ``true`` if used for focus lock (default ``false``)
 
@@ -121,6 +122,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``valueRangeStep`` (default ``1.0``): step of the power control in the
   **Laser** panel
 * ``freqRangeMin`` / ``freqRangeMax`` / ``freqRangeInit`` (default ``0``):
@@ -207,6 +209,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/positioners`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``resetOnClose`` (default ``false``): set it to ``true`` to have this
   positioner moved to ``0`` on every axis when ImSwitch2 closes with the
   **Positioner** panel loaded.  Otherwise a stage stays where it is on exit.
@@ -439,7 +442,13 @@ Key fields:
 
 * ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
 * ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
-* ``simulation``: Allow NI-DAQ commands without physical hardware (``true`` / ``false``)
+* ``simulation``: Select software NI-DAQ/scan simulation (``true`` / ``false``).
+  With ``true``, ImSwitch deliberately runs the software scan simulator instead
+  of opening NI-DAQmx tasks. With ``false``, ImSwitch expects real NI-DAQ
+  hardware. If the ``nidaqmx`` backend is unavailable, Hardware Control still
+  starts in a degraded state, but NI-DAQ writes and scans are refused; it does
+  **not** silently switch to simulated acquisition. Install the hardware extra
+  (``pip install "imswitch2[hardware]"``) to restore real NI-DAQ operation.
 
 **Example** (simulation mode, no physical DAQ):
 

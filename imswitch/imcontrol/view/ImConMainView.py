@@ -345,6 +345,10 @@ class ImConMainView(QtWidgets.QMainWindow):
             enabledDockKeys = []
         elif enabledDockKeys is True:
             enabledDockKeys = allDockKeys
+        # A setup with instruments always gets their panel: without it a
+        # connected power meter or polarimeter shows no reading anywhere.
+        if getattr(self.viewSetupInfo, 'instruments', None) and 'Instruments' not in enabledDockKeys:
+            enabledDockKeys = list(enabledDockKeys) + ['Instruments']
 
         if 'Image' in enabledDockKeys:
             self.docks['Image'] = Dock('Image Display', size=(1, 1))
@@ -733,6 +737,7 @@ _DOCK_DISPLAY_NAMES = {
     'Positioner': 'Positioner',
     'Laser': 'Laser Control',
     'Rotator': 'Rotator',
+    'Instruments': 'Instruments',
     'MotCorr': 'Motorized Correction Collar',
     'SLMs': 'SLMs',
     'SLM': 'SLM',
@@ -781,6 +786,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'BSC203':        _DockInfo(name='BSC203 Stage',                  yPosition=0),
     'Laser':         _DockInfo(name='Laser Control',                 yPosition=0),
     'Rotator':       _DockInfo(name='Rotator',                       yPosition=1),
+    'Instruments':   _DockInfo(name='Instruments',                   yPosition=1),
     'MotCorr':       _DockInfo(name='Motorized Correction Collar',   yPosition=1),
     'SLMs':          _DockInfo(name='SLMs',                          yPosition=2),
     'Scan':          _DockInfo(name='Scan',                          yPosition=2),

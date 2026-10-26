@@ -1,6 +1,8 @@
 """Passive status inference: fallbacks must never look real or configured-mock."""
 from types import SimpleNamespace
 
+import pytest
+
 from imswitch.imcontrol.model.devices import (
     DeviceConnectionState,
     DeviceFailureKind,
@@ -19,16 +21,27 @@ class _Plain:
     pass
 
 
-def test_kinesis_fallback_is_an_error_on_a_mock_not_a_real_device():
+def test_an_unplugged_kinesis_is_a_real_device_that_is_not_connected():
+    """P-2 (device-reconnect-2.0.md): no fallback mock. The rotator keeps
+    its real mode, shows the error, and refuses commands until reconnected;
+    ``useMockOnFailure: true`` is the explicit opt-in for the old fallback."""
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
     from imswitch.imcontrol.model.managers.rotators.KinesisRotatorManager import (
         KinesisRotatorManager,
     )
     manager = KinesisRotatorManager(
         SimpleNamespace(managerProperties={'snr': '55000000'}), 'k10')
-    status = _status(manager)            # no hardware here: it fell back
-    assert status.mode is DeviceRuntimeMode.MOCK
+    status = _status(manager)            # no hardware here
+    assert status.mode is DeviceRuntimeMode.REAL
     assert status.connection is DeviceConnectionState.ERROR
-    assert status.failure_kind is DeviceFailureKind.CONNECTION_ERROR
+    assert manager.isSimulated is True   # a calibration run still refuses it
+    with pytest.raises(DeviceNotConnectedError):
+        manager.move_abs(10.0)
+
+    fallback = KinesisRotatorManager(
+        SimpleNamespace(managerProperties={'snr': '55000000', 'useMockOnFailure': True}), 'k10')
+    assert _status(fallback).mode is DeviceRuntimeMode.MOCK
+    fallback.move_abs(10.0)              # the mock takes it
 
 
 def test_wrapped_motor_mock_is_detected():
