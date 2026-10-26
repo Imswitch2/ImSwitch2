@@ -263,6 +263,19 @@ def test_a_display_style_update_is_possible_and_the_creation_burst_is_not_counte
     assert history.unrecorded == "possible" and history.completeness == "partial"
 
 
+def test_an_opened_that_lands_after_the_next_command_started_is_still_its_own_creation_burst():
+    # Seen on a real Fiji before the host drained the AWT queue after a send:
+    # the sent image's updates and "opened" arrived around the first command.
+    log = Log()
+    log.updated(1.0, -2)
+    log.command(2.0, 2.2, "Duplicate...", -2, options="title=d duplicate ")
+    log.updated(2.01, -2)
+    log.opened(2.02, -2)
+    log.opened(2.1, -3)
+    history = history_for(-3, log.events, None, sent_ids={-2})
+    assert history.unrecorded == "none observed" and history.completeness == "recorded"
+
+
 def test_updates_to_an_image_off_the_chain_are_ignored():
     log = Log()
     log.opened(1.0, -2)

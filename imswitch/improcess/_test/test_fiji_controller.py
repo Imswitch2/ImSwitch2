@@ -119,6 +119,7 @@ class FakeSession:
         self.fetched: list = []
         self.fail_start = None
         self.fail_fetch = None
+        self.log: dict = {"events": [], "recorder": None}
         self._next = -1
         FakeSession.instances.append(self)
 
@@ -150,6 +151,9 @@ class FakeSession:
         self.fetched.append(image_id)
         desc, data = self.images[image_id]
         return data, desc
+
+    def events(self, clear=False):
+        return self.log
 
     def add_foreign(self, uid=""):
         image_id, self._next = self._next, self._next - 1
@@ -327,6 +331,76 @@ def test_an_import_emits_a_result_with_external_import_provenance(env):
     assert node["op"] == "external-import" and node["tool"] == "fiji"
     assert node["details"]["imagej"] == "2.18.0" and node["details"]["java"] == "21.0.7"
     assert "metadata notes; see Metadata" in env.status
+
+
+def _sent_with_log(env, events, recorder=None):
+    """A sent image whose Fiji description matches what was sent, and the events Fiji recorded."""
+    from dataclasses import replace
+
+    env.recon.active = _result()
+    env.controller.sendCurrent()
+    session = env.session
+    ((image_id, record),) = session.sent.items()
+    desc, data = session.images[image_id]
+    session.images[image_id] = (
+        replace(desc, pixel_width=0.1, pixel_height=0.2, x_unit="µm", y_unit="µm", z_unit="µm"), data,
+    )
+    session.log = {"events": events, "recorder": recorder}
+    return image_id
+
+
+def _command(time, name, image_id, options):
+    return {"kind": "command", "time": time, "command": name, "current_id": image_id, "options": options}
+
+
+def test_a_filter_only_history_lets_the_import_inherit_the_grid_and_is_stored(env):
+    env.controller.startFiji()
+    events = []
+    image_id = _sent_with_log(env, events)
+    events.extend([
+        {"kind": "opened", "time": 1.0, "id": image_id, "title": "src", "changes": False},
+        _command(2.0, "Gaussian Blur...", image_id, "sigma=2 "),
+        {"kind": "updated", "time": 2.1, "id": image_id, "title": "src", "changes": True},
+        _command(3.0, "Invert", image_id, ""),
+    ])
+    env.controller._importIds([image_id])
+
+    ((result, _),) = env.comm.sigResultProduced.emitted
+    assert result.metadata["grid"] == "inherit"
+    node = output_node(result)
+    details = node["details"]
+    assert [s["command"] for s in details["fiji_history"]["steps"]] == ["Gaussian Blur...", "Invert"]
+    assert details["fiji_history"]["completeness"] == "recorded" and details["fiji_history"]["origin"] == "sent"
+    assert details["grid_policy"] == "fiji-grid-v1" and details["grid_policy_reason"] == ""
+    assert details["imagej"] == "2.18.0"
+    assert result.metadata["fiji"]["history"] == details["fiji_history"]
+    assert "2 Fiji steps, history recorded" in env.status
+
+
+def test_a_crop_in_the_history_gives_a_fresh_grid_and_says_why(env):
+    env.controller.startFiji()
+    events = []
+    image_id = _sent_with_log(env, events)
+    events.extend([
+        {"kind": "opened", "time": 1.0, "id": image_id, "title": "src", "changes": False},
+        _command(2.0, "Crop", image_id, ""),
+    ])
+    env.controller._importIds([image_id])
+
+    ((result, _),) = env.comm.sigResultProduced.emitted
+    assert result.metadata["grid"] == "fresh"
+    assert "Crop" in output_node(result)["details"]["grid_policy_reason"]
+    assert "1 Fiji step, history recorded" in env.status
+
+
+def test_an_image_with_no_known_history_is_fresh_and_reported_unknown(env):
+    env.controller.startFiji()
+    env.session.add_foreign()
+    env.controller.importNewImages()
+    ((result, _),) = env.comm.sigResultProduced.emitted
+    assert result.metadata["grid"] == "fresh"
+    assert output_node(result)["details"]["fiji_history"]["origin"] == "unknown"
+    assert "0 Fiji steps, history unknown" in env.status
 
 
 def test_the_uid_hint_names_the_source(env):

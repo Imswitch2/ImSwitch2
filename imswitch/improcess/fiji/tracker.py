@@ -501,7 +501,9 @@ def _unrecorded(events, owner, chain, creators, in_place) -> tuple[str, list[str
     detected: list[str] = []
     possible: list[str] = []
     for image, cutoff in chain:
-        opened_at = next((p for p, e in enumerate(events[:cutoff]) if e.get("kind") == "opened" and e.get("id") == image), None)
+        # Searched in the whole log: ImageJ delivers "opened" on the AWT thread
+        # and it can land after a command that started right behind it.
+        opened_at = next((p for p, e in enumerate(events) if e.get("kind") == "opened" and e.get("id") == image), None)
         made_at = creators[image].pos if image in creators else None
         modified_at = [c.pos for c in in_place.get(image, ())]
         previous = None

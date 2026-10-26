@@ -436,6 +436,7 @@ class FijiState:
             raise ValueError(f"file holds dtype {data.dtype.name}, the message declares {req.dtype}")
         imp = build_imageplus(data, req)
         imp.show()
+        self.drain_edt()          # its "opened" must precede whatever command comes next
         return {"image_id": int(imp.getID())}
 
     def list_images(self, _req: ListImages) -> list:

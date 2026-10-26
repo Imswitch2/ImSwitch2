@@ -36,6 +36,7 @@ from imswitch.improcess.fiji.preferences import (
     save_fiji_preferences,
 )
 from imswitch.improcess.fiji.protocol import FijiLinkError, HostError
+from imswitch.improcess.fiji.tracker import GRID_POLICY_VERSION, grid_preserved, history_for
 from imswitch.improcess.fiji.session import (
     STOP_TIMEOUT_S,
     FijiDied,
@@ -436,12 +437,23 @@ class FijiController(QtCore.QObject):
             data, desc = session.fetch(image_id)
             source = resolve_source(image_id, desc, session.sent, sent_results, results_by_uid)
             ping = session.ping_info
-            # P4: the provenance tracker decides preserves_grid and adds the recorded operations here.
+            # The host's log is cumulative (never cleared here), so every
+            # import reads the whole of what Fiji did since it started.
+            log = session.events()
+            history = history_for(image_id, log["events"], log["recorder"], sent_ids=set(session.sent))
+            preserves, reason = grid_preserved(history)
+            details = {"imagej": ping.imagej, "java": ping.java} if ping else {}
+            details.update({
+                "fiji_history": history.to_details(),
+                "grid_policy": GRID_POLICY_VERSION,
+                "grid_policy_reason": reason,
+            })
             imported = import_fiji_image(
                 desc, data, source,
                 sent=sent_record_for(image_id, desc, session.sent),
-                preserves_grid=False,
-                details={"imagej": ping.imagej, "java": ping.java} if ping else None,
+                preserves_grid=preserves,
+                details=details,
+                history_details=history.to_details(),
             )
             return image_id, imported
 
@@ -455,9 +467,18 @@ class FijiController(QtCore.QObject):
             return
         self._commChannel.sigResultProduced.emit(result, result.name)
         self._imported.add(image_id)
-        notes = len((result.metadata.get("fiji") or {}).get("dropped") or ())
+        fiji = result.metadata.get("fiji") or {}
+        notes = len(fiji.get("dropped") or ())
         suffix = f" ({notes} metadata notes; see Metadata)" if notes else ""
-        self._status(f"Imported {result.name} from Fiji{suffix}.")
+        history = fiji.get("history")
+        if history is None:
+            self._status(f"Imported {result.name} from Fiji{suffix}.")
+            return
+        steps = len(history["steps"])
+        self._status(
+            f"Imported {result.name} from Fiji \N{EM DASH} {steps} Fiji step{'' if steps == 1 else 's'}, "
+            f"history {history['completeness']}{suffix}."
+        )
 
     def _onImportFailed(self, image_id, error) -> None:
         if isinstance(error, (NotImportable, HostError)) and not isinstance(error, FijiDied):

@@ -130,27 +130,119 @@ What does not cross
   Everything that could not be carried is listed under the imported result's
   *Fiji* entry in the metadata (``dropped``).
 
-Imported images get a fresh coordinate grid
-===========================================
+Imported images and their coordinate grid
+=========================================
 
-An image coming back from Fiji is always placed on a **new coordinate grid**,
-even when its shape and pixel size match the image you sent. Shape and scale
-cannot prove that pixels still sit where they were: *Translate* and *Rotate*
-keep both, and a crop that happens to preserve the pixel size moves the
-origin. A new grid is the safe default; it means the result is not
-automatically overlaid on the original, and nothing is misregistered by
-accident. A later release will inherit the grid only when every operation
-recorded on the image is known to preserve it.
+An image coming back from Fiji is placed on a **new coordinate grid** unless
+every Fiji step that led to it is known to keep every pixel where it was.
+Shape and scale cannot prove that on their own: *Translate* and *Rotate* keep
+both, and a crop that happens to preserve the pixel size moves the origin. So
+the grid is inherited only when all of these hold:
+
+* the image's history starts at an image that was sent from ImProcess;
+* nothing changed the image outside a recorded command;
+* the parameters of every step were recorded;
+* every step is on the grid policy list below;
+* the shape, scale, units and axes still match what was sent (the check the
+  import always did).
+
+Otherwise the result gets a new grid, which means it is not automatically
+overlaid on the original; nothing is misregistered by accident. The reason is
+stored with the import (``grid_policy_reason``).
+
+Processing history
+==================
+
+Fiji does not keep a processing log, so ImProcess assembles a best-effort one
+from three things ImageJ already exposes, while Fiji runs:
+
+* **Commands.** ImageJ announces every command (menu use and scripted calls
+  alike) before it runs, with the image that was current. ImProcess notes the
+  command, its start and end, and which plugin (and jar) implements it.
+* **Image events.** ImageJ reports when an image is opened or updated, and
+  whether its *changed* flag is set. An image that appears while a command runs
+  is that command's output; a command that produces none acted in place.
+* **The macro recorder.** A hidden recorder, as in *Plugins > Macros > Record*,
+  captures the parameters of commands used from the menus (``sigma=2``) and
+  the selections made beforehand (``makeRectangle(...)``). Scripted calls
+  carry their parameters with the command and are not in the recorder.
+
+Together they tell, for an imported image, which sent image it came from and
+the Fiji steps in between, oldest first. This is stored in the import step's
+details (``fiji_history``) and in the result's metadata under *Fiji*
+(``history``), and the status bar summarises it ("3 Fiji steps, history
+recorded"). It is useful scientific provenance, not a replay script: the
+import is still not replayable.
+
+How far to trust it
+-------------------
+
+Each step is **recorded** when its parameters are known (an empty parameter
+string counts) and **partial** when only the command name is. The history as a
+whole is:
+
+* **recorded**: the origin is a sent image, every step is recorded, and no
+  change went unseen;
+* **partial**: a step is partial, or a change is possible (below);
+* **unknown**: the origin is not known (the image was opened from a file in
+  Fiji, or made by something that bypasses commands), or a change was
+  detected.
+
+Changes that no command accounts for are reported separately:
+
+* **possible**: ImageJ reported an update to the image outside any command.
+  ImageJ1 also reports display-only actions (changing the slice, Enhance
+  Contrast) as updates, with the changed flag left unset, so this may be a
+  display refresh and not an edit.
+* **detected**: the update showed the changed flag turning on although no
+  command changed the image (painting, filling a selection, a script's Java
+  calls). The pixels were edited in a way the history cannot describe.
+
+Grid policy ``fiji-grid-v1``
+----------------------------
+
+The policy is the list of ImageJ1 commands that, by construction, keep every
+pixel in place (same size, same calibration):
+
+* neighbourhood filters: Gaussian Blur, Median, Mean, Minimum, Maximum,
+  Variance, Unsharp Mask, Smooth, Sharpen, Find Edges, Subtract Background;
+* point operations: Invert, Add, Subtract, Multiply, Divide, Min, Max, Gamma,
+  Log, Exp, Square, Square Root, Abs, Reciprocal, Set;
+* type conversion: 8-bit, 16-bit, 32-bit;
+* binary operations: Convert to Mask, Make Binary, Erode, Dilate, Open,
+  Close-, Fill Holes, Skeletonize, Outline;
+* Duplicate, but only when no selection was made before it and no range was
+  given: a duplicate of a selection is a crop.
+
+Anything else (Crop, Scale, Size, Translate, Rotate, Flip, Canvas Size, Z
+Project, Reslice, Stack to Images, Make Substack, and every command the list
+does not name) gives a new grid. The version is stored beside each decision, so
+a later change to the list can be told apart.
+
+What the history cannot see
+---------------------------
+
+* Parameters of menu commands come only from the recorder. A scripted call
+  with no parameters looks like menu use and is not in the recorder, so its
+  step is partial.
+* Scripts and macros run inside Fiji appear as the commands they call; a
+  command that runs other commands is marked partial.
+* Drawing tools and plugins that bypass the command layer are seen only as
+  image updates (*possible* or *detected*).
+* ImageJ2 and SciJava commands are not tracked separately; they are seen only
+  as far as they run ImageJ1 commands or change images.
+* Opening a file is shown as an unknown origin; the file itself is not
+  recorded.
 
 Provenance
 ==========
 
 An imported result records one step, **external import** with tool ``fiji``,
-holding the Fiji image id and title, the ImageJ and Java versions, and the
-metadata notes. When the result's source is known (it was sent from ImProcess,
-or its lineage hint matches a result), that result is the step's input. The
-step is **not replayable**: what happened inside Fiji cannot be run again by a
-workflow.
+holding the Fiji image id and title, the ImageJ and Java versions, the metadata
+notes and the Fiji history above. When the result's source is known (it was
+sent from ImProcess, or its lineage hint matches a result), that result is the
+step's input. The step is **not replayable**: what happened inside Fiji cannot
+be run again by a workflow.
 
 Known limitations
 =================

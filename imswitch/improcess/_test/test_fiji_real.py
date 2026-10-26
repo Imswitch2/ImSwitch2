@@ -18,6 +18,7 @@ import pytest
 from imswitch.improcess.fiji.convert import PROP_RESULT_UID, NotSendable, import_fiji_image, plan_send
 from imswitch.improcess.fiji.protocol import HostError, resolve_launch_config
 from imswitch.improcess.fiji.session import FijiDied, FijiSession
+from imswitch.improcess.fiji.tracker import GRID_POLICY_VERSION, grid_preserved, history_for
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 
 FIJI_DIR = os.environ.get("IMSWITCH_FIJI_TEST_DIR")
@@ -205,3 +206,60 @@ def test_display_only_actions_fire_updated_with_the_change_flag_unset(session):
     # Contrast is display-only: the pixels are untouched.
     data, _ = session.fetch(image_id)
     assert np.array_equal(data[0, :, 0], source.data)
+
+
+def _import_with_history(session, image_id, source):
+    """What the controller's import job does, without the controller."""
+    data, desc = session.fetch(image_id)
+    log = session.events()
+    history = history_for(image_id, log["events"], log["recorder"], sent_ids=set(session.sent))
+    preserves, reason = grid_preserved(history)
+    imported = import_fiji_image(
+        desc, data, source, sent=session.sent.get(image_id) or next(iter(session.sent.values())),
+        preserves_grid=preserves,
+        details={"fiji_history": history.to_details(), "grid_policy": GRID_POLICY_VERSION, "grid_policy_reason": reason},
+        history_details=history.to_details(),
+    )
+    return history, reason, imported
+
+
+def test_a_blur_in_place_comes_back_on_the_inherited_grid_with_its_history(session):
+    source = _result((4, 20, 30), "ZYX", np.uint16, scales=[0.5, 0.2, 0.1])
+    image_id = session.send(plan_send(source))
+    session.run_command(image_id, "Gaussian Blur...", "sigma=2 stack")
+    history, reason, imported = _import_with_history(session, image_id, source)
+
+    assert history.origin == "sent" and history.origin_id == image_id and reason == ""
+    blur = next(s for s in history.steps if s.command == "Gaussian Blur...")
+    assert blur.options_source == "macro" and blur.options.strip() == "sigma=2 stack" and blur.in_place
+    assert blur.plugin_jar and blur.completeness == "recorded"
+    assert history.unrecorded == "none observed" and history.completeness == "recorded"
+    assert imported.grid == "inherit"
+    assert imported.result.metadata["fiji"]["history"]["steps"][-1]["command"] == "Gaussian Blur..."
+
+
+def test_a_duplicate_blurred_in_fiji_comes_back_on_the_inherited_grid_in_two_steps(session):
+    source = _result((4, 20, 30), "ZYX", np.uint16, scales=[0.5, 0.2, 0.1])
+    image_id = session.send(plan_send(source))
+    before = {d.image_id for d in session.list_images()}
+    session.run_command(image_id, "Duplicate...", "title=dup duplicate")
+    (dup,) = [d.image_id for d in session.list_images() if d.image_id not in before]
+    session.run_command(dup, "Gaussian Blur...", "sigma=1 stack")
+    history, reason, imported = _import_with_history(session, dup, source)
+
+    assert [(s.command, s.in_place) for s in history.steps] == [("Duplicate...", False), ("Gaussian Blur...", True)]
+    assert history.steps[0].input_id == image_id and history.steps[0].output_id == dup
+    assert history.origin_id == image_id and reason == "" and imported.grid == "inherit"
+
+
+def test_a_crop_in_fiji_is_fresh_and_the_reason_names_crop(session):
+    source = _result((40, 50), "YX", np.uint16, scales=[0.2, 0.1])
+    image_id = session.send(plan_send(source))
+    session.run_command(image_id, "Specify...", "width=20 height=10 x=5 y=7 slice=1")
+    session.run_command(image_id, "Crop")
+    history, reason, imported = _import_with_history(session, image_id, source)
+
+    assert [s.command for s in history.steps][-1] == "Crop"
+    assert "Specify" in reason or "Crop" in reason
+    assert imported.grid == "fresh"
+    assert imported.result.metadata["fiji"]["history"]["origin"] == "sent"
