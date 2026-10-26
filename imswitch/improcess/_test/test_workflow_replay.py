@@ -131,6 +131,16 @@ def test_non_replayable_nodes_are_refused_with_every_reason(registry):
     assert "LLM guide" in str(excinfo.value)
 
 
+def test_an_external_import_ancestor_is_not_replayable(registry):
+    shown = ArrayProcessingResult("src", np.ones((4, 4), np.float32), ["Y", "X"])
+    imported = record_import(ArrayProcessingResult("out", np.ones((4, 4), np.float32), ["Y", "X"]),
+                             plugin_name="Fiji", widget_name=None, layer_name="out", layer_type="image",
+                             grid="fresh", source_result=shown, tool="fiji")
+    with pytest.raises(ReplayError) as excinfo:
+        workflow_from_provenance(ProvenanceDocument(graph=graph_of(imported)), registry=registry)
+    assert any("interactively in Fiji" in r for r in excinfo.value.reasons)
+
+
 def test_a_missing_plugin_and_a_newer_params_version_are_refused(registry, tmp_path):
     raw = _h5(tmp_path / "scan.h5")
     wf = Workflow("w", [

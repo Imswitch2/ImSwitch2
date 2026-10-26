@@ -282,10 +282,40 @@ def test_a_napari_import_is_recorded_as_non_replayable():
         source_result=shown,
     )
     node = prov.output_node(imported)
-    assert node["op"] == "napari-import"
+    assert node["op"] == "external-import"
+    assert node["tool"] == "napari"
     assert node["replayable"] is False
     assert node["inputs"] == [prov.output_ref(shown)]
     assert history_of(imported)[-1]["label"] == "Imported from napari-segment-anything"
+
+
+def test_a_legacy_napari_import_node_still_validates_and_has_history():
+    imported = prov.record_import(
+        _image("mask"), plugin_name="napari-x", widget_name="w",
+        layer_name="mask", layer_type="labels", grid="fresh",
+    )
+    graph = json.loads(json.dumps(prov.graph_of(imported)))
+    node_id, _port = prov.output_of(graph)
+    graph["nodes"][node_id]["op"] = "napari-import"        # what an older file holds
+    graph["nodes"][node_id].pop("tool")
+    prov.validate_graph(graph)
+    assert prov.derive_history(graph)[-1]["label"] == "Imported from napari-x"
+
+
+def test_a_fiji_import_records_the_tool_reason_and_json_safe_details():
+    imported = prov.record_import(
+        _image("fiji result"), plugin_name="Fiji", widget_name=None,
+        layer_name="blurred", layer_type="image", grid="fresh",
+        tool="fiji", details={"image_id": -3, "notes": ["origin dropped"], "arr": np.arange(3)},
+    )
+    node = prov.output_node(imported)
+    assert node["op"] == "external-import"
+    assert node["tool"] == "fiji"
+    assert node["replayable"] is False
+    assert node["reasons"] == ["produced interactively in Fiji"]
+    assert node["details"]["image_id"] == -3
+    assert json.loads(json.dumps(node["details"])) == node["details"]
+    prov.validate_graph(json.loads(json.dumps(prov.graph_of(imported))))
 
 
 # --------------------------------------------------------------------------

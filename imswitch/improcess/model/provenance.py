@@ -10,8 +10,10 @@ be run again from what was written down.
 This module records a graph instead, under ``metadata["provenance"]``:
 
 * a **node** per operation (``source``, ``reconstruct``, ``consolidate``,
-  ``process``, ``napari-import``; ``opaque`` for a result whose origin is
-  unknown), with a minted step id, the plugin that ran, its parameters,
+  ``process``, ``external-import`` for a result taken back from an
+  interactive tool such as napari or Fiji, whose ``tool`` field names it;
+  ``napari-import`` is the legacy name of the same op, read from older files
+  and never written; ``opaque`` for a result whose origin is unknown), with a minted step id, the plugin that ran, its parameters,
   **ordered** input references and **named** output ports;
 * every result carries the **transitive** union of its inputs' nodes plus its
   own, keyed by step id so shared ancestors deduplicate, and an ``output``
@@ -44,7 +46,9 @@ from imswitch.imcommon.algorithms.spatial_frame import mint_uid
 PROVENANCE_KEY = "provenance"
 SCHEMA_VERSION = 1
 
-OPS = ("source", "reconstruct", "consolidate", "process", "napari-import", "opaque")
+# "napari-import" is legacy-read-only: graphs saved before the op became
+# tool-neutral still validate and replay-skip, but no new node is written with it.
+OPS = ("source", "reconstruct", "consolidate", "process", "external-import", "napari-import", "opaque")
 DEFAULT_PORT = "out"
 SOURCE_PORT = "data"
 
@@ -827,20 +831,32 @@ def record_import(
     layer_type: str,
     grid: str,
     source_result=None,
+    tool: str = "napari",
+    details: dict | None = None,
 ):
-    """Record a layer taken back from a napari plugin as ``result``.
+    """Record a result taken back from an interactive tool as ``result``.
 
-    Non-replayable by definition: what the plugin did between receiving our
-    layers and producing this one is not something we can run again.
+    ``tool`` names the program (``napari``, ``fiji``). Non-replayable by
+    definition: what the tool did between receiving our data and producing
+    this result is not something we can run again. ``details`` is free-form
+    context (image id, dropped metadata); it is stored lossy-but-JSON-safe
+    because the node is never replayed.
     """
+    reason = (
+        "produced interactively inside a napari plugin"
+        if str(tool) == "napari"
+        else f"produced interactively in {plugin_name}"
+    )
+    extra_details = {"details": json_safe_value(dict(details))} if details else {}
     inputs = [output_ref(source_result)] if source_result is not None else []
     labels = [_describe(source_result)] if source_result is not None else []
     node_id, node = make_node(
-        "napari-import",
+        "external-import",
         inputs=inputs,
         input_labels=labels,
         outputs=(DEFAULT_PORT,),
         extra={
+            "tool": str(tool),
             "plugin_name": str(plugin_name),
             "widget_name": str(widget_name or ""),
             "layer_name": str(layer_name),
@@ -848,7 +864,8 @@ def record_import(
             "grid": str(grid),
             "label": f"Imported from {plugin_name}",
             "replayable": False,
-            "reasons": ["produced interactively inside a napari plugin"],
+            "reasons": [reason],
+            **extra_details,
         },
     )
     ancestors = merge_nodes(

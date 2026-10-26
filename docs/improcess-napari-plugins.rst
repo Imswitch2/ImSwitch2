@@ -223,8 +223,9 @@ is offered only when its npe2 layer-type constraints (``image``, ``image+``,
 layers by type *and count*, and the writer command you picked is the one
 dispatched, not the plugin's first compatible writer.
 
-Every import records a ``napari-import`` step in the result's provenance,
-naming the plugin, the widget, the layer and the grid decision. Such a step
+Every import records an ``external-import`` step (``tool: napari``) in the
+result's provenance (files written earlier may carry the older name
+``napari-import``), naming the plugin, the widget, the layer and the grid decision. Such a step
 is not replayable by definition.
 
 Adapters

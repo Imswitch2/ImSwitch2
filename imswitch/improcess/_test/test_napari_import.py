@@ -159,7 +159,8 @@ def test_an_import_records_a_non_replayable_node_pointing_at_the_source():
     source = _source()
     imported = import_layer(_snap(), source, plugin_name="napari-skimage", widget_name="Automated Threshold")
     node = output_node(imported.result)
-    assert node["op"] == "napari-import"
+    assert node["op"] == "external-import"
+    assert node["tool"] == "napari"
     assert node["replayable"] is False
     assert node["plugin_name"] == "napari-skimage"
     assert node["grid"] == "fresh"
