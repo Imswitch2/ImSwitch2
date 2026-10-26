@@ -212,7 +212,10 @@ def _import_with_history(session, image_id, source):
     """What the controller's import job does, without the controller."""
     data, desc = session.fetch(image_id)
     log = session.events()
-    history = history_for(image_id, log["events"], log["recorder"], sent_ids=set(session.sent))
+    history = history_for(
+        image_id, log["events"], log["recorder"], sent_ids=set(session.sent),
+        fetched_fingerprint=session.fetch_fingerprints.get(image_id),
+    )
     preserves, reason = grid_preserved(history)
     imported = import_fiji_image(
         desc, data, source, sent=session.sent.get(image_id) or next(iter(session.sent.values())),
@@ -263,3 +266,26 @@ def test_a_crop_in_fiji_is_fresh_and_the_reason_names_crop(session):
     assert "Specify" in reason or "Crop" in reason
     assert imported.grid == "fresh"
     assert imported.result.metadata["fiji"]["history"]["origin"] == "sent"
+
+
+def test_scrolling_after_a_filter_does_not_degrade_the_history(session):
+    source = _result((4, 20, 30), "ZYX", np.uint16, scales=[0.5, 0.2, 0.1])
+    image_id = session.send(plan_send(source))
+    session.run_command(image_id, "Gaussian Blur...", "sigma=2 stack")
+    session.run_command(image_id, "Next Slice [>]")
+    history, reason, imported = _import_with_history(session, image_id, source)
+
+    assert session.fetch_fingerprints[image_id]
+    assert history.unrecorded == "none observed" and history.completeness == "recorded", history.summary()
+    assert reason == "" and imported.grid == "inherit"
+    assert [s.command for s in history.steps][-1] == "Next Slice [>]"
+
+
+def test_a_request_with_empty_options_is_a_recorded_step(session):
+    source = _result((20, 30), "YX", np.uint16, scales=[0.2, 0.1])
+    image_id = session.send(plan_send(source))
+    session.run_command(image_id, "8-bit")
+    history, reason, imported = _import_with_history(session, image_id, source)
+    (step,) = history.steps
+    assert step.command == "8-bit" and step.options == "" and step.options_source == "macro"
+    assert step.completeness == "recorded" and history.completeness == "recorded"

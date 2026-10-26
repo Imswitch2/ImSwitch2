@@ -132,6 +132,20 @@ def test_event_log_snapshot_is_a_copy_and_clearing_drops_pending_ends():
     assert log.snapshot() == []
 
 
+def test_command_ends_can_carry_fingerprints():
+    log = host.EventLog()
+    seq = log.begin_command("Invert", current_id=-2)
+    assert log.input_of(seq) == -2
+    log.end_command(seq, end_fingerprints={"-2": "ab"})
+    assert log.snapshot()[0]["end_fingerprints"] == {"-2": "ab"}
+
+
+def test_the_fingerprint_fold_is_order_sensitive_and_fixed_width():
+    one, two = host.fold_fingerprint([1, 2, 3]), host.fold_fingerprint([3, 2, 1])
+    assert one != two and len(one) == len(two) == 16
+    assert host.fold_fingerprint([-1]) == host.fold_fingerprint([2 ** 64 - 1])
+
+
 def test_importing_the_host_loads_no_java_bridge_and_no_model():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     code = ("import sys; import imswitch.improcess.fiji.host; "

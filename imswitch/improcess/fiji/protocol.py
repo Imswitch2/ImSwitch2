@@ -355,10 +355,12 @@ class FetchInfo:
     shape_tzcyx: list
     dtype: str
     description: dict
+    #: Change detector over the image's pixels at fetch time (see host.fingerprint); optional.
+    fingerprint: str | None = None
 
     def to_dict(self) -> dict:
         return {"image_id": self.image_id, "shape_tzcyx": list(self.shape_tzcyx),
-                "dtype": self.dtype, "description": dict(self.description)}
+                "dtype": self.dtype, "description": dict(self.description), "fingerprint": self.fingerprint}
 
     @classmethod
     def from_dict(cls, d: dict) -> "FetchInfo":
@@ -368,6 +370,7 @@ class FetchInfo:
         return cls(
             image_id=_field(d, "image_id", int), shape_tzcyx=list(shape),
             dtype=_field(d, "dtype", str), description=dict(_field(d, "description", dict)),
+            fingerprint=d["fingerprint"] if isinstance(d.get("fingerprint"), str) else None,
         )
 
 

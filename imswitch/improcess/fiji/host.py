@@ -232,12 +232,22 @@ class EventLog:
         """Record that ``command`` starts now; the returned ``seq`` is the handle for :meth:`end_command`."""
         return self.record("command", command=command, end=None, **fields)
 
-    def end_command(self, seq: int) -> None:
-        """Stamp the end of a command begun earlier. A seq already cleared from the log is ignored."""
+    def end_command(self, seq: int, **fields) -> None:
+        """Stamp the end of a command begun earlier, with any ``fields`` known at that moment.
+
+        A seq already cleared from the log is ignored.
+        """
         with self._lock:
             event = self._by_seq.get(seq)
             if event is not None and event.get("end") is None:
                 event["end"] = self._now()
+                event.update(fields)
+
+    def input_of(self, seq: int) -> int | None:
+        """The ``current_id`` a command started with (None when unknown or cleared)."""
+        with self._lock:
+            event = self._by_seq.get(seq)
+            return event.get("current_id") if event is not None else None
 
     def snapshot(self, clear: bool = False) -> list[dict]:
         """Copies of the events, each with its ``end`` as known right now."""
@@ -260,6 +270,8 @@ def _jimport(name: str):
 
 class _RunLocal(threading.local):
     seqs: list | None = None
+    #: The options run_command asked for, until the first command of that call has used them.
+    requested: str | None = None
 
 
 class FijiState:
@@ -314,12 +326,20 @@ class FijiState:
             def commandExecuting(self, command):
                 imp = WindowManager.getCurrentImage()
                 options = Macro.getOptions()
+                options = str(options) if options is not None else None
+                hint = None
+                requested, state._run_local.requested = state._run_local.requested, None
+                if options is None and requested is not None:
+                    # ImageJ hands an empty options string to the command as "none",
+                    # but the host itself passed it: only the first command of the
+                    # call is ours, a macro's inner commands are not.
+                    options, hint = requested, "request"
                 name = str(command)
                 class_name = plugin_class(name)
                 seq = events.begin_command(
                     name,
                     current_id=int(imp.getID()) if imp is not None else None,
-                    options=str(options) if options is not None else None,
+                    options=options, options_source_hint=hint,
                     thread=thread_name(),
                     recorder_offset=recorder_offset(),
                     plugin_class=class_name,
@@ -331,7 +351,7 @@ class FijiState:
                 else:
                     # Started by ImageJ's own Executer thread (menu use): the command
                     # is over when that Java thread is.
-                    state.watch_end(seq, Thread.currentThread())
+                    state.watch_end(seq, Thread.currentThread(), int(imp.getID()) if imp is not None else None)
                 return command
 
         @JImplements("ij.ImageListener")
@@ -387,7 +407,7 @@ class FijiState:
         except Exception:  # noqa: BLE001  (no code source, a bootstrap class, a missing class: all "unknown")
             return None
 
-    def watch_end(self, seq: int, java_thread) -> None:
+    def watch_end(self, seq: int, java_thread, input_id: int | None) -> None:
         """Stamp ``seq``'s end when ``java_thread`` (the thread running a menu command) dies."""
         def wait() -> None:
             try:
@@ -395,9 +415,27 @@ class FijiState:
                 self.drain_edt()
             except Exception:  # noqa: BLE001  (the end stays None: "not known", which the tracker handles)
                 return
-            self.events.end_command(seq)
+            self.events.end_command(seq, end_fingerprints=self.end_fingerprints(input_id))
 
         threading.Thread(target=wait, name=f"fiji-end-{seq}", daemon=True).start()
+
+    def end_fingerprints(self, input_id: int | None) -> dict[str, str]:
+        """Pixel fingerprints, now, of a command's input image and of the current image."""
+        WindowManager = _jimport("ij.WindowManager")
+        found: dict[str, str] = {}
+        current = WindowManager.getCurrentImage()
+        images = [WindowManager.getImage(int(input_id)) if input_id is not None else None, current]
+        for imp in images:
+            if imp is None:
+                continue
+            key = str(int(imp.getID()))
+            if key in found:
+                continue
+            try:
+                found[key] = fingerprint(imp)
+            except Exception:  # noqa: BLE001  (an image that cannot be read just has no fingerprint)
+                continue
+        return found
 
     @staticmethod
     def drain_edt() -> None:
@@ -451,6 +489,7 @@ class FijiState:
         return FetchInfo(
             image_id=req.image_id, shape_tzcyx=shape,
             dtype=_DTYPE_BY_BIT_DEPTH[int(imp.getBitDepth())], description=description.to_dict(),
+            fingerprint=_safe_fingerprint(imp),
         ).to_dict()
 
     def run_command(self, req: RunCommand) -> dict:
@@ -458,6 +497,7 @@ class FijiState:
         WindowManager = _jimport("ij.WindowManager")
         seqs: list[int] = []
         self._run_local.seqs = seqs
+        self._run_local.requested = req.options
         try:
             if req.image_id is not None:
                 IJ.run(self._image(req.image_id), req.command, req.options)
@@ -469,8 +509,13 @@ class FijiState:
                 pass
         finally:
             self._run_local.seqs = None
+            self._run_local.requested = None
+            prints: dict = {}
             for seq in seqs:
-                self.events.end_command(seq)
+                input_id = self.events.input_of(seq)
+                if input_id not in prints:
+                    prints[input_id] = self.end_fingerprints(input_id)
+                self.events.end_command(seq, end_fingerprints=prints[input_id])
         current = WindowManager.getCurrentImage()
         return {"current_id": int(current.getID()) if current is not None else None}
 
@@ -594,6 +639,45 @@ def describe(imp) -> FijiImageDescription:
         channel_labels=tuple(labels),
         changes=bool(imp.changes),
     )
+
+
+#: Modulus of the fold in :func:`fingerprint`: 64 bits, so the hex result has a fixed width.
+_FINGERPRINT_BITS = 64
+#: Multiplier of the fold (the 64-bit FNV prime), so plane order matters.
+_FINGERPRINT_PRIME = 0x100000001B3
+
+
+def fold_fingerprint(parts) -> str:
+    """Fold integers into one 64-bit hex string; order-sensitive."""
+    mask = (1 << _FINGERPRINT_BITS) - 1
+    value = 0
+    for part in parts:
+        value = ((value ^ (int(part) & mask)) * _FINGERPRINT_PRIME) & mask
+    return f"{value:0{_FINGERPRINT_BITS // 4}x}"
+
+
+def fingerprint(imp) -> str:
+    """A change detector over ``imp``'s pixels, computed on the Java side plane by plane.
+
+    ``java.util.Arrays.hashCode`` of every plane's pixel array is folded together
+    with width, height, bit depth and stack size. It is NOT a cryptographic hash:
+    two different images can collide, which only costs a missed "possible" change
+    in the history. Equal fingerprints mean the pixels are (almost certainly)
+    the ones seen before; ImageJ's own ``changes`` flag cannot say that.
+    """
+    Arrays = _jimport("java.util.Arrays")
+    stack = imp.getStack()
+    size = int(stack.getSize())
+    parts = [int(imp.getWidth()), int(imp.getHeight()), int(imp.getBitDepth()), size]
+    parts.extend(int(Arrays.hashCode(stack.getPixels(i))) for i in range(1, size + 1))
+    return fold_fingerprint(parts)
+
+
+def _safe_fingerprint(imp) -> str | None:
+    try:
+        return fingerprint(imp)
+    except Exception:  # noqa: BLE001  (the fingerprint is optional evidence, never a reason to fail a fetch)
+        return None
 
 
 def write_tzcyx(imp, path: str) -> list:

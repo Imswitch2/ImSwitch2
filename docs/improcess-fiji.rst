@@ -190,13 +190,26 @@ whole is:
 
 Changes that no command accounts for are reported separately:
 
-* **possible**: ImageJ reported an update to the image outside any command.
-  ImageJ1 also reports display-only actions (changing the slice, Enhance
-  Contrast) as updates, with the changed flag left unset, so this may be a
-  display refresh and not an edit.
-* **detected**: the update showed the changed flag turning on although no
-  command changed the image (painting, filling a selection, a script's Java
-  calls). The pixels were edited in a way the history cannot describe.
+* **possible**: ImageJ reported an update to the image outside any command
+  that the history cannot explain. ImageJ1 also reports display-only actions
+  (changing the slice, Enhance Contrast) as updates, so scrolling through a
+  result is not an edit. Two things clear those updates, and each is counted
+  in a note instead of lowering the history:
+
+  * the update left ImageJ's *changed* flag unset on an image that was never
+    marked changed;
+  * **a pixel fingerprint.** The host fingerprints an image's pixels (a
+    hash of every plane, a change detector and not a cryptographic hash)
+    when each command ends and again when you import. When the two match, the
+    pixels are exactly what the last command left, and every later update was
+    a display refresh. Only an update that neither clears (a changed flag
+    already set by an earlier edit, with no fingerprint to compare) stays
+    *possible*.
+* **detected**: the pixels changed although no command changed them: the
+  fingerprint at import differs from the one after the last recorded command,
+  or the changed flag turned on outside every command (painting, filling a
+  selection, a script's Java calls). The pixels were edited in a way the
+  history cannot describe.
 
 Grid policy ``fiji-grid-v1``
 ----------------------------
@@ -209,6 +222,8 @@ pixel in place (same size, same calibration):
 * point operations: Invert, Add, Subtract, Multiply, Divide, Min, Max, Gamma,
   Log, Exp, Square, Square Root, Abs, Reciprocal, Set;
 * type conversion: 8-bit, 16-bit, 32-bit;
+* display and navigation: Next and Previous Slice, Set Slice, Enhance
+  Contrast, Apply LUT;
 * binary operations: Convert to Mask, Make Binary, Erode, Dilate, Open,
   Close-, Fill Holes, Skeletonize, Outline;
 * Duplicate, but only when no selection was made before it and no range was
@@ -222,6 +237,8 @@ a later change to the list can be told apart.
 What the history cannot see
 ---------------------------
 
+* The fingerprint is a change detector: two different images can in principle
+  share one, which only costs a missed *possible* change.
 * Parameters of menu commands come only from the recorder. A scripted call
   with no parameters looks like menu use and is not in the recorder, so its
   step is partial.

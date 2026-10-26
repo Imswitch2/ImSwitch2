@@ -440,7 +440,10 @@ class FijiController(QtCore.QObject):
             # The host's log is cumulative (never cleared here), so every
             # import reads the whole of what Fiji did since it started.
             log = session.events()
-            history = history_for(image_id, log["events"], log["recorder"], sent_ids=set(session.sent))
+            history = history_for(
+                image_id, log["events"], log["recorder"], sent_ids=set(session.sent),
+                fetched_fingerprint=getattr(session, "fetch_fingerprints", {}).get(image_id),
+            )
             preserves, reason = grid_preserved(history)
             details = {"imagej": ping.imagej, "java": ping.java} if ping else {}
             details.update({

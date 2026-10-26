@@ -67,6 +67,17 @@ Rules
      False, so this may be a display refresh and not an edit.
 
    Old logs have no flag, so only ``"possible"`` can be reported.
+
+   Two kinds of ``updated`` are first recognised as display refreshes and not
+   counted (a note says how many):
+
+   * an update with ``changes`` False on an image whose flag was never seen
+     True (display-only actions leave it unset);
+   * for the imported image, any update after the last command that has a pixel
+     fingerprint for it (``end_fingerprints``), when the fingerprint taken at
+     fetch time equals that one: the pixels are those the command left. When
+     the two differ the pixels changed after the last recorded command, which
+     is ``"detected"`` whatever the flag says.
 8. **Completeness.** ``"unknown"`` when the origin is unknown or a change is
    detected; else ``"partial"`` when a step is partial or a change is possible;
    else ``"recorded"``.
@@ -107,6 +118,11 @@ _GRID_GROUPS_V1: dict[str, tuple[str, tuple[str, ...]]] = {
     "type conversion": (
         "Changes the pixel type only; width, height, stack size and calibration stay.",
         ("8-bit", "16-bit", "32-bit"),
+    ),
+    "display and navigation": (
+        "Moves ImageJ's current slice or changes display ranges (or, with normalize, a point operation); "
+        "the geometry and calibration are never touched.",
+        ("Next Slice [>]", "Previous Slice [<]", "Set Slice...", "Enhance Contrast...", "Apply LUT"),
     ),
     "binary": (
         "Binary operations work in place on the pixel grid of the mask they are given.",
@@ -430,8 +446,15 @@ def _step(cmd: _Command) -> FijiStep:
     )
 
 
-def history_for(image_id: int, events: list[dict], recorder: str | None, *, sent_ids: Collection[int]) -> FijiHistory:
-    """Everything Fiji did to ``image_id`` since it was sent, as far as ImageJ showed it."""
+def history_for(
+    image_id: int, events: list[dict], recorder: str | None, *,
+    sent_ids: Collection[int], fetched_fingerprint: str | None = None,
+) -> FijiHistory:
+    """Everything Fiji did to ``image_id`` since it was sent, as far as ImageJ showed it.
+
+    ``fetched_fingerprint`` is the host's pixel fingerprint of the image at the
+    moment it was fetched; see rule 7.
+    """
     sent = {int(i) for i in sent_ids}
     ordered = _ordered(events)
     commands, owner = _commands(ordered, recorder, sent)
@@ -475,7 +498,22 @@ def history_for(image_id: int, events: list[dict], recorder: str | None, *, sent
         notes.append("the walk through the log did not end; the origin is not known")
     steps = tuple(_step(cmd) for segment in reversed(segments) for cmd in segment)
 
-    unrecorded, change_notes = _unrecorded(ordered, owner, chain, creators, in_place)
+    anchor = None
+    for cmd in commands:
+        if str(image_id) in (cmd.event.get("end_fingerprints") or {}):
+            anchor = cmd
+    cleared: dict[int, int] = {}
+    pixels_changed = False
+    if anchor is not None and fetched_fingerprint is not None:
+        if anchor.event["end_fingerprints"][str(image_id)] == fetched_fingerprint:
+            cleared[int(image_id)] = anchor.pos
+        else:
+            pixels_changed = True
+    unrecorded, change_notes = _unrecorded(ordered, owner, chain, creators, in_place, cleared)
+    if pixels_changed:
+        unrecorded = "detected"
+        change_notes = [f"the pixels of image {image_id} changed after the last recorded command ({anchor.name})",
+                        *change_notes]
     notes.extend(change_notes)
     if origin == "unknown":
         completeness = "unknown"
@@ -497,16 +535,18 @@ _POSSIBLE_HINT = (
 )
 
 
-def _unrecorded(events, owner, chain, creators, in_place) -> tuple[str, list[str]]:
+def _unrecorded(events, owner, chain, creators, in_place, cleared) -> tuple[str, list[str]]:
     detected: list[str] = []
     possible: list[str] = []
+    notes: list[str] = []
     for image, cutoff in chain:
         # Searched in the whole log: ImageJ delivers "opened" on the AWT thread
         # and it can land after a command that started right behind it.
         opened_at = next((p for p, e in enumerate(events) if e.get("kind") == "opened" and e.get("id") == image), None)
         made_at = creators[image].pos if image in creators else None
         modified_at = [c.pos for c in in_place.get(image, ())]
-        previous = None
+        previous, ever_set = None, False
+        by_pixels = by_flag = 0
         for pos in range(cutoff):
             event = events[pos]
             if event.get("id") != image or event.get("kind") not in ("opened", "updated"):
@@ -517,22 +557,32 @@ def _unrecorded(events, owner, chain, creators, in_place) -> tuple[str, list[str
                 and (opened_at is None or pos > opened_at)
             )
             if outside:
-                when = _time(event)
-                label = f"image {image} was updated at {when:g} s outside any recorded command" if when is not None \
-                    else f"image {image} was updated outside any recorded command"
+                label = f"image {image} was updated at {_time(event):g} s outside any recorded command" \
+                    if _time(event) is not None else f"image {image} was updated outside any recorded command"
                 touched = any(p < pos for p in modified_at)
-                if (flag is True and not touched
+                if image in cleared and pos > cleared[image]:
+                    by_pixels += 1          # the pixels are provably those the last command left
+                elif flag is False and not ever_set:
+                    by_flag += 1            # display-only actions leave the changed flag unset
+                elif (flag is True and not touched
                         and (previous is False or (previous is None and made_at is None))):
                     detected.append(f"{label}, and its changed flag turned on")
                 else:
                     possible.append(label)
             if flag is not None:
                 previous = bool(flag)
+                ever_set = ever_set or previous
+        if by_pixels:
+            notes.append(f"{by_pixels} later update{'s' if by_pixels != 1 else ''} of image {image} left its pixels "
+                         "unchanged (display refresh)")
+        if by_flag:
+            notes.append(f"{by_flag} update{'s' if by_flag != 1 else ''} of image {image} outside any command never "
+                         "set its changed flag (display refresh)")
     if detected:
-        return "detected", [*detected, *possible]
+        return "detected", [*detected, *possible, *notes]
     if possible:
-        return "possible", [*possible, _POSSIBLE_HINT]
-    return "none observed", []
+        return "possible", [*possible, _POSSIBLE_HINT, *notes]
+    return "none observed", notes
 
 
 # --------------------------------------------------------------------------

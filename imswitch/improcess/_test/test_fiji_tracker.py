@@ -153,12 +153,13 @@ class Log:
     def updated(self, time, image, changes=False):
         self._add("updated", time, id=image, title=f"t{image}", changes=changes)
 
-    def command(self, time, end, name, current, options=None, line=None):
+    def command(self, time, end, name, current, options=None, line=None, prints=None):
         offset = len(self.text)
         if line:
             self.recorded(line)
+        extra = {"end_fingerprints": prints} if prints is not None else {}
         self._add("command", time, command=name, end=end, current_id=current, options=options,
-                  recorder_offset=offset, plugin_class=f"ij.plugin.{name}", plugin_jar="ij.jar")
+                  recorder_offset=offset, plugin_class=f"ij.plugin.{name}", plugin_jar="ij.jar", **extra)
 
 
 def _filter_chain():
@@ -258,7 +259,8 @@ def test_a_display_style_update_is_possible_and_the_creation_burst_is_not_counte
     log.updated(1.05, -2)
     log.opened(1.1, -2)
     assert history_for(-2, log.events, None, sent_ids={-2}).unrecorded == "none observed"
-    log.updated(8.0, -2, changes=False)
+    log.updated(8.0, -2)
+    del log.events[-1]["changes"]       # an old-schema event: no flag to judge by
     history = history_for(-2, log.events, None, sent_ids={-2})
     assert history.unrecorded == "possible" and history.completeness == "partial"
 
@@ -274,6 +276,44 @@ def test_an_opened_that_lands_after_the_next_command_started_is_still_its_own_cr
     log.opened(2.1, -3)
     history = history_for(-3, log.events, None, sent_ids={-2})
     assert history.unrecorded == "none observed" and history.completeness == "recorded"
+
+
+def test_a_flag_false_update_on_an_untouched_image_is_a_display_refresh():
+    log = Log()
+    log.opened(1.0, -2)
+    log.updated(8.0, -2, changes=False)
+    log.updated(8.5, -2, changes=False)
+    history = history_for(-2, log.events, None, sent_ids={-2})
+    assert history.unrecorded == "none observed" and history.completeness == "recorded"
+    assert "2 updates of image -2" in history.unrecorded_notes[0] and grid_preserved(history)[0]
+
+
+def _blurred_then_scrolled(fingerprint_after):
+    log = Log()
+    log.opened(1.0, -2)
+    log.command(2.0, 2.1, "Gaussian Blur...", -2, options="sigma=2 ", prints={"-2": "aaaa"})
+    log.updated(2.05, -2, changes=True)
+    log.updated(9.0, -2, changes=True)      # scrolling: the flag is True after a recorded edit
+    return history_for(-2, log.events, None, sent_ids={-2}, fetched_fingerprint=fingerprint_after)
+
+
+def test_without_a_fingerprint_a_display_update_after_an_edit_is_only_possible():
+    history = _blurred_then_scrolled(None)
+    assert history.unrecorded == "possible" and not grid_preserved(history)[0]
+
+
+def test_a_matching_fingerprint_clears_later_updates_as_display_refreshes():
+    history = _blurred_then_scrolled("aaaa")
+    assert history.unrecorded == "none observed" and history.completeness == "recorded"
+    assert grid_preserved(history) == (True, "")
+    assert "left its pixels unchanged" in history.unrecorded_notes[0]
+
+
+def test_a_differing_fingerprint_means_the_pixels_changed_after_the_last_command():
+    history = _blurred_then_scrolled("bbbb")
+    assert history.unrecorded == "detected" and history.completeness == "unknown"
+    assert "pixels of image -2 changed after the last recorded command" in history.unrecorded_notes[0]
+    assert not grid_preserved(history)[0]
 
 
 def test_updates_to_an_image_off_the_chain_are_ignored():

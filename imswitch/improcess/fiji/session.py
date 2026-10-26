@@ -152,6 +152,8 @@ class FijiSession:
         self.ping_info: PingInfo | None = None
         #: ``SentRecord`` per ImagePlus id this session created.
         self.sent: dict[int, SentRecord] = {}
+        #: Pixel fingerprint the host reported with the last fetch of each image (None when it gave none).
+        self.fetch_fingerprints: dict[int, str | None] = {}
 
     # -- state ------------------------------------------------------------
 
@@ -316,6 +318,7 @@ class FijiSession:
         self._proc, self._temp_dir = None, None
         self.ping_info = None
         self.sent = {}
+        self.fetch_fingerprints = {}
 
     # -- requests ----------------------------------------------------------
 
@@ -410,6 +413,7 @@ class FijiSession:
                     f"the fetched file holds {data.dtype.name}{list(data.shape)}, "
                     f"the host reported {info.dtype}{list(info.shape_tzcyx)}"
                 )
+            self.fetch_fingerprints[int(image_id)] = info.fingerprint
             return data, FijiImageDescription.from_dict(info.description)
 
     def run_command(self, image_id: int | None, command: str, options: str = "") -> int | None:

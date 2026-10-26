@@ -257,3 +257,12 @@ def test_env_names_what_the_host_needs(tmp_path, jars):
     assert env["IMSWITCH_FIJI_MAX_HEAP_MB"] == "6144"
     assert env["IMSWITCH_FIJI_CLASSPATH"].split(os.pathsep) == [str(j) for j in jars]
     assert all(k.startswith("IMSWITCH_FIJI_") or k in ("FIJI_DIR", "JAVA_HOME") for k in env)
+
+
+def test_fetch_info_fingerprint_is_optional():
+    from imswitch.improcess.fiji.protocol import FetchInfo
+
+    base = {"image_id": -2, "shape_tzcyx": [1, 1, 1, 2, 2], "dtype": "uint8", "description": {}}
+    assert FetchInfo.from_dict(base).fingerprint is None
+    assert FetchInfo.from_dict({**base, "fingerprint": "ab"}).fingerprint == "ab"
+    assert FetchInfo.from_dict(FetchInfo.from_dict({**base, "fingerprint": "ab"}).to_dict()).fingerprint == "ab"
