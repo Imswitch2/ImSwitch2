@@ -615,6 +615,36 @@ class StreamInit:
     stack_info: StackInfo | None = None
 
 
+@dataclass(frozen=True)
+class RawInfo:
+    """What an entry holds, read from its metadata alone: frames of
+    ``frame_shape`` making up a (T, *S, Y, X) array, where only T grows."""
+
+    T: int | None  # None: unknown, still growing
+    S: tuple[int, ...]
+    frame_shape: tuple[int, int]
+    dtype: np.dtype
+    name: str = ""  # the entry's, which its result is shown under
+    mode: str | None = None  # the recording mode, e.g. "CameraLapse", "ScanLapse"
+    attrs: dict[str, Any] = field(default_factory=dict)  # the data array's
+    # <det>/metadata/, flattened to "Section:key" as the offline loader does,
+    # e.g. "Rec:Mode", "ScanStage:axis_length"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Contract:
+    """What a reconstructor needs from the stream to reconstruct an entry."""
+
+    init_frames: int  # frames needed before streaming starts; 0: no init
+    chunk_frames: int  # frames per push: 1 frame by frame, prod(S) whole stacks
+    params: dict[str, Any]  # resolved from the user's values and the RawInfo
+
+
+class Incompatible(ValueError):
+    """Raised by :meth:`StreamingReconstructor.contract` to refuse an entry."""
+
+
 class StreamingSession(ABC):
     """Stateful live reconstruction for one stack or recording."""
 
@@ -665,6 +695,24 @@ class StreamingReconstructor(Reconstructor):
     """Reconstructor that supports sub-stack live updates."""
 
     supports_streaming: bool = True
+
+    def contract(self, info: RawInfo, params: dict) -> Contract:
+        """Agree to reconstruct an entry, or raise :class:`Incompatible`.
+
+        ``params`` are the user's values; a value of None means "not set".
+        Resolve every parameter you can from them and ``info`` (no pixels
+        are read yet), and leave the rest to :meth:`complete`. The default
+        accepts anything, needs no init, and takes frames one by one.
+        """
+        return Contract(init_frames=0, chunk_frames=1, params=dict(params))
+
+    def complete(self, params: dict, frames: np.ndarray) -> dict:
+        """Resolve the parameters the first ``init_frames`` frames answer.
+
+        Called only when the contract asked for init frames. The default
+        returns ``params`` unchanged.
+        """
+        return dict(params)
 
     @abstractmethod
     def make_session(self) -> StreamingSession:

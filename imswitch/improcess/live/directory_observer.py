@@ -28,7 +28,6 @@ class DirectoryObserver(QtCore.QObject):
         self._seen: set[str] = set()
         self._root_unreadable = False
         self._logger = initLogger(self, tryInheritParent=False)
-
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(interval_ms)
         self._timer.timeout.connect(self.check)
@@ -66,12 +65,11 @@ class DirectoryObserver(QtCore.QObject):
             self._logger.info(f"{self._root} is readable again")
             self._root_unreadable = False
 
-        for name in sorted(names):
-            path = os.path.join(self._root, name)
-            if path in self._seen:
-                continue
-            self._seen.add(path)
-            self.sigEntryFound.emit(path)
+        for n in names:
+            path = os.path.join(self._root, n)
+            if path not in self._seen:
+                self._seen.add(path)
+                self.sigEntryFound.emit(path)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
