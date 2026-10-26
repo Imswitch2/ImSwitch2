@@ -5,6 +5,10 @@ the host is a separate Java-bearing process, and the other side of a socket is
 never trusted, so every message is validated on arrival and a malformed one
 raises :class:`ProtocolError` instead of reaching the rest of the program.
 
+The host process imports this module, so it imports nothing from ``imswitch``
+(``convert`` pulls in the whole ImProcess model, h5py included) and numpy at
+most; ``tests`` assert that in a subprocess.
+
 This module opens no sockets and starts no process; transport and process
 management come later. It holds the messages, the typed replies, and
 :func:`resolve_launch_config`, which carries the fixes the P0 prototype
@@ -23,13 +27,14 @@ from typing import Any, ClassVar, Sequence
 
 import numpy as np
 
-from imswitch.improcess.fiji.convert import IMAGEJ_DTYPES, FijiImageDescription, SendPlan
 
 #: Bump on any incompatible message change. The host reports its version in
 #: ``ping`` and the parent refuses a mismatch.
 PROTOCOL_VERSION = 1
 
-_IMAGEJ_DTYPE_NAMES = tuple(d.name for d in IMAGEJ_DTYPES)
+#: ImageJ1's 8/16/32-bit processors. Anything else would need a cast, which
+#: would change the numbers. convert.IMAGEJ_DTYPES is derived from this.
+IMAGEJ_DTYPE_NAMES = ("uint8", "uint16", "float32")
 
 
 class FijiLinkError(RuntimeError):
@@ -84,6 +89,60 @@ def _str_list(d: dict, key: str) -> list:
 
 
 # --------------------------------------------------------------------------
+# what crosses the process boundary
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FijiImageDescription:
+    """The host's description of one open ImagePlus (plain JSON types only)."""
+
+    image_id: int                              # ImagePlus.getID(): negative, session-unique
+    title: str
+    dims_xyczt: tuple[int, int, int, int, int]
+    bit_depth: int
+    pixel_width: float
+    pixel_height: float
+    pixel_depth: float
+    x_unit: str
+    y_unit: str
+    z_unit: str
+    x_origin: float
+    y_origin: float
+    z_origin: float
+    frame_interval: float
+    time_unit: str
+    properties: dict
+    channel_labels: tuple
+    changes: bool
+
+    def to_dict(self) -> dict:
+        out = dict(self.__dict__)
+        out["dims_xyczt"] = [int(v) for v in self.dims_xyczt]
+        out["channel_labels"] = list(self.channel_labels)
+        out["properties"] = {str(k): str(v) for k, v in self.properties.items()}
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "FijiImageDescription":
+        return cls(
+            image_id=int(d["image_id"]),
+            title=str(d["title"]),
+            dims_xyczt=tuple(int(v) for v in d["dims_xyczt"]),
+            bit_depth=int(d["bit_depth"]),
+            pixel_width=float(d["pixel_width"]),
+            pixel_height=float(d["pixel_height"]),
+            pixel_depth=float(d["pixel_depth"]),
+            x_unit=str(d["x_unit"]), y_unit=str(d["y_unit"]), z_unit=str(d["z_unit"]),
+            x_origin=float(d["x_origin"]), y_origin=float(d["y_origin"]), z_origin=float(d["z_origin"]),
+            frame_interval=float(d["frame_interval"]),
+            time_unit=str(d["time_unit"]),
+            properties={str(k): str(v) for k, v in dict(d.get("properties") or {}).items()},
+            channel_labels=tuple(None if v is None else str(v) for v in d.get("channel_labels") or ()),
+            changes=bool(d["changes"]),
+        )
+
+
+# --------------------------------------------------------------------------
 # requests
 # --------------------------------------------------------------------------
 
@@ -109,7 +168,8 @@ class Send:
     op: ClassVar[str] = "send"
 
     @classmethod
-    def from_plan(cls, plan: SendPlan, path) -> "Send":
+    def from_plan(cls, plan, path) -> "Send":
+        """``plan`` is a ``convert.SendPlan``, taken duck-typed to avoid importing convert."""
         return cls(
             path=str(path),
             title=plan.title,
@@ -168,6 +228,23 @@ class CloseImage:
 
 
 @dataclass(frozen=True)
+class RunCommand:
+    """Run an ImageJ1 command: ``IJ.run(imp, command, options)``, or ``IJ.run(command, options)``.
+
+    Used by tests and later by scripted workflows; a user's own Fiji work never
+    goes through it. The reply is ``{"current_id": int | None}``.
+    """
+
+    image_id: int | None
+    command: str
+    options: str = ""
+    op: ClassVar[str] = "run_command"
+
+    def to_dict(self) -> dict:
+        return {"op": self.op, "image_id": self.image_id, "command": self.command, "options": self.options}
+
+
+@dataclass(frozen=True)
 class Quit:
     op: ClassVar[str] = "quit"
 
@@ -186,6 +263,14 @@ def request_from_dict(d: dict):
         return Quit()
     if op == Events.op:
         return Events(clear=_field(d, "clear", bool, optional=True, default=False))
+    if op == RunCommand.op:
+        image_id = d.get("image_id")
+        if image_id is not None:
+            image_id = _field(d, "image_id", int)
+        return RunCommand(
+            image_id=image_id, command=_field(d, "command", str),
+            options=_field(d, "options", str, optional=True, default=""),
+        )
     if op == CloseImage.op:
         return CloseImage(image_id=_field(d, "image_id", int))
     if op == Fetch.op:
@@ -195,8 +280,8 @@ def request_from_dict(d: dict):
         if len(shape) != 5 or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in shape):
             raise ProtocolError("field 'shape_tzcyx' must be five positive integers")
         dtype = _field(d, "dtype", str)
-        if dtype not in _IMAGEJ_DTYPE_NAMES:
-            raise ProtocolError(f"dtype {dtype!r} is not one of {_IMAGEJ_DTYPE_NAMES}")
+        if dtype not in IMAGEJ_DTYPE_NAMES:
+            raise ProtocolError(f"dtype {dtype!r} is not one of {IMAGEJ_DTYPE_NAMES}")
         properties = _field(d, "properties", dict)
         if not all(isinstance(k, str) and isinstance(v, str) for k, v in properties.items()):
             raise ProtocolError("field 'properties' must map strings to strings")
@@ -461,7 +546,7 @@ def _bridge_jars(bridge_jars: Sequence) -> tuple:
 
 __all__ = [
     "PROTOCOL_VERSION", "FijiLinkError", "ProtocolError", "HostError", "FijiNotFound",
-    "BridgeJarsMissing", "Ping", "Send", "ListImages", "Fetch", "Events", "CloseImage", "Quit",
+    "BridgeJarsMissing", "Ping", "Send", "ListImages", "Fetch", "Events", "CloseImage", "RunCommand", "Quit", "IMAGEJ_DTYPE_NAMES", "FijiImageDescription",
     "request_from_dict", "Reply", "reply_value", "PingInfo", "FetchInfo", "images_from_reply",
     "check_ping", "HostLaunchConfig", "resolve_launch_config",
 ]

@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 
+from imswitch.improcess.fiji.protocol import IMAGEJ_DTYPE_NAMES, FijiImageDescription
 from imswitch.improcess.model.napari_import import (
     ImportedLayer,
     LayerSnapshot,
@@ -41,7 +42,7 @@ IMAGEJ_AXES = ("T", "Z", "C", "Y", "X")
 
 #: ImageJ1 has 8-bit, 16-bit and 32-bit float processors only. Anything else
 #: would need a cast, which would change the numbers, so it is refused.
-IMAGEJ_DTYPES = (np.dtype("uint8"), np.dtype("uint16"), np.dtype("float32"))
+IMAGEJ_DTYPES = tuple(np.dtype(name) for name in IMAGEJ_DTYPE_NAMES)
 
 PROP_RESULT_UID = "imswitch.result_uid"
 PROP_AXES = "imswitch.axes"
@@ -198,55 +199,8 @@ def _channel_names(result, n_channels: int, notes: list[str]) -> list[str]:
 # what crosses the process boundary
 # --------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class FijiImageDescription:
-    """The host's description of one open ImagePlus (plain JSON types only)."""
-
-    image_id: int                              # ImagePlus.getID(): negative, session-unique
-    title: str
-    dims_xyczt: tuple[int, int, int, int, int]
-    bit_depth: int
-    pixel_width: float
-    pixel_height: float
-    pixel_depth: float
-    x_unit: str
-    y_unit: str
-    z_unit: str
-    x_origin: float
-    y_origin: float
-    z_origin: float
-    frame_interval: float
-    time_unit: str
-    properties: dict
-    channel_labels: tuple
-    changes: bool
-
-    def to_dict(self) -> dict:
-        out = dict(self.__dict__)
-        out["dims_xyczt"] = [int(v) for v in self.dims_xyczt]
-        out["channel_labels"] = list(self.channel_labels)
-        out["properties"] = {str(k): str(v) for k, v in self.properties.items()}
-        return out
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "FijiImageDescription":
-        return cls(
-            image_id=int(d["image_id"]),
-            title=str(d["title"]),
-            dims_xyczt=tuple(int(v) for v in d["dims_xyczt"]),
-            bit_depth=int(d["bit_depth"]),
-            pixel_width=float(d["pixel_width"]),
-            pixel_height=float(d["pixel_height"]),
-            pixel_depth=float(d["pixel_depth"]),
-            x_unit=str(d["x_unit"]), y_unit=str(d["y_unit"]), z_unit=str(d["z_unit"]),
-            x_origin=float(d["x_origin"]), y_origin=float(d["y_origin"]), z_origin=float(d["z_origin"]),
-            frame_interval=float(d["frame_interval"]),
-            time_unit=str(d["time_unit"]),
-            properties={str(k): str(v) for k, v in dict(d.get("properties") or {}).items()},
-            channel_labels=tuple(None if v is None else str(v) for v in d.get("channel_labels") or ()),
-            changes=bool(d["changes"]),
-        )
-
+# FijiImageDescription lives in protocol.py (the host imports that module and
+# must not load this one); it is imported above and re-exported from here.
 
 @dataclass(frozen=True)
 class SentRecord:

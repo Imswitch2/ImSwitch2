@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import platform
+import subprocess
 import sys
 
 import numpy as np
@@ -14,7 +16,7 @@ from imswitch.improcess.fiji import protocol as proto
 from imswitch.improcess.fiji.convert import plan_send
 from imswitch.improcess.fiji.protocol import (
     PROTOCOL_VERSION, BridgeJarsMissing, CloseImage, Events, Fetch, FijiNotFound, HostError,
-    ListImages, Ping, PingInfo, ProtocolError, Quit, Reply, Send, check_ping, images_from_reply,
+    ListImages, Ping, PingInfo, ProtocolError, Quit, Reply, RunCommand, Send, check_ping, images_from_reply,
     reply_value, request_from_dict, resolve_launch_config,
 )
 from imswitch.improcess.model.array_result import ArrayProcessingResult
@@ -28,11 +30,44 @@ def _send():
 
 
 @pytest.mark.parametrize("request_", [
-    Ping(), _send(), ListImages(), Fetch(-3, "/tmp/y.raw"), Events(), Events(clear=True), CloseImage(-3), Quit(),
+    Ping(), _send(), ListImages(), RunCommand(-3, "Duplicate...", "title=x"), RunCommand(None, "Close All"), Fetch(-3, "/tmp/y.raw"), Events(), Events(clear=True), CloseImage(-3), Quit(),
 ])
 def test_every_request_round_trips_through_json(request_):
     wire = json.loads(json.dumps(request_.to_dict()))
     assert request_from_dict(wire) == request_
+
+
+@pytest.mark.parametrize("bad", [
+    {"op": "run_command", "image_id": "x", "command": "c"}, {"op": "run_command", "image_id": 1},
+    {"op": "run_command", "image_id": True, "command": "c"}, {"op": "run_command", "image_id": 1, "command": 3},
+    {"op": "run_command", "image_id": 1, "command": "c", "options": 5},
+])
+def test_malformed_run_command_is_refused(bad):
+    with pytest.raises(ProtocolError):
+        request_from_dict(bad)
+
+
+def test_run_command_defaults_to_no_image_and_no_options():
+    assert request_from_dict({"op": "run_command", "command": "Close All"}) == RunCommand(None, "Close All", "")
+
+
+def test_protocol_alone_loads_no_other_imswitch_module():
+    # The host process imports protocol; reaching convert would drag in the
+    # whole ImProcess model (h5py and more) and fail in the host's interpreter.
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    code = ("import sys; import imswitch.improcess.fiji.protocol; "
+            "print(sorted(m for m in sys.modules if m.startswith('imswitch')))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=root,
+                         env={**os.environ, "PYTHONPATH": root}, check=True).stdout
+    assert ast.literal_eval(out.strip()) == [
+        "imswitch", "imswitch.improcess", "imswitch.improcess.fiji", "imswitch.improcess.fiji.protocol",
+    ]
+
+
+def test_convert_dtypes_derive_from_the_protocol_names():
+    from imswitch.improcess.fiji import convert
+    assert convert.IMAGEJ_DTYPES == tuple(np.dtype(n) for n in proto.IMAGEJ_DTYPE_NAMES)
+    assert convert.FijiImageDescription is proto.FijiImageDescription
 
 
 def test_send_from_plan_describes_the_canonical_array():
