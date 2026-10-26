@@ -441,10 +441,15 @@ class HostLaunchConfig:
 def resolve_launch_config(
     fiji_dir,
     *,
-    ram_bytes: int,
+    ram_bytes: int | None,
     bridge_jars: Sequence,
 ) -> HostLaunchConfig:
-    """Work out how to start the host for ``fiji_dir`` (pure; RAM is an argument)."""
+    """Work out how to start the host for ``fiji_dir`` (pure; RAM is an argument).
+
+    ``ram_bytes=None`` means the physical memory could not be determined: a
+    heap policy given as a percentage then cannot be turned into a size, so no
+    ``-Xmx`` is passed (Java's default heap applies) and a note says so.
+    """
     notes: list[str] = []
     root = _fiji_root(Path(fiji_dir), notes)
     java_home = _find_java_home(root)
@@ -515,7 +520,7 @@ def _find_java_home(root: Path) -> Path:
     )
 
 
-def _max_heap_mb(root: Path, ram_bytes: int, notes: list[str]) -> int | None:
+def _max_heap_mb(root: Path, ram_bytes: int | None, notes: list[str]) -> int | None:
     unknown = "Fiji's heap policy not found; Java's default heap applies"
     try:
         text = (root / "config" / "jaunch" / "fiji.toml").read_text(encoding="utf-8")
@@ -529,6 +534,10 @@ def _max_heap_mb(root: Path, ram_bytes: int, notes: list[str]) -> int | None:
         return None
     number, unit = float(value.group("number")), value.group("unit").lower()
     if unit == "%":
+        if ram_bytes is None:
+            notes.append(f"physical memory unknown, so Fiji's {value.group('number')}% heap policy "
+                         "cannot be applied; Java's default heap applies")
+            return None
         return int(ram_bytes * number / 100) // _BYTES_PER_MB
     return int(number * _MB_PER_GB) if unit.startswith("g") else int(number)
 
