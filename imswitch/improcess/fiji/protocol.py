@@ -399,24 +399,34 @@ def _platform_token() -> str | None:
 
 
 def _find_java_home(root: Path) -> Path:
+    # Resolved, because Fiji Latest's macOS JDK folder links its top-level bin
+    # into zulu-21.jdk/Contents/Home/bin: one JDK, reachable by two paths.
+    java_root = (root / "java").resolve()
     homes = sorted(
         {
-            bin_dir.parent
-            for bin_dir in (root / "java").rglob("bin")
+            bin_dir.resolve().parent
+            for bin_dir in java_root.rglob("bin")
             if bin_dir.is_dir() and ((bin_dir / "java").exists() or (bin_dir / "java.exe").exists())
         }
     )
     if not homes:
         raise FijiNotFound("this Fiji has no bundled Java; install Fiji Latest")
-    if len(homes) == 1:
-        return homes[0]
+    # Even a lone JDK must be this platform's: an older Fiji ships
+    # java/macosx/<x64 Java 8>, which this process cannot load, and accepting
+    # it here would only move the failure into the host's startup.
     token = _platform_token()
-    matching = [h for h in homes if token and token in h.relative_to(root / "java").as_posix().lower()]
+    matching = [h for h in homes if token and token in h.relative_to(java_root).as_posix().lower()]
     if len(matching) == 1:
         return matching[0]
+    if not matching:
+        raise FijiNotFound(
+            f"this Fiji bundles no Java for this platform ({token or sys.platform}): "
+            + ", ".join(str(h) for h in homes)
+            + "; install Fiji Latest for this platform"
+        )
     raise FijiNotFound(
-        "this Fiji bundles several Java installations and none is the only match for this platform: "
-        + ", ".join(str(h) for h in (matching or homes))
+        "this Fiji bundles several Java installations for this platform: "
+        + ", ".join(str(h) for h in matching)
     )
 
 

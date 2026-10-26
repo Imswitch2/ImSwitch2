@@ -125,11 +125,34 @@ def _on(monkeypatch, plat, machine):
     monkeypatch.setattr(platform, "machine", lambda: machine)
 
 
+@pytest.fixture(autouse=True)
+def _apple_silicon(monkeypatch):
+    # The default fake Fiji bundles a macos-arm64 JDK; pin the platform so the
+    # suite means the same thing on every CI runner. Tests that need another
+    # platform call _on() again.
+    _on(monkeypatch, "darwin", "arm64")
+
+
 def test_a_single_bundled_jdk_is_used(tmp_path, jars):
     root = _fiji(tmp_path)
     config = resolve_launch_config(root, ram_bytes=8 * GIB, bridge_jars=jars)
     assert config.java_home == root / "java/macos-arm64/zulu21/zulu-21.jdk/Contents/Home"
     assert config.java_fetch == "auto" and config.fiji_dir == root
+
+
+def test_a_jdk_reachable_by_a_linked_bin_counts_once(tmp_path, jars):
+    # Fiji Latest's macOS layout: <zulu>/bin -> zulu-21.jdk/Contents/Home/bin.
+    root = _fiji(tmp_path, java=("macos-arm64/zulu21/zulu-21.jdk/Contents/Home",))
+    (root / "java/macos-arm64/zulu21/bin").symlink_to("zulu-21.jdk/Contents/Home/bin")
+    config = resolve_launch_config(root, ram_bytes=GIB, bridge_jars=jars)
+    assert config.java_home == (root / "java/macos-arm64/zulu21/zulu-21.jdk/Contents/Home").resolve()
+
+
+def test_a_lone_jdk_for_another_platform_is_refused(tmp_path, jars):
+    # The layout of an older Fiji: x64 Java 8 under java/macosx.
+    root = _fiji(tmp_path, java=("macosx/zulu8-macosx_x64/jre/Contents/Home",))
+    with pytest.raises(FijiNotFound, match="no Java for this platform"):
+        resolve_launch_config(root, ram_bytes=GIB, bridge_jars=jars)
 
 
 def test_the_jdk_is_chosen_by_platform(tmp_path, jars, monkeypatch):

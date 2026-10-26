@@ -13,8 +13,9 @@ This module records a graph instead, under ``metadata["provenance"]``:
   ``process``, ``external-import`` for a result taken back from an
   interactive tool such as napari or Fiji, whose ``tool`` field names it;
   ``napari-import`` is the legacy name of the same op, read from older files
-  and never written; ``opaque`` for a result whose origin is unknown), with a minted step id, the plugin that ran, its parameters,
-  **ordered** input references and **named** output ports;
+  and never written; ``opaque`` for a result whose origin is unknown), with
+  a minted step id, the plugin that ran, its parameters, **ordered** input
+  references and **named** output ports;
 * every result carries the **transitive** union of its inputs' nodes plus its
   own, keyed by step id so shared ancestors deduplicate, and an ``output``
   reference saying which node and port *this* result is;
