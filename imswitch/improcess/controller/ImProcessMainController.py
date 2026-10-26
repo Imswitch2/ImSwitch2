@@ -94,6 +94,19 @@ class ImProcessMainController(MainController):
             # Endpoints are an extra on top of the viewer; a broken npe2
             # environment must not keep ImProcess from starting.
             self.__logger.exception("Could not set up napari endpoints")
+        self.fijiController = None
+        try:
+            from .FijiController import FijiController
+
+            self.fijiController = FijiController(
+                self.__commChannel,
+                self.__mainView,
+                self.mainViewController.reconstructionController,
+            )
+        except Exception:
+            # Fiji is an optional extra; a broken setup there must not keep
+            # ImProcess from starting.
+            self.__logger.exception("Could not set up the Fiji link")
         self.workflowController = None
         try:
             from .WorkflowController import WorkflowController

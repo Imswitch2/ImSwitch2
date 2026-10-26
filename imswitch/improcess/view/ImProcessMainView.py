@@ -901,10 +901,16 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsMenu.addSeparator()
         self._napariPluginsMenu = self._pluginsMenu.addMenu('napari plugins')
         self._napariPluginsMenu.setToolTipsVisible(True)
+        self._fijiMenu = self._pluginsMenu.addMenu('Fiji')
+        self._fijiMenu.setToolTipsVisible(True)
 
     def napariPluginsMenu(self) -> QtWidgets.QMenu:
         """The submenu the napari endpoint controller fills in."""
         return self._napariPluginsMenu
+
+    def fijiMenu(self) -> QtWidgets.QMenu:
+        """The submenu the Fiji controller fills in."""
+        return self._fijiMenu
 
     def _openUserPluginsFolder(self) -> None:
         """Open the drop-in plugins directory in the system file browser."""
