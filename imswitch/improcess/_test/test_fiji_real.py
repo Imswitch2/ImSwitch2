@@ -40,7 +40,8 @@ def _config():
 
 
 def _new_session() -> FijiSession:
-    return FijiSession(_config(), python=FIJI_PYTHON, extra_env={"PYTHONPATH": str(REPO_ROOT)})
+    # No PYTHONPATH here: the session puts this ImSwitch on the host's path itself.
+    return FijiSession(_config(), python=FIJI_PYTHON)
 
 
 @pytest.fixture(scope="module")

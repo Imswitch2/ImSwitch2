@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -239,3 +240,15 @@ def test_a_host_that_ignores_quit_is_killed(make):
     assert time.monotonic() - started >= SHORT_STOP_S
     assert proc.poll() is not None and proc.returncode != 0
     assert session.state == "stopped"
+
+
+def test_the_host_path_starts_with_this_imswitch():
+    import os
+
+    import imswitch
+    from imswitch.improcess.fiji.session import _host_pythonpath
+
+    root = str(Path(imswitch.__file__).resolve().parent.parent)
+    path = _host_pythonpath(os.pathsep.join(["/elsewhere", root]))
+    assert path.split(os.pathsep) == [root, "/elsewhere"]
+    assert _host_pythonpath("") == root

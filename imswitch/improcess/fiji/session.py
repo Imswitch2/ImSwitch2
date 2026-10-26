@@ -105,6 +105,22 @@ class FijiDied(FijiLinkError):
     """The host process died or the connection to it broke."""
 
 
+def _host_pythonpath(existing: str) -> str:
+    """``existing`` with this ImSwitch's package root in front.
+
+    The host may run in another interpreter (the ``fijiPython`` preference:
+    an environment that has pyimagej when ImSwitch's does not), where
+    ``imswitch`` is not installed. The host imports only the protocol module
+    and numpy, so pointing it at this ImSwitch's source is all it needs, and
+    it also guarantees both sides speak the same protocol version.
+    """
+    import imswitch
+
+    root = str(Path(imswitch.__file__).resolve().parent.parent)
+    parts = [p for p in existing.split(os.pathsep) if p and p != root]
+    return os.pathsep.join([root, *parts])
+
+
 class FijiSession:
     """One host process and the connection to it. See the module docstring."""
 
@@ -198,6 +214,7 @@ class FijiSession:
         self._listener = Listener(("127.0.0.1", 0), authkey=authkey)
         host, port = self._listener.address
         env = {**os.environ, **self.config.env(), "IMSWITCH_FIJI_ADDR": f"{host}:{port}", **self._extra_env}
+        env["PYTHONPATH"] = _host_pythonpath(env.get("PYTHONPATH", ""))
         with open(self.log_path, "wb") as log:
             self._proc = subprocess.Popen(
                 [self._python, "-m", self._host_module],
