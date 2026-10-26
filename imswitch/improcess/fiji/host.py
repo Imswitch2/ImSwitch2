@@ -352,6 +352,13 @@ class FijiState:
         return {}
 
     def events_reply(self, req: Events) -> dict:
+        # ImageJ hands ImageListener notifications to the AWT event thread
+        # with invokeLater, so "opened" for a duplicate made by the request
+        # just before this one may still be queued. Draining the queue first
+        # makes a snapshot complete for every request that already returned.
+        from jpype import JProxy
+
+        _jimport("java.awt.EventQueue").invokeAndWait(JProxy("java.lang.Runnable", dict(run=lambda: None)))
         text = self.recorder.getText() if self.recorder is not None else None
         return {"events": self.events.snapshot(clear=req.clear), "recorder": str(text) if text is not None else None}
 
