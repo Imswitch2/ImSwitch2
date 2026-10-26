@@ -105,6 +105,21 @@ def resolve_source(image_id, desc, sent_ids, sent_results: dict, results_by_uid:
     return results_by_uid.get(uid) if uid else None
 
 
+def sent_record_for(image_id, desc, sent: dict):
+    """The send an image belongs to: its own, else the send its lineage hint names.
+
+    A duplicate made in Fiji carries the sent image's uid hint but has no send
+    of its own; borrowing that send's axes lets it come back in the source's
+    axis order instead of ImageJ's. It only shapes the axis order --
+    ``to_snapshot`` still checks that the extra axes are size 1, and the grid
+    is decided separately.
+    """
+    if image_id in sent:
+        return sent[image_id]
+    uid = desc.properties.get(PROP_RESULT_UID, "") if desc is not None else ""
+    return next((record for record in sent.values() if uid and record.result_uid == uid), None)
+
+
 class FijiController(QtCore.QObject):
     """Owns the Plugins > Fiji menu, the session and its worker thread."""
 
@@ -424,7 +439,7 @@ class FijiController(QtCore.QObject):
             # P4: the provenance tracker decides preserves_grid and adds the recorded operations here.
             imported = import_fiji_image(
                 desc, data, source,
-                sent=session.sent.get(image_id),
+                sent=sent_record_for(image_id, desc, session.sent),
                 preserves_grid=False,
                 details={"imagej": ping.imagej, "java": ping.java} if ping else None,
             )
@@ -551,4 +566,4 @@ class FijiController(QtCore.QObject):
         self._logger.info(message)
 
 
-__all__ = ["FijiController", "CLOSE_MARGIN_S", "resolve_source"]
+__all__ = ["FijiController", "CLOSE_MARGIN_S", "resolve_source", "sent_record_for"]

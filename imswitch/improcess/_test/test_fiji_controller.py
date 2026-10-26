@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qtpy import QtCore, QtWidgets  # noqa: E402
 
 from imswitch.improcess.controller import FijiController as controller_module  # noqa: E402
-from imswitch.improcess.controller.FijiController import FijiController, resolve_source  # noqa: E402
+from imswitch.improcess.controller.FijiController import FijiController, resolve_source, sent_record_for  # noqa: E402
 from imswitch.improcess.fiji.convert import PROP_RESULT_UID, SentRecord  # noqa: E402
 from imswitch.improcess.fiji.preferences import (  # noqa: E402
     LOCATION_HINT,
@@ -346,6 +346,17 @@ def test_source_resolution_order():
     assert resolve_source(-3, desc, set(), {}, {"u1": hinted}) is hinted
     assert resolve_source(-3, _desc(-3), set(), {}, {"u1": hinted}) is None
     assert resolve_source(-3, _desc(-3, uid="other"), set(), {}, {"u1": hinted}) is None
+
+
+def test_a_derived_image_borrows_the_send_its_hint_names():
+    from imswitch.improcess.fiji.convert import SentRecord
+
+    own = SentRecord(-2, "u1", ("Z", "Y", "X"), (1, 5, 1, 8, 8))
+    sent = {-2: own}
+    assert sent_record_for(-2, _desc(-2, uid="u1"), sent) is own
+    assert sent_record_for(-3, _desc(-3, uid="u1"), sent) is own      # a duplicate of -2
+    assert sent_record_for(-4, _desc(-4, uid="other"), sent) is None
+    assert sent_record_for(-5, _desc(-5), sent) is None
 
 
 def test_one_message_per_image_that_cannot_be_imported(env):
