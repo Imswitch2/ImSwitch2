@@ -5,7 +5,7 @@ from __future__ import annotations
 import h5py
 import numpy as np
 import pytest
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.result import ViewMode
@@ -517,3 +517,58 @@ def test_the_scale_bar_stays_visible_on_a_bright_image(qtbot):
     outline = window_pixels.pixelColor(origin.x() + bar.width() // 2, origin.y())
     assert min(color.lightness() for color in pixels) > 200
     assert outline.lightness() < 100, "no dark edge to tell the bar from a white image"
+
+
+def _view_rect(window):
+    return window.viewBox().viewRect()
+
+
+def test_home_button_restores_the_whole_image_after_zooming(qtbot):
+    window = _window(qtbot, _result(np.zeros((60, 80), np.uint8), "YX"))
+    window.show()
+    QtWidgets.QApplication.processEvents()
+    window.resetView()
+    whole = _view_rect(window)
+    # The whole image (80 x 60 pixels, origin at 0) is in view.
+    assert whole.left() <= 0 and whole.top() <= 0
+    assert whole.right() >= 80 and whole.bottom() >= 60
+
+    window.viewBox().scaleBy((0.25, 0.25), (10, 10))
+    window.viewBox().translateBy((7, 5))
+    assert _view_rect(window).width() < whole.width()
+
+    window._homeButton.click()
+
+    assert _view_rect(window).width() == pytest.approx(whole.width())
+    assert _view_rect(window).height() == pytest.approx(whole.height())
+    assert _view_rect(window).left() == pytest.approx(whole.left())
+    assert _view_rect(window).top() == pytest.approx(whole.top())
+
+
+def test_the_home_key_on_the_canvas_does_the_same_and_leaves_the_sliders_alone(qtbot):
+    data = np.zeros((4, 60, 80), np.uint8)
+    window = _window(qtbot, _result(data, "ZYX"))
+    window.show()
+    window.activateWindow()
+    qtbot.waitUntil(window.isActiveWindow, timeout=2000)     # shortcuts fire in the active window only
+    window._canvas.setFocus()
+    whole = _view_rect(window)
+    window.viewBox().scaleBy((0.25, 0.25), (10, 10))
+
+    qtbot.keyClick(window._canvas, QtCore.Qt.Key_Home)
+    assert _view_rect(window).width() == pytest.approx(whole.width())
+
+    slider = window._sliders[0][0]
+    slider.setValue(2)
+    window.viewBox().scaleBy((0.25, 0.25), (10, 10))
+    slider.setFocus()
+    qtbot.keyClick(slider, QtCore.Qt.Key_Home)
+    assert slider.value() == 0                                   # the slider keeps its Home
+    assert _view_rect(window).width() < whole.width()            # and the view was not reset
+
+
+def test_the_home_button_sits_in_the_status_row_with_a_tooltip(qtbot):
+    window = _window(qtbot, _result(np.zeros((8, 8), np.uint8), "YX"))
+    assert window._homeButton.toolTip().startswith("Reset view")
+    assert window._homeButton.parentWidget() is window
+    assert window._status.isVisibleTo(window) and window._homeButton.isVisibleTo(window)

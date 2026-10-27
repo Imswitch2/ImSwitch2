@@ -58,6 +58,7 @@ from imswitch.improcess.model.contrast import (
     safe_display_levels,
 )
 from imswitch.improcess.model.result import result_kind
+from imswitch.improcess.view.icons import improcessIcon
 
 #: How much of the view's width the scale bar may span. A fifth reads as a
 #: ruler without hiding the structure it measures, and the bar shortens (to the
@@ -518,7 +519,24 @@ class ImageWindow(QtWidgets.QWidget):
         layout.addWidget(self._canvas, 1)
         layout.addWidget(self._modeCombo)
         layout.addLayout(self._slidersLayout)
-        layout.addWidget(self._status)
+        # The status line and, at its right, the one view control: no toolbar.
+        self._homeButton = QtWidgets.QToolButton()
+        self._homeButton.setIcon(improcessIcon("reset-view", self))
+        self._homeButton.setAutoRaise(True)
+        self._homeButton.setToolTip("Reset view: show the whole image (Home)")
+        self._homeButton.clicked.connect(self.resetView)
+        # Home on the canvas, not the window: in a slider or a spin box Home
+        # already means "first plane" and must keep meaning it.
+        self._canvas.setFocusPolicy(QtCore.Qt.ClickFocus)
+        self._homeShortcut = QtWidgets.QShortcut(
+            QtGui.QKeySequence(QtCore.Qt.Key_Home), self._canvas, self.resetView
+        )
+        self._homeShortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+        statusRow = QtWidgets.QHBoxLayout()
+        statusRow.setContentsMargins(0, 0, 0, 0)
+        statusRow.addWidget(self._status, 1)
+        statusRow.addWidget(self._homeButton)
+        layout.addLayout(statusRow)
 
         self._loadResult()
 
@@ -1216,7 +1234,8 @@ class ImageWindow(QtWidgets.QWidget):
             slider = self._sliders[axis][0]
             slider.setValue(max(slider.minimum(), min(int(step), slider.maximum())))
 
-    def resetView(self) -> None:
+    def resetView(self, *_args) -> None:
+        """Show the whole image (the Home button, the Home key, the toolbar's *Reset view*)."""
         self._vb.autoRange(padding=0)
 
     # ------------------------------------------------------------------

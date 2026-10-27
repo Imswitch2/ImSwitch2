@@ -352,7 +352,9 @@ In window mode:
   (T, Z, Dataset, Base, ...), and a status line giving the calibrated cursor
   position, the value under the cursor (per visible channel for a composite)
   and the slider indices.  A scale bar appears when the pixel size is
-  calibrated.  A result with several view modes gets a mode selector.
+  calibrated.  A result with several view modes gets a mode selector.  The
+  **Home** button at the right of the status line (or the Home key with the
+  image selected) shows the whole image again after zooming and panning.
 * A window has **no contrast controls of its own**.  The image toolbar
   (*Auto contrast*, *Brightness/Contrast…*, *Reset contrast*, the LUT
   selector, *Channels…* and *Reset view*) acts on the **active window**, the
@@ -398,6 +400,9 @@ when you click another window.
   screen.
 * **Profile.** *Line* (the intensity along a drawn line), *Rectangle* and
   *Z profile*, on the plane on screen.
+* **Crop/Substack**, from the Image toolbar or from Tools.  The range table and
+  the *Crop from* ROI chooser work as with napari; only the yellow outline that
+  previews the crop on the image is not drawn.
 
 Inside these panels the controls that need the napari viewer stay visible but
 disabled, with the tooltip *Not yet supported with separate windows*: the ROI
@@ -417,7 +422,6 @@ action.  They work as before with the embedded viewer.
 
 * The panels **Segmentation** (preview), **PSF resolution**,
   **Colocalization** and **Multicolor** (previews).
-* **Crop/Substack…** (the stack-subset dialog that previews on napari layers).
 * **Plugins → napari plugins** (sending a result to a napari plugin and
   importing a napari layer).
 * RGB images and 3D layers cannot be measured or drawn with the ROI tools in a
