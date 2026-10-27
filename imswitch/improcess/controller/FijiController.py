@@ -38,7 +38,6 @@ from imswitch.improcess.fiji.preferences import (
 from imswitch.improcess.fiji.protocol import FijiLinkError, HostError
 from imswitch.improcess.fiji.tracker import GRID_POLICY_VERSION, grid_preserved, history_for
 from imswitch.improcess.fiji.session import (
-    STOP_TIMEOUT_S,
     FijiDied,
     FijiSession,
     FijiStartError,
@@ -47,11 +46,11 @@ from imswitch.improcess.model.napari_import import NotImportable
 from imswitch.improcess.model.provenance import output_node
 from imswitch.improcess.view.FijiImportDialog import FijiImportDialog
 
-#: Time allowed, on top of the session's own stop bound, for the worker to
-#: finish a stop and for its thread to exit when ImProcess closes. The stop
-#: itself is bounded by STOP_TIMEOUT_S; what remains is removing the temp
-#: files and the thread's event loop returning, which take milliseconds.
-#: 5 s is far above that and keeps closing under ~15 s in the worst case.
+#: Time allowed for the worker thread to exit after ImProcess closed and the
+#: session was stopped. The stop interrupts the job the worker is running
+#: (its host is killed, so the job fails at once); what remains is that job
+#: returning and the thread's event loop quitting, which take milliseconds.
+#: 5 s is far above that.
 CLOSE_MARGIN_S = 5.0
 
 _MS_PER_S = 1000
@@ -129,6 +128,9 @@ class FijiController(QtCore.QObject):
     #: session's watcher thread; Qt queues it to the GUI thread because this
     #: object lives there.
     _sigHostExited = QtCore.Signal(object)
+    #: A Stop Fiji finished. Emitted from the short-lived thread that ran the
+    #: stop; queued to the GUI thread like the signal above.
+    _sigStopFinished = QtCore.Signal()
 
     def __init__(
         self,
@@ -161,9 +163,14 @@ class FijiController(QtCore.QObject):
         self._worker = None
         self._pending: dict = {}
         self._tickets = itertools.count(1)
+        #: Bumped by every stop. A job queued before a stop must not run after
+        #: it (a queued Send would start Fiji again right after the user
+        #: stopped it); see :meth:`_runThreaded`.
+        self._generation = 0
         self._closed = False
         self._menu = None
         self._sigHostExited.connect(self._onHostExited)
+        self._sigStopFinished.connect(self._onStopFinished)
 
         menu_getter = getattr(mainView, "fijiMenu", None)
         if callable(menu_getter):
@@ -260,7 +267,14 @@ class FijiController(QtCore.QObject):
             self._startThread()
         ticket = next(self._tickets)
         self._pending[ticket] = (on_done, on_failed)
-        self._worker.sigRun.emit(ticket, tag, job)
+        generation = self._generation
+
+        def current_job():
+            if generation != self._generation:
+                raise FijiLinkError("cancelled: Fiji was stopped")   # nobody is listening: the stop cleared _pending
+            return job()
+
+        self._worker.sigRun.emit(ticket, tag, current_job)
 
     def _startThread(self) -> None:
         self._thread = QtCore.QThread()
@@ -344,13 +358,37 @@ class FijiController(QtCore.QObject):
         self._status(self.statusLine())
 
     def stopFiji(self) -> None:
-        def job():
-            if self._session is not None:
-                self._session.stop()
+        """Stop Fiji now, even while a start or a request is running on the worker.
 
-        self._submit("stop", job, self._onStopped)
+        The stop does not go through the worker (it would queue behind the very
+        job it has to interrupt) and does not run on the GUI thread (it can
+        take as long as the session's stop bound). The interrupted job fails
+        on the worker; its callbacks are dropped, because stopping on purpose
+        is not an error.
+        """
+        self._pending.clear()
+        self._generation += 1
+        session = self._session
+        if session is None:
+            self._onStopped()
+            return
+        threading.Thread(target=self._stopSession, args=(session,), name="fiji-stop", daemon=True).start()
 
-    def _onStopped(self, _value) -> None:
+    def _stopSession(self, session) -> None:
+        """Thread of its own: stop ``session``, then tell the GUI thread."""
+        try:
+            session.stop()
+        except Exception:  # noqa: BLE001 - the GUI thread must still hear that the stop ended
+            self._logger.exception("Stopping Fiji failed")
+        finally:
+            self._sigStopFinished.emit()
+
+    @QtCore.Slot()
+    def _onStopFinished(self) -> None:
+        if not self._closed:
+            self._onStopped()
+
+    def _onStopped(self, _value=None) -> None:
         self._starting = False
         self._sentResults.clear()
         self._imported.clear()
@@ -573,23 +611,19 @@ class FijiController(QtCore.QObject):
         if self._closed:
             return
         self._closed = True
-        self._pending.clear()
+        self._pending.clear()           # the job the stop interrupts must not report back
+        self._generation += 1
+        # Directly, not as a job: a stop queued on the worker would wait behind
+        # a start or request that may never finish. session.stop() is
+        # thread-safe and bounded, and it kills the host under a stuck job.
+        if self._session is not None:
+            try:
+                self._session.stop()
+            except Exception:  # noqa: BLE001 - closing must go on to the thread
+                self._logger.exception("Stopping Fiji failed while closing")
         thread, worker = self._thread, self._worker
         if thread is None:
-            if self._session is not None:
-                self._session.stop()
             return
-        stopped = threading.Event()
-
-        def job():
-            try:
-                if self._session is not None:
-                    self._session.stop()
-            finally:
-                stopped.set()
-
-        worker.sigRun.emit(0, "close", job)
-        stopped.wait(STOP_TIMEOUT_S + CLOSE_MARGIN_S)
         thread.quit()
         if not thread.wait(int(CLOSE_MARGIN_S * _MS_PER_S)):
             self._logger.warning("The Fiji worker thread is still running after closing; leaving it to finish")

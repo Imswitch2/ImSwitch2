@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -10,7 +11,9 @@ import pytest
 
 from imswitch.improcess.fiji.convert import PROP_RESULT_UID, import_fiji_image, plan_send
 from imswitch.improcess.fiji.protocol import FijiLinkError, HostError, HostLaunchConfig
-from imswitch.improcess.fiji.session import FijiDied, FijiSession, FijiStartError
+from imswitch.improcess.fiji.session import (
+    KILL_WAIT_S, STOP_HANDOVER_S, FijiDied, FijiSession, FijiStartError,
+)
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 
 FAKE = "imswitch.improcess._test.fiji_fake_host"
@@ -21,6 +24,15 @@ SHORT_STOP_S = 0.5
 SELF_EXIT_DELAY_S = 0.3
 #: Generous wait for the watcher to react to that exit.
 WATCH_WAIT_S = 30.0
+#: How long a fake host that connects late sleeps first: long enough for the
+#: test to land a stop (or a stray connection) before it connects.
+LATE_CONNECT_S = 3.0
+#: What a stop that has to kill a stuck host may take in these tests: the
+#: polite wait plus the session's own handover bound.
+STOP_BOUND_S = SHORT_STOP_S + KILL_WAIT_S + STOP_HANDOVER_S
+#: A stop that kills a stuck host is in practice done in well under this; the
+#: documented bound above is only the worst case.
+PROMPT_STOP_S = SHORT_STOP_S + 5.0
 
 
 @pytest.fixture
@@ -305,3 +317,61 @@ def test_the_host_path_starts_with_this_imswitch():
     path = _host_pythonpath(os.pathsep.join(["/elsewhere", root]))
     assert path.split(os.pathsep) == [root, "/elsewhere"]
     assert _host_pythonpath("") == root
+
+
+# -- stopping what is in flight ---------------------------------------------------
+
+def _run_in_thread(fn):
+    """Run ``fn`` on a thread; ``box`` gets ``value`` or ``error`` and ``done`` is set at the end."""
+    box = {"done": threading.Event()}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+        finally:
+            box["done"].set()
+
+    threading.Thread(target=target, daemon=True).start()
+    return box
+
+
+def _wait_for(condition, what, timeout_s=WATCH_WAIT_S):
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        time.sleep(0.01)
+
+
+def test_stop_during_a_hanging_request_kills_the_host_and_frees_the_caller(make):
+    session = make("hang_on_request=2")          # the ping is request 1
+    session.start()
+    proc, temp_dir = session.process, session.temp_dir
+    request = _run_in_thread(session.list_images)
+    time.sleep(0.2)                               # the request is now waiting for a reply that never comes
+    assert not request["done"].is_set()
+    started = time.monotonic()
+    session.stop(timeout_s=SHORT_STOP_S)
+    elapsed = time.monotonic() - started
+    assert SHORT_STOP_S <= elapsed < STOP_BOUND_S and elapsed < PROMPT_STOP_S
+    assert session.state == "stopped" and proc.poll() is not None and not temp_dir.exists()
+    assert request["done"].wait(WATCH_WAIT_S)
+    assert isinstance(request.get("error"), FijiDied)
+
+
+def test_stop_during_a_slow_start_ends_it_promptly_and_a_restart_works(make):
+    session = make(f"connect_after={LATE_CONNECT_S}", startup_timeout_s=60.0)
+    start = _run_in_thread(session.start)
+    _wait_for(lambda: session.process is not None, "the host to be launched")
+    proc, temp_dir = session.process, session.temp_dir
+    started = time.monotonic()
+    session.stop(timeout_s=SHORT_STOP_S)
+    elapsed = time.monotonic() - started
+    assert elapsed < PROMPT_STOP_S                # nowhere near the 60 s start-up timeout
+    assert start["done"].wait(WATCH_WAIT_S)
+    assert isinstance(start.get("error"), FijiStartError) and "stopped while starting" in str(start["error"])
+    assert session.state == "stopped" and proc.poll() is not None and not temp_dir.exists()
+    session._extra_env["IMSWITCH_FIJI_FAKE"] = ""
+    session.start()
+    assert session.state == "ready"

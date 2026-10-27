@@ -12,8 +12,12 @@ round trip can be tested without Fiji.
 * ``never_connect``: sleep forever;
 * ``wrong_protocol``: report another protocol version;
 * ``headless``: report a headless Fiji;
+* ``connect_after=S``: sleep S seconds before connecting, so a stop can land
+  while the session is still starting;
 * ``die_on_request=N``: ``os._exit`` on the Nth request received (the start-up
   ping is request 1);
+* ``hang_on_request=N``: receive the Nth request and never reply, like a Fiji
+  sitting in a modal dialog;
 * ``exit_after=S``: ``os._exit`` by itself S seconds after connecting, like a
   user closing Fiji's window;
 * ``slow_quit``: acknowledge ``Quit`` but keep running, so the session's kill
@@ -147,6 +151,8 @@ def main() -> int:
     if "never_connect" in flags:
         while True:
             time.sleep(1)
+    if "connect_after" in flags:
+        time.sleep(float(flags["connect_after"]))
     host, _, port = os.environ["IMSWITCH_FIJI_ADDR"].rpartition(":")
     conn = Client((host, int(port)), authkey=authkey)
     fiji = FakeFiji(flags)
@@ -155,6 +161,7 @@ def main() -> int:
         timer.daemon = True
         timer.start()
     die_at = int(flags["die_on_request"]) if "die_on_request" in flags else None
+    hang_at = int(flags["hang_on_request"]) if "hang_on_request" in flags else None
     received = 0
     while True:
         try:
@@ -164,6 +171,9 @@ def main() -> int:
         received += 1
         if die_at is not None and received == die_at:
             os._exit(DIED_CODE)
+        if hang_at is not None and received == hang_at:
+            while True:
+                time.sleep(1)
         try:
             request = request_from_dict(raw)
             reply = Reply(True, fiji.handle(request))

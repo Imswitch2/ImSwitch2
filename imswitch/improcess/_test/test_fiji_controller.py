@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -39,6 +40,14 @@ from imswitch.improcess.model.napari_import import NotImportable  # noqa: E402
 from imswitch.improcess.model.provenance import derive_history, graph_of, output_node  # noqa: E402
 
 FAKE = "imswitch.improcess._test.fiji_fake_host"
+WAIT_MS = 60000
+#: Polite wait of the sessions the stop tests use, so a stuck host is killed after
+#: this instead of after the production STOP_TIMEOUT_S.
+SHORT_STOP_S = 0.5
+#: How far a stop that kills a stuck host may exceed its polite wait in these tests.
+STOP_SLACK_S = 5.0
+#: The fake host's late connection: long enough for a stop to land first.
+LATE_CONNECT_S = 3.0
 
 
 # -- stubs ----------------------------------------------------------------------
@@ -218,6 +227,9 @@ class Env:
     def status(self):
         return self.view.statuses[-1]
 
+    def statuses_contain(self, message):
+        return message in self.view.statuses
+
 
 @pytest.fixture
 def env(tmp_path, qapp):
@@ -263,11 +275,12 @@ def test_missing_pyimagej_disables_everything_with_the_install_hint(tmp_path, qa
     assert not actions["Start Fiji"].isEnabled() and not actions["Send to Fiji"].isEnabled()
 
 
-def test_stop_returns_to_not_running(env):
+def test_stop_returns_to_not_running(env, qtbot):
     env.controller.startFiji()
     env.controller.stopFiji()
+    # the stop runs on a thread of its own and reports back through a queued signal
+    qtbot.waitUntil(lambda: env.status == "Fiji stopped.", timeout=WAIT_MS)
     assert env.session.state == "stopped" and "Fiji: not running" in env.actions()
-    assert env.status == "Fiji stopped."
 
 
 # -- sending --------------------------------------------------------------------
@@ -656,3 +669,114 @@ def test_real_thread_and_real_session_on_the_fake_host(tmp_path, qtbot):
 def test_the_close_margin_is_a_named_bound():
     assert controller_module.CLOSE_MARGIN_S > 0
     assert QtCore.QThread is not None
+
+
+# -- stopping what is in flight ---------------------------------------------------
+
+class _Rig:
+    """A real worker thread and real sessions on the fake host; ``scenario`` is read at each session's creation."""
+
+    def __init__(self, tmp_path):
+        self.made = []
+        self.scenario = ""
+        scenario = self
+
+        class QuickStopSession(FijiSession):
+            def stop(self, timeout_s=SHORT_STOP_S):
+                super().stop(timeout_s)
+
+        def factory(config, python=None, on_exit=None):
+            session = QuickStopSession(
+                config, python=python, host_module=FAKE, temp_root=tmp_path, startup_timeout_s=60.0,
+                extra_env={"IMSWITCH_FIJI_FAKE": scenario.scenario}, on_exit=on_exit,
+            )
+            self.made.append(session)
+            return session
+
+        self.env = Env(tmp_path, runner=None, factory=factory)
+        self.controller = self.env.controller
+
+    def cleanup(self):
+        for session in self.made:
+            session.stop(timeout_s=SHORT_STOP_S)
+            assert session.process is None or session.process.poll() is not None
+        if self.controller._thread is not None:
+            self.controller.close()
+
+
+@pytest.fixture
+def rig(tmp_path, qapp):
+    rig = _Rig(tmp_path)
+    yield rig
+    rig.cleanup()
+
+
+def _request_in_flight(session) -> bool:
+    """True while another thread holds the session lock, i.e. is blocked inside a host call."""
+    got = session._lock.acquire(blocking=False)
+    if got:
+        session._lock.release()
+    return not got
+
+
+def _start_with_a_hanging_job(rig, qtbot):
+    """Start a host that hangs on its second request, then give the worker a job that hangs."""
+    rig.scenario = "hang_on_request=2"            # the ping is request 1
+    controller = rig.controller
+    controller.startFiji()
+    qtbot.waitUntil(lambda: controller.state() == "ready", timeout=WAIT_MS)
+    controller.importNewImages()                    # lists the images: the host never answers
+    session = rig.made[0]
+    qtbot.waitUntil(lambda: _request_in_flight(session), timeout=WAIT_MS)
+    return session
+
+
+def test_close_while_a_job_hangs_kills_the_host_and_ends_the_thread(rig, qtbot):
+    session = _start_with_a_hanging_job(rig, qtbot)
+    controller, thread, process = rig.controller, rig.controller._thread, session.process
+    assert thread.isRunning()
+    started = time.monotonic()
+    controller.close()
+    assert time.monotonic() - started < SHORT_STOP_S + STOP_SLACK_S
+    assert not thread.isRunning() and process.poll() is not None
+    assert session.state == "stopped" and controller._thread is None
+    assert "unexpectedly" not in " ".join(rig.env.view.statuses)      # the interrupted job stayed silent
+
+
+def test_stop_fiji_while_a_job_hangs_does_not_block_the_event_loop(rig, qtbot):
+    session = _start_with_a_hanging_job(rig, qtbot)
+    controller, process = rig.controller, session.process
+    ticks = []
+    timer = QtCore.QTimer()
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start(20)
+    try:
+        controller.stopFiji()
+        assert not ticks and not rig.env.statuses_contain("Fiji stopped.")
+        qtbot.waitUntil(lambda: rig.env.statuses_contain("Fiji stopped."), timeout=WAIT_MS)
+    finally:
+        timer.stop()
+    assert len(ticks) >= 2                          # the GUI thread kept running while the stop waited
+    assert session.state == "stopped" and process.poll() is not None
+    assert controller.state() == "stopped" and controller.statusLine() == "Fiji: not running"
+    assert "unexpectedly" not in " ".join(rig.env.view.statuses)
+
+
+def test_stop_fiji_while_starting_ends_stopped_and_start_works_again(rig, qtbot, warnings):
+    rig.scenario = f"connect_after={LATE_CONNECT_S}"
+    controller = rig.controller
+    controller.startFiji()
+    qtbot.waitUntil(lambda: bool(rig.made) and rig.made[0].process is not None, timeout=WAIT_MS)
+    assert controller.state() == "starting"
+    process = rig.made[0].process
+    controller.stopFiji()
+    qtbot.waitUntil(lambda: rig.env.statuses_contain("Fiji stopped."), timeout=WAIT_MS)
+    qtbot.wait(200)                                  # let the interrupted start report, if it were going to
+    assert controller.state() == "stopped" and controller.statusLine() == "Fiji: not running"
+    assert warnings == []                            # a stop on purpose is not a failed start
+    assert process.poll() is not None and rig.made[0].state == "stopped"
+
+    rig.scenario = ""
+    controller.startFiji()
+    qtbot.waitUntil(lambda: controller.state() == "ready", timeout=WAIT_MS)
+    assert len(rig.made) == 2 and rig.made[1].state == "ready"

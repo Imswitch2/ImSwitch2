@@ -227,7 +227,10 @@ or *failed to start*) and these entries.
      - Imports every open image that was neither sent from ImProcess nor
        imported before, without asking. Says so when there is none.
    * - **Stop Fiji**
-     - Closes Fiji and its process. Closing ImProcess does the same.
+     - Closes Fiji and its process. Closing ImProcess does the same. It also
+       works while Fiji is still starting (at once) and while Fiji is busy in
+       a dialog (Fiji gets about ten seconds to quit, then its process is
+       ended).
    * - **Fiji location…**
      - Chooses the Fiji folder (see above). A running Fiji keeps its old
        location until the next start.

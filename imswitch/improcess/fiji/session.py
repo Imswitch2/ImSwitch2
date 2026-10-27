@@ -94,6 +94,21 @@ REAP_TIMEOUT_S = 5.0
 #: ignored, so this is only a guard against a stuck wait).
 KILL_WAIT_S = 10.0
 
+#: How long the throwaway connection that wakes the accept thread may take to
+#: connect, and how long the waiter then gives the accept thread to finish.
+#: Both are localhost operations that complete in milliseconds; one second is
+#: far above that and still keeps a failed start from seeming hung.
+WAKE_ACCEPT_S = 1.0
+
+#: How long :meth:`FijiSession.stop` waits for a start or a request that holds
+#: the session lock to let go AFTER it has killed the host. The holder is
+#: released by the host's death, then needs: the start loop to notice
+#: (STARTUP_POLL_S), wake and release its accept thread (a connect plus a wait,
+#: 2 * WAKE_ACCEPT_S), and reap the process (REAP_TIMEOUT_S, KILL_WAIT_S). A
+#: request only needs the reap. Every term is a bound that already exists, so
+#: this adds no guess of its own.
+STOP_HANDOVER_S = STARTUP_POLL_S + 2 * WAKE_ACCEPT_S + REAP_TIMEOUT_S + KILL_WAIT_S
+
 STATES = ("stopped", "starting", "ready", "failed", "dead")
 
 
@@ -201,7 +216,7 @@ class FijiSession:
             if self._state == "ready":
                 return
             self._teardown()
-            self._stopping = False
+            self._stopping = False          # a stop() of the previous host must not abort this start
             self._state, self._error = "starting", ""
             try:
                 self._launch()
@@ -288,6 +303,9 @@ class FijiSession:
             if code is not None:
                 self._wake_accept(accepted)
                 raise FijiStartError(self._describe(f"the Fiji host exited with code {code} before it connected"))
+            if self._stopping:
+                self._wake_accept(accepted)
+                raise FijiStartError(self._describe("stopped while starting"))
             if time.monotonic() >= deadline:
                 self._wake_accept(accepted)
                 raise FijiStartError(self._describe(
@@ -295,11 +313,15 @@ class FijiSession:
         if "error" in box:
             raise FijiStartError(self._describe(f"the Fiji host connection failed: {box['error']!r}"))
         self._conn = box["conn"]
+        if self._stopping:
+            raise FijiStartError(self._describe("stopped while starting"))
 
         try:
             info = PingInfo.from_dict(reply_value(self._exchange(Ping(), deadline - time.monotonic())))
             check_ping(info)
         except (FijiLinkError, EOFError, OSError) as exc:
+            if self._stopping:              # stop() killed the host under the ping
+                raise FijiStartError(self._describe("stopped while starting")) from exc
             raise FijiStartError(self._describe(f"the Fiji host failed its first request: {exc}")) from exc
         self.ping_info = info
 
@@ -307,27 +329,65 @@ class FijiSession:
         """Release the blocked ``accept`` with a throwaway connection, then close the listener."""
         try:
             host, port = self._listener.address
-            socket.create_connection((host, port), timeout=1.0).close()
+            socket.create_connection((host, port), timeout=WAKE_ACCEPT_S).close()
         except OSError:
             pass
-        accepted.wait(1.0)
+        accepted.wait(WAKE_ACCEPT_S)
 
     def stop(self, timeout_s: float = STOP_TIMEOUT_S) -> None:
-        """Ask the host to quit, kill it after ``timeout_s``, and remove the temp files. Idempotent."""
+        """Quit the host, kill it if it will not, and remove the temp files. Idempotent, thread-safe.
+
+        Unlike every other call it works while a :meth:`start` or a request is
+        in flight, which is the point: a start can take minutes and a request
+        to a Fiji sitting in a modal dialog never returns. It sets the stopping
+        flag (a start in progress notices it within ``STARTUP_POLL_S`` and
+        gives up), then waits for the session lock for at most ``timeout_s``.
+        With the lock it asks the host to quit and kills it if it has not
+        exited by the same deadline. Without it, the host is killed at once;
+        the in-flight request then reads EOF (or the start sees the exit),
+        lets go of the lock, and stop cleans up.
+
+        Total bound: ``timeout_s`` for the polite path (lock wait, ``Quit`` and
+        exit share one deadline), plus ``KILL_WAIT_S`` for reaping a host that
+        had to be killed, plus ``STOP_HANDOVER_S`` when the lock was held by a
+        start or request. The killed-host case normally ends in milliseconds;
+        the sum is only the worst case of bounds that already exist.
+        """
         self._stopping = True          # before Quit, so the watcher stays silent
-        with self._lock:
-            if self._state == "ready":
-                try:
-                    self._exchange(Quit(), None)
-                except (FijiLinkError, EOFError, OSError):
-                    pass
-            if self._proc is not None and self._proc.poll() is None:
-                try:
-                    self._proc.wait(timeout=timeout_s)
-                except subprocess.TimeoutExpired:
-                    self._kill()
+        deadline = time.monotonic() + timeout_s
+        if self._lock.acquire(timeout=max(timeout_s, 0.0)):
+            try:
+                self._quit_and_teardown(deadline)
+            finally:
+                self._lock.release()
+            return
+        self._kill()
+        if not self._lock.acquire(timeout=STOP_HANDOVER_S):
+            # The holder is neither a start nor a request waiting on the host
+            # (the host is dead), so it is busy elsewhere, e.g. writing a large
+            # array to disk. It leaves the session "dead" when it ends, and a
+            # later stop() tidies up; tearing down under it would not be safe.
+            return
+        try:
             self._teardown()
             self._state, self._error = "stopped", ""
+        finally:
+            self._lock.release()
+
+    def _quit_and_teardown(self, deadline: float) -> None:
+        """With the lock held: ask the host to quit, kill it at ``deadline``, tear everything down."""
+        if self._state == "ready":
+            try:
+                self._exchange(Quit(), max(deadline - time.monotonic(), 0.0))
+            except (FijiLinkError, EOFError, OSError):
+                pass
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.wait(timeout=max(deadline - time.monotonic(), 0.0))
+            except subprocess.TimeoutExpired:
+                self._kill()
+        self._teardown()
+        self._state, self._error = "stopped", ""
 
     def _kill(self) -> None:
         proc = self._proc
@@ -383,7 +443,7 @@ class FijiSession:
         """Send ``message`` and return the raw reply dict; ``timeout_s`` bounds the wait."""
         self._conn.send(message.to_dict())
         if timeout_s is not None and not self._conn.poll(max(timeout_s, 0.0)):
-            raise FijiLinkError("no reply from the Fiji host within the start-up allowance")
+            raise FijiLinkError("no reply from the Fiji host within the time allowed")
         return self._conn.recv()
 
     def _mark_dead(self, cause: BaseException) -> FijiDied:
@@ -476,5 +536,5 @@ class FijiSession:
 
 
 __all__ = [
-    "STARTUP_TIMEOUT_S", "STOP_TIMEOUT_S", "STATES", "FijiStartError", "FijiDied", "FijiSession", "HostError",
+    "STARTUP_TIMEOUT_S", "STOP_TIMEOUT_S", "STOP_HANDOVER_S", "STATES", "FijiStartError", "FijiDied", "FijiSession", "HostError",
 ]
