@@ -890,6 +890,7 @@ def test_new_recording_resets_previous_scan_and_writer_terminals_first():
         _shutdownRequested=False,
         _finalizingRecCycle=False,
         recording=False,
+        recMode=RecMode.SpecFrames,
         doneScan=True,
         endedRecording=True,
         _master=types.SimpleNamespace(
@@ -1083,6 +1084,9 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
         _recordingOperationActive=True,
         _recordingManagerGeneration=None,
         _recordingGenerationBeforeOperation=None,
+        _activeScanSeriesSettings=types.SimpleNamespace(
+            timepoints=2, interval_s=0.0, single_file=False,
+        ),
         _usesDetailedRecordingSignals=True,
         savename='/tmp/rec/test_rec',
         recordingArgs={
