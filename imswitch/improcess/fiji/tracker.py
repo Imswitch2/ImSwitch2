@@ -78,6 +78,19 @@ Rules
      fetch time equals that one: the pixels are those the command left. When
      the two differ the pixels changed after the last recorded command, which
      is ``"detected"`` whatever the flag says.
+
+   The fingerprint is evidence only while its command is the LAST one that
+   acted in place on the image (or created it). The host stamps a command's
+   end, and with it the fingerprints, after the command's thread is over and
+   after hashing every plane, so a later command can reach the log without
+   them: its end not yet stamped, its fingerprint unreadable, or a command on a
+   long-lived thread whose end never comes. Then the pixels may differ from
+   the older fingerprint because of that very command, and the difference says
+   nothing about an outside change. In that case no pixel verdict is given:
+   the result is ``"possible"`` with a note that names the commands and, when
+   the host reported them (``pending_ends``), that their fingerprint was still
+   being computed. Equal fingerprints still clear later updates: the pixels
+   are then provably those of the older command.
 8. **Completeness.** ``"unknown"`` when the origin is unknown or a change is
    detected; else ``"partial"`` when a step is partial or a change is possible;
    else ``"recorded"``.
@@ -449,11 +462,14 @@ def _step(cmd: _Command) -> FijiStep:
 def history_for(
     image_id: int, events: list[dict], recorder: str | None, *,
     sent_ids: Collection[int], fetched_fingerprint: str | None = None,
+    pending_ends: Collection[int] = (),
 ) -> FijiHistory:
     """Everything Fiji did to ``image_id`` since it was sent, as far as ImageJ showed it.
 
     ``fetched_fingerprint`` is the host's pixel fingerprint of the image at the
-    moment it was fetched; see rule 7.
+    moment it was fetched; see rule 7. ``pending_ends`` are the ``seq`` numbers
+    of the commands whose end the host was still stamping when it answered (the
+    events reply's ``pending_ends``); they only sharpen a note.
     """
     sent = {int(i) for i in sent_ids}
     ordered = _ordered(events)
@@ -498,15 +514,30 @@ def history_for(
         notes.append("the walk through the log did not end; the origin is not known")
     steps = tuple(_step(cmd) for segment in reversed(segments) for cmd in segment)
 
+    key = str(image_id)
     anchor = None
     for cmd in commands:
-        if str(image_id) in (cmd.event.get("end_fingerprints") or {}):
+        if key in (cmd.event.get("end_fingerprints") or {}):
             anchor = cmd
+    # Commands after the anchor that changed this image (or made it) without
+    # leaving a fingerprint for it: the anchor is then not the last word.
+    unfingerprinted: list[_Command] = []
+    if anchor is not None:
+        acting = list(in_place.get(int(image_id), ()))
+        if int(image_id) in creators:
+            acting.append(creators[int(image_id)])
+        unfingerprinted = sorted(
+            {c.pos: c for c in acting
+             if c.pos > anchor.pos and key not in (c.event.get("end_fingerprints") or {})}.values(),
+            key=lambda c: c.pos,
+        )
     cleared: dict[int, int] = {}
-    pixels_changed = False
+    pixels_changed = pixels_unjudged = False
     if anchor is not None and fetched_fingerprint is not None:
-        if anchor.event["end_fingerprints"][str(image_id)] == fetched_fingerprint:
+        if anchor.event["end_fingerprints"][key] == fetched_fingerprint:
             cleared[int(image_id)] = anchor.pos
+        elif unfingerprinted:
+            pixels_unjudged = True
         else:
             pixels_changed = True
     unrecorded, change_notes = _unrecorded(ordered, owner, chain, creators, in_place, cleared)
@@ -514,6 +545,10 @@ def history_for(
         unrecorded = "detected"
         change_notes = [f"the pixels of image {image_id} changed after the last recorded command ({anchor.name})",
                         *change_notes]
+    elif pixels_unjudged:
+        if unrecorded == "none observed":
+            unrecorded = "possible"
+        change_notes = [_unjudged_note(image_id, anchor, unfingerprinted, set(pending_ends)), *change_notes]
     notes.extend(change_notes)
     if origin == "unknown":
         completeness = "unknown"
@@ -526,6 +561,20 @@ def history_for(
     return FijiHistory(
         image_id=int(image_id), origin_id=origin_id, origin=origin, steps=steps,
         unrecorded=unrecorded, unrecorded_notes=tuple(notes), completeness=completeness,
+    )
+
+
+def _unjudged_note(image_id: int, anchor: _Command, later: list[_Command], pending: set[int]) -> str:
+    """Why the pixel fingerprint of ``anchor`` cannot say whether something changed the image outside a command."""
+    names = ", ".join(c.name for c in later)
+    waiting = [c.name for c in later if c.event.get("seq") in pending]
+    why = (
+        f"the host was still computing the fingerprint after {', '.join(waiting)} when it answered"
+        if waiting else "the end of the later command was not observed when the image was fetched, or its fingerprint could not be read"
+    )
+    return (
+        f"the pixel fingerprint of image {image_id} after {names} was not available ({why}), "
+        f"so the pixels differing from those {anchor.name} left cannot be told apart from a change outside a command"
     )
 
 
@@ -611,7 +660,10 @@ def grid_preserved(history: FijiHistory) -> tuple[bool, str]:
     if history.origin != "sent":
         return False, "the image's origin in ImProcess is not known"
     if history.unrecorded != "none observed":
-        return False, f"the image may have been changed outside a recorded command ({history.unrecorded})"
+        reason = f"the image may have been changed outside a recorded command ({history.unrecorded})"
+        if history.unrecorded_notes:
+            reason += f": {history.unrecorded_notes[0]}"        # the first note is the one that decided it
+        return False, reason
     for step in history.steps:
         if step.completeness != "recorded":
             return False, f"the parameters of {step.command} were not recorded"

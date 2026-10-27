@@ -316,6 +316,74 @@ def test_a_differing_fingerprint_means_the_pixels_changed_after_the_last_command
     assert not grid_preserved(history)[0]
 
 
+def _blurred_then_inverted(*, invert_end, fetched="bbbb", invert_prints=None):
+    """Blur (fingerprinted) then Invert from the menu, whose fingerprint may not be there (yet)."""
+    log = Log()
+    log.opened(1.0, -2)
+    log.command(2.0, 2.1, "Gaussian Blur...", -2, options="sigma=2 ", prints={"-2": "aaaa"})
+    log.updated(2.05, -2, changes=True)
+    log.command(3.0, invert_end, "Invert", -2, line='run("Invert");', prints=invert_prints)
+    log.updated(3.05, -2, changes=True)
+    return log, fetched
+
+
+@pytest.mark.parametrize("invert_end", [None, 3.1], ids=["end not stamped yet", "ended, fingerprint unreadable"])
+def test_a_later_command_without_a_fingerprint_does_not_read_as_a_change_outside_a_command(invert_end):
+    log, fetched = _blurred_then_inverted(invert_end=invert_end)
+    history = history_for(-2, log.events, log.text, sent_ids={-2}, fetched_fingerprint=fetched)
+    assert [s.command for s in history.steps] == ["Gaussian Blur...", "Invert"]
+    assert history.unrecorded == "possible" and history.completeness == "partial"
+    note = history.unrecorded_notes[0]
+    assert "Invert" in note and "not available" in note and "Gaussian Blur..." in note
+    assert "changed after the last recorded command" not in " ".join(history.unrecorded_notes)
+    ok, reason = grid_preserved(history)
+    assert not ok and "possible" in reason and "pixel fingerprint of image -2 after Invert" in reason
+
+
+def test_a_pending_end_reported_by_the_host_is_named_in_the_note():
+    log, fetched = _blurred_then_inverted(invert_end=None)
+    invert_seq = log.events[-2]["seq"]
+    history = history_for(-2, log.events, log.text, sent_ids={-2}, fetched_fingerprint=fetched,
+                          pending_ends=[invert_seq])
+    assert history.unrecorded == "possible"
+    assert "still computing the fingerprint after Invert" in history.unrecorded_notes[0]
+    other = history_for(-2, log.events, log.text, sent_ids={-2}, fetched_fingerprint=fetched, pending_ends=[999])
+    assert "still computing" not in other.unrecorded_notes[0]
+
+
+def test_a_later_command_with_a_fingerprint_is_the_anchor_and_a_difference_is_detected():
+    log, _ = _blurred_then_inverted(invert_end=3.1, invert_prints={"-2": "cccc"})
+    history = history_for(-2, log.events, log.text, sent_ids={-2}, fetched_fingerprint="dddd")
+    assert history.unrecorded == "detected" and "changed after the last recorded command (Invert)" in history.unrecorded_notes[0]
+    assert history_for(-2, log.events, log.text, sent_ids={-2}, fetched_fingerprint="cccc").unrecorded == "none observed"
+
+
+def test_a_later_command_without_a_fingerprint_that_left_the_pixels_alone_is_still_cleared():
+    log, _ = _blurred_then_inverted(invert_end=None)
+    history = history_for(-2, log.events, log.text, sent_ids={-2}, fetched_fingerprint="aaaa")
+    assert history.unrecorded == "none observed" and history.completeness == "recorded"
+
+
+def test_a_later_command_on_another_image_does_not_take_the_fingerprint_evidence_away():
+    log, _ = _blurred_then_inverted(invert_end=3.1, invert_prints={"-2": "cccc"})
+    log.opened(4.0, -9)
+    log.command(5.0, None, "Invert", -9, options="")
+    history = history_for(-2, log.events, log.text, sent_ids={-2}, fetched_fingerprint="dddd")
+    assert history.unrecorded == "detected"
+
+
+def test_a_creator_without_a_fingerprint_after_the_anchor_takes_the_honest_path():
+    log = Log()
+    log.opened(1.0, -2)
+    log.command(2.0, 2.1, "Gaussian Blur...", -2, options="sigma=2 ", prints={"-2": "aaaa"})
+    log.command(3.0, None, "Duplicate...", -2, options="title=d duplicate ")
+    log.opened(3.05, -3)
+    # The fingerprint of -3 is anchored on a command that does not know it; the creator lacks one.
+    log.events[1]["end_fingerprints"]["-3"] = "aaaa"
+    history = history_for(-3, log.events, log.text, sent_ids={-2}, fetched_fingerprint="zzzz")
+    assert history.unrecorded == "possible" and "Duplicate..." in history.unrecorded_notes[0]
+
+
 def test_updates_to_an_image_off_the_chain_are_ignored():
     log = Log()
     log.opened(1.0, -2)

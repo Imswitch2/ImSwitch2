@@ -510,6 +510,7 @@ class FijiController(QtCore.QObject):
             history = history_for(
                 image_id, log["events"], log["recorder"], sent_ids=set(session.sent),
                 fetched_fingerprint=getattr(session, "fetch_fingerprints", {}).get(image_id),
+                pending_ends=log.get("pending_ends") or (),
             )
             preserves, reason = grid_preserved(history)
             details = {"imagej": ping.imagej, "java": ping.java} if ping else {}

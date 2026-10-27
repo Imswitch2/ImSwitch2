@@ -386,6 +386,16 @@ Changes that no command accounts for are reported separately:
   selection, a script's Java calls). The pixels were edited in a way the
   history cannot describe.
 
+  A fingerprint counts only while its command is the last one that changed the
+  image. When a later command has none (Fiji was still hashing a large stack
+  when you imported, the fingerprint could not be read, or the command is
+  still running), the pixels may differ because of that command, so the
+  history is *possible*, not *detected*, and a note names the command and says
+  its fingerprint was not available. Fiji waits, for a bounded time that grows
+  with its memory size, for the fingerprints of commands that have finished
+  before it answers, so this is rare; a command that is still running (a
+  dialog is open) is not waited for.
+
 Grid policy ``fiji-grid-v1``
 ----------------------------
 

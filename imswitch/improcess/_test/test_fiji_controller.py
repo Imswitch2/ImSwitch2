@@ -397,6 +397,29 @@ def test_a_filter_only_history_lets_the_import_inherit_the_grid_and_is_stored(en
     assert "2 Fiji steps, history recorded" in env.status
 
 
+def test_a_command_whose_fingerprint_was_still_pending_is_named_and_refuses_the_grid_honestly(env):
+    env.controller.startFiji()
+    events = []
+    image_id = _sent_with_log(env, events)
+    key = str(image_id)
+    events.extend([
+        {"seq": 0, "kind": "opened", "time": 1.0, "id": image_id, "title": "src", "changes": False},
+        {**_command(2.0, "Gaussian Blur...", image_id, "sigma=2 "), "seq": 1, "end": 2.1,
+         "end_fingerprints": {key: "aaaa"}},
+        {**_command(3.0, "Invert", image_id, ""), "seq": 2, "end": None},
+    ])
+    env.session.fetch_fingerprints = {image_id: "bbbb"}
+    env.session.log = {"events": events, "recorder": None, "pending_ends": [2]}
+    env.controller._importIds([image_id])
+
+    ((result, _),) = env.comm.sigResultProduced.emitted
+    history = output_node(result)["details"]["fiji_history"]
+    assert history["unrecorded"] == "possible" and history["completeness"] == "partial"
+    assert "still computing the fingerprint after Invert" in history["unrecorded_notes"][0]
+    assert result.metadata["grid"] == "fresh"
+    assert "pixel fingerprint" in output_node(result)["details"]["grid_policy_reason"]
+
+
 def test_a_crop_in_the_history_gives_a_fresh_grid_and_says_why(env):
     env.controller.startFiji()
     events = []
