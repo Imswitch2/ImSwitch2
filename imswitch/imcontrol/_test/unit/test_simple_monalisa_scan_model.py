@@ -441,6 +441,24 @@ def test_profile_reload_uses_profile_owned_z_defaults():
     assert reloaded.z_length_um == pytest.approx(1.9)
 
 
+def test_a_fixed_readout_step_plays_the_setup_readout_pulse_time():
+    """The readout pulse time is setup-owned: a profile's readout step that
+    is not editable plays it too, not its own default (the panel showed
+    2.5 ms while the camera TTL played 1 ms)."""
+    setup = _Setup()
+    setup.scan.simpleMoNaLISA['readoutPulseTimeMs'] = 2.5
+    readout = setup.scan.simpleMoNaLISA['profiles']['green']['steps'][2]
+    assert readout['durationEditable'] is False and readout['defaultDurationMs'] == 1
+    limits = MoNaLISALimits.from_setup(setup)
+
+    plan = default_plan(limits)
+    assert plan.step_durations_s['readout'] == pytest.approx(0.0025)
+    analog, digital = plan_to_dicts(plan, limits)
+    (start,), (end,) = digital['pulse_starts_s']['Camera'][0], digital['pulse_ends_s']['Camera'][0]
+    assert end - start == pytest.approx(0.0025)
+    assert dicts_to_plan(analog, digital, limits, plan) == plan
+
+
 def test_recording_naming_defaults_include_all_active_steps_including_readout():
     from imswitch.imcontrol.model.simple_monalisa_scan import render_recording_suffix
 

@@ -331,7 +331,12 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
     analog['phase_delay'] = plan.phase_delay_us
     analog['d3step_delay'] = plan.d3step_delay_us
 
-    steps = len(plan.channels)
+    # No laser chosen yet is one line pass that fires nothing: what the
+    # Advanced panel holds for it (its step count never drops below one),
+    # so the plan survives the trip to that page and back. Starting it is
+    # refused by the controller with the reason.
+    lanes = plan.channels or ((),)
+    steps = len(lanes)
     fired = plan.lasers()
     targets = [name for name in limits.ttl_devices if name in fired]
     power_capable = [gate.name for gate in limits.gates if gate.power_capable]
@@ -345,7 +350,7 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
         # as they were, so a laser ticked there before would fire too. The
         # TTL designer, and what gets armed, read ``target_device`` only.
         'linestep_enable': {
-            name: [name in lane for lane in plan.channels] for name in limits.ttl_devices
+            name: [name in lane for lane in lanes] for name in limits.ttl_devices
         },
         'pulse_starts_s': {name: [[] for _ in range(steps)] for name in limits.ttl_devices},
         'pulse_ends_s': {name: [[] for _ in range(steps)] for name in limits.ttl_devices},
@@ -434,6 +439,9 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
             if step < len(enable.get(name) or ()) and enable[name][step]
         )
         if not lane:
+            if steps == 1:
+                lanes = []      # no laser chosen: the panel's empty lanes
+                break
             raise PlanNotRepresentable(
                 f'Line pass {step + 1} of this scan fires no laser, which the '
                 'point-scan panel cannot show; open it in the Advanced scan panel.'

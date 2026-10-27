@@ -280,6 +280,29 @@ def test_a_power_setting_that_cannot_be_built_refuses_the_start(rig):
     assert 'Not started' in rig.widget.messageLabel.text()
 
 
+def test_a_plan_without_lasers_is_refused_and_survives_the_advanced_page(rig, monkeypatch):
+    """Every chip dragged off the lanes: Start is refused with the reason
+    (not a failed scan), and the trip to the Advanced page and back asks
+    nothing and keeps the empty lanes."""
+    _edit(rig, channels=())
+    rig.scan.setSimpleScanMode('acquisition')
+    rig.widget.startButton.click()
+    QtTest.QTest.qWait(300)
+
+    assert rig.rejections and 'at least one laser' in rig.rejections[0]
+    assert 'sigScanStarting' not in rig.events
+    assert not rig.scan.isRunning
+
+    asked = []
+    monkeypatch.setattr(rig.scan._panel, 'confirmDiscardAdvanced',
+                        lambda text: asked.append(text) or False)
+    assert rig.scan.setScanPage('advanced')
+    assert rig.scan.setScanPage('simple')
+    assert asked == []
+    assert rig.scan.scanPage() == 'simple'
+    assert rig.scan._simple()['acquisition'].channels == ()
+
+
 def test_a_power_waveform_that_is_not_built_refuses_the_start(rig):
     """Advanced swallows a failed power injection and scans without it; this
     panel checks the built waveforms and refuses instead."""

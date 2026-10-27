@@ -358,8 +358,7 @@ class TriggerScopeScanController(
         self.doingNonFinalPartOfSequence = False
 
         self.scanDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_scans')
-        if not os.path.exists(self.scanDir):
-            os.makedirs(self.scanDir)
+        os.makedirs(self.scanDir, exist_ok=True)
 
         self.positioners = {
             pName: pManager

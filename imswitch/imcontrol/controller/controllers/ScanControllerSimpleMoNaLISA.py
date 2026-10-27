@@ -163,8 +163,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         plan = plan if plan is not None else self.acquisitionPlan()
         if plan is None:
             return ()
-        profile = limits.profile_store.profile(plan.profile_id)
-        mode = profile.mode(plan.mode_id)
+        try:
+            profile = limits.profile_store.profile(plan.profile_id)
+            mode = profile.mode(plan.mode_id)
+        except MoNaLISAProfileError:
+            # The plan names a profile this store no longer has (the moment
+            # between a deletion and the plan's replacement).
+            return ()
         detectorNames = set(self._master.detectorsManager.getAllDeviceNames())
         result = []
         # Prefer semantic Readout steps for the normal MoNaLISA case, then
@@ -1005,8 +1010,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             if (current.scan_extent_source != edited.scan_extent_source
                     and edited.scan_extent_source == 'manual'
                     and edited.manual_scan_extent_um is not None):
+                # normalize_plan prefers the per-axis lengths, which the
+                # adaptation above set to the old uLens length.
                 plan = dataclasses.replace(
-                    plan, lateral_length_um=edited.manual_scan_extent_um
+                    plan,
+                    lateral_length_um=edited.manual_scan_extent_um,
+                    x_length_um=edited.manual_scan_extent_um,
+                    y_length_um=edited.manual_scan_extent_um,
                 )
             self._setBoundPlan(plan)
         else:
@@ -1062,18 +1072,38 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._view.showMessage(str(error), error=True)
             return
         active = state['plan'] is not None and state['plan'].profile_id == profile_id
+        previous = (state['plan'], state['binding'])
+        plan = None
+        if active and new_store.profiles:
+            # The replacement is chosen against the new store, and the plan
+            # leaves the deleted profile before the store is replaced: the
+            # resolution the save runs reads the plan's profile from the
+            # store, and the old plan's profile is no longer in it.
+            new_limits = dataclasses.replace(state['limits'], profile_store=new_store)
+            plan = select_profile(
+                state['plan'], new_store.default_profile, new_limits, preserve_if_same=False
+            )
+        if active:
+            state['plan'] = plan
+            state['binding'] = (
+                MoNaLISAProfileBinding.bound(new_store.profile(plan.profile_id), plan.mode_id)
+                if plan is not None else MoNaLISAProfileBinding.unbound()
+            )
         # Do not refresh through the old plan while persisting.  If the active
         # profile is being deleted, setPlan(old_plan) can otherwise reinsert
         # the deleted id into the combo before we select the replacement.
         if not self._saveProfileStoreOrReport(new_store, refresh_view=False):
+            state['plan'], state['binding'] = previous
             return
         state = self._monalisa()
+        if active:
+            # The view still shows the deleted profile's plan; configure()
+            # reads the shown plan's profile from the new store.
+            self._view.setPlan(None)
         self._view.configure(state['limits'])
-        if active and not new_store.profiles:
+        if active and plan is None:
             self._setUnboundProfileState()
         elif active:
-            replacement_id = new_store.default_profile
-            plan = self._planForProfile(replacement_id, preserve_if_same=False)
             self._setBoundPlan(plan)
         else:
             self._refreshViewAfterProfileStoreChange()
@@ -1400,14 +1430,22 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 if not self._commChannel.liveScreeningWorkflow.get_laser_active(name):
                     raise RuntimeError(f'Laser "{name}" rejected the Live enable request.')
         except Exception:
+            uncertain = set()
             for name, wasActive in previous.items():
                 try:
                     self._commChannel.liveScreeningWorkflow.set_laser_active(name, wasActive)
+                    if self._commChannel.liveScreeningWorkflow.get_laser_active(name) != wasActive:
+                        raise RuntimeError('laser does not report its previous state')
                 except Exception:
+                    uncertain.add(name)
                     self._logger.error(
                         f'Failed to roll back Live state for laser "{name}".',
                         exc_info=True,
                     )
+            # What is back as it was stays screening; what the rollback could
+            # not restore may be on, and stays Simple's to switch off, so that
+            # Stop and close try it again (review 2026-10-17).
+            self.__dict__['_activeScreeningLasers'] = current | uncertain
             raise
         self.__dict__['_activeScreeningLasers'] = target
 
@@ -1445,6 +1483,16 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             # An existing Stop/Live session keeps its deliberate internal mode.
             if not hadTriggerOverride:
                 self._releaseScreeningTriggerOverride()
+            leftOn = sorted(self.__dict__.get('_activeScreeningLasers', set()))
+            if leftOn:
+                # A laser the rollback could not switch off: screening is not
+                # over, Stop (and close) must still switch it off.
+                self.__dict__['_screeningActive'] = True
+                self._view.setScreeningActive(True)
+                self._view.showMessage(
+                    f'Could not start Live screening: {error}. May still be on: '
+                    f'{", ".join(leftOn)} -- Stop switches it off.', error=True)
+                return
             self._view.showMessage(f'Could not start Live screening: {error}', error=True)
             return
         self.__dict__['_screeningActive'] = True
@@ -1557,6 +1605,12 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self, start, *, requireLiveView, keepPreparedIfIdle=False,
         refreshSetup=True,
     ):
+        # Refused before the camera is touched: a second start while an
+        # acquisition runs used to rewrite the running camera's trigger
+        # before the base refused it.
+        if self._isBusy():
+            self._recordScanStartRejection('An acquisition is already running.')
+            return None
         # The first point captures ROI/readout-speed changes immediately before
         # compilation. Continuations of one retained ScanLapse deliberately do
         # not re-resolve/mirror Simple state: that acquisition was frozen at its
@@ -1670,7 +1724,21 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def _onScanRejected(self, reason):
         super()._onScanRejected(reason)
-        self._restoreAcquisitionTrigger()
+        # The signal is global: while an acquisition runs, a refusal is
+        # somebody else's start (REC, a script, another panel) and the
+        # running camera keeps its frame trigger. Only a refusal of this
+        # panel's own pending start gives the camera back.
+        if not self._isBusy():
+            self._restoreAcquisitionTrigger()
+
+    def _relinquishSimpleOwnership(self) -> bool:
+        """Leaving the simple page: screening lasers off and the camera's
+        pre-Live trigger back. The Stop control disappears on Advanced, so
+        Simple-owned illumination never crosses the page boundary. False
+        when something stayed as it was (the message says what)."""
+        if self.__dict__.get('_screeningActive', False) and not self._stopScreening():
+            return False
+        return self._releaseScreeningTriggerOverride()
 
     def closeEvent(self):
         # Screening is not a scan lifecycle, so the generic scan close path
@@ -1705,14 +1773,17 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._syncRecordingAcquisitionOwnership()
             return True
 
-        # The Stop control disappears on Advanced, so do not carry Simple-owned
-        # illumination or its persistent camera-trigger override across the
-        # page boundary.
+        # Refused before anything is touched, as the base refuses it: while an
+        # acquisition runs it owns the camera trigger, and releasing the
+        # screening override below restored the camera's pre-Live trigger
+        # under a frame-triggered acquisition (review 2026-10-17).
+        if page != self.scanPage() and self._isBusy():
+            self._panel.showPage(self.scanPage())
+            self._panel.showNote('Stop the scan before switching panels.')
+            return False
+
         leavingSimple = self._onSimplePage() and page != self.scanPage()
-        if leavingSimple and self.__dict__.get('_screeningActive', False):
-            if not self._stopScreening():
-                return False
-        if leavingSimple and not self._releaseScreeningTriggerOverride():
+        if leavingSimple and not self._relinquishSimpleOwnership():
             return False
         switched = super().setScanPage(page, discardAdvanced=discardAdvanced)
         if switched and self._onSimplePage():
@@ -2153,8 +2224,11 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
         if not result.compatible:
             self._clearLoadedSimpleBinding()
+            if self._onSimplePage():
+                self._relinquishSimpleOwnership()
             self._enterPage('advanced')
             self._panel.showPage('advanced')
+            self._panel.showNote(f'{result.message} It is shown on the Advanced page.')
             self._showPendingLoadResolution(result)
             return
 
@@ -2285,7 +2359,12 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
         # Applying while Advanced prevents ScanCloakController.setParameters()
         # from interpreting/recompiling the incoming dictionaries before they
-        # have been accepted as the authoritative saved acquisition.
+        # have been accepted as the authoritative saved acquisition. The page
+        # may stay Advanced, so what Simple owns is handed back first (a
+        # setup-mode switch or a state load during Live screening left the
+        # lasers on with the Stop control gone).
+        if original_page == 'simple':
+            self._relinquishSimpleOwnership()
         self._enterPage('advanced')
         self._panel.showPage('advanced')
         warnings = super().applyComponentState(state, applyMode=applyMode)
@@ -2314,7 +2393,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._clearLoadedSimpleBinding()
             self._enterPage('advanced')
             self._panel.showPage('advanced')
-            self._panel.showNote('')
+            self._panel.showNote(f'{result.message} It is shown on the Advanced page.')
             self._setPendingLoadResolution(metadata, state, result)
             warning = f'Loaded scan kept unchanged in Advanced. {result.message}'
             warnings.append(warning)

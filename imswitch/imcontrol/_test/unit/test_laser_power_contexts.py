@@ -121,6 +121,7 @@ def _controller(*, live=5.0, setup=None, mode='separated'):
     ctrl._commChannel = SimpleNamespace(sharedAttrs={})
     ctrl._logger = _Logger()
     ctrl.settingAttr = False
+    ctrl.is_scanning = False
     ctrl._livePowerValues = {"488": live}
     ctrl._scanPowerValues = {}
     ctrl._powerMode = LaserPowerMode(mode)
@@ -157,6 +158,14 @@ def test_laser_power_mode_resolves_from_category_settings():
         "lasers": {"powerMode": "separated"}
     })
     assert laserPowerModeFromSetup(setup) is LaserPowerMode.SEPARATED
+
+
+def test_misspelled_laser_power_mode_in_setup_falls_back_to_coupled(caplog):
+    setup = ViewSetupInfo(deviceCategorySettings={
+        "lasers": {"powerMode": "seperated"}
+    })
+    assert laserPowerModeFromSetup(setup) is LaserPowerMode.COUPLED
+    assert "seperated" in caplog.text
 
 
 def test_context_api_uses_explicit_setting_names():

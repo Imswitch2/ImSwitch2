@@ -206,6 +206,21 @@ only by tests. This design replaced an earlier one where
 whenever an APD/PMT was present, which broke mixed detector setups;
 ``registerExternalScanDriver()`` is now a no-op kept for compatibility.
 
+Missing NI-DAQmx is not simulation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``nidaq.simulation: false`` means that the setup requests real NI-DAQ
+operation. If the ``nidaqmx`` Python backend cannot be imported, ImControl no
+longer aborts startup: the configured NI-DAQ infrastructure is reported as
+unavailable and the rest of Hardware Control can continue to load. This is a
+degraded real-hardware state, **not** an automatic mock fallback.
+
+In that state, one-shot AO/DO writes report failure and an NI-DAQ scan is
+refused before it arms. The scan simulator, virtual camera triggers and
+synthetic APD/PMT scan data are enabled only by the explicit
+``nidaq.simulation: true`` setting. This avoids producing plausible simulated
+data when a real microscope merely lost its NI-DAQ dependency.
+
 Workflow facade
 ~~~~~~~~~~~~~~~
 
@@ -238,8 +253,7 @@ Setup templates
 Ready-to-use hardware-free setup files, all under
 ``imswitch/_data/user_defaults/imcontrol_setups/``:
 
-* ``simple_mock_setup.json`` — **the default setup** (preselected on first
-  start): mock camera (``AVManager``) for live widefield and one simulated
+* ``simple_mock_setup.json`` — mock camera (``AVManager``) for live widefield and one simulated
   APD imaging the synthetic sample (``mockSample``) through the
   SimplePointScan panel; galvos reaching 100 µm, three gated lasers,
   ``nidaq.simulation: true``.

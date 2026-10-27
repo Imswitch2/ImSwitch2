@@ -62,15 +62,17 @@ def report(extractions):
 # ── the numbers the plan quotes ───────────────────────────────────────────
 def test_the_coverage_the_plan_is_built_on(report):
     # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert report.managers == 62, "61 plus RS232Manager, which the legacy scan no longer skips"
+    assert report.managers == 66, "61 plus RS232Manager, plus two mock and two Thorlabs instruments"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
     # ... plus RS232Manager itself, once the catalog stopped skipping it.
     # Four fewer since the removed camera managers (see above): 59 -> 55.
-    assert report.reads_any == 56
-    assert report.with_keys == 56
+    # 60: the four instrument managers read self._managerProperties, which
+    # their base binds from the InstrumentInfo, so all four list their keys.
+    assert report.reads_any == 60
+    assert report.with_keys == 60
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
@@ -78,15 +80,29 @@ def test_the_coverage_the_plan_is_built_on(report):
     # the Thorlabs camera's frameBufferDepth added 3. 210: AAAOTF's
     # useMockOnFailure. 213: LeicaDMIZPositionerManager's shared-hardware
     # calibCsvPath boundary read. 215 after open-loop positioner reference
-    # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope;
-    # 216: the APD's mockSample.
-    assert report.keys == 216
+    # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope.
+    # 233: the instrument managers' 18 keys (mocks 7, PM100 4, PAX1000 7).
+    # 235: MockPAX plate1Rotator / plate2Rotator.
+    # 239: useMockOnFailure on Kinesis stage / rotator, Standa, ThorCam TSI
+    # (reconnect 2.0 R-3: the fallback mock became an explicit opt-in);
+    # 242: and on Photometrics, Allied Vision and PiCam. 244: the APD's and the
+    # Hamamatsu's mockSample (SimplePointScan / SimpleMoNaLISA mock setups).
+    assert report.keys == 244
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
-    assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 154
+    # 64 after the device-reconnection rebase: CoolLED and MPB read
+    # rs232device unguarded at construction now (their status descriptors
+    # reuse that name instead of re-reading it), so it is required, as it is
+    # for every other RS232-backed laser.
+    assert report.required == 66, "62 + CoolLED/MPB rs232device + PM100/PAX serial"
+    assert report.optional == 178  # +2 mockSample
     assert report.refs == 14
-    assert report.none_default_only == 32  # +2 defaultReferenceVoltage, +1 mockSample
+    # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
+    # default) for their status descriptors instead of inside try/except.
+    # 35: PM100 and PAX1000 read wavelengthNm with .get() (None = keep the
+    # instrument's own). 37: MockPAX plate1Rotator / plate2Rotator.
+    # 39: the two mockSample blocks (None = no synthetic sample).
+    assert report.none_default_only == 39
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -95,9 +111,11 @@ def test_the_coverage_the_plan_is_built_on(report):
     # never counted as documented. 131: AAAOTF's useMockOnFailure. 134:
     # Cobolt scanResumeSettleMs, PI runtime_timeout_ms, and Leica stand
     # availableCubes are now documented by their cards.
-    # 135: NidaqPositionerManager.defaultReferenceVoltage is now documented
-    # too; 136: and the APD's mockSample.
-    assert (report.docs_agree, report.docs_documented) == (136, 136)
+    # NidaqPositionerManager.defaultReferenceVoltage is now documented too.
+    # 153: docs/devices/instruments.rst documents the 18 instrument keys.
+    # 155: and MockPAX's plate rotators. 159 / 162: the seven useMockOnFailure rows.
+    # 163: the APD's mockSample row; 164: the Hamamatsu's.
+    assert (report.docs_agree, report.docs_documented) == (164, 164)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -105,7 +123,11 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 93: AAAOTF's useMockOnFailure is read with a bool default.
     # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
     # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
-    assert report.typed_by_code == 96
+    # 98 after the device-reconnection rebase: Elliptec's address (int()) and
+    # port (str()) are coerced in code.
+    # 114: the 16 instrument keys read through float()/int()/str().
+    # 118 / 121: the seven useMockOnFailure reads through bool().
+    assert report.typed_by_code == 121
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -197,9 +219,12 @@ def test_thorcam_defaults_carry_their_sub_keys(extractions):
     assert {"exposure_us", "gain", "operation_mode"} <= set(spec.sub_properties)
 
 
-def test_pistage_usb_description_is_read_in_a_method_handed_the_dict(extractions):
+def test_pistage_usb_description_is_optional(extractions):
+    # Read directly at construction since the reconnect rework (it is kept
+    # for re-resolving the USB device on reconnect), with .get(): optional.
     spec = extractions["PIStageManager"].properties["usb_description"]
-    assert spec.reads[0].via == "method:_resolve_usb_description"
+    assert spec.required == "optional"
+    assert spec.reads[0].via == "literal"
 
 
 def test_rs232_manager_is_open_because_the_driver_takes_the_whole_dict():
@@ -277,5 +302,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 62
+    assert totals["managers"] == 66
 

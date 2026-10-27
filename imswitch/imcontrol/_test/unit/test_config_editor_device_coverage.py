@@ -170,3 +170,64 @@ def test_category_for_manager_lookup():
     
     # Unknown
     assert editor._get_category_for_manager("NonexistentManager") is None
+
+
+@pytest.fixture
+def _qapp():
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+def _category_dialog(cat, current):
+    return editor.SectionEditorDialog(
+        cat, editor.CATEGORY_SCHEMAS[cat], current, {},
+        title_prefix="Edit category settings", allow_custom_fields=True,
+    )
+
+
+def test_category_settings_keep_existing_custom_keys(_qapp):
+    """Apply writes back keys the schema does not define, with their types."""
+    current = {"powerMode": "separated", "serial": "0042", "maxMw": 50, "flags": [1, 2]}
+    dlg = _category_dialog("lasers", current)
+    assert set(dlg._custom_widgets) == {"serial", "maxMw", "flags"}
+    dlg._try_apply()
+    assert dlg.result_data == current
+
+
+def test_category_settings_add_and_remove_custom_property(_qapp):
+    dlg = _category_dialog("positioners", {})
+    assert dlg.add_custom_field("homeOnStart", True) == ""
+    assert dlg.add_custom_field("  speed ", 2.5) == ""
+    assert dlg.add_custom_field("note", "text") == ""
+    assert dlg.add_custom_field("speed", 3) != ""     # duplicate key
+    assert dlg.add_custom_field("   ", 1) != ""       # empty key
+    row = dlg._custom_widgets["note"].parentWidget()
+    dlg._remove_custom_row("note", row)
+    dlg._try_apply()
+    assert dlg.result_data == {"homeOnStart": True, "speed": 2.5}
+
+
+def test_category_settings_custom_key_cannot_shadow_schema_field(_qapp):
+    dlg = _category_dialog("lasers", {})
+    assert dlg.add_custom_field("powerMode", "separated") != ""
+    dlg._try_apply()
+    assert dlg.result_data == {"powerMode": "coupled"}
+
+
+def test_section_dialog_without_custom_fields_is_unchanged(_qapp):
+    dlg = editor.SectionEditorDialog("lasers", editor.CATEGORY_SCHEMAS["lasers"], {"x": 1}, {})
+    assert dlg.add_custom_field("y", 2) != ""
+    dlg._try_apply()
+    # No custom properties are offered; a key the form does not show is
+    # kept as it was, as every section form keeps it.
+    assert dlg.result_data == {"powerMode": "coupled", "x": 1}
+
+
+def test_parse_freeform_value():
+    assert editor._parse_freeform_value("42") == 42
+    assert editor._parse_freeform_value("true") is True
+    assert editor._parse_freeform_value("[1, 2]") == [1, 2]
+    assert editor._parse_freeform_value("(1, 2)") == (1, 2)
+    assert editor._parse_freeform_value("hello") == "hello"
+    assert editor._parse_freeform_value("  ") is None

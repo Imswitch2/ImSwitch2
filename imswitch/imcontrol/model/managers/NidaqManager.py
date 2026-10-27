@@ -9,8 +9,10 @@ try:
     import nidaqmx._lib
     import nidaqmx.constants
     _NIDAQMX_AVAILABLE = True
-except ImportError:
+    _NIDAQMX_IMPORT_ERROR = None
+except ImportError as error:
     _NIDAQMX_AVAILABLE = False
+    _NIDAQMX_IMPORT_ERROR = error
 
     class _UnavailableNidaqError(Exception):
         pass
@@ -102,30 +104,40 @@ class NidaqManager(SignalInterface):
     def __init__(self, setupInfo):
         super().__init__()
         self.__logger = initLogger(self)
+        self.__setupInfo = setupInfo
         self.__simulating = bool(setupInfo.nidaq.simulation)
+        self.__backendAvailable = bool(_NIDAQMX_AVAILABLE)
+        self.__backendError = None
         self.__warnedRuntimeErrors = set()
+        self._configuredDeviceNames = self._extractConfiguredDeviceNames(setupInfo)
+        self._detectedDeviceNames = ()
+        self._deviceEnumerationError = None
         scanInfo = getattr(setupInfo, 'scan', None)
         if not self.__simulating and scanInfo is not None:
             self._checkScanClockRate(getattr(scanInfo, 'sampleRate', None))
 
-        if not _NIDAQMX_AVAILABLE:
-            hasNidaqDevices = any(
-                info.getAnalogChannel() is not None or info.getDigitalLine() is not None
-                for info in setupInfo.getAllDevices().values()
-            )
-            if hasNidaqDevices and not self.__simulating:
-                raise ImportError(
-                    'nidaqmx is required for NI-DAQ hardware in this setup. '
-                    'Install it with: pip install "imswitch2[hardware]"'
-                )
-            if hasNidaqDevices:
+        if not self.__backendAvailable:
+            if self.__simulating:
                 self.__logger.info(
                     'nidaqmx not installed; running NI-DAQ devices in simulation mode.'
                 )
+            elif self._configuredDeviceNames:
+                detail = (
+                    'nidaqmx is not available, so configured NI-DAQ hardware '
+                    'cannot be used. ImControl will continue without the NI-DAQ '
+                    'backend. Install it with: pip install "imswitch2[hardware]", '
+                    'or set nidaq.simulation=true for software scan simulation.'
+                )
+                if _NIDAQMX_IMPORT_ERROR is not None:
+                    detail += f' Import error: {_NIDAQMX_IMPORT_ERROR}'
+                self.__backendError = ImportError(detail)
+                self.__logger.warning(str(self.__backendError))
             else:
                 self.__logger.debug('nidaqmx not installed; NI-DAQ operations disabled.')
 
-        self.__setupInfo = setupInfo
+        if self.__backendAvailable and not self.__simulating:
+            self._cacheDetectedDeviceNames()
+
         self.tasks = {}
         self.doTaskWaiter = None
         self.aoTaskWaiter = None
@@ -156,6 +168,94 @@ class NidaqManager(SignalInterface):
             self.__scanSimulator = ScanSimulationCoordinator(setupInfo)
             self.__scanSimulator.sigFrameTrigger.connect(self.sigSimScanFrameTrigger)
             self.__scanSimulator.sigDone.connect(self.scanDone)
+
+    @staticmethod
+    def _extractConfiguredDeviceNames(setupInfo):
+        names = set()
+
+        def add_channel(channel, *, integerMeansDev1=False):
+            if channel is None:
+                return
+            if integerMeansDev1 and isinstance(channel, int):
+                names.add('Dev1')
+                return
+            text = str(channel).strip()
+            if not text or '/' not in text:
+                return
+            device_name = text.split('/', 1)[0].strip()
+            if device_name and device_name.casefold() != 'triggerscope':
+                names.add(device_name)
+
+        for info in setupInfo.getAllDevices().values():
+            add_channel(info.getAnalogChannel())
+            add_channel(info.getDigitalLine())
+
+            managerProperties = getattr(info, 'managerProperties', None) or {}
+            # Point detectors keep their NI input channels in managerProperties
+            # rather than the common analog/digital output fields.
+            add_channel(managerProperties.get('ctrInputLine'))
+            add_channel(managerProperties.get('analogInputLine'))
+
+        add_channel(setupInfo.nidaq.getTimerCounterChannel())
+
+        scanInfo = getattr(setupInfo, 'scan', None)
+        if scanInfo is not None:
+            add_channel(
+                getattr(scanInfo, 'lineClockLine', None), integerMeansDev1=True
+            )
+            add_channel(
+                getattr(scanInfo, 'frameStartClockLine', None), integerMeansDev1=True
+            )
+            add_channel(
+                getattr(scanInfo, 'frameEndClockLine', None), integerMeansDev1=True
+            )
+        return tuple(sorted(names, key=str.casefold))
+
+    def _cacheDetectedDeviceNames(self):
+        """Best-effort one-time NI-DAQmx board discovery for diagnostics.
+
+        This runs during normal manager initialization, never from Hardware
+        Status refresh. Failure is cached for the infrastructure view and does
+        not change scan/task behavior.
+        """
+        try:
+            import nidaqmx.system
+            system = nidaqmx.system.System.local()
+            self._detectedDeviceNames = tuple(
+                sorted((str(device.name) for device in system.devices), key=str.casefold)
+            )
+        except Exception as exc:
+            self._deviceEnumerationError = exc
+            self.__logger.warning(
+                'Could not enumerate NI-DAQmx devices for hardware status: %s',
+                exc,
+            )
+
+    @property
+    def configuredDeviceNames(self):
+        return tuple(self._configuredDeviceNames)
+
+    @property
+    def detectedDeviceNames(self):
+        return tuple(self._detectedDeviceNames)
+
+    @property
+    def deviceEnumerationError(self):
+        return self._deviceEnumerationError
+
+    @property
+    def backendAvailable(self):
+        """Whether the native NI-DAQmx backend can be used for real hardware."""
+        return self.__backendAvailable
+
+    @property
+    def backendError(self):
+        """Cached backend failure for passive status reporting, if any."""
+        return self.__backendError
+
+    @property
+    def simulating(self):
+        return self.__simulating
 
     def __del__(self):
         try:
@@ -324,6 +424,26 @@ class NidaqManager(SignalInterface):
         self.__warnedRuntimeErrors.add(key)
         self.__logger.warning(message)
 
+    def _backendUnavailableMessage(self, operation):
+        return (
+            f'Cannot {operation}: NI-DAQmx is unavailable while '
+            'nidaq.simulation=false. Install imswitch2[hardware] to use real '
+            'NI-DAQ hardware, or set nidaq.simulation=true to use software '
+            'scan simulation.'
+        )
+
+    def _requireHardwareBackend(self, operation):
+        """Refuse a real-hardware operation when NI-DAQmx is unavailable.
+
+        Explicit simulation remains independent: ``simulation=true`` never
+        requires the native backend and keeps using ScanSimulationCoordinator.
+        """
+        if self.__simulating or self.__backendAvailable:
+            return
+        raise NidaqBackendUnavailableError(
+            self._backendUnavailableMessage(operation)
+        )
+
     def registerExternalScanDriver(self):
         """Legacy compatibility hook.
 
@@ -467,6 +587,9 @@ class NidaqManager(SignalInterface):
     def startInputTask(self, taskName, taskType, *args):
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
+            self._requireHardwareBackend(
+                f'create NI-DAQ input task "{taskName}"'
+            )
             if taskName in self.tasks:
                 raise NidaqManagerError(
                     f'NI-DAQ task "{taskName}" is already registered'
@@ -1090,18 +1213,35 @@ class NidaqManager(SignalInterface):
         if operationError is not None:
             raise operationError
 
-    def setDigital(self, target, enable):
-        """Set one digital line through a registered finite output task."""
+    def setDigital(self, target, enable, *, raise_on_error=False):
+        """Set one digital line through a registered finite output task.
+
+        Returns ``True`` on success and ``False`` when a DAQ error is handled
+        locally. With ``raise_on_error=True`` the original DAQ error is raised.
+        """
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
             line = self.__setupInfo.getDevice(target).getDigitalLine()
         if line is None:
             raise NidaqManagerError('Target has no digital output assigned to it')
 
+        if not self.__simulating and not self.__backendAvailable:
+            error = NidaqBackendUnavailableError(
+                self._backendUnavailableMessage(
+                    f'write digital output for {target}'
+                )
+            )
+            self._warnRuntimeErrorOnce(
+                ('setDigital', target, 'backend-unavailable'), str(error)
+            )
+            if raise_on_error:
+                raise error
+            return False
+
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
         tasklen = 100
         try:
-            return self._runOneShotOutput(
+            self._runOneShotOutput(
                 'setDigitalTask',
                 lambda: self.__createLineDOTask(
                     'setDigitalTask',
@@ -1114,6 +1254,7 @@ class NidaqManager(SignalInterface):
                 ),
                 enable * np.ones(tasklen, dtype=bool),
             )
+            return True
         except (
             nidaqmx._lib.DaqNotFoundError,
             nidaqmx._lib.DaqFunctionNotSupportedError,
@@ -1123,6 +1264,9 @@ class NidaqManager(SignalInterface):
                 ('setDigital', target, type(error).__name__, str(error)),
                 f'NI-DAQ digital write failed for {target}: {error}',
             )
+            if raise_on_error:
+                raise
+            return False
 
     @property
     def isSimulating(self) -> bool:
@@ -1140,6 +1284,19 @@ class NidaqManager(SignalInterface):
             channel = self.__setupInfo.getDevice(target).getAnalogChannel()
         if channel is None:
             raise NidaqManagerError('Target has no analog output assigned to it')
+
+        if not self.__simulating and not self.__backendAvailable:
+            error = NidaqBackendUnavailableError(
+                self._backendUnavailableMessage(
+                    f'write analog output for {target}'
+                )
+            )
+            self._warnRuntimeErrorOnce(
+                ('setAnalog', target, 'backend-unavailable'), str(error)
+            )
+            if raise_on_error:
+                raise error
+            return False
 
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
         tasklen = 10
@@ -1212,6 +1369,10 @@ class NidaqManager(SignalInterface):
                     'Cannot start scan: the NI-DAQ manager is busy with another '
                     'scan or DAQ operation'
                 )
+            # Preserve the pre-existing refusal contract before consulting the
+            # hardware backend. A scan that is already busy must report BUSY,
+            # even on a host without nidaqmx, and no arm state is entered here.
+            self._requireHardwareBackend('start NI-DAQ scan')
             self._scanGeneration += 1
             scanGeneration = self._scanGeneration
             self.busy = True
@@ -1785,6 +1946,10 @@ class NidaqManagerError(Exception):
     def __init__(self, message):
         super().__init__(message)  # so str(exc) is the message, not ''
         self.message = message
+
+
+class NidaqBackendUnavailableError(NidaqManagerError):
+    """Real NI-DAQ operation requested without an available NI-DAQmx backend."""
 
 
 class ScanBusyError(NidaqManagerError):

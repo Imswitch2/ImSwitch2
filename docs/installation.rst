@@ -76,6 +76,7 @@ Option B: Install from source (recommended for developers)
    pip install -e ".[imagej]"     # ImageJ/Fiji .roi and RoiSet.zip import/export in the ROI manager
    pip install -e ".[full]"       # OpenCV, plus what [imagej] installs
    pip install -e ".[storm]"      # napari-storm GPU point-cloud viewer for SMLM results
+   pip install -e ".[comet]"      # COMET all-pairs drift correction for SMLM localization results
 
    # Developer toolchain: the test suite as CI runs it, the linter, the docs build
    pip install -e ".[test]" ruff
@@ -93,10 +94,11 @@ Launch:
 
 On first launch ImSwitch2 creates ``~/ImSwitchConfig/`` (or
 ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows) and opens a
-setup-picker dialog with ``simple_mock_setup.json`` preselected: a
-point-scanning microscope with one camera and one APD, all simulated, so
-the UI can be explored without any device connected. Choose your own setup
-there, or later with **Pick hardware setup…**.
+setup-picker dialog with ``example_no_hardware.json`` preselected.
+``simple_mock_setup.json`` is a point-scanning microscope with one camera
+and one APD, all simulated, so the UI can be explored without any device
+connected. Choose your own setup there, or later with
+**Pick hardware setup…**.
 
 
 Vendor SDKs (not installed by pip)

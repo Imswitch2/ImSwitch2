@@ -272,6 +272,19 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.resetLayoutAction.triggered.connect(self.resetDockLayout)
         view.addAction(self.resetLayoutAction)
 
+        # Imported by class, not through the lazy ``widgets`` namespace: once
+        # anything imports the HardwareStatusWidget *module* directly, the
+        # package attribute of that name is the module, not the class.
+        from .widgets.HardwareStatusWidget import HardwareStatusWidget
+        self.hardwareStatusWidget = self.factory.createWidget(HardwareStatusWidget)
+        self.hardwareStatusWidget.hide()
+        self.hardwareStatusAction = QtWidgets.QAction('Hardware status…', self)
+        self.hardwareStatusAction.setToolTip(
+            'Connection state of every device in this setup.'
+        )
+        self.hardwareStatusAction.triggered.connect(self.showHardwareStatus)
+        hardware.addAction(self.hardwareStatusAction)
+
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
         self.configureShortcutsAction.triggered.connect(self.sigOpenShortcutEditor)
@@ -333,6 +346,10 @@ class ImConMainView(QtWidgets.QMainWindow):
             enabledDockKeys = []
         elif enabledDockKeys is True:
             enabledDockKeys = allDockKeys
+        # A setup with instruments always gets their panel: without it a
+        # connected power meter or polarimeter shows no reading anywhere.
+        if getattr(self.viewSetupInfo, 'instruments', None) and 'Instruments' not in enabledDockKeys:
+            enabledDockKeys = list(enabledDockKeys) + ['Instruments']
 
         if 'Image' in enabledDockKeys:
             self.docks['Image'] = Dock('Image Display', size=(1, 1))
@@ -574,6 +591,12 @@ class ImConMainView(QtWidgets.QMainWindow):
                 # Action is disabled or has no binding
                 qAction.setText(baseText)
 
+    def showHardwareStatus(self):
+        """Show and raise the global read-only hardware status window."""
+        self.hardwareStatusWidget.show()
+        self.hardwareStatusWidget.raise_()
+        self.hardwareStatusWidget.activateWindow()
+
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()
         return result == QtWidgets.QDialog.Accepted
@@ -715,6 +738,7 @@ _DOCK_DISPLAY_NAMES = {
     'Positioner': 'Positioner',
     'Laser': 'Laser Control',
     'Rotator': 'Rotator',
+    'Instruments': 'Instruments',
     'MotCorr': 'Motorized Correction Collar',
     'SLMs': 'SLMs',
     'SLM': 'SLM',
@@ -763,6 +787,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'BSC203':        _DockInfo(name='BSC203 Stage',                  yPosition=0),
     'Laser':         _DockInfo(name='Laser Control',                 yPosition=0),
     'Rotator':       _DockInfo(name='Rotator',                       yPosition=1),
+    'Instruments':   _DockInfo(name='Instruments',                   yPosition=1),
     'MotCorr':       _DockInfo(name='Motorized Correction Collar',   yPosition=1),
     'SLMs':          _DockInfo(name='SLMs',                          yPosition=2),
     'Scan':          _DockInfo(name='Scan',                          yPosition=2),
