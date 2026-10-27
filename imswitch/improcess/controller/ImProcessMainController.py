@@ -1086,6 +1086,9 @@ class ImProcessMainController(MainController):
         self.resultWindowManager = manager
         self.mainViewController.reconstructionController.setWindowManager(manager)
         manager.setWindowMenu(self.__mainView.windowMenu)
+        # The ROI Manager, ROI stats and Profile follow the active window.
+        if hasattr(self.__mainView, 'bindWindowManager'):
+            self.__mainView.bindWindowManager(manager)
         self.__mainView.sigClosing.connect(manager.closeAll)
 
     def _imageDisplayChosen(self, choice: str) -> None:

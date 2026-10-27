@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from qtpy import QtWidgets
+
 UNSUPPORTED_TOOLTIP = "Not yet supported with separate windows (Preferences → Image display)"
 
 
@@ -43,9 +45,12 @@ NAPARI_ONLY_TOOLS: tuple[NapariOnlyTool, ...] = (
     NapariOnlyTool("napari-plugins", "napari plugins", "menu", "_napariPluginsMenu"),
 )
 
-#: Ids re-enabled in window mode. Empty until the ROI tools (W5) land; adding
-#: an id here is all it takes to switch that tool back on.
-SUPPORTED_IN_WINDOW_MODE: frozenset[str] = frozenset()
+#: Ids re-enabled in window mode: the core of the ROI tools, which draw and
+#: measure through :mod:`~imswitch.improcess.view.window_tools`. Inside them a
+#: few controls that need napari stay disabled, each with its own tooltip (the
+#: ROI manager's Freehand shape, Profile's layer chooser). Adding an id here is
+#: all it takes to switch a tool back on.
+SUPPORTED_IN_WINDOW_MODE: frozenset[str] = frozenset({"profile", "roi-manager", "roi-stats"})
 
 
 def unsupported_tools() -> tuple[NapariOnlyTool, ...]:
@@ -61,9 +66,32 @@ def panel_tool(widget_kind: str) -> NapariOnlyTool | None:
     return None
 
 
-def restrict_panel(widget) -> None:
-    """Disable a napari-only panel and say why."""
+def restrict_panel(widget, dock_actions=None) -> None:
+    """Disable a napari-only panel and say why, wherever the pointer rests on it.
+
+    A tooltip on the panel alone is not enough: a disabled panel's buttons and
+    labels each show their own tooltip (or none), so the reason would appear
+    only on the panel's bare background. It is set on every child as well, on
+    the title of the dock holding the panel, and (``dock_actions``: title ->
+    action, the View menu's entries) on its menu entry.
+    """
     if widget is None:
         return
     widget.setEnabled(False)
     widget.setToolTip(UNSUPPORTED_TOOLTIP)
+    for child in widget.findChildren(QtWidgets.QWidget):
+        child.setToolTip(UNSUPPORTED_TOOLTIP)
+    dock = widget.parentWidget()
+    while dock is not None and not _is_dock(dock):
+        dock = dock.parentWidget()
+    if dock is not None:
+        dock.label.setToolTip(UNSUPPORTED_TOOLTIP)
+        action = (dock_actions or {}).get(dock.name())
+        if action is not None:
+            action.setToolTip(UNSUPPORTED_TOOLTIP)
+
+
+def _is_dock(widget) -> bool:
+    from pyqtgraph.dockarea import Dock
+
+    return isinstance(widget, Dock)

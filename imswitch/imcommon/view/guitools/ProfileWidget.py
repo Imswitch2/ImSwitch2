@@ -48,7 +48,11 @@ from imswitch.imcommon.model.result_records import (
     records_to_csv,
     series_to_csv,
 )
-from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
+from imswitch.imcommon.view.guitools.viewer_tools import (
+    WINDOW_MODE_UNSUPPORTED_TOOLTIP,
+    ViewerToolService,
+    is_window_viewer,
+)
 
 #: Layer-chooser entries that are not a layer name.
 _ACTIVE = "__active__"
@@ -534,6 +538,12 @@ class ProfileWidget(QtWidgets.QWidget):
                 self._toolService.on_viewer_event(self._toolToken, signal(), handler)
             except Exception:
                 pass
+
+        if is_window_viewer(napariViewer):
+            # One window, one layer: there is nothing to choose between, and
+            # "All visible layers" needs several napari layers.
+            self.layerCombo.setEnabled(False)
+            self.layerCombo.setToolTip(WINDOW_MODE_UNSUPPORTED_TOOLTIP)
 
         self.refreshLayerChoices()
         self._drawEmpty()

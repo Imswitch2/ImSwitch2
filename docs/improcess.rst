@@ -367,22 +367,61 @@ In window mode:
   (choosing one brings it forward) and offers **Tile** and **Cascade**, which
   arrange them within the screen.
 
+Other layers
+------------
+
+A result's other display layers are drawn read-only over its image, on the same
+sliders: **labels** (a segmentation mask) as a semi-transparent layer with a
+distinct colour per label id, **points** as a scatter of the points that lie on
+the plane on screen, and **shapes** as outlines.  Layers that ask for the 3D
+canvas (the Poincaré sphere of a polarisation map) need the embedded viewer;
+the status line says so.
+
+Drawing ROIs in a window
+------------------------
+
+The **ROI manager**, **ROI stats** and **Profile** panels work on the active
+window: they measure its image, at the plane its sliders show, and follow you
+when you click another window.
+
+* **ROI manager.** Choose a shape and press **Draw**: *Rectangle*, *Ellipse*
+  and *Line* are drawn by dragging on the image, *Polygon* by clicking each
+  vertex and double-clicking to close it, *Points* by clicking.  The shape stays
+  editable (drag it, or its handles, to move or resize it) until you press
+  **Add Shape**.  The list, rename, delete, **Measure** (on the plane on
+  screen), the measurements, the sets and saving or loading ROIs (``.json``,
+  and ImageJ ``.roi`` with the optional ``imagej`` extra) behave as in the
+  embedded viewer.  The ROIs are outlined on the window they are measured on;
+  selecting a row turns its outline white, and clicking an outline (in a mode
+  that is not drawing) selects its row.
+* **ROI stats.** *Full image* or the *Rectangle ROI* you draw, on the plane on
+  screen.
+* **Profile.** *Line* (the intensity along a drawn line), *Rectangle* and
+  *Z profile*, on the plane on screen.
+
+Inside these panels the controls that need the napari viewer stay visible but
+disabled, with the tooltip *Not yet supported with separate windows*: the ROI
+manager's **Freehand** shape, and Profile's layer chooser (a window has one
+image, so there is nothing to choose between).  While a drawing mode is on the
+left button draws; the middle button still pans, the right button and the wheel
+still zoom, and **Pan** in Profile (or *Full image* in ROI stats) hands the left
+button back to panning.
+
 Not yet supported
 -----------------
 
 These draw on or read the napari viewer's layers and are disabled in window
 mode, with the tooltip *Not yet supported with separate windows (Preferences →
-Image display)*.  They work as before with the embedded viewer.
+Image display)* on the panel, its dock title, its View-menu entry and its Tools
+action.  They work as before with the embedded viewer.
 
-* The panels **ROI manager**, **ROI stats**, **Profile**, **Segmentation**
-  (preview), **PSF resolution**, **Colocalization** and **Multicolor**
-  (previews).
+* The panels **Segmentation** (preview), **PSF resolution**,
+  **Colocalization** and **Multicolor** (previews).
 * **Crop/Substack…** (the stack-subset dialog that previews on napari layers).
 * **Plugins → napari plugins** (sending a result to a napari plugin and
   importing a napari layer).
-* Display layers that are not images (labels, points, shapes) are not drawn
-  yet: the window's status line says so.  Localization (point cloud) results
-  have no image window.
+* RGB images and 3D layers cannot be measured or drawn with the ROI tools in a
+  window.  Localization (point cloud) results have no image window.
 
 Results list vs. napari layers
 ===============================

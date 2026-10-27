@@ -387,8 +387,8 @@ def test_tile_and_cascade_move_real_windows_onto_the_screen(manager):
 
 def test_the_unsupported_registry_names_the_napari_only_tools():
     ids = {tool.id for tool in window_mode.unsupported_tools()}
-    assert ids == {"profile", "roi-manager", "roi-stats", "segmentation", "psf-resolution",
-                   "colocalization", "multicolor", "crop-substack", "napari-plugins"}
+    assert ids == {"segmentation", "psf-resolution", "colocalization", "multicolor",
+                   "crop-substack", "napari-plugins"}
     assert "separate windows" in window_mode.UNSUPPORTED_TOOLTIP
 
 

@@ -16,6 +16,7 @@ from imswitch.improcess.model.runtime_tools import (
 from imswitch.improcess.model.display_preferences import (
     IMAGE_DISPLAY_NAPARI,
     IMAGE_DISPLAY_WINDOWS,
+    load_display_preferences,
 )
 from imswitch.improcess.model.luts import IMAGE_LUTS
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
@@ -50,6 +51,22 @@ from .icons import improcessIcon
 # The largest fraction of the screen this window may insist on. Anything above
 # 1.0 puts the bottom edge off-screen with no way back.
 _MAX_MINIMUM_SCREEN_FRACTION = 0.8
+
+
+def _restrict_panel_for_window_mode(view, tool) -> None:
+    """Disable a napari-only panel and put the reason where the pointer will be:
+    on the panel, its dock title, its View entry and its Tools action.
+
+    A function on the view's attributes rather than a method, so it applies to
+    any object that has them.
+    """
+    restrict_panel(
+        getattr(view, tool.attribute, None), getattr(view, '_dockVisibilityActions', None)
+    )
+    action = getattr(view, '_analysisToolActions', {}).get(tool.id)
+    if action is not None:
+        action.setToolTip(UNSUPPORTED_TOOLTIP)
+        action.setStatusTip(UNSUPPORTED_TOOLTIP)
 
 
 class ImProcessMainView(QtWidgets.QMainWindow):
@@ -147,6 +164,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showColocalizationPanel: bool = False,
         showMulticolorPanel: bool = False,
         showLogPanel: bool = False,
+        imageDisplay: str | None = None,
         *args,
         **kwargs,
     ):
@@ -367,9 +385,19 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             showLayerControls=showNapariLayerControls,
             useNapariStormViewer=useNapariStormViewer,
         )
+        # With separate image windows the ROI Manager, ROI stats and Profile are
+        # given a stand-in viewer backed by the active window instead of the
+        # napari viewer (the controller binds the window manager to it).
+        if imageDisplay is None:
+            imageDisplay = load_display_preferences().imageDisplay
+        self._windowViewer = None
+        if imageDisplay == IMAGE_DISPLAY_WINDOWS:
+            from .window_tools import ActiveWindowViewer
+
+            self._windowViewer = ActiveWindowViewer()
         self.graphWidget = GraphWidget() if showGraphPanel else None
         self.profileWidget = (
-            ProfileWidget(self.reconstructionWidget.napariViewer)
+            ProfileWidget(self.roiToolViewer())
             if showProfilePanel
             else None
         )
@@ -381,12 +409,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._startupRuntimeAnalysisToolIds = []
         self.frcWidget = None
         self.roiStatsWidget = (
-            ROIStatsWidget(self.reconstructionWidget.napariViewer)
+            ROIStatsWidget(self.roiToolViewer())
             if showROIStatsPanel
             else None
         )
         self.roiManagerWidget = (
-            ROIManagerWidget(self.reconstructionWidget.napariViewer)
+            ROIManagerWidget(self.roiToolViewer())
             if showROIManagerPanel
             else None
         )
@@ -694,6 +722,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if action is not None:
             action.setChecked(True)
 
+    def roiToolViewer(self):
+        """What the ROI Manager, ROI stats and Profile draw on and read: the napari
+        viewer, or with separate windows the stand-in backed by the active window."""
+        if self._windowViewer is not None:
+            return self._windowViewer
+        return self.reconstructionWidget.napariViewer
+
+    def bindWindowManager(self, manager) -> None:
+        """Point the window-mode ROI tools at ``manager``'s active window."""
+        if self._windowViewer is not None:
+            self._windowViewer.bind(manager)
+
     def imageDisplayMode(self) -> str:
         """The display this session runs with (fixed at startup)."""
         return self._imageDisplayMode
@@ -710,7 +750,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             return
         for tool in unsupported_tools():
             if tool.kind == 'panel':
-                restrict_panel(getattr(self, tool.attribute, None))
+                _restrict_panel_for_window_mode(self, tool)
             elif tool.kind == 'image-action':
                 self._blockedImageActions.add(tool.id)
                 action = self._imageActions.get(tool.id)
@@ -722,6 +762,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 if menu is not None:
                     menu.menuAction().setEnabled(False)
                     menu.menuAction().setToolTip(UNSUPPORTED_TOOLTIP)
+
+    def _restrictIfWindowMode(self, spec) -> None:
+        """A panel opened (or reopened) after startup is restricted like the rest."""
+        tool = panel_tool(spec.widget_kind) if self._imageDisplayMode == IMAGE_DISPLAY_WINDOWS else None
+        if tool is not None:
+            _restrict_panel_for_window_mode(self, tool)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
@@ -1108,6 +1154,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if spec.widget_kind in ('roi-manager', 'segmentation'):
                 self._wireROIManagerToDependentWidgets()
             self._syncDockVisibilityActions()
+            self._restrictIfWindowMode(spec)
             return title
 
         try:
@@ -1138,8 +1185,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if runtime_loaded:
                 self._runtimeAnalysisToolIds.add(processor_id)
             setattr(self, spec.attribute, widget)
-            if self._imageDisplayMode == IMAGE_DISPLAY_WINDOWS and panel_tool(spec.widget_kind):
-                restrict_panel(widget)
             if spec.widget_kind in ('roi-manager', 'segmentation', 'result-processor'):
                 # Any of these may be opened first, and the wiring runs in
                 # both directions, so it is redone whenever one arrives.
@@ -1155,6 +1200,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             dock.show()
             self._safeRaiseDock(dock)
             self._syncDockVisibilityActions()
+            self._restrictIfWindowMode(spec)
         except Exception:
             # Roll back partial dock state so subsequent attempts can retry
             # without colliding with an orphaned dock entry.
@@ -1562,7 +1608,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             ),
             'graph': lambda: GraphWidget(),
             'console': lambda: PythonConsoleWidget(),
-            'profile': lambda: ProfileWidget(viewer),
+            'profile': lambda: ProfileWidget(self.roiToolViewer()),
             'metadata': lambda: MetadataWidget(),
             'segmentation': lambda: SegmentationWidget(
                 viewer,
@@ -1577,8 +1623,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 roiManagerWidget=self.roiManagerWidget,
             ),
             'multicolor': lambda: MulticolorWidget(viewer),
-            'roi-manager': lambda: ROIManagerWidget(viewer),
-            'roi-stats': lambda: ROIStatsWidget(viewer),
+            'roi-manager': lambda: ROIManagerWidget(self.roiToolViewer()),
+            'roi-stats': lambda: ROIStatsWidget(self.roiToolViewer()),
         }
         try:
             return factories[spec.widget_kind]
