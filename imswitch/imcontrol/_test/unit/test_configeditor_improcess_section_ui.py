@@ -27,6 +27,12 @@ from imswitch.imcontrol._test.unit.configeditor_testing import SHIPPED_SETUPS, a
 PROCESSING = editor.SECTION_SCHEMAS["processing"]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_dropin_session(monkeypatch):
+    """Each test is a new editor session: no drop-in scan carried over."""
+    monkeypatch.setattr(editor, "_DROPIN_CACHE", {})
+
+
 def _setups() -> dict:
     return {
         path.stem: json.loads(path.read_text(encoding="utf-8"))

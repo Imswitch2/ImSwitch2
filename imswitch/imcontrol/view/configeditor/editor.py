@@ -973,6 +973,8 @@ _CANVAS_SECTIONS = frozenset({IMPROCESS_SECTION_KEY})
 
 #: The button that starts the ImProcess section from a shipped preset.
 IMPROCESS_PRESET_BUTTON = "Start from preset\u2026"
+#: The drop-in page's button that scans the plugins folder again.
+DROPIN_RESCAN_BUTTON = "Rescan"
 IMPROCESS_PRESET_TOOLTIP = (
     "Start the ImProcess section from one of the processor setups ImSwitch ships"
 )
@@ -1116,16 +1118,9 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
     """
     try:
         from imswitch.imcontrol.model.plugins.registry import build_default_registry
-        from imswitch.imcontrol.model.plugins.validation import (
-            ValidationContext,
-            validate_setup_data,
-        )
+        from imswitch.imcontrol.model.plugins.validation import validate_setup_data
 
-        context = ValidationContext(
-            widget_requires_section=_WIDGET_REQUIRES_SECTION,
-            known_reconstructor_ids=tuple(_section_option_values("processing", "reconstructors")),
-            known_processor_ids=tuple(_section_option_values("processing", "processors")),
-        )
+        context = _improcess_validation_context(data)
         report = validate_setup_data(
             data,
             build_default_registry(discover=True),
@@ -4576,6 +4571,68 @@ def _discover_dropins(directory: str | None = None) -> _DropIns:
     return found
 
 
+#: What drop-in discovery found, per folder (None = the default plugins
+#: folder), for the whole editor session. Discovery imports the plugin files,
+#: so it runs the first time it is needed and not on every validation pass.
+_DROPIN_CACHE: dict = {}
+
+
+def _cached_dropins(directory: str | None = None, *, refresh: bool = False) -> _DropIns:
+    """The drop-in plugins of ``directory``, discovered once and kept."""
+    if refresh or directory not in _DROPIN_CACHE:
+        _DROPIN_CACHE[directory] = _discover_dropins(directory)
+    return _DROPIN_CACHE[directory]
+
+
+def _improcess_builtin_ids() -> tuple[tuple, tuple]:
+    """``(reconstructor ids, processor ids)`` of the built-in plugins only.
+
+    From ImProcess's own tables, not from the editor's option lists, which also
+    carry any drop-in already loaded in this process. When ImProcess cannot be
+    imported the offline lists stand in; a test pins them to the real ones.
+    """
+    try:
+        from imswitch.improcess.processors import available_processor_specs
+        from imswitch.improcess.reconstructors import builtin_reconstructor_ids
+
+        return (
+            tuple(builtin_reconstructor_ids()),
+            tuple(spec[0] for spec in available_processor_specs(origin="builtin")),
+        )
+    except Exception:
+        return tuple(IMPROCESS_RECONSTRUCTOR_FALLBACK), tuple(IMPROCESS_PROCESSOR_FALLBACK)
+
+
+def _improcess_validation_context(data: dict):
+    """The ``ValidationContext`` for ``data``: widget map, built-in ids, drop-in ids.
+
+    The drop-in folder is discovered (once per session) only when the
+    ``processing`` block lists an id that is not built-in; a setup that lists
+    only built-ins never causes a plugin file to be imported. When discovery is
+    unavailable the drop-in ids are empty.
+    """
+    from imswitch.imcontrol.model.plugins.validation import ValidationContext
+
+    reconstructors, processors = _improcess_builtin_ids()
+    block = data.get(IMPROCESS_SECTION_KEY)
+    block = block if isinstance(block, dict) else {}
+    listed_r = block.get("reconstructors") if isinstance(block.get("reconstructors"), list) else []
+    listed_p = block.get("processors") if isinstance(block.get("processors"), list) else []
+    dropin_r: tuple = ()
+    dropin_p: tuple = ()
+    if any(i not in reconstructors for i in listed_r) or any(i not in processors for i in listed_p):
+        found = _cached_dropins()
+        dropin_r = tuple(e[0] for e in found.entries if e[1] == "reconstructor")
+        dropin_p = tuple(e[0] for e in found.entries if e[1] == "processor")
+    return ValidationContext(
+        widget_requires_section=_WIDGET_REQUIRES_SECTION,
+        known_reconstructor_ids=reconstructors,
+        known_processor_ids=processors,
+        dropin_reconstructor_ids=dropin_r,
+        dropin_processor_ids=dropin_p,
+    )
+
+
 class _EndpointsEditor(QWidget):
     """The napari endpoints list as pretty-printed JSON in a multi-line box.
 
@@ -4780,7 +4837,8 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
         self._endpoints: _EndpointsEditor | None = None
         self._page_titles: list[str] = []
         self._muted = "#AAAAAA" if is_dark_mode() else "#666666"
-        self._dropins = _discover_dropins(dropin_directory)
+        self._dropin_directory = dropin_directory
+        self._dropins = _cached_dropins(dropin_directory)
         self.setWindowTitle(f"Edit section: {schema.get('display', self._key)}")
 
         lay = QVBoxLayout(self)
@@ -4975,11 +5033,20 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
             "Drop-in plugins are active on this computer whenever their file is "
             "in the plugins folder, so they are not listed in the setup file."
         ))
+        folder_row = QHBoxLayout()
         folder = QLabel(f"Folder: {found.directory or 'unknown'}")
         folder.setTextFormat(Qt.PlainText)
         folder.setWordWrap(True)
         folder.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lay.addWidget(folder)
+        folder_row.addWidget(folder, 1)
+        rescan = QPushButton(DROPIN_RESCAN_BUTTON)
+        rescan.setToolTip(
+            "Look in the plugins folder again (this imports the plugin files). "
+            "The editor otherwise scans once per session."
+        )
+        rescan.clicked.connect(self._rescan_dropins)
+        folder_row.addWidget(rescan, 0, Qt.AlignTop)
+        lay.addLayout(folder_row)
 
         self._dropin_tree = QTreeWidget()
         self._dropin_tree.setRootIsDecorated(False)
@@ -5027,6 +5094,19 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
             lay.addWidget(err)
         lay.addStretch()
         return self._scrolling(inner)
+
+    def _rescan_dropins(self) -> None:
+        """Discover the drop-in folder again and redraw the page."""
+        self._dropins = _cached_dropins(self._dropin_directory, refresh=True)
+        index = self._page_titles.index("Drop-in plugins")
+        was_current = self._page_list.currentRow() == index
+        old = self._stack.widget(index)
+        self._stack.removeWidget(old)
+        old.setParent(None)
+        old.deleteLater()
+        self._stack.insertWidget(index, self._build_dropin_page(self._loaded))
+        if was_current:
+            self._stack.setCurrentIndex(index)
 
     def _build_custom_tab(self, current: dict | None) -> QWidget:
         page = QWidget()
@@ -5984,20 +6064,13 @@ class ValidationPanel(QFrame):
         # Try to use model validation service (Phase 4)
         try:
             from imswitch.imcontrol.model.plugins.registry import build_default_registry
-            from imswitch.imcontrol.model.plugins.validation import (
-                validate_setup_data,
-                ValidationContext,
-            )
+            from imswitch.imcontrol.model.plugins.validation import validate_setup_data
             
             # Build registry
             registry = build_default_registry(discover=True)
             
             # Build context with editor-supplied inputs
-            context = ValidationContext(
-                widget_requires_section=_WIDGET_REQUIRES_SECTION,
-                known_reconstructor_ids=tuple(_section_option_values("processing", "reconstructors")),
-                known_processor_ids=tuple(_section_option_values("processing", "processors")),
-            )
+            context = _improcess_validation_context(data)
             
             # Validate using model
             report = validate_setup_data(data, registry, context=context)

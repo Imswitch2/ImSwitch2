@@ -342,3 +342,107 @@ def test_a_non_scanning_positioner_sharing_the_axis_is_not_flagged():
     data["positioners"]["ND-PiezoZ"]["forScanning"] = False
 
     assert _shared_actuator_warnings(data) == []
+
+
+# ── processing: built-in, drop-in and unknown plugin ids ───────────────────
+def _processing_codes(processing, **context):
+    registry = build_default_registry(discover=False)
+    report = validate_setup_data(
+        {"processing": processing}, registry, context=ValidationContext(**context)
+    )
+    return {d.code: d for d in report.diagnostics if d.code.startswith("xref.processing.")}
+
+
+_BUILTIN = dict(known_reconstructor_ids=("view-only", "monalisa"), known_processor_ids=("resize",))
+
+
+def test_processing_builtin_ids_are_fine():
+    assert _processing_codes(
+        {"reconstructors": ["monalisa"], "processors": ["resize"]}, **_BUILTIN
+    ) == {}
+
+
+def test_processing_dropin_ids_are_a_portability_warning():
+    found = _processing_codes(
+        {"reconstructors": ["view-only", "user.recon"], "processors": ["resize", "user.proc"]},
+        dropin_reconstructor_ids=("user.recon",), dropin_processor_ids=("user.proc",), **_BUILTIN,
+    )
+    assert set(found) == {"xref.processing.dropin-reconstructor", "xref.processing.dropin-processor"}
+    for diag in found.values():
+        assert diag.severity == "warning"
+        assert "drop-in plugin on this computer" in diag.message
+        assert "computers without the file" in diag.message
+    assert "user.recon" in found["xref.processing.dropin-reconstructor"].message
+    assert found["xref.processing.dropin-processor"].path == ("processing", "processors")
+
+
+def test_processing_unknown_ids_are_an_error_that_says_what_happens():
+    found = _processing_codes(
+        {"reconstructors": ["view-only", "nope"], "processors": ["resize", "nope2"]}, **_BUILTIN,
+        dropin_reconstructor_ids=("user.recon",),
+    )
+    assert set(found) == {"xref.processing.unknown-reconstructor", "xref.processing.unknown-processor"}
+    for diag in found.values():
+        assert diag.severity == "error"
+        assert diag.message.endswith("ImProcess skips unknown ids at startup.")
+    assert "'nope'" in found["xref.processing.unknown-reconstructor"].message
+
+
+def test_processing_mixed_ids_report_each_kind_once():
+    found = _processing_codes(
+        {"reconstructors": ["view-only", "user.recon", "nope"]},
+        dropin_reconstructor_ids=("user.recon",), **_BUILTIN,
+    )
+    assert set(found) == {"xref.processing.dropin-reconstructor", "xref.processing.unknown-reconstructor"}
+    assert "nope" not in found["xref.processing.dropin-reconstructor"].message
+    assert "user.recon" not in found["xref.processing.unknown-reconstructor"].message
+
+
+def test_a_builtin_id_wins_over_a_dropin_of_the_same_id():
+    assert _processing_codes(
+        {"reconstructors": ["monalisa"]}, dropin_reconstructor_ids=("monalisa",), **_BUILTIN
+    ) == {}
+
+
+def test_without_a_context_the_builtin_tables_decide():
+    from imswitch.improcess.processors import available_processor_specs
+    from imswitch.improcess.reconstructors import builtin_reconstructor_ids
+
+    builtin_p = available_processor_specs(origin="builtin")[0][0]
+    found = _processing_codes({
+        "reconstructors": [builtin_reconstructor_ids()[0], "nope"],
+        "processors": [builtin_p],
+    })
+    assert set(found) == {"xref.processing.unknown-reconstructor"}
+
+
+def test_a_dropin_loaded_in_this_process_is_not_builtin(monkeypatch):
+    from imswitch.improcess.reconstructors import _USER_RECONSTRUCTOR_CLASSES, _all_reconstructor_classes
+
+    monkeypatch.setitem(_USER_RECONSTRUCTOR_CLASSES, "user.loaded", _all_reconstructor_classes()["view-only"])
+    found = _processing_codes({"reconstructors": ["user.loaded"]})
+    assert set(found) == {"xref.processing.unknown-reconstructor"}, "only the built-in table counts"
+
+
+def test_nothing_known_and_the_import_failing_means_no_id_diagnostics(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "imswitch.improcess.reconstructors", None)
+    monkeypatch.setitem(sys.modules, "imswitch.improcess.processors", None)
+    assert _processing_codes({"reconstructors": ["whatever"], "processors": ["anything"]}) == {}
+
+
+def test_nothing_known_still_reports_a_listed_dropin(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "imswitch.improcess.reconstructors", None)
+    monkeypatch.setitem(sys.modules, "imswitch.improcess.processors", None)
+    found = _processing_codes(
+        {"reconstructors": ["user.recon", "other"]}, dropin_reconstructor_ids=("user.recon",),
+    )
+    assert set(found) == {"xref.processing.dropin-reconstructor"}
+
+
+def test_the_shape_checks_stay():
+    found = _processing_codes({"reconstructors": [], "processors": "resize"}, **_BUILTIN)
+    assert set(found) == {"xref.processing.reconstructors-invalid", "xref.processing.processors-invalid"}

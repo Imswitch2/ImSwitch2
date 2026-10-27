@@ -186,8 +186,12 @@ class SetupDiagnostic:
 class ValidationContext:
     """Optional editor-supplied context for validation checks."""
     widget_requires_section: dict | None = None
+    #: The ids of the built-in ImProcess plugins. None: ask ImProcess itself.
     known_reconstructor_ids: tuple | None = None
     known_processor_ids: tuple | None = None
+    #: The drop-in plugin ids found on this computer; None or empty: none known.
+    dropin_reconstructor_ids: tuple | None = None
+    dropin_processor_ids: tuple | None = None
 
 
 @dataclass
@@ -549,6 +553,67 @@ def _validate_daq_channels(data: dict) -> list[SetupDiagnostic]:
     return diagnostics
 
 
+def _builtin_improcess_ids() -> tuple[set | None, set | None]:
+    """The built-in ImProcess reconstructor and processor ids, or ``(None, None)``.
+
+    Read from ImProcess's own tables, built-ins only: drop-in plugins already
+    loaded in this process are not built-in. ``None`` means "cannot tell", and
+    the id checks are then skipped rather than guessed.
+    """
+    try:
+        from imswitch.improcess.processors import available_processor_specs
+        from imswitch.improcess.reconstructors import builtin_reconstructor_ids
+
+        return (
+            set(builtin_reconstructor_ids()),
+            {spec[0] for spec in available_processor_specs(origin="builtin")},
+        )
+    except Exception:
+        return None, None
+
+
+def _plugin_id_diagnostics(
+    key: str, noun: str, listed: list, builtin: set | None, dropin: set,
+) -> list[SetupDiagnostic]:
+    """Diagnostics for the ids listed under ``processing.<key>``.
+
+    A built-in id is fine. A drop-in id is a warning: drop-ins are active
+    whenever their file is present, so listing one only makes the setup fail
+    to find it on a computer without the file. Any other id is an error:
+    ImProcess skips it at startup. Without ``builtin`` an unknown id cannot be
+    told from a built-in one, so only drop-in ids are reported.
+    """
+    builtin_ids = builtin or set()
+    dropins = [i for i in listed if i not in builtin_ids and i in dropin]
+    unknown = (
+        [i for i in listed if i not in builtin_ids and i not in dropin]
+        if builtin_ids else []
+    )
+    found: list[SetupDiagnostic] = []
+    if dropins:
+        found.append(SetupDiagnostic(
+            severity="warning",
+            code=f"xref.processing.dropin-{noun}",
+            message=(
+                f"processing.{key} lists {dropins}, a drop-in plugin on this computer; "
+                f"drop-ins are active whenever their file is present, so listing it "
+                f"makes the setup fail to find it on computers without the file."
+            ),
+            path=("processing", key),
+        ))
+    if unknown:
+        found.append(SetupDiagnostic(
+            severity="error",
+            code=f"xref.processing.unknown-{noun}",
+            message=(
+                f"processing.{key} contains unknown plugin ID(s): {unknown}. "
+                f"ImProcess skips unknown ids at startup."
+            ),
+            path=("processing", key),
+        ))
+    return found
+
+
 def _validate_cross_references(data: dict, context: ValidationContext | None) -> list[SetupDiagnostic]:
     """Validate cross-references between sections."""
     diagnostics = []
@@ -712,30 +777,27 @@ def _validate_cross_references(data: dict, context: ValidationContext | None) ->
     # processing ⇄ reconstructor/processor IDs
     processing = data.get("processing")
     if processing:
-        # Try to get known IDs from context or import directly
+        # Built-in ids: from the context, else from ImProcess's own tables.
         known_reconstructors = None
         known_processors = None
-        
+
         if context and context.known_reconstructor_ids:
             known_reconstructors = set(context.known_reconstructor_ids)
         if context and context.known_processor_ids:
             known_processors = set(context.known_processor_ids)
-        
-        # If not in context, try importing from improcess
         if known_reconstructors is None or known_processors is None:
-            try:
-                from imswitch.improcess.model.plugins.registry import build_default_registry as build_improcess_registry
-                improcess_registry = build_improcess_registry(discover=True)
-                if known_reconstructors is None:
-                    known_reconstructors = {c.id for c in improcess_registry.list_contributions(kind="reconstructor")}
-                if known_processors is None:
-                    known_processors = {c.id for c in improcess_registry.list_contributions(kind="processor")}
-            except Exception:
-                pass
-        
+            builtin_reconstructors, builtin_processors = _builtin_improcess_ids()
+            if known_reconstructors is None:
+                known_reconstructors = builtin_reconstructors
+            if known_processors is None:
+                known_processors = builtin_processors
+
+        dropin_reconstructors = set(getattr(context, "dropin_reconstructor_ids", None) or ())
+        dropin_processors = set(getattr(context, "dropin_processor_ids", None) or ())
+
         reconstructors = processing.get("reconstructors")
         processors = processing.get("processors")
-        
+
         if reconstructors is not None:
             if not isinstance(reconstructors, list) or not reconstructors:
                 diagnostics.append(SetupDiagnostic(
@@ -744,16 +806,12 @@ def _validate_cross_references(data: dict, context: ValidationContext | None) ->
                     message="processing.reconstructors must be a non-empty list of ImProcess reconstructor IDs.",
                     path=("processing", "reconstructors"),
                 ))
-            elif known_reconstructors:
-                unknown = [r for r in reconstructors if r not in known_reconstructors]
-                if unknown:
-                    diagnostics.append(SetupDiagnostic(
-                        severity="error",
-                        code="xref.processing.unknown-reconstructor",
-                        message=f"processing.reconstructors contains unknown plugin ID(s): {unknown}.",
-                        path=("processing", "reconstructors"),
-                    ))
-        
+            else:
+                diagnostics.extend(_plugin_id_diagnostics(
+                    "reconstructors", "reconstructor", reconstructors,
+                    known_reconstructors, dropin_reconstructors,
+                ))
+
         if processors is not None:
             if not isinstance(processors, list):
                 diagnostics.append(SetupDiagnostic(
@@ -762,16 +820,12 @@ def _validate_cross_references(data: dict, context: ValidationContext | None) ->
                     message="processing.processors must be a list of ImProcess processor IDs.",
                     path=("processing", "processors"),
                 ))
-            elif known_processors:
-                unknown = [p for p in processors if p not in known_processors]
-                if unknown:
-                    diagnostics.append(SetupDiagnostic(
-                        severity="error",
-                        code="xref.processing.unknown-processor",
-                        message=f"processing.processors contains unknown plugin ID(s): {unknown}.",
-                        path=("processing", "processors"),
-                    ))
-    
+            else:
+                diagnostics.extend(_plugin_id_diagnostics(
+                    "processors", "processor", processors,
+                    known_processors, dropin_processors,
+                ))
+
     # microscopeStand ⇄ rs232devices
     ms = data.get("microscopeStand")
     if ms:

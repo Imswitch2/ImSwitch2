@@ -2408,8 +2408,13 @@ side should load nothing.
 
 Of the built-ins, only the IDs you list are instantiated during initial
 registry setup; drop-in plugins from the plugins folder are always
-registered.  An ID ImProcess does not know stops it from starting: its tab
-shows the ``KeyError``, which lists the valid IDs.  Runtime-loaded tools, and
+registered, so do not list them.  An ID this computer does not have is
+skipped at startup with one logged warning naming the key and the available
+IDs, and ImProcess starts with the rest; if none of the listed reconstructors
+is known, it registers the standalone default (``view-only``).  The config
+editor flags such an ID as an error, and a drop-in ID listed in the setup as
+a warning (the setup then fails to find it on a computer without the file).
+Runtime-loaded tools, and
 registry-backed startup panels such as ``projectionPanel`` and ``frcPanel``,
 may register their required processors later.  List processor IDs explicitly
 when you want them preloaded without opening the corresponding panel.

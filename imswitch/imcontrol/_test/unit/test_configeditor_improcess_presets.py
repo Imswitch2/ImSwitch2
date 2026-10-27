@@ -100,6 +100,12 @@ from imswitch.imcontrol.view.configeditor import editor
 from imswitch.imcontrol._test.unit.configeditor_testing import assert_json_identical
 
 PROCESSING = editor.SECTION_SCHEMAS["processing"]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_dropin_session(monkeypatch):
+    """Each test is a new editor session: no drop-in scan carried over."""
+    monkeypatch.setattr(editor, "_DROPIN_CACHE", {})
 PRESETS = {p.title: p for p in shipped_improcess_presets()}
 BUTTON = editor.IMPROCESS_PRESET_BUTTON
 OLD_BLOCK = {"reconstructors": ["view-only"], "processors": ["resize"], "someFutureKey": 1}
