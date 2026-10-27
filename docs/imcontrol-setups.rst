@@ -41,7 +41,9 @@ file holds the per-computer settings that are not part of any setup:
 .. tip::
 
    Don't want to hand-edit JSON?  Use the bundled visual setup editor.
-   It shows typed fields for every manager's ``managerProperties``.
+   It shows typed fields for every manager's ``managerProperties`` and for
+   the sections of the file that are not devices (:ref:`config-editor-system-sections`,
+   :ref:`config-editor-improcess`).
 
    From a running ImSwitch2, open it with
    **Hardware → Edit hardware configuration…**.  It opens on the setup file
@@ -81,6 +83,65 @@ file holds the per-computer settings that are not part of any setup:
    Editing some *other* setup file changes nothing about the running
    session, so nothing is asked.
 
+
+.. _config-editor-system-sections:
+
+System sections in the config editor
+====================================
+
+The **System** card lists the sections of the setup file that configure
+ImSwitch2 rather than one device: ``scan``, ``focusLock``, ``autofocus``,
+``tiling``, ``nidaq``, ``etSTED``, ``microscopeStand``, ``teensyPulse``,
+``triggerScope``, ``pyroServerInfo`` and the legacy ``pulseStreamer``.  Each
+configured section has an **Edit…** button and a **×** that removes it, and
+**＋ Add System Section…** offers the ones the file does not have.  The
+ImProcess block has its own place on the canvas
+(:ref:`below <config-editor-improcess>`) and follows the same rules.
+``triggerScope`` is a System section too; it used to appear under **Extras**
+as raw JSON.
+
+The dialog has one tab per group of options, each option with its explanation
+as a tooltip.  ``focusLock`` has the tabs Basic, Devices, Crop, Control and
+Reacquire; ``tiling`` has Basic, Devices, Acquisition, Saving and Mosaic.
+Choices the code defines are drop-downs: the tiling **Default pattern**
+(spiral or serpentine), **Mode** and **Save format**, for example.  Rates are
+in the unit the code reads: the ``focusLock`` and ``autofocus`` **Update
+freq** is in hertz.
+
+**Apply writes the section as the file had it**, for every System section.  A
+key is written only if
+
+* the file already had it,
+* you changed it in the dialog, or
+* the setup loader needs it.
+
+A short section therefore stays short: opening a section and pressing
+**Apply** changes nothing, a key you did not touch is neither added nor
+changed, and keys come back in the order the file had them.  A key the file
+leaves out shows the value the code uses for it; it is written only once you
+change it.
+
+A key is *needed by the loader* when leaving it out makes the setup loader
+fail, or warn that it defaulted the value to ``null``.  Those keys are marked
+with a bold label and an asterisk.  ``focusLock`` needs ``camera``,
+``positioner``, ``updateFreq``, the four crop values, ``piKp`` and ``piKi``;
+``scan`` needs the widget type, both designers and their parameter dicts
+(``{}`` for none) and the sample rate; ``tiling`` needs ``xyPositioner``;
+``triggerScope`` needs ``rs232device``.  ``nidaq``, ``etSTED``,
+``teensyPulse``, ``pyroServerInfo`` and ``pulseStreamer`` need nothing.
+
+Keys the editor has no field for stay on the **Custom** tab and are written
+back unchanged; **⊕ Add property** adds your own.  A key a newer ImSwitch
+wrote, or one only your site reads, survives an Edit and Apply.
+
+**A new section starts with its required keys only, and they are empty.**
+The editor does not fill in a number the code has no default for (a crop
+width, a PI gain, a sample rate) or a class name: you choose it.  **Apply**
+refuses and lists what is missing (``Missing required: Detector, Z
+Positioner, …``) until each is filled in.  The same holds when you edit a
+section whose file lacks a required key: it shows empty and must be filled
+before Apply.  A section with nothing required starts as an empty block, and
+is listed on the card once it holds a key.
 
 .. _config-editor-improcess:
 
@@ -144,14 +205,11 @@ one-sentence explanation under it, and three pages that are not options:
 * **Set on this computer**: the ImProcess settings that are *not* in a setup
   (below).
 
-**Apply** writes the block as the file had it.  A key is written only if the
-file already had it, you changed it in the dialog, or it is required (the
-list of reconstructors, which may not be empty), so a short block stays
-short, opening the dialog and pressing **Apply** changes nothing, and keys
-come back in the order the file had them.  Keys the editor does not know stay
-on the Custom page and are written back unchanged.  A new section starts
-with the required key only.  The key reference is in :ref:`the
-processing section <setupinfo-processing>` of the setup reference.
+**Apply** writes the block as the file had it, by the rule in
+:ref:`config-editor-system-sections`.  The one required key is the list of
+reconstructors, which may not be empty.  Keys the editor does not know stay on
+the Custom page.  The key reference is in :ref:`the processing section
+<setupinfo-processing>` of the setup reference.
 
 The editor's validation panel checks the plugin lists against what exists:
 

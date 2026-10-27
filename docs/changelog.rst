@@ -7,13 +7,24 @@ Unreleased
 
 **Fixes**
 
-- **The config editor no longer drops keys from the ImProcess block, and a
+- **The config editor no longer drops keys from any System section, and a
   setup naming a plugin this computer lacks no longer stops ImProcess.**
-  Applying the ImProcess section used to write only the keys of its form:
-  ``liveStallTimeoutS``, ``liveViewerUpdateIntervalS``, ``napariEndpoints`` and
-  any key a newer ImSwitch had written were lost, and a short block grew into
-  every field.  It now writes the block as the file had it (a key only if
-  the file had it, you changed it or it is required) and keeps unknown keys.
+  Applying a System section (``scan``, ``focusLock``, ``autofocus``,
+  ``tiling``, ``nidaq``, …) or the ImProcess section used to write every field
+  of its form and lose every key the form had no field for: the ImProcess
+  ``liveStallTimeoutS``, ``liveViewerUpdateIntervalS`` and ``napariEndpoints``
+  and any key a newer ImSwitch had written, ``focusLock``'s
+  ``positionerAxis`` and reacquire settings, ``autofocus``'s ``settleTimeMs``
+  and twelve ``tiling`` keys (``mode``, the saving group, the mosaic
+  orientation and registration), and a short block grew into every field.
+  Every System section now writes as the file had it (a key only if the file
+  had it, you changed it or the setup loader needs it), keeps unknown keys on
+  a Custom tab, and offers all of those keys on tabs of its own.  A new
+  section starts with its required keys only, empty, instead of invented
+  numbers (a crop width of 600, a PI gain of 25, a sample rate of 100000):
+  Apply refuses until you fill them in.  The ``focusLock`` and ``autofocus``
+  **Update freq** was labelled milliseconds while the code reads hertz, and
+  the tiling **Default pattern** was a free-text box; it is a drop-down now.
   Separately, a ``reconstructors`` or ``processors`` list naming an id that is not here (a
   drop-in plugin that lives on another computer, a typo) raised a ``KeyError``
   and ImProcess did not open; the id is now skipped with one logged warning,
@@ -21,6 +32,13 @@ Unreleased
   known it registers ``view-only``.  A setup that lists only ``processors``
   now gets ``view-only`` (not ``monalisa``) as its reconstructor, the same as
   with no block at all.
+
+- The config editor's ``teensyPulse`` section no longer turns the mock
+  fallback on by itself: **Mock on failure** started ticked although the code
+  defaults ``useMockOnFailure`` to ``false``, so a section applied without
+  touching it silently let a mock stand in for a missing pulse generator.
+  ``triggerScope`` (``rs232device``) is now a System section with its own
+  dialog instead of raw JSON under Extras.
 
 - Hardware Control no longer fails startup solely because a setup requests
   real NI-DAQ channels while the ``nidaqmx`` backend is unavailable. The
