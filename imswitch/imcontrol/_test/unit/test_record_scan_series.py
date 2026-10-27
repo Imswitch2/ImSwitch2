@@ -335,7 +335,7 @@ def test_the_rec_flow_reads_the_request_before_the_widget():
         toggle.index('elif self._commChannel.hasScanWidget():')
     )
     assert 'seriesRequest.frames if seriesRequest is not None' in toggle
-    assert 'True if seriesRequest is not None' in toggle
+    assert 'bool(seriesRequest.singleFile) if seriesRequest is not None' in toggle
 
     nextLapse = _method_body(source, 'nextLapse')
     assert nextLapse.index('self._recordingScanSource = seriesRequest.source') < (

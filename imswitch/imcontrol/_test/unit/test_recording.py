@@ -475,6 +475,7 @@ def test_panel_scan_series_uses_snapshotted_interval_after_completed_point(
         _recordingFailureAwaitingScanEnd=False,
         _recordingFailedCurrent=False,
         timer=None,
+        nextLapse=lambda: None,
         _widget=types.SimpleNamespace(
             isRecButtonChecked=lambda: True,
             updateRecLapseNum=lambda _value: None,
@@ -900,6 +901,7 @@ def test_new_recording_resets_previous_scan_and_writer_terminals_first():
         _handleRecordingFailure=(
             lambda message, **kwargs: failures.append((message, kwargs))
         ),
+        _recordingAcquisitionStartAllowed=lambda: True,
     )
 
     def stopAfterInitialState(**_kwargs):
@@ -1071,6 +1073,7 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
         lapseTotal=2,
         timer=None,
         _finalizingRecCycle=False,
+        _recordingScanSource=None,
         _scanStartPublished=False,
         _scanRequestAccepted=False,
         _acceptedScanRunToken=None,

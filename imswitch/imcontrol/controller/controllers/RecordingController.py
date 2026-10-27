@@ -340,8 +340,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._syncScanSeriesSettingsFromWorkflow()
 
     def _publishScanSeriesActivity(self, source, active: bool) -> None:
+        # The workflow is an optional collaborator during partial construction
+        # and teardown. Read it from ``__dict__`` so an absent channel stays a
+        # normal no-op instead of reaching Qt's uninitialized attribute lookup.
         workflow = getattr(
-            getattr(self, '_commChannel', None), 'recordingWorkflow', None
+            self.__dict__.get('_commChannel'), 'recordingWorkflow', None
         )
         publish = getattr(workflow, 'publish_scan_series_activity', None)
         if callable(publish):
@@ -416,7 +419,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
     def _recordingAcquisitionOwner(self):
         workflow = getattr(
-            getattr(self, '_commChannel', None), 'recordingWorkflow', None
+            self.__dict__.get('_commChannel'), 'recordingWorkflow', None
         )
         getter = getattr(workflow, 'recording_acquisition_owner', None)
         return getter() if callable(getter) else None
