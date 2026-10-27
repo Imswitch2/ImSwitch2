@@ -16,7 +16,7 @@ Setup
                 Positioner and Recording widgets. Change X_STAGE and
                 Y_STAGE to your stage names.
 
-Next: the scanning tutorials, starting with ../scanning/01_run_a_scan.py
+Next: 09_rotators.py
 """
 
 import os

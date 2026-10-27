@@ -973,6 +973,29 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             for warning in warnings:
                 self._logger.warning(warning)
 
+    @APIExport(runOnUIThread=True)
+    def getScanParameters(self) -> dict:
+        """ Returns the scan the Scan widget holds as a dict, the same
+        content saveScanParamsToFile writes: ``analogParameterDict`` (the
+        scanned devices with ``axis_length``, ``axis_step_size`` and
+        ``axis_centerpos`` per device, in µm, and ``sequence_time`` in s),
+        ``digitalParameterDict`` (the pulsed devices with ``TTL_start`` and
+        ``TTL_end`` in s) and ``positionersScan``. Edit it and give it back
+        with setScanParameters. """
+        return self.getComponentState()
+
+    @APIExport(runOnUIThread=True)
+    def setScanParameters(self, parameters: dict) -> None:
+        """ Puts a dict from getScanParameters, edited or not, into the Scan
+        widget, as loadScanParamsFromFile does with a file. Raises
+        ValueError, naming what could not be applied, when the dict does
+        not fit the setup (a device the setup lacks, say). """
+        warnings = self.applyComponentState(
+            parameters, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+        )
+        if warnings:
+            raise ValueError('; '.join(str(w) for w in warnings))
+
     def _read_scan_file(self, filePath: str):
         """Read a scan file, returning a component state dict.
         

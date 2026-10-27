@@ -55,6 +55,7 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         # Connect ModuleCommunicationChannel signals if available
         if self._moduleCommChannel is not None:
             self._moduleCommChannel.sigLiveReconResult.connect(self.liveReconResultAvailable)
+            self._moduleCommChannel.sigShowImage.connect(self.showImage)
 
     def autoLevels(self, detectorNames=None, im=None):
         """ Set histogram levels automatically with current detector image."""
@@ -177,6 +178,17 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
                 shape = getattr(layerData[0][0], 'shape', None)
                 if shape is not None:
                     self.adjustFrame(shape, instantResetView=True)
+
+    def showImage(self, name, image, scale):
+        """ A script's show(): the array in the layer called ``name``,
+        replacing that layer's data when it exists. """
+        try:
+            isNew = self._widget.setStaticLayer(name, image, scale)
+        except Exception:
+            self.__logger.error(f'Could not show {name!r}', exc_info=True)
+            return
+        if isNew and self._shouldResetView:
+            self.adjustFrame(image.shape, instantResetView=True)
 
     def setExposure(self, exp):
         detectorName = self._master.detectorsManager.getAllDeviceNames()[0]

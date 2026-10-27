@@ -586,8 +586,9 @@ Standa mounts (``StandaRotatorManager``); on Kinesis and Elliptec mounts they
 log an error and do nothing.  Saved widget state keeps each mount's step and
 speed, never its angle.
 
-Scripts can turn a mount to an angle with
-``api.imcontrol.moveAbs(name, angle)``.
+Scripts turn a mount with ``api.imcontrol.setRotatorPosition(name,
+degrees)`` (absolute) and ``moveRotator(name, degrees)`` (relative), and
+read it with ``getRotatorPosition(name)``; see :doc:`api/api.imcontrol`.
 
 .. image:: ./images/auto/RotatorWidget.png
    :align: center

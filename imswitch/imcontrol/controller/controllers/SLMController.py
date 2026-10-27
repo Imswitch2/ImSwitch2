@@ -84,6 +84,7 @@ class SLMController(StatefulComponentMixin, ImConWidgetController):
 
     @APIExport(runOnUIThread=True)
     def toggleSLMDisplay(self, enabled):
+        """ Shows or hides the SLM display window. """
         self._widget.setSLMDisplayVisible(enabled)
 
     def monitorChanged(self, monitor):
@@ -180,6 +181,8 @@ class SLMController(StatefulComponentMixin, ImConWidgetController):
 
     @APIExport(runOnUIThread=True)
     def loadParams(self):
+        """ Loads the SLM parameters of the objective chosen in the SLM
+        widget; logs an error and does nothing while none is chosen. """
         obj = self._widget.controlPanel.objlensComboBox.currentText()
         if obj == 'No objective':
             self.__logger.error('You have to choose an objective from the drop down menu.')
@@ -225,6 +228,8 @@ class SLMController(StatefulComponentMixin, ImConWidgetController):
                 )
     @APIExport(runOnUIThread=True)
     def setMask(self, maskMode):
+        """ Sets the mode of the mask chosen in the SLM widget, by MaskMode
+        value or by its name. """
         mask = self._widget.controlPanel.maskComboBox.currentIndex()  # 0 = donut (left), 1 = tophat (right)
         if isinstance(maskMode, str):
             maskMode = getattr(MaskMode, maskMode)

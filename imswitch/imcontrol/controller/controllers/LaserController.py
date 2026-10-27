@@ -1748,6 +1748,24 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         return bool(self._widget.isLaserActive(laserName))
 
     @APIExport(runOnUIThread=True)
+    def isLaserActive(self, laserName: str) -> bool:
+        """ Whether the laser is switched on. """
+        return bool(self._widget.isLaserActive(laserName))
+
+    @APIExport()
+    def getLaserInfo(self, laserName: str) -> Dict[str, Any]:
+        """ Describes the laser: ``wavelength`` in nm, the ``units`` of its
+        value with the ``min``, ``max`` and ``step`` of that value, and
+        ``binary`` (True for a laser that is only switched on and off, whose
+        value means nothing). """
+        laser = self._master.lasersManager[laserName]
+        return {
+            'wavelength': laser.wavelength, 'units': laser.valueUnits,
+            'min': laser.valueRangeMin, 'max': laser.valueRangeMax,
+            'step': laser.valueRangeStep, 'binary': laser.isBinary,
+        }
+
+    @APIExport(runOnUIThread=True)
     def setLaserActive(self, laserName: str, active: bool) -> None:
         """ Sets whether the specified laser is powered on. """
         self._requireLaserEditsAllowed()

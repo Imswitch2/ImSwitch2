@@ -1130,10 +1130,14 @@ class ScanControllerAdvanced(SuperScanController):
 
     @APIExport(runOnUIThread=True)
     def changeScanCenterPos(self, positionerName, positionerScanCenterPos):
+        """ Sets the centre of the scan along a positioner, in µm (the Scan
+        widget's *Center*). """
         self._widget.setScanCenterPos(positionerName, positionerScanCenterPos)
 
     @APIExport(runOnUIThread=True)
     def changeScanSize(self, positioner: str, size: float):
+        """ Sets the size of the scan along a positioner, in µm (the Scan
+        widget's *Size*). """
         self._widget.setScanSize(positioner, size)
 
     # ------------------------------------------------------------------

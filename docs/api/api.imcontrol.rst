@@ -86,15 +86,29 @@ api.imcontrol
 
    .. method:: changeScanPower(laserName: str, laserValue: Union[int, float]) -> None
 
-      Sets the value of the specified laser, in the units that the laser
-      uses (alias of setLaserValue kept for existing scripts). Runs on the
-      UI thread because it updates the laser widget.
+      Legacy alias of :meth:`setLaserValue` with Live semantics.
+
+      Despite the historical name, changing this method to software-only Scan
+      state would silently break existing scripts, so the permanent Scan
+      configuration API is :meth:`setLaserPowerSetting` with
+      ``context='scan'``.
 
       Needs *Laser* in ``availableWidgets``.
 
    .. method:: changeScanSize(positioner: str, size: float)
 
       Needs the *Scan* widget (Advanced, PointScan) in ``availableWidgets``.
+
+   .. method:: connectInstrument(name: 'str') -> 'dict'
+
+      Connect an instrument (raises if it does not connect, or if a run
+      or script holds it).
+
+      Needs *Instruments* in ``availableWidgets``.
+
+   .. method:: deleteLaserPreset(name: str, context='live') -> bool
+
+      Needs *Laser* in ``availableWidgets``.
 
    .. method:: deleteSetupMode(name)
 
@@ -110,6 +124,12 @@ api.imcontrol
       target list and the overview marker overlay.
 
       Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: disconnectInstrument(name: 'str') -> 'dict'
+
+      Disconnect an instrument so it can be unplugged.
+
+      Needs *Instruments* in ``availableWidgets``.
 
    .. method:: duplicateSetupMode(name, newName, description=None, shortcut='')
 
@@ -156,10 +176,100 @@ api.imcontrol
 
       Needs *Recording* in ``availableWidgets``.
 
+   .. method:: getInstrumentDiagnostics(name: 'str') -> 'dict'
+
+      What the driver knows beyond the quantities -- for checking an
+      instrument on the rig: the PAX1000's last raw packet (``last_fields``:
+      fields 0-8 carry its revolution counter, timestamp and misalignment),
+      settings the firmware did not read back (``unconfirmed_settings``),
+      the timing profile in force and whether it is verified.
+
+      Needs *Instruments* in ``availableWidgets``.
+
+   .. method:: getInstruments() -> 'List[dict]'
+
+      Instruments of this setup: name, whether connected, identity,
+      quantities (name and unit), settings and whether their timing is
+      verified on hardware.
+
+      Needs *Instruments* in ``availableWidgets``.
+
+   .. method:: getLaserAcquisitionState(laserName: str) -> Dict[str, Any]
+
+      Return the power behavior the current acquisition would use.
+
+      This resolves setup laser-category ``powerMode``, scan participation, AO
+      ownership, gate -> ``powerDevice`` routing and separated-mode Scan
+      fallback into one RPC-friendly state object. ``value`` is ``None``
+      when the path is inactive or AO-owned because no controller-side
+      scalar power is authoritative in those cases.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserAcquisitionStates() -> Dict[str, Dict[str, Any]]
+
+      Return resolved acquisition-power state for every runtime laser.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserActive(laserName: str) -> bool
+
+      Return the current Live ON/OFF state for ``laserName``.
+
+      Needs *Laser* in ``availableWidgets``.
+
    .. method:: getLaserNames() -> List[str]
 
       Returns the device names of all lasers. These device names can be
       passed to other laser-related functions.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserPowerSetting(laserName: str, context='live') -> Union[int, float]
+
+      Return the configured power setting for one Live/Scan context.
+
+      This API deliberately describes configuration rather than acquisition
+      behavior. An unset Scan setting follows the current Live setting
+      dynamically, even while coupled laser power mode keeps that Scan
+      setting dormant. Use :meth:`getLaserAcquisitionState` to ask what the
+      current acquisition would actually use.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserPowerSettings(context='live') -> Dict[str, Any]
+
+      Return configured non-binary laser power settings for one context.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserPreset(name: str, context='live') -> Optional[Dict[str, Any]]
+
+      Return one global preset's normalized power mapping without applying it.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserPresetNames(context='live') -> List[str]
+
+      Return preset names visible in the requested current policy/context.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserScanStatus() -> Dict[str, Dict[str, Any]]
+
+      Return the legacy scan-configuration status view for all lasers.
+
+      This compatibility API intentionally reports the raw scan-published
+      participation/AO state only. New code that needs the power actually
+      used under the current laser power mode should call
+      :meth:`getLaserAcquisitionState` instead.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserValue(laserName: str)
+
+      The value the specified laser was last set to, in its own units
+      (a % setpoint when it uses a calibration LUT).
 
       Needs *Laser* in ``availableWidgets``.
 
@@ -192,6 +302,12 @@ api.imcontrol
       Diagnostics from the last run with tile alignment enabled.
 
       Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: getReservations() -> 'list'
+
+      Active reservations: owner and reserved resources.
+
+      Needs *Reservation* in ``availableWidgets``.
 
    .. method:: getScanRequestStatus(requestId: str) -> dict
 
@@ -272,6 +388,10 @@ api.imcontrol
 
       Needs *RotationScan* in ``availableWidgets``.
 
+   .. method:: loadLaserPreset(name: str, context='live') -> bool
+
+      Needs *Laser* in ``availableWidgets``.
+
    .. method:: loadParams()
 
       Needs *SLM* in ``availableWidgets``.
@@ -298,6 +418,54 @@ api.imcontrol
 
       Always available.
 
+   .. method:: measureLaserPowerLut(laser: 'str', meter: 'str', drive_values: 'Sequence[float]', confirm_dark: 'Optional[Callable[[], bool]]' = None, folder: 'Optional[str]' = None, samples_per_point: 'int' = 5, settle_s: 'float' = 0.2, allow_unverified_timing: 'bool' = False, notes: 'str' = '', progress: 'Optional[Callable]' = None) -> 'LaserLutReport'
+
+      Measure a laser's power against its raw drive and write the
+      ``calibCsvPath`` LUT if the measurement passes acceptance.
+
+      Reserves the laser, the meter and the waveform outputs for the whole
+      run: records the laser's value and emission, sets the meter to the
+      laser's wavelength, switches emission off and calls ``confirm_dark()``
+      -- return True only once the beam is really blocked at the sensor --,
+      zeroes the meter, sweeps ``drive_values`` (raw volts / AOTF amplitude,
+      bypassing any loaded LUT) and restores the laser on every exit path.
+
+      Returns a report: ``lut_file`` (None if refused, with the reasons in
+      ``refused``), ``run`` (the run file and its outcomes) and ``result``.
+      Runs go to ``folder`` (default ``ImSwitchConfig/measurement_runs``).
+      With ``allow_unverified_timing`` (until the meter's timing is checked
+      on hardware) the run is kept but no LUT is written.
+
+      Needs *Instruments* in ``availableWidgets``.
+
+   .. method:: measureRotatorGrid(axes: 'Sequence[Sequence]', instruments: 'Sequence[str]', samples_per_point: 'int' = 5, settle_s: 'float' = 0.2, traversal: 'str' = 'snake', folder: 'Optional[str]' = None, allow_unverified_timing: 'bool' = False, allow_simulated: 'bool' = False, return_to_start: 'bool' = True, plane_label: 'str' = '', notes: 'str' = '', laser: 'Optional[str]' = None, progress: 'Optional[Callable]' = None) -> 'RunReport'
+
+      Measure instruments on a grid of rotator positions.
+
+      ``axes`` lists ``(rotator, [angles in degrees])`` pairs, outermost
+      first; ``traversal`` is ``'snake'`` (default: the inner axis reverses
+      on every other line, so it never travels back) or ``'raster'``. At
+      every point the rotators move, settle (their own settle time plus
+      ``settle_s``), and each instrument takes ``samples_per_point``
+      samples acquired after the move.
+
+      The rotators, the instruments and the waveform outputs are reserved
+      for the whole run; the rotators return to where they started.
+      ``progress(event)`` is called after each point (``event.index``,
+      ``event.total``, ``event.status``). Stop in ImScripting ends the run
+      after the current point; the data so far is kept.
+
+      Returns the run report: ``run_file`` (open it in ImProcess),
+      ``acquisition`` / ``cleanup`` outcomes and point counts. Runs go to
+      ``folder`` (default ``ImSwitchConfig/measurement_runs``).
+      ``allow_unverified_timing``: needed until the instrument's timing is
+      checked on hardware. ``allow_simulated``: accept simulated rotators
+      (mock setups); recorded in the run file. ``laser`` names the laser
+      that lit the instruments; its wavelength is recorded with the run
+      (the polarisation map compares it with the polarimeter's).
+
+      Needs *Instruments* in ``availableWidgets``.
+
    .. method:: move_flip(name, state)
 
       Move one flip mirror and all linked followers to state 0 or 1.
@@ -322,17 +490,39 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
+   .. method:: readInstrument(name: 'str', n: 'int' = 1, deadline_s: 'float' = 10.0) -> 'List[dict]'
+
+      ``n`` fresh readings of a connected instrument, as dicts of
+      quantity values -- a quick look, not a measurement: timing need not
+      be verified, and invalid readings are skipped. Refused while a run or
+      a script holds the instrument (read through its reservation then).
+
+      Needs *Instruments* in ``availableWidgets``.
+
+   .. method:: renameLaserPreset(oldName: str, newName: str, context='live') -> bool
+
+      Needs *Laser* in ``availableWidgets``.
+
    .. method:: renameSetupMode(name, newName)
 
       Rename a saved setup mode and return the updated mode.
 
       Always available.
 
-   .. method:: reset_connections()
+   .. method:: reserve(rotators: 'Iterable[str]' = (), lasers: 'Iterable[str]' = (), positioners: 'Iterable[Sequence[str]]' = (), instruments: 'Iterable[str]' = (), *, waveform_outputs: 'bool' = True, owner: 'str' = 'script', deadline_s: 'float' = 5.0) -> 'ReservationHandle'
 
-      Close/reopen all flip mirror connections and re-sync followers.
+      Reserve audited devices for exclusive, owner-bound use.
 
-      Needs *FlipMirror* in ``availableWidgets``.
+      ``positioners`` is a list of ``(positioner, axis)`` pairs;
+      ``instruments`` names entries of the setup's ``instruments`` section
+      (``handle.instrument(name).read(...)``). With
+      ``waveform_outputs`` (default) no waveform scan can start while the
+      reservation is held. Waits up to ``deadline_s`` for commands already
+      running on those devices; refuses if one is still running, if another
+      owner holds a device, or if a device is not audited for exclusive
+      control.
+
+      Needs *Reservation* in ``availableWidgets``.
 
    .. method:: runCellTargeting(feature_callback: Optional[Callable[[int, dict, Tuple[float, float]], NoneType]] = None, move_only: bool = False) -> None
 
@@ -371,6 +561,16 @@ api.imcontrol
       handle as ``{requestId, source, state, message}``).
 
       Always available.
+
+   .. method:: saveLaserPreset(name: str, context='live', select: bool = False) -> None
+
+      Save current values into the single global preset namespace.
+
+      New coupled presets are unspecified; new separated presets inherit the
+      active Live/Scan context. Updating an existing preset preserves its
+      stored context even when coupled mode can see every preset.
+
+      Needs *Laser* in ``availableWidgets``.
 
    .. method:: saveScanParamsToFile(filePath: str) -> None
 
@@ -463,10 +663,26 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
+   .. method:: setLaserPowerSetting(laserName: str, value: Union[int, float], context='live') -> None
+
+      Set one configured Live/Scan power setting.
+
+      Live remains hardware-backed. Scan remains software-only until a
+      separated acquisition applies it; in coupled mode it can therefore be
+      configured as dormant future separated-mode state without affecting
+      current hardware.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: setLaserPowerSettings(values: Dict[str, Union[int, float]], context='live') -> None
+
+      Set multiple configured laser power settings in one context.
+
+      Needs *Laser* in ``availableWidgets``.
+
    .. method:: setLaserValue(laserName: str, value: Union[int, float]) -> None
 
-      Sets the value of the specified laser, in the units that the laser
-      uses.
+      Set the live value of a laser (legacy API).
 
       Needs *Laser* in ``availableWidgets``.
 
@@ -569,7 +785,7 @@ api.imcontrol
 
       Set the free-text note attached to recordings made from now on.
 
-      The same text the Tools -> Session notes... dialog edits. Recordings
+      The same text the File -> Session notes... dialog edits. Recordings
       snapshot the shared attributes when they start, so this reaches every
       file saved after the call and none saved before it. Pass '' to clear.
 
