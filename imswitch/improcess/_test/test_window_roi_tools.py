@@ -342,14 +342,26 @@ def test_the_rectangle_profile_works_too(qtbot, rig):
 # what stays unsupported, and how it says so
 # --------------------------------------------------------------------------
 
-def test_the_three_tools_are_supported_and_the_rest_are_not():
-    assert window_mode.SUPPORTED_IN_WINDOW_MODE == {"profile", "roi-manager", "roi-stats"}
+def test_the_supported_tools_are_listed_and_the_rest_are_not():
+    assert window_mode.SUPPORTED_IN_WINDOW_MODE == {
+        "profile", "roi-manager", "roi-stats", "crop-substack",
+    }
     assert {tool.id for tool in window_mode.unsupported_tools()} == {
         "segmentation", "psf-resolution", "colocalization", "multicolor",
-        "crop-substack", "napari-plugins",
+        "napari-plugins",
     }
     assert window_mode.panel_tool("roi-manager") is None
     assert window_mode.panel_tool("segmentation") is not None
+
+
+def test_a_generic_result_processor_panel_is_restricted_by_its_own_id(monkeypatch):
+    """The panel kind of every processor tool is "result-processor", which names nothing."""
+    tool = window_mode.NapariOnlyTool("some-processor", "Some", "panel", "somePanel")
+    monkeypatch.setattr(window_mode, "NAPARI_ONLY_TOOLS", (*window_mode.NAPARI_ONLY_TOOLS, tool))
+
+    assert window_mode.panel_tool("result-processor", "some-processor") is tool
+    assert window_mode.panel_tool("result-processor", "denoise") is None
+    assert window_mode.panel_tool("result-processor", "stack-subset") is None
 
 
 def test_a_restricted_panel_shows_its_reason_everywhere_the_pointer_can_rest(qtbot):

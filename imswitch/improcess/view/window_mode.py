@@ -46,11 +46,16 @@ NAPARI_ONLY_TOOLS: tuple[NapariOnlyTool, ...] = (
 )
 
 #: Ids re-enabled in window mode: the core of the ROI tools, which draw and
-#: measure through :mod:`~imswitch.improcess.view.window_tools`. Inside them a
-#: few controls that need napari stay disabled, each with its own tooltip (the
-#: ROI manager's Freehand shape, Profile's layer chooser). Adding an id here is
-#: all it takes to switch a tool back on.
-SUPPORTED_IN_WINDOW_MODE: frozenset[str] = frozenset({"profile", "roi-manager", "roi-stats"})
+#: measure through :mod:`~imswitch.improcess.view.window_tools`, and
+#: Crop/Substack, whose range table and ROI chooser read the ROI manager and
+#: need no canvas (only its live crop outline is drawn on the napari viewer,
+#: which window mode leaves out). Inside them a few controls that need napari
+#: stay disabled, each with its own tooltip (the ROI manager's Freehand shape,
+#: Profile's layer chooser). Adding an id here is all it takes to switch a
+#: tool back on.
+SUPPORTED_IN_WINDOW_MODE: frozenset[str] = frozenset(
+    {"profile", "roi-manager", "roi-stats", "crop-substack"}
+)
 
 
 def unsupported_tools() -> tuple[NapariOnlyTool, ...]:
@@ -58,10 +63,15 @@ def unsupported_tools() -> tuple[NapariOnlyTool, ...]:
     return tuple(tool for tool in NAPARI_ONLY_TOOLS if tool.id not in SUPPORTED_IN_WINDOW_MODE)
 
 
-def panel_tool(widget_kind: str) -> NapariOnlyTool | None:
-    """The restricted panel tool for a runtime ``widget_kind``, or None."""
+def panel_tool(widget_kind: str, processor_id: str | None = None) -> NapariOnlyTool | None:
+    """The restricted panel tool for a runtime panel, or None.
+
+    Matched on the ``widget_kind`` *or* the ``processor_id``: a tool built on
+    the generic result-processor panel has the kind ``"result-processor"``
+    whatever it is, so its own id is the only thing that names it.
+    """
     for tool in unsupported_tools():
-        if tool.kind == "panel" and tool.id == widget_kind:
+        if tool.kind == "panel" and tool.id in (widget_kind, processor_id):
             return tool
     return None
 

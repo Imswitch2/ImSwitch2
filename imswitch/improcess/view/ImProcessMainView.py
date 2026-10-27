@@ -765,7 +765,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def _restrictIfWindowMode(self, spec) -> None:
         """A panel opened (or reopened) after startup is restricted like the rest."""
-        tool = panel_tool(spec.widget_kind) if self._imageDisplayMode == IMAGE_DISPLAY_WINDOWS else None
+        tool = panel_tool(spec.widget_kind, spec.processor_id) if self._imageDisplayMode == IMAGE_DISPLAY_WINDOWS else None
         if tool is not None:
             _restrict_panel_for_window_mode(self, tool)
 

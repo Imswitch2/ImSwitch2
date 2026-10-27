@@ -388,7 +388,7 @@ def test_tile_and_cascade_move_real_windows_onto_the_screen(manager):
 def test_the_unsupported_registry_names_the_napari_only_tools():
     ids = {tool.id for tool in window_mode.unsupported_tools()}
     assert ids == {"segmentation", "psf-resolution", "colocalization", "multicolor",
-                   "crop-substack", "napari-plugins"}
+                   "napari-plugins"}
     assert "separate windows" in window_mode.UNSUPPORTED_TOOLTIP
 
 
@@ -416,7 +416,10 @@ def _stub_main_view(qtbot):
     return view
 
 
-def test_window_mode_disables_the_napari_only_tools_with_a_tooltip(qtbot):
+def test_window_mode_disables_the_napari_only_tools_with_a_tooltip(qtbot, monkeypatch):
+    # Crop/Substack is supported now; an image action is still blocked the same way
+    # when a tool of that kind is not (this is the machinery the next one will use).
+    monkeypatch.setattr(window_mode, "SUPPORTED_IN_WINDOW_MODE", frozenset({"profile"}))
     view = _stub_main_view(qtbot)
     ImProcessMainView.setImageDisplayMode(view, IMAGE_DISPLAY_WINDOWS)
     assert view.canvas == [False]
