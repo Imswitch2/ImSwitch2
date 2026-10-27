@@ -266,3 +266,42 @@ def test_fetch_info_fingerprint_is_optional():
     assert FetchInfo.from_dict(base).fingerprint is None
     assert FetchInfo.from_dict({**base, "fingerprint": "ab"}).fingerprint == "ab"
     assert FetchInfo.from_dict(FetchInfo.from_dict({**base, "fingerprint": "ab"}).to_dict()).fingerprint == "ab"
+
+
+@pytest.mark.parametrize("plat,machine,folder", [
+    ("darwin", "arm64", "macos-arm64"),
+    ("darwin", "x86_64", "macos64"),
+    ("win32", "AMD64", "win64"),
+    ("win32", "ARM64", "win-arm64"),
+    ("linux", "x86_64", "linux64"),
+    ("linux", "aarch64", "linux-arm64"),
+])
+def test_the_jdk_folder_follows_fijis_own_platform_names(tmp_path, jars, monkeypatch, plat, machine, folder):
+    # Fiji Latest's zips name these folders exactly so (config/jaunch/jvm.toml).
+    homes = [f"{name}/zulu/{'Contents/Home' if name.startswith('macos') else ''}".rstrip("/")
+             for name in ("macos-arm64", "macos64", "win64", "win-arm64", "linux64", "linux-arm64")]
+    root = _fiji(tmp_path, java=tuple(homes))
+    _on(monkeypatch, plat, machine)
+    home = resolve_launch_config(root, ram_bytes=GIB, bridge_jars=jars).java_home
+    assert home.relative_to((root / "java").resolve()).parts[0] == folder
+
+
+def test_a_java_8_fiji_is_refused_with_the_reason(tmp_path, jars, monkeypatch):
+    # Fiji Stable on Windows: the platform folder matches, the Java is too old.
+    root = _fiji(tmp_path, java=("win64/zulu8",), exe="java.exe")
+    (root / "java/win64/zulu8/release").write_text('JAVA_VERSION="1.8.0_322"\n')
+    _on(monkeypatch, "win32", "AMD64")
+    with pytest.raises(FijiNotFound, match="Java 8.*Fiji Latest"):
+        resolve_launch_config(root, ram_bytes=GIB, bridge_jars=jars)
+
+
+@pytest.mark.parametrize("text,major", [
+    ('JAVA_VERSION="1.8.0_322"\n', 8), ('IMPLEMENTOR="Azul"\nJAVA_VERSION="21.0.7"\n', 21),
+    ('JAVA_VERSION="11"\n', 11), ("nothing here\n", None),
+])
+def test_java_major_version_reads_the_release_file(tmp_path, text, major):
+    from imswitch.improcess.fiji.protocol import java_major_version
+
+    (tmp_path / "release").write_text(text)
+    assert java_major_version(tmp_path) == major
+    assert java_major_version(tmp_path / "missing") is None

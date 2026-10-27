@@ -480,15 +480,61 @@ def _fiji_root(path: Path, notes: list[str]) -> Path:
     )
 
 
+#: Fiji's own name for each platform's folder under ``java/``, copied from
+#: the bundled-Java search paths in Fiji Latest's launcher configuration
+#: (``config/jaunch/jvm.toml``: ``${app-dir}/java/<name>/*``, checked
+#: 2026-10-27). Keyed by (sys.platform family, CPU family).
+FIJI_PLATFORM_FOLDERS = {
+    ("macos", "arm64"): "macos-arm64",
+    ("macos", "x64"): "macos64",
+    ("windows", "arm64"): "win-arm64",
+    ("windows", "x64"): "win64",
+    ("linux", "arm64"): "linux-arm64",
+    ("linux", "x64"): "linux64",
+}
+
+#: The oldest Java the host can run on: scyjava (which pyimagej starts Java
+#: through) refuses anything older than Java 11. Fiji Stable bundles Java 8.
+MIN_JAVA_MAJOR = 11
+
+
 def _platform_token() -> str | None:
-    machine = platform.machine().lower()
+    """Fiji's java/ folder name for this machine, or None for a platform Fiji does not ship."""
     if sys.platform == "darwin":
-        return "macos-arm64" if machine in ("arm64", "aarch64") else "macos-x64"
-    if sys.platform.startswith("win"):
-        return "win64"
-    if sys.platform.startswith("linux"):
-        return "linux64"
-    return None
+        system = "macos"
+    elif sys.platform.startswith("win"):
+        system = "windows"
+    elif sys.platform.startswith("linux"):
+        system = "linux"
+    else:
+        return None
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        cpu = "arm64"
+    elif machine in ("x86_64", "amd64", "x64"):
+        cpu = "x64"
+    else:
+        return None
+    return FIJI_PLATFORM_FOLDERS.get((system, cpu))
+
+
+def java_major_version(java_home: Path) -> int | None:
+    """The major Java version from ``<java_home>/release``, or None when it cannot be read.
+
+    Every JDK and JRE build writes ``JAVA_VERSION="..."`` there: ``"1.8.0_322"``
+    is Java 8 (the old ``1.x`` scheme), ``"21.0.7"`` is Java 21.
+    """
+    try:
+        text = (Path(java_home) / "release").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r'^JAVA_VERSION="(\d+)(?:\.(\d+))?', text, re.MULTILINE)
+    if not match:
+        return None
+    major = int(match.group(1))
+    if major == 1 and match.group(2):
+        major = int(match.group(2))
+    return major
 
 
 def _find_java_home(root: Path) -> Path:
@@ -508,8 +554,16 @@ def _find_java_home(root: Path) -> Path:
     # java/macosx/<x64 Java 8>, which this process cannot load, and accepting
     # it here would only move the failure into the host's startup.
     token = _platform_token()
-    matching = [h for h in homes if token and token in h.relative_to(java_root).as_posix().lower()]
+    # The platform folder is the first component under java/, matched exactly:
+    # "win64" must not match a "win-arm64" folder or the other way round.
+    matching = [h for h in homes if token and h.relative_to(java_root).parts[0].lower() == token]
     if len(matching) == 1:
+        major = java_major_version(matching[0])
+        if major is not None and major < MIN_JAVA_MAJOR:
+            raise FijiNotFound(
+                f"this Fiji bundles Java {major} ({matching[0]}); the Fiji link needs Java "
+                f"{MIN_JAVA_MAJOR} or newer, which Fiji Latest bundles. Install Fiji Latest, not Fiji Stable"
+            )
         return matching[0]
     if not matching:
         raise FijiNotFound(
@@ -560,5 +614,6 @@ __all__ = [
     "PROTOCOL_VERSION", "FijiLinkError", "ProtocolError", "HostError", "FijiNotFound",
     "BridgeJarsMissing", "Ping", "Send", "ListImages", "Fetch", "Events", "CloseImage", "RunCommand", "Quit", "IMAGEJ_DTYPE_NAMES", "FijiImageDescription",
     "request_from_dict", "Reply", "reply_value", "PingInfo", "FetchInfo", "images_from_reply",
-    "check_ping", "HostLaunchConfig", "resolve_launch_config",
+    "check_ping", "HostLaunchConfig", "resolve_launch_config", "FIJI_PLATFORM_FOLDERS", "MIN_JAVA_MAJOR",
+    "java_major_version",
 ]

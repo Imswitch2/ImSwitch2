@@ -30,6 +30,13 @@ BRIDGE_JARS_DIR = Path(__file__).resolve().parent / "jars"
 
 INSTALL_HINT = 'pyimagej is not installed: pip install "imswitch2[fiji]"'
 LOCATION_HINT = "Choose the Fiji folder: Plugins → Fiji → Fiji location…"
+#: The installer builds (.dmg, setup.exe) are frozen with PyInstaller: they
+#: carry neither pyimagej nor the host's source files, so no interpreter can
+#: run the host and pointing at one (fijiPython) cannot help either.
+FROZEN_HINT = (
+    "The Fiji link is not available in the installer build of ImSwitch2; "
+    "install ImSwitch2 with pip to use it (see the Fiji link documentation)"
+)
 
 
 @dataclass(frozen=True)
@@ -138,8 +145,11 @@ def availability(
     preferences: FijiPreferences,
     *,
     find_spec: Callable = importlib.util.find_spec,
+    frozen: bool | None = None,
 ) -> tuple[bool, str]:
     """Whether Fiji can be started, and the reason when it cannot."""
+    if frozen if frozen is not None else bool(getattr(sys, "frozen", False)):
+        return False, FROZEN_HINT
     # With an explicit fijiPython the host runs in that interpreter, so this
     # one need not hold pyimagej; a missing package there shows up as the
     # host's own start failure, which quotes its log.

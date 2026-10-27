@@ -113,3 +113,11 @@ def test_unknown_ram_means_no_heap_limit_and_a_note(tmp_path, monkeypatch):
 def test_physical_ram_is_positive_here_or_unknown():
     ram = prefs_module.physical_ram_bytes()
     assert ram is None or ram > 0
+
+
+def test_an_installer_build_says_the_link_needs_a_pip_install(tmp_path):
+    from imswitch.improcess.fiji.preferences import FROZEN_HINT
+
+    prefs = FijiPreferences(str(_fiji(tmp_path)), "/other/python")
+    assert availability(prefs, find_spec=_has, frozen=True) == (False, FROZEN_HINT)
+    assert "pip" in FROZEN_HINT
