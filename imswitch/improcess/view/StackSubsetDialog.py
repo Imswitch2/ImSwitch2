@@ -117,6 +117,11 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
         self.roiCombo = QtWidgets.QComboBox()
         self.roiCombo.currentIndexChanged.connect(self._roiChosen)
 
+        #: Says why an ROI could not be applied (it lies off this image).
+        self.roiNote = QtWidgets.QLabel("")
+        self.roiNote.setWordWrap(True)
+        self.roiNote.setVisible(False)
+
         self.copyCheck = QtWidgets.QCheckBox("Copy data")
         self.copyCheck.setChecked(False)
 
@@ -135,6 +140,7 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(source)
+        layout.addWidget(self.roiNote)
         layout.addWidget(self.table)
         layout.addLayout(bottom)
 
@@ -152,6 +158,7 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
         silently applies to the wrong extent.
         """
         self._appliedROI = None
+        self.roiNote.setVisible(False)
         self._rows = []
         self._shape = shape_for_result(result) if result is not None else ()
         self._labels = axis_labels_for_result(result) if result is not None else []
@@ -224,6 +231,20 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
 
         r0, r1, c0, c1 = (int(v) for v in roi_bounds(roi))
         pairs = (("Y", r0, r1), ("X", c0, c1))
+        self.roiNote.setVisible(False)
+        for label, start, stop in pairs:
+            row = self._rowForLabel(label)
+            if row is not None and (start >= row.size or stop <= 0):
+                # No overlap: clipping would leave a one-pixel sliver and say
+                # nothing, which is how a crop from another image's ROI passes.
+                self.roiNote.setText(
+                    f"'{getattr(roi, 'name', 'ROI')}' lies outside this image: it spans "
+                    f"{label} {start}-{stop}, the image has {row.size} pixels along {label}. "
+                    "It was probably drawn on a different image."
+                )
+                self.roiNote.setVisible(True)
+                self._appliedROI = None
+                return False
         applied = False
         self._updating = True
         try:
@@ -261,6 +282,9 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
                 ranges.append(
                     {
                         "axis": row.axis,
+                        # The label travels with the index: the run may be
+                        # handed a component with other axes than this table.
+                        "label": str(self._labels[row.axis]),
                         "start": first - 1,
                         "stop": last,
                         "step": step,

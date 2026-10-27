@@ -409,3 +409,43 @@ def test_the_view_puts_the_reason_on_the_dock_the_view_entry_and_the_tools_actio
                  tools_action.toolTip(), tools_action.statusTip()):
         assert text == window_mode.UNSUPPORTED_TOOLTIP
     assert not panel.isEnabled()
+
+
+# --------------------------------------------------------------------------
+# a calibrated result whose display layer has axes of its own
+# --------------------------------------------------------------------------
+
+def test_a_rectangle_on_a_calibrated_component_layer_has_exact_pixel_bounds(qtbot):
+    """MoNaLISA-like: the layer drops the whole result's Base axis and is in nm."""
+    from imswitch.improcess.model.result import DisplayLayerSpec
+
+    nm = 35.0
+    data = np.random.default_rng(5).random((1, 1, 1, 1, 60, 70)).astype(np.float32)
+
+    class Result(ArrayProcessingResult):
+        def display_layers(self):
+            return [DisplayLayerSpec(
+                name="signal", data=data[:, 0], axis_labels=["Dataset", "T", "Z", "Y", "X"],
+                axis_scales=[1.0, 1.0, 1.0, nm, nm], scale_unit="nm", component="signal",
+            )]
+
+    manager = ResultWindowManager()
+    viewer = ActiveWindowViewer(manager)
+    window = manager.show(Result("rec", data, ["Dataset", "Base", "T", "Z", "Y", "X"],
+                                 axis_scales=[1.0, 1.0, 1.0, 1.0, nm, nm], scale_unit="nm"))
+    qtbot.addWidget(window)
+    panel = ROIManagerWidget(viewer)
+    qtbot.addWidget(panel)
+    layer = viewer.activeLayer()
+    r0, r1, c0, c1 = 5, 15, 5, 20
+    corners = ((r0, c0), (r0, c1), (r1, c1), (r1, c0))
+    world = [layer.data_to_world([r, c])[-2:].tolist() for r, c in corners]
+    rig = type("Rig", (), {"service": viewer.tool_service})()
+
+    _draw_and_add(panel, rig, "rectangle", world)
+
+    assert panel.rois()[0].bounds == (r0, r1, c0, c1)
+    plane = data[0, 0, 0, 0]
+    assert _row(panel)["mean"] == pytest.approx(float(plane[r0:r1, c0:c1].mean()), rel=1e-5)
+    assert _row(panel)["area_px"] == (r1 - r0) * (c1 - c0)
+    manager.closeAll()

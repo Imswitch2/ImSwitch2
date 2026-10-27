@@ -335,8 +335,8 @@ def test_crop_substack_dialog_converts_first_last_to_processor_ranges(qapp):
 
     assert dialog.selected_params() == {
         "ranges": [
-            {"axis": 0, "start": 1, "stop": 3, "step": 1},
-            {"axis": 2, "start": 0, "stop": 5, "step": 2},
+            {"axis": 0, "label": "Z", "start": 1, "stop": 3, "step": 1},
+            {"axis": 2, "label": "X", "start": 0, "stop": 5, "step": 2},
         ],
         "copy": False,
     }

@@ -17,7 +17,7 @@ from imswitch.improcess.processors._axis_split import (
     shape_for_result,
 )
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.processors.base import Processor
+from imswitch.improcess.processors.base import Processor, ProcessorInputError
 
 
 class StackSubsetProcessor(Processor):
@@ -64,6 +64,7 @@ class StackSubsetProcessor(Processor):
             params.get("ranges", []),
             labels=axis_labels_for_result(result),
             shape=shape_for_result(result),
+            input_name=str(getattr(result, "name", "")),
         )
         return subset_result(
             result,
@@ -147,6 +148,7 @@ def normalize_subset_ranges(
     *,
     labels: Sequence[str],
     shape: Sequence[int],
+    input_name: str = "",
 ) -> tuple[dict, ...]:
     """Normalize user/GUI range specs to validated axis/start/stop/step dicts."""
     normalized = []
@@ -160,7 +162,7 @@ def normalize_subset_ranges(
 
     seen_axes = set()
     for spec in iterable:
-        axis = _resolve_axis(spec.get("axis", spec.get("label")), labels)
+        axis = _resolve_spec_axis(spec, labels)
         if axis in seen_axes:
             raise ValueError(f"Duplicate subset range for axis {axis}")
         seen_axes.add(axis)
@@ -172,11 +174,34 @@ def normalize_subset_ranges(
             raise ValueError("Subset step must be at least 1")
         if start < 0 or stop > size or start >= stop:
             label = labels[axis] if axis < len(labels) else str(axis)
-            raise ValueError(
-                f"Invalid subset range for axis {label}: start={start}, stop={stop}, size={size}"
+            where = f" of '{input_name}'" if input_name else ""
+            raise ProcessorInputError(
+                f"Invalid subset range for axis {label}: start={start}, stop={stop}, "
+                f"but the axis{where} has {size} pixels. The range was probably set "
+                "for a different image; choose the image in the panel again."
             )
         normalized.append({"axis": axis, "start": start, "stop": stop, "step": step})
     return tuple(normalized)
+
+
+def _resolve_spec_axis(spec, labels: Sequence[str]) -> int:
+    """The axis a range is for: its **label** when it has one, else its index.
+
+    The panel's table is built for the result it was last shown, while a run
+    may be given a component of it with a different axis order (MoNaLISA's
+    whole result has a Base axis its signal component lacks), so an index
+    alone points at the wrong axis there. A label survives; the index is the
+    fallback for specs written by hand.
+    """
+    label = spec.get("label")
+    if label is None:
+        return _resolve_axis(spec.get("axis"), labels)
+    if str(label).lower() not in [str(item).lower() for item in labels]:
+        raise ProcessorInputError(
+            f"This image has no axis {label!r} to crop (its axes are {list(labels)}); "
+            "the range was set for a different image."
+        )
+    return _resolve_axis(label, labels)
 
 
 def _resolve_axis(axis, labels: Sequence[str]) -> int:
@@ -197,7 +222,7 @@ def _resolve_axis(axis, labels: Sequence[str]) -> int:
             except ValueError as exc:
                 raise ValueError(f"Unknown subset axis {axis!r}") from exc
     if index < 0 or index >= len(labels):
-        raise ValueError(f"Subset axis index {index} outside result rank {len(labels)}")
+        raise ProcessorInputError(f"Subset axis index {index} outside result rank {len(labels)}")
     return index
 
 
