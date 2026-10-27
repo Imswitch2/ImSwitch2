@@ -64,7 +64,13 @@ def _applyIdentityMetadata(layer, identity, *, overrides=None) -> None:
 
 
 class ReconstructionView(QtWidgets.QFrame):
-    """ Frame for showing the reconstructed image"""
+    """Frame for showing the reconstructed image: the embedded napari display.
+
+    Implements :class:`~imswitch.improcess.view.result_display.ResultDisplay`
+    (rendering and contrast) and
+    :class:`~imswitch.improcess.view.result_display.ResultListPane` (the list
+    of loaded results); ``_test/test_result_display.py`` guards both.
+    """
 
     # Signals
     sigItemSelected = QtCore.Signal()
