@@ -53,6 +53,20 @@ from .icons import improcessIcon
 _MAX_MINIMUM_SCREEN_FRACTION = 0.8
 
 
+def _restrict_if_window_mode(view, spec) -> None:
+    """A panel opened (or reopened) after startup is restricted like the rest.
+
+    A module function reading the mode defensively: the dock-building methods
+    are also driven on lightweight stand-in views in tests, which have no
+    display mode and must behave as the napari default.
+    """
+    if getattr(view, "_imageDisplayMode", None) != IMAGE_DISPLAY_WINDOWS:
+        return
+    tool = panel_tool(spec.widget_kind, spec.processor_id)
+    if tool is not None:
+        _restrict_panel_for_window_mode(view, tool)
+
+
 def _restrict_panel_for_window_mode(view, tool) -> None:
     """Disable a napari-only panel and put the reason where the pointer will be:
     on the panel, its dock title, its View entry and its Tools action.
@@ -764,10 +778,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     menu.menuAction().setToolTip(UNSUPPORTED_TOOLTIP)
 
     def _restrictIfWindowMode(self, spec) -> None:
-        """A panel opened (or reopened) after startup is restricted like the rest."""
-        tool = panel_tool(spec.widget_kind, spec.processor_id) if self._imageDisplayMode == IMAGE_DISPLAY_WINDOWS else None
-        if tool is not None:
-            _restrict_panel_for_window_mode(self, tool)
+        _restrict_if_window_mode(self, spec)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
@@ -1154,7 +1165,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if spec.widget_kind in ('roi-manager', 'segmentation'):
                 self._wireROIManagerToDependentWidgets()
             self._syncDockVisibilityActions()
-            self._restrictIfWindowMode(spec)
+            _restrict_if_window_mode(self, spec)
             return title
 
         try:
@@ -1200,7 +1211,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             dock.show()
             self._safeRaiseDock(dock)
             self._syncDockVisibilityActions()
-            self._restrictIfWindowMode(spec)
+            _restrict_if_window_mode(self, spec)
         except Exception:
             # Roll back partial dock state so subsequent attempts can retry
             # without colliding with an orphaned dock entry.

@@ -11,6 +11,26 @@ from .basecontrollers import ImProcessWidgetController
 
 
 
+
+def _window_manager(controller):
+    """The window manager in window mode, else None.
+
+    A module function reading ``__dict__`` defensively, not a method: the
+    controller's own methods are also driven on lightweight stand-ins (tests
+    call ``ReconstructionViewController.updateRecon(stub, ...)``), which have
+    neither the method nor the attribute, and must keep taking the napari path.
+    """
+    return getattr(controller, "__dict__", {}).get("_windows")
+
+
+def _retain_windows(controller) -> None:
+    """Dispose of the windows of results that have left the list."""
+    manager = _window_manager(controller)
+    if manager is None:
+        return
+    manager.retainOnly([data for _name, data in controller._widget.getAllItemDatas()])
+
+
 class ReconstructionViewController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -116,12 +136,10 @@ class ReconstructionViewController(ImProcessWidgetController):
             reconList.itemDoubleClicked.connect(self._listItemDoubleClicked)
 
     def _windowManager(self):
-        # Read through __dict__: on a controller whose base __init__ has not
-        # run, plain getattr raises rather than falling back to the default.
-        return self.__dict__.get("_windows")
+        return _window_manager(self)
 
     def _activeWindow(self):
-        manager = self._windowManager()
+        manager = _window_manager(self)
         return manager.activeWindow() if manager is not None else None
 
     def _windowActivated(self, result) -> None:
@@ -146,25 +164,21 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def _listItemDoubleClicked(self, item) -> None:
         """Reopen the window of a double-clicked row (closing only hides it)."""
-        manager = self._windowManager()
+        manager = _window_manager(self)
         if manager is not None and item is not None:
             manager.show(item.data(1))
 
     def _showInWindow(self, result) -> None:
-        manager = self._windowManager()
+        manager = _window_manager(self)
         manager.show(result, activate=not self.__dict__.get("_followingWindow", False))
 
     def _retainWindows(self) -> None:
-        """Dispose of the windows of results that have left the list."""
-        manager = self._windowManager()
-        if manager is None:
-            return
-        manager.retainOnly([data for _name, data in self._widget.getAllItemDatas()])
+        _retain_windows(self)
 
     def resetView(self) -> None:
         """Fit the active image into its view (the toolbar's *Reset view*)."""
         window = self._activeWindow()
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             if window is not None:
                 window.resetView()
             return
@@ -172,7 +186,7 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def _resultsChanged(self) -> None:
         """Announce that the loaded set or the selection moved."""
-        self._retainWindows()
+        _retain_windows(self)
         self._retainNapariStormDatasets()
         self._commChannel.sigResultsChanged.emit()
 
@@ -236,7 +250,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         # run, plain getattr raises rather than falling back to the default.
         displayed = self.__dict__.get("_displayedResult")
         if (displayed is not None and displayed is not currItem
-                and self._windowManager() is None):
+                and _window_manager(self) is None):
             # (A window persists its result's look the moment it changes.)
             self._persistActiveViewerSettings(displayed)
         self._syncViewModes(currItem)
@@ -311,7 +325,7 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def fullUpdate(self, autoLevels=False, levels=None):
         reconObj = self._widget.getCurrentItemData()
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             # The single place a result becomes the displayed one, in window
             # mode: its window is shown (created on first use) and raised.
             # Levels are the window's business -- it reads what the result
@@ -598,13 +612,13 @@ class ReconstructionViewController(ImProcessWidgetController):
             self.updateRecon()
 
     def getImage(self):
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             return window.getImage() if window is not None else None
         return self._widget.getImage()
 
     def getActiveImage(self):
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             return window.getActiveImage() if window is not None else None
         if hasattr(self._widget, "getActiveImage"):
@@ -612,7 +626,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         return self._widget.getImage()
 
     def getActiveImageCurrentView(self):
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             return window.currentPlane() if window is not None else None
         image = self.getActiveImage()
@@ -626,7 +640,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         return image[tuple(index)]
 
     def getActiveImageDisplayLevels(self):
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             return window.getActiveImageDisplayLevels() if window is not None else None
         if hasattr(self._widget, "getActiveImageDisplayLevels"):
@@ -634,7 +648,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         return self._widget.getImageDisplayLevels()
 
     def setActiveImageDisplayLevels(self, minimum, maximum):
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             # The window files the levels on its result itself.
             window = self._activeWindow()
             if window is not None:
@@ -649,7 +663,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._storeActiveDisplayLevels(result, (minimum, maximum))
 
     def getActiveImageColormap(self) -> str:
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             if window is not None:
                 return window.getActiveImageColormap()
@@ -663,7 +677,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         return "grayclip"
 
     def setActiveImageColormap(self, colormap: str):
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             if window is not None:
                 window.setActiveImageColormap(colormap)
@@ -675,7 +689,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._storeActiveColormap(result, colormap)
 
     def getDisplayLayerStates(self) -> list[dict]:
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             return window.getImageLayerStates() if window is not None else []
         if hasattr(self._widget, "getImageLayerStates"):
@@ -683,7 +697,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         return []
 
     def setDisplayLayerVisible(self, layer_id: str, visible: bool) -> None:
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             if window is not None:
                 window.setImageLayerVisible(layer_id, visible)
@@ -695,7 +709,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             result.setDisplayLayerVisible(layer_id, visible)
 
     def setDisplayLayerColormap(self, layer_id: str, colormap: str) -> None:
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             if window is not None:
                 window.setImageLayerColormap(layer_id, colormap)
@@ -707,7 +721,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             result.setDisplayLayerColormap(layer_id, colormap)
 
     def setActiveImageDisplayLevelsRange(self, minimum, maximum):
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             window = self._activeWindow()
             if window is not None:
                 window.setActiveImageDisplayLevelsRange(minimum, maximum)
@@ -845,7 +859,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         if not callable(replacer) or not replacer(old, new, name):
             self.resultProduced(new, name)
             return
-        manager = self._windowManager()
+        manager = _window_manager(self)
         if manager is not None:
             manager.replace(old, new)
         if self._widget.getCurrentItemData() is new:
@@ -991,7 +1005,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         # click elsewhere mid-run would overwrite that other entry's data.
         previous = self._liveItem.data(1)
         self._liveItem.setData(1, result)
-        manager = self._windowManager()
+        manager = _window_manager(self)
         if manager is not None:
             # Window mode: the window follows the entry's new data object
             # (a pixel swap when the layers still match, else a reload).
@@ -1028,10 +1042,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         t = self._liveLatestTimepoint
         if t is None:
             return
-        if self._windowManager() is not None:
+        if _window_manager(self) is not None:
             # The live run's own window, not whichever one is active.
             window = (
-                self._windowManager().windowFor(self._liveItem.data(1))
+                _window_manager(self).windowFor(self._liveItem.data(1))
                 if self._liveItemIsAlive() else None
             )
             labels = window.axis_labels if window is not None else []

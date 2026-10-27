@@ -87,9 +87,11 @@ class CommunicationChannel(SignalInterface):
     Used for notices the operator should see where they are looking -- e.g.
     how much a load is about to materialise -- rather than in the log.
     ``ImProcessMainController`` forwards it to
-    ``ImProcessMainView.showStatusMessage``.
+    ``ImProcessMainView.showStatusMessage``. The result-window manager's
+    notices (a result with no image to show) arrive through it too, wired up
+    by ``ImProcessMainController``.
 
-    Emitters: DataFrameController, FileIOController
+    Emitters: DataFrameController, FileIOController, ImProcessMainController
     Listeners: ImProcessMainController
     """
 
