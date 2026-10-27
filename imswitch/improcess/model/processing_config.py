@@ -20,6 +20,8 @@ from typing import Any
 #: ``napari_endpoints`` (snake case) is an accepted alias of ``napariEndpoints``
 #: read in ``model/napari_endpoints.py``; the editor does not offer it.
 PROCESSING_KEYS: frozenset[str] = frozenset({
+    # Reconstructors, Processors (the editor's first two pages)
+    "reconstructors", "processors",
     # Startup layout
     "parameterPanel", "napariLayerControls", "reconstructionPanel",
     "actionsPanel", "fileWatcherPanel", "multiDataPanel", "currentDataPanel",
@@ -34,8 +36,8 @@ PROCESSING_KEYS: frozenset[str] = frozenset({
     # Live mode
     "liveStallTimeoutS", "liveViewerUpdateIntervalS",
     "live_display_in_imcontrol",
-    # Plugins
-    "reconstructors", "processors", "napariEndpoints",
+    # napari plugins
+    "napariEndpoints",
 })
 
 

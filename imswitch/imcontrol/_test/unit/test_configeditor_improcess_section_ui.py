@@ -236,7 +236,17 @@ def test_the_pages_are_the_schema_groups_then_the_fixed_ones(qapp):
         if field["grp"] not in groups:
             groups.append(field["grp"])
     dlg = _dialog({})
-    assert dlg._page_titles == groups + ["Drop-in plugins", "Custom", "Set on this computer"]
+    assert groups[:2] == ["Reconstructors", "Processors"], "the main components lead"
+    # drop-in plugins are about reconstructors and processors: right after them
+    assert dlg._page_titles == (
+        groups[:2] + ["Drop-in plugins"] + groups[2:] + ["Custom", "Set on this computer"]
+    )
+    assert dlg._page_titles == [
+        "Reconstructors", "Processors", "Drop-in plugins", "Startup layout",
+        "Analysis panels", "Localization viewer", "Live mode", "napari plugins",
+        "Custom", "Set on this computer",
+    ]
+    assert dlg._page_list.currentRow() == 0 and dlg._page_titles[0] == "Reconstructors"
     assert [dlg._page_list.item(i).text() for i in range(dlg._page_list.count())] == dlg._page_titles
     assert dlg._stack.count() == len(dlg._page_titles)
 
@@ -291,10 +301,8 @@ def test_unknown_keys_are_on_the_custom_page_and_kept(qapp):
 def test_a_required_field_left_empty_is_refused(qapp):
     dlg = _dialog(editor._new_section_seed(PROCESSING))
     box = dlg._field_widgets["reconstructors"]._w
-    for i in range(box.count()):
-        item = box.item(i)
-        if item.data(Qt.UserRole) is not None:
-            item.setCheckState(Qt.Unchecked)
+    for option_id in box.checked_ids():
+        box.checkbox(option_id).click()
     dlg._try_apply()
     assert dlg.result() != QDialog.Accepted
     assert "Reconstructors" in dlg._err_lbl.text()
@@ -607,16 +615,76 @@ def test_without_the_registries_the_options_are_bare_ids(monkeypatch):
         assert field["opts"]
 
 
-def test_a_multiselect_shows_labels_but_returns_ids(qapp):
+def _rows(fw) -> dict:
+    """``{id: (name, muted id text or None, description or None)}`` of a rich list."""
+    box = fw._w
+    out = {}
+    for option_id in box.option_ids():
+        check = box.checkbox(option_id)
+        row = check.parentWidget()
+        labels = [l.text() for l in row.findChildren(QLabel)]
+        ident = option_id if option_id in labels else None
+        description = next((t for t in labels if t != option_id), None)
+        out[option_id] = (check.text(), ident, description)
+    return out
+
+
+def test_a_multiselect_shows_name_id_and_description_but_returns_ids(qapp):
     fw = editor.FieldWidget(_field("reconstructors"), ["view-only"])
+    rows = _rows(fw)
+    name, ident, description = rows["monalisa"]
+    assert name == "MoNaLISA" and ident == "monalisa"
+    assert description == "Point-scanning SIM reconstruction with pattern-based signal extraction"
+    # untouched: the file's value, as it was
+    original = ["view-only"]
+    fw = editor.FieldWidget(_field("reconstructors"), original)
+    assert fw.get_value() is original and not fw.is_touched()
+    fw._w.checkbox("monalisa").click()
+    assert fw.is_touched()
+    assert fw.get_value() == ["monalisa", "view-only"], "ids, in the schema's option order"
+
+
+def test_every_reconstructor_row_has_a_description(qapp):
+    """All of them: the ``description`` attribute, else the docstring's first line."""
+    rows = _rows(editor.FieldWidget(_field("reconstructors"), []))
+    assert len(rows) >= 11
+    assert all(description for _, _, description in rows.values())
+    # monalisa-legacy has no ``description``: its docstring's first line stands in
+    assert rows["monalisa-legacy"][2].startswith("Classic MoNaLISA")
+
+
+def test_the_descriptions_come_from_the_registry_attribute_or_the_docstring():
+    class WithAttr:
+        """Docstring line.\n\nMore."""
+        description = "  The attribute.  "
+
+    class WithDoc:
+        """First line of the docstring.
+
+        Second paragraph."""
+
+    class Neither:
+        pass
+
+    assert editor._plugin_description(WithAttr) == "The attribute."
+    assert editor._plugin_description(WithDoc) == "First line of the docstring."
+    assert editor._plugin_description(Neither) == ""
+
+
+def test_the_processor_descriptions_are_the_first_docstring_line():
+    field = _field("processors")
+    assert field["option_descriptions"]["drift-correct"] == "Drift correction using phase cross-correlation."
+    assert set(field["option_descriptions"]) <= set(field["opts"])
+
+
+def test_a_multiselect_without_registry_descriptions_stays_a_plain_list(qapp):
+    field = {k: v for k, v in _field("reconstructors").items() if k != "option_descriptions"}
+    fw = editor.FieldWidget(field, ["view-only"])
+    assert isinstance(fw._w, editor.QListWidget)
     texts = [fw._w.item(i).text() for i in range(fw._w.count())]
     assert "MoNaLISA  (monalisa)" in texts
-    assert "monalisa" not in texts
-    # untouched: the file's value, as it was
-    assert fw.get_value() == ["view-only"]
-    row = texts.index("MoNaLISA  (monalisa)")
-    fw._w.item(row).setCheckState(Qt.Checked)
-    assert fw.get_value() == ["monalisa", "view-only"], "ids, in the schema's option order"
+    fw._w.item(texts.index("MoNaLISA  (monalisa)")).setCheckState(Qt.Checked)
+    assert fw.get_value() == ["monalisa", "view-only"]
 
 
 def test_a_multiselect_without_labels_reads_as_before(qapp):
@@ -629,17 +697,60 @@ def test_a_multiselect_without_labels_reads_as_before(qapp):
 
 
 def test_grouped_processors_have_headers_and_keep_unknown_ids(qapp):
-    fw = editor.FieldWidget(_field("processors"), ["resize", "user.tiny-test"])
-    items = [fw._w.item(i) for i in range(fw._w.count())]
-    headers = [i.text() for i in items if i.data(Qt.UserRole) is None]
+    original = ["resize", "user.tiny-test"]
+    fw = editor.FieldWidget(_field("processors"), original)
+    box = fw._w
+    headers = box.header_texts()
     assert "Transform" in headers and "Restoration" in headers
     assert headers[-1] == "Not known here (kept as written)"
-    for header in (i for i in items if i.data(Qt.UserRole) is None):
-        assert not header.flags() & Qt.ItemIsUserCheckable
-    # touch something unrelated: the id the registry does not offer survives
-    row = next(i for i in items if i.data(Qt.UserRole) == "filter")
-    row.setCheckState(Qt.Checked)
+    assert headers[:-1] == sorted(headers[:-1], key=str.lower), "categories read alphabetically"
+    assert fw.get_value() is original, "untouched: the very object the file had"
+    # the id the registry does not offer is listed, checked, and keeps its name
+    assert box.checkbox("user.tiny-test").isChecked()
+    assert box.checkbox("user.tiny-test").text() == "user.tiny-test"
+    assert _rows(fw)["user.tiny-test"][2] is None
+    # touch something unrelated: it survives
+    box.checkbox("filter").click()
     value = fw.get_value()
     assert "user.tiny-test" in value and "resize" in value and "filter" in value
-    ids = [i.data(Qt.UserRole) for i in items if i.data(Qt.UserRole) is not None]
+    ids = box.option_ids()
     assert value == [i for i in ids if i in value], "stable: option order, extras last"
+    assert ids[-1] == "user.tiny-test"
+
+
+def test_processors_sit_under_their_category_header(qapp):
+    fw = editor.FieldWidget(_field("processors"), [])
+    box = fw._w
+    layout = box.layout()
+    seen, current = {}, None
+    for i in range(layout.count()):
+        widget = layout.itemAt(i).widget()
+        if widget is None:
+            continue
+        if isinstance(widget, QLabel):
+            current = widget.text()
+        else:
+            check = widget.findChild(editor.QCheckBox)
+            seen[next(k for k, v in box._boxes.items() if v is check)] = current
+    assert seen["resize"] == "Transform" and seen["drift-correct"] == "Restoration"
+    assert len(box._boxes) == len(box.option_ids()) == len(_field("processors")["opts"]), \
+        "one check box per option; the headers are labels, not choices"
+
+
+def test_a_plain_untouched_list_keeps_the_original_object_for_the_two_pages(qapp):
+    block = {"reconstructors": ["view-only"], "processors": ["resize", "mystery"]}
+    dlg = _dialog(copy.deepcopy(block))
+    for key in ("reconstructors", "processors"):
+        assert dlg._field_widgets[key].get_value() == block[key]
+        assert not dlg._field_widgets[key].is_touched()
+
+
+def test_the_tip_of_the_two_lists_is_said_once_at_the_top_of_the_page(qapp):
+    dlg = _dialog({})
+    for title, key in (("Reconstructors", "reconstructors"), ("Processors", "processors")):
+        page = dlg._stack.widget(dlg._page_titles.index(title))
+        tip = _field(key)["tip"]
+        assert [l.text() for l in page.findChildren(QLabel)].count(tip) == 1
+        layout = page.widget().layout()
+        assert layout.itemAt(0).widget().text() == tip, "the first thing on the page"
+        assert layout.itemAt(1).widget() is dlg._field_widgets[key], "then the list, nothing under it"

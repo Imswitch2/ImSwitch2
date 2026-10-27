@@ -17,6 +17,7 @@ The module therefore never touches ``QApplication`` state outside :func:`main`.
 import ast
 import colorsys
 import copy
+import inspect
 import json
 import math
 import os
@@ -352,6 +353,19 @@ IMPROCESS_PROCESSOR_FALLBACK = [
 PLUGIN_DISCOVERY_ERROR = None
 
 
+def _plugin_description(plugin_cls) -> str:
+    """One line saying what a registered plugin does.
+
+    The class's own ``description`` when it has one (every built-in
+    reconstructor does), else the first line of its docstring.
+    """
+    text = str(getattr(plugin_cls, "description", "") or "").strip()
+    if not text:
+        doc = inspect.getdoc(plugin_cls) or ""
+        text = doc.strip().splitlines()[0].strip() if doc.strip() else ""
+    return text
+
+
 def _resolve_section_dynamic_options(schema: dict) -> None:
     """Replace supported option placeholders with runtime-discovered values."""
     global PLUGIN_DISCOVERY_ERROR
@@ -385,23 +399,32 @@ def _resolve_section_dynamic_options(schema: dict) -> None:
     # registries. Without them the options stay bare ids.
     labels = {"__improcess_reconstructors__": {}, "__improcess_processors__": {}}
     groups = {"__improcess_processors__": {}}
+    descriptions = None     # None = the registries could not be read
     if PLUGIN_DISCOVERY_ERROR is None:
         try:
             from imswitch.improcess.reconstructors import _all_reconstructor_classes
-            from imswitch.improcess.processors import available_processor_specs
+            from imswitch.improcess.processors import (
+                _all_processor_classes, available_processor_specs,
+            )
 
+            found = {"__improcess_reconstructors__": {}, "__improcess_processors__": {}}
             for plugin_id, plugin_cls in _all_reconstructor_classes().items():
                 name = str(getattr(plugin_cls, "name", "") or "")
                 if name:
                     labels["__improcess_reconstructors__"][plugin_id] = name
+                found["__improcess_reconstructors__"][plugin_id] = _plugin_description(plugin_cls)
             for plugin_id, name, category in available_processor_specs(origin="all"):
                 if name:
                     labels["__improcess_processors__"][plugin_id] = str(name)
                 if category:
                     groups["__improcess_processors__"][plugin_id] = str(category)
+            for plugin_id, plugin_cls in _all_processor_classes().items():
+                found["__improcess_processors__"][plugin_id] = _plugin_description(plugin_cls)
+            descriptions = found
         except Exception:
             labels = {"__improcess_reconstructors__": {}, "__improcess_processors__": {}}
             groups = {"__improcess_processors__": {}}
+            descriptions = None
 
     for field in schema.get("fields", []):
         opts = field.get("opts") or []
@@ -412,6 +435,11 @@ def _resolve_section_dynamic_options(schema: dict) -> None:
                 field["option_labels"] = dict(labels[placeholder])
             if groups.get(placeholder):
                 field["option_groups"] = dict(groups[placeholder])
+            if descriptions is not None:
+                field["option_descriptions"] = {
+                    plugin_id: text
+                    for plugin_id, text in descriptions[placeholder].items() if text
+                }
 
 
 def _hsv_palette(n: int, saturation: float = 0.60, value: float = 0.78) -> list:
@@ -2587,6 +2615,136 @@ def _parse_freeform_value(text: str):
             return stripped
 
 
+#: Header of the bucket holding ids the schema offers without a category.
+_CHOICE_OTHER = "Other"
+#: Header of the bucket holding ids only the file has.
+_CHOICE_NOT_KNOWN = "Not known here (kept as written)"
+
+
+def _grouped_choices(options: list, unknown: list, groups: dict) -> list:
+    """``[(header, [option, ...]), ...]`` in reading order.
+
+    Categories read alphabetically; ids the schema offers without a category
+    come last under "Other", and ids only the file has under their own
+    header, so nothing the file lists is hidden.
+    """
+    unknown_ids = {str(option) for option in unknown}
+    buckets: dict[str, list] = {}
+    for opt in options:
+        if str(opt) in unknown_ids:
+            name = _CHOICE_NOT_KNOWN
+        else:
+            name = groups.get(str(opt)) or _CHOICE_OTHER
+        buckets.setdefault(name, []).append(opt)
+    trailing = (_CHOICE_OTHER, _CHOICE_NOT_KNOWN)
+
+    def reading_order(name: str):
+        return (1, trailing.index(name)) if name in trailing else (0, name.lower())
+
+    return [(name, buckets[name]) for name in sorted(buckets, key=reading_order)]
+
+
+class _ChoiceList(QWidget):
+    """A checkable list whose rows say what each choice is.
+
+    One row per option: a check box carrying the display name, the id muted
+    beside it, and under it a muted description. Used for the ImProcess
+    reconstructors and processors, where the name alone does not tell a user
+    what they are switching on. The stored value is the id; the rows are
+    only how it reads. Choices may sit under non-checkable headers
+    (``groups``); ids the schema does not offer (``unknown``) are listed under
+    their own header and kept.
+    """
+
+    #: Emitted when the user clicks a check box -- never on construction.
+    sig_edited = pyqtSignal()
+
+    def __init__(self, field_def: dict, options: list, unknown: list,
+                 selected: set, parent=None):
+        super().__init__(parent)
+        labels = field_def.get("option_labels") or {}
+        descriptions = field_def.get("option_descriptions") or {}
+        groups = field_def.get("option_groups") or {}
+        self._muted = "#AAAAAA" if is_dark_mode() else "#666666"
+        self._boxes: dict[str, QCheckBox] = {}
+        self._headers: list[str] = []
+        unknown_ids = {str(option) for option in unknown}
+        # the label's text starts where the box's own text does
+        style = self.style()
+        self._indent = (style.pixelMetric(QStyle.PM_IndicatorWidth)
+                        + style.pixelMetric(QStyle.PM_CheckBoxLabelSpacing))
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        if groups or unknown_ids:
+            sections = _grouped_choices(options, unknown, groups)
+        else:
+            sections = [(None, list(options))]
+        for header, members in sections:
+            if header is not None:
+                title = QLabel(header)
+                title.setTextFormat(Qt.PlainText)
+                font = title.font()
+                font.setBold(True)
+                title.setFont(font)
+                title.setContentsMargins(0, 6, 0, 0)
+                self._headers.append(header)
+                lay.addWidget(title)
+            for opt in members:
+                known = str(opt) not in unknown_ids
+                lay.addWidget(self._row(
+                    str(opt),
+                    str(labels.get(str(opt)) or opt) if known else str(opt),
+                    str(descriptions.get(str(opt), "")) if known else "",
+                    str(opt) in selected,
+                ))
+        lay.addStretch()
+
+    def _row(self, option_id: str, name: str, description: str, checked: bool) -> QWidget:
+        row = QWidget()
+        col = QVBoxLayout(row)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        line = QHBoxLayout()
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        box = QCheckBox(name)
+        box.setChecked(checked)
+        box.clicked.connect(lambda *_: self.sig_edited.emit())
+        self._boxes[option_id] = box
+        line.addWidget(box)
+        if name != option_id:
+            ident = QLabel(option_id)
+            ident.setTextFormat(Qt.PlainText)
+            ident.setStyleSheet(f"color:{self._muted}; font-size:8pt;")
+            line.addWidget(ident)
+        line.addStretch()
+        col.addLayout(line)
+        if description:
+            text = QLabel(description)
+            text.setTextFormat(Qt.PlainText)
+            text.setWordWrap(True)
+            text.setContentsMargins(self._indent, 0, 0, 0)
+            text.setStyleSheet(f"color:{self._muted}; font-size:8pt;")
+            col.addWidget(text)
+        return row
+
+    def option_ids(self) -> list[str]:
+        """Every id with a row, in the order the rows read."""
+        return list(self._boxes)
+
+    def header_texts(self) -> list[str]:
+        """The non-checkable headers, in reading order."""
+        return list(self._headers)
+
+    def checkbox(self, option_id: str) -> QCheckBox:
+        return self._boxes[str(option_id)]
+
+    def checked_ids(self) -> list[str]:
+        return [option_id for option_id, box in self._boxes.items() if box.isChecked()]
+
+
 # =============================================================================
 # FieldWidget – single editable field row
 # =============================================================================
@@ -2658,9 +2816,6 @@ class FieldWidget(QWidget):
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
         elif tp == "multiselect":
-            self._w = QListWidget()
-            self._w.setMinimumHeight(92)
-            self._w.setMaximumHeight(150)
             listed = value if isinstance(value, list) else []
             selected = {str(v) for v in listed}
             options = list(self._def.get("opts", []) or [])
@@ -2677,11 +2832,18 @@ class FieldWidget(QWidget):
             #: then ids the file had that the schema does not offer.
             self._option_order = [str(option) for option in options]
             groups = self._def.get("option_groups") or {}
-            if groups:
-                self._fill_grouped(options, unknown, groups, selected)
+            if "option_descriptions" in self._def:
+                # The registries were read: rows that say what each choice is.
+                self._w = _ChoiceList(self._def, options, unknown, selected)
             else:
-                for opt in options:
-                    self._w.addItem(self._choice_item(opt, selected))
+                self._w = QListWidget()
+                self._w.setMinimumHeight(92)
+                self._w.setMaximumHeight(150)
+                if groups:
+                    self._fill_grouped(options, unknown, groups, selected)
+                else:
+                    for opt in options:
+                        self._w.addItem(self._choice_item(opt, selected))
         elif tp == "ref":
             # Cross-reference to a device in the live config. opts is the list
             # of categories ("detectors", "positioners", ...) to draw names from.
@@ -2746,26 +2908,8 @@ class FieldWidget(QWidget):
         return item
 
     def _fill_grouped(self, options: list, unknown: list, groups: dict, selected: set) -> None:
-        """Fill a multiselect under non-checkable category headers.
-
-        Categories read alphabetically; ids the schema offers without a
-        category come last under "Other", and ids only the file has under
-        their own header, so nothing the file lists is hidden.
-        """
-        other, not_known = "Other", "Not known here (kept as written)"
-        unknown_ids = {str(option) for option in unknown}
-        buckets: dict[str, list] = {}
-        for opt in options:
-            if str(opt) in unknown_ids:
-                name = not_known
-            else:
-                name = groups.get(str(opt)) or other
-            buckets.setdefault(name, []).append(opt)
-        trailing = (other, not_known)
-        def reading_order(name: str):
-            return (1, trailing.index(name)) if name in trailing else (0, name.lower())
-
-        for name in sorted(buckets, key=reading_order):
+        """Fill a multiselect under non-checkable category headers."""
+        for name, members in _grouped_choices(options, unknown, groups):
             header = QListWidgetItem(name)
             header.setFlags(Qt.ItemIsEnabled)
             header.setData(Qt.UserRole, None)
@@ -2773,7 +2917,7 @@ class FieldWidget(QWidget):
             font.setBold(True)
             header.setFont(font)
             self._w.addItem(header)
-            for opt in buckets[name]:
+            for opt in members:
                 self._w.addItem(self._choice_item(opt, selected))
 
     def fit_to_contents(self) -> None:
@@ -2806,6 +2950,8 @@ class FieldWidget(QWidget):
                 w.lineEdit().textEdited.connect(touch)
         elif isinstance(w, QListWidget):
             w.itemChanged.connect(touch)
+        elif isinstance(w, _ChoiceList):
+            w.sig_edited.connect(touch)
         elif isinstance(w, QLineEdit):
             w.textEdited.connect(touch)
 
@@ -2832,12 +2978,15 @@ class FieldWidget(QWidget):
         if tp == "select":
             return self._w.currentData()
         if tp == "multiselect":
-            checked = [
-                self._w.item(i).data(Qt.UserRole)
-                for i in range(self._w.count())
-                if self._w.item(i).data(Qt.UserRole) is not None
-                and self._w.item(i).checkState() == Qt.Checked
-            ]
+            if isinstance(self._w, _ChoiceList):
+                checked = self._w.checked_ids()
+            else:
+                checked = [
+                    self._w.item(i).data(Qt.UserRole)
+                    for i in range(self._w.count())
+                    if self._w.item(i).data(Qt.UserRole) is not None
+                    and self._w.item(i).checkState() == Qt.Checked
+                ]
             rank = {value: n for n, value in enumerate(self._option_order)}
             return sorted(checked, key=lambda value: rank[value])
         if tp == "ref":
@@ -4826,9 +4975,9 @@ def _pick_improcess_preset(parent=None):
 class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
     """Modal editor of the setup's ``processing`` block.
 
-    Pages on the left (the schema's groups, then Drop-in plugins, Custom and
-    Set on this computer), the page on the right, and under every option its
-    one-sentence explanation in plain view. Writes follow the schema's
+    Pages on the left (the schema's groups, Drop-in plugins right after the
+    Processors, then Custom and Set on this computer), the page on the right,
+    and under every option its one-sentence explanation in plain view. Writes follow the schema's
     ``as_written`` policy through :func:`_collect_section_result`, exactly as
     :class:`SectionEditorDialog` does: open, Apply untouched, and the block is
     what it was.
@@ -4839,6 +4988,10 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
     _INLINE_TYPES = frozenset(
         {"bool", "bool_auto", "int", "float", "select", "text", "path", "ref"}
     )
+
+    #: The drop-in plugins page, and the schema group it follows.
+    _DROPIN_PAGE = "Drop-in plugins"
+    _DROPIN_AFTER = "Processors"
 
     def __init__(self, schema: dict, current: dict | None, data: dict, parent=None, *,
                  dropin_directory: str | None = None):
@@ -4925,7 +5078,11 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
             groups.setdefault(f.get("grp", "Basic"), []).append(f)
         for grp, fields in groups.items():
             self._add_page(grp, self._build_group_page(fields, current))
-        self._add_page("Drop-in plugins", self._build_dropin_page(current))
+            if grp == self._DROPIN_AFTER:
+                # About the reconstructors and processors, so right behind them.
+                self._add_page(self._DROPIN_PAGE, self._build_dropin_page(current))
+        if self._DROPIN_PAGE not in self._page_titles:
+            self._add_page(self._DROPIN_PAGE, self._build_dropin_page(current))
         self._add_page("Custom", self._build_custom_tab(current))
         self._add_page("Set on this computer", self._build_computer_page())
         # The list is as wide as its longest page title, no wider.
@@ -4996,11 +5153,19 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(12)
         for f in fields:
-            lay.addWidget(self._field_row(f, current))
+            if f.get("type") == "multiselect" and "option_descriptions" in f:
+                # A page of its own rows: what the list does is said once, on
+                # top, and the page title already names the list.
+                if f.get("tip"):
+                    lay.addWidget(self._note(f["tip"]))
+                lay.addWidget(self._field_row(f, current, announced=True))
+            else:
+                lay.addWidget(self._field_row(f, current))
         lay.addStretch()
         return self._scrolling(inner)
 
-    def _field_row(self, f: dict, current: dict | None) -> QWidget:
+    def _field_row(self, f: dict, current: dict | None, *, announced: bool = False) -> QWidget:
+        """One field. ``announced``: its label and tip are already on the page."""
         cur = (current or {}).get(f["key"], _MISSING)
         if cur is _MISSING:
             cur = _field_default(f)
@@ -5014,6 +5179,8 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
             fw.fit_to_contents()
         self._field_widgets[f["key"]] = fw
 
+        if announced:
+            return fw
         label = QLabel(f"<b>{f['label']}</b> *" if f.get("req") else f["label"])
         label.setTextFormat(Qt.RichText)
         label.setWordWrap(True)
@@ -5115,7 +5282,7 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
     def _rescan_dropins(self) -> None:
         """Discover the drop-in folder again and redraw the page."""
         self._dropins = _cached_dropins(self._dropin_directory, refresh=True)
-        index = self._page_titles.index("Drop-in plugins")
+        index = self._page_titles.index(self._DROPIN_PAGE)
         was_current = self._page_list.currentRow() == index
         old = self._stack.widget(index)
         self._stack.removeWidget(old)

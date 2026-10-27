@@ -53,8 +53,8 @@ _BOOL_READERS = {
     "live_display_in_imcontrol": pc.is_live_display_in_imcontrol_enabled,
 }
 
-_GROUPS = ["Startup layout", "Analysis panels", "Localization viewer",
-           "Live mode", "Plugins"]
+_GROUPS = ["Reconstructors", "Processors", "Startup layout", "Analysis panels",
+           "Localization viewer", "Live mode", "napari plugins"]
 
 
 def _section() -> dict:
@@ -178,7 +178,7 @@ def test_only_reconstructors_is_required():
     assert required == ["reconstructors"]
 
 
-def test_groups_are_the_five_in_order():
+def test_groups_are_the_seven_in_order_reconstructors_and_processors_first():
     seen: list[str] = []
     for field in _section()["fields"]:
         if field["grp"] not in seen:
@@ -187,6 +187,10 @@ def test_groups_are_the_five_in_order():
     # contiguous: a group never reappears after another one started
     order = [field["grp"] for field in _section()["fields"]]
     assert order == sorted(order, key=_GROUPS.index)
+    fields = _fields()
+    assert fields["reconstructors"]["grp"] == "Reconstructors"
+    assert fields["processors"]["grp"] == "Processors"
+    assert fields["napariEndpoints"]["grp"] == "napari plugins"
 
 
 def test_per_computer_settings_stay_out_of_the_template():
