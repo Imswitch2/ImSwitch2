@@ -163,8 +163,13 @@ class _Builder:
         self.boundary_sources: set[str] = set()
         self.inputs: list[tuple[str, str]] = []
         self.interactive: list[str] = []
+        #: One record per interactive step met (allow_inputs). ``inputs`` and
+        #: ``interactive`` are derived from these once it is known which input
+        #: ``Source`` steps survive, see :meth:`finish_boundaries`.
+        self.boundaries: list[dict] = []
         self.saved_for_inputs = 0
         self.terminal_boundary = False
+        self.terminal_where = ""
         self.used_ids: set[str] = set()
         self.step_ids: dict[str, str] = {}
         self.skipped: set[str] = set()
@@ -239,7 +244,8 @@ class _Builder:
         layer = node.get("layer_name")
         if tool == "fiji":
             steps = len(((details.get("fiji_history") or {}).get("steps")) or [])
-            known = [f"Fiji image {details['image_id']}"] if "image_id" in details else []
+            known = [f"image {layer!r}"] if layer else []
+            known += [f"Fiji image {details['image_id']}"] if "image_id" in details else []
             if steps:
                 known.append(f"{steps} recorded Fiji step{'' if steps == 1 else 's'}")
             what = "The Fiji step" + (f" ({', '.join(known)})" if known else "")
@@ -253,9 +259,51 @@ class _Builder:
         what = f"The {tool} step ({', '.join(known)})"
         return what, f"the result produced in {tool} by {plugin!r}; bind a file or a result"
 
-    def _interactive(self, text: str) -> None:
-        self.warnings.append(text)
-        self.interactive.append(text)
+    def _record_boundary(self, **facts) -> None:
+        """Keep what is known about an interactive step; its warning is written later.
+
+        A placeholder holds the warning's place so the order of the warnings is
+        the order of the steps, and the text is chosen in :meth:`finish_boundaries`
+        when it is known whether the step's input survives into the workflow.
+        """
+        facts["warn_index"] = len(self.warnings)
+        self.warnings.append("")
+        self.boundaries.append(facts)
+
+    def finish_boundaries(self, kept: set[str]) -> None:
+        """Fill ``inputs``, ``interactive`` and the warnings from the boundary records.
+
+        ``kept`` are the ids of the ``Source`` steps in the finished workflow.
+        An input nothing reads is dropped from it (a step sent to Fiji, imported
+        and sent straight on again leaves the first import with no reader), and
+        then it is not an input to bind and no text may say it is.
+        """
+        self.inputs, self.interactive = [], []
+        for b in self.boundaries:
+            if b["terminal"]:
+                text = self._terminal_text(b)
+            elif b["input_id"] in kept:
+                self.inputs.append((b["input_id"], b["how"]))
+                sent = f"saves what was sent to {b['shown'] or 'it'} and " if b["saved"] else ""
+                text = (f"{b['what']} cannot be part of a workflow; the workflow {sent}starts again from an "
+                        f"input {b['input_id']!r} you bind when running it.")
+            elif b["saved"]:
+                text = (f"{b['what']} cannot be part of a workflow; the workflow saves what was sent to "
+                        f"{b['shown'] or 'it'} (saved as {b['saved'][0]}) and has no input for this step, since nothing after it reads from it.")
+            else:
+                text = (f"{b['what']} cannot be part of a workflow; it left nothing replayable on either "
+                        "side, so the workflow has no input for it.")
+            self.warnings[b["warn_index"]] = text
+            self.interactive.append(text)
+
+    @staticmethod
+    def _terminal_text(b: dict) -> str:
+        what, where = b["what"], b["where"]
+        detail = what[what.index("("):] if "(" in what else ""
+        head = f"The last step happened in {where}{' ' + detail if detail else ''}; a workflow cannot contain it"
+        if b["saved"]:
+            return f"{head}, so the workflow stops at what was sent to {b['shown'] or 'it'} (saved as {b['saved'][0]})."
+        return f"{head} and nothing replayable was sent to it."
 
     def boundary_to_input(self, node_id: str, node: dict, *, is_output: bool) -> None:
         """Replace an interactive step by an input the user binds at run time.
@@ -289,31 +337,17 @@ class _Builder:
         self.steps.extend(saves)
         self.saved_for_inputs += len(saves)
         shown = "Fiji" if tool == "fiji" else tool
-        sent = "saves what was sent to " + (shown or "it") + " and " if saves else ""
+        record = dict(what=what, how=how, shown=shown, saved=[s.path_template.split("/")[-1] for s in saves])
         if is_output:
             self.terminal_boundary = True
             where = shown or "a step with no recorded origin"
-            detail = what[what.index("("):] if "(" in what else ""
-            if saves:
-                self._interactive(
-                    f"The last step happened in {where}{' ' + detail if detail else ''}; a workflow cannot "
-                    f"contain it, so the workflow stops at what was sent to {shown or 'it'} (saved as "
-                    f"{saves[0].path_template.split('/')[-1]})."
-                )
-            else:
-                self._interactive(
-                    f"The last step happened in {where}{' ' + detail if detail else ''}; a workflow cannot "
-                    "contain it and nothing replayable was sent to it."
-                )
+            self.terminal_where = where
+            self._record_boundary(input_id=None, terminal=True, where=where, **record)
             return
         self.steps.append(Source(input_id, SourceSpec(metadata={"input": how})))
         self.step_ids[node_id] = input_id
         self.boundary_sources.add(node_id)
-        self.inputs.append((input_id, how))
-        self._interactive(
-            f"{what} cannot be part of a workflow; the workflow {sent}starts again from an input "
-            f"{input_id!r} you bind when running it."
-        )
+        self._record_boundary(input_id=input_id, terminal=False, **record)
 
     def emit(self, node_id: str, node: dict, op: str, label: str) -> None:
         if op == "source":
@@ -415,8 +449,8 @@ def workflow_from_provenance(
     if builder.terminal_boundary:
         if not builder.saved_for_inputs:
             raise ReplayError(
-                "the result was produced interactively from a recording directly, so there is "
-                "nothing between the recording and that step to put in a workflow",
+                f"the result came from {builder.terminal_where} directly and nothing replayable precedes it, "
+                "so there is nothing to put in a workflow",
                 ["nothing replayable precedes the interactive step"],
             )
     else:
@@ -431,6 +465,7 @@ def workflow_from_provenance(
             [step.input] if isinstance(step, Save) else list(getattr(step, "inputs", []) or []))}
         # A raw recording that only fed an interactive step is not an input of the workflow.
         builder.steps = [s for s in builder.steps if not isinstance(s, Source) or s.id in used]
+        builder.finish_boundaries({s.id for s in builder.steps if isinstance(s, Source)})
 
     warnings = list(builder.warnings)
     recorded_version = str(graph.get("imswitch_version") or "")
