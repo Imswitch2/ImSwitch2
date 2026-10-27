@@ -1103,8 +1103,10 @@ Optional object read by ImProcess, not by ImControl: which ImProcess panels
 open at startup, the live-mode settings, and which ``reconstructors`` and
 ``processors`` (and napari plugin endpoints) it offers.  The processing-only
 presets (``*_processor.json``, ``general_image_processing.json``) consist of
-little else.  See :ref:`improcess-processing-presets`; the config editor edits
-the block as :ref:`its own section <config-editor-improcess>`.
+little else.  The keys are listed in the order of the config editor's dialog
+pages, with the reconstructors and processors first.  See
+:ref:`improcess-processing-presets`; the config editor edits the block as
+:ref:`its own section <config-editor-improcess>`.
 
 Every key is optional; a key that is absent has the default below.  A
 ``reconstructors`` or ``processors`` key that names only one side of the
@@ -1114,6 +1116,40 @@ rather than to a setup (the Fiji location, the image display, the default
 data and save folders) are not part of this block; they are kept in
 ``ImSwitchConfig/config/improcess_options.json`` and set from ImProcess's
 **Plugins** and **Preferences** menus.
+
+.. rubric:: Reconstructors
+
+Which reconstructors ImProcess registers; see :ref:`improcess-processing-presets` for how the list is read.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 10 14 54
+
+   * - Key
+     - Type
+     - Default
+     - Meaning
+   * - ``reconstructors``
+     - list of ids
+     - ``["view-only"]``
+     - The built-in reconstructors to register; the first is the initial one.  Ids this computer does not have are skipped at startup with a warning, and if none is known ``view-only`` is registered.  Drop-in plugins are active on their own and should not be listed.
+
+.. rubric:: Processors
+
+Which processors ImProcess registers.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 10 14 54
+
+   * - Key
+     - Type
+     - Default
+     - Meaning
+   * - ``processors``
+     - list of ids
+     - ``["drift-correct"]``
+     - The built-in processors to register; ``[]`` registers none.  Unknown ids are skipped with a warning.  Others can be loaded at runtime from the Tools toolbar.
 
 .. rubric:: Startup layout
 
@@ -1267,9 +1303,9 @@ Live reconstruction while a recording is written.
      - ``false``
      - When ImControl runs in the same session, also show live results in ImControl's image viewer (the key keeps its snake_case spelling).
 
-.. rubric:: Plugins
+.. rubric:: napari plugins
 
-Which plugins ImProcess registers; see :ref:`improcess-processing-presets` for how the lists are read.
+napari plugin adapters that results can be sent to; see :doc:`improcess-napari-plugins`.
 
 .. list-table::
    :header-rows: 1
@@ -1279,14 +1315,6 @@ Which plugins ImProcess registers; see :ref:`improcess-processing-presets` for h
      - Type
      - Default
      - Meaning
-   * - ``reconstructors``
-     - list of ids
-     - ``["view-only"]``
-     - The built-in reconstructors to register; the first is the initial one.  Ids this computer does not have are skipped at startup with a warning, and if none is known ``view-only`` is registered.  Drop-in plugins are active on their own and should not be listed.
-   * - ``processors``
-     - list of ids
-     - ``["drift-correct"]``
-     - The built-in processors to register; ``[]`` registers none.  Unknown ids are skipped with a warning.  Others can be loaded at runtime from the Tools toolbar.
    * - ``napariEndpoints``
      - list of objects
      - ``[]``
@@ -1512,10 +1540,12 @@ Hardware-free scan setups (simulated NI-DAQ, see :doc:`mock-infrastructure`):
 * ``mixed_hamamatsu_apd_mock_scan_setup.json`` — mock Hamamatsu camera and
   APD in one Base scan
 
-ImProcess-only presets, with no hardware: ``fiji_processor.json``,
-``general_image_processing.json``, ``monalisa_processor.json``,
-``snouty_processor.json``, ``widefieldstarss_processor.json`` (see
-:ref:`improcess-processing-presets`).
+ImProcess-only presets, with no hardware: ``bead_psf_processor.json``,
+``fiji_processor.json``, ``general_image_processing.json``,
+``monalisa_processor.json``, ``restoration_processor.json``,
+``smlm_processor.json``, ``snouty_processor.json``,
+``tiling_mosaic_processor.json``, ``timelapse_processor.json``,
+``widefieldstarss_processor.json`` (see :ref:`improcess-processing-presets`).
 
 Or use the **visual config editor** (Config Studio), which shows typed fields
 for every manager's ``managerProperties``.  In a running ImSwitch2 it is

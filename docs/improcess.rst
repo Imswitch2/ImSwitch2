@@ -2444,23 +2444,50 @@ Processing-only setup presets
 =============================
 
 Ready-to-use minimal configs ship under
-``imswitch/_data/user_defaults/imcontrol_setups/``:
+``imswitch/_data/user_defaults/imcontrol_setups/``.  Each has a title, which is
+what the config editor's picker shows, and a one-paragraph description:
 
 .. list-table::
    :header-rows: 1
+   :widths: 24 28 48
 
-   * - Setup file
+   * - Title
+     - Setup file
      - Intended use
-   * - ``fiji_processor.json``
+   * - Bead scans and PSF measurement
+     - ``bead_psf_processor.json``
+     - Rebuild a recorded bead scan (``beadrec``) and measure the PSF width with the PSF resolution processor, line profiles and projections
+   * - Deconvolution and clean-up
+     - ``restoration_processor.json``
+     - Richardson-Lucy deconvolution, background subtraction, spatial filters and drift correction of widefield or confocal images, checked with projections, profiles and an FRC estimate
+   * - Fiji-like image processing
+     - ``fiji_processor.json``
      - Ultimate minimal Fiji/ImageJ-like processor: view-only loading, no startup docks, no napari layer controls and no Reconstruction dock until data is loaded
-   * - ``monalisa_processor.json``
-     - MoNaLISA reconstruction plus view-only fallback
-   * - ``snouty_processor.json``
-     - SNOUTY deskew, SNOUTY projection previews and multicolor strip alignment
-   * - ``widefieldstarss_processor.json``
-     - WidefieldSTARSS H/V-pair analysis
-   * - ``general_image_processing.json``
+   * - General image analysis
+     - ``general_image_processing.json``
      - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC and ROI tools, with the multicolor processors registered (the Multicolor panel opens from *Load tool*)
+   * - MoNaLISA reconstruction
+     - ``monalisa_processor.json``
+     - MoNaLISA reconstruction plus view-only fallback, with the analysis panels
+   * - Single-molecule localization
+     - ``smlm_processor.json``
+     - Localize blinking data (``smlm-localizer``), then drift correction, filtering, grouping and rendering of the localizations, with point-cloud display when the ``storm`` extra is installed
+   * - SNOUTY / OPM light-sheet
+     - ``snouty_processor.json``
+     - SNOUTY deskew, SNOUTY projection previews and multicolor strip alignment
+   * - Tiling mosaics
+     - ``tiling_mosaic_processor.json``
+     - Reassemble a saved tiling run (``tiling-mosaic``) and project, resize or convert the type of the mosaic
+   * - Time-lapse analysis
+     - ``timelapse_processor.json``
+     - A saved time lapse as one stack along time (``time-lapse``), with drift correction, background subtraction, cropping in time, projection and ROI measurements
+   * - WidefieldSTARSS anisotropy
+     - ``widefieldstarss_processor.json``
+     - WidefieldSTARSS H/V-pair analysis
+
+A preset selects ids and switches only: no numeric setting, so a number always
+comes from a processor's own default or from you.  To use one as a stand-alone
+setup, also set ``enabled`` to ``["improcess"]`` in ``modules.json``.
 
 The config editor's **Start from preset…** button (see
 :ref:`config-editor-improcess`) offers exactly the shipped setups that contain
@@ -2468,13 +2495,20 @@ only a ``processing`` block, ignoring comment keys (``//`` ...) and reserved
 keys (``__`` ...): a setup file is a preset because of what it holds, not
 because it is on a list, so a new processor-only setup shows up by being added
 to the package data.  It reads them from the package, never from your
-``ImSwitchConfig`` copy, shows each one's ``// description``, and copies the
-block into the setup you are editing.  Every key of the block is listed in
+``ImSwitchConfig`` copy, lists them by their ``// title``, and shows the
+selected one's ``// description`` and what its block sets, read in words and
+not as JSON (:ref:`config-editor-improcess`); **Use preset** copies the block into the setup you are
+editing.  Every key of the block is listed in
 :ref:`the processing key reference <setupinfo-processing>`.
 
 The Fiji preset is intentionally sparse: it starts with ``view-only`` and no
 registered processors, then lets the *Image operations* and *Tools* toolbars register
 processor-backed tools only when the user opens them.
+
+The single-molecule preset switches on ``napariStormViewer`` and
+``smlmRenderPanel``.  Both need the optional ``storm`` extra to have any
+effect (:ref:`improcess-napari-storm`); without it the localizations keep
+their histogram preview and the render controls are shown but do nothing.
 
 The MoNaLISA preset's block, as shipped in ``monalisa_processor.json``::
 

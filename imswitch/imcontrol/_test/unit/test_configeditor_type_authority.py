@@ -492,8 +492,9 @@ def test_the_corpus_is_what_the_plan_says():
     assert sources == {"shipped", "generated", "value-shape"}
     # 16: galvo_apd_mock_scan_setup.json joined the shipped setups with the
     # single-axis scan work; 17: mock_scan_monalisa_live.json with the live
-    # reconstruction work. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert len(shipped_setups()) == 17
+    # reconstruction work; 22: the five processor-only presets (SMLM, bead PSF,
+    # restoration, time lapse, tiling mosaic). 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
+    assert len(shipped_setups()) == 22
     # 64: plus the mock power meter and mock PAX instruments.
     # 66: plus the Thorlabs PM100 and PAX1000.
     assert len(generated_fixtures()) == 66

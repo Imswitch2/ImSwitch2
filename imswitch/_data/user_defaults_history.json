@@ -5,6 +5,9 @@
    "8cb776b27450be6f10a9d2b7e86d0d0c60096569c6e9212c68837873e37f81d1",
    "b330c1f9840d42ab579415826a4363febb58925b9d0dee054c0bdaf517902840"
   ],
+  "imcontrol_setups/bead_psf_processor.json": [
+   "3b6e309534e83cb40f49d753de90022ae433d9d95eedc88a561f57e877b917b8"
+  ],
   "imcontrol_setups/example_coolLED.json": [
    "0c89c6437c20943e93cd643f257a7caa3fd962bb44a5a72ca528fc5b0b975e1a",
    "70d0ad1db5a278ce18c07ead262c74f5fb4a4ad6335c49cd4c007b5f2ef1f7e3",
@@ -74,7 +77,8 @@
    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   ],
   "imcontrol_setups/fiji_processor.json": [
-   "479cfe624ccea39700e06e766a6ebda8b3e2826e568f5e3211fcc84a597656c5"
+   "479cfe624ccea39700e06e766a6ebda8b3e2826e568f5e3211fcc84a597656c5",
+   "480a20433a5225b63362b8bb113e122342df2fa52eef2358021795da4ae2c31d"
   ],
   "imcontrol_setups/galvo_apd_mock_scan_setup.json": [
    "3ab592b551bda83764b8b9aa5b45b49ab8c92dd230eae795eae4a3ac77d970e4",
@@ -84,6 +88,7 @@
   "imcontrol_setups/general_image_processing.json": [
    "8507f740cd72642444272fe3bfcd626e398ffdc1929e684f497f70ca053b4f99",
    "b2831d5c222bcec6c18d521bfbbaaf013464ab9ce59ca57cc06435d71e8d8a43",
+   "b6b5d5ccab8b7c74d0dcf5055f737d8dfa44440651ce34256bee636427c72e04",
    "c9011b21e7e8ea8e5ec46221d6eb7f0ed058d71aaa31e57e2006253d62f6779a"
   ],
   "imcontrol_setups/hamamatsu_mock_scan_setup.json": [
@@ -105,19 +110,34 @@
    "bdacbca888e84613129cfc5938e14f532f9dfe44f7df0a930501798ee249ff01"
   ],
   "imcontrol_setups/monalisa_processor.json": [
+   "19895733ea5aabedcf0bc68237e6ac86da621e867f6b5ddac6b2e14f78bf4e60",
    "a9eb39ca69fe6f15f1e47e9beb65613f863cd9dc17067b3eca806287223e8842",
    "b94e7a38fc41ed1320c38331c2f55a0c7be75f702c3fa418dbf8b20316eb5ce1",
    "d4ea1f7890f4ce4a910c2b989dcb551f3f110fda0f04274a9f5888638372f209",
    "ee7668f38f2f097ee9f5f14d65e193d210e63e6754e6b59df7a0d0cc6fe4b151"
   ],
+  "imcontrol_setups/restoration_processor.json": [
+   "56639c6d6132169f3c6c1945170aa475b38d0fa7d7746d772a8f31e4b3e4fe99"
+  ],
+  "imcontrol_setups/smlm_processor.json": [
+   "83cd0ddf8f7ccb4a3436c5bf7539d342828ff2875422f618a08cefdbe4096c24"
+  ],
   "imcontrol_setups/snouty_processor.json": [
    "68e0d990ec02e0952810ef6b2beb42fb2c4aef4f1d48af8999ff50eb0680b393",
+   "d7f2386f4a0d50e21cc577b5da8d89f953bfffdab5660267671e98ca00258265",
    "eb8e160b1db03f65214a90f9677fa51d76c44d97608d64f82a5d98ba7771266f",
    "ec57fc264a956eadc472a4ced9856e93a58e6620e6ad7c812c5b39bae7b55598"
   ],
+  "imcontrol_setups/tiling_mosaic_processor.json": [
+   "23107a102ef61aa28b2b65d13ed31db59d88772ae8a26b252e93ae5dc02dec6b"
+  ],
+  "imcontrol_setups/timelapse_processor.json": [
+   "a7787ae023fb9006a54641a2f801298fc7a2c1552ad6c63d14712d2470caea54"
+  ],
   "imcontrol_setups/widefieldstarss_processor.json": [
    "7ce959bce398c3c887eb245c3c99f50eec3aab71731483921717cfad274959d5",
-   "afe6b83b9e40c1c59b48c13aeae139a3d11cc809f1dcae57ad7ce2e4a60a865f"
+   "afe6b83b9e40c1c59b48c13aeae139a3d11cc809f1dcae57ad7ce2e4a60a865f",
+   "eb1f52c73ca0a0fc0dbe1adcb144175397c675c4c3d666cf622d127c78d1f7f5"
   ],
   "imcontrol_slm/info_glyc.json": [
    "03e9f67a818274088f8692f5cd76fe47271883305568e66d690ee2e8a8179fcb",

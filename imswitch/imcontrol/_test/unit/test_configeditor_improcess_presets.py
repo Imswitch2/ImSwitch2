@@ -1,7 +1,7 @@
 """Starting the ImProcess section from a shipped preset.
 
 A preset is selected by a rule (a shipped setup that is only a ``processing``
-block), not by file name, so the first test names today's five and fails
+block), not by file name, so the first test names today's ten and fails
 loudly when that set changes: a new preset is a conscious change.
 """
 
@@ -23,6 +23,11 @@ EXPECTED_PRESETS = {
     "snouty_processor",
     "widefieldstarss_processor",
     "general_image_processing",
+    "smlm_processor",
+    "bead_psf_processor",
+    "restoration_processor",
+    "timelapse_processor",
+    "tiling_mosaic_processor",
 }
 
 #: Settings of a computer, not of a setup.
@@ -34,17 +39,86 @@ def _write(folder, name, data):
 
 
 # ── discovery (Qt-free) ─────────────────────────────────────────────────────
-def test_the_rule_selects_exactly_the_five_shipped_presets():
+def test_the_rule_selects_exactly_the_ten_shipped_presets():
     found = shipped_improcess_presets()
-    assert {p.title for p in found} == EXPECTED_PRESETS
+    assert {p.stem for p in found} == EXPECTED_PRESETS
     assert [p.file_name for p in found] == sorted(p.file_name for p in found)
-    assert all(p.file_name == f"{p.title}.json" for p in found)
+    assert all(p.file_name == f"{p.stem}.json" for p in found)
+
+
+def test_every_preset_has_a_human_title_and_a_plain_description():
+    titles = []
+    for preset in shipped_improcess_presets():
+        assert preset.title != preset.stem, f"{preset.stem} has no // title"
+        assert "_" not in preset.title and preset.title == preset.title.strip()
+        titles.append(preset.title)
+        # plain sentences for someone choosing a starting point, not setup recipes
+        assert "modules.json" not in preset.description, preset.stem
+        assert "processing." not in preset.description, preset.stem
+        assert not any(ch in preset.description for ch in "{}[]"), preset.stem
+        assert preset.description.rstrip().endswith("."), preset.stem
+    assert len(set(titles)) == len(titles), "titles tell the presets apart"
+
+
+def test_the_title_comes_from_the_comment_key_and_falls_back_to_the_stem(tmp_path):
+    block = {"reconstructors": ["view-only"]}
+    _write(tmp_path, "a_named.json", {"// title": "  A name ", "processing": block})
+    _write(tmp_path, "b_unnamed.json", {"processing": block})
+    _write(tmp_path, "c_blank.json", {"// title": "  ", "processing": block})
+    _write(tmp_path, "d_wrong_type.json", {"// title": 3, "processing": block})
+    found = {p.stem: p for p in shipped_improcess_presets(tmp_path)}
+    assert found["a_named"].title == "A name"
+    assert [found[k].title for k in ("b_unnamed", "c_blank", "d_wrong_type")] == [
+        "b_unnamed", "c_blank", "d_wrong_type"]
+    assert found["a_named"].processing == block, "a title is not part of the block"
+
+
+def test_every_preset_only_names_ids_the_registries_have():
+    """A preset is a statement about built-ins: an id that does not exist is a typo."""
+    from imswitch.improcess.reconstructors import available_reconstructor_ids
+    from imswitch.improcess.processors import available_processor_specs
+
+    reconstructors = set(available_reconstructor_ids())
+    processors = {pid for pid, _, _ in available_processor_specs(origin="builtin")}
+    from imswitch.improcess.model.processing_config import PROCESSING_KEYS
+
+    for preset in shipped_improcess_presets():
+        block = preset.processing
+        assert set(block) <= PROCESSING_KEYS, (preset.stem, set(block) - PROCESSING_KEYS)
+        assert set(block.get("reconstructors", [])) <= reconstructors, preset.stem
+        assert set(block.get("processors", [])) <= processors, preset.stem
+
+
+def test_a_preset_selects_ids_and_switches_only():
+    """No numeric setting in a preset: a number needs a source, and a preset has none."""
+    for preset in shipped_improcess_presets():
+        for key, value in preset.processing.items():
+            if key in ("reconstructors", "processors"):
+                assert isinstance(value, list) and all(isinstance(i, str) for i in value)
+            else:
+                assert isinstance(value, bool), (preset.stem, key, value)
+
+
+def test_every_preset_loads_through_the_real_setup_loader_without_warnings():
+    import warnings
+
+    from imswitch.imcontrol.model.SetupInfo import SetupInfo
+
+    for path in sorted(shipped_setups_directory().glob("*.json")):
+        raw = path.read_text(encoding="utf-8")
+        if path.stem not in EXPECTED_PRESETS:
+            continue
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            setup = SetupInfo.from_json(raw, infer_missing=True)
+        assert not [str(w.message) for w in caught], (path.stem, [str(w.message) for w in caught])
+        assert setup._catchAll["processing"] == json.loads(raw)["processing"], path.stem
 
 
 def test_every_preset_has_a_description_and_a_block_that_round_trips():
     for preset in shipped_improcess_presets():
         assert isinstance(preset, Preset)
-        assert preset.description, preset.title
+        assert preset.description, preset.stem
         assert preset.processing, preset.title
         assert json.loads(json.dumps(preset.processing)) == preset.processing
 
@@ -93,7 +167,7 @@ def test_a_missing_folder_gives_no_presets(tmp_path):
 # ── the editor ──────────────────────────────────────────────────────────────
 pytest.importorskip("PyQt5")
 
-from PyQt5.QtWidgets import QDialog, QMessageBox, QPlainTextEdit, QPushButton
+from PyQt5.QtWidgets import QDialog, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QTextEdit
 
 from imswitch.imcontrol.view.configeditor import editor
 
@@ -106,7 +180,7 @@ PROCESSING = editor.SECTION_SCHEMAS["processing"]
 def _fresh_dropin_session(monkeypatch):
     """Each test is a new editor session: no drop-in scan carried over."""
     monkeypatch.setattr(editor, "_DROPIN_CACHE", {})
-PRESETS = {p.title: p for p in shipped_improcess_presets()}
+PRESETS = {p.stem: p for p in shipped_improcess_presets()}
 BUTTON = editor.IMPROCESS_PRESET_BUTTON
 OLD_BLOCK = {"reconstructors": ["view-only"], "processors": ["resize"], "someFutureKey": 1}
 
@@ -157,17 +231,130 @@ def window(qapp, tmp_path, monkeypatch):
 
 
 # ── the picker ──────────────────────────────────────────────────────────────
-def test_the_picker_lists_titles_with_description_and_a_json_preview(qapp):
+def _labels(widget) -> list[str]:
+    return [label.text() for label in widget.findChildren(QLabel)]
+
+
+def _picker_on(stem):
+    dlg = editor.ImProcessPresetDialog(shipped_improcess_presets())
+    row = [dlg._list.item(i).text() for i in range(dlg._list.count())].index(PRESETS[stem].title)
+    dlg._list.setCurrentRow(row)
+    return dlg
+
+
+def test_the_picker_lists_titles_and_shows_title_and_description(qapp):
     dlg = editor.ImProcessPresetDialog(shipped_improcess_presets())
     titles = [dlg._list.item(i).text() for i in range(dlg._list.count())]
-    assert set(titles) == EXPECTED_PRESETS
+    assert set(titles) == {p.title for p in PRESETS.values()}
+    assert not set(titles) & EXPECTED_PRESETS, "titles, not file names"
     for row, title in enumerate(titles):
         dlg._list.setCurrentRow(row)
-        assert dlg._description.text() == PRESETS[title].description
-        preview = dlg._preview
-        assert preview.isReadOnly()
-        assert json.loads(preview.toPlainText()) == PRESETS[title].processing
+        preset = next(p for p in PRESETS.values() if p.title == title)
+        assert dlg._title.text() == preset.title
+        assert dlg._description.text() == preset.description
     assert dlg.chosen is None
+
+
+def test_the_picker_shows_no_json(qapp):
+    dlg = editor.ImProcessPresetDialog(shipped_improcess_presets())
+    dlg.show()
+    for row in range(dlg._list.count()):
+        dlg._list.setCurrentRow(row)
+        assert not dlg.findChildren(QPlainTextEdit) and not dlg.findChildren(QTextEdit)
+        for text in _labels(dlg):
+            assert not any(ch in text for ch in "{}[]\""), text
+    dlg.close()
+
+
+def test_the_picker_names_the_selected_presets_reconstructors_with_their_descriptions(qapp):
+    dlg = _picker_on("monalisa_processor")
+    labels = _labels(dlg)
+    assert "Reconstructors" in labels
+    assert "MoNaLISA" in labels and "monalisa" in labels, "the display name, the id muted beside it"
+    assert "View only" in labels
+    assert "Point-scanning SIM reconstruction with pattern-based signal extraction" in labels
+    assert "Display raw frames without any reconstruction" in labels
+    # the list's tooltip carries the names too
+    row = dlg._list.currentRow()
+    assert "MoNaLISA, View only" in dlg._list.item(row).toolTip()
+
+
+def test_the_picker_groups_processors_by_category_with_display_names(qapp):
+    dlg = _picker_on("monalisa_processor")
+    labels = _labels(dlg)
+    assert "Processors" in labels
+    assert "Restoration" in labels and "Drift Correction" in labels
+    assert "Measurement" in labels
+    measurement = next(t for t in labels if "FRC Resolution" in t and "PSF / Bead Resolution" in t)
+    assert "Colocalization" in measurement
+    assert not any("drift-correct" == t for t in labels), "ids are not the primary text"
+
+
+def test_the_picker_says_what_opens_and_what_is_hidden(qapp):
+    dlg = _picker_on("fiji_processor")
+    labels = _labels(dlg)
+    assert "Hidden at startup" in labels and "Opens at startup" not in labels
+    hidden = next(t for t in labels if "Parameter panel" in t)
+    for name in ("Napari layer controls", "Reconstruction panel", "Actions panel",
+                 "Directory watcher panel", "Multidata panel", "Current data panel",
+                 "Results table panel"):
+        assert name in hidden
+    assert "Graph panel" not in hidden, "analysis panels already start hidden: nothing to say"
+    assert "None at startup" in " ".join(labels), "it registers no processor"
+    dlg = _picker_on("monalisa_processor")
+    labels = _labels(dlg)
+    assert "Opens at startup" in labels and "Hidden at startup" not in labels
+    opened = next(t for t in labels if "Graph panel" in t)
+    assert "ROI manager panel" in opened and "FRC panel" in opened
+
+
+def test_a_part_left_at_its_default_is_not_mentioned(qapp):
+    block = {"reconstructors": ["view-only"], "graphPanel": True, "frcPanel": False,
+             "parameterPanel": True, "liveViewerUpdateIntervalS": 0.2}
+    summary = editor._improcess_preset_summary(block, PROCESSING)
+    assert summary["opens"] == ["Graph panel"]
+    assert summary["hidden"] == [] and summary["other"] == []
+    assert summary["processors"] is None
+    assert editor._improcess_preset_summary({}, PROCESSING) == {
+        "reconstructors": None, "processors": None, "opens": [], "hidden": [], "other": []}
+
+
+def test_other_settings_are_said_in_words(qapp):
+    block = {"liveStallTimeoutS": 0, "liveViewerUpdateIntervalS": 0.5,
+             "napariEndpoints": [{"id": "x"}, {"id": "y"}], "someFutureKey": {"a": 1},
+             "metadataPanel": True}
+    summary = editor._improcess_preset_summary(block, PROCESSING)
+    assert dict(summary["other"]) == {
+        "Live stall timeout (s)": "0",
+        "Live viewer update interval (s)": "0.5",
+        "Napari plugin endpoints": "2 entries",
+        "someFutureKey": "1 entry",
+    }
+    assert summary["opens"] == ["File metadata panel"]
+
+
+def test_every_preset_summarises_without_json_and_with_known_names(qapp):
+    for preset in shipped_improcess_presets():
+        summary = editor._improcess_preset_summary(preset.processing, PROCESSING)
+        assert summary["other"] == [], (preset.stem, "a preset sets only ids and switches")
+        for name, ident, description in summary["reconstructors"]:
+            assert name != ident, (preset.stem, ident, "has a display name")
+            assert description, (preset.stem, ident)
+        for category, members in summary["processors"] or []:
+            assert category != "Not known here (kept as written)", preset.stem
+            for name, ident in members:
+                assert name != ident, (preset.stem, ident)
+
+
+def test_the_smlm_preset_says_it_wants_the_storm_extra_and_what_happens_without(qapp):
+    smlm = PRESETS["smlm_processor"]
+    assert "storm" in smlm.description and "histogram preview" in smlm.description
+    assert smlm.processing["napariStormViewer"] is True and smlm.processing["smlmRenderPanel"] is True
+    dlg = _picker_on("smlm_processor")
+    labels = _labels(dlg)
+    opened = next(t for t in labels if "Render localizations as point clouds" in t)
+    assert "SMLM render controls" in opened
+    assert "SMLM localizer" in labels
 
 
 def test_use_preset_answers_the_selected_one_and_cancel_none(qapp):
@@ -201,7 +388,14 @@ def test_pick_runs_the_real_picker(qapp, monkeypatch):
         editor.ImProcessPresetDialog, "exec_",
         lambda self: (self._list.setCurrentRow(0), self._use.click(), self.result())[2],
     )
-    assert editor._pick_improcess_preset().title == sorted(PRESETS)[0]
+    first = min(PRESETS.values(), key=lambda p: p.title.casefold())
+    assert editor._pick_improcess_preset().stem == first.stem
+
+
+def test_the_picker_lists_presets_by_title(qapp):
+    dlg = editor.ImProcessPresetDialog(shipped_improcess_presets())
+    titles = [dlg._list.item(i).text() for i in range(dlg._list.count())]
+    assert titles == sorted(titles, key=str.casefold)
 
 
 # ── the canvas ──────────────────────────────────────────────────────────────
@@ -256,7 +450,9 @@ def test_replacing_asks_with_default_no_and_no_keeps_the_old_block(window, monke
     asked = _answer(monkeypatch, QMessageBox.No)
     _choose(monkeypatch, "fiji_processor")
     _button(window._canvas, BUTTON).click()
-    assert asked == [("Replace the current ImProcess settings with 'fiji_processor'?", QMessageBox.No)]
+    assert asked == [
+        (f"Replace the current ImProcess settings with '{PRESETS['fiji_processor'].title}'?",
+         QMessageBox.No)]
     assert_json_identical(window._data["processing"], OLD_BLOCK)
     assert window._modified is False
 
@@ -310,7 +506,9 @@ def test_a_preset_in_the_dialog_replaces_a_block_after_asking(qapp, monkeypatch)
     asked = _answer(monkeypatch, QMessageBox.Yes)
     _choose(monkeypatch, "monalisa_processor")
     _button(dlg, BUTTON).click()
-    assert asked == [("Replace the current ImProcess settings with 'monalisa_processor'?", QMessageBox.No)]
+    assert asked == [
+        (f"Replace the current ImProcess settings with '{PRESETS['monalisa_processor'].title}'?",
+         QMessageBox.No)]
     dlg._try_apply()
     assert_json_identical(dlg.result_data, PRESETS["monalisa_processor"].processing)
     assert "someFutureKey" not in dlg.result_data
@@ -378,3 +576,9 @@ def test_a_preset_does_not_rescan_the_dropin_folder(qapp, monkeypatch):
     _choose(monkeypatch, "fiji_processor")
     _button(dlg, BUTTON).click()
     assert calls == [1]
+
+
+@pytest.mark.parametrize("stem", sorted(EXPECTED_PRESETS))
+def test_the_editor_finds_nothing_to_flag_in_a_shipped_preset(qapp, stem):
+    """The validation panel flags unknown plugin ids; a preset must not trip it."""
+    assert editor._collect_xref_issues({"processing": PRESETS[stem].processing}) == []

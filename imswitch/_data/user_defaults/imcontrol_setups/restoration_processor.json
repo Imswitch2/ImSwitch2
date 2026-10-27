@@ -1,0 +1,12 @@
+{
+    "// title": "Deconvolution and clean-up",
+    "// description": "Restore widefield or confocal images: Richardson-Lucy deconvolution with a theoretical PSF, background subtraction, spatial filters and drift correction, then check the result with projections, line profiles and an FRC resolution estimate. No hardware is needed.",
+
+    "processing": {
+        "projectionPanel": true,
+        "profilePanel": true,
+        "frcPanel": true,
+        "reconstructors": ["view-only"],
+        "processors": ["deconvolve-rl", "subtract-background", "filter", "drift-correct", "projection", "frc"]
+    }
+}

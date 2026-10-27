@@ -167,31 +167,38 @@ The card has three buttons:
 
 * **Configure…** (**Edit…** once the setup has a block) opens the ImProcess
   dialog.
-* **Start from preset…** lists the processor-only setups ImSwitch ships, with
-  each one's description and block, and copies the chosen block into this
-  setup (:ref:`improcess-processing-presets`).  The preset file itself is not
+* **Start from preset…** lists the processor-only setups ImSwitch ships by
+  title.  For the selected one it shows what it is for and what it sets,
+  read in words and not as JSON: its reconstructors and processors by name
+  (the reconstructors with their one-line descriptions, the processors under
+  their categories), what **Opens at startup**, what is **Hidden at startup**
+  and any **Other settings**.  A part the preset leaves at its default is not
+  mentioned.  **Use preset** copies the chosen block into this setup
+  (:ref:`improcess-processing-presets`); the preset file itself is not
   changed.  If the setup already has a block you are asked before it is
   replaced.  The dialog has the same button, which replaces what the dialog
   shows; nothing is written until you press **Apply**.
+
+  .. image:: ./images/config-editor-improcess-presets.png
+     :alt: The Start from preset window with the MoNaLISA reconstruction preset selected: its description, its reconstructors with their descriptions, its processors by category and the panels it opens
+     :align: center
 * **Remove** deletes the ``processing`` block from the setup, after asking.
 
-The dialog has one page per group of options, each option with its
-one-sentence explanation under it, and three pages that are not options:
+The reconstructors and the processors are the main components of ImProcess,
+so they are the dialog's first two pages, and it opens on the first.  Every
+other group of options is a page after them, each option with its
+one-sentence explanation under it, and three pages are not options:
 
 .. image:: ./images/config-editor-improcess-dialog.png
-   :alt: The ImProcess dialog on its Plugins page, with the reconstructors and the processors listed by name and id, the processors grouped by category
+   :alt: The ImProcess dialog on its Reconstructors page, each reconstructor with its name, its id and a one-line description
    :align: center
 
-* **Startup layout**: which ImProcess docks open at startup.
-* **Analysis panels**: the optional panels that are closed unless switched on.
-* **Localization viewer**: the point-cloud rendering of localization results.
-* **Live mode**: the stall timeout, the viewer refresh interval and whether
-  live results also appear in ImControl.
-* **Plugins**: the built-in reconstructors and processors to register (by
-  name, with the id in brackets, processors grouped by category) and the
-  napari plugin endpoints, which are a JSON list in a text box; a list that
-  is not valid JSON, or an entry that is not a valid endpoint, is reported
-  when you press **Apply**, which stays on that page until it is fixed.
+* **Reconstructors**: the built-in reconstructors to register, one row each
+  with its name, its id (muted) and a one-line description.  The first listed
+  is the initial one; at least one is required.
+* **Processors**: the built-in processors to register, in the same rows,
+  grouped under their categories.  An id in the file that this computer does
+  not know is listed under *Not known here (kept as written)* and kept.
 * **Drop-in plugins**: what the plugins folder holds on this computer
   (id, kind, name, file), with a **Rescan** button; read-only.  A drop-in
   plugin is active on a computer whenever its file is in the plugins folder,
@@ -200,6 +207,15 @@ one-sentence explanation under it, and three pages that are not options:
   marked on this page.  The folder is scanned by importing the plugin files,
   so this happens when the dialog opens (once per editor session), not when
   the editor starts; a file that fails to load is shown with the reason.
+* **Startup layout**: which ImProcess docks open at startup.
+* **Analysis panels**: the optional panels that are closed unless switched on.
+* **Localization viewer**: the point-cloud rendering of localization results.
+* **Live mode**: the stall timeout, the viewer refresh interval and whether
+  live results also appear in ImControl.
+* **napari plugins**: the napari plugin endpoints, a JSON list in a text
+  box; a list that is not valid JSON, or an entry that is not a valid
+  endpoint, is reported when you press **Apply**, which stays on that page
+  until it is fixed.
 * **Custom**: keys in the block that the editor has no field for, kept as
   they are, and **⊕ Add property** for your own.
 * **Set on this computer**: the ImProcess settings that are *not* in a setup

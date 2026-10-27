@@ -26,6 +26,9 @@ _NON_CONFIG_PREFIXES = ("//", "__")
 #: The comment key that describes a shipped setup.
 _DESCRIPTION_KEY = "// description"
 
+#: The comment key that names a shipped setup for people ("MoNaLISA reconstruction").
+_TITLE_KEY = "// title"
+
 _SETUPS_DIR_NAME = "imcontrol_setups"
 
 
@@ -34,9 +37,14 @@ class Preset:
     """One shipped ImProcess starting point."""
 
     file_name: str
-    title: str          # the file stem
+    title: str          # the setup's ``// title``; the file stem when it has none
     description: str    # the setup's ``// description``, or ""
     processing: dict    # the block exactly as shipped
+
+    @property
+    def stem(self) -> str:
+        """The file name without ``.json``."""
+        return self.file_name[:-len(".json")] if self.file_name.endswith(".json") else self.file_name
 
 
 def shipped_setups_directory() -> Path:
@@ -53,6 +61,13 @@ def shipped_setups_directory() -> Path:
     except Exception:
         return (Path(__file__).resolve().parents[3] / "_data" / "user_defaults"
                 / _SETUPS_DIR_NAME)
+
+
+def _title(value, fallback: str) -> str:
+    """``// title`` when it is a non-empty string, else ``fallback`` (the file stem)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return fallback
 
 
 def _description(value) -> str:
@@ -87,7 +102,7 @@ def shipped_improcess_presets(directory: Path | str | None = None) -> list[Prese
             continue
         presets.append(Preset(
             file_name=path.name,
-            title=path.stem,
+            title=_title(data.get(_TITLE_KEY), path.stem),
             description=_description(data.get(_DESCRIPTION_KEY)),
             processing=block,
         ))

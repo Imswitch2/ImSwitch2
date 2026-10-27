@@ -1,0 +1,13 @@
+{
+    "// title": "Bead scans and PSF measurement",
+    "// description": "Rebuild a recorded bead scan into an image and measure the point-spread function: its width from a 2D Gaussian fit, line profiles through the bead and projections, with the ROI manager for choosing the bead. View-only shows the raw frames. No hardware is needed.",
+
+    "processing": {
+        "psfResolutionPanel": true,
+        "projectionPanel": true,
+        "profilePanel": true,
+        "roiManagerPanel": true,
+        "reconstructors": ["beadrec", "view-only"],
+        "processors": ["psf-resolution", "projection"]
+    }
+}

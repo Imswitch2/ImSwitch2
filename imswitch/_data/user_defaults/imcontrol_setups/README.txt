@@ -7,3 +7,8 @@ Processing-only presets:
 - snouty_processor.json
 - widefieldstarss_processor.json
 - general_image_processing.json
+- smlm_processor.json
+- bead_psf_processor.json
+- restoration_processor.json
+- timelapse_processor.json
+- tiling_mosaic_processor.json

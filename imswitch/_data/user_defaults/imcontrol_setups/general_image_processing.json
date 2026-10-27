@@ -1,5 +1,6 @@
 {
-    "// description": "Minimal setup for running ImProcess as a stand-alone general image-processing and analysis tool. No hardware devices are declared - this setup is meant for opening existing HDF5/Zarr/TIFF acquisitions, viewing them, applying generic processors including multicolor strip alignment, and using optional analysis panels. To use, also set 'enabled' to ['improcess'] in modules.json.",
+    "// title": "General image analysis",
+    "// description": "View-only display with the common analysis tools: drift correction, projections, segmentation, PSF resolution, colocalization, FRC and multicolor strip alignment, with their panels and the ROI tools open. For looking at and measuring existing HDF5, Zarr or TIFF acquisitions, without hardware.",
 
     "processing": {
         "graphPanel": true,

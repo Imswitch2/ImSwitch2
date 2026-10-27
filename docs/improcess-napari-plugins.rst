@@ -239,7 +239,7 @@ An adapter is a ``NapariEndpoint`` (``imswitch.improcess.model.napari_endpoints`
 The built-in ones live in that module; yours go in the setup file or in a
 drop-in plugin.
 
-The config editor edits the ``napariEndpoints`` list on the **Plugins** page
+The config editor edits the ``napariEndpoints`` list on the **napari plugins** page
 of its ImProcess dialog (:ref:`config-editor-improcess`) and, when you apply,
 checks each entry the way ImProcess reads it.
 

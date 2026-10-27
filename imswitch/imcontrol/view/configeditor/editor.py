@@ -31,7 +31,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox,
-    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QFileDialog, QFormLayout, QGridLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar, QHeaderView,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction,
@@ -1112,6 +1112,85 @@ def _improcess_summary_lines(schema: dict, block: dict) -> list[str]:
     if custom:
         lines.append(f"{len(custom)} custom key{'s' if len(custom) != 1 else ''}")
     return lines
+
+
+def _improcess_option_label(label: str) -> str:
+    """A flag's schema label as the name of the thing it shows: no "Show " lead."""
+    text = str(label).removeprefix("Show ").strip()
+    return text[:1].upper() + text[1:]
+
+
+def _improcess_value_in_words(value) -> str:
+    """A setting's value as a reader would say it; never JSON."""
+    if value is None:
+        return "not set"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, (list, dict)):
+        count = len(value)
+        return f"{count} {'entry' if count == 1 else 'entries'}"
+    return str(value)
+
+
+def _improcess_preset_summary(block: dict, schema: dict) -> dict:
+    """What a preset's ``processing`` block sets, in the editor's own words.
+
+    Only what differs from the schema's default is said: a part the block
+    leaves alone, or sets to its default, is not listed.
+
+    ``reconstructors``  ``[(name, id, description), ...]`` in the block's order,
+                        or ``None`` when the block does not set them.
+    ``processors``      ``[(category, [(name, id), ...]), ...]``, categories as
+                        the processor list reads them, or ``None``; an empty
+                        list (the block registers none) is ``[]``.
+    ``opens``           labels of the flags the block switches on that default off.
+    ``hidden``          labels of the flags the block switches off that default on.
+    ``other``           ``[(label, value in words), ...]`` for every other key.
+    """
+    fields = _schema_fields(schema)
+    out: dict = {"reconstructors": None, "processors": None,
+                 "opens": [], "hidden": [], "other": []}
+
+    def names_of(key):
+        field_def = fields.get(key) or {}
+        return (field_def.get("option_labels") or {},
+                field_def.get("option_descriptions") or {},
+                field_def.get("option_groups") or {})
+
+    listed = block.get("reconstructors")
+    if isinstance(listed, list):
+        labels, descriptions, _ = names_of("reconstructors")
+        out["reconstructors"] = [
+            (str(labels.get(str(i)) or i), str(i), str(descriptions.get(str(i), "")))
+            for i in listed
+        ]
+    listed = block.get("processors")
+    if isinstance(listed, list):
+        labels, _, groups = names_of("processors")
+        offered = {str(o) for o in (fields.get("processors") or {}).get("opts", [])}
+        unknown = [i for i in listed if str(i) not in offered] if offered else []
+        out["processors"] = [
+            (category, [(str(labels.get(str(i)) or i), str(i)) for i in members])
+            for category, members in _grouped_choices(list(listed), unknown, groups)
+        ]
+
+    for key, value in block.items():
+        if key in ("reconstructors", "processors"):
+            continue
+        field_def = fields.get(key)
+        if field_def is None:
+            out["other"].append((str(key), _improcess_value_in_words(value)))
+            continue
+        default = _field_default(field_def)
+        default = None if default == "null" else default
+        if value == default:
+            continue
+        label = _improcess_option_label(field_def.get("label", key))
+        if field_def.get("type") == "bool" and isinstance(value, bool):
+            out["opens" if value else "hidden"].append(label)
+        else:
+            out["other"].append((label, _improcess_value_in_words(value)))
+    return out
 
 
 # Maps each widget in availableWidgets that needs a section to the section key.
@@ -4874,15 +4953,24 @@ class _EndpointsEditor(QWidget):
 
 
 class ImProcessPresetDialog(QDialog):
-    """Pick one of the shipped ImProcess presets: titles, the description of
-    the selected one, and its block as pretty JSON (read-only)."""
+    """Pick one of the shipped ImProcess presets.
 
-    def __init__(self, presets: list, parent=None):
+    The titles on the left; for the selected one, on the right, what it is
+    for and what it sets -- the reconstructors and processors by name, what
+    opens and what stays hidden at startup, and any other setting -- read
+    from the block with the editor's own labels. Nothing of the file's JSON
+    is shown.
+    """
+
+    def __init__(self, presets: list, parent=None, schema: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Start from preset")
-        self._presets = list(presets)
+        # by the name a person reads, not by file name
+        self._presets = sorted(presets, key=lambda preset: preset.title.casefold())
+        self._schema = schema if schema is not None else (
+            SECTION_SCHEMAS.get(IMPROCESS_SECTION_KEY) or {})
         self._chosen = None
-        muted = "#AAAAAA" if is_dark_mode() else "#666666"
+        self._muted = "#AAAAAA" if is_dark_mode() else "#666666"
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
@@ -4893,26 +4981,45 @@ class ImProcessPresetDialog(QDialog):
             "itself is not changed."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(f"color:{muted}; font-size:9pt;")
+        intro.setStyleSheet(f"color:{self._muted}; font-size:9pt;")
         lay.addWidget(intro)
 
         body = QHBoxLayout()
         body.setSpacing(8)
         self._list = QListWidget()
         for preset in self._presets:
-            self._list.addItem(preset.title)
+            item = QListWidgetItem(preset.title)
+            block = preset.processing if isinstance(preset.processing, dict) else {}
+            names = self._summary(block)["reconstructors"]
+            if names:
+                item.setToolTip("Reconstructors: " + ", ".join(name for name, _, _ in names))
+            self._list.addItem(item)
         self._list.setFixedWidth(self._list.sizeHintForColumn(0) + 2 * self._list.frameWidth() + 8)
         body.addWidget(self._list)
-        right = QVBoxLayout()
+
+        self._detail = QWidget()
+        self._detail_lay = QVBoxLayout(self._detail)
+        self._detail_lay.setContentsMargins(8, 4, 8, 4)
+        self._detail_lay.setSpacing(6)
+        self._title = QLabel()
+        self._title.setTextFormat(Qt.PlainText)
+        self._title.setWordWrap(True)
+        font = self._title.font()
+        font.setBold(True)
+        font.setPointSizeF(font.pointSizeF() * 1.4)
+        self._title.setFont(font)
         self._description = QLabel()
         self._description.setTextFormat(Qt.PlainText)
         self._description.setWordWrap(True)
-        right.addWidget(self._description)
-        self._preview = QPlainTextEdit()
-        self._preview.setReadOnly(True)
-        self._preview.setLineWrapMode(QPlainTextEdit.NoWrap)
-        right.addWidget(self._preview, 1)
-        body.addLayout(right, 1)
+        self._detail_lay.addWidget(self._title)
+        self._detail_lay.addWidget(self._description)
+        self._sections: list[QWidget] = []     # rebuilt for every preset
+        self._detail_lay.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(self._detail)
+        body.addWidget(scroll, 1)
         lay.addLayout(body, 1)
 
         if not self._presets:
@@ -4935,15 +5042,102 @@ class ImProcessPresetDialog(QDialog):
         if self._presets:
             self._list.setCurrentRow(0)
 
+    def _summary(self, block: dict) -> dict:
+        return _improcess_preset_summary(block, self._schema)
+
+    # ── the right-hand side ────────────────────────────────────────────────
+    def _clear_sections(self) -> None:
+        for widget in self._sections:
+            self._detail_lay.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+        self._sections = []
+
+    def _add_section(self, heading: str, content: QWidget) -> None:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 6, 0, 0)
+        col.setSpacing(3)
+        title = QLabel(heading)
+        title.setTextFormat(Qt.PlainText)
+        font = title.font()
+        font.setBold(True)
+        title.setFont(font)
+        col.addWidget(title)
+        col.addWidget(content)
+        # above the stretch that keeps the sections at the top
+        self._detail_lay.insertWidget(self._detail_lay.count() - 1, box)
+        self._sections.append(box)
+
+    def _plain(self, text: str, *, muted: bool = False) -> QLabel:
+        label = QLabel(text)
+        label.setTextFormat(Qt.PlainText)
+        label.setWordWrap(True)
+        if muted:
+            label.setStyleSheet(f"color:{self._muted};")
+        return label
+
+    def _reconstructor_rows(self, rows: list) -> QWidget:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        for name, ident, description in rows:
+            line = QHBoxLayout()
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(8)
+            line.addWidget(self._plain(name))
+            if name != ident:
+                muted = self._plain(ident, muted=True)
+                muted.setWordWrap(False)
+                line.addWidget(muted)
+            line.addStretch()
+            col.addLayout(line)
+            if description:
+                col.addWidget(self._plain(description, muted=True))
+        return box
+
+    def _processor_rows(self, groups: list) -> QWidget:
+        box = QWidget()
+        grid = QGridLayout(box)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(3)
+        for row, (category, members) in enumerate(groups):
+            head = self._plain(category, muted=True)
+            head.setWordWrap(False)
+            grid.addWidget(head, row, 0, Qt.AlignTop)
+            grid.addWidget(self._plain(", ".join(name for name, _ in members)), row, 1)
+        grid.setColumnStretch(1, 1)
+        return box
+
     def _show_row(self, row: int) -> None:
+        self._clear_sections()
         if not 0 <= row < len(self._presets):
+            self._title.setText("")
             self._description.setText("")
-            self._preview.setPlainText("")
             self._use.setEnabled(False)
             return
         preset = self._presets[row]
+        self._title.setText(preset.title)
         self._description.setText(preset.description or "(no description)")
-        self._preview.setPlainText(json.dumps(preset.processing, indent=2))
+        block = preset.processing if isinstance(preset.processing, dict) else {}
+        summary = self._summary(block)
+        if summary["reconstructors"]:
+            self._add_section("Reconstructors", self._reconstructor_rows(summary["reconstructors"]))
+        if summary["processors"] is not None:
+            if summary["processors"]:
+                self._add_section("Processors", self._processor_rows(summary["processors"]))
+            else:
+                self._add_section("Processors", self._plain(
+                    "None at startup; tools can still be loaded from the Tools toolbar."))
+        if summary["opens"]:
+            self._add_section("Opens at startup", self._plain(", ".join(summary["opens"])))
+        if summary["hidden"]:
+            self._add_section("Hidden at startup", self._plain(", ".join(summary["hidden"])))
+        if summary["other"]:
+            self._add_section("Other settings", self._plain(
+                "\n".join(f"{label}: {text}" for label, text in summary["other"])))
         self._use.setEnabled(True)
 
     def _accept_selected(self) -> None:
