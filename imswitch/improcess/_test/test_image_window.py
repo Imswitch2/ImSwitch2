@@ -465,3 +465,55 @@ def test_lut_tables():
     assert lut_table("green")[-1].tolist() == [0, 255, 0]
     assert lut_table("viridis").shape == (256, 3)
     assert lut_table("no-such-map").tolist() == lut_table("gray").tolist()
+
+
+#: Pixels skipped at each end of the bar's rectangle: the rectangle includes the
+#: outline pen and its antialiased edge, which are not the bar's fill.
+BAR_EDGE_INSET_PX = 3
+
+
+def _scale_bar_pixels(window):
+    """The grabbed window's pixels along the middle of the scale bar's rectangle."""
+    window.show()
+    window.resize(480, 360)
+    QtWidgets.QApplication.processEvents()
+    window._updateScaleBar()
+    QtWidgets.QApplication.processEvents()
+    canvas = window._canvas
+    scene_rect = window._scalebar.bar.sceneBoundingRect()
+    view_rect = canvas.mapFromScene(scene_rect).boundingRect()
+    origin = canvas.mapTo(window, view_rect.topLeft())
+    image = window.grab().toImage()
+    y = origin.y() + view_rect.height() // 2
+    return [image.pixelColor(x, y) for x in range(origin.x() + BAR_EDGE_INSET_PX, origin.x() + view_rect.width() - BAR_EDGE_INSET_PX)]
+
+
+def test_the_scale_bar_draws_a_bright_bar_on_a_dark_image(qtbot):
+    result = _result(np.zeros((60, 80), np.uint8), "YX", axis_scales=[0.1, 0.1], scale_unit="um")
+    result.setDispLevels((0.0, 255.0))      # fixed, so the zeros are black and not stretched to grey
+    window = _window(qtbot, result)
+
+    pixels = _scale_bar_pixels(window)
+    image_pixel = window.grab().toImage().pixelColor(window.width() // 2, window.height() // 3)
+
+    assert image_pixel.lightness() < 20
+    assert len(pixels) > 10, "the bar has no extent on the canvas"
+    assert min(color.lightness() for color in pixels) > 200
+    # ... and it lies inside the canvas, not below its edge where it is clipped.
+    bar = window._canvas.mapFromScene(window._scalebar.bar.sceneBoundingRect()).boundingRect()
+    assert window._canvas.rect().contains(bar)
+
+
+def test_the_scale_bar_stays_visible_on_a_bright_image(qtbot):
+    result = _result(np.full((60, 80), 240, np.uint8), "YX", axis_scales=[0.1, 0.1], scale_unit="um")
+    result.setDispLevels((0.0, 255.0))
+    window = _window(qtbot, result)
+
+    pixels = _scale_bar_pixels(window)
+    window_pixels = window.grab().toImage()
+
+    bar = window._canvas.mapFromScene(window._scalebar.bar.sceneBoundingRect()).boundingRect()
+    origin = window._canvas.mapTo(window, bar.topLeft())
+    outline = window_pixels.pixelColor(origin.x() + bar.width() // 2, origin.y())
+    assert min(color.lightness() for color in pixels) > 200
+    assert outline.lightness() < 100, "no dark edge to tell the bar from a white image"

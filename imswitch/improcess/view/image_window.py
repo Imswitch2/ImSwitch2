@@ -65,6 +65,24 @@ from imswitch.improcess.model.result import result_kind
 #: presentation policy, not a measurement.
 SCALE_BAR_VIEW_FRACTION = 0.2
 
+#: Distance of the scale bar's corner from the canvas corner, in screen pixels.
+#: pyqtgraph anchors the bar's *top-left* at the offset point and draws it
+#: downwards from there, so with no margin the bar sits entirely outside the
+#: canvas and is clipped away while its label (drawn upwards) still shows.
+#: It must clear the bar's thickness plus the outline; 20 px leaves the label
+#: room above and some air below.
+SCALE_BAR_MARGIN_PX = 20
+
+#: The bar's thickness in screen pixels. Thick enough to see and to hit, thin
+#: enough not to read as a rectangle of the image.
+SCALE_BAR_THICKNESS_PX = 6
+
+#: A bar is white, which vanishes on a bright image; the dark outline (width in
+#: screen pixels) and the translucent dark plate behind the label keep both
+#: readable whatever is underneath. RGBA of the label's plate.
+SCALE_BAR_OUTLINE_PX = 1
+SCALE_BAR_PLATE_RGBA = (0, 0, 0, 140)
+
 #: The "nice" mantissas of a scale-bar length, largest first: the 1-2-5
 #: sequence of every engineering ruler.
 NICE_MANTISSAS = (5, 2, 1)
@@ -475,7 +493,12 @@ class ImageWindow(QtWidgets.QWidget):
         self._vb = _CanvasViewBox(lockAspect=True, invertY=True, enableMenu=False)
         self._canvas.addItem(self._vb)
         self._vb.setBackgroundColor("k")
-        self._scalebar = pg.ScaleBar(size=1.0, suffix="")
+        self._scalebar = pg.ScaleBar(
+            size=1.0, width=SCALE_BAR_THICKNESS_PX, suffix="",
+            brush="w", pen=pg.mkPen("k", width=SCALE_BAR_OUTLINE_PX),
+            offset=(-SCALE_BAR_MARGIN_PX, -SCALE_BAR_MARGIN_PX),
+        )
+        self._scalebar.text.fill = pg.mkBrush(*SCALE_BAR_PLATE_RGBA)
         self._scalebar.setParentItem(self._vb)
         self._scalebar.hide()
         self._vb.sigRangeChanged.connect(self._updateScaleBar)
