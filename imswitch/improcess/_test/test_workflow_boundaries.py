@@ -240,3 +240,34 @@ def test_the_controller_still_refuses_a_broken_recipe(registry, tmp_path, monkey
     controller, messages = _controller(final)
     assert controller.exportWorkflow(tmp_path / "x.yaml") is None
     assert "Cannot export a runnable workflow" in messages[-1] and shown == []
+
+
+def test_applied_to_what_came_back_only_the_part_after_the_input_runs(registry, tmp_path):
+    from imswitch.improcess.workflows.steps import Save, part_from_input, unbound_inputs
+
+    final = _chain(registry, tmp_path)
+    workflow = _replay(final, registry, allow_inputs=True).workflow
+    assert unbound_inputs(workflow) == ["from_fiji"]
+    part = part_from_input(workflow, "from_fiji")
+    kept = [step.id for step in part.steps]
+    assert "from_fiji" in kept and "rec1" not in kept                  # the branch to Fiji is not rerun
+    assert not any(isinstance(s, Save) and "_for_fiji" in s.path_template for s in part.steps)
+    stand_in = ArrayProcessingResult("from fiji", np.random.default_rng(6).random((2, 8, 8)).astype(np.float32),
+                                     ["C", "Y", "X"])
+    out = tmp_path / "out"
+    with run(part, registry=registry, bindings={"from_fiji": stand_in}, out_dir=out) as report:
+        assert report.result("proc2").data.shape == (2, 8, 8)
+    assert len(list(out.iterdir())) == 1 and not any("_for_fiji" in p.name for p in out.iterdir())
+
+
+def test_run_on_selected_results_fills_the_one_input(registry, tmp_path, monkeypatch):
+    final = _chain(registry, tmp_path)
+    workflow = _replay(final, registry, allow_inputs=True).workflow
+    controller, _messages = _controller(final)
+    calls = []
+    monkeypatch.setattr(controller, "_runBatch", lambda path, bindings, **kw: calls.append((bindings, kw)) or True)
+    picked = ArrayProcessingResult("picked", np.zeros((2, 8, 8), np.float32), ["C", "Y", "X"])
+    assert controller.runWorkflowObjectOnResults(workflow, results=[picked]) is True
+    ((bindings, kw),) = calls
+    assert bindings == [{"from_fiji": picked}]
+    assert "rec1" not in [s.id for s in kw["workflow"].steps]

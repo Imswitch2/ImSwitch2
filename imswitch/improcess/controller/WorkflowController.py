@@ -486,7 +486,23 @@ class WorkflowController(QtCore.QObject):
         return results
 
     def _runOnResults(self, path, workflow, results, *, out_dir=None, overwrite=None):
-        entry = self._entryStep(workflow)
+        from imswitch.improcess.workflows.steps import part_from_input, unbound_inputs
+
+        inputs = unbound_inputs(workflow)
+        if len(inputs) == 1:
+            # Exported around a Fiji or napari step: the selected result is
+            # what came back from it, so it fills that input, and only the
+            # part that continues from there runs.
+            entry = inputs[0]
+            workflow = part_from_input(workflow, entry)
+        elif len(inputs) > 1:
+            self._status(
+                f"This workflow has {len(inputs)} inputs to bind ({', '.join(inputs)}); "
+                "applying it to results needs exactly one."
+            )
+            return False
+        else:
+            entry = self._entryStep(workflow)
         if entry is None:
             return False
         return self._runBatch(

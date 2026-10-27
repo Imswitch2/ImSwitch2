@@ -552,10 +552,16 @@ Running such a workflow needs the input bound. A run that leaves it unbound is
 refused before anything runs: *input 'from_fiji' is not bound; bind a file or
 run it on a selected result*. Give the input a path in the editor (or ``--bind
 from_fiji=edited.tif`` on the command line, or ``bindings={"from_fiji": ...}``
-in Python, where an in-memory result is accepted too) and run it. *Run
-workflow on selected results* binds only the workflow's one reconstruction and
-*over files* needs a workflow with a single source, so neither can supply
-the input of such a workflow: they are refused.
+in Python, where an in-memory result is accepted too) and run it.
+
+*Run workflow on selected results* is the natural way to use such a workflow
+in the GUI: select the image that came back from Fiji (or napari) and run.
+When the workflow has exactly one such input, each selected result fills it,
+and only the part that continues from the input runs, together with anything
+that part depends on: the branch that remakes what was sent to Fiji, and its
+``_for_fiji`` save, are left out. A workflow with several such inputs is
+refused with their names, and *over files* still needs a workflow with a
+single source.
 
 Files written before the graph existed carry only the linear
 ``processing_history`` (schema 0). Replay builds the best workflow it can —

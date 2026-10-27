@@ -203,6 +203,64 @@ def step_from_dict(payload: dict) -> Step:
         raise WorkflowError(f"step {data.get('id')!r}: {exc}") from exc
 
 
+def unbound_inputs(workflow: "Workflow") -> list[str]:
+    """Ids of the path-less input sources, the ones a run must be given.
+
+    These are what an export around an interactive step (Fiji, a napari
+    plugin) leaves where that step was: replay marks them in their metadata.
+    """
+    return [
+        step.id for step in workflow.steps
+        if isinstance(step, Source) and not step.source.bound
+        and (step.source.metadata or {}).get("input")
+    ]
+
+
+def part_from_input(workflow: "Workflow", input_id: str) -> "Workflow":
+    """The steps a run starting at ``input_id`` needs, and nothing else.
+
+    A workflow exported around a Fiji step has two branches: one that remakes
+    what was sent to Fiji, and one that continues from what came back. Applied
+    to an image that came back, only the second should run. Kept: every Save
+    downstream of the input, and every step those Saves depend on (which
+    includes a step that combines the input with something from the other
+    branch). Dropped: Saves, and their chains, that the input does not reach.
+    """
+    by_id = {step.id: step for step in workflow.steps}
+
+    def inputs_of(step) -> list[str]:
+        if isinstance(step, Save):
+            return [step.input.step]
+        return [ref.step for ref in getattr(step, "inputs", []) or []]
+
+    downstream = {input_id}
+    changed = True
+    while changed:
+        changed = False
+        for step in workflow.steps:
+            if step.id not in downstream and any(i in downstream for i in inputs_of(step)):
+                downstream.add(step.id)
+                changed = True
+    saves = [s.id for s in workflow.steps if isinstance(s, Save) and s.id in downstream]
+    if not saves:
+        raise WorkflowError(f"no output depends on the input {input_id!r}")
+    needed: set[str] = set()
+    pending = list(saves)
+    while pending:
+        sid = pending.pop()
+        if sid in needed:
+            continue
+        needed.add(sid)
+        pending.extend(i for i in inputs_of(by_id[sid]) if i in by_id)
+    return Workflow(
+        workflow.name,
+        [step for step in workflow.steps if step.id in needed],
+        schema=workflow.schema,
+        description=workflow.description,
+        metadata=dict(workflow.metadata),
+    )
+
+
 # --------------------------------------------------------------------------
 # workflow
 # --------------------------------------------------------------------------
