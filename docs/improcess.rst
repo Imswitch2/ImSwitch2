@@ -25,6 +25,7 @@ layer controls in the middle.
 
     improcess-workflows
     improcess-napari-plugins
+    improcess-fiji
 
 Launching ImProcess
 ===================
@@ -325,6 +326,113 @@ as CSV.  The Metadata panel shows it for the selected result, including the
 step list recorded as ``processing_history``, and ``python -m
 imswitch.improcess.workflows replay`` turns a saved file's record back into
 a workflow (see :doc:`improcess-workflows`).
+
+.. _improcess-image-windows:
+
+Separate image windows (Fiji-style)
+===================================
+
+By default a result is shown in the napari viewer inside the main window.
+**Preferences → Image display → Separate windows (Fiji-style)** shows each
+result in a window of its own instead, like ImageJ, so several images can sit
+side by side.  The choice is kept per computer in ``improcess_options.json``
+(key ``imageDisplay``: ``"napari"``, the default, or ``"windows"``) and is
+read when ImProcess starts: after changing it, restart ImProcess.  There is no
+live switch.
+
+In window mode:
+
+* Selecting a result in the reconstruction list opens its window (created the
+  first time) and brings it forward; double-clicking a row reopens a window
+  you closed.  Closing a window only hides it, the result stays in the list.
+  Removing a result from the list closes its window.  The list pane stays in
+  the main window; only the napari canvas next to it is hidden (the viewer
+  itself still exists for napari plugins).
+* A window is minimal: the image, one slider per axis that is not on screen
+  (T, Z, Dataset, Base, ...), and a status line giving the calibrated cursor
+  position, the value under the cursor (per visible channel for a composite)
+  and the slider indices.  A scale bar appears when the pixel size is
+  calibrated.  A result with several view modes gets a mode selector.  The
+  **Home** button at the right of the status line (or the Home key with the
+  image selected) shows the whole image again after zooming and panning.
+* A window has **no contrast controls of its own**.  The image toolbar
+  (*Auto contrast*, *Brightness/Contrast…*, *Reset contrast*, the LUT
+  selector, *Channels…* and *Reset view*) acts on the **active window**, the
+  one you clicked last.  Clicking another window makes its result the current
+  one in the list.  Levels, LUT and channel visibility are stored on the result,
+  so it keeps its look in either display and when its window is reopened.
+* A composite (made by *Make composite*) is drawn as channels added together,
+  each with its own LUT; any other result with a channel axis gets a slider
+  for it.  Only the plane on screen is read, so large HDF5 and Zarr results
+  open without being loaded.
+* The **Window** menu (shown only in window mode) lists the open windows
+  (choosing one brings it forward) and offers **Tile** and **Cascade**, which
+  arrange them within the screen.
+* The windows are *tool windows* owned by the main ImSwitch window, which is
+  what keeps a click on the image toolbar from burying the image it acts on.
+  They therefore stay above **every** ImSwitch tab (ImControl as well as
+  ImProcess), cannot be minimized on their own, and do not appear in the Dock's
+  window list or the Windows taskbar.  They stay visible while you work in
+  another application such as Fiji.  This on-screen behaviour on macOS and
+  Windows has not been confirmed on a rig yet.
+
+Other layers
+------------
+
+A result's other display layers are drawn read-only over its image, on the same
+sliders: **labels** (a segmentation mask) as a semi-transparent layer with a
+distinct colour per label id, **points** as a scatter of the points that lie on
+the plane on screen, and **shapes** as outlines.  Layers that ask for the 3D
+canvas (the Poincaré sphere of a polarisation map) need the embedded viewer;
+the status line says so.
+
+Drawing ROIs in a window
+------------------------
+
+The **ROI manager**, **ROI stats** and **Profile** panels work on the active
+window: they measure its image, at the plane its sliders show, and follow you
+when you click another window.
+
+* **ROI manager.** Choose a shape and press **Draw**: *Rectangle*, *Ellipse*
+  and *Line* are drawn by dragging on the image, *Polygon* by clicking each
+  vertex and double-clicking to close it, *Points* by clicking.  The shape stays
+  editable (drag it, or its handles, to move or resize it) until you press
+  **Add Shape**.  The list, rename, delete, **Measure** (on the plane on
+  screen), the measurements, the sets and saving or loading ROIs (``.json``,
+  and ImageJ ``.roi`` with the optional ``imagej`` extra) behave as in the
+  embedded viewer.  The ROIs are outlined on the window they are measured on;
+  selecting a row turns its outline white, and clicking an outline (in a mode
+  that is not drawing) selects its row.
+* **ROI stats.** *Full image* or the *Rectangle ROI* you draw, on the plane on
+  screen.
+* **Profile.** *Line* (the intensity along a drawn line), *Rectangle* and
+  *Z profile*, on the plane on screen.
+* **Crop/Substack**, from the Image toolbar or from Tools.  The range table and
+  the *Crop from* ROI chooser work as with napari; only the yellow outline that
+  previews the crop on the image is not drawn.
+
+Inside these panels the controls that need the napari viewer stay visible but
+disabled, with the tooltip *Not yet supported with separate windows*: the ROI
+manager's **Freehand** shape, and Profile's layer chooser (a window has one
+image, so there is nothing to choose between).  While a drawing mode is on the
+left button draws; the middle button still pans, the right button and the wheel
+still zoom, and **Pan** in Profile (or *Full image* in ROI stats) hands the left
+button back to panning.
+
+Not yet supported
+-----------------
+
+These draw on or read the napari viewer's layers and are disabled in window
+mode, with the tooltip *Not yet supported with separate windows (Preferences →
+Image display)* on the panel, its dock title, its View-menu entry and its Tools
+action.  They work as before with the embedded viewer.
+
+* The panels **Segmentation** (preview), **PSF resolution**,
+  **Colocalization** and **Multicolor** (previews).
+* **Plugins → napari plugins** (sending a result to a napari plugin and
+  importing a napari layer).
+* RGB images and 3D layers cannot be measured or drawn with the ROI tools in a
+  window.  Localization (point cloud) results have no image window.
 
 Results list vs. napari layers
 ===============================
@@ -2813,6 +2921,7 @@ See also
 
 * :doc:`improcess-napari-plugins` — sending results to installed napari
   plugins (dock widgets and readers), and taking layers back
+* :doc:`improcess-fiji` — sending results to Fiji and importing its images
 * :doc:`improcess-workflows` — reconstructing and processing without the
   GUI: batch workflows, ports, saves, binding, replay
 * :doc:`imcontrol` — the ImControl module (hardware control)

@@ -194,7 +194,10 @@ class WorkflowController(QtCore.QObject):
         """Write the current result's provenance as a workflow file."""
         from imswitch.improcess.model.provenance import graph_of
         from imswitch.improcess.model.save_protocol import ProvenanceDocument
-        from imswitch.improcess.workflows.replay import ReplayError, workflow_from_provenance
+        from imswitch.improcess.workflows.replay import (
+            ReplayError,
+            workflow_from_provenance_around_interactive_steps,
+        )
 
         result = self._reconstructionController.getActiveResult()
         if result is None:
@@ -205,7 +208,7 @@ class WorkflowController(QtCore.QObject):
             self._status(f"'{getattr(result, 'name', 'result')}' carries no provenance to export.")
             return None
         try:
-            replay = workflow_from_provenance(
+            replay = workflow_from_provenance_around_interactive_steps(
                 ProvenanceDocument(graph=graph), registry=self._registry(),
                 name=f"workflow-{_slug(getattr(result, 'name', 'result'))}",
             )
@@ -223,8 +226,29 @@ class WorkflowController(QtCore.QObject):
         written = replay.workflow.save(Path(path))
         for warning in replay.warnings:
             self._logger.warning("Workflow export: %s", warning)
-        self._status(f"Wrote workflow {written.name} ({len(replay.workflow.steps)} steps).")
+        steps = f"{len(replay.workflow.steps)} steps"
+        if replay.inputs:
+            names = ", ".join(sid for sid, _ in replay.inputs)
+            steps += f"; {len(replay.inputs)} input{'' if len(replay.inputs) == 1 else 's'} to bind: {names}"
+        self._status(f"Wrote workflow {written.name} ({steps}).")
+        self._explainInteractiveSteps(replay.interactive, replay.inputs, "Export workflow")
         return written
+
+    def _explainInteractiveSteps(self, warnings, inputs, title: str) -> None:
+        """Tell the user what was left out of a workflow and what to bind.
+
+        A workflow made around a Fiji or napari step is not the whole story of
+        the result, and a log line or a status message is too easy to miss.
+        """
+        if not warnings:
+            return
+        text = "Part of this result was made interactively and cannot be part of a workflow:\n\n"
+        text += "\n".join(f"- {line}" for line in warnings)
+        if inputs:
+            text += "\n\nBind these when you run it:\n" + "\n".join(f"- {sid}: {how}" for sid, how in inputs)
+        QtWidgets.QMessageBox.information(
+            self._mainView if isinstance(self._mainView, QtWidgets.QWidget) else None, title, text,
+        )
 
     # -- editor -----------------------------------------------------------------
 
@@ -278,6 +302,7 @@ class WorkflowController(QtCore.QObject):
             return None
         for note in document.notes:
             self._logger.warning("Workflow import: %s", note)
+        self._explainInteractiveSteps(document.interactive, document.inputs, "Edit workflow")
         return self.openEditor(document)
 
     def _catalog(self):
@@ -461,7 +486,32 @@ class WorkflowController(QtCore.QObject):
         return results
 
     def _runOnResults(self, path, workflow, results, *, out_dir=None, overwrite=None):
-        entry = self._entryStep(workflow)
+        from imswitch.improcess.workflows.steps import WorkflowError, part_from_input, unbound_inputs
+
+        inputs = unbound_inputs(workflow)
+        if len(inputs) == 1:
+            # Exported around a Fiji or napari step: the selected result is
+            # what came back from it, so it fills that input, and only the
+            # part that continues from there runs.
+            entry = inputs[0]
+            try:
+                workflow = part_from_input(workflow, entry)
+            except WorkflowError:
+                # E.g. the Save after the input was deleted in the editor. This
+                # runs from a Qt signal: raising here would show the user nothing.
+                self._status(
+                    f"Cannot run this workflow on results: the input {entry!r} reaches no Save step; "
+                    "add a Save after it in the editor."
+                )
+                return False
+        elif len(inputs) > 1:
+            self._status(
+                f"This workflow has {len(inputs)} inputs to bind ({', '.join(inputs)}); "
+                "applying it to results needs exactly one."
+            )
+            return False
+        else:
+            entry = self._entryStep(workflow)
         if entry is None:
             return False
         return self._runBatch(

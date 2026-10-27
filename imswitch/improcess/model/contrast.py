@@ -26,6 +26,17 @@ _WORKING_SET_BYTES_PER_ELEMENT = 8 + 1 + 8
 _MAX_SAMPLE_VALUES = 2_000_000
 
 
+#: Total percentage of pixels allowed to saturate when a result is scaled
+#: automatically -- 2% is 1% off each tail, which is the rule a result's own
+#: display layers already use for their per-component levels. The two have to
+#: agree: a MoNaLISA reconstruction renders through the display-layer path and
+#: a duplicate of it through the plain-image path, and clipping the outliers in
+#: one while spanning the full range in the other made the same picture look
+#: like two different pictures depending on which was clicked. Every display
+#: (the embedded viewer and the separate image windows) takes it from here.
+AUTO_SATURATED_PERCENT = 2.0
+
+
 def _sample_working_set_bytes() -> int:
     """The working set in force: the configured setting, else the literal."""
     return memory_limits.effectiveBytes('processingWorkingSetBytes', _SAMPLE_WORKING_SET_BYTES)

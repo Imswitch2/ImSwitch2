@@ -507,10 +507,12 @@ cannot be run again:
   form (an object the plugin's codec could not write down), an ROI
   restriction too large to keep and recorded by reference, a source that
   was never persisted (a RAM recording), a stream that did not complete,
-  a layer imported from a napari plugin, or a localization table opened
-  from another program's file (Picasso, ThunderSTORM, a mapped CSV) — that
-  file is recorded as a fingerprinted source, so the provenance says
-  exactly where the table came from, but no ImProcess step produced it;
+  a layer imported from a napari plugin or an image taken back from Fiji
+  (see the next subsection for how the GUI exports around these), or a
+  localization table opened from another program's file (Picasso,
+  ThunderSTORM, a mapped CSV) — that file is recorded as a fingerprinted
+  source, so the provenance says exactly where the table came from, but no
+  ImProcess step produced it;
 * a plugin that is not installed;
 * parameters recorded with a newer ``params_version`` than the installed
   plugin has.
@@ -519,6 +521,47 @@ In ``replay`` mode the run also verifies every source against the recorded
 fingerprint (dataset, shape, dtype, size, modification time, attribute
 digest, tiling manifest) and stops on a mismatch; ``--allow-drift`` turns
 that into a warning, and the report then says it was a run, not a replay.
+
+Results with an interactive step (Fiji, napari plugins)
+-------------------------------------------------------
+
+An import from Fiji or from a napari plugin is a step done by hand, so it
+cannot be run again, and a result made after one used to be impossible to
+export. *Export workflow* and *Edit workflow* in the GUI now make the best
+workflow they can instead (in Python:
+``workflow_from_provenance(..., allow_inputs=True)``; the default and the
+command line stay strict):
+
+* everything that is not the interactive step becomes the workflow;
+* what **fed** the step (the image sent to Fiji) is kept, and its last result
+  gets a ``Save`` writing ``{out_dir}/{source_stem}_for_fiji{ext}`` (or
+  ``_for_napari``), so running the workflow reproduces "the image you sent";
+* the step itself becomes a ``source`` with **no path**, called ``from_fiji``
+  or ``from_napari`` (``input`` when the origin was never recorded), that you
+  bind when you run the workflow; the steps that came after it read from it;
+* if the import was the last step there is nothing after it, and the workflow
+  is the fed chain with its ``Save``;
+* a message lists every step that was left out and which inputs to bind;
+  they are also in the editor's notes and the log.
+
+Only interactive steps are treated this way. A plugin that is not installed,
+an ROI recorded by reference or parameters that cannot be replayed still
+refuse the export, because those are a broken recipe.
+
+Running such a workflow needs the input bound. A run that leaves it unbound is
+refused before anything runs: *input 'from_fiji' is not bound; bind a file or
+run it on a selected result*. Give the input a path in the editor (or ``--bind
+from_fiji=edited.tif`` on the command line, or ``bindings={"from_fiji": ...}``
+in Python, where an in-memory result is accepted too) and run it.
+
+*Run workflow on selected results* is the natural way to use such a workflow
+in the GUI: select the image that came back from Fiji (or napari) and run.
+When the workflow has exactly one such input, each selected result fills it,
+and only the part that continues from the input runs, together with anything
+that part depends on: the branch that remakes what was sent to Fiji, and its
+``_for_fiji`` save, are left out. A workflow with several such inputs is
+refused with their names, and *over files* still needs a workflow with a
+single source.
 
 Files written before the graph existed carry only the linear
 ``processing_history`` (schema 0). Replay builds the best workflow it can —

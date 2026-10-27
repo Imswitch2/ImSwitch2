@@ -12,7 +12,11 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.view.guitools.naparitools import NapariROISetOverlay
-from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
+from imswitch.imcommon.view.guitools.viewer_tools import (
+    WINDOW_MODE_UNSUPPORTED_TOOLTIP,
+    ViewerToolService,
+    is_window_viewer,
+)
 from imswitch.improcess.analysis.roi_frame_adapter import world_to_data
 from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.imcommon.algorithms.roi_style import ROIStyle
@@ -252,8 +256,13 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self._autosaveTimer.setSingleShot(True)
         self._autosaveTimer.setInterval(self.AUTOSAVE_DEBOUNCE_MS)
         self._autosaveTimer.timeout.connect(self._autosave)
-        # The committed ROI set, drawn read-only in the viewer (P-1).
-        self._overlay = NapariROISetOverlay(napariViewer)
+        # The committed ROI set, drawn read-only in the viewer (P-1). With
+        # separate image windows the viewer stand-in draws it on the window.
+        self._overlay = (
+            napariViewer.make_roi_overlay()
+            if is_window_viewer(napariViewer)
+            else NapariROISetOverlay(napariViewer)
+        )
 
         # One chooser rather than a button per shape. The panel has always
         # captured whatever was drawn -- an ellipse, a polygon, a line -- but
@@ -503,7 +512,26 @@ class ROIManagerWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+        if is_window_viewer(napariViewer):
+            self._restrictForWindowMode()
+
         self.refresh_stats()
+
+    def _restrictForWindowMode(self) -> None:
+        """Keep visible, but disable, what only the napari viewer can do.
+
+        Freehand needs a drag-collected path that the window tool does not
+        draw (rectangle, ellipse, polygon, line and points are available).
+        """
+        model = self.shapeCombo.model()
+        for row, (_label, mode) in enumerate(self.DRAW_MODES):
+            if mode == "path":
+                item = model.item(row)
+                if item is not None:
+                    item.setEnabled(False)
+                self.shapeCombo.setItemData(
+                    row, WINDOW_MODE_UNSUPPORTED_TOOLTIP, QtCore.Qt.ToolTipRole
+                )
 
     def selected_draw_mode(self) -> str:
         """The viewer-tool mode the chooser is on."""
@@ -520,7 +548,12 @@ class ROIManagerWidget(QtWidgets.QWidget):
         """
         self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
         self._toolService.set_multi_shape(self._toolToken, True)
-        self._toolService.set_mode(self._toolToken, self.selected_draw_mode())
+        try:
+            self._toolService.set_mode(self._toolToken, self.selected_draw_mode())
+        except ValueError as exc:
+            # A mode the window tool does not draw: say so rather than leave
+            # a Draw button that does nothing.
+            self.summaryLabel.setText(str(exc))
 
     def _drawModeChanged(self, _index=None) -> None:
         """Switch live when the tool is already held.
@@ -2591,11 +2624,14 @@ class ROIManagerWidget(QtWidgets.QWidget):
         layer = self._active_image_layer()
         if layer is None:
             return None
-        data = np.asarray(layer.data)
+        # Slice before converting: a lazy stack read whole is not a plane.
+        data = layer.data
+        if not hasattr(data, "ndim"):
+            data = np.asarray(data)
         if data.ndim < 2:
             return None
         if data.ndim == 2:
-            return data
+            return np.asarray(data)
         step = self._current_step(data.ndim)
         indexer = []
         for axis, size in enumerate(data.shape):

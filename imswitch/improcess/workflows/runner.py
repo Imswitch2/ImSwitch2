@@ -255,12 +255,42 @@ def run(
             target = workflow.step(sid)
         except KeyError:
             raise WorkflowError(f"binding names a step that does not exist: {sid!r}") from None
-        if isinstance(target, (Source, Save)):
+        if isinstance(target, Save):
             raise WorkflowError(
                 f"{sid!r} cannot be bound to a result: only a reconstruct, consolidate or "
-                "process step can start from an existing result"
+                "process step (or an input source) can start from an existing result"
+            )
+        if isinstance(target, Source) and any(
+            isinstance(step, (Reconstruct, Consolidate)) and any(ref.step == sid for ref in step.inputs)
+            for step in workflow.steps
+        ):
+            raise WorkflowError(
+                f"{sid!r} cannot be bound to a result: only a reconstruct, consolidate or process "
+                "step can start from an existing result (a source that feeds a reconstruction "
+                "needs a recording; bind the reconstruction itself to the result)"
             )
     skipped = steps_replaced_by_bindings(workflow, set(bound_results))
+    # Refuse an input nobody bound BEFORE any work: a workflow exported around
+    # an interactive step (Fiji) has path-less sources, and finding the first
+    # one only after a long reconstruction would waste the run.
+    for step in workflow.steps:
+        if isinstance(step, Source) and step.id not in skipped:
+            wanted = bindings.get(step.id, step.source)
+            if isinstance(wanted, str):
+                from imswitch.improcess.workflows.sources import parse_binding
+
+                wanted = parse_binding(wanted)
+            if not wanted.bound:
+                what = (
+                    f"input {step.id!r} is not bound; bind a file or run it on a selected result"
+                    if (step.source.metadata or {}).get("input") else
+                    f"source {step.id!r} is not bound to a path"
+                )
+                report.failed_step = step.id
+                report.error = f"{step.id}: {what}"
+                error = RunError(report.error)
+                error.report = report          # type: ignore[attr-defined]
+                raise error
 
     from imswitch.improcess.processors.run import run_processor
     from imswitch.improcess.reconstructors.run import run_consolidation, run_reconstruction
@@ -278,8 +308,9 @@ def run(
             if step.id in skipped:
                 if step.id in bound_results:
                     result = bound_results[step.id]
-                    report.results[f"{step.id}.{DEFAULT_PORT}"] = result
-                    report.bound.append(f"{step.id}.{DEFAULT_PORT}")
+                    port = SOURCE_PORT if isinstance(step, Source) else DEFAULT_PORT
+                    report.results[f"{step.id}.{port}"] = result
+                    report.bound.append(f"{step.id}.{port}")
                     if not report._sources:
                         source_stem = str(getattr(result, "name", "") or source_stem)
                 report.steps_run.append(step.id)

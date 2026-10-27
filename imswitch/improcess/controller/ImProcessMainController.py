@@ -9,6 +9,12 @@ from imswitch.improcess.model.processing_config import (
     load_processing_config,
     plugin_ids_from_config,
 )
+from imswitch.improcess.model.display_preferences import (
+    IMAGE_DISPLAY_WINDOWS,
+    DisplayPreferences,
+    load_display_preferences,
+    save_display_preferences,
+)
 from .CommunicationChannel import CommunicationChannel
 from .GraphController import GraphController
 from .ImageToolbarController import ImageToolbarController
@@ -47,6 +53,15 @@ class ImProcessMainController(MainController):
         if hasattr(self.__mainView, 'sigReloadPluginsRequested'):
             self.__mainView.sigReloadPluginsRequested.connect(self._reload_user_plugins)
 
+        # The image display is fixed for the session (the embedded viewer is
+        # built into the main window), so it is read once, before any panel
+        # that depends on the napari canvas is created.
+        self.__imageDisplay = load_display_preferences().imageDisplay
+        if hasattr(self.__mainView, 'setImageDisplayMode'):
+            self.__mainView.setImageDisplayMode(self.__imageDisplay)
+        if hasattr(self.__mainView, 'sigImageDisplayChosen'):
+            self.__mainView.sigImageDisplayChosen.connect(self._imageDisplayChosen)
+
         # Initialize plugin registry
         self._initialize_plugins()
         self._register_startup_runtime_processors()
@@ -75,6 +90,9 @@ class ImProcessMainController(MainController):
         self.mainViewController = self.__factory.createController(
             ImProcessMainViewController, self.__mainView
         )
+        self.resultWindowManager = None
+        if self.__imageDisplay == IMAGE_DISPLAY_WINDOWS:
+            self._startWindowMode()
         self.imageToolbarController = ImageToolbarController(
             self.__commChannel,
             self.__mainView,
@@ -94,6 +112,19 @@ class ImProcessMainController(MainController):
             # Endpoints are an extra on top of the viewer; a broken npe2
             # environment must not keep ImProcess from starting.
             self.__logger.exception("Could not set up napari endpoints")
+        self.fijiController = None
+        try:
+            from .FijiController import FijiController
+
+            self.fijiController = FijiController(
+                self.__commChannel,
+                self.__mainView,
+                self.mainViewController.reconstructionController,
+            )
+        except Exception:
+            # Fiji is an optional extra; a broken setup there must not keep
+            # ImProcess from starting.
+            self.__logger.exception("Could not set up the Fiji link")
         self.workflowController = None
         try:
             from .WorkflowController import WorkflowController
@@ -1045,7 +1076,57 @@ class ImProcessMainController(MainController):
                 indices.append(data.shape[axis] // 2)
         return data[tuple(indices)]
 
+    def _startWindowMode(self) -> None:
+        """Show results in one window each; the image toolbar acts on the active one."""
+        from imswitch.improcess.view.result_windows import ResultWindowManager
+
+        manager = ResultWindowManager(
+            self.__mainView, statusMessage=self.__commChannel.sigStatusMessage.emit
+        )
+        self.resultWindowManager = manager
+        self.mainViewController.reconstructionController.setWindowManager(manager)
+        manager.setWindowMenu(self.__mainView.windowMenu)
+        # The ROI Manager, ROI stats and Profile follow the active window.
+        if hasattr(self.__mainView, 'bindWindowManager'):
+            self.__mainView.bindWindowManager(manager)
+        # ImProcessMainView is a tab page, so Qt never delivers it a closeEvent
+        # and sigClosing is not emitted on the real shutdown path; closeEvent()
+        # below (called directly by the module shutdown) closes the windows.
+        # The connection stays for a view that is closed as a window.
+        self.__mainView.sigClosing.connect(manager.closeAll)
+
+    def _imageDisplayChosen(self, choice: str) -> None:
+        """Remember the image display for the next start (no live switch)."""
+        try:
+            save_display_preferences(DisplayPreferences(imageDisplay=choice))
+        except OSError as error:
+            self.__logger.warning(f'Could not save the image display preference: {error}')
+            self.__commChannel.sigStatusMessage.emit(
+                f'Could not save the image display preference ({error}).'
+            )
+            return
+        if choice == self.__imageDisplay:
+            self.__commChannel.sigStatusMessage.emit('Image display unchanged.')
+        else:
+            self.__commChannel.sigStatusMessage.emit(
+                'Image display saved. It takes effect the next time ImProcess starts.'
+            )
+
+    def _closeImageWindows(self):
+        """Dispose of the separate image windows (window mode), if there are any."""
+        # getattr: this runs on a controller whose construction may have raised.
+        manager = getattr(self, 'resultWindowManager', None)
+        if manager is None:
+            return
+        try:
+            manager.closeAll()
+        except Exception as e:
+            self.__logger.warning(f'Failed to close the image windows: {e}')
+
     def closeEvent(self):
+        # The windows go first: they reference the results and the viewer facade
+        # that the controllers torn down below own.
+        self._closeImageWindows()
         # Persist the current dock layout before tearing the controllers down,
         # so the next launch can restore it.
         if self.__guiLayoutStateAdapter is not None:

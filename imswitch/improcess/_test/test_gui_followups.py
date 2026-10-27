@@ -59,7 +59,7 @@ def test_a_result_tree_carries_identity_metadata_and_provenance(registry):
     assert "/result/result_uid" in paths and "/result/axis_labels" in paths
     assert "/provenance/steps" in paths and "/provenance/graph" in paths
     steps = tree.find("/provenance/steps")
-    assert steps is not None and any("projection" in str(item) for item in steps.value)
+    assert steps is not None and any("projection" in str(item).lower() for item in steps.value)
     plain = metadata_tree_from_result(_image())
     assert plain.find("/metadata/note").value == "hello" and plain.find("/provenance") is None
 

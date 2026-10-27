@@ -232,6 +232,8 @@ def import_layer(
     widget_name: str | None = None,
     preserves_grid: bool = False,
     name: str | None = None,
+    tool: str = "napari",
+    details: dict | None = None,
 ) -> ImportedLayer:
     """Turn one plugin-created layer into a typed result or a set of ROIs."""
     layer_type = str(snapshot.layer_type).lower()
@@ -260,7 +262,7 @@ def import_layer(
         record_import(
             result, plugin_name=plugin_name, widget_name=widget_name,
             layer_name=snapshot.name, layer_type="points", grid="n/a",
-            source_result=source_result,
+            source_result=source_result, tool=tool, details=details,
         )
         return ImportedLayer(result=result, grid="n/a", reason="points carry no pixel grid")
 
@@ -291,7 +293,7 @@ def import_layer(
     record_import(
         result, plugin_name=plugin_name, widget_name=widget_name,
         layer_name=snapshot.name, layer_type=layer_type, grid=grid,
-        source_result=source_result,
+        source_result=source_result, tool=tool, details=details,
     )
     return ImportedLayer(result=result, grid=grid, reason=reason)
 
