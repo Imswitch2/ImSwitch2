@@ -37,6 +37,7 @@ from .extraction import (
     DEFAULT_MIN_PIXELS,
     DEFAULT_REACH_SIGMA,
     ExtractionOperator,
+    ExtractionResult,
     calibrate_haze_sigma,
 )
 from .lattice import Lattice, detect_lattice
@@ -51,6 +52,7 @@ from .placement import (
     lock_step_to_lattice,
     place,
     place_nearest,
+    prepare_placement,
     sample_positions,
 )
 from .quality import seam_contrast
@@ -112,6 +114,10 @@ class PipelineParams:
         cell_offsets: ``"seams"`` takes the offset of every focus off its
             amplitudes, read from the borders of the cells
             (:mod:`.cell_offsets`); ``"off"`` does not.
+        variance_weighting: Compute the extraction variance gain and use it
+            when duplicate direct-placement samples are combined. Kept on by
+            default for current lattice-result parity; Fast can disable it
+            without paying the variance solves.
         sharpen_sigma_px: When given, the result also holds the image
             sharpened by a Wiener filter that undoes a Gaussian blur of this
             many output pixels (:mod:`.sharpen`).
@@ -138,6 +144,7 @@ class PipelineParams:
     reassignment: str | float = "auto"
     frame_gain: str = "smooth"
     cell_offsets: str = "seams"
+    variance_weighting: bool = True
     sharpen_sigma_px: float | None = None
     sharpen_regularization: float = 0.1
     pinhole_stack: str = "off"
@@ -706,6 +713,7 @@ def reconstruct_stack(
     geometry: StackGeometry,
     scan_index: np.ndarray,
     frame_gain: np.ndarray | None = None,
+    extracted: ExtractionResult | None = None,
 ) -> StackReconstruction:
     """Reconstruct one stack: the frames of one scan of the cell.
 
@@ -716,6 +724,8 @@ def reconstruct_stack(
             displaced by ``geometry.step @ scan_index[k]`` in frame ``k``.
         frame_gain: ``(frames,)`` gain of every frame; the amplitudes are
             divided by it.
+        extracted: An extraction already solved for ``frames``. Supplying it
+            makes reconstruction/corrections reuse that solve.
     """
     frames = np.asarray(frames)
     scan_index = np.asarray(scan_index, dtype=float).reshape(-1, 2)
@@ -724,7 +734,12 @@ def reconstruct_stack(
             f"{frames.shape[0]} frames but {scan_index.shape[0]} scan positions"
         )
     operator = geometry.operator
-    extracted = operator.apply(frames)
+    if extracted is None:
+        extracted = operator.apply(frames)
+    elif extracted.amplitude.shape[0] != frames.shape[0]:
+        raise ValueError(
+            f"{frames.shape[0]} frames but {extracted.amplitude.shape[0]} extracted rows"
+        )
     gx, gy = _raster_coordinates(geometry, scan_index)
     valid = operator.valid
     gx, gy = gx[:, valid], gy[:, valid]
@@ -733,22 +748,31 @@ def reconstruct_stack(
     if frame_gain is not None:
         gain = np.asarray(frame_gain, dtype=float).reshape(frames.shape[0])
     amplitudes = extracted.amplitude / gain[:, None]
-    variance = (
-        (extracted.noise_sigma / gain)[:, None] ** 2
-        * operator.variance_gain[None, valid]
+    alpha = _shift_factor_to_use(geometry)
+    variance = None
+    # Variance is only consumed by direct amplitude placement. Reassigned
+    # images and diagnostic/background planes do not need the expensive
+    # inverse-normal diagonal.
+    if geometry.params.variance_weighting and alpha is None:
+        variance = (
+            (extracted.noise_sigma / gain)[:, None] ** 2
+            * operator.variance_gain[None, valid]
+        )
+        variance = np.where(variance > 0, variance, np.nan)
+        if not np.all(np.isfinite(variance)):
+            variance = None
+
+    placement_plan = prepare_placement(
+        gx, gy, geometry.raster.shape,
+        tolerance=geometry.params.commensurate_tolerance,
+        smoothing=geometry.params.smoothing,
     )
-    variance = np.where(variance > 0, variance, np.nan)
-    if not np.all(np.isfinite(variance)):
-        variance = None
 
     def placed(values: np.ndarray | None, with_variance: bool) -> PlacedImage | None:
         if values is None:
             return None
-        return place(
-            gx, gy, values[:, valid], geometry.raster.shape,
-            variance=variance if with_variance else None,
-            tolerance=geometry.params.commensurate_tolerance,
-            smoothing=geometry.params.smoothing,
+        return placement_plan.place(
+            values[:, valid], variance=variance if with_variance else None
         )
 
     focus = np.broadcast_to(np.flatnonzero(valid)[None, :], gx.shape)
@@ -764,7 +788,6 @@ def reconstruct_stack(
     elif geometry.params.cell_offsets != "off":
         raise ValueError(f"Unknown cell offsets {geometry.params.cell_offsets!r}")
 
-    alpha = _shift_factor_to_use(geometry)
     if alpha is None:
         amplitude = placed(amplitudes, True)
     else:
@@ -772,7 +795,7 @@ def reconstruct_stack(
         amplitude = reassign(
             frames, operator, model.x, model.y,
             scan_index @ geometry.step.T, geometry.raster, alpha,
-            frame_gain=gain, focus_offset=offsets,
+            frame_gain=gain, focus_offset=offsets, extracted=extracted,
         )
     pinholes = None
     if geometry.params.pinhole_stack != "off":
@@ -919,7 +942,8 @@ def reconstruct_scan(
     valid = operator.valid
     diagnostics = {}
 
-    amplitude = operator.apply(frames).amplitude[:, valid]
+    extracted = operator.apply(frames)
+    amplitude = extracted.amplitude[:, valid]
     gain = None
     if params.frame_gain == "smooth":
         try:
@@ -1036,7 +1060,9 @@ def reconstruct_scan(
             diagnostics["shift_factor_xy"] = (factor.alpha_x, factor.alpha_y)
             diagnostics["shift_factor_spread"] = factor.spread
 
-    result = reconstruct_stack(frames, geometry, scan_index, frame_gain=gain)
+    result = reconstruct_stack(
+        frames, geometry, scan_index, frame_gain=gain, extracted=extracted
+    )
     geometry_diagnostics = dict(geometry.diagnostics)
     geometry_diagnostics.update(
         coverage_holes=geometry.coverage.holes,

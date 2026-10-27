@@ -25,20 +25,18 @@ import numpy as np
 
 from imswitch.imcommon.model import initLogger
 
-from .extraction import DEFAULT_REACH_SIGMA, ExtractionOperator
+from . import extraction as extraction_backend
+from .extraction import (
+    DEFAULT_REACH_SIGMA,
+    DeviceExtractionExecutor,
+    ExtractionOperator,
+)
 from .scan_geometry import get_1d_indices, get_center_coords
 
-try:
-    import cupy as cp
-    import cupyx.scipy.sparse as cusparse
-    import cupyx.scipy.sparse.linalg as cusparse_linalg
-
-    CUPY_AVAILABLE = True
-except ImportError:
-    CUPY_AVAILABLE = False
-    cp = None
-    cusparse = None
-    cusparse_linalg = None
+# Compatibility exports used by the live session/tests.  The actual device
+# backend lives next to ExtractionOperator in ``extraction``.
+CUPY_AVAILABLE = extraction_backend.CUPY_AVAILABLE
+cp = extraction_backend.cp
 
 #: The spot width used when it can be neither measured nor derived.
 DEFAULT_GAUSSIAN_SIGMA_PX = 2.0
@@ -79,45 +77,6 @@ def measure_spot_sigma(
     if fit.sigma <= max(1.05 * low, MIN_MEASURED_SIGMA_PX) or fit.sigma >= 0.95 * high:
         return None
     return float(fit.sigma)
-
-
-class _DeviceSolve:
-    """The operator's per-frame product and solve, on the device.
-
-    Mirrors ``ExtractionOperator._solve``: the projector (the weighted
-    design, transposed) and the factorized normal matrix are copied to the
-    device once; a chunk of frames is then one sparse product and one solve
-    with the factors, for all frames of the chunk at once.
-    """
-
-    def __init__(self, operator: ExtractionOperator):
-        import scipy.sparse as sparse
-
-        self.row_pixel = cp.asarray(operator._row_pixel)
-        # Float64 throughout, as on the CPU: the factors are, and a sparse
-        # product is not where a GPU's float32 speed would be felt.
-        self.projector = cusparse.csr_matrix(operator._projector.astype(np.float64))
-        normal = (operator._projector @ operator._design).tocsc()
-        diagonal = normal.diagonal()
-        normal = normal + sparse.diags(1e-10 * diagonal + 1e-300, format="csc")
-        self.solver = cusparse_linalg.splu(cusparse.csc_matrix(normal.astype(np.float64)))
-        columns = operator._amplitude_column
-        have = operator.valid & (columns >= 0)
-        self.amplitude_column = cp.asarray(np.where(have, columns, 0))
-        self.have = cp.asarray(have)
-        self.num_coefficients = int(operator._design.shape[1])
-        self.frame_shape = operator.frame_shape
-
-    def amplitudes(self, chunk) -> "cp.ndarray":
-        chunk = cp.asarray(chunk)
-        if chunk.ndim == 2:
-            chunk = chunk[None]
-        flat = chunk.reshape(chunk.shape[0], -1)
-        data = flat[:, self.row_pixel].astype(cp.float64).T
-        projected = self.projector @ data
-        solution = self.solver.solve(projected)                 # (coefficients, frames)
-        amplitude = solution[self.amplitude_column].T            # (frames, num_foci)
-        return cp.where(self.have[None, :], amplitude, 0.0).astype(cp.float32)
 
 
 def _margin_points(
@@ -180,7 +139,7 @@ class FastGaussExtractor:
         self.gaussian_sigma_px = gaussian_sigma_px
         self.fit_background = bool(fit_background)
         self.scan_ori = scan_ori
-        self.use_gpu = bool(use_gpu) and CUPY_AVAILABLE
+        self.use_gpu = bool(use_gpu) and extraction_backend.CUPY_AVAILABLE
         self._device = None
 
         # The foci in the frame in the order the index map expects (row-major
@@ -200,7 +159,7 @@ class FastGaussExtractor:
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
         self.num_frames_in_stack = int(nx_s) * int(ny_s)
         if self.use_gpu:
-            self._device = _DeviceSolve(self.operator)
+            self._device = DeviceExtractionExecutor(self.operator)
 
     def process_chunk(self, chunk) -> np.ndarray:
         """Amplitudes of the foci of every frame of ``chunk``: ``(frames, num_foci)``.
@@ -209,7 +168,7 @@ class FastGaussExtractor:
         A chunk on the device is solved there and the result copied back.
         """
         if self._device is not None:
-            return cp.asnumpy(self.process_chunk_gpu(chunk))
+            return extraction_backend.cp.asnumpy(self.process_chunk_gpu(chunk))
         chunk = np.asarray(chunk)
         amplitude = self.operator.apply(chunk).amplitude[:, : self.num_foci]
         return np.nan_to_num(amplitude, nan=0.0).astype(np.float32, copy=False)
@@ -254,7 +213,7 @@ def make_fast_gauss_extractor(
     factorization fails, the extractor runs on the CPU and says so.
     """
     logger = initLogger("make_fast_gauss_extractor")
-    if use_gpu and not CUPY_AVAILABLE:
+    if use_gpu and not extraction_backend.CUPY_AVAILABLE:
         logger.info("GPU requested but CuPy not available; falling back to CPU")
     try:
         extractor = FastGaussExtractor(
@@ -263,7 +222,7 @@ def make_fast_gauss_extractor(
             scan_ori=scan_ori, use_gpu=use_gpu,
         )
     except Exception as error:
-        if not (use_gpu and CUPY_AVAILABLE):
+        if not (use_gpu and extraction_backend.CUPY_AVAILABLE):
             raise
         logger.warning(f"GPU extraction could not be set up ({error}); using the CPU")
         extractor = FastGaussExtractor(

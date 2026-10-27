@@ -166,6 +166,32 @@ class TestStep:
             reconstruct_stack(scan.frames[:10], geometry, scan.scan_index)
 
 
+    def test_reconstruct_scan_reuses_one_extraction_solve(self, monkeypatch):
+        scan = make_scan(steps=(6, 5))
+        params = PipelineParams(
+            frame_gain="smooth", cell_offsets="off", reassignment=0.2,
+            variance_weighting=False,
+        )
+        geometry = prepare_geometry(
+            scan.frames.mean(axis=0), scan.step, scan.scan_index, params
+        )
+        calls = 0
+        original = geometry.operator._solve
+
+        def counted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(geometry.operator, "_solve", counted)
+        reconstruct_scan(
+            scan.frames, scan.step, (6, 5), params=params, orientation="+x+y",
+            geometry=geometry,
+        )
+        assert calls == 1
+        assert geometry.operator._variance_gain is None
+
+
 class TestDistortion:
     def test_measured_centres_remove_the_cell_tiling(self):
         """E7: with foci 0.3 px off the ideal lattice, placing by the ideal

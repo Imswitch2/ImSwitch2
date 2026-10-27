@@ -909,16 +909,17 @@ def test_the_device_solve_mirrors_the_cpu_solve(monkeypatch):
     import scipy.sparse
     import scipy.sparse.linalg
 
-    from imswitch.improcess.reconstructors.monalisa import gauss_processor
+    from imswitch.improcess.reconstructors.monalisa import extraction as extraction_backend
 
     fake_cp = types.SimpleNamespace(
-        asarray=np.asarray, asnumpy=np.asarray, where=np.where,
+        asarray=np.asarray, asnumpy=np.asarray, where=np.where, maximum=np.maximum,
+        sqrt=np.sqrt, sum=np.sum,
         float32=np.float32, float64=np.float64, ndarray=np.ndarray,
     )
-    monkeypatch.setattr(gauss_processor, "CUPY_AVAILABLE", True)
-    monkeypatch.setattr(gauss_processor, "cp", fake_cp)
-    monkeypatch.setattr(gauss_processor, "cusparse", scipy.sparse)
-    monkeypatch.setattr(gauss_processor, "cusparse_linalg", scipy.sparse.linalg)
+    monkeypatch.setattr(extraction_backend, "CUPY_AVAILABLE", True)
+    monkeypatch.setattr(extraction_backend, "cp", fake_cp)
+    monkeypatch.setattr(extraction_backend, "cusparse", scipy.sparse)
+    monkeypatch.setattr(extraction_backend, "cusparse_linalg", scipy.sparse.linalg)
 
     scan = make_scan(steps=(3, 3), sigma=2.0, background=20.0, offset=(4.0, 5.0))
     rows, cols = scan.frames.shape[1:]

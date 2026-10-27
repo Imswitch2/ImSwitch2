@@ -19,6 +19,7 @@ from imswitch.improcess.reconstructors.monalisa.placement import (
     lock_step_to_lattice,
     place,
     place_nearest,
+    prepare_placement,
     sample_positions,
 )
 from imswitch.improcess.reconstructors.monalisa.scan_geometry import get_1d_indices
@@ -229,6 +230,19 @@ class TestExactPlacement:
         )
         assert np.isnan(placed.image[0, 0])
         assert placed.image[0, 1] == 2.0
+
+    def test_prepared_direct_plan_preserves_holes_and_duplicate_weighting(self):
+        gx = np.array([1.0, 1.0, 2.0])
+        gy = np.array([1.0, 1.0, 0.0])
+        values = np.array([10.0, 20.0, 5.0])
+        variance = np.array([1.0, 3.0, 2.0])
+        plan = prepare_placement(gx, gy, (3, 4))
+        assert plan.method == "exact"
+        expected = place_nearest(gx, gy, values, (3, 4), variance=variance)
+        actual = plan.place(values, variance=variance)
+        np.testing.assert_allclose(actual.image, expected.image, equal_nan=True)
+        np.testing.assert_array_equal(actual.count, expected.count)
+        np.testing.assert_allclose(actual.variance, expected.variance, equal_nan=True)
 
 
 class TestGridding:

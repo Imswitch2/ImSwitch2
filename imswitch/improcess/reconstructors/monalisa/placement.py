@@ -273,6 +273,76 @@ class PlacedImage:
     method: str = "exact"
 
 
+@dataclass(frozen=True)
+class PlacementPlan:
+    """Prepared placement geometry, reusable for any values on the samples.
+
+    ``method`` is decided from coordinates once.  For exact/direct placement
+    ``flat_pixel`` contains the precomputed output pixel of every sample
+    (``-1`` outside the raster), so amplitude/background/haze do not repeat
+    coordinate rounding and bounds work.
+    """
+
+    gx: np.ndarray
+    gy: np.ndarray
+    shape: tuple[int, int]
+    method: str
+    max_residual: float
+    smoothing: float = DEFAULT_SMOOTHING
+    flat_pixel: np.ndarray | None = None
+
+    def place(
+        self, values: np.ndarray, variance: np.ndarray | None = None
+    ) -> PlacedImage:
+        if self.method == "exact":
+            return _place_prepared_exact(self, values, variance)
+        return grid_bspline(
+            self.gx, self.gy, values, self.shape, variance, smoothing=self.smoothing
+        )
+
+    def place_device(self, values, variance=None):
+        """Direct placement on CuPy, preserving arrays on the device.
+
+        Interpolation deliberately remains the CPU/SciPy exceptional path.
+        """
+        if self.method != "exact":
+            raise RuntimeError("Device placement is only available for direct placement")
+        from .extraction import CUPY_AVAILABLE, cp
+
+        if not CUPY_AVAILABLE:
+            raise RuntimeError("CuPy is not available")
+        rows, cols = self.shape
+        values_array = cp.asarray(values)
+        if values_array.size != self.gx.size:
+            raise ValueError("values do not match the prepared placement samples")
+        variance_array = None
+        if variance is not None:
+            variance_array = cp.broadcast_to(cp.asarray(variance), values_array.shape)
+        values = values_array.reshape(-1)
+        variance = None if variance_array is None else variance_array.reshape(-1)
+        flat_pixel = cp.asarray(self.flat_pixel)
+        keep = (flat_pixel >= 0) & cp.isfinite(values)
+        weight = cp.ones(values.size, dtype=cp.float64)
+        if variance is not None:
+            keep = keep & cp.isfinite(variance) & (variance > 0)
+            weight = cp.where(keep, 1.0 / cp.where(keep, variance, 1.0), 0.0)
+        index = flat_pixel[keep]
+        size = rows * cols
+        total_weight = cp.bincount(index, weights=weight[keep], minlength=size)
+        total = cp.bincount(index, weights=(weight * values)[keep], minlength=size)
+        count = cp.bincount(index, minlength=size)
+        image = cp.where(count > 0, total / total_weight, cp.nan).reshape(rows, cols)
+        pixel_variance = None
+        if variance is not None:
+            pixel_variance = cp.where(
+                count > 0, 1.0 / total_weight, cp.nan
+            ).reshape(rows, cols)
+        return PlacedImage(
+            image=image, count=count.reshape(rows, cols), variance=pixel_variance,
+            max_residual=self.max_residual, method="exact",
+        )
+
+
 def _flatten_samples(gx, gy, values, variance):
     values = np.asarray(values, dtype=float)
     if variance is not None:
@@ -290,6 +360,82 @@ def _flatten_samples(gx, gy, values, variance):
         keep &= np.isfinite(variance) & (variance > 0)
         weight = np.where(keep, 1.0 / np.where(keep, variance, 1.0), 0.0)
     return gx[keep], gy[keep], values[keep], weight[keep]
+
+
+def prepare_placement(
+    gx: np.ndarray,
+    gy: np.ndarray,
+    shape: tuple[int, int],
+    tolerance: float = COMMENSURATE_TOLERANCE,
+    smoothing: float = DEFAULT_SMOOTHING,
+) -> PlacementPlan:
+    """Prepare the direct-vs-interpolated placement decision once."""
+    rows, cols = int(shape[0]), int(shape[1])
+    gx = np.asarray(gx, dtype=float)
+    gy = np.asarray(gy, dtype=float)
+    if gx.shape != gy.shape:
+        raise ValueError("gx and gy must have the same shape")
+    fx, fy = gx.ravel(), gy.ravel()
+    finite = np.isfinite(fx) & np.isfinite(fy)
+    component_residual = np.maximum(
+        np.abs(fx[finite] - np.rint(fx[finite])),
+        np.abs(fy[finite] - np.rint(fy[finite])),
+    )
+    direct = component_residual.size == 0 or float(component_residual.max()) <= tolerance
+    euclidean = np.hypot(
+        fx[finite] - np.rint(fx[finite]), fy[finite] - np.rint(fy[finite])
+    )
+    max_residual = float(euclidean.max()) if euclidean.size else 0.0
+    flat_pixel = None
+    if direct:
+        ix = np.rint(fx).astype(np.int64)
+        iy = np.rint(fy).astype(np.int64)
+        inside = finite & (ix >= 0) & (ix < cols) & (iy >= 0) & (iy < rows)
+        flat_pixel = np.full(fx.size, -1, dtype=np.int64)
+        flat_pixel[inside] = iy[inside] * cols + ix[inside]
+    return PlacementPlan(
+        gx=gx, gy=gy, shape=(rows, cols),
+        method="exact" if direct else "gridded",
+        max_residual=max_residual, smoothing=float(smoothing), flat_pixel=flat_pixel,
+    )
+
+
+def _place_prepared_exact(
+    plan: PlacementPlan, values: np.ndarray, variance: np.ndarray | None = None
+) -> PlacedImage:
+    rows, cols = plan.shape
+    values_array = np.asarray(values, dtype=float)
+    if values_array.size != plan.gx.size:
+        raise ValueError("values do not match the prepared placement samples")
+    variance_array = None
+    if variance is not None:
+        variance_array = np.broadcast_to(
+            np.asarray(variance, dtype=float), values_array.shape
+        )
+    values = values_array.ravel()
+    variance = None if variance_array is None else variance_array.ravel()
+    flat_pixel = np.asarray(plan.flat_pixel, dtype=np.int64)
+    keep = (flat_pixel >= 0) & np.isfinite(values)
+    weight = np.ones(values.size)
+    if variance is not None:
+        keep &= np.isfinite(variance) & (variance > 0)
+        weight = np.where(keep, 1.0 / np.where(keep, variance, 1.0), 0.0)
+    flat = flat_pixel[keep]
+    size = rows * cols
+    total_weight = np.bincount(flat, weights=weight[keep], minlength=size)
+    total = np.bincount(flat, weights=(weight * values)[keep], minlength=size)
+    count = np.bincount(flat, minlength=size)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        image = np.where(count > 0, total / total_weight, np.nan)
+        pixel_variance = (
+            np.where(count > 0, 1.0 / total_weight, np.nan)
+            if variance is not None else None
+        )
+    return PlacedImage(
+        image=image.reshape(rows, cols), count=count.reshape(rows, cols),
+        variance=None if pixel_variance is None else pixel_variance.reshape(rows, cols),
+        max_residual=plan.max_residual, method="exact",
+    )
 
 
 def place_nearest(
@@ -507,16 +653,9 @@ def place(
     geometry: measured focus centres and a scan step that is a fraction of a
     percent off both move samples off the raster.
     """
-    fx = np.asarray(gx, dtype=float).ravel()
-    fy = np.asarray(gy, dtype=float).ravel()
-    finite = np.isfinite(fx) & np.isfinite(fy)
-    residual = np.maximum(
-        np.abs(fx[finite] - np.rint(fx[finite])),
-        np.abs(fy[finite] - np.rint(fy[finite])),
-    )
-    if residual.size == 0 or float(residual.max()) <= tolerance:
-        return place_nearest(gx, gy, values, shape, variance)
-    return grid_bspline(gx, gy, values, shape, variance, smoothing=smoothing)
+    return prepare_placement(
+        gx, gy, shape, tolerance=tolerance, smoothing=smoothing
+    ).place(values, variance)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

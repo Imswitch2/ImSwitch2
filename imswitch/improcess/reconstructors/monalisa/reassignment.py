@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .extraction import ExtractionOperator
+from .extraction import ExtractionOperator, ExtractionResult
 from .placement import HOLE_DENSITY, OutputRaster, PlacedImage, sample_positions
 
 DEFAULT_OFFSETS = (
@@ -300,6 +300,7 @@ def reassign(
     chunk: int = 16,
     frame_gain: np.ndarray | None = None,
     focus_offset: np.ndarray | None = None,
+    extracted: ExtractionResult | None = None,
 ) -> PlacedImage:
     """Reconstruct by placing every footprint pixel where it was measured.
 
@@ -322,6 +323,9 @@ def reassign(
             it (:mod:`.frame_gain`).
         focus_offset: ``(foci,)`` offset of every focus' amplitude, taken
             off its values (:mod:`.cell_offsets`).
+        extracted: The already-solved extraction of ``frames``. When given,
+            reassignment derives its footprint residuals from these retained
+            coefficients instead of solving the Gaussian fit again.
 
     Returns:
         The image, with ``count`` the accumulated weight per pixel relative
@@ -349,7 +353,8 @@ def reassign(
     norm = np.zeros(raster.shape)
     for start in range(0, frames.shape[0], int(chunk)):
         block = slice(start, start + int(chunk))
-        values = operator.footprint_values(frames[block])
+        block_extracted = None if extracted is None else extracted.sliced(block)
+        values = operator.footprint_values(frames[block], extracted=block_extracted)
         if frame_gain is not None:
             values = values / np.asarray(frame_gain, dtype=float)[block][:, None]
         if focus_offset is not None:

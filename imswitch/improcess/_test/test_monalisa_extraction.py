@@ -221,6 +221,51 @@ class TestIsolatedParity:
         assert abs(truncated - scene["amplitude"][focus]) > 0.1
 
 
+class TestRetainedFit:
+    def test_footprint_values_can_reuse_the_original_solve(self, scene, monkeypatch):
+        operator = _build(scene, reach_sigma=3.0)
+        frames = np.stack([scene["frame"], 1.1 * scene["frame"]])
+        extracted = operator.apply(frames)
+
+        def fail(*args, **kwargs):
+            raise AssertionError("the Gaussian fit was solved twice")
+
+        monkeypatch.setattr(operator, "_solve", fail)
+        values = operator.footprint_values(frames, extracted=extracted)
+        assert values.shape == (2, operator.footprints.focus.size)
+
+    def test_device_executor_is_geometry_independent(self, monkeypatch):
+        import types
+        import scipy.sparse
+        import scipy.sparse.linalg
+        from imswitch.improcess.reconstructors.monalisa import extraction as backend
+
+        fake_cp = types.SimpleNamespace(
+            asarray=np.asarray, asnumpy=np.asarray, where=np.where, maximum=np.maximum,
+            sqrt=np.sqrt, sum=np.sum,
+            float32=np.float32, float64=np.float64, ndarray=np.ndarray,
+        )
+        monkeypatch.setattr(backend, "CUPY_AVAILABLE", True)
+        monkeypatch.setattr(backend, "cp", fake_cp)
+        monkeypatch.setattr(backend, "cusparse", scipy.sparse)
+        monkeypatch.setattr(backend, "cusparse_linalg", scipy.sparse.linalg)
+
+        lattice = Lattice.hexagonal(11.0, offset=(4.0, 3.0), angle_rad=np.deg2rad(17))
+        x, y = lattice.points_in_frame(*SHAPE, margin=3 * SIGMA)
+        amplitude = 150.0 + np.arange(x.size, dtype=float) % 70
+        frame = render_spots(SHAPE, x, y, SIGMA, amplitude) + 25.0
+        operator = ExtractionOperator.build(x, y, SIGMA, SHAPE)
+        host = operator.apply(frame)
+        executor = backend.DeviceExtractionExecutor(operator)
+        amplitudes = executor.amplitudes(frame)
+        np.testing.assert_allclose(
+            amplitudes, np.nan_to_num(host.amplitude, nan=0.0), rtol=1e-6, atol=1e-6
+        )
+        device = executor.apply(frame)
+        np.testing.assert_allclose(device.amplitude, host.amplitude, rtol=1e-9, atol=1e-9)
+        np.testing.assert_allclose(device.noise_sigma, host.noise_sigma, rtol=2e-6, atol=1e-9)
+
+
 class TestHaze:
     def test_a_haze_of_the_modelled_shape_is_removed(self, scene):
         frame = scene["frame"] + _render_haze(
