@@ -35,6 +35,7 @@ import sys
 import tempfile
 import threading
 import time
+from multiprocessing import AuthenticationError
 from multiprocessing.connection import Listener
 from pathlib import Path
 from typing import Callable, Mapping
@@ -99,6 +100,11 @@ KILL_WAIT_S = 10.0
 #: Both are localhost operations that complete in milliseconds; one second is
 #: far above that and still keeps a failed start from seeming hung.
 WAKE_ACCEPT_S = 1.0
+
+#: Pause after a refused connection attempt before accepting again, so a
+#: listener that fails at once (for example no file descriptors left) cannot
+#: spin a core. Equal to the start-up poll: the same "noticed within" latency.
+ACCEPT_RETRY_S = STARTUP_POLL_S
 
 #: How long :meth:`FijiSession.stop` waits for a start or a request that holds
 #: the session lock to let go AFTER it has killed the host. The holder is
@@ -285,54 +291,98 @@ class FijiSession:
         except OSError:
             pass        # the host already exited; the wait below reports why
 
+        listener = self._listener
         box: dict = {}
         accepted = threading.Event()
+        give_up = threading.Event()     # set when the waiter no longer wants a connection
+        refused: list[str] = []         # repr of each connection attempt that failed to authenticate
 
         def accept() -> None:
+            # Anyone on this machine can connect to the port, and CPython's
+            # Listener.accept() runs the key challenge on the FIRST peer: a
+            # port scanner or endpoint-security probe would otherwise fail the
+            # start (a wrong key raises AuthenticationError, a peer that
+            # closes raises EOFError) while the real host waits in the backlog.
+            # So a failed attempt is recorded and the next peer is accepted.
+            # A peer that connects and then sends nothing still blocks inside
+            # the stdlib challenge; that is not solved here, the start-up
+            # timeout bounds it.
             try:
-                box["conn"] = self._listener.accept()
+                while not give_up.is_set():
+                    try:
+                        box["conn"] = listener.accept()
+                        return
+                    except (AuthenticationError, EOFError, OSError) as exc:
+                        if give_up.is_set():
+                            return
+                        refused.append(repr(exc))
+                        if give_up.wait(ACCEPT_RETRY_S):
+                            return
             except BaseException as exc:  # noqa: BLE001  (reported by the waiting thread)
                 box["error"] = exc
             finally:
                 accepted.set()
+
+        def fail(headline: str) -> FijiStartError:
+            if refused:
+                headline += (f"; {len(refused)} connection attempt(s) to its port failed authentication "
+                             f"or closed early (last: {refused[-1]})")
+            return FijiStartError(self._describe(headline))
 
         threading.Thread(target=accept, name="fiji-accept", daemon=True).start()
         deadline = time.monotonic() + self._startup_timeout_s
         while not accepted.wait(STARTUP_POLL_S):
             code = self._proc.poll()
             if code is not None:
-                self._wake_accept(accepted)
-                raise FijiStartError(self._describe(f"the Fiji host exited with code {code} before it connected"))
+                self._wake_accept(accepted, give_up)
+                raise fail(f"the Fiji host exited with code {code} before it connected")
             if self._stopping:
-                self._wake_accept(accepted)
-                raise FijiStartError(self._describe("stopped while starting"))
+                self._wake_accept(accepted, give_up)
+                raise fail("stopped while starting")
             if time.monotonic() >= deadline:
-                self._wake_accept(accepted)
-                raise FijiStartError(self._describe(
-                    f"the Fiji host did not connect within {self._startup_timeout_s:g} s"))
+                self._wake_accept(accepted, give_up)
+                raise fail(f"the Fiji host did not connect within {self._startup_timeout_s:g} s")
+        give_up.set()
         if "error" in box:
-            raise FijiStartError(self._describe(f"the Fiji host connection failed: {box['error']!r}"))
+            raise fail(f"the Fiji host connection failed: {box['error']!r}")
         self._conn = box["conn"]
+        self._close_listener()          # the host is connected: nothing else may connect
         if self._stopping:
-            raise FijiStartError(self._describe("stopped while starting"))
+            raise fail("stopped while starting")
 
         try:
             info = PingInfo.from_dict(reply_value(self._exchange(Ping(), deadline - time.monotonic())))
             check_ping(info)
         except (FijiLinkError, EOFError, OSError) as exc:
             if self._stopping:              # stop() killed the host under the ping
-                raise FijiStartError(self._describe("stopped while starting")) from exc
-            raise FijiStartError(self._describe(f"the Fiji host failed its first request: {exc}")) from exc
+                raise fail("stopped while starting") from exc
+            raise fail(f"the Fiji host failed its first request: {exc}") from exc
         self.ping_info = info
 
-    def _wake_accept(self, accepted: threading.Event) -> None:
-        """Release the blocked ``accept`` with a throwaway connection, then close the listener."""
-        try:
-            host, port = self._listener.address
-            socket.create_connection((host, port), timeout=WAKE_ACCEPT_S).close()
-        except OSError:
-            pass
+    def _wake_accept(self, accepted: threading.Event, give_up: threading.Event) -> None:
+        """Tell the accept thread to stop, release it with a throwaway connection, wait for it.
+
+        The throwaway connection is refused by the key challenge (and the thread
+        then sees ``give_up``), which is what unblocks an ``accept`` that no
+        close of the listener would reliably interrupt on every platform.
+        """
+        give_up.set()
+        listener = self._listener
+        if listener is not None:
+            try:
+                host, port = listener.address
+                socket.create_connection((host, port), timeout=WAKE_ACCEPT_S).close()
+            except OSError:
+                pass
         accepted.wait(WAKE_ACCEPT_S)
+
+    def _close_listener(self) -> None:
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            try:
+                listener.close()
+            except OSError:
+                pass
 
     def stop(self, timeout_s: float = STOP_TIMEOUT_S) -> None:
         """Quit the host, kill it if it will not, and remove the temp files. Idempotent, thread-safe.
@@ -401,14 +451,13 @@ class FijiSession:
             pass
 
     def _close_channels(self) -> None:
-        for name in ("_conn", "_listener"):
-            channel = getattr(self, name)
-            setattr(self, name, None)
-            if channel is not None:
-                try:
-                    channel.close()
-                except OSError:
-                    pass
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        self._close_listener()          # already None once the host has connected
 
     def _teardown(self) -> None:
         """Release everything of the previous host, process included."""

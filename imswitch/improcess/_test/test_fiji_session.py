@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from pathlib import Path
@@ -375,3 +376,39 @@ def test_stop_during_a_slow_start_ends_it_promptly_and_a_restart_works(make):
     session._extra_env["IMSWITCH_FIJI_FAKE"] = ""
     session.start()
     assert session.state == "ready"
+
+
+def _stray_connection_before_the_host(make, misbehave):
+    session = make(f"connect_after={LATE_CONNECT_S}")
+    start = _run_in_thread(session.start)
+    _wait_for(lambda: session._listener is not None, "the listener")
+    with socket.create_connection(session._listener.address, timeout=5.0) as stray:
+        misbehave(stray)
+    assert start["done"].wait(WATCH_WAIT_S)
+    assert "error" not in start, start.get("error")
+    assert session.state == "ready" and session.ping_info is not None
+    assert session._listener is None              # closed once the host was in
+    return session
+
+
+def test_a_stray_connection_that_closes_at_once_does_not_fail_the_start(make):
+    _stray_connection_before_the_host(make, lambda stray: None)
+
+
+def test_a_stray_connection_with_the_wrong_key_does_not_fail_the_start(make):
+    garbage = bytes(range(256)) + bytes(44)      # 300 bytes that are not an authentication answer
+
+    def misbehave(stray):
+        stray.sendall(garbage)
+
+    _stray_connection_before_the_host(make, misbehave)
+
+
+def test_stray_attempts_are_named_in_the_error_of_a_start_that_fails(make):
+    session = make("never_connect", startup_timeout_s=SHORT_TIMEOUT_S)
+    start = _run_in_thread(session.start)
+    _wait_for(lambda: session._listener is not None, "the listener")
+    socket.create_connection(session._listener.address, timeout=5.0).close()
+    assert start["done"].wait(WATCH_WAIT_S)
+    assert isinstance(start.get("error"), FijiStartError)
+    assert "did not connect" in str(start["error"]) and "connection attempt(s)" in str(start["error"])
