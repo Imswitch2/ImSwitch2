@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("PyQt5")
 
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QCheckBox, QLineEdit
+from PyQt5.QtWidgets import QCheckBox, QLabel, QLineEdit, QPushButton
 
 from imswitch.imcontrol.view.configeditor import editor
 from imswitch.imcontrol.view.configeditor.editor import SectionEditorDialog
@@ -244,3 +244,125 @@ def test_a_custom_schema_with_no_section_flag_writes_every_field(qapp):
 def test_a_section_can_still_opt_out_explicitly():
     schema = {"section": True, "write_policy": "write_all", "fields": []}
     assert not editor._writes_as_written(schema)
+
+
+# ------------------------------------- keys the templates used to leave out
+
+TILING_ALL_KEYS = {
+    "xyPositioner": "Stage",
+    "mode": "triggered",
+    "scanSource": "ScanWidget",
+    "scanTimeoutS": 42.5,
+    "settleTimeMs": 80.0,
+    "saveTiles": True,
+    "saveFormat": "ZARR",
+    "measurementsRoot": "D:/tiles",
+    "flipTileAxisX": True,
+    "flipTileAxisY": True,
+    "swapTileAxes": True,
+    "registerTiles": True,
+    "registrationMaxShiftFraction": 0.25,
+}
+
+FOCUS_LOCK_BLOCK = {
+    "camera": "IR", "positioner": "ZPiezo", "updateFreq": 10,
+    "frameCropx": 1, "frameCropy": 2, "frameCropw": 300, "frameCroph": 100,
+    "piKp": 5.0, "piKi": 0.5,
+    "positionerAxis": "Z", "reacquireTimeoutS": 2.5, "reacquireTolerancePx": 1.25, "reacquireSamples": 8,
+}
+
+
+@pytest.mark.parametrize("key, block", [("tiling", TILING_ALL_KEYS), ("focusLock", FOCUS_LOCK_BLOCK)])
+def test_every_key_the_code_reads_is_a_template_field_and_survives_apply(qapp, key, block):
+    schema = editor.SECTION_SCHEMAS[key]
+    dlg = _dialog(key, copy.deepcopy(block), {})
+    # every one of these keys has its own widget, none had to fall to the Custom tab
+    assert dlg._custom_widgets == {}
+    assert set(block) <= set(dlg._field_widgets)
+    dlg._try_apply()
+    assert dlg.result_data, dlg._err_lbl.text()
+    assert_json_identical(dlg.result_data, block)
+    assert list(dlg.result_data) == list(block)
+    assert {f["key"] for f in schema["fields"]} >= set(block)
+
+
+def test_changing_one_new_tiling_key_changes_only_that_key(qapp):
+    dlg = _dialog("tiling", copy.deepcopy(TILING_ALL_KEYS), {})
+    box = dlg._field_widgets["registerTiles"]._w
+    box.click()
+    combo = dlg._field_widgets["saveFormat"]._w
+    index = combo.findData("HDF5")
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+    QTest.keyClick(dlg._field_widgets["scanTimeoutS"]._w, "0")
+    dlg._try_apply()
+    assert_json_identical(
+        dlg.result_data,
+        {**TILING_ALL_KEYS, "registerTiles": False, "saveFormat": "HDF5", "scanTimeoutS": 42.50},
+    )
+
+
+def test_a_short_tiling_block_is_not_expanded_into_the_new_keys(qapp):
+    block = {"xyPositioner": "Stage", "defaultTilesX": 4}
+    dlg = _dialog("tiling", copy.deepcopy(block), {})
+    dlg._try_apply()
+    assert_json_identical(dlg.result_data, block)
+
+
+def test_a_short_focus_lock_block_is_not_expanded_into_the_new_keys(qapp):
+    block = {k: v for k, v in FOCUS_LOCK_BLOCK.items()
+             if k not in {"positionerAxis", "reacquireTimeoutS", "reacquireTolerancePx", "reacquireSamples"}}
+    dlg = _dialog("focusLock", copy.deepcopy(block), {})
+    dlg._try_apply()
+    assert_json_identical(dlg.result_data, block)
+
+
+def test_the_new_keys_show_their_code_default_when_the_file_lacks_them(qapp):
+    dlg = _dialog("tiling", {"xyPositioner": "Stage"}, {})
+    assert dlg._field_widgets["mode"]._w.currentData() == "free-running"
+    assert dlg._field_widgets["saveFormat"]._w.currentData() == "TIFF"
+    assert dlg._field_widgets["scanTimeoutS"]._w.text() == "300.0"
+    assert not dlg._field_widgets["saveTiles"]._w.isChecked()
+
+
+def test_the_teensy_mock_fallback_is_off_unless_the_file_says_so(qapp):
+    dlg = _dialog("teensyPulse", {"port": "COM7"}, {})
+    assert not dlg._field_widgets["useMockOnFailure"]._w.isChecked()
+    dlg._try_apply()
+    assert dlg.result_data == {"port": "COM7"}
+
+    new = editor._new_section_seed(editor.SECTION_SCHEMAS["teensyPulse"])
+    assert new == {}
+
+
+def test_trigger_scope_section_asks_for_the_rs232_device(qapp):
+    schema = editor.SECTION_SCHEMAS["triggerScope"]
+    assert schema["group"] == "system"
+    assert [f["key"] for f in schema["fields"]] == ["rs232device"]
+    field = schema["fields"][0]
+    assert field["req"] and field["type"] == "ref" and field["opts"] == ["rs232devices"]
+
+    data = {"rs232devices": {"Board": {"managerName": "RS232Manager"}}}
+    dlg = _dialog("triggerScope", editor._new_section_seed(schema), data)
+    dlg._try_apply()
+    assert dlg.result_data == {}
+    assert _missing_labels(dlg) == ["RS232 device"]
+    combo = dlg._field_widgets["rs232device"]._w
+    assert [combo.itemText(i) for i in range(combo.count())] == ["", "Board"]
+    QTest.keyClicks(combo.lineEdit(), "Board")
+    dlg._try_apply()
+    assert dlg.result_data == {"rs232device": "Board"}
+
+
+def test_a_trigger_scope_block_is_a_system_row_and_not_an_extras_entry(qapp):
+    panel = editor.PropertyEditor()
+    panel.load_config_extras({"triggerScope": {"rs232device": "Board"}, "rs232devices": {"Board": {}}})
+    rows = "\n".join(label.text() for label in panel._sys_sections_inner.findChildren(QLabel))
+    assert "TriggerScope" in rows and "(triggerScope)" in rows
+    extras = [b.text() for b in panel._sections_inner.findChildren(QPushButton)]
+    assert "triggerScope" not in extras
+
+    panel = editor.PropertyEditor()
+    panel.load_config_extras({"rs232devices": {"Board": {}}})
+    add = next(b for b in panel._sys_sections_inner.findChildren(QPushButton) if b.text().startswith("＋ Add System"))
+    assert "triggerScope" in add.toolTip()

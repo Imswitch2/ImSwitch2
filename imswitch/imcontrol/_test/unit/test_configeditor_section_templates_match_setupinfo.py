@@ -58,25 +58,6 @@ SECTION_CLASSES = {
     "triggerScope": setup_info.TriggerScopeInfo,
 }
 
-#: Fields the dataclass reads that the template does not offer yet.
-#: Added in S1 of the section-templates work; the set is emptied there.
-EXPECTED_MISSING_FROM_TEMPLATE = {
-    "focusLock": {"positionerAxis", "reacquireTimeoutS", "reacquireTolerancePx", "reacquireSamples"},
-    "autofocus": {"settleTimeMs"},
-    "tiling": {
-        "mode", "scanSource", "scanTimeoutS", "settleTimeMs", "saveTiles", "saveFormat",
-        "measurementsRoot", "flipTileAxisX", "flipTileAxisY", "swapTileAxes",
-        "registerTiles", "registrationMaxShiftFraction",
-    },
-}
-#: Sections that have no template yet (added in S1).
-EXPECTED_NO_TEMPLATE = {"triggerScope"}
-
-#: Optional fields whose template default is known to differ from the
-#: dataclass default (fixed in S1).
-EXPECTED_DEFAULT_MISMATCH = {("teensyPulse", "useMockOnFailure")}
-
-
 def _template(key: str) -> dict:
     path = SECTIONS_DIR / f"{key}.json"
     return json.loads(path.read_text(encoding="utf-8"))
@@ -178,9 +159,9 @@ def test_every_section_dataclass_is_mapped_to_its_setupinfo_field():
         assert inner[0] is cls, key
 
 
-def test_the_set_of_templates_is_the_known_one():
+def test_every_section_dataclass_has_a_template():
     on_disk = {p.stem for p in SECTIONS_DIR.glob("*.json")}
-    assert on_disk - {"processing"} == set(SECTION_CLASSES) - EXPECTED_NO_TEMPLATE
+    assert on_disk - {"processing"} == set(SECTION_CLASSES)
 
 
 @pytest.mark.parametrize("key", _templates_present())
@@ -188,11 +169,8 @@ def test_template_lists_every_dataclass_field_and_nothing_else(key):
     cls = SECTION_CLASSES[key]
     in_code = {f.name for f in dataclasses.fields(cls)}
     in_template = set(_fields(key))
-    expected_missing = EXPECTED_MISSING_FROM_TEMPLATE.get(key, set())
     assert in_template - in_code == set(), f"{key}: template lists keys the code never reads"
-    assert in_code - in_template == expected_missing, (
-        f"{key}: template does not offer {sorted(in_code - in_template - expected_missing)}"
-    )
+    assert in_code - in_template == set(), f"{key}: template does not offer {sorted(in_code - in_template)}"
 
 
 @pytest.mark.parametrize("key", _templates_present())
@@ -241,29 +219,10 @@ def test_optional_defaults_are_the_dataclass_defaults(key):
     for k, f in _fields(key).items():
         if f.get("req"):
             continue
-        if (key, k) in EXPECTED_DEFAULT_MISMATCH:
-            continue
         shown = _normalised(editor._field_default(f))
         assert shown == loader_default(by_name[k]), (
             f"{key}.{k}: template starts at {shown!r}, the code at {loader_default(by_name[k])!r}"
         )
-
-
-def test_the_known_default_mismatches_are_still_mismatches():
-    """Keeps EXPECTED_DEFAULT_MISMATCH honest: an entry that no longer differs must go."""
-    from imswitch.imcontrol.view.configeditor import editor
-
-    for key, k in EXPECTED_DEFAULT_MISMATCH:
-        by_name = {f.name: f for f in dataclasses.fields(SECTION_CLASSES[key])}
-        shown = _normalised(editor._field_default(_fields(key)[k]))
-        assert shown != loader_default(by_name[k])
-
-
-def test_the_expected_missing_fields_really_are_missing():
-    """Keeps EXPECTED_MISSING_FROM_TEMPLATE honest: a field offered since must leave the set."""
-    for key, names in EXPECTED_MISSING_FROM_TEMPLATE.items():
-        assert names.isdisjoint(_fields(key)), key
-        assert names <= {f.name for f in dataclasses.fields(SECTION_CLASSES[key])}, key
 
 
 @pytest.mark.parametrize("key", _templates_present())
@@ -274,3 +233,22 @@ def test_every_template_is_a_section_that_writes_as_written(key):
     assert schema["section"] is True
     assert schema["key"] == key
     assert editor._writes_as_written(schema)
+
+
+def test_tiling_choices_are_the_ones_the_code_defines():
+    """No invented options: ``mode`` and ``saveFormat`` list what the code accepts."""
+    pytest.importorskip("PyQt5")
+    from imswitch.imcontrol.model.managers.RecordingManager import SaveFormat
+    from imswitch.imcontrol.view.widgets.TilingWidget import MODE_FREE_RUNNING, MODE_TRIGGERED
+    from imswitch.imcontrol.model.workflows.spiral import SPIRAL
+
+    fields = _fields("tiling")
+    assert fields["mode"]["type"] == "select"
+    assert fields["mode"]["opts"] == [MODE_FREE_RUNNING, MODE_TRIGGERED]
+    assert fields["saveFormat"]["type"] == "select"
+    assert set(fields["saveFormat"]["opts"]) == {fmt.name for fmt in SaveFormat}
+    assert fields["defaultPattern"]["type"] == "select"
+    assert SPIRAL in fields["defaultPattern"]["opts"]
+    # free text, because the code takes whatever names a live scan controller / folder
+    assert fields["scanSource"]["type"] == "text"
+    assert fields["measurementsRoot"]["type"] == "text"

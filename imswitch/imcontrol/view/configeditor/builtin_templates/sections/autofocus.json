@@ -12,6 +12,7 @@
     {"key": "frameCropx", "label": "Crop X",           "type": "int",  "default": "null","req": true, "grp": "Crop",    "tip": "Starting X of the focus-metric region.", "opts": []},
     {"key": "frameCropy", "label": "Crop Y",           "type": "int",  "default": "null","req": true, "grp": "Crop",    "tip": "Starting Y of the focus-metric region.", "opts": []},
     {"key": "frameCropw", "label": "Crop width",       "type": "int",  "default": "null","req": true,"grp": "Crop",    "tip": "Width of the focus-metric region.", "opts": []},
-    {"key": "frameCroph", "label": "Crop height",      "type": "int",  "default": "null","req": true,"grp": "Crop",    "tip": "Height of the focus-metric region.", "opts": []}
+    {"key": "frameCroph", "label": "Crop height",      "type": "int",  "default": "null","req": true,"grp": "Crop",    "tip": "Height of the focus-metric region.", "opts": []},
+    {"key": "settleTimeMs", "label": "Settle time (ms)", "type": "float", "default": 150.0, "req": false, "grp": "Advanced", "tip": "Wait after each Z move before the focus metric's frame is taken, in milliseconds. The frame is taken through the same fresh-frame handshake tiling uses, so a camera slower than this wait still yields a frame that started exposing after the move.", "opts": []}
   ]
 }
