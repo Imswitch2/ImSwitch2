@@ -442,7 +442,15 @@ class ImageWindow(QtWidgets.QWidget):
     sigContentChanged = QtCore.Signal()
 
     def __init__(self, result, parent=None):
-        super().__init__(parent, QtCore.Qt.Window)
+        # With an owner (the ImProcess main window) this is a tool window: it
+        # stays above its owner, so clicking the toolbar (Auto contrast, a
+        # LUT) does not bury the image it acts on. Checked on macOS 2026-10-27:
+        # an unowned window, or an owned Qt.Window, falls behind the main
+        # window when that is activated; an owned Qt.Tool stays above and can
+        # still become the active window. Without an owner (tests, scripts) it
+        # is an ordinary top-level window.
+        flags = QtCore.Qt.Tool if parent is not None else QtCore.Qt.Window
+        super().__init__(parent, flags)
         self._logger = initLogger(self, tryInheritParent=False)
         self._result = result
         self._layers: list[_Layer] = []

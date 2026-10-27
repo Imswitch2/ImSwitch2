@@ -136,7 +136,9 @@ class ResultWindowManager(QtCore.QObject):
             return None
         window = self._windows.get(id(result))
         if window is None:
-            window = self._factory(result)
+            # Owned by the main window, so the windows stay above it (see
+            # ImageWindow.__init__).
+            window = self._factory(result, parent=self._parentWidget)
             self._windows[id(result)] = window
             window.sigActivated.connect(lambda w=window: self._onActivated(w))
             window.sigClosed.connect(lambda w=window: self._onClosed(w))

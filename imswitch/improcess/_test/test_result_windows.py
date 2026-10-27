@@ -459,3 +459,23 @@ def test_the_toolbar_resets_the_view_through_the_controller():
     toolbar._logger = SimpleNamespace(exception=lambda *a, **k: None)
     toolbar.resetView()
     assert calls == ["controller"]
+
+
+def test_windows_are_tool_windows_owned_by_the_main_window(qtbot):
+    """Owned tool windows stay above the main window when the toolbar is clicked."""
+    from qtpy import QtCore, QtWidgets
+    import numpy as np
+
+    from imswitch.improcess.model.array_result import ArrayProcessingResult
+    from imswitch.improcess.view.result_windows import ResultWindowManager
+
+    main = QtWidgets.QMainWindow()
+    qtbot.addWidget(main)
+    manager = ResultWindowManager(main)
+    window = manager.show(ArrayProcessingResult("r", np.zeros((8, 8), np.float32), ["Y", "X"]))
+    assert window.parentWidget() is main
+    assert window.windowType() == QtCore.Qt.Tool
+    unowned = ResultWindowManager(None).show(ArrayProcessingResult("u", np.zeros((8, 8), np.float32), ["Y", "X"]))
+    qtbot.addWidget(unowned)
+    assert unowned.windowType() == QtCore.Qt.Window
+    manager.closeAll()
