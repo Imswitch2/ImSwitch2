@@ -36,6 +36,20 @@ raster, so it is read plane by plane like an image), ``points`` as a scatter of
 the points on the current plane, ``shapes`` as non-editable outlines. A layer
 that asks for the 3D canvas (``ndisplay == 3``) cannot be drawn here and is
 reported in the status line.
+
+Coordinate convention
+---------------------
+The view's coordinates are napari's *world* coordinates: pixel ``(r, c)`` is
+**centred** on ``(c * sx, r * sy)`` and covers ``[c - 0.5, c + 0.5) * sx`` by
+``[r - 0.5, r + 0.5) * sy`` (``PIXEL_CENTRE_OFFSET`` is that half pixel). The
+window uses napari's convention, not Qt's (where an image item's pixel ``(r, c)``
+starts at the corner ``(c, r)``), because everything that measures or draws
+through :mod:`~imswitch.improcess.view.window_tools` is written for napari: ROI
+outlines (``roi_outline``), polygon rasterisation (``roi_mask_local``), bilinear
+profile sampling and this module's own points/shapes overlays all take a world
+coordinate to *be* a pixel centre. The image item is therefore placed half a pixel
+up-left of the origin (:meth:`ImageWindow._place`), the cursor readout rounds to
+the nearest pixel (:func:`pixel_index`), and the panels work unchanged.
 """
 
 from __future__ import annotations
@@ -83,6 +97,12 @@ SCALE_BAR_THICKNESS_PX = 6
 #: readable whatever is underneath. RGBA of the label's plate.
 SCALE_BAR_OUTLINE_PX = 1
 SCALE_BAR_PLATE_RGBA = (0, 0, 0, 140)
+
+#: Half a pixel: the distance from a pixel's centre to its edge. The window uses
+#: napari's convention (world coordinate ``i * scale`` is the *centre* of pixel
+#: ``i``; see the module docstring), so the image sits this far (in pixels) up-left
+#: of the origin and a cursor position maps to the nearest pixel centre.
+PIXEL_CENTRE_OFFSET = 0.5
 
 #: The "nice" mantissas of a scale-bar length, largest first: the 1-2-5
 #: sequence of every engineering ruler.
@@ -158,6 +178,11 @@ _UNIT_DISPLAY = {"um": "µm"}
 def display_unit(unit: str) -> str:
     """The unit as printed ("um" is written "µm", as in the napari scale bar)."""
     return _UNIT_DISPLAY.get(unit, unit)
+
+
+def pixel_index(coordinate: float, scale: float) -> int:
+    """The pixel a view coordinate falls in: the one whose centre (``i * scale``) is nearest."""
+    return int(math.floor(coordinate / scale + PIXEL_CENTRE_OFFSET))
 
 
 def nice_length(maximum: float) -> float:
@@ -741,14 +766,20 @@ class ImageWindow(QtWidgets.QWidget):
             layer.item.setLevels(layer.levels)
 
     def _place(self, layer: _Layer) -> None:
-        """Place an item in calibrated coordinates (image pixel -> scale units)."""
+        """Place an item in calibrated coordinates (image pixel -> scale units).
+
+        Pixel ``(r, c)`` is centred on ``(c * sx, r * sy)``: the rectangle starts
+        half a pixel before the origin (the module docstring says why).
+        """
         if layer.plane is None:
             return
         sy, sx = self._yx_scales()
         height, width = layer.plane.shape[:2]
         placed = (height, width, sy, sx)
         if layer.placed != placed:
-            layer.item.setRect(QtCore.QRectF(0, 0, width * sx, height * sy))
+            layer.item.setRect(QtCore.QRectF(
+                -PIXEL_CENTRE_OFFSET * sx, -PIXEL_CENTRE_OFFSET * sy, width * sx, height * sy,
+            ))
             layer.placed = placed
 
     def _yx_scales(self) -> tuple[float, float]:
@@ -927,7 +958,7 @@ class ImageWindow(QtWidgets.QWidget):
         """
         sy, sx = self._yx_scales()
         unit = display_unit(self._scale_unit)
-        col, row = int(math.floor(x / sx)), int(math.floor(y / sy))
+        col, row = pixel_index(x, sx), pixel_index(y, sy)
         if unit == "px":
             position = f"x={col}  y={row}"
         else:

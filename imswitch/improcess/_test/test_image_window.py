@@ -191,7 +191,8 @@ def test_cursor_readout_in_pixels_and_per_channel(qtbot):
         "comp", data, ["C", "Y", "X"], channel_axis=0, channel_colormaps=["red", "green"],
     )
     window = _window(qtbot, result)
-    text = window.readoutText(3.5, 1.5)
+    # The centre of pixel (row 1, column 3) is at world (x=3, y=1).
+    text = window.readoutText(3.0, 1.0)
     assert "x=3  y=1" in text
     assert f"comp C_0={data[0, 1, 3]:g}" in text and f"comp C_1={data[1, 1, 3]:g}" in text
     # Outside the image only the position is given.
@@ -529,9 +530,10 @@ def test_home_button_restores_the_whole_image_after_zooming(qtbot):
     QtWidgets.QApplication.processEvents()
     window.resetView()
     whole = _view_rect(window)
-    # The whole image (80 x 60 pixels, origin at 0) is in view.
-    assert whole.left() <= 0 and whole.top() <= 0
-    assert whole.right() >= 80 and whole.bottom() >= 60
+    # The whole image (80 x 60 pixels) is in view; pixel centres are on the
+    # integers, so the image spans [-0.5, 79.5] x [-0.5, 59.5].
+    assert whole.left() <= -0.5 and whole.top() <= -0.5
+    assert whole.right() >= 79.5 and whole.bottom() >= 59.5
 
     window.viewBox().scaleBy((0.25, 0.25), (10, 10))
     window.viewBox().translateBy((7, 5))
@@ -572,3 +574,100 @@ def test_the_home_button_sits_in_the_status_row_with_a_tooltip(qtbot):
     assert window._homeButton.toolTip().startswith("Reset view")
     assert window._homeButton.parentWidget() is window
     assert window._status.isVisibleTo(window) and window._homeButton.isVisibleTo(window)
+
+
+# --------------------------------------------------------------------------
+# the coordinate convention: world (r, c) is the CENTRE of pixel (r, c), as in napari
+# --------------------------------------------------------------------------
+
+SCALE_Y, SCALE_X = 2.0, 3.0
+
+
+def _scaled_window(qtbot, data=None):
+    data = np.zeros((40, 50), np.float32) if data is None else data
+    return _window(qtbot, _result(data, "YX", axis_scales=[SCALE_Y, SCALE_X], scale_unit="um"))
+
+
+def _item_rect_in_view(window):
+    item = window._layers[0].item
+    return item.mapRectToParent(item.boundingRect())
+
+
+def _pixel_centre_in_view(window, row, col):
+    """Where the image item draws the centre of pixel (row, col), in view coordinates."""
+    rect = _item_rect_in_view(window)
+    shape = window._layers[0].plane.shape
+    return (rect.left() + (col + 0.5) * rect.width() / shape[1],
+            rect.top() + (row + 0.5) * rect.height() / shape[0])
+
+
+def test_the_image_is_drawn_centred_on_its_pixel_coordinates(qtbot):
+    window = _scaled_window(qtbot)
+    rect = _item_rect_in_view(window)
+    # Pixel (0, 0) is centred on the origin, so the image starts half a pixel before it.
+    assert rect.left() == pytest.approx(-0.5 * SCALE_X)
+    assert rect.top() == pytest.approx(-0.5 * SCALE_Y)
+    assert rect.width() == pytest.approx(50 * SCALE_X)
+    assert rect.height() == pytest.approx(40 * SCALE_Y)
+    assert _pixel_centre_in_view(window, 0, 0) == pytest.approx((0.0, 0.0))
+    assert _pixel_centre_in_view(window, 10, 12) == pytest.approx((12 * SCALE_X, 10 * SCALE_Y))
+
+
+def test_a_point_is_drawn_on_the_centre_of_its_pixel(qtbot):
+    image = np.zeros((40, 50), np.float32)
+    points = np.array([[10.0, 12.0]])
+    specs = [_spec("img", image, "YX", component="i", axis_scales=[SCALE_Y, SCALE_X]),
+             _spec("pts", points, "YX", kind="points", role="overlay", component="p",
+                   axis_scales=[SCALE_Y, SCALE_X])]
+    window = _window(qtbot, _LayeredResult("res", image, "YX", specs))
+    xs, ys = window._overlays[0].items[0].getData()
+
+    assert (xs[0], ys[0]) == pytest.approx((12 * SCALE_X, 10 * SCALE_Y))
+    # ... and that is the middle of the image item's pixel (10, 12).
+    assert (xs[0], ys[0]) == pytest.approx(_pixel_centre_in_view(window, 10, 12))
+
+
+def test_an_outline_through_pixel_centres_runs_through_the_item_pixel_centres(qtbot):
+    image = np.zeros((40, 50), np.float32)
+    shape = np.array([[[10.0, 12.0], [20.0, 30.0]]])
+    specs = [_spec("img", image, "YX", component="i", axis_scales=[SCALE_Y, SCALE_X]),
+             _spec("shp", shape, "YX", kind="shapes", role="overlay", component="s",
+                   axis_scales=[SCALE_Y, SCALE_X], layer_kwargs={"shape_type": "rectangle"})]
+    window = _window(qtbot, _LayeredResult("res", image, "YX", specs))
+    x, y = window._overlays[0].items[0].getData()
+
+    assert (x[0], y[0]) == pytest.approx(_pixel_centre_in_view(window, 10, 12))
+    assert (np.nanmax(x), np.nanmax(y)) == pytest.approx(_pixel_centre_in_view(window, 20, 30))
+
+
+def test_the_readout_names_the_nearest_pixel(qtbot):
+    data = np.tile(np.arange(50, dtype=np.float32), (40, 1))   # value == column
+    window = _scaled_window(qtbot, data)
+
+    assert "value=12 " in window.readoutText(12.3 * SCALE_X, 5 * SCALE_Y) + " "
+    assert "value=13 " in window.readoutText(12.6 * SCALE_X, 5 * SCALE_Y) + " "
+    # A pixel's centre, and the whole pixel around it, name that pixel.
+    for offset in (-0.49, 0.0, 0.49):
+        assert "value=12 " in window.readoutText((12 + offset) * SCALE_X, 5 * SCALE_Y) + " "
+    # Rows follow the same rule.
+    rows = np.tile(np.arange(40, dtype=np.float32)[:, None], (1, 50))
+    window = _scaled_window(qtbot, rows)
+    assert "value=7 " in window.readoutText(3 * SCALE_X, 7.4 * SCALE_Y) + " "
+    assert "value=8 " in window.readoutText(3 * SCALE_X, 7.6 * SCALE_Y) + " "
+    # The half pixel before the first centre is still the image; the next is outside.
+    assert "value=0 " in window.readoutText(-0.4 * SCALE_X, -0.4 * SCALE_Y) + " "
+    assert "value" not in window.readoutText(-0.6 * SCALE_X, 3 * SCALE_Y)
+
+
+def test_the_whole_image_is_in_view_after_reset(qtbot):
+    window = _scaled_window(qtbot)
+    window.show()
+    QtWidgets.QApplication.processEvents()
+    window.viewBox().scaleBy((0.25, 0.25), (10, 10))
+    window.resetView()
+    view = window.viewBox().viewRect()
+
+    assert view.left() <= -0.5 * SCALE_X + 1e-9 and view.right() >= (50 - 0.5) * SCALE_X - 1e-9
+    assert view.top() <= -0.5 * SCALE_Y + 1e-9 and view.bottom() >= (40 - 0.5) * SCALE_Y - 1e-9
+    # padding=0: it is the image, not more than the aspect lock needs.
+    assert view.left() == pytest.approx(-0.5 * SCALE_X) or view.top() == pytest.approx(-0.5 * SCALE_Y)

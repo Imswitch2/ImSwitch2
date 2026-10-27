@@ -449,3 +449,60 @@ def test_a_rectangle_on_a_calibrated_component_layer_has_exact_pixel_bounds(qtbo
     assert _row(panel)["mean"] == pytest.approx(float(plane[r0:r1, c0:c1].mean()), rel=1e-5)
     assert _row(panel)["area_px"] == (r1 - r0) * (c1 - c0)
     manager.closeAll()
+
+
+# --------------------------------------------------------------------------
+# the window's coordinate convention (world (r, c) is the centre of pixel (r, c))
+# --------------------------------------------------------------------------
+
+def _alternating_columns_rig(qtbot, scales):
+    manager = ResultWindowManager()
+    viewer = ActiveWindowViewer(manager)
+    data = np.zeros((40, 50), np.float32)
+    data[:, ::2] = 100.0                       # columns alternate 100, 0, 100, ...
+    window = manager.show(ArrayProcessingResult(
+        "stripes", data, ["Y", "X"], axis_scales=list(scales), scale_unit="um"))
+    qtbot.addWidget(window)
+    return manager, viewer, window, data
+
+
+@pytest.mark.parametrize("scales", [(1.0, 1.0), (2.0, 3.0)])
+def test_a_profile_through_pixel_centres_returns_the_pixel_values_not_their_means(qtbot, scales):
+    manager, viewer, window, data = _alternating_columns_rig(qtbot, scales)
+    widget = ProfileWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.selectMode("line")
+    row_scale, col_scale = scales
+
+    # The line runs through the centres of columns 4..8 of row 10, where the
+    # image item draws them -- not through the pixel corners.
+    rect = window._layers[0].item
+    rect = rect.mapRectToParent(rect.boundingRect())
+    y = rect.top() + (10 + 0.5) * rect.height() / data.shape[0]
+    x0 = rect.left() + (4 + 0.5) * rect.width() / data.shape[1]
+    x1 = rect.left() + (8 + 0.5) * rect.width() / data.shape[1]
+    viewer.tool_service.add_shape("line", [[y, x0], [y, x1]])
+
+    [record] = widget._current_record_inputs
+    profile = np.asarray(record[2])
+    columns = np.linspace(4, 8, profile.size)
+    exact = np.interp(columns, np.arange(data.shape[1]), data[10])
+    assert np.allclose(profile, exact, atol=1e-3)
+    # The five pixel centres themselves read 100, 0, 100, 0, 100 (never a mean of two).
+    at_centres = profile[np.isclose(columns % 1.0, 0.0)]
+    assert sorted(set(np.round(at_centres, 3))) == [0.0, 100.0]
+    assert np.allclose(at_centres, 100.0 * (np.round(columns[np.isclose(columns % 1.0, 0.0)]) % 2 == 0))
+    manager.closeAll()
+
+
+def test_a_polygon_through_pixel_centres_measures_the_same_pixels_as_its_rectangle(panel, rig):
+    # The same four corners, drawn as a polygon and as a rectangle, on the
+    # window's centre convention (row/column index == world coordinate).
+    corners = _rect(10, 12, 30, 40)
+    _draw_and_add(panel, rig, "polygon", corners)
+    _draw_and_add(panel, rig, "rectangle", corners)
+
+    polygon, rectangle = _row(panel, 0), _row(panel, 1)
+    assert (polygon["type"], rectangle["type"]) == ("polygon", "rectangle")
+    assert polygon["area_px"] == rectangle["area_px"] == (30 - 10) * (40 - 12)
+    assert polygon["mean"] == pytest.approx(rectangle["mean"])
