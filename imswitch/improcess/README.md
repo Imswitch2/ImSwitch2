@@ -579,9 +579,12 @@ Rules:
   ImProcess uses **standalone defaults**: reconstructor `["view-only"]`,
   processor `["drift-correct"]`. If at least one of the two keys is present,
   ImProcess is in **config-driven mode**; a missing companion key defaults to
-  `["view-only"]` (reconstructors) / `["drift-correct"]` (processors). Ids not in
-  the corresponding `_AVAILABLE_*` dict raise a startup `KeyError` that lists
-  the unknown IDs and available built-ins. Explicit list order is preserved, so
+  `["view-only"]` (reconstructors) / `["drift-correct"]` (processors). Ids that
+  are neither built-in nor a drop-in plugin on this computer are skipped at
+  startup with one warning each that lists the available IDs; if no configured
+  reconstructor is known, the standalone default is registered instead. The
+  `register_default_*` functions themselves stay strict (`KeyError`). Explicit
+  list order is preserved, so
   the first configured reconstructor is the initial active reconstructor. This
   is the initial registry population; runtime-loaded tools and registry-backed
   startup panels may register their required processor later.
