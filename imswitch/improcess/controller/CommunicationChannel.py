@@ -166,7 +166,7 @@ class CommunicationChannel(SignalInterface):
     which ``ImProcessMainController._wire_producing_panel`` bridges onto this
     one. That is why ``ImProcessMainController`` appears on both lists below.
 
-    Emitters: ImProcessMainController, ImageToolbarController,
+    Emitters: FijiController, ImProcessMainController, ImageToolbarController,
         LiveReconstructionController, MemoryLiveController, MoNaLISAController,
         NapariEndpointController, PythonConsoleController,
         ReconstructorManagerController, ResultProcessorController,
