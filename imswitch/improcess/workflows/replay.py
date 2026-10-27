@@ -41,11 +41,27 @@ from imswitch.improcess.workflows.steps import (
 
 
 class ReplayError(ValueError):
-    """The recorded provenance cannot be turned into a runnable workflow."""
+    """The recorded provenance cannot be turned into a runnable workflow.
 
-    def __init__(self, message: str, reasons: list[str] | None = None):
+    ``boundaries`` are the provenance node ids of interactive steps (an
+    external import, an opaque origin) that stopped the replay; ``blocking``
+    are the reasons that are NOT such a step (a missing plugin, a ROI
+    restriction by reference, parameters that cannot be replayed). A caller
+    may retry with ``allow_inputs=True`` exactly when :attr:`only_boundaries`:
+    structured on purpose, so nobody has to match message text.
+    """
+
+    def __init__(self, message: str, reasons: list[str] | None = None, *,
+                 boundaries: list[str] | None = None, blocking: list[str] | None = None):
         super().__init__(message)
         self.reasons = list(reasons or [])
+        self.boundaries = list(boundaries or [])
+        self.blocking = list(self.reasons if blocking is None and not self.boundaries else (blocking or []))
+
+    @property
+    def only_boundaries(self) -> bool:
+        """Every reason is an interactive step: the rest of the recipe is sound."""
+        return bool(self.boundaries) and not self.blocking
 
 
 @dataclass
@@ -53,6 +69,18 @@ class ReplayResult:
     workflow: Workflow
     warnings: list[str] = field(default_factory=list)
     node_ids: dict[str, str] = field(default_factory=dict)   # step id -> provenance node id
+    #: ``(source step id, what to bind)`` for each input the user must bind to
+    #: run the workflow: the stand-ins for interactive steps (``allow_inputs``).
+    inputs: list[tuple[str, str]] = field(default_factory=list)
+    #: The warnings that are about interactive steps left out (a subset of ``warnings``).
+    interactive: list[str] = field(default_factory=list)
+
+
+#: Non-replayable ops that are an *interactive step* rather than a broken
+#: recipe: work done by hand in another program (``external-import``, and
+#: ``napari-import`` as older files call it) or whose origin was never
+#: recorded (``opaque``). With ``allow_inputs`` each becomes an input.
+BOUNDARY_OPS = ("external-import", "napari-import", "opaque")
 
 
 _PREFIX = {"source": "src", "reconstruct": "rec", "consolidate": "cons", "process": "proc"}
@@ -120,12 +148,24 @@ def _decode(node: dict, plugin, warnings: list[str], label: str) -> dict:
 class _Builder:
     """Turns the ancestors of one node into steps, skipping what cannot run."""
 
-    def __init__(self, graph: dict, registry):
+    def __init__(self, graph: dict, registry, *, allow_inputs: bool = False, fed_fmt: str = "tiff"):
         self.graph = graph
         self.nodes = graph["nodes"]
         self.registry = registry
+        self.allow_inputs = allow_inputs
+        self.fed_fmt = fed_fmt
         self.warnings: list[str] = []
         self.reasons: list[str] = []
+        #: Boundary nodes met in strict mode, and the reasons that are not boundaries.
+        self.boundary_nodes: list[str] = []
+        self.boundary_reasons: list[str] = []
+        #: Nodes replaced by an input ``Source`` (allow_inputs), and the inputs made.
+        self.boundary_sources: set[str] = set()
+        self.inputs: list[tuple[str, str]] = []
+        self.interactive: list[str] = []
+        self.saved_for_inputs = 0
+        self.terminal_boundary = False
+        self.used_ids: set[str] = set()
         self.step_ids: dict[str, str] = {}
         self.skipped: set[str] = set()
         self.counters: dict[str, int] = {}
@@ -144,7 +184,7 @@ class _Builder:
             raise _Skip(target)
         if target not in self.step_ids:
             raise ReplayError(f"node {target!r} is referenced before it is defined")
-        if self.nodes[target].get("op") == "source":
+        if self.nodes[target].get("op") == "source" or target in self.boundary_sources:
             return Ref(self.step_ids[target], None)
         return Ref(self.step_ids[target], port)
 
@@ -154,8 +194,16 @@ class _Builder:
             op = str(node.get("op"))
             label = f"{op} {node_id[-8:]}"
             if not node.get("replayable", True) and op != "source":
+                if op in BOUNDARY_OPS and self.allow_inputs:
+                    self.boundary_to_input(node_id, node, is_output=node_id == out_id)
+                    continue
                 for reason in node.get("reasons") or ["marked non-replayable"]:
-                    self.reasons.append(f"{label} ({node.get('plugin_id') or op}): {reason}")
+                    text = f"{label} ({node.get('plugin_id') or op}): {reason}"
+                    self.reasons.append(text)
+                    if op in BOUNDARY_OPS:
+                        self.boundary_reasons.append(text)
+                if op in BOUNDARY_OPS:
+                    self.boundary_nodes.append(node_id)
                 self.skipped.add(node_id)
                 continue
             try:
@@ -164,6 +212,108 @@ class _Builder:
                 # Its own record is fine; an ancestor's is not, and that
                 # ancestor's reason is already listed.
                 self.skipped.add(node_id)
+
+    # -- interactive steps become inputs ---------------------------------------
+
+    def _unique(self, base: str) -> str:
+        taken = self.used_ids | {step.id for step in self.steps}
+        candidate, number = base, 1
+        while candidate in taken:
+            number += 1
+            candidate = f"{base}{number}"
+        self.used_ids.add(candidate)
+        return candidate
+
+    @staticmethod
+    def _tool_of(node: dict) -> str:
+        if node.get("op") == "opaque":
+            return ""
+        return str(node.get("tool") or ("napari" if node.get("op") == "napari-import" else "external"))
+
+    def _describe_boundary(self, node: dict, tool: str) -> tuple[str, str]:
+        """``(what the step was, what to bind)`` for the warning and the input."""
+        if not tool:
+            what = str(node.get("label") or "a step with no recorded origin")
+            return what, f"{what}; bind a file or a result"
+        details = node.get("details") if isinstance(node.get("details"), dict) else {}
+        layer = node.get("layer_name")
+        if tool == "fiji":
+            steps = len(((details.get("fiji_history") or {}).get("steps")) or [])
+            known = [f"Fiji image {details['image_id']}"] if "image_id" in details else []
+            if steps:
+                known.append(f"{steps} recorded Fiji step{'' if steps == 1 else 's'}")
+            what = "The Fiji step" + (f" ({', '.join(known)})" if known else "")
+            made = f"the image produced in Fiji (was {layer!r}" if layer else "the image produced in Fiji (was unnamed"
+            if "image_id" in details:
+                made += f", Fiji image {details['image_id']}"
+            return what, made + "); bind a file or a result"
+        plugin = node.get("plugin_name") or tool
+        widget = node.get("widget_name")
+        known = [f"plugin {plugin!r}"] + ([f"widget {widget!r}"] if widget else []) + ([f"layer {layer!r}"] if layer else [])
+        what = f"The {tool} step ({', '.join(known)})"
+        return what, f"the result produced in {tool} by {plugin!r}; bind a file or a result"
+
+    def _interactive(self, text: str) -> None:
+        self.warnings.append(text)
+        self.interactive.append(text)
+
+    def boundary_to_input(self, node_id: str, node: dict, *, is_output: bool) -> None:
+        """Replace an interactive step by an input the user binds at run time.
+
+        What FED the step (its inputs' ancestry, e.g. the image sent to Fiji)
+        was replayable and is already emitted; its last result gets its own
+        ``Save`` so a run reproduces "the image you sent". The step itself
+        becomes a path-less ``Source`` that everything downstream reads from,
+        unless it was the final result, in which case nothing follows it.
+        """
+        tool = self._tool_of(node)
+        if tool:
+            key = f"{re.sub(r'[^a-z0-9]+', '_', tool.lower()).strip('_') or 'external'}"
+            input_id = self._unique(f"from_{key}")
+            suffix = input_id[len("from_"):]
+        else:
+            input_id = self._unique("input")
+            suffix = input_id
+        what, how = self._describe_boundary(node, tool)
+        saves = []
+        for ref in node.get("inputs") or []:
+            target = str(ref["node"])
+            if target not in self.step_ids or target in self.boundary_sources:
+                continue            # nothing replayable fed it, or it is itself an input
+            if self.nodes[target].get("op") == "source":
+                continue            # the raw recording is already the user's file
+            port = str(ref.get("port") or DEFAULT_PORT)
+            sid = self._unique(f"save_for_{suffix}")
+            saves.append(Save(sid, Ref(self.step_ids[target], port), fmt=self.fed_fmt,
+                              path_template="{out_dir}/{source_stem}_for_" + suffix + "{ext}"))
+        self.steps.extend(saves)
+        self.saved_for_inputs += len(saves)
+        shown = "Fiji" if tool == "fiji" else tool
+        sent = "saves what was sent to " + (shown or "it") + " and " if saves else ""
+        if is_output:
+            self.terminal_boundary = True
+            where = shown or "a step with no recorded origin"
+            detail = what[what.index("("):] if "(" in what else ""
+            if saves:
+                self._interactive(
+                    f"The last step happened in {where}{' ' + detail if detail else ''}; a workflow cannot "
+                    f"contain it, so the workflow stops at what was sent to {shown or 'it'} (saved as "
+                    f"{saves[0].path_template.split('/')[-1]})."
+                )
+            else:
+                self._interactive(
+                    f"The last step happened in {where}{' ' + detail if detail else ''}; a workflow cannot "
+                    "contain it and nothing replayable was sent to it."
+                )
+            return
+        self.steps.append(Source(input_id, SourceSpec(metadata={"input": how})))
+        self.step_ids[node_id] = input_id
+        self.boundary_sources.add(node_id)
+        self.inputs.append((input_id, how))
+        self._interactive(
+            f"{what} cannot be part of a workflow; the workflow {sent}starts again from an input "
+            f"{input_id!r} you bind when running it."
+        )
 
     def emit(self, node_id: str, node: dict, op: str, label: str) -> None:
         if op == "source":
@@ -228,12 +378,21 @@ def workflow_from_provenance(
     name: str | None = None,
     save_fmt: str | None = None,
     save_template: str | None = None,
+    allow_inputs: bool = False,
 ) -> ReplayResult:
     """A :class:`Workflow` that reproduces the file ``document`` describes.
 
     ``registry`` (optional) lets parameters be decoded by the plugins' own
     codecs, migrated across ``params_version`` changes, and lets missing
     plugins be reported here instead of at run time.
+
+    By default any non-replayable ancestor refuses the whole replay. With
+    ``allow_inputs`` an *interactive step* (an import from Fiji or a napari
+    plugin, a result with no recorded origin) is instead replaced by an
+    **input** the user binds when running: everything except that step
+    becomes the workflow, what fed it is saved as ``..._for_<tool>``, and
+    each such step is a line in :attr:`ReplayResult.warnings`. A broken
+    recipe (a missing plugin, a ROI recorded by reference) still refuses.
     """
     if isinstance(document, dict):
         document = ProvenanceDocument.from_dict(document)
@@ -242,22 +401,36 @@ def workflow_from_provenance(
     graph = validate_graph(document.graph)
     out_id, out_port = output_of(graph)
 
-    builder = _Builder(graph, registry)
+    fmt = save_fmt or str((document.artifact or {}).get("fmt") or "tiff")
+    builder = _Builder(graph, registry, allow_inputs=allow_inputs, fed_fmt=fmt)
     builder.build(out_id)
     if builder.reasons:
         raise ReplayError(
             "the recorded run cannot be replayed:\n  " + "\n  ".join(builder.reasons)
             + "\n(see the LLM guide in docs/improcess-workflows.rst for filling the gaps)",
             builder.reasons,
+            boundaries=builder.boundary_nodes,
+            blocking=[r for r in builder.reasons if r not in builder.boundary_reasons],
         )
-    if out_id not in builder.step_ids:
-        raise ReplayError("the file's own node was not replayable")
-
-    fmt = save_fmt or str((document.artifact or {}).get("fmt") or "tiff")
-    output_is_source = graph["nodes"][out_id].get("op") == "source"
-    output_ref = Ref(builder.step_ids[out_id], None if output_is_source else out_port)
-    builder.steps.append(Save("save1", input=output_ref, fmt=fmt,
-                              path_template=save_template or "{out_dir}/{source_stem}_replay{ext}"))
+    if builder.terminal_boundary:
+        if not builder.saved_for_inputs:
+            raise ReplayError(
+                "the result was produced interactively from a recording directly, so there is "
+                "nothing between the recording and that step to put in a workflow",
+                ["nothing replayable precedes the interactive step"],
+            )
+    else:
+        if out_id not in builder.step_ids:
+            raise ReplayError("the file's own node was not replayable")
+        output_is_source = graph["nodes"][out_id].get("op") == "source"
+        output_ref = Ref(builder.step_ids[out_id], None if output_is_source else out_port)
+        builder.steps.append(Save("save1", input=output_ref, fmt=fmt,
+                                  path_template=save_template or "{out_dir}/{source_stem}_replay{ext}"))
+    if allow_inputs:
+        used = {ref.step for step in builder.steps for ref in (
+            [step.input] if isinstance(step, Save) else list(getattr(step, "inputs", []) or []))}
+        # A raw recording that only fed an interactive step is not an input of the workflow.
+        builder.steps = [s for s in builder.steps if not isinstance(s, Source) or s.id in used]
 
     warnings = list(builder.warnings)
     recorded_version = str(graph.get("imswitch_version") or "")
@@ -267,7 +440,8 @@ def workflow_from_provenance(
         warnings.append(f"recorded with ImSwitch {recorded_version}, this is {imswitch_version()}")
 
     artifact = dict(document.artifact or {})
-    node_ids = {sid: nid for nid, sid in builder.step_ids.items()}
+    kept = {step.id for step in builder.steps}
+    node_ids = {sid: nid for nid, sid in builder.step_ids.items() if sid in kept}
     workflow = Workflow(
         name or f"replay-{_slug(artifact.get('primary') or out_id[-8:])}",
         builder.steps,
@@ -277,7 +451,24 @@ def workflow_from_provenance(
             "provenance_nodes": dict(node_ids),
         },
     )
-    return ReplayResult(workflow=workflow, warnings=warnings, node_ids=node_ids)
+    return ReplayResult(workflow=workflow, warnings=warnings, node_ids=node_ids, inputs=list(builder.inputs),
+                        interactive=list(builder.interactive))
+
+
+def workflow_from_provenance_around_interactive_steps(document, **kwargs) -> ReplayResult:
+    """Strict replay; if only interactive steps stood in the way, replay around them.
+
+    The two-step policy every caller wants (export, edit): a recipe that is
+    broken for any other reason still refuses with its reasons, while one
+    whose only gaps are steps done by hand in Fiji or a napari plugin becomes
+    a workflow with those steps as inputs, and the warnings say so.
+    """
+    try:
+        return workflow_from_provenance(document, **kwargs)
+    except ReplayError as exc:
+        if not exc.only_boundaries:
+            raise
+    return workflow_from_provenance(document, allow_inputs=True, **kwargs)
 
 
 def _from_history(document: ProvenanceDocument, *, registry, name, save_fmt) -> ReplayResult:
@@ -348,7 +539,10 @@ def workflow_from_file(path, *, registry=None, name: str | None = None, save_fmt
     return result
 
 
-__all__ = ["ReplayError", "ReplayResult", "workflow_from_file", "workflow_from_provenance"]
+__all__ = [
+    "BOUNDARY_OPS", "ReplayError", "ReplayResult", "workflow_from_file", "workflow_from_provenance",
+    "workflow_from_provenance_around_interactive_steps",
+]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

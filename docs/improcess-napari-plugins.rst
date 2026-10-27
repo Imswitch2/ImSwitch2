@@ -226,7 +226,11 @@ dispatched, not the plugin's first compatible writer.
 Every import records an ``external-import`` step (``tool: napari``) in the
 result's provenance (files written earlier may carry the older name
 ``napari-import``), naming the plugin, the widget, the layer and the grid decision. Such a step
-is not replayable by definition.
+is not replayable by definition. Exporting the workflow of a result that went
+through one does not refuse any more: the step becomes an input called
+``from_napari`` that you bind when running, what was sent to the plugin is
+saved as ``..._for_napari``, and a message says what was left out (see
+*Results with an interactive step* in :doc:`improcess-workflows`).
 
 Adapters
 ========

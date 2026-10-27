@@ -433,6 +433,17 @@ sent from ImProcess, or its lineage hint matches a result), that result is the
 step's input. The step is **not replayable**: what happened inside Fiji cannot
 be run again by a workflow.
 
+That does not stop you exporting the rest. *Export workflow* (and *Edit
+workflow*) on a result that went through Fiji writes a workflow of
+everything except the Fiji step: the steps that produced what you sent are
+kept, with a ``Save`` that writes it as ``..._for_fiji``, and the Fiji step is
+replaced by an **input** called ``from_fiji`` that you bind when running (a
+file, or a result in the GUI), after which the steps that came after Fiji run
+on it. A message lists what was left out and what to bind. When the import was
+the last step the workflow ends with that save. Other problems (a plugin that
+is not installed, for example) still refuse the export. See *Results with an
+interactive step* in :doc:`improcess-workflows`.
+
 Known limitations
 =================
 

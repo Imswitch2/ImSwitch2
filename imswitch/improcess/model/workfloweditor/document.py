@@ -112,6 +112,10 @@ class WorkflowDocument:
         self.revision = 0
         #: Notes from the last import (replay warnings); informational.
         self.notes: list[str] = []
+        #: Inputs to bind and the warnings about interactive steps left out, when the
+        #: document was made around a Fiji/napari step (``from_result``); else empty.
+        self.inputs: list[tuple[str, str]] = []
+        self.interactive: list[str] = []
 
     # -- files ------------------------------------------------------------------
 
@@ -496,19 +500,25 @@ class WorkflowDocument:
         """The workflow that made ``result``, from its provenance, minimized.
 
         Raises :class:`~imswitch.improcess.workflows.replay.ReplayError` when
-        the record cannot be run again, listing every reason.
+        the record cannot be run again, listing every reason. A step done by
+        hand in Fiji or a napari plugin is not such a reason: it becomes an
+        input to bind (shown with no path) and a note says so.
         """
         from imswitch.improcess.model.provenance import graph_of
         from imswitch.improcess.model.save_protocol import ProvenanceDocument
-        from imswitch.improcess.workflows.replay import workflow_from_provenance
+        from imswitch.improcess.workflows.replay import workflow_from_provenance_around_interactive_steps
 
         graph = graph_of(result)
         if graph is None:
             raise WorkflowError(f"'{getattr(result, 'name', 'result')}' carries no provenance")
-        replay = workflow_from_provenance(ProvenanceDocument(graph=graph), registry=catalog.registry, name=name)
+        replay = workflow_from_provenance_around_interactive_steps(
+            ProvenanceDocument(graph=graph), registry=catalog.registry, name=name,
+        )
         document = cls(replay.workflow, catalog=catalog)
         document.minimize_params()
         document.notes = [str(warning) for warning in replay.warnings]
+        document.inputs = list(replay.inputs)
+        document.interactive = list(replay.interactive)
         document.dirty = True
         return document
 
