@@ -48,6 +48,7 @@ _resources_module = None
 _roles_module = None
 _disabled_devices_module = None
 _comparison_module = None
+_improcess_presets_module = None
 _setup_kind_metadata = ()
 try:
     from imswitch.imcontrol.model.configeditor.catalog import build_catalog
@@ -59,6 +60,7 @@ try:
     from imswitch.imcontrol.model.configeditor import roles as _roles_module
     from imswitch.imcontrol.model.configeditor import disabled_devices as _disabled_devices_module
     from imswitch.imcontrol.model.configeditor import comparison as _comparison_module
+    from imswitch.imcontrol.model.configeditor import improcess_presets as _improcess_presets_module
     from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
     _setup_kind_metadata = setup_kinds()
 except ImportError as e:
@@ -969,6 +971,37 @@ IMPROCESS_SECTION_KEY = "processing"
 #: Sections that have their own place on the canvas instead of a System row.
 _CANVAS_SECTIONS = frozenset({IMPROCESS_SECTION_KEY})
 
+#: The button that starts the ImProcess section from a shipped preset.
+IMPROCESS_PRESET_BUTTON = "Start from preset\u2026"
+IMPROCESS_PRESET_TOOLTIP = (
+    "Start the ImProcess section from one of the processor setups ImSwitch ships"
+)
+
+
+def _shipped_improcess_presets() -> list:
+    """The shipped ImProcess presets (see ``improcess_presets``); none when unavailable."""
+    if _improcess_presets_module is None:
+        return []
+    try:
+        return _improcess_presets_module.shipped_improcess_presets()
+    except Exception:
+        return []
+
+
+def _improcess_block_is_set(data: dict) -> bool:
+    """Whether the document already has a ``processing`` block worth asking about."""
+    return data.get(IMPROCESS_SECTION_KEY) not in (None, {}, [])
+
+
+def _confirm_improcess_preset_replace(parent, title: str) -> bool:
+    """Ask before a preset replaces the ImProcess settings; the default is No."""
+    answer = QMessageBox.question(
+        parent, "Start from preset",
+        f"Replace the current ImProcess settings with '{title}'?",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+    )
+    return answer == QMessageBox.Yes
+
 
 def _schema_fields(schema: dict) -> dict:
     return {f["key"]: f for f in schema.get("fields", [])}
@@ -1534,6 +1567,7 @@ class DeviceCanvas(QScrollArea):
     sig_category_settings = pyqtSignal(str)
     sig_improcess_edit = pyqtSignal()
     sig_improcess_remove = pyqtSignal()
+    sig_improcess_preset = pyqtSignal()
 
     def __init__(self, parent=None, *, compact: bool = False):
         super().__init__(parent)
@@ -1825,6 +1859,12 @@ class DeviceCanvas(QScrollArea):
                 f"border-radius:3px; background:{colors['button_bg']}; }}"
                 f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
             )
+            preset = QPushButton(IMPROCESS_PRESET_BUTTON)
+            preset.setFixedHeight(22)
+            preset.setStyleSheet(button_style)
+            preset.setToolTip(IMPROCESS_PRESET_TOOLTIP)
+            preset.clicked.connect(self.sig_improcess_preset.emit)
+            buttons.addWidget(preset)
             edit = QPushButton("Edit…" if configured else "Configure…")
             edit.setFixedHeight(22)
             edit.setStyleSheet(button_style)
@@ -4610,6 +4650,105 @@ class _EndpointsEditor(QWidget):
         return ""
 
 
+class ImProcessPresetDialog(QDialog):
+    """Pick one of the shipped ImProcess presets: titles, the description of
+    the selected one, and its block as pretty JSON (read-only)."""
+
+    def __init__(self, presets: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Start from preset")
+        self._presets = list(presets)
+        self._chosen = None
+        muted = "#AAAAAA" if is_dark_mode() else "#666666"
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+        intro = QLabel(
+            "These are the processor setups ImSwitch ships. The chosen one's "
+            "ImProcess settings are copied into this setup; the preset file "
+            "itself is not changed."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color:{muted}; font-size:9pt;")
+        lay.addWidget(intro)
+
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        self._list = QListWidget()
+        for preset in self._presets:
+            self._list.addItem(preset.title)
+        self._list.setFixedWidth(self._list.sizeHintForColumn(0) + 2 * self._list.frameWidth() + 8)
+        body.addWidget(self._list)
+        right = QVBoxLayout()
+        self._description = QLabel()
+        self._description.setTextFormat(Qt.PlainText)
+        self._description.setWordWrap(True)
+        right.addWidget(self._description)
+        self._preview = QPlainTextEdit()
+        self._preview.setReadOnly(True)
+        self._preview.setLineWrapMode(QPlainTextEdit.NoWrap)
+        right.addWidget(self._preview, 1)
+        body.addLayout(right, 1)
+        lay.addLayout(body, 1)
+
+        if not self._presets:
+            self._description.setText("No shipped presets were found.")
+
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        self._use = QPushButton("Use preset")
+        self._use.setDefault(True)
+        self._use.clicked.connect(self._accept_selected)
+        row.addWidget(cancel)
+        row.addWidget(self._use)
+        lay.addLayout(row)
+
+        self._list.currentRowChanged.connect(self._show_row)
+        self._use.setEnabled(False)
+        self.resize(780, 580)
+        if self._presets:
+            self._list.setCurrentRow(0)
+
+    def _show_row(self, row: int) -> None:
+        if not 0 <= row < len(self._presets):
+            self._description.setText("")
+            self._preview.setPlainText("")
+            self._use.setEnabled(False)
+            return
+        preset = self._presets[row]
+        self._description.setText(preset.description or "(no description)")
+        self._preview.setPlainText(json.dumps(preset.processing, indent=2))
+        self._use.setEnabled(True)
+
+    def _accept_selected(self) -> None:
+        row = self._list.currentRow()
+        if 0 <= row < len(self._presets):
+            self._chosen = self._presets[row]
+            self.accept()
+
+    @property
+    def chosen(self):
+        """The preset picked with "Use preset", or None."""
+        return self._chosen
+
+
+def _pick_improcess_preset(parent=None):
+    """Let the operator pick a shipped preset; None when cancelled or none exist."""
+    presets = _shipped_improcess_presets()
+    if not presets:
+        QMessageBox.information(
+            parent, "Start from preset", "No shipped ImProcess presets were found.",
+        )
+        return None
+    dlg = ImProcessPresetDialog(presets, parent)
+    if dlg.exec_() != QDialog.Accepted:
+        return None
+    return dlg.chosen
+
+
 class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
     """Modal editor of the setup's ``processing`` block.
 
@@ -4648,13 +4787,22 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
 
+        header = QHBoxLayout()
+        header.setSpacing(8)
         summary = schema.get("summary", "")
         if summary:
             hint = QLabel(summary)
             hint.setTextFormat(Qt.PlainText)
             hint.setWordWrap(True)
             hint.setStyleSheet(f"color:{self._muted}; font-size:9pt;")
-            lay.addWidget(hint)
+            header.addWidget(hint, 1)
+        else:
+            header.addStretch()
+        preset_btn = QPushButton(IMPROCESS_PRESET_BUTTON)
+        preset_btn.setToolTip(IMPROCESS_PRESET_TOOLTIP)
+        preset_btn.clicked.connect(self._start_from_preset)
+        header.addWidget(preset_btn, 0, Qt.AlignTop)
+        lay.addLayout(header)
 
         body = QHBoxLayout()
         body.setSpacing(8)
@@ -4664,19 +4812,7 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
         body.addWidget(self._stack, 1)
         lay.addLayout(body, 1)
 
-        groups: dict[str, list] = {}
-        for f in schema.get("fields", []):
-            groups.setdefault(f.get("grp", "Basic"), []).append(f)
-        for grp, fields in groups.items():
-            self._add_page(grp, self._build_group_page(fields, current))
-        self._add_page("Drop-in plugins", self._build_dropin_page(current))
-        self._add_page("Custom", self._build_custom_tab(current))
-        self._add_page("Set on this computer", self._build_computer_page())
-
-        # The list is as wide as its longest page title, no wider.
-        self._page_list.setFixedWidth(
-            self._page_list.sizeHintForColumn(0) + 2 * self._page_list.frameWidth() + 8
-        )
+        self._build_pages(current)
         self._page_list.currentRowChanged.connect(self._stack.setCurrentIndex)
         self._page_list.setCurrentRow(0)
         self.resize(560 + self._page_list.width(), 560)
@@ -4702,6 +4838,58 @@ class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
         lay.addLayout(btns)
 
     # ── pages ───────────────────────────────────────────────────────────────
+    def _build_pages(self, current: dict | None) -> None:
+        """(Re)build every page from ``current``; the drop-in scan is reused."""
+        self._loaded = copy.deepcopy(current) if isinstance(current, dict) else {}
+        self._received = list(current) if isinstance(current, dict) else []
+        self._field_widgets = {}
+        self._custom_widgets = {}
+        self._endpoints = None
+        groups: dict[str, list] = {}
+        for f in self._schema.get("fields", []):
+            groups.setdefault(f.get("grp", "Basic"), []).append(f)
+        for grp, fields in groups.items():
+            self._add_page(grp, self._build_group_page(fields, current))
+        self._add_page("Drop-in plugins", self._build_dropin_page(current))
+        self._add_page("Custom", self._build_custom_tab(current))
+        self._add_page("Set on this computer", self._build_computer_page())
+        # The list is as wide as its longest page title, no wider.
+        self._page_list.setFixedWidth(
+            self._page_list.sizeHintForColumn(0) + 2 * self._page_list.frameWidth() + 8
+        )
+
+    def _clear_pages(self) -> None:
+        self._page_list.blockSignals(True)
+        self._page_list.clear()
+        self._page_list.blockSignals(False)
+        while self._stack.count():
+            page = self._stack.widget(0)
+            self._stack.removeWidget(page)
+            page.setParent(None)
+            page.deleteLater()
+        self._page_titles = []
+
+    def _has_unapplied_edits(self) -> bool:
+        """Whether the pages hold something other than the block they were built from."""
+        out, missing = _collect_section_result(
+            self._schema, self._received, self._field_widgets, self._custom_widgets
+        )
+        return bool(missing) or out != self._loaded
+
+    def _start_from_preset(self) -> None:
+        """Replace the dialog's settings with a shipped preset (Apply writes them)."""
+        preset = _pick_improcess_preset(self)
+        if preset is None:
+            return
+        if (_improcess_block_is_set(self._data) or self._has_unapplied_edits()) \
+                and not _confirm_improcess_preset_replace(self, preset.title):
+            return
+        row = max(self._page_list.currentRow(), 0)
+        self._err_lbl.setText("")
+        self._clear_pages()
+        self._build_pages(copy.deepcopy(preset.processing))
+        self._page_list.setCurrentRow(min(row, self._page_list.count() - 1))
+
     def _add_page(self, title: str, widget: QWidget) -> None:
         self._page_titles.append(title)
         self._page_list.addItem(title)
@@ -6215,6 +6403,7 @@ class MainWindow(QMainWindow):
         if pane == "primary":
             canvas.sig_improcess_edit.connect(self._on_improcess_edit)
             canvas.sig_improcess_remove.connect(self._on_improcess_remove)
+            canvas.sig_improcess_preset.connect(self._on_improcess_preset)
 
     def _pane_data(self, pane: str) -> dict:
         return self._compare_data if pane == "compare" else self._data
@@ -7251,6 +7440,17 @@ class MainWindow(QMainWindow):
         """Configure / Edit on the canvas's ImProcess card."""
         if _edit_improcess_section(self._data, self):
             self._after_improcess_change()
+
+    def _on_improcess_preset(self):
+        """Start from preset on the canvas's ImProcess card."""
+        preset = _pick_improcess_preset(self)
+        if preset is None:
+            return
+        if _improcess_block_is_set(self._data) \
+                and not _confirm_improcess_preset_replace(self, preset.title):
+            return
+        self._data[IMPROCESS_SECTION_KEY] = copy.deepcopy(preset.processing)
+        self._after_improcess_change()
 
     def _after_improcess_change(self):
         # The canvas's card belongs to the primary pane, whichever pane the
