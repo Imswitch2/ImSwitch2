@@ -15,26 +15,185 @@ entries are disabled and say why.
 Installing
 ==========
 
-#. Install the extra, which brings PyImageJ (and, on macOS, the AppKit
-   bridge)::
+The Fiji link is part of ImSwitch2 itself, not a drop-in plugin or a plugin
+from the online store: there is nothing to copy into a plugins folder. It
+needs two things that ImSwitch2 does not install by default, the **fiji
+extra** (the Python packages that talk to Java) and **Fiji itself**, and one
+setting, **where Fiji is**. The steps below take about ten minutes, most of
+it the Fiji download (about 700 MB).
 
-     pip install "imswitch2[fiji]"
+Before you start
+----------------
 
-#. Download **Fiji Latest** for your platform from https://fiji.sc and unpack
-   it anywhere. Fiji Latest ships its own Java; ImSwitch2 uses that Java and
-   never a system one. Older Fiji downloads, which bundle another Java, are
-   refused with a message.
-#. Choose the folder in **Plugins → Fiji → Fiji location…**. Pick the folder
-   that holds the ``jars``, ``plugins`` and ``java`` folders. On macOS that is
-   the folder that *contains* ``Fiji.app``, not ``Fiji.app`` itself (choosing
-   ``Fiji.app`` is understood and corrected, with a note). The choice is kept
-   per computer in ``improcess_options.json`` in the ImSwitch config folder.
+* ImSwitch2 must be **installed with pip**, from PyPI or from a source
+  checkout (see :doc:`installation`). The installer builds (the macOS ``.dmg``
+  and the Windows ``setup.exe``) cannot use the Fiji link yet: they carry
+  neither the Python packages nor the files the Fiji process runs. In an
+  installer build the menu entries are disabled and say so.
+* Know which Python environment ImSwitch2 runs from (the conda environment or
+  virtual environment you start it from). The extra is installed into that
+  same environment.
+* Java does not need to be installed: Fiji brings its own, and ImSwitch2 uses
+  only Fiji's.
 
-An environment that holds PyImageJ when the ImSwitch environment does not can
-run the host: set the advanced key ``fijiPython`` in ``improcess_options.json``
-to that interpreter. It has no menu entry; when it is set, ImSwitch no longer
-checks for PyImageJ itself and a missing package shows up as the host's own
-start failure, with its log.
+Step 1: install the fiji extra
+------------------------------
+
+Activate the environment ImSwitch2 runs from, then install the extra:
+
+.. code-block:: bash
+
+   # ImSwitch2 from PyPI
+   pip install "imswitch2[fiji]"
+
+   # ImSwitch2 from a source checkout (run in the checkout folder)
+   pip install -e ".[fiji]"
+
+This installs **PyImageJ** 1.8.0 or newer, which brings JPype, scyjava and
+imglyb. On macOS it also installs **PyObjC** (``pyobjc-framework-Cocoa``),
+which Fiji's window needs there. It adds packages and is not expected to
+upgrade anything ImSwitch2 already uses. Check that it worked:
+
+.. code-block:: bash
+
+   python -c "import imagej; print(imagej.__version__)"
+
+If your ImSwitch2 environment cannot take these packages, use a separate
+environment for Fiji instead; see `Running Fiji from another Python
+environment`_ below.
+
+Step 2: download Fiji Latest
+----------------------------
+
+Open https://imagej.net/software/fiji/downloads and download **Fiji Latest**
+for your computer, the version **with Java bundled**:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Computer
+     - File
+   * - Mac with Apple silicon (M1 and later)
+     - ``fiji-latest-macos-arm64-jdk.zip``
+   * - Mac with an Intel processor
+     - ``fiji-latest-macos64-jdk.zip``
+   * - Windows, 64-bit (most PCs)
+     - ``fiji-latest-win64-jdk.zip``
+   * - Windows on ARM
+     - ``fiji-latest-win-arm64-jdk.zip``
+   * - Linux, 64-bit
+     - ``fiji-latest-linux64-jdk.zip``
+   * - Linux on ARM
+     - ``fiji-latest-linux-arm64-jdk.zip``
+
+The same files are listed at https://downloads.imagej.net/fiji/latest/.
+
+Do **not** use *Fiji Stable* or an older Fiji you already have: they bundle
+Java 8, and the Fiji link needs Java 11 or newer (Fiji Latest bundles Java
+21). ImSwitch2 checks this and refuses such a folder with that reason. The
+``portable-nojava`` download has no Java at all and is refused too.
+
+Step 3: unpack Fiji somewhere permanent
+---------------------------------------
+
+Unzip the file into a folder you keep, not into *Downloads* or a temporary
+folder, since ImSwitch2 starts Fiji from there every time:
+
+* **macOS**: for example ``~/Applications`` or ``~/software``. Unzipping
+  gives a folder named ``Fiji`` that contains ``Fiji.app`` (the launcher you
+  would double-click), ``jars``, ``plugins``, ``java`` and more.
+* **Windows**: for example ``C:\Users\<you>\Fiji``. Avoid
+  ``C:\Program Files``: Fiji's own updater needs to write into its folder.
+* **Linux**: for example ``~/Fiji``.
+
+You do not have to start Fiji by itself first, but you can, to check the
+download. ImSwitch2 starts its own copy of Fiji either way.
+
+Step 4: tell ImSwitch2 where Fiji is
+------------------------------------
+
+#. Start ImProcess and open **Plugins → Fiji → Fiji location…**.
+#. Choose the ``Fiji`` folder from step 3, the one that contains ``jars``,
+   ``plugins`` and ``java``. On macOS, choose the folder that *contains*
+   ``Fiji.app``, not ``Fiji.app`` itself (if you do pick ``Fiji.app``,
+   ImSwitch2 uses its parent folder and says so).
+#. ImSwitch2 checks the folder at once: a folder it cannot use is refused with
+   the reason (see `Troubleshooting`_), and the old setting stays.
+
+The location is saved per computer in ``improcess_options.json`` in the
+ImSwitch2 configuration folder (``~/ImSwitchConfig/config`` on macOS and
+Linux, ``Documents\ImSwitchConfig\config`` on Windows), next to the default
+folders. ImProcess does not need to be restarted.
+
+Step 5: check that it works
+---------------------------
+
+#. Open **Plugins → Fiji**. The first line reads *Fiji: not running* and
+   **Start Fiji** is enabled. If it is disabled, hover over it: the tooltip
+   says what is missing.
+#. Click **Start Fiji**. Fiji's window opens after a few seconds (the first
+   start after unpacking can take longer while Fiji indexes its plugins); the
+   ImProcess window stays usable meanwhile. The first line of the menu then
+   names the ImageJ and Java versions, for example *Fiji: ImageJ
+   2.18.0/1.54p (Java 21.0.7)*.
+#. Select a result in ImProcess and click **Send to Fiji**. It opens in Fiji
+   as a hyperstack with its pixel size, Z step and channel names.
+#. In Fiji, run something on it, for example *Image › Duplicate…* and then
+   *Process › Filters › Gaussian Blur…*.
+#. Back in ImProcess, click **Plugins → Fiji → Import new images**. The
+   duplicate arrives as a new result, and the status bar says how many Fiji
+   steps were recorded.
+
+Running Fiji from another Python environment
+--------------------------------------------
+
+The Fiji process can run in a different Python environment from ImSwitch2,
+for example when the ImSwitch2 environment cannot take PyImageJ. ImSwitch2
+gives that process its own code automatically; the other environment needs
+only PyImageJ (and NumPy, which PyImageJ brings):
+
+#. Create the environment and install PyImageJ into it:
+
+   .. code-block:: bash
+
+      python -m venv ~/fiji-env
+      ~/fiji-env/bin/pip install "pyimagej>=1.8.0"
+      # macOS only:
+      ~/fiji-env/bin/pip install pyobjc-framework-Cocoa
+
+   On Windows the interpreter is ``%USERPROFILE%\fiji-env\Scripts\python.exe``
+   and pip is ``%USERPROFILE%\fiji-env\Scripts\pip.exe``. A conda environment
+   works the same way.
+#. Open ``improcess_options.json`` (see step 4 for the folder) in a text editor
+   and add the key ``fijiPython`` with the full path to that interpreter. Keep
+   the keys already in the file:
+
+   .. code-block:: json
+
+      {
+          "fijiDir": "/Users/you/software/Fiji",
+          "fijiPython": "/Users/you/fiji-env/bin/python"
+      }
+
+#. Open **Plugins → Fiji** again; the change takes effect at the next start.
+
+With ``fijiPython`` set, ImSwitch2 no longer checks its own environment for
+PyImageJ; if the other environment lacks it, **Start Fiji** fails and the
+message shows the Fiji process's own error. Remove the key, or set it to
+``""``, to go back to ImSwitch2's own environment.
+
+Uninstalling
+------------
+
+* Stop Fiji (**Plugins → Fiji → Stop Fiji**) and delete the ``Fiji`` folder.
+* ``pip uninstall pyimagej`` removes the main package; its dependencies
+  (``jpype1``, ``scyjava``, ``imglyb``, ``jgo``, ``xarray`` and, on macOS,
+  ``pyobjc-framework-Cocoa``) can be removed the same way if nothing else uses
+  them.
+* Delete the ``fijiDir`` and ``fijiPython`` keys from
+  ``improcess_options.json`` if you like; without the extra the menu simply
+  stays disabled.
 
 The menu
 ========
@@ -274,6 +433,59 @@ Known limitations
   is cleared.
 * A very large stack is copied through a temporary file on the way to and
   from Fiji, so it needs the disk space and takes time.
+
+Troubleshooting
+===============
+
+When an entry in **Plugins → Fiji** is disabled, its tooltip gives the reason;
+when Fiji fails to start, a message box gives it, followed by the last lines of
+the Fiji process's log. The full log is ``host.log`` in a folder named
+``imswitch-fiji-…`` in the system's temporary folder; it is kept until Fiji is
+started or stopped again.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 55
+
+   * - Message
+     - What to do
+   * - *pyimagej is not installed: pip install "imswitch2[fiji]"*
+     - Step 1 was not done in the environment ImSwitch2 runs from. Install the
+       extra there, or use `Running Fiji from another Python environment`_.
+   * - *Choose the Fiji folder: Plugins → Fiji → Fiji location…*
+     - No Fiji folder is set yet; see step 4.
+   * - *… has no 'jars' folder; choose the Fiji folder …*
+     - The folder chosen is not Fiji's top folder. Choose the folder that
+       contains ``jars``, ``plugins`` and ``java``.
+   * - *this Fiji has no bundled Java; install Fiji Latest*
+     - The folder is a Fiji without Java (the ``portable-nojava`` download).
+       Download the ``-jdk`` file for your computer (step 2).
+   * - *this Fiji bundles no Java for this platform …*
+     - The Fiji download is for another kind of computer (for example the
+       Intel Mac download on an Apple silicon Mac), or an old Fiji. Download
+       the file for your computer from the table in step 2.
+   * - *this Fiji bundles Java 8 …; the Fiji link needs Java 11 or newer …*
+     - This is Fiji Stable or an old Fiji. Download Fiji Latest (step 2).
+   * - *The Fiji link is not available in the installer build of ImSwitch2 …*
+     - Install ImSwitch2 with pip (:doc:`installation`) to use the Fiji link.
+   * - Start fails with *imglyb requests imglib2-imglyb … but …* in the log
+     - The installed imglyb wants a different bridge jar version from the one
+       ImSwitch2 ships. Install the versions ImSwitch2 was tested with:
+       ``pip install "pyimagej==1.8.0" "imglyb==2.1.0"``.
+   * - Start fails with *ModuleNotFoundError: No module named 'scyjava'* (or
+       ``'imagej'``) in the log
+     - ``fijiPython`` points at an environment without PyImageJ; install it
+       there or remove the key.
+   * - The menu says *Fiji stopped unexpectedly*
+     - Fiji's window was closed, or Fiji crashed. **Start Fiji** starts a new
+       one. Images sent before are no longer known to that new Fiji.
+   * - Fiji runs out of memory on a large stack
+     - Fiji gets the share of memory its own launcher would give it, set by
+       the line ``cfg.max-heap`` in ``config/jaunch/fiji.toml`` inside the
+       Fiji folder (``'75%'`` by default). Change that line and restart Fiji.
+   * - A send takes several seconds before the image appears
+     - Fiji is in the background and waits for its window to be activated;
+       bring Fiji to the front.
 
 See also
 ========
