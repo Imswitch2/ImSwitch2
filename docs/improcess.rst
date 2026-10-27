@@ -368,6 +368,13 @@ In window mode:
 * The **Window** menu (shown only in window mode) lists the open windows
   (choosing one brings it forward) and offers **Tile** and **Cascade**, which
   arrange them within the screen.
+* The windows are *tool windows* owned by the main ImSwitch window, which is
+  what keeps a click on the image toolbar from burying the image it acts on.
+  They therefore stay above **every** ImSwitch tab (ImControl as well as
+  ImProcess), cannot be minimized on their own, and do not appear in the Dock's
+  window list or the Windows taskbar.  They stay visible while you work in
+  another application such as Fiji.  This on-screen behaviour on macOS and
+  Windows has not been confirmed on a rig yet.
 
 Other layers
 ------------

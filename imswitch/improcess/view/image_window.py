@@ -486,15 +486,21 @@ class ImageWindow(QtWidgets.QWidget):
     sigContentChanged = QtCore.Signal()
 
     def __init__(self, result, parent=None):
-        # With an owner (the ImProcess main window) this is a tool window: it
-        # stays above its owner, so clicking the toolbar (Auto contrast, a
-        # LUT) does not bury the image it acts on. Checked on macOS 2026-10-27:
-        # an unowned window, or an owned Qt.Window, falls behind the main
-        # window when that is activated; an owned Qt.Tool stays above and can
-        # still become the active window. Without an owner (tests, scripts) it
-        # is an ordinary top-level window.
+        # With an owner (the ImSwitch main window; ImProcess is one of its tabs)
+        # this is a tool window: it stays above its owner, so clicking the
+        # toolbar (Auto contrast, a LUT) does not bury the image it acts on.
+        # Checked on macOS 2026-10-27: an unowned window, or an owned Qt.Window,
+        # falls behind the main window when that is activated; an owned Qt.Tool
+        # stays above and can still become the active window. Without an owner
+        # (tests, scripts) it is an ordinary top-level window.
+        # A Qt.Tool window on macOS is otherwise hidden whenever the application
+        # is not the active one (it is an NSPanel), which would hide every image
+        # the moment the user switches to Fiji; WA_MacAlwaysShowToolWindow keeps
+        # it visible. The attribute has no effect on other platforms.
         flags = QtCore.Qt.Tool if parent is not None else QtCore.Qt.Window
         super().__init__(parent, flags)
+        if parent is not None:
+            self.setAttribute(QtCore.Qt.WA_MacAlwaysShowToolWindow, True)
         self._logger = initLogger(self, tryInheritParent=False)
         self._result = result
         self._layers: list[_Layer] = []

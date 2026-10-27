@@ -482,3 +482,24 @@ def test_windows_are_tool_windows_owned_by_the_main_window(qtbot):
     qtbot.addWidget(unowned)
     assert unowned.windowType() == QtCore.Qt.Window
     manager.closeAll()
+
+
+def test_an_owned_window_stays_visible_while_another_application_is_active(qtbot):
+    """A macOS tool window hides with its application unless it asks not to."""
+    from qtpy import QtCore, QtWidgets
+    import numpy as np
+
+    from imswitch.improcess.model.array_result import ArrayProcessingResult
+    from imswitch.improcess.view.result_windows import ResultWindowManager
+
+    main = QtWidgets.QMainWindow()
+    qtbot.addWidget(main)
+    manager = ResultWindowManager(main)
+    owned = manager.show(ArrayProcessingResult("r", np.zeros((8, 8), np.float32), ["Y", "X"]))
+    assert owned.testAttribute(QtCore.Qt.WA_MacAlwaysShowToolWindow)
+
+    unowned = ResultWindowManager(None).show(ArrayProcessingResult("u", np.zeros((8, 8), np.float32), ["Y", "X"]))
+    qtbot.addWidget(unowned)
+    assert unowned.windowType() == QtCore.Qt.Window
+    assert not unowned.testAttribute(QtCore.Qt.WA_MacAlwaysShowToolWindow)
+    manager.closeAll()
