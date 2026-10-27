@@ -6,6 +6,8 @@ import io
 import os
 import subprocess
 import sys
+import threading
+import time
 
 import pytest
 
@@ -144,6 +146,73 @@ def test_the_fingerprint_fold_is_order_sensitive_and_fixed_width():
     one, two = host.fold_fingerprint([1, 2, 3]), host.fold_fingerprint([3, 2, 1])
     assert one != two and len(one) == len(two) == 16
     assert host.fold_fingerprint([-1]) == host.fold_fingerprint([2 ** 64 - 1])
+
+
+GB = 2 ** 30
+
+
+def test_the_fingerprint_wait_bound_covers_the_hashing_of_the_largest_possible_stack():
+    floor = host.FINGERPRINT_WAIT_FLOOR_S
+    assert host.fingerprint_wait_bound_s(0) == floor
+    per_gb = host.FINGERPRINT_SECONDS_PER_GB * host.FINGERPRINTS_PER_COMMAND * host.FINGERPRINT_WAIT_SLACK
+    assert host.fingerprint_wait_bound_s(8 * GB) == pytest.approx(floor + 8 * per_gb)
+    # an image that fills the whole heap, hashed twice, at the measured rate, still fits with room to spare
+    heap = 48 * GB
+    assert host.fingerprint_wait_bound_s(heap) > host.FINGERPRINTS_PER_COMMAND * 48 * host.FINGERPRINT_SECONDS_PER_GB
+    assert host.fingerprint_wait_bound_s(-1) == floor
+
+
+def _worker(release: threading.Event) -> threading.Thread:
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_pending_ends_wait_for_a_finished_command_and_return_nothing_when_it_stamps_in_time():
+    pending = host.PendingEnds()
+    release = threading.Event()
+    worker = threading.Thread(target=lambda: (release.wait(), pending.discard(4)), daemon=True)
+    pending.add(4, worker, "java-thread-over")
+    worker.start()
+    threading.Timer(0.05, release.set).start()
+    assert pending.seqs() == [4]
+    assert pending.settle(lambda _t: False, bound_s=5.0) == []
+    assert not worker.is_alive() and pending.seqs() == []
+
+
+def test_pending_ends_report_the_watchers_still_stamping_when_the_bound_runs_out():
+    pending = host.PendingEnds()
+    release = threading.Event()
+    slow, quick = _worker(release), _worker(release)
+    pending.add(7, slow, "over")
+    pending.add(3, quick, "over")
+    started = time.monotonic()
+    assert pending.settle(lambda _t: False, bound_s=0.05) == [3, 7]
+    assert time.monotonic() - started < 2.0, "the bound is one deadline for all watchers, not one per watcher"
+    release.set()
+
+
+def test_pending_ends_do_not_wait_for_a_command_whose_java_thread_is_alive():
+    pending = host.PendingEnds()
+    release = threading.Event()
+    pending.add(1, _worker(release), "dialog-open")
+    started = time.monotonic()
+    assert pending.settle(lambda _t: True, bound_s=30.0) == []
+    assert time.monotonic() - started < 2.0
+    assert pending.seqs() == [1]            # still registered: the command has not ended
+    release.set()
+
+
+def test_pending_ends_treat_an_unreadable_java_thread_as_still_running():
+    pending = host.PendingEnds()
+    release = threading.Event()
+    pending.add(1, _worker(release), "broken")
+
+    def broken(_thread):
+        raise RuntimeError("java gone")
+
+    assert pending.settle(broken, bound_s=30.0) == []
+    release.set()
 
 
 def test_importing_the_host_loads_no_java_bridge_and_no_model():

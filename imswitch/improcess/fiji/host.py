@@ -259,6 +259,100 @@ class EventLog:
             return out
 
 
+#: How long hashing one gigabyte of pixels takes in the JVM, measured in the
+#: prototype: ``java.util.Arrays.hashCode`` folded plane by plane ran at about
+#: 0.5 s per GB (the pixels are touched once, so memory bandwidth, not the
+#: hash, is the limit).
+FINGERPRINT_SECONDS_PER_GB = 0.5
+
+#: ``end_fingerprints`` hashes two images at most: the command's input image and
+#: the image that is current when it ends (see ``FijiState.end_fingerprints``).
+FINGERPRINTS_PER_COMMAND = 2
+
+#: Allowance on top of the measured rate for what the prototype did not
+#: measure: pages of a big stack that were swapped out, garbage-collection
+#: pauses, a busy machine. A policy, not a measurement; it only widens a wait
+#: that ends the moment the stamping does, and a wait that still runs out costs
+#: one "possible" in the history's note, never a wrong "detected".
+FINGERPRINT_WAIT_SLACK = 2.0
+
+#: The part of the wait that does not scale with the pixels: starting the
+#: stamping thread, draining the AWT queue behind a command that is still
+#: painting. A policy; small stacks need milliseconds, so this is generous
+#: without being noticeable (the wait ends as soon as the stamping does).
+FINGERPRINT_WAIT_FLOOR_S = 2.0
+
+_BYTES_PER_GB = 2 ** 30
+
+
+def fingerprint_wait_bound_s(max_heap_bytes: int) -> float:
+    """The longest the host waits for finished commands' fingerprints before answering an events request.
+
+    The largest stack a send (or a command) can put in Fiji is bounded by the
+    JVM heap, so the hashing time of the biggest image that can exist is
+    ``heap_gb * FINGERPRINT_SECONDS_PER_GB``; a command hashes at most
+    :data:`FINGERPRINTS_PER_COMMAND` images and the whole is widened by
+    :data:`FINGERPRINT_WAIT_SLACK`, on top of :data:`FINGERPRINT_WAIT_FLOOR_S`.
+    The watchers run concurrently, so one bound serves all of them.
+    """
+    heap_gb = max(int(max_heap_bytes), 0) / _BYTES_PER_GB
+    return (FINGERPRINT_WAIT_FLOOR_S
+            + heap_gb * FINGERPRINT_SECONDS_PER_GB * FINGERPRINTS_PER_COMMAND * FINGERPRINT_WAIT_SLACK)
+
+
+class PendingEnds:
+    """The end-watchers that have not finished stamping, keyed by the command's ``seq``.
+
+    A watcher is a Python thread that waits for a menu command's Java thread to
+    die and then stamps the command's end and pixel fingerprints. The command
+    is over once its Java thread is, but the stamping can take seconds on a big
+    stack, so a request for the events must be able to wait for exactly those
+    watchers (and not for a command whose Java thread lives on, such as one
+    holding a dialog open). Pure Python: the Java thread is only asked
+    ``is_alive`` through the callable the caller supplies.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[int, tuple[threading.Thread, Any]] = {}
+
+    def add(self, seq: int, worker: threading.Thread, java_thread: Any) -> None:
+        """Register before ``worker`` starts, so its own :meth:`discard` cannot come first."""
+        with self._lock:
+            self._items[seq] = (worker, java_thread)
+
+    def discard(self, seq: int) -> None:
+        with self._lock:
+            self._items.pop(seq, None)
+
+    def seqs(self) -> list[int]:
+        with self._lock:
+            return sorted(self._items)
+
+    def settle(self, java_is_alive, bound_s: float, clock=time.monotonic) -> list[int]:
+        """Wait up to ``bound_s`` in all for the stamping of every command whose Java thread is over.
+
+        Returns the ``seq`` of the watchers still stamping when the bound ran
+        out, oldest first. A watcher whose Java thread is alive, or whose
+        liveness cannot be read, is not waited for and not reported: its
+        command has not ended.
+        """
+        with self._lock:
+            waiting = sorted(self._items.items())
+        finished = []
+        for seq, (worker, java_thread) in waiting:
+            try:
+                over = not java_is_alive(java_thread)
+            except Exception:  # noqa: BLE001  (unreadable: treat the command as still running)
+                over = False
+            if over:
+                finished.append((seq, worker))
+        deadline = clock() + max(bound_s, 0.0)
+        for _seq, worker in finished:
+            worker.join(max(deadline - clock(), 0.0))
+        return [seq for seq, worker in finished if worker.is_alive()]
+
+
 # --------------------------------------------------------------------------
 # Java side (everything below needs a running ImageJ)
 # --------------------------------------------------------------------------
@@ -288,6 +382,7 @@ class FijiState:
         # Java only holds a weak-ish handle to a JImplements proxy; dropping
         # ours would let Python collect it under a live listener.
         self._proxies: list = []
+        self._pending_ends = PendingEnds()
 
     def install_probes(self) -> None:
         from jpype import JImplements, JOverride
@@ -408,16 +503,25 @@ class FijiState:
             return None
 
     def watch_end(self, seq: int, java_thread, input_id: int | None) -> None:
-        """Stamp ``seq``'s end when ``java_thread`` (the thread running a menu command) dies."""
+        """Stamp ``seq``'s end when ``java_thread`` (the thread running a menu command) dies.
+
+        The watcher is registered in :attr:`_pending_ends` until it is done, so
+        :meth:`events_reply` can wait for it once the command is over.
+        """
         def wait() -> None:
             try:
-                java_thread.join()
-                self.drain_edt()
-            except Exception:  # noqa: BLE001  (the end stays None: "not known", which the tracker handles)
-                return
-            self.events.end_command(seq, end_fingerprints=self.end_fingerprints(input_id))
+                try:
+                    java_thread.join()
+                    self.drain_edt()
+                except Exception:  # noqa: BLE001  (the end stays None: "not known", which the tracker handles)
+                    return
+                self.events.end_command(seq, end_fingerprints=self.end_fingerprints(input_id))
+            finally:
+                self._pending_ends.discard(seq)
 
-        threading.Thread(target=wait, name=f"fiji-end-{seq}", daemon=True).start()
+        worker = threading.Thread(target=wait, name=f"fiji-end-{seq}", daemon=True)
+        self._pending_ends.add(seq, worker, java_thread)
+        worker.start()
 
     def end_fingerprints(self, input_id: int | None) -> dict[str, str]:
         """Pixel fingerprints, now, of a command's input image and of the current image."""
@@ -526,11 +630,29 @@ class FijiState:
         return {}
 
     def events_reply(self, req: Events) -> dict:
+        """The events, the recorder text and the commands whose end was still being stamped.
+
+        Commands whose Java thread is over get their end and fingerprints
+        stamped by a watcher that can still be hashing: wait for those, for at
+        most :func:`fingerprint_wait_bound_s`. The ``seq`` of any that are still
+        at it after that are returned as ``pending_ends``, so the tracker can
+        name them. A command whose Java thread is alive (a dialog is open) is
+        not waited for.
+        """
+        Runtime = _jimport("java.lang.Runtime")
+        pending = self._pending_ends.settle(
+            lambda java_thread: bool(java_thread.isAlive()),
+            fingerprint_wait_bound_s(int(Runtime.getRuntime().maxMemory())),
+        )
         # Draining the AWT queue first makes a snapshot complete for every
         # request that already returned.
         self.drain_edt()
         text = self.recorder.getText() if self.recorder is not None else None
-        return {"events": self.events.snapshot(clear=req.clear), "recorder": str(text) if text is not None else None}
+        return {
+            "events": self.events.snapshot(clear=req.clear),
+            "recorder": str(text) if text is not None else None,
+            "pending_ends": pending,
+        }
 
     def _image(self, image_id: int):
         imp = _jimport("ij.WindowManager").getImage(int(image_id))
