@@ -366,3 +366,26 @@ class TestOutputRaster:
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_placement_mode_can_force_interpolation_or_require_direct():
+    from imswitch.improcess.reconstructors.monalisa.placement import prepare_placement
+
+    gx = np.array([[0.10, 1.10]])
+    gy = np.array([[0.0, 0.0]])
+    forced = prepare_placement(gx, gy, (2, 3), tolerance=0.05, mode="interpolate")
+    assert forced.method == "gridded"
+    with pytest.raises(ValueError, match="Direct placement requested"):
+        prepare_placement(gx, gy, (2, 3), tolerance=0.05, mode="direct")
+
+
+def test_direct_mode_still_uses_exact_holes_and_duplicate_semantics():
+    from imswitch.improcess.reconstructors.monalisa.placement import prepare_placement
+
+    gx = np.array([[0.0, 0.0, 2.0]])
+    gy = np.zeros_like(gx)
+    plan = prepare_placement(gx, gy, (1, 3), mode="direct")
+    placed = plan.place(np.array([[10.0, 20.0, 30.0]]))
+    assert placed.image[0, 0] == pytest.approx(15.0)
+    assert np.isnan(placed.image[0, 1])
+    assert placed.image[0, 2] == pytest.approx(30.0)

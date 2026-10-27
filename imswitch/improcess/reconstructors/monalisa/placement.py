@@ -368,8 +368,13 @@ def prepare_placement(
     shape: tuple[int, int],
     tolerance: float = COMMENSURATE_TOLERANCE,
     smoothing: float = DEFAULT_SMOOTHING,
+    mode: str = "auto",
 ) -> PlacementPlan:
-    """Prepare the direct-vs-interpolated placement decision once."""
+    """Prepare placement once.
+
+    ``mode`` is ``"auto"`` (direct when within ``tolerance``), ``"direct"``
+    (require direct placement) or ``"interpolate"`` (always grid).
+    """
     rows, cols = int(shape[0]), int(shape[1])
     gx = np.asarray(gx, dtype=float)
     gy = np.asarray(gy, dtype=float)
@@ -381,7 +386,17 @@ def prepare_placement(
         np.abs(fx[finite] - np.rint(fx[finite])),
         np.abs(fy[finite] - np.rint(fy[finite])),
     )
-    direct = component_residual.size == 0 or float(component_residual.max()) <= tolerance
+    compatible = component_residual.size == 0 or float(component_residual.max()) <= tolerance
+    mode = str(mode).strip().lower()
+    if mode not in ("auto", "direct", "interpolate"):
+        raise ValueError(f"Unknown placement mode {mode!r}")
+    if mode == "direct" and not compatible:
+        largest = float(component_residual.max()) if component_residual.size else 0.0
+        raise ValueError(
+            f"Direct placement requested, but samples are {largest:.4g} raster pixels "
+            f"off-grid (tolerance {float(tolerance):.4g})"
+        )
+    direct = compatible if mode == "auto" else mode == "direct"
     euclidean = np.hypot(
         fx[finite] - np.rint(fx[finite]), fy[finite] - np.rint(fy[finite])
     )

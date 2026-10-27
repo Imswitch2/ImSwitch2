@@ -26,9 +26,12 @@ from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstructor
 
+from ..monalisa.calibration import PatternLocalization
+from ..monalisa.localization_settings import LocalizationSettings
 from ..monalisa.pipeline import (
     PipelineParams,
     find_foci,
+    needs_modulation_frame,
     prepare_geometry,
     reconstruct_scan,
 )
@@ -57,15 +60,24 @@ def pipeline_params(params: dict) -> PipelineParams:
     # The footprint is 2.5 spot widths (96 % of a Gaussian spot; the joint
     # fit makes a wide footprint safe) and the foci are always fitted
     # together: neither is a choice the panel offers.
+    localization_settings = params.get("localization_settings")
+    if not isinstance(localization_settings, LocalizationSettings):
+        localization_settings = LocalizationSettings.from_dict(localization_settings)
     return PipelineParams(
         background=background,
         reassignment=reassignment,
-        frame_gain="smooth" if params["frame_gain"] else "off",
-        cell_offsets="seams" if params["cell_offsets"] else "off",
-        sharpen_sigma_px=float(params["sharpen_sigma_px"]) if params["sharpen"] else None,
-        sharpen_regularization=float(params["sharpen_regularization"]),
-        # Every image where it belongs, so that the stack can be projected.
-        pinhole_stack="shifted" if params["pinhole_stack"] else "off",
+        frame_gain="smooth" if params.get("frame_gain", True) else "off",
+        cell_offsets="seams" if params.get("cell_offsets", True) else "off",
+        variance_weighting=bool(params.get("variance_weighting", True)),
+        sharpen_sigma_px=float(params.get("sharpen_sigma_px", 1.5)) if params.get("sharpen", False) else None,
+        sharpen_regularization=float(params.get("sharpen_regularization", 0.1)),
+        pinhole_stack="shifted" if params.get("pinhole_stack", False) else "off",
+        spot_sigma_px=params.get("spot_sigma_px"),
+        localization_refinement=str(params.get("localization_refinement", "full")),
+        localization_settings=localization_settings,
+        commensurate_tolerance=float(params.get("commensurate_tolerance", 0.05)),
+        placement_mode=str(params.get("placement_mode", "auto")).lower(),
+        device=str(params.get("device", "CPU")),
     )
 
 
@@ -271,7 +283,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
             step = np.diag([scan.step_nm / pixel_nm] * 2)
         orientation = None if params["orientation"] == AUTO else str(params["orientation"])
         settings = pipeline_params(params)
-        reuse_localization = bool(params["reuse_localization"])
+        supplied_localization = params.get("_pattern_localization")
+        if isinstance(supplied_localization, dict):
+            supplied_localization = PatternLocalization.from_dict(supplied_localization)
+        reuse_localization = bool(params.get("reuse_localization", False))
         reference_source = None
         geometry = None
         if reuse_localization:
@@ -299,6 +314,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             result = reconstruct_scan(
                 stack, step, shape, settings,
                 orientation=orientation, geometry=geometry,
+                localization=supplied_localization if geometry is None else None,
             )
             if index == 0:
                 geometry = result.geometry
@@ -407,6 +423,9 @@ class MonalisaLatticeReconstructor(Reconstructor):
             # is known even if their size in pixels is not.
             step_aspect = float(scan.step_nm[0]) / float(scan.step_nm[1])
         settings = pipeline_params(params)
+        supplied_localization = params.get("_pattern_localization")
+        if isinstance(supplied_localization, dict):
+            supplied_localization = PatternLocalization.from_dict(supplied_localization)
         notes = {}
         if len(scan.scanned_axes) == 1:
             # The shift factor is a displacement in the plane; a scan that
@@ -438,9 +457,13 @@ class MonalisaLatticeReconstructor(Reconstructor):
         else:
             report("align", 0, 1, "Finding the lattice and the spot")
             mean_frame = frames.mean(axis=0, dtype=np.float64)
-            modulation_frame = frames.var(axis=0, dtype=np.float64)
+            modulation_frame = (
+                frames.var(axis=0, dtype=np.float64)
+                if needs_modulation_frame(settings) else None
+            )
             geometry = prepare_geometry(
                 mean_frame, step, scan.index[scan.frames_of(order[0])], settings,
+                localization=supplied_localization,
                 modulation_frame=modulation_frame, step_aspect=step_aspect,
             )
         shape = scan.in_plane_shape

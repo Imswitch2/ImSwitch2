@@ -416,8 +416,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # - 'Reconstruct current' is ceremonial for pass-through plugins
         #   (process() is a no-op wrap), so hide it; currentDataChanged
         #   auto-routes the data to the viewer in that case.
-        # - 'Update reconstruction' re-applies MoNaLISA scan parameters and
-        #   only makes sense for the MoNaLISA plugin.
+        # - 'Update reconstruction' is the classic SignalExtractor coefficient
+        #   re-render action; keep it only on the temporary Legacy integration.
         # - The multidata button stays visible for every plugin. Pass-through
         #   plugins get it relabeled as a batch 'load to viewer' action with
         #   the consolidate entry hidden; plugins without consolidation
@@ -433,7 +433,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         try:
             self._widget.setReconstructionActionsVisible(
                 reconstruct_current=not is_pass_through,
-                update_reconstruction=(reconstructor.id == 'monalisa'),
+                update_reconstruction=(reconstructor.id == 'monalisa-legacy'),
                 reconstruct_multidata=True,
                 multidata_consolidate=(
                     'hidden' if is_pass_through
@@ -462,10 +462,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 'Could not update Directory watcher availability', exc_info=True
             )
 
-        # NOTE: Special-case by ID retained because MoNaLISA uses a legacy parameter
-        # tree that differs fundamentally from the standard plugin widget API.
-        # This will remain until the scan-params/find-pattern path is migrated.
-        if reconstructor.id == "monalisa":
+        # The classic SignalExtractor path remains on the legacy parameter tree
+        # until its standalone UI is completed.  The unified Gaussian MoNaLISA
+        # plugin now uses the normal plugin-owned fixed parameter widget.
+        if reconstructor.id == "monalisa-legacy":
             try:
                 self._widget.setLegacyMonalisaParameterWidget()
             except Exception:
@@ -505,6 +505,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
         if hasattr(widget, "sigPreviewToggled"):
             try:
                 widget.sigPreviewToggled.connect(self._handlePreviewToggled)
+                if hasattr(widget, "sigLocalizeRequested"):
+                    widget.sigLocalizeRequested.connect(self._localizeCurrent)
                 if hasattr(widget, "sigDetectionParamsChanged"):
                     widget.sigDetectionParamsChanged.connect(self._updatePreview)
                 if not getattr(self, '_previewFrameSignalConnected', False):
@@ -526,21 +528,16 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
 
     def reconstruct(self, dataObjs, consolidate):
-        # NOTE: Special-case by ID retained because MoNaLISA uses a separate legacy
-        # reconstruction path (MoNaLISAController) that differs from the generic
-        # plugin process() API.
         if self._main._activeReconstructor is None:
             return
-        if self._main._activeReconstructor.id != "monalisa":
-            self._reconstruct_with_plugin(dataObjs, consolidate)
+        # The classic SignalExtractor is already registered as its own plugin,
+        # but its standalone parameter widget/controller cleanup belongs to the
+        # Legacy consolidation pass.  Preserve the proven legacy execution path
+        # while allowing ``monalisa`` itself to use the normal plugin API now.
+        if self._main._activeReconstructor.id == "monalisa-legacy":
+            self._main.monalisaController.runLegacyReconstruct(dataObjs, consolidate)
             return
-        params = self._widget.getReconstructionParams()
-        if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
-            self._reconstruct_with_plugin(dataObjs, consolidate)
-            return
-
-        # Legacy MoNaLISA reconstruction path — delegate to MoNaLISAController.
-        self._main.monalisaController.runLegacyReconstruct(dataObjs, consolidate)
+        self._reconstruct_with_plugin(dataObjs, consolidate)
 
     def _reconstruct_with_plugin(self, dataObjs, consolidate):
         reconstructor = self._main._activeReconstructor
@@ -632,9 +629,50 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
 
         budget = self._default_memory_budget_bytes()
+        shared_auto_localization = None
+        relocalize_each = False
+        if reconstructor.id == "monalisa" and len(data_objs) > 1:
+            first_params = self._params_for_data_obj(reconstructor)
+            if str(first_params.get("localization_mode", "Auto")) == "Auto":
+                relocalize_each = bool(
+                    first_params.get("relocalize_each_data_item", False)
+                )
+                if not relocalize_each:
+                    shared_auto_localization = dict(
+                        first_params.get("auto_localization") or {}
+                    )
+                    if not shared_auto_localization:
+                        localizer = getattr(reconstructor, "localize", None)
+                        if callable(localizer):
+                            self._setPreviewStatus(
+                                "Localizing first data item for multi-data reuse..."
+                            )
+                            try:
+                                localization, status = localizer(
+                                    data_objs[0], first_params
+                                )
+                            except Exception as exc:
+                                self._logger.error(
+                                    f"MoNaLISA localization failed: {exc}"
+                                )
+                                self._setPreviewStatus(f"Localization failed: {exc}")
+                                return
+                            shared_auto_localization = localization.to_dict()
+                            widget = getattr(self, "_previewWidget", None)
+                            setter = getattr(widget, "set_auto_localization", None)
+                            if callable(setter):
+                                setter(localization, status)
+
         jobs = []
         for data_obj in data_objs:
             params = self._params_for_data_obj(reconstructor)
+            if reconstructor.id == "monalisa" and len(data_objs) > 1:
+                if relocalize_each:
+                    params = dict(params)
+                    params["auto_localization"] = {}
+                elif shared_auto_localization is not None:
+                    params = dict(params)
+                    params["auto_localization"] = dict(shared_auto_localization)
             try:
                 validator = getattr(reconstructor, "validate_source", None)
                 if callable(validator):
@@ -810,6 +848,27 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 np.array([]), np.array([])
             )
             self._setPreviewStatus("")
+
+    def _localizeCurrent(self):
+        """Explicit localization action for reconstructors that expose one."""
+        reconstructor = self._main._activeReconstructor
+        data_obj = getattr(self._main, "_currentDataObj", None)
+        widget = getattr(self, "_previewWidget", None)
+        if reconstructor is None or data_obj is None or widget is None:
+            return
+        localizer = getattr(reconstructor, "localize", None)
+        setter = getattr(widget, "set_auto_localization", None)
+        if not callable(localizer) or not callable(setter):
+            return
+        self._setPreviewStatus("Localizing...")
+        try:
+            localization, status = localizer(data_obj, widget.get_values())
+        except Exception as exc:
+            self._logger.error(f"Localization failed: {exc}")
+            self._setPreviewStatus(f"Localization failed: {exc}")
+            return
+        setter(localization, status)
+        self._updatePreview()
 
     def _setPreviewStatus(self, text):
         widget = getattr(self, '_previewWidget', None)

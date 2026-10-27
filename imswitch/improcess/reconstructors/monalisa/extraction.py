@@ -330,6 +330,7 @@ class ExtractionOperator:
             options={"SymmetricMode": True},
         )
         self._variance_gain: np.ndarray | None = None
+        self._device_executor = None
 
     # ------------------------------------------------------------------ build
     @classmethod
@@ -489,6 +490,23 @@ class ExtractionOperator:
         """
         coefficients, noise = self._solve(frames, int(chunk))
         return self._result(coefficients, noise)
+
+    def apply_device(self, frames, device: str = "CPU", chunk: int = 64) -> ExtractionResult:
+        """Extract on the requested backend, returning the normal host result.
+
+        The GPU factorization is cached on the operator because one calibrated
+        geometry is reused for every stack/timepoint of a recording.  If CuPy
+        is unavailable, ``GPU`` falls back to the CPU backend, matching the
+        existing Fast-Gauss behavior.
+        """
+        choice = str(device or "CPU").strip().lower()
+        if choice not in ("cpu", "gpu"):
+            raise ValueError(f"Unknown extraction device {device!r}")
+        if choice == "gpu" and CUPY_AVAILABLE:
+            if self._device_executor is None:
+                self._device_executor = DeviceExtractionExecutor(self)
+            return self._device_executor.apply(frames)
+        return self.apply(frames, chunk=chunk)
 
     def footprint_values(
         self, frames: np.ndarray, extracted: ExtractionResult | None = None

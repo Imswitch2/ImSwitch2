@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from .calibration import PatternLocalization
 from .cell_offsets import fit_cell_offsets
 from .frame_gain import fit_frame_gain
 from .extraction import (
@@ -41,6 +42,7 @@ from .extraction import (
     calibrate_haze_sigma,
 )
 from .lattice import Lattice, detect_lattice
+from .localization_settings import LocalizationSettings
 from .placement import (
     COMMENSURATE_TOLERANCE,
     DEFAULT_SMOOTHING,
@@ -105,6 +107,8 @@ class PipelineParams:
         commensurate_tolerance: Samples within this distance of a raster
             pixel, in raster pixels, are placed without interpolation.
         smoothing: Roughness penalty of the gridding.
+        placement_mode: ``"auto"``, ``"direct"`` or ``"interpolate"``.
+        device: Gaussian extraction backend, ``"CPU"`` or ``"GPU"``.
         reassignment: ``"auto"`` measures the shift factor and reassigns the
             pixels of the spots when the foci are not confined, ``"off"``
             places amplitudes, a number is the shift factor to reassign with.
@@ -137,10 +141,18 @@ class PipelineParams:
     joint: bool = True
     spot_mode: str = "shared"
     spot_sigma_px: float | None = None
+    # ``fast`` detects the general lattice directly from the mean frame (the
+    # variance is only a fallback) and skips per-focus centre/width refinement
+    # when a spot width is already supplied. ``full`` keeps the experimental
+    # variance selection and robust focus refinement.
+    localization_refinement: str = "full"
     period_band_px: tuple[float, float] | None = None
+    localization_settings: LocalizationSettings | None = None
     lock_tolerance: float = 0.02
     commensurate_tolerance: float = COMMENSURATE_TOLERANCE
     smoothing: float = DEFAULT_SMOOTHING
+    placement_mode: str = "auto"
+    device: str = "CPU"
     reassignment: str | float = "auto"
     frame_gain: str = "smooth"
     cell_offsets: str = "seams"
@@ -150,10 +162,19 @@ class PipelineParams:
     pinhole_stack: str = "off"
 
 
+def needs_modulation_frame(params: PipelineParams) -> bool:
+    """Whether Auto preparation needs the temporal-variance image."""
+    return not (
+        str(params.localization_refinement).lower() == "fast"
+        and params.spot_sigma_px is not None
+    )
+
+
 @dataclass(frozen=True)
 class StackGeometry:
     """Everything that is fixed for a recording."""
 
+    localization: PatternLocalization
     lattice: Lattice
     spot_model: SpotModel
     operator: ExtractionOperator
@@ -319,6 +340,7 @@ def prepare_geometry(
     scan_index: np.ndarray,
     params: PipelineParams | None = None,
     lattice: Lattice | None = None,
+    localization: PatternLocalization | None = None,
     modulation_frame: np.ndarray | None = None,
     pixel_mask: np.ndarray | None = None,
     step_aspect: float | None = None,
@@ -345,19 +367,65 @@ def prepare_geometry(
             both but not the pixel size (:func:`complete_step`).
     """
     params = params or PipelineParams()
+    if params.localization_settings is not None and params.period_band_px is None:
+        settings = params.localization_settings
+        params = replace(params, period_band_px=settings.period_band_px())
     mean_frame = np.asarray(mean_frame, dtype=float)
     rows, cols = mean_frame.shape
-    finding = find_foci(mean_frame, modulation_frame, params, lattice=lattice)
-    calibration, lattice, first = finding.calibration, finding.lattice, finding.spot
-    image = calibration.image
-    modulation = calibration.name == "variance"
-    lattice_residual = finding.lattice_residual_px
+    if localization is None:
+        supplied_lattice = lattice is not None
+        finding = find_localization(mean_frame, modulation_frame, params, lattice=lattice)
+        calibration, lattice, first = finding.calibration, finding.lattice, finding.spot
+        localization = PatternLocalization.from_lattice(
+            lattice,
+            source=(
+                "supplied-lattice" if supplied_lattice
+                else "auto-fast" if calibration.name.endswith("-fast")
+                else "auto"
+            ),
+        )
+        image = calibration.image
+        modulation = calibration.name.startswith("variance")
+        lattice_residual = finding.lattice_residual_px
+    else:
+        lattice = localization.lattice
+        inner_x, inner_y = localization.points_in_frame(rows, cols)
+        if inner_x.size == 0:
+            raise ValueError("The supplied localization has no foci inside the frame")
+        if params.spot_sigma_px is not None:
+            # Manual localization + manual/default FWHM is the true Fast
+            # calibration path: use exactly what the user supplied.  Do not
+            # run the automatic shared-width/centre calibration merely to
+            # overwrite it afterwards.
+            image = mean_frame
+            modulation = False
+            first = SpotModel.uniform(inner_x, inner_y, float(params.spot_sigma_px))
+        else:
+            calibration = choose_calibration_image(
+                mean_frame, modulation_frame, params, lattice=lattice
+            )
+            image = calibration.image
+            modulation = calibration.name == "variance"
+            first = calibrate_spot_model(
+                image, inner_x, inner_y, None,
+                mode="measured", modulation=modulation,
+            )
+        lattice_residual = np.nan
 
-    margin = 3.0 * first.shared_sigma
-    x, y = lattice.points_in_frame(rows, cols, margin=margin)
-    spot_model = calibrate_spot_model(
-        image, x, y, first.shared_sigma, mode=params.spot_mode, modulation=modulation
+    final_sigma = (
+        float(params.spot_sigma_px)
+        if params.spot_sigma_px is not None
+        else float(first.shared_sigma)
     )
+    margin = 3.0 * final_sigma
+    x, y = localization.points_in_frame(rows, cols, margin=margin)
+    if params.spot_sigma_px is not None:
+        spot_model = SpotModel.uniform(x, y, final_sigma)
+        spot_model.diagnostics.update({"mode": "manual", "image": "configured"})
+    else:
+        spot_model = calibrate_spot_model(
+            image, x, y, first.shared_sigma, mode=params.spot_mode, modulation=modulation
+        )
     sigma = spot_model.sigma
     if params.spot_sigma_px is not None:
         sigma = np.full(x.shape, float(params.spot_sigma_px))
@@ -402,12 +470,19 @@ def prepare_geometry(
     cell_coverage = coverage(index_matrix, scan_index)
     raster = OutputRaster.covering((rows, cols), step, lattice.offset)
 
+    calibration_info = locals().get("calibration")
     diagnostics = {
         "lattice": lattice.describe(),
         "lattice_fit_residual_px": lattice_residual,
-        "calibration_image": calibration.name,
-        "calibration_contrast": dict(calibration.contrast),
-        "calibration_width_ratio": calibration.width_ratio,
+        "calibration_image": (
+            calibration_info.name if calibration_info is not None else "configured"
+        ),
+        "calibration_contrast": (
+            dict(calibration_info.contrast) if calibration_info is not None else {}
+        ),
+        "calibration_width_ratio": (
+            calibration_info.width_ratio if calibration_info is not None else None
+        ),
         "step_aspect": step_aspect,
         "spot_sigma_px": spot_model.shared_sigma,
         "spot_model": dict(spot_model.diagnostics),
@@ -428,6 +503,7 @@ def prepare_geometry(
         "coverage_overlaps": cell_coverage.overlaps,
     }
     return StackGeometry(
+        localization=localization,
         lattice=lattice,
         spot_model=spot_model,
         operator=operator,
@@ -551,7 +627,8 @@ def choose_calibration_image(
     :data:`VARIANCE_CONTRAST_RATIO` of the mean frame's.
     """
     params = params or PipelineParams()
-    band = params.period_band_px or (3.0, None)
+    settings = params.localization_settings or LocalizationSettings()
+    band = params.period_band_px or settings.period_band_px()
     mean_frame = np.asarray(mean_frame, dtype=float)
     candidates = []
     if modulation_frame is not None:
@@ -563,7 +640,9 @@ def choose_calibration_image(
     for name, image in candidates:
         try:
             found = lattice or detect_lattice(
-                image, min_period=band[0], max_period=band[1]
+                image, min_period=band[0], max_period=band[1],
+                num_candidate_peaks=int(settings.num_candidate_peaks),
+                min_peak_significance=float(settings.min_peak_significance),
             )
             x, y = found.points_in_frame(*image.shape)
             fit = shared_sigma_fit(image, x, y, radius=_default_radius(x, y, 2.0))
@@ -619,6 +698,12 @@ class FociFinding:
         a2 = np.linalg.norm(self.lattice.a2)
         rows, cols = self.calibration.image.shape
         count = self.points(rows, cols)[0].size
+        if self.calibration.name.endswith("-fast"):
+            return (
+                f"{count} foci on a lattice of {a1:.2f} x {a2:.2f} px; "
+                f"configured spot sigma {self.spot.shared_sigma:.2f} px; "
+                f"read from the {self.calibration.name.removesuffix('-fast')} frame"
+            )
         measured = self.spot.diagnostics.get("num_measured", 0)
         contrast = ", ".join(
             f"{name} {value:.2f}" for name, value in self.calibration.contrast.items()
@@ -679,6 +764,81 @@ def find_foci(
     return FociFinding(calibration, lattice, first, lattice_residual)
 
 
+def find_localization(
+    mean_frame: np.ndarray,
+    modulation_frame: np.ndarray | None = None,
+    params: PipelineParams | None = None,
+    lattice: Lattice | None = None,
+) -> FociFinding:
+    """Resolve Auto localization at the refinement level selected by ``params``.
+
+    ``fast`` is intentionally close to the historical Fast-Gauss contract:
+    detect the general lattice, use the configured spot width, and stop.  It
+    avoids per-focus centre/width fitting.  The mean frame is tried first;
+    variance is only a fallback when the lattice cannot be detected there.
+
+    ``full`` delegates to :func:`find_foci`, retaining the experimental
+    variance selection, per-focus measurement and lattice refinement.
+    """
+    params = params or PipelineParams()
+    fast = (
+        str(params.localization_refinement).lower() == "fast"
+        and params.spot_sigma_px is not None
+    )
+    if not fast:
+        return find_foci(mean_frame, modulation_frame, params, lattice=lattice)
+
+    mean_frame = np.asarray(mean_frame, dtype=float)
+    rows, cols = mean_frame.shape
+    settings = params.localization_settings or LocalizationSettings()
+    band = params.period_band_px or settings.period_band_px()
+    chosen_name = "mean-fast"
+    chosen_image = mean_frame
+    found = lattice
+    first_failure = None
+    if found is None:
+        try:
+            found = detect_lattice(
+                chosen_image,
+                min_period=band[0], max_period=band[1],
+                num_candidate_peaks=int(settings.num_candidate_peaks),
+                min_peak_significance=float(settings.min_peak_significance),
+            )
+        except ValueError as exc:
+            first_failure = exc
+            if modulation_frame is None:
+                raise
+            chosen_name = "variance-fast"
+            chosen_image = np.asarray(modulation_frame, dtype=float)
+            try:
+                found = detect_lattice(
+                    chosen_image,
+                    min_period=band[0], max_period=band[1],
+                    num_candidate_peaks=int(settings.num_candidate_peaks),
+                    min_peak_significance=float(settings.min_peak_significance),
+                )
+            except ValueError:
+                raise first_failure
+
+    x, y = found.points_in_frame(rows, cols)
+    if x.size == 0:
+        raise ValueError("The detected localization has no foci inside the frame")
+    sigma = float(params.spot_sigma_px)
+    spacing = found.nearest_spacing()
+    if spacing < 3.0 * sigma:
+        raise ValueError(
+            f"The lattice found has a period of {spacing:.2f} px, finer than "
+            f"configured spots of sigma {sigma:.2f} px allow: it is likely a "
+            "harmonic. Set an expected period/tolerance in Localization settings."
+        )
+    spot = SpotModel.uniform(x, y, sigma)
+    spot.diagnostics.update({"mode": "configured", "image": chosen_name})
+    calibration = CalibrationImage(
+        chosen_name, chosen_image, found, sigma, contrast={}, width_ratio=None
+    )
+    return FociFinding(calibration, found, spot, np.nan)
+
+
 def _oriented_aspect(aspect: float | None, orientation: str) -> float | None:
     """The x-over-y step ratio in camera axes for a stage-to-camera mapping."""
     if aspect is None or not np.isfinite(aspect) or aspect <= 0:
@@ -734,8 +894,9 @@ def reconstruct_stack(
             f"{frames.shape[0]} frames but {scan_index.shape[0]} scan positions"
         )
     operator = geometry.operator
+    params = geometry.params
     if extracted is None:
-        extracted = operator.apply(frames)
+        extracted = operator.apply_device(frames, params.device)
     elif extracted.amplitude.shape[0] != frames.shape[0]:
         raise ValueError(
             f"{frames.shape[0]} frames but {extracted.amplitude.shape[0]} extracted rows"
@@ -766,6 +927,7 @@ def reconstruct_stack(
         gx, gy, geometry.raster.shape,
         tolerance=geometry.params.commensurate_tolerance,
         smoothing=geometry.params.smoothing,
+        mode=geometry.params.placement_mode,
     )
 
     def placed(values: np.ndarray | None, with_variance: bool) -> PlacedImage | None:
@@ -852,6 +1014,7 @@ def reconstruct_scan(
     params: PipelineParams | None = None,
     orientation: str | None = None,
     lattice: Lattice | None = None,
+    localization: PatternLocalization | None = None,
     pixel_mask: np.ndarray | None = None,
     shift_factor: ShiftFactor | None = None,
     geometry: StackGeometry | None = None,
@@ -926,7 +1089,10 @@ def reconstruct_scan(
             shift_factor = geometry.shift_factor
     else:
         mean_frame = frames.mean(axis=0, dtype=np.float64)
-        modulation_frame = frames.var(axis=0, dtype=np.float64)
+        modulation_frame = (
+            frames.var(axis=0, dtype=np.float64)
+            if needs_modulation_frame(params) else None
+        )
         first_index = (
             orient_recorded_index(scan_index, orientation or "+x+y") if recorded
             else raster_scan_index(num_fast, num_slow, orientation or "+x+y")
@@ -934,7 +1100,7 @@ def reconstruct_scan(
         first_step = orient_step_columns(step, orientation or "+x+y") if recorded else step
         geometry = prepare_geometry(
             mean_frame, first_step, first_index, params,
-            lattice=lattice, modulation_frame=modulation_frame,
+            lattice=lattice, localization=localization, modulation_frame=modulation_frame,
             pixel_mask=pixel_mask,
             step_aspect=_oriented_aspect(step_aspect, orientation or "+x+y") if recorded else None,
         )
@@ -942,7 +1108,11 @@ def reconstruct_scan(
     valid = operator.valid
     diagnostics = {}
 
-    extracted = operator.apply(frames)
+    # One geometry-independent extraction backend for both the old Fast grid
+    # and general lattices.  The returned result is host-readable for the
+    # compact calibration/correction steps, while the expensive sparse solve
+    # uses the selected device.
+    extracted = operator.apply_device(frames, params.device)
     amplitude = extracted.amplitude[:, valid]
     gain = None
     if params.frame_gain == "smooth":
