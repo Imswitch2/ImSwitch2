@@ -356,7 +356,11 @@
    "5fdc6ea81a37db5788cd02a560b88bada900a78708aabfefaaedddcbe60365ad"
   ],
   "scripts/workflows/README.md": [
-   "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270"
+   "3a2ebd0cfed92c36668ee7d4a4761ee64c715fe7498762f03f3475f3cdd0e270",
+   "c8767b87f3afaa10ca33bec2f921ebd463252b3b1e1a683aeb9b640c6018bdea"
+  ],
+  "scripts/workflows/monalisa/01_bleach_compensated_timelapse.py": [
+   "0a31d08a7cc60eff85491e8082219c19ec903b8a656e0d7b8dd5d3f1f7277fff"
   ],
   "scripts/workflows/timeresolved/01_binned_photon_arrivals.py": [
    "dd1d25460ea63e07ade1ec9cc41c1ee0f75fcb59691cd351b919808f32a98e70"
