@@ -101,9 +101,10 @@ ImProcess block has its own place on the canvas
 as raw JSON.
 
 The dialog has one tab per group of options, each option with its explanation
-as a tooltip.  ``focusLock`` has the tabs Basic, Devices, Crop, Control and
-Reacquire; ``tiling`` has Basic, Devices, Acquisition, Saving and Mosaic.
-Choices the code defines are drop-downs: the tiling **Default pattern**
+as a tooltip.  ``focusLock`` has the tabs Devices, Basic, Crop, Control and
+Reacquire; ``autofocus`` has Devices, Basic, Crop and Advanced; ``tiling`` has
+Devices, Basic, Acquisition, Saving and Mosaic; ``scan`` has Basic, Designers
+and DAQ clocks; ``teensyPulse`` has Basic and Advanced.  Choices the code defines are drop-downs: the tiling **Default pattern**
 (spiral or serpentine), **Mode** and **Save format**, for example.  Rates are
 in the unit the code reads: the ``focusLock`` and ``autofocus`` **Update
 freq** is in hertz.
@@ -125,9 +126,11 @@ A key is *needed by the loader* when leaving it out makes the setup loader
 fail, or warn that it defaulted the value to ``null``.  Those keys are marked
 with a bold label and an asterisk.  ``focusLock`` needs ``camera``,
 ``positioner``, ``updateFreq``, the four crop values, ``piKp`` and ``piKi``;
-``scan`` needs the widget type, both designers and their parameter dicts
-(``{}`` for none) and the sample rate; ``tiling`` needs ``xyPositioner``;
-``triggerScope`` needs ``rs232device``.  ``nidaq``, ``etSTED``,
+``autofocus`` needs the same camera, positioner, update frequency and four
+crop values (no PI gains); ``scan`` needs the widget type, both designers and
+their parameter dicts (``{}`` for none) and the sample rate; ``tiling`` needs
+``xyPositioner``; ``triggerScope`` needs ``rs232device``; ``microscopeStand``
+needs ``managerName`` and ``rs232device``.  ``nidaq``, ``etSTED``,
 ``teensyPulse``, ``pyroServerInfo`` and ``pulseStreamer`` need nothing.
 
 Keys the editor has no field for stay on the **Custom** tab and are written
@@ -154,13 +157,14 @@ settings) has its own section on the editor's centre canvas, headed
 **ImProcess**.  It is always shown, below the device categories, and first
 for a setup with no devices at all, such as the processor-only presets.  The
 card under the heading says what the block does: the reconstructors by name,
-how many processors, which analysis panels open, any live-mode setting that
-differs from its default and how many keys the editor has no field for.  With
-no ``processing`` block it says which standalone defaults ImProcess then
-uses.
+with the first marked as the one that starts active (``Reconstructors:
+MoNaLISA (starts active), View only``), how many processors, which analysis
+panels open, any live-mode setting that differs from its default and how many
+keys the editor has no field for.  With no ``processing`` block it says which
+standalone defaults ImProcess then uses.
 
 .. image:: ./images/config-editor-improcess-canvas.png
-   :alt: The config editor with the ImProcess section on the canvas, showing its summary card and the Start from preset, Edit and Remove buttons
+   :alt: The config editor with the ImProcess section on the canvas, showing its summary card (the first reconstructor marked starts active) and the Start from preset, Edit and Remove buttons
    :align: center
 
 The card has three buttons:
@@ -172,15 +176,18 @@ The card has three buttons:
   read in words and not as JSON: its reconstructors and processors by name
   (the reconstructors with their one-line descriptions, the processors under
   their categories), what **Opens at startup**, what is **Hidden at startup**
-  and any **Other settings**.  A part the preset leaves at its default is not
-  mentioned.  **Use preset** copies the chosen block into this setup
+  and any **Other settings**.  The first reconstructor is marked *starts
+  active*, as on the card.  A part the preset leaves at its default is not
+  mentioned.  Ten presets ship, listed with their titles in
+  :ref:`improcess-processing-presets`, which also says how a setup file
+  becomes one.  **Use preset** copies the chosen block into this setup
   (:ref:`improcess-processing-presets`); the preset file itself is not
   changed.  If the setup already has a block you are asked before it is
   replaced.  The dialog has the same button, which replaces what the dialog
   shows; nothing is written until you press **Apply**.
 
   .. image:: ./images/config-editor-improcess-presets.png
-     :alt: The Start from preset window with the MoNaLISA reconstruction preset selected: its description, its reconstructors with their descriptions, its processors by category and the panels it opens
+     :alt: The Start from preset window with the MoNaLISA reconstruction preset selected: its description, its reconstructors with their descriptions and the first marked starts active, its processors by category and the panels it opens
      :align: center
 * **Remove** deletes the ``processing`` block from the setup, after asking.
 
@@ -190,12 +197,21 @@ other group of options is a page after them, each option with its
 one-sentence explanation under it, and three pages are not options:
 
 .. image:: ./images/config-editor-improcess-dialog.png
-   :alt: The ImProcess dialog on its Reconstructors page, each reconstructor with its name, its id and a one-line description
+   :alt: The ImProcess dialog on its Reconstructors page: the Starts with choice above the rows, each reconstructor with its name, its id and a one-line description
    :align: center
 
 * **Reconstructors**: the built-in reconstructors to register, one row each
-  with its name, its id (muted) and a one-line description.  The first listed
-  is the initial one; at least one is required.
+  with its name, its id (muted) and a one-line description; at least one is
+  required.  Above the rows, **Starts with** chooses the reconstructor ImProcess
+  has selected when it opens; the others stay available in the Parameters
+  dock's picker.  The combo lists the ticked reconstructors by name and
+  follows the ticks: ticking one adds it at the end, unticking removes it, and
+  when the chosen one is unticked the first remaining one is chosen.  There is
+  no setting for the choice: ImProcess opens on the **first reconstructor the
+  setup lists**, so the editor writes the chosen one first.  Ticking another
+  one keeps the order the file had and adds the new one after it; nothing is
+  reordered until you tick, untick or choose.  An id the file has that this
+  computer does not (listed under *Not known here*) can be chosen too.
 * **Processors**: the built-in processors to register, in the same rows,
   grouped under their categories.  An id in the file that this computer does
   not know is listed under *Not known here (kept as written)* and kept.

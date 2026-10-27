@@ -2358,6 +2358,8 @@ that moves it, so the line in the log is the line to act on. Saving is
 refused while a recording runs: every queue check reads the limit in force,
 so a smaller queue would fail the recording in progress.
 
+.. _improcess-config-schema:
+
 Config schema
 =============
 
@@ -2406,6 +2408,16 @@ default for the other side: an omitted ``reconstructors`` key is
 exactly as when the whole block is absent. Use an explicit empty list when that
 side should load nothing (for processors; the config editor's check asks for at
 least one reconstructor).
+
+**The reconstructor ImProcess starts with is the first one listed.**  The
+reconstructors are registered in the order of the ``reconstructors`` list, the
+registry keeps that order, ImProcess makes the first registered one the active
+reconstructor at startup, and the Parameters-dock picker opens on it; the others
+stay available in the picker.  So ``["monalisa", "view-only"]`` opens on
+MoNaLISA and ``["view-only", "monalisa"]`` on View only.  An unknown first id is
+skipped (see below), so the first one this computer has starts.  There is no
+separate key for this; the config editor's **Starts with** choice
+(:ref:`config-editor-improcess`) writes the chosen reconstructor first.
 
 Of the built-ins, only the IDs you list are instantiated during initial
 registry setup; drop-in plugins from the plugins folder are always
@@ -2486,15 +2498,24 @@ what the config editor's picker shows, and a one-paragraph description:
      - WidefieldSTARSS H/V-pair analysis
 
 A preset selects ids and switches only: no numeric setting, so a number always
-comes from a processor's own default or from you.  To use one as a stand-alone
-setup, also set ``enabled`` to ``["improcess"]`` in ``modules.json``.
+comes from a processor's own default or from you.  The first reconstructor of
+each preset is the one ImProcess starts with (see `Config schema`_).  To use one
+as a stand-alone setup, also set ``enabled`` to ``["improcess"]`` in
+``modules.json``.
 
 The config editor's **Start from preset…** button (see
 :ref:`config-editor-improcess`) offers exactly the shipped setups that contain
 only a ``processing`` block, ignoring comment keys (``//`` ...) and reserved
 keys (``__`` ...): a setup file is a preset because of what it holds, not
 because it is on a list, so a new processor-only setup shows up by being added
-to the package data.  It reads them from the package, never from your
+to the package data.  To add a preset, put a JSON file whose only key is
+``processing`` into that folder, give it a ``"// title"`` (the name the picker
+lists; the file name is used without one) and a ``"// description"`` (what it is
+for, in a sentence or two) and list the reconstructor it should start with first.
+Add a row to the table above and a line to the folder's ``README.txt``.  The
+file is a shipped default, so run ``python tools/update_user_defaults_history.py``
+and commit the result, or the user-defaults sync test fails.  One test names
+today's ten presets, so a new one is a deliberate edit there.  It reads them from the package, never from your
 ``ImSwitchConfig`` copy, lists them by their ``// title``, and shows the
 selected one's ``// description`` and what its block sets, read in words and
 not as JSON (:ref:`config-editor-improcess`); **Use preset** copies the block into the setup you are
@@ -2552,7 +2573,7 @@ The ``processing:`` block also accepts:
 * **napariEndpoints** (list of objects, default none) — napari plugin adapters
   that results can be sent to, each entry with at least an ``id``; see
   :doc:`improcess-napari-plugins`.  The config editor edits the list on its
-  Plugins page and checks each entry.
+  napari plugins page and checks each entry.
 * **napariStormViewer** (bool, default ``false``) — draw localization results
   as GPU point clouds through the optional napari-storm package instead of
   their histogram preview.  Needs the ``storm`` extra; without it the key has

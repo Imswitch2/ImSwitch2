@@ -584,8 +584,11 @@ Rules:
   startup with one warning each that lists the available IDs; if no configured
   reconstructor is known, the standalone default is registered instead. The
   `register_default_*` functions themselves stay strict (`KeyError`). Explicit
-  list order is preserved, so
-  the first configured reconstructor is the initial active reconstructor. This
+  list order is preserved, so the first configured reconstructor this computer
+  has is the one active at startup (the registry keeps registration order,
+  `ReconstructorManagerController._select_reconstructor` takes the first, and
+  the Parameters-dock picker opens on it). There is no separate key: the config
+  editor's "Starts with" combo writes the chosen reconstructor first. This
   is the initial registry population; runtime-loaded tools and registry-backed
   startup panels may register their required processor later.
 - **Panel flags.** Each `is_*_panel_enabled()` getter reads its boolean key and

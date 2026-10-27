@@ -1119,7 +1119,7 @@ data and save folders) are not part of this block; they are kept in
 
 .. rubric:: Reconstructors
 
-Which reconstructors ImProcess registers; see :ref:`improcess-processing-presets` for how the list is read.
+Which reconstructors ImProcess registers, and which one it starts with; see :ref:`improcess-config-schema` for how the list is read.
 
 .. list-table::
    :header-rows: 1
@@ -1132,7 +1132,7 @@ Which reconstructors ImProcess registers; see :ref:`improcess-processing-presets
    * - ``reconstructors``
      - list of ids
      - ``["view-only"]``
-     - The built-in reconstructors to register; the first is the initial one.  Ids this computer does not have are skipped at startup with a warning, and if none is known ``view-only`` is registered.  Drop-in plugins are active on their own and should not be listed.
+     - The built-in reconstructors to register.  The first one listed is the one ImProcess has selected at startup (its Parameters-dock picker opens on it; the others stay in the picker); the config editor's **Starts with** choice writes it first.  Ids this computer does not have are skipped at startup with a warning, and if none is known ``view-only`` is registered.  Drop-in plugins are active on their own and should not be listed.
 
 .. rubric:: Processors
 

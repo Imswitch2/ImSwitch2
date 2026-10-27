@@ -12,3 +12,9 @@ Processing-only presets:
 - restoration_processor.json
 - timelapse_processor.json
 - tiling_mosaic_processor.json
+
+A setup whose only key is "processing" (comment keys such as "// title" and
+"// description" aside) is a preset: the config editor's "Start from preset..."
+lists it by its "// title". The first reconstructor of its list is the one
+ImProcess starts with. After adding or changing a setup file here, run
+tools/update_user_defaults_history.py.
