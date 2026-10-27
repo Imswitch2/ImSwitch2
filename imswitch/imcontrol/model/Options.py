@@ -1,4 +1,5 @@
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -9,8 +10,19 @@ from imswitch.imcommon.model import dirtools
 
 @dataclass(frozen=True)
 class RecordingOptions:
+    """Where the Recording widget saves by default. A property of the
+    computer, set with Preferences > Recordings folder…"""
     outputFolder: str = os.path.join(dirtools.UserFileDirs.Root, 'recordings')
     includeDateInOutputFolder: bool = True
+
+    def folderFor(self, when=None) -> str:
+        """ The folder recordings made at ``when`` (a timestamp, default now)
+        go to: ``outputFolder``, plus a ``YYYY-MM-DD`` subfolder when
+        ``includeDateInOutputFolder`` is on. """
+        if not self.includeDateInOutputFolder:
+            return self.outputFolder
+        return os.path.join(self.outputFolder,
+                            time.strftime('%Y-%m-%d', time.localtime(when)))
 
 
 @dataclass(frozen=True)

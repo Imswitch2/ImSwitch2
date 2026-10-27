@@ -170,12 +170,14 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             self._commChannel.sigStartRecording.emit()
 
         devices = list(dict.fromkeys(laserDevices or ()))
+        self._raiseIfLaserScanPreparationFailed()
         # Membership must be published before detector acquisition and before
         # the firmware command. LaserController hands each selected gate to the
         # firmware and locks its on/off control in this slot.
         self.emitScanSignal(
             self._commChannel.sigScanDevicesResolved, devices
         )
+        self._raiseIfLaserScanPreparationFailed()
         # Preserve the public notification for plugins that observe scan build
         # boundaries. It is no longer the laser-arming authority.
         self.emitScanSignal(self._commChannel.sigScanBuilt, devices)
@@ -420,11 +422,17 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             'current iteration will finish and no continuation will follow.'
         )
 
-    def _failTriggerScopeScan(self):
+    def _failTriggerScopeScan(self, message=None):
         """Resolve an arm failure or explicit local force-stop exactly once."""
+        hasSpecificMessage = message is not None
+        message = str(message or 'Scan failed or was stopped.')
         with self._triggerScopeTerminalLock:
             runToken = self._triggerScopeRunToken
             if runToken is None:
+                if hasSpecificMessage:
+                    ScanLifecycleMixin._recordScanStartRejection(
+                        self, message
+                    )
                 self.isRunning = False
                 self._setTriggerScopeScanButtonChecked(False)
                 self._setTriggerScopeAbortPending(False)
@@ -440,7 +448,7 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             if token is not None:
                 self._scanCoordinator.resolve(token, FINISH_ABORT)
             self._scanStopRequested = False
-            self._triggerScopeRunOutcome = (False, 'Scan failed or was stopped.')
+            self._triggerScopeRunOutcome = (False, message)
             self._releaseTriggerScopeRun(runToken)
             return True
 
@@ -538,27 +546,34 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             )
         finally:
             self._externalTriggerScopeCompletion = None
+            runToken = (
+                completion.runToken
+                if completion is not None else
+                self._scanCoordinator.runForOwner(self)
+            )
+            accepted = runToken is not None
+            message = '' if accepted else (
+                self._lastScanStartRejection
+                or 'TriggerScope scan controller refused the request or '
+                   'failed to arm.'
+            )
+            report = getattr(workflow, 'report_scan_request_result', None)
+            if callable(report):
+                try:
+                    report(
+                        self, accepted, message,
+                        runToken if accepted else None,
+                        completion if accepted and completion is not None else None,
+                    )
+                except Exception:
+                    self._logger.error(
+                        'Failed to report the TriggerScope scan request result',
+                        exc_info=True,
+                    )
             if completion is not None:
-                accepted = completion.runToken is not None
-                message = '' if accepted else (
-                    self._lastScanStartRejection
-                    or 'TriggerScope scan controller refused the request or '
-                       'failed to arm.'
+                bound = self.__dict__.setdefault(
+                    '_triggerScopeBoundCompletions', []
                 )
-                report = getattr(workflow, 'report_scan_request_result', None)
-                if callable(report):
-                    try:
-                        report(
-                            self, accepted, message,
-                            completion.runToken if accepted else None,
-                            completion if accepted else None,
-                        )
-                    except Exception:
-                        self._logger.error(
-                            'Failed to report the TriggerScope scan request result',
-                            exc_info=True,
-                        )
-                bound = self.__dict__.setdefault('_triggerScopeBoundCompletions', [])
                 if not accepted and completion in bound:
                     bound.remove(completion)
 

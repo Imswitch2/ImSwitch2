@@ -107,6 +107,15 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         self._commChannel.sigDetectorSwitched.connect(self.detectorSwitched)
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
 
+        # A reconnect may replace a detector's backend with a different sensor
+        # (mock <-> real, another model): re-read its geometry, limits and
+        # parameters, or the next Apply writes the old frame back.
+        self._deviceLifecycleListener = None
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            self._deviceLifecycleListener = self._deviceLifecycleChanged
+            lifecycleService.addListener(self._deviceLifecycleListener)
+
         # Connect SettingsWidget signals
         self._widget.sigROIChanged.connect(self.ROIchanged)
         self._widget.sigDetectorChanged.connect(self.detectorSwitchClicked)
@@ -423,6 +432,39 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
             yield
         finally:
             self._suppressWriteback = previous
+
+    def closeEvent(self):
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        listener = self.__dict__.get('_deviceLifecycleListener')
+        if lifecycleService is not None and listener is not None:
+            lifecycleService.removeListener(listener)
+            self._deviceLifecycleListener = None
+        parent = getattr(super(), 'closeEvent', None)
+        return parent() if callable(parent) else None
+
+    def _deviceLifecycleChanged(self, result):
+        """Lifecycle listener -- runs on the reconnecting thread."""
+        names = tuple(
+            device_id.name
+            for device_id in getattr(result, 'affected_device_ids', ())
+            if getattr(device_id, 'kind', None) == 'detector'
+        )
+        if names:
+            self._invokeOnControllerThreadIfNeeded(
+                lambda: self._refreshReconnectedDetectors(names)
+            )
+
+    def _refreshReconnectedDetectors(self, names):
+        current = self._master.detectorsManager.getCurrentDetectorName()
+        for name in names:
+            if name not in self.allParams:
+                continue
+            detector = self._master.detectorsManager[name]
+            # Pure readback: nothing travels back to the new backend.
+            self.updateParamsFromDetector(detector=detector, blockSignals=True)
+            if name == current:
+                self._commChannel.sigAdjustFrame.emit(detector.shape)
+        self.updateSharedAttrs()
 
     def updateParamsFromDetector(self, *, detector, blockSignals=False):
         """ Update the parameter values from the detector.

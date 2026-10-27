@@ -66,6 +66,50 @@ class SuperScanWidget(Widget):
         self.loadScanBtn.clicked.connect(self.sigLoadScanClicked)
         self.scanButton.clicked.connect(self.sigRunScanClicked)
 
+    def confirmUnreferencedScan(self, unreferenced):
+        lines = [
+            self._formatUnreferencedScanAxis(positionerName, axis)
+            for positionerName, axis in unreferenced
+        ]
+
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setWindowTitle('Unreferenced positioners')
+        box.setText(
+            'This scan uses open-loop positioners that have not been referenced:'
+            '\n\n'
+            + '\n'.join(lines)
+        )
+        box.setInformativeText(
+            'Their displayed positions may not correspond to the currently '
+            'applied hardware voltage.\n\n'
+            'Reference them from the Positioner widget before scanning, or '
+            'continue using the current software positions.'
+        )
+
+        suppressCheck = QtWidgets.QCheckBox(
+            "Don't show this warning again this session"
+        )
+        if hasattr(box, 'setCheckBox'):
+            box.setCheckBox(suppressCheck)
+        else:
+            layout = box.layout()
+            if layout is not None:
+                layout.addWidget(
+                    suppressCheck, layout.rowCount(), 0, 1, layout.columnCount()
+                )
+
+        continueButton = box.addButton('Continue', QtWidgets.QMessageBox.AcceptRole)
+        cancelButton = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(cancelButton)
+        box.setEscapeButton(cancelButton)
+        box.exec_()
+
+        return box.clickedButton() == continueButton, suppressCheck.isChecked()
+
+    def _formatUnreferencedScanAxis(self, positionerName, axis):
+        return f'{positionerName} — {axis}'
+
     @abstractmethod
     def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits):
         pass

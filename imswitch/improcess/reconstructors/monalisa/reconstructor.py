@@ -11,6 +11,7 @@ from imswitch.imcommon.model.acquisition_layout import UnconsumedLoopError
 from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
 from .coeffs_to_image import (
     linestep_conditions_interleave_per_line,
@@ -74,6 +75,50 @@ class MonalisaReconstructor(StreamingReconstructor):
         'bg_gaussian_size_nm': 500,
         'bleaching_correction': False,
         'auto_scan_orientation': True}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('pixel_size_nm', 'float', 77, label='Pixel size', suffix='nm'),
+            ParamField(
+                'reconstruction_method', 'select', 'Fast Gauss MoNaLISA',
+                label='Reconstruction method',
+                help='Fast Gauss MoNaLISA (default) uses the low-latency Gaussian reassignment path that live reconstruction always uses. MoNaLISA runs the full post-acquisition SignalExtractor path.',
+                options=('Fast Gauss MoNaLISA', 'MoNaLISA'),
+            ),
+            ParamField('device', 'select', 'GPU', label='CPU/GPU', options=('GPU', 'CPU')),
+            ParamField(
+                'row_offset', 'float', 9.89, label='Row-offset', min=0, max=9999, group='Pattern',
+            ),
+            ParamField(
+                'col_offset', 'float', 10.4, label='Col-offset', min=0, max=9999, group='Pattern',
+            ),
+            ParamField(
+                'row_period', 'float', 11.05, label='Row-period', min=0, max=9999,
+                group='Pattern',
+            ),
+            ParamField(
+                'col_period', 'float', 11.05, label='Col-period', min=0, max=9999,
+                group='Pattern',
+            ),
+            ParamField(
+                'psf_fwhm_nm', 'float', 220, label='PSF FWHM', min=0, max=9999, suffix='nm',
+                group='Reconstruction options',
+            ),
+            ParamField(
+                'bg_modelling', 'select', 'Constant', label='BG modelling',
+                options=('Constant', 'Gaussian', 'No background'), group='Reconstruction options',
+            ),
+            ParamField(
+                'bg_gaussian_size_nm', 'float', 500, label='BG Gaussian size', suffix='nm',
+                group='Reconstruction options',
+            ),
+            ParamField('bleaching_correction', 'bool', False, label='Bleaching correction'),
+            ParamField(
+                'auto_scan_orientation', 'bool', True, label='Auto-detect scan orientation',
+                help='Override the scan-params dialog by picking the fast/slow axis and pos/neg direction that minimize total variation of the reconstructed image — ported from Mini_Recon.',
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')

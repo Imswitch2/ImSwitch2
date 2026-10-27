@@ -72,6 +72,7 @@ class SmarACTPositionerManager(PositionerManager):
         self.__logger__.debug('Connecting to stage')
         self.__setup_connection_and_buffers()
         self.__logger__.debug('Connected to stage')
+        self._setConnected("SmarACT stage connected")
 
 
 
@@ -98,6 +99,7 @@ class SmarACTPositionerManager(PositionerManager):
         """
         self.__logger__.info('Closing system')
         self.ExitIfError(SA_CloseSystem(self.mcsHandle))
+        self._setFinalizedStatus()
 
 
     def move(self, dist, axis):

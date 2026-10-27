@@ -538,13 +538,35 @@ def seed_scan_delays_from_setup(widget, setupInfo) -> None:
     Both are rig facts -- the galvo's response lag and the settle a slice
     change needs -- so they belong in ``scan.scanDesignerParams`` as
     ``phase_delay``/``d3step_delay`` (microseconds), not in a widget literal.
+    So is a sensible first dwell, ``dwell_ms``, for a rig the panel's
+    galvo-oriented default does not suit.
     The two panels used to open with different literals (100 and 0) for the
     same mirror. A persisted widget state applied later still wins, as it
     should: it is what the operator last calibrated.
+
+    Controllers call this while they are still being constructed, after the
+    base scan controller has already connected the widget's change signals.
+    Seed values must therefore not emit those signals into a half-initialized
+    subclass. Both scan controllers explicitly publish their initial parameter
+    state immediately afterwards.
     """
     scan = getattr(setupInfo, "scan", None)
     params = getattr(scan, "scanDesignerParams", None) or {}
-    for key, setter in (("phase_delay", "setPhaseDelayPar"),
-                        ("d3step_delay", "setd3StepDelayPar")):
-        if key in params and hasattr(widget, setter):
-            getattr(widget, setter)(params[key])
+
+    blockSignals = getattr(widget, "blockSignals", None)
+    signalsWereBlocked = None
+    if callable(blockSignals):
+        signalsWereBlocked = blockSignals(True)
+    try:
+        for key, setter in (("phase_delay", "setPhaseDelayPar"),
+                            ("d3step_delay", "setd3StepDelayPar")):
+            if key in params and hasattr(widget, setter):
+                getattr(widget, setter)(params[key])
+        # The first dwell (ms), when the panel's own (0.02 ms, made for galvos)
+        # does not suit the rig: a stepped stage needs its move and settle inside
+        # every pixel. Optional; designers ignore the key.
+        if "dwell_ms" in params and hasattr(widget, "setSeqTimePar"):
+            widget.setSeqTimePar(float(params["dwell_ms"]) / 1000.0)
+    finally:
+        if callable(blockSignals):
+            blockSignals(signalsWereBlocked)

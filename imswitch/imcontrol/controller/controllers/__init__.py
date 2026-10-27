@@ -26,6 +26,7 @@ _CONTROLLER_MODULES = {
     "FlipMirrorController": "FlipMirrorController",
     "FocusLockController": "FocusLockController",
     "ImageController": "ImageController",
+    "HardwareStatusController": "HardwareStatusController",
     "LaserController": "LaserController",
     "LightSheetMulticolorController": "LightSheetMulticolorController",
     "LeicaStandController": "LeicaStandController",
@@ -57,6 +58,8 @@ _CONTROLLER_MODULES = {
     "WatcherController": "WatcherController",
     "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",
+    "ReservationController": "ReservationController",
+    "InstrumentsController": "InstrumentsController",
 }
 
 

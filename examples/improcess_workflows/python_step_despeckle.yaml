@@ -1,0 +1,58 @@
+# Replace hot pixels without blurring anything else.
+# A pixel is replaced by the median of its 3 x 3 neighbourhood only if it is
+# brighter than that median by more than k noise widths; every other pixel is
+# left exactly as it was.
+# Why a script: Filter's median blurs every pixel; this touches only the outliers.
+#
+# Run it on a synthetic recording (12 frames):
+#   python -c "import sys; sys.path.insert(0, 'examples/improcess_workflows'); \
+#     from _synthetic import write_synthetic_recording as w; w('cells.h5', frames=12)"
+#   python -m imswitch.improcess.workflows run python_step_despeckle.yaml \
+#       --input cells.h5 --out results/
+# or paste the code of the step into Tools -> Python step (it is also in
+# Load snippet... as 'despeckle').
+#
+# Derived from imswitch/_data/user_defaults/improcess_snippets/despeckle.py by
+# tools/make_python_recipe_workflows.py: edit the snippet, then run the tool.
+name: python-despeckle
+schema: 1
+description: Replace hot pixels without blurring anything else.
+steps:
+- step: source
+  id: raw
+- step: reconstruct
+  id: rec
+  reconstructor: view-only
+  params: {}
+  inputs:
+  - raw
+- step: process
+  id: script
+  processor: python
+  params:
+    ports: out
+    code: |
+      # Replace hot pixels without blurring anything else.
+      # A pixel is replaced by the median of its 3 x 3 neighbourhood only if it is
+      # brighter than that median by more than k noise widths; every other pixel is
+      # left exactly as it was.
+      # Why a script: Filter's median blurs every pixel; this touches only the outliers.
+      from scipy import ndimage
+
+      k = 8.0                                        # noise widths above the local median that count as hot
+      #                                                (raise it for very dim images, where shot noise is skewed)
+      planes = data.astype(np.float32)
+      local = ndimage.median_filter(planes, size=(1,) * (data.ndim - 2) + (3, 3))
+      residual = planes - local
+      noise = 1.4826 * np.median(np.abs(residual), axis=(-2, -1), keepdims=True)   # robust width, per plane
+      noise = np.maximum(noise, 1e-3 * np.ptp(planes) + 1e-6)                      # a flat plane has no width
+      hot = residual > k * noise
+      out = np.where(hot, local, planes)
+      print(f"replaced {hot.sum()} of {hot.size} pixels ({hot.mean():.4%})")
+  inputs:
+  - rec
+- step: save
+  id: save_out
+  input: script.out
+  fmt: tiff
+  path_template: '{out_dir}/{source_stem}_despeckle{ext}'

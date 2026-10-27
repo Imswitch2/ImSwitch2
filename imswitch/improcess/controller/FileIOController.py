@@ -8,21 +8,29 @@ from qtpy import QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
+from imswitch.imcommon.model import dirtools
 from imswitch.improcess.analysis.smlm_import import (
     read_generic_csv,
     read_localizations,
     sniff_localization_format,
 )
+from imswitch.imcommon.model.measurement_run import MeasurementRunFile, is_measurement_run_file
 from imswitch.improcess.model import result_io
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
     LOCALIZATIONS_SPEC,
     LOCATOR_DIRECTORY,
+    MEASUREMENT_RUN_SOURCE_KIND,
     TILING_MANIFEST_SPEC,
     file_dialog_filter,
     preferred_source_spec,
     resolve_dataset_source,
     specs_for_reconstructor,
+)
+from imswitch.improcess.model.folder_preferences import (
+    FolderPreferences,
+    load_folder_preferences,
+    save_folder_preferences,
 )
 from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
@@ -86,8 +94,12 @@ class FileIOController(ImProcessWidgetController):
     def __init__(self, *args, mainController=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main = mainController
-        self._dataFolder = None
-        self._saveFolder = None
+        # Kept between sessions in improcess_options.json (Preferences >
+        # Default folders…); None means the dialogs start where the system
+        # puts them.
+        folders = load_folder_preferences()
+        self._dataFolder = folders.dataFolder or None
+        self._saveFolder = folders.saveFolder or None
 
         # Multi-dataset controllers are only used by _loadFromPath
         self.multiDataFrameController = self._factory.createController(
@@ -96,6 +108,9 @@ class FileIOController(ImProcessWidgetController):
         self.pickDatasetsController = self._factory.createController(
             PickDatasetsController, self._widget.pickDatasetsDialog
         )
+        if self._dataFolder is not None:
+            # The add-data dialog starts in the saved folder too.
+            self._commChannel.sigDataFolderChanged.emit(self._dataFolder)
 
     def quickLoadData(self):
         dataPath = self._requestLoadPath()
@@ -247,6 +262,11 @@ class FileIOController(ImProcessWidgetController):
         elif localizationFormat is not None:
             return self._loadLocalizationsAsResult(dataPath, localizationFormat)
 
+        # A measurement run is HDF5 by name but not an image: recognised by its
+        # schema marker and opened as a metadata source for run reconstructors.
+        if is_measurement_run_file(dataPath):
+            return self._loadMeasurementRunAsCurrent(dataPath)
+
         try:
             source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
             dataPath = str(source.path)
@@ -334,7 +354,9 @@ class FileIOController(ImProcessWidgetController):
             return 'cancelled'
 
         try:
-            result = read_generic_csv(dataPath, **kwargs)
+            result = read_generic_csv(
+                dataPath, preview_pixel_size_nm=self._previewPixelSizeNm(), **kwargs
+            )
         except Exception as exc:
             self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
             return 'empty'
@@ -348,11 +370,41 @@ class FileIOController(ImProcessWidgetController):
         publishes its output.
         """
         try:
-            result = read_localizations(dataPath)
+            result = read_localizations(
+                dataPath, preview_pixel_size_nm=self._previewPixelSizeNm()
+            )
         except Exception as exc:
             self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
             return 'empty'
         return self._publishLocalizations(result, dataPath, localizationFormat)
+
+    def _previewPixelSizeNm(self) -> float:
+        """The preview bin the SMLM localizer's panel is set to.
+
+        An imported table is shown exactly as a localized one would be, so
+        it takes the same *Rendering -> Preview pixel size*; the active
+        reconstructor's parameter widget is where that value lives. The
+        localizer's default when no panel is up to ask.
+        """
+        from imswitch.improcess.reconstructors.smlm.localizer import (
+            preview_pixel_size_nm,
+        )
+
+        # Through __dict__: on a controller whose Qt base __init__ has not run
+        # (tests build one without it) a plain getattr raises instead of
+        # answering None.
+        widget = self.__dict__.get('_widget')
+        getter = getattr(getattr(widget, 'parTree', None), 'get_values', None)
+        values = {}
+        if callable(getter):
+            try:
+                values = dict(getter() or {})
+            except Exception:
+                self._logger.debug(
+                    'Could not read the preview pixel size from the parameter widget',
+                    exc_info=True,
+                )
+        return preview_pixel_size_nm(values)
 
     def _publishLocalizations(self, result, dataPath, localizationFormat) -> str:
         """Hand a freshly read localization table to the reconstruction list."""
@@ -385,6 +437,24 @@ class FileIOController(ImProcessWidgetController):
             f"({localizationFormat})"
         )
         return 'current'
+
+    def _loadMeasurementRunAsCurrent(self, dataPath) -> str:
+        """Open a measurement run file as the current, non-image source."""
+        try:
+            run = MeasurementRunFile.load(dataPath)
+            data_obj = DataObj.fromMetadataSource(
+                os.path.basename(dataPath), Path(dataPath),
+                MEASUREMENT_RUN_SOURCE_KIND, run,
+            )
+            data_obj.sourceFingerprint = run.run_id
+        except Exception as exc:
+            self._logger.error(f"Could not open the measurement run {dataPath}: {exc}")
+            return 'empty'
+        self._logger.info(
+            f"Opened measurement run {run.run_id}: {run.n_points} points, "
+            f"acquisition {run.acquisition.value}"
+        )
+        return _route_as_current(self, data_obj)
 
     def _loadMetadataAsCurrent(self, source) -> str:
         """Inspect and route a non-array source without asking DataObj to open it."""
@@ -507,15 +577,39 @@ class FileIOController(ImProcessWidgetController):
     def saveFolderChanged(self, saveFolder):
         self._saveFolder = saveFolder
 
-    def setDataFolder(self):
-        dataFolder = guitools.askForFolderPath(self._widget)
-        if dataFolder:
-            self._commChannel.sigDataFolderChanged.emit(dataFolder)
+    def openFolderPreferences(self):
+        """Show the default-folders editor, seeded with the folders in force."""
+        dialog = self._widget.folderPreferencesDialog
+        dialog.setValues(FolderPreferences(dataFolder=self._dataFolder or '',
+                                           saveFolder=self._saveFolder or ''))
+        self._widget.showFolderPreferencesDialog()
 
-    def setSaveFolder(self):
-        saveFolder = guitools.askForFolderPath(self._widget)
-        if saveFolder:
-            self._commChannel.sigSaveFolderChanged.emit(saveFolder)
+    def saveFolderPreferences(self, values):
+        """Save the default folders to improcess_options.json and use them now.
+
+        Either may be empty, meaning no default. A folder that cannot be one
+        (a relative path, an existing file) keeps the dialog open with the
+        reason, as does a file that cannot be written.
+        """
+        dialog = self._widget.folderPreferencesDialog
+        folders = {}
+        for field, label in (('dataFolder', 'Open data from'),
+                             ('saveFolder', 'Save results to')):
+            try:
+                folders[field] = dirtools.checkedFolderPath(values.get(field), allowEmpty=True)
+            except ValueError as error:
+                dialog.setStatus(f'{label}: {error}')
+                return
+        try:
+            save_folder_preferences(FolderPreferences(**folders))
+        except OSError as error:
+            self._logger.error(f'Could not save the default folders: {error}', exc_info=True)
+            dialog.setStatus(f'Could not save the default folders: {error}')
+            return
+        self._commChannel.sigDataFolderChanged.emit(folders['dataFolder'] or None)
+        self._commChannel.sigSaveFolderChanged.emit(folders['saveFolder'] or None)
+        dialog.setStatus('')
+        dialog.accept()
 
     def saveCurrent(self, dataType):
         """ Saves the reconstructed image or coefficients from the current

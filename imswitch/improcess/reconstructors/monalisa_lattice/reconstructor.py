@@ -23,6 +23,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstructor
 
 from ..monalisa.pipeline import (
@@ -31,6 +32,7 @@ from ..monalisa.pipeline import (
     prepare_geometry,
     reconstruct_scan,
 )
+from ..monalisa.scan_frame import ORIENTATIONS
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
 from .result import MonalisaLatticeResult
 from .scan import LayoutScan, layout_scan, recorded_scan
@@ -94,6 +96,47 @@ class MonalisaLatticeReconstructor(Reconstructor):
     @classmethod
     def default_params(cls) -> dict:
         return dict(DEFAULT_PARAMS)
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('scan_steps_fast', 'int', 0, label='Steps, fast axis',
+                       min=0, max=10000, group='Scan', help='0: taken from the recording'),
+            ParamField('scan_steps_slow', 'int', 0, label='Steps, slow axis',
+                       min=0, max=10000, group='Scan', help='0: taken from the recording'),
+            ParamField('scan_step_nm', 'float', 0.0, label='Step', suffix='nm',
+                       min=0, max=10000, group='Scan', help='0: taken from the recording'),
+            ParamField('pixel_size_nm', 'float', 0.0, label='Camera pixel', suffix='nm',
+                       min=0, max=10000, group='Scan',
+                       help='0: the scan is taken to cover the cell of the lattice once'),
+            ParamField('orientation', 'select', AUTO, label='Orientation',
+                       options=(AUTO, *ORIENTATIONS), group='Scan',
+                       help='Fast axis first, for recordings without an acquisition layout'),
+            ParamField('background', 'select', 'constant', label='Background',
+                       options=('constant', 'none', 'auto'), group='Estimator',
+                       help='auto: a haze term where the mean frame calls for one'),
+            ParamField('frame_gain', 'bool', True, label='Frame gain', group='Corrections',
+                       help='Divide out the brightness of the frames over the scan'),
+            ParamField('cell_offsets', 'bool', True, label='Cell offsets', group='Corrections',
+                       help='Take the offset of every focus off, read from the cell borders'),
+            ParamField('reassignment', 'select', 'auto', label='Reassignment',
+                       options=('auto', 'off', 'fixed'), group='Corrections',
+                       help='auto: measure the shift factor and reassign when foci are wide'),
+            ParamField('shift_factor', 'float', 0.0, label='Shift factor',
+                       min=0.0, max=1.0, step=0.05, group='Corrections',
+                       help='Used when Reassignment is fixed'),
+            ParamField('sharpen', 'bool', False, label='Sharpened image', group='Outputs'),
+            ParamField('sharpen_sigma_px', 'float', 1.5, label='Sharpening blur',
+                       min=0.1, max=10.0, step=0.25, suffix='px', group='Outputs',
+                       help='Width of the blur the filter undoes, output pixels'),
+            ParamField('sharpen_regularization', 'float', 0.1,
+                       label='Sharpening regularization', min=0.001, max=10.0,
+                       step=0.01, group='Outputs',
+                       help='Smaller sharpens more and amplifies more noise'),
+            ParamField('pinhole_stack', 'bool', False, label='Pinhole stack (sanity check)',
+                       group='Outputs',
+                       help='The raw frames as one image per pixel of the footprint'),
+        )
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return MonalisaLatticeParamsWidget(parent)

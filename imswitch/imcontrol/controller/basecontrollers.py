@@ -6,6 +6,7 @@ import threading
 import traceback
 
 from abc import abstractmethod
+from contextlib import contextmanager
 
 from qtpy import QtCore
 
@@ -15,7 +16,8 @@ from imswitch.imcommon.controller.basecontrollers import (
     WidgetControllerFactory,
 )
 from imswitch.imcontrol.model import (
-    InvalidChildClassError, ScanDesignRefusedError,
+    InvalidChildClassError, LaserPowerMode, ScanDesignRefusedError,
+    laserPowerModeFromSetup,
 )
 from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
 from imswitch.imcontrol.model.managers._scan_execution import (
@@ -267,6 +269,23 @@ class ScanLifecycleMixin:
     #: Why the last scan start request was refused (None when it was not).
     _lastScanStartRejection = None
 
+    def _laserScanPreparationError(self):
+        """Return a safety-critical laser preparation error, if published.
+
+        LaserController owns the actual preparation.  Scan controllers only
+        enforce its veto at the final synchronous pre-arm boundary.
+        """
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        getter = getattr(workflow, 'laser_scan_preparation_error', None)
+        return getter() if callable(getter) else None
+
+    def _raiseIfLaserScanPreparationFailed(self):
+        error = self._laserScanPreparationError()
+        if error:
+            raise RuntimeError(
+                f'Laser preparation failed; scan will not start: {error}'
+            )
+
     def _recordScanStartRejection(self, reason):
         """ Make a refused start observable (plan A-05).
 
@@ -477,6 +496,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._widget.sigStageParChanged.connect(self.updateScanStageAttrs)
         self._widget.sigSignalParChanged.connect(self.updateScanTTLAttrs)
 
+        # warning suppresion per-session
+        self._suppressUnreferencedScanWarning = False
+
     @property
     def parameterDict(self):
         return None
@@ -486,7 +508,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             raise InvalidChildClassError('ScanController needs to return a valid parameterDict')
         else:
             return True
-
+    
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
         """ Run scan from external non-scan-widget trigger. """
         requestCompletion = ScanRequestCompletion(self)
@@ -604,7 +626,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
         coordinator = getattr(self, '_scanCoordinator', None)
         if coordinator is None:
-            return ''
+            return self._unreferencedScanStartRefusal()
         try:
             activeIteration = getattr(coordinator, 'activeToken')
         except Exception:
@@ -631,7 +653,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             except Exception:
                 return 'Unable to verify current scan-run ownership.'
         if activeRun is None:
-            return ''
+            return self._unreferencedScanStartRefusal()
 
         localToken = getattr(self, '_scanRunToken', None)
         if activeRun is not localToken:
@@ -662,7 +684,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             or bool(getattr(activeRun, 'releaseRequested', False))
         ):
             return 'The current scan run is failed, stopped, or releasing.'
-        return ''
+        return self._unreferencedScanStartRefusal()
 
     def _detachExternalScanRequestCompletions(self, runToken):
         """Remove and return the requests pending for this exact run.
@@ -846,6 +868,56 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 # once sigScanDone publication has returned.
                 completeRequest()
     
+    def _unreferencedScanStartRefusal(self) -> str:
+        """Return a non-interactive refusal for unreferenced scan axes."""
+        if self._suppressUnreferencedScanWarning:
+            return ''
+
+        unreferenced = self._getUnreferencedScanAxes()
+        if not unreferenced:
+            return ''
+
+        axesText = ', '.join(
+            f'{positionerName} ({axis})'
+            for positionerName, axis in unreferenced
+        )
+        return (
+            'This scan uses unreferenced open-loop positioners: '
+            f'{axesText}. Reference them before starting an external scan.'
+        )
+
+    def _confirmUnreferencedScanIfNeeded(self) -> bool:
+        """Ask the user before scanning with unreferenced open-loop axes."""
+        if self._suppressUnreferencedScanWarning:
+            return True
+
+        unreferenced = self._getUnreferencedScanAxes()
+        if not unreferenced:
+            return True
+
+        proceed, suppressWarning = self._widget.confirmUnreferencedScan(
+            unreferenced
+        )
+        if proceed and suppressWarning:
+            self._suppressUnreferencedScanWarning = True
+        return proceed
+    
+    def _getUnreferencedScanAxes(self):
+        unreferenced = []
+        for positionerName in self.positioners:
+            manager = self._master.positionersManager[positionerName]
+            if not manager.isReferenceActionable:
+                continue
+            
+            positionerInfo = self._setupInfo.positioners[positionerName]
+            axes = list(getattr(positionerInfo, 'axes', None)or manager.axes)
+            
+            for axis in axes:
+                if not manager.isAxisReferenced(axis):
+                    unreferenced.append((positionerName, axis))
+        
+        return unreferenced
+    
     @abstractmethod
     def setParameters(self):
         """ Set scan parameters from analog and digital parameter dictionaries. """
@@ -940,7 +1012,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def getNumScanPositions(self):
         """ Returns the number of scan positions for the configured scan. """
-        _, positions, _ = self._master.scanManager.getScanSignalsDict(self._analogParameterDict)
+        with self._positionSnapshotForScanDesign():
+            _, positions, _ = self._master.scanManager.getScanSignalsDict(
+                self._analogParameterDict
+            )
         numPositions = functools.reduce(lambda x, y: x * y, positions)
         return numPositions
 
@@ -1150,6 +1225,72 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 exc_info=True,
             )
 
+    def _capturePositionersBeforeScan(self):
+        positionsBeforeScan = []
+        for positionerName in self._analogParameterDict.get( 'target_device', []):
+            if not positionerName or positionerName == 'None':
+                positionsBeforeScan.append([])
+                continue
+            manager = self._master.positionersManager[positionerName]
+            info = self._setupInfo.positioners[positionerName]
+            axes = list(getattr(info, 'axes', None) or manager.axes)
+            positionsBeforeScan.append([manager.position[axis]for axis in axes])
+        self._analogParameterDict['axis_position_before_scan'] = positionsBeforeScan
+
+    def _forgetPositionersBeforeScan(self):
+        self._analogParameterDict.pop('axis_position_before_scan', None)
+
+    @contextmanager
+    def _positionSnapshotForScanDesign(self):
+        """Temporarily expose current tracked positions to scan designers.
+
+        Preserve any pre-existing snapshot so nested/re-entrant design calls
+        cannot erase the caller's runtime context. The snapshot is transient:
+        it is never retained in ``_analogParameterDict`` after the outermost
+        design scope exits.
+        """
+        key = 'axis_position_before_scan'
+        missing = object()
+        previous = self._analogParameterDict.get(key, missing)
+
+        try:
+            self._capturePositionersBeforeScan()
+            yield
+        finally:
+            if previous is missing:
+                self._analogParameterDict.pop(key, None)
+            else:
+                self._analogParameterDict[key] = previous
+
+    def _setNonScanPositionersToCenter(self):
+        """Preserve legacy parking for non-Beta scans only.
+
+        BetaScanDesigner interprets ``axis_centerpos`` as a relative
+        offset from the position captured immediately before the scan.
+        Pre-positioning an inactive Beta axis to that raw center value would
+        therefore move it to the wrong absolute position before the waveform
+        starts.
+        """
+        if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'BetaScanDesigner':
+            return
+
+        for index, positionerName in enumerate(
+            self._analogParameterDict.get('target_device', [])
+        ):
+            if positionerName in self._positionersScan:
+                continue
+            try:
+                position = self._analogParameterDict['axis_centerpos'][index]
+                manager = self._master.positionersManager[positionerName]
+                # Managers address axes by name ('Z'), not by index.
+                manager.setPosition(position, manager.axes[0])
+            except Exception:
+                self._logger.warning(
+                    'Failed to set %s to center before scan:\n%s',
+                    positionerName,
+                    traceback.format_exc(),
+                )
+
     def _buildScanSignals(self):
         """Read the scan parameters and build ``(signalDict, scanInfoDict)``.
 
@@ -1157,9 +1298,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         refuses the design.
         """
         self.getParameters()
-        return self._master.scanManager.makeFullScan(
-            self._analogParameterDict, self._digitalParameterDict
-        )
+        with self._positionSnapshotForScanDesign():
+            return self._master.scanManager.makeFullScan(
+                self._analogParameterDict, self._digitalParameterDict
+            )
 
     def _beginScanRunWithDesign(self, *, sigScanStartingEmitted,
                                 recalculateSignals):
@@ -1531,8 +1673,12 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         ``sigScanBuilt`` arrives and its write is refused. Publishing first
         gives those consumers a window while the DAQ is still free.
 
-        A failure to resolve the device list must not block the scan: the scan
-        itself does not depend on this, only the consumers do.
+        In separated laser-power mode, membership is part of the hardware
+        handoff: it decides which Live paths are suppressed and where Scan
+        power is applied, so resolution failure must abort before arming.
+        Coupled mode deliberately preserves the pre-work behavior: resolution
+        failure is logged and membership consumers are skipped, but laser
+        ownership alone does not make acquisition refusal fatal.
         """
         self._scanPositionersRestored = False
         # Published here rather than alongside sigScanStarting, which fires
@@ -1542,9 +1688,22 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # Consumers have already yielded on sigScanStarting and this only ever
         # releases them, so arriving later is safe -- arriving wrong is not.
         self._publishScanActuators()
+        laserPowerMode = laserPowerModeFromSetup(self._setupInfo)
+        separatedLaserPower = laserPowerMode is LaserPowerMode.SEPARATED
+        if separatedLaserPower:
+            self._raiseIfLaserScanPreparationFailed()
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
-        except Exception:
+        except Exception as error:
+            if separatedLaserPower:
+                self._logger.error(
+                    'Could not resolve the scan device list; refusing to arm '
+                    f'acquisition because laser ownership is undefined:\n'
+                    f'{traceback.format_exc()}'
+                )
+                raise RuntimeError(
+                    'Could not resolve scan laser/device membership before arming.'
+                ) from error
             self._logger.error(
                 'Could not resolve the scan device list; lasers and other '
                 f'membership consumers are not being notified:\n'
@@ -1554,6 +1713,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self.emitScanSignal(
                 self._commChannel.sigScanDevicesResolved, devices
             )
+        if separatedLaserPower:
+            self._raiseIfLaserScanPreparationFailed()
         recordingManager = getattr(self._master, 'recordingManager', None)
         markScanStarted = getattr(
             recordingManager, 'markScanStarted', None
@@ -1839,6 +2000,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         """ Runs a scan with the set scanning parameters (GUI Scan button).
         The API entry point is WorkflowFacadeController.runScan, exported once
         so rigs with several scanners do not collide on the name. """
+        if not self._confirmUnreferencedScanIfNeeded():
+            return
         self.runScanAdvanced(sigScanStartingEmitted=False)
         
     def sendScanParameters(self):
@@ -1945,6 +2108,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             mode['scanMode'] = self._widget.isScanMode()
         if hasattr(self._widget, 'isContLaserMode'):
             mode['contLaserMode'] = self._widget.isContLaserMode()
+        if hasattr(self._widget, 'progressEnabled'):
+            mode['progressEnabled'] = self._widget.progressEnabled()
 
         scanInfo = getattr(self._setupInfo, 'scan', None)
 
@@ -2049,6 +2214,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
             if mode.get('repeatEnabled') is not None and hasattr(self._widget, 'setRepeatEnabled'):
                 self._widget.setRepeatEnabled(bool(mode['repeatEnabled']))
+            if mode.get('progressEnabled') is not None and hasattr(self._widget, 'setProgressEnabled'):
+                self._widget.setProgressEnabled(bool(mode['progressEnabled']))
 
             self.setParameters()
             self.signalDict = None
@@ -2166,9 +2333,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             "repeatEnabled": "repeat",
             "scanMode": "scan mode",
             "contLaserMode": "continuous laser mode",
+            "progressEnabled": "progress bar",
         }
         summaries = []
-        for key in ("repeatEnabled", "scanMode", "contLaserMode"):
+        for key in ("repeatEnabled", "scanMode", "contLaserMode", "progressEnabled"):
             value = mode.get(key)
             if value is not None:
                 summaries.append(f"    {labels[key]}: {self._fmt(value)}")

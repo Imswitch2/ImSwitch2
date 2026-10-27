@@ -146,3 +146,19 @@ def test_load_setup_reports_invalid_json_location(tmp_path):
     path.write_text('{"lasers":', encoding="utf-8")
     with pytest.raises(ValueError, match="line 1"):
         load_setup(path)
+
+
+def test_pm100d_uses_the_shared_imswitch_driver():
+    from imswitch.imcontrol._test.unit.test_thorlabs_instruments import PM_RESOURCE, _pm100
+    from utility_scripts.aa_aotf_calibration import PM100D
+
+    inst, rm = _pm100(power="1.5E-03")
+    meter = PM100D("P0011748", resource_manager_factory=rm)
+    meter.connect()
+    assert meter.connected and meter.resource_name == PM_RESOURCE
+    assert meter.identify() == "Thorlabs,PM100D,P0011748,2.4.0"
+    assert meter.read_power_mw() == pytest.approx(1.5)
+    meter.set_wavelength_nm(775)
+    assert inst.writes[-1] == "SENS:CORR:WAV 775"
+    meter.close()
+    assert not meter.connected

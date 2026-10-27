@@ -1,7 +1,6 @@
 import weakref
 from unittest.mock import Mock, patch
 
-from qtpy import QtWidgets
 
 from imswitch.imcommon.controller.basecontrollers import WidgetControllerFactory
 from imswitch.imcontrol.controller.ImConMainController import ImConMainController
@@ -16,24 +15,24 @@ def _close_ready_controller():
     return controller
 
 
-def test_close_state_prompt_defaults_to_yes():
+def test_close_state_prompt_answers_no_when_nobody_answers():
     controller = _close_ready_controller()
 
-    with patch.object(
-        QtWidgets.QMessageBox,
-        'question',
-        return_value=QtWidgets.QMessageBox.Yes,
+    with patch(
+        'imswitch.imcontrol.view.guitools.askYesNoQuestion', return_value=True
     ) as question:
         assert controller._shouldSaveWidgetStateOnClose() is True
 
     question.assert_called_once()
-    assert question.call_args.args[4] == QtWidgets.QMessageBox.Yes
+    # Enter still says Yes; the empty room says No, after a bounded wait.
+    assert question.call_args.kwargs['unattendedAnswer'] is False
+    assert question.call_args.kwargs['unattendedAfterS'] == 30
 
 
-def test_restore_warnings_are_shown_to_the_operator():
+def test_restore_warnings_are_shown_to_the_operator_and_close_by_themselves():
     controller = _close_ready_controller()
 
-    with patch.object(QtWidgets.QMessageBox, 'warning') as warning:
+    with patch('imswitch.imcontrol.view.guitools.showWarning') as warning:
         controller._showWidgetStateRestoreWarnings(
             'Some settings could not be restored',
             ['Settings: Could not restore Trigger source for Camera1'],
@@ -41,6 +40,7 @@ def test_restore_warnings_are_shown_to_the_operator():
 
     warning.assert_called_once()
     assert 'Trigger source' in warning.call_args.args[2]
+    assert warning.call_args.kwargs['unattendedAfterS'] == 30
 
 
 def test_close_event_saves_default_state_when_prompt_accepts():

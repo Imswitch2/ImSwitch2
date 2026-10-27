@@ -18,6 +18,10 @@ e.g. the global ``getWaitForSignal`` scripting function.
 Step-by-step tutorials ship with the scripting module; see
 :ref:`scripting-tutorials` below.
 
+This module drives the microscope.  To script what you do to *results* in
+ImProcess (a one-off transformation, a recipe for a folder of recordings, a
+console over the results list) see :ref:`improcess-python-step`.
+
 Threading model and waiting for events
 ======================================
 
@@ -108,6 +112,26 @@ can decide whether to wait for the end of the recording
 ``tutorial/scanning/05_laser_power_series.py`` is this pattern in full,
 runnable on a mock setup.
 
+Reserving devices and instruments
+=================================
+
+``api.imcontrol.reserve(rotators=..., lasers=..., positioners=...,
+instruments=...)`` gives a script exclusive control of those devices: while
+the handle is held, the GUI, other scripts and waveform scans are refused,
+and every command through the handle carries the reservation. Power meters
+and polarimeters (the setup's ``instruments`` section), their reads and the
+laser power LUT procedure are described in :doc:`devices/instruments`.
+
+.. code-block:: python
+
+    with api.imcontrol.reserve(rotators=['hwp'], instruments=['pax1']) as r:
+        r.rotator('hwp').apply(22.5, deadline_s=20)
+        window = r.instrument('pax1').read(5, allow_unverified=True)
+
+Only devices audited for exclusive control can be reserved (real Standa,
+Kinesis and Elliptec rotators, NI-DAQ and AA AOTF lasers); a rotator running
+as a simulation is refused.
+
 .. _scripting-tutorials:
 
 Tutorials
@@ -120,7 +144,7 @@ other. Each is written for a *simulated setup*: a setup file, shipped with
 ImSwitch2, whose cameras, stages, scanners and lasers are all mock devices,
 so the tutorials run without a microscope. The header of every tutorial
 says what it teaches, which setup file to load (``Mock setup:``; choose it
-with **Tools > Pick hardware setup…** in the Hardware Control tab), what
+with **Hardware > Pick hardware setup…** in the Hardware Control tab), what
 that setup simulates (``It simulates:``), and what your own microscope
 needs for the script (``Your own microscope:``). ``tutorial/README.md``
 explains how to load a setup and asks you to read each script, predict

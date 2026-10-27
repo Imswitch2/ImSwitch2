@@ -151,7 +151,7 @@ Recording and scanning
 Acquisition and notes
     * ``acquisition:software_version``, ``acquisition:start_time`` and
       ``acquisition:exposure_time_ms``, on recordings
-    * ``notes:session``: the text from **Tools → Session notes…**, stored
+    * ``notes:session``: the text from **File → Session notes…**, stored
       as ``metadata/notes/@session``
 
 Values HDF5 cannot store natively (a dict, a ragged list) are saved as

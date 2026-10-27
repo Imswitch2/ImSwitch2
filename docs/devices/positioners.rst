@@ -435,6 +435,10 @@ plugin's class instead of this one, and a warning in the log says so; see
      - bool
      - ``false``
      - If true, home both axes during construction.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - When the hardware cannot be opened, install a simulation instead of leaving the device not connected (the default: the error shows in Hardware status, commands are refused, Reconnect brings it back).
    * - ``driverUnitsPerPositionUnit``
      - float
      - ``1.0``
@@ -706,7 +710,8 @@ Analog-controlled positioner driven via NI-DAQ analog out.
             "managerProperties": {
                 "conversionFactor": 10.0,
                 "minVolt": -10.0,
-                "maxVolt": 10.0
+                "maxVolt": 10.0,
+                "defaultReferenceVoltage": 0.0
             },
             "analogChannel": 0,
             "axes": ["Z"],
@@ -734,8 +739,13 @@ Analog-controlled positioner driven via NI-DAQ analog out.
    * - ``maxVolt``
      - float
      - Maximum allowed analog voltage.
+   * - ``defaultReferenceVoltage``
+     - float or null
+     - Optional analog voltage used by the explicit open-loop reference
+       workflow. If omitted, no default reference target is configured.
 
-All three are **required** (subscripted, no defaults).  The Galvo and
+``conversionFactor``, ``minVolt`` and ``maxVolt`` are **required**
+(subscripted, no defaults); ``defaultReferenceVoltage`` is optional. The Galvo and
 Beta scan designers also read ``minVolt`` / ``maxVolt`` of each scanned
 positioner and refuse a scan whose signal would leave that range
 (*Signal voltages outside scanner ranges*).

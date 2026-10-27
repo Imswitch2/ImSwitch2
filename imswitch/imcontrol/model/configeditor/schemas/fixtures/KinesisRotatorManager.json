@@ -5,7 +5,8 @@
     "managerProperties": {
       "homeOnInit": true,
       "snr": "example",
-      "unitsPerDegree": 1.5
+      "unitsPerDegree": 1.5,
+      "useMockOnFailure": true
     }
   }
 }
