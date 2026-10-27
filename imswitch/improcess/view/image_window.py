@@ -256,6 +256,12 @@ class ImageWindow(QtWidgets.QWidget):
     def result(self):
         return self._result
 
+    def setResult(self, result) -> None:
+        """Show another result in this window (a refined or replaced list entry)."""
+        self._result = result
+        self.setWindowTitle(str(getattr(result, "name", "") or "Result"))
+        self._loadResult()
+
     def activate(self) -> None:
         """Raise this window and make it the active one."""
         self.show()

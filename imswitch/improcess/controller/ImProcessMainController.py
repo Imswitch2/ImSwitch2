@@ -9,6 +9,12 @@ from imswitch.improcess.model.processing_config import (
     load_processing_config,
     plugin_ids_from_config,
 )
+from imswitch.improcess.model.display_preferences import (
+    IMAGE_DISPLAY_WINDOWS,
+    DisplayPreferences,
+    load_display_preferences,
+    save_display_preferences,
+)
 from .CommunicationChannel import CommunicationChannel
 from .GraphController import GraphController
 from .ImageToolbarController import ImageToolbarController
@@ -47,6 +53,15 @@ class ImProcessMainController(MainController):
         if hasattr(self.__mainView, 'sigReloadPluginsRequested'):
             self.__mainView.sigReloadPluginsRequested.connect(self._reload_user_plugins)
 
+        # The image display is fixed for the session (the embedded viewer is
+        # built into the main window), so it is read once, before any panel
+        # that depends on the napari canvas is created.
+        self.__imageDisplay = load_display_preferences().imageDisplay
+        if hasattr(self.__mainView, 'setImageDisplayMode'):
+            self.__mainView.setImageDisplayMode(self.__imageDisplay)
+        if hasattr(self.__mainView, 'sigImageDisplayChosen'):
+            self.__mainView.sigImageDisplayChosen.connect(self._imageDisplayChosen)
+
         # Initialize plugin registry
         self._initialize_plugins()
         self._register_startup_runtime_processors()
@@ -75,6 +90,9 @@ class ImProcessMainController(MainController):
         self.mainViewController = self.__factory.createController(
             ImProcessMainViewController, self.__mainView
         )
+        self.resultWindowManager = None
+        if self.__imageDisplay == IMAGE_DISPLAY_WINDOWS:
+            self._startWindowMode()
         self.imageToolbarController = ImageToolbarController(
             self.__commChannel,
             self.__mainView,
@@ -1057,6 +1075,35 @@ class ImProcessMainController(MainController):
             else:
                 indices.append(data.shape[axis] // 2)
         return data[tuple(indices)]
+
+    def _startWindowMode(self) -> None:
+        """Show results in one window each; the image toolbar acts on the active one."""
+        from imswitch.improcess.view.result_windows import ResultWindowManager
+
+        manager = ResultWindowManager(
+            self.__mainView, statusMessage=self.__commChannel.sigStatusMessage.emit
+        )
+        self.resultWindowManager = manager
+        self.mainViewController.reconstructionController.setWindowManager(manager)
+        manager.setWindowMenu(self.__mainView.windowMenu)
+        self.__mainView.sigClosing.connect(manager.closeAll)
+
+    def _imageDisplayChosen(self, choice: str) -> None:
+        """Remember the image display for the next start (no live switch)."""
+        try:
+            save_display_preferences(DisplayPreferences(imageDisplay=choice))
+        except OSError as error:
+            self.__logger.warning(f'Could not save the image display preference: {error}')
+            self.__commChannel.sigStatusMessage.emit(
+                f'Could not save the image display preference ({error}).'
+            )
+            return
+        if choice == self.__imageDisplay:
+            self.__commChannel.sigStatusMessage.emit('Image display unchanged.')
+        else:
+            self.__commChannel.sigStatusMessage.emit(
+                'Image display saved. It takes effect the next time ImProcess starts.'
+            )
 
     def closeEvent(self):
         # Persist the current dock layout before tearing the controllers down,

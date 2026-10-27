@@ -13,6 +13,10 @@ from imswitch.improcess.model.runtime_tools import (
     RuntimeAnalysisToolSpec,
     runtime_analysis_panel_shortcuts,
 )
+from imswitch.improcess.model.display_preferences import (
+    IMAGE_DISPLAY_NAPARI,
+    IMAGE_DISPLAY_WINDOWS,
+)
 from imswitch.improcess.model.luts import IMAGE_LUTS
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
     DEFAULT_FOOTPRINT_NUM_RECTS,
@@ -25,6 +29,7 @@ from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
 from .DirectoryWatcherFrame import DirectoryWatcherFrame
 from .FolderPreferencesDialog import FolderPreferencesDialog
+from .window_mode import UNSUPPORTED_TOOLTIP, panel_tool, restrict_panel, unsupported_tools
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
@@ -53,6 +58,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveCoeffs = QtCore.Signal()
     sigSaveCoeffsAll = QtCore.Signal()
     sigOpenFolderPreferences = QtCore.Signal()
+    #: The user picked an image display in Preferences > Image display
+    #: (``"napari"`` or ``"windows"``); it applies at the next start.
+    sigImageDisplayChosen = QtCore.Signal(str)
 
     sigReconstuctCurrent = QtCore.Signal()
     sigCancelReconstruction = QtCore.Signal()
@@ -280,6 +288,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         # holds result-producing ones; Tools carries the built-in panels and
         # Plugins the drop-in analysis plugins.
         self._imageActions: dict[str, QtWidgets.QAction] = {}
+        # Image actions window mode cannot serve yet (see window_mode.py): they
+        # stay disabled whatever the active result would otherwise allow.
+        self._blockedImageActions: set[str] = set()
+        self._imageDisplayMode = IMAGE_DISPLAY_NAPARI
         self._imageLutActions: dict[str, QtWidgets.QAction] = {}
         self._imageMenu = menuBar.addMenu('&Image')
         self._imageOpsMenu = menuBar.addMenu('&Operations')
@@ -623,6 +635,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         resetLayoutAction.triggered.connect(self.resetLayout)
         viewMenu.addAction(resetLayoutAction)
 
+        # Window menu: the open image windows plus Tile and Cascade. Built
+        # always, shown only in window mode (setImageDisplayMode).
+        self.windowMenu = menuBar.addMenu('&Window')
+        self.windowMenu.menuAction().setVisible(False)
+
         self._buildPreferencesMenu(menuBar)
 
         pg.setConfigOption('imageAxisOrder', 'row-major')
@@ -646,6 +663,65 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         self.folderPreferencesAction.triggered.connect(self.sigOpenFolderPreferences)
         self._preferencesMenu.addAction(self.folderPreferencesAction)
+
+        # Image display: where results are shown. Read at startup, so a choice
+        # here applies the next time ImProcess starts.
+        self._imageDisplayMenu = self._preferencesMenu.addMenu('Image display')
+        self._imageDisplayMenu.setToolTipsVisible(True)
+        self._imageDisplayActions: dict[str, QtWidgets.QAction] = {}
+        displayGroup = QtWidgets.QActionGroup(self)
+        displayGroup.setExclusive(True)
+        for choice, text, tip in (
+            (IMAGE_DISPLAY_NAPARI, 'Embedded viewer (napari)',
+             'Show results in the napari viewer inside the main window (default).'),
+            (IMAGE_DISPLAY_WINDOWS, 'Separate windows (Fiji-style)',
+             'Show each result in a window of its own, like ImageJ. The image toolbar '
+             'acts on the active window.'),
+        ):
+            action = QtWidgets.QAction(text, self, checkable=True)
+            action.setToolTip(tip)
+            displayGroup.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False, value=choice: self.sigImageDisplayChosen.emit(value)
+            )
+            self._imageDisplayMenu.addAction(action)
+            self._imageDisplayActions[choice] = action
+        self._imageDisplayActions[IMAGE_DISPLAY_NAPARI].setChecked(True)
+
+    def setImageDisplayChoiceChecked(self, choice: str) -> None:
+        """Tick the saved choice in Preferences > Image display."""
+        action = self._imageDisplayActions.get(choice)
+        if action is not None:
+            action.setChecked(True)
+
+    def imageDisplayMode(self) -> str:
+        """The display this session runs with (fixed at startup)."""
+        return self._imageDisplayMode
+
+    def setImageDisplayMode(self, mode: str) -> None:
+        """Run in ``mode``: ``"windows"`` hides the napari canvas (the results list
+        stays), shows the Window menu and disables the napari-only tools."""
+        self._imageDisplayMode = mode
+        windows = mode == IMAGE_DISPLAY_WINDOWS
+        self.windowMenu.menuAction().setVisible(windows)
+        self.reconstructionWidget.setCanvasVisible(not windows)
+        self.setImageDisplayChoiceChecked(mode)
+        if not windows:
+            return
+        for tool in unsupported_tools():
+            if tool.kind == 'panel':
+                restrict_panel(getattr(self, tool.attribute, None))
+            elif tool.kind == 'image-action':
+                self._blockedImageActions.add(tool.id)
+                action = self._imageActions.get(tool.id)
+                if action is not None:
+                    action.setEnabled(False)
+                    action.setToolTip(UNSUPPORTED_TOOLTIP)
+            elif tool.kind == 'menu':
+                menu = getattr(self, tool.attribute, None)
+                if menu is not None:
+                    menu.menuAction().setEnabled(False)
+                    menu.menuAction().setToolTip(UNSUPPORTED_TOOLTIP)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
@@ -1062,6 +1138,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if runtime_loaded:
                 self._runtimeAnalysisToolIds.add(processor_id)
             setattr(self, spec.attribute, widget)
+            if self._imageDisplayMode == IMAGE_DISPLAY_WINDOWS and panel_tool(spec.widget_kind):
+                restrict_panel(widget)
             if spec.widget_kind in ('roi-manager', 'segmentation', 'result-processor'):
                 # Any of these may be opened first, and the wiring runs in
                 # both directions, so it is redone whenever one arrives.
@@ -1314,14 +1392,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._showStatusMessage(message, timeout_ms)
 
     def setImageActionsEnabled(self, enabled: bool) -> None:
-        for action in self._imageActions.values():
-            action.setEnabled(bool(enabled))
+        for action_id, action in self._imageActions.items():
+            action.setEnabled(bool(enabled) and action_id not in self._blockedImageActions)
         self.setImageLutEnabled(enabled)
 
     def setImageActionEnabled(self, action_id: str, enabled: bool) -> None:
         action = self._imageActions.get(action_id)
         if action is not None:
-            action.setEnabled(bool(enabled))
+            action.setEnabled(bool(enabled) and action_id not in self._blockedImageActions)
 
     def imageAction(self, action_id: str) -> QtWidgets.QAction | None:
         return self._imageActions.get(action_id)

@@ -220,7 +220,13 @@ class ImageToolbarController:
 
     def resetView(self) -> None:
         try:
-            self._view.reconstructionWidget.resetView()
+            # Through the controller, which knows whether the picture is the
+            # embedded canvas or the active image window.
+            reset = getattr(self._reconstructionController, "resetView", None)
+            if callable(reset):
+                reset()
+            else:
+                self._view.reconstructionWidget.resetView()
         except Exception:
             self._logger.exception("Could not reset reconstruction view")
 

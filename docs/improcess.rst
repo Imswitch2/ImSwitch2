@@ -327,6 +327,63 @@ step list recorded as ``processing_history``, and ``python -m
 imswitch.improcess.workflows replay`` turns a saved file's record back into
 a workflow (see :doc:`improcess-workflows`).
 
+.. _improcess-image-windows:
+
+Separate image windows (Fiji-style)
+===================================
+
+By default a result is shown in the napari viewer inside the main window.
+**Preferences → Image display → Separate windows (Fiji-style)** shows each
+result in a window of its own instead, like ImageJ, so several images can sit
+side by side.  The choice is kept per computer in ``improcess_options.json``
+(key ``imageDisplay``: ``"napari"``, the default, or ``"windows"``) and is
+read when ImProcess starts: after changing it, restart ImProcess.  There is no
+live switch.
+
+In window mode:
+
+* Selecting a result in the reconstruction list opens its window (created the
+  first time) and brings it forward; double-clicking a row reopens a window
+  you closed.  Closing a window only hides it, the result stays in the list.
+  Removing a result from the list closes its window.  The list pane stays in
+  the main window; only the napari canvas next to it is hidden (the viewer
+  itself still exists for napari plugins).
+* A window is minimal: the image, one slider per axis that is not on screen
+  (T, Z, Dataset, Base, ...), and a status line giving the calibrated cursor
+  position, the value under the cursor (per visible channel for a composite)
+  and the slider indices.  A scale bar appears when the pixel size is
+  calibrated.  A result with several view modes gets a mode selector.
+* A window has **no contrast controls of its own**.  The image toolbar
+  (*Auto contrast*, *Brightness/Contrast…*, *Reset contrast*, the LUT
+  selector, *Channels…* and *Reset view*) acts on the **active window**, the
+  one you clicked last.  Clicking another window makes its result the current
+  one in the list.  Levels, LUT and channel visibility are stored on the result,
+  so it keeps its look in either display and when its window is reopened.
+* A composite (made by *Make composite*) is drawn as channels added together,
+  each with its own LUT; any other result with a channel axis gets a slider
+  for it.  Only the plane on screen is read, so large HDF5 and Zarr results
+  open without being loaded.
+* The **Window** menu (shown only in window mode) lists the open windows
+  (choosing one brings it forward) and offers **Tile** and **Cascade**, which
+  arrange them within the screen.
+
+Not yet supported
+-----------------
+
+These draw on or read the napari viewer's layers and are disabled in window
+mode, with the tooltip *Not yet supported with separate windows (Preferences →
+Image display)*.  They work as before with the embedded viewer.
+
+* The panels **ROI manager**, **ROI stats**, **Profile**, **Segmentation**
+  (preview), **PSF resolution**, **Colocalization** and **Multicolor**
+  (previews).
+* **Crop/Substack…** (the stack-subset dialog that previews on napari layers).
+* **Plugins → napari plugins** (sending a result to a napari plugin and
+  importing a napari layer).
+* Display layers that are not images (labels, points, shapes) are not drawn
+  yet: the window's status line says so.  Localization (point cloud) results
+  have no image window.
+
 Results list vs. napari layers
 ===============================
 
