@@ -14,6 +14,12 @@ api.imcontrol
 
    .. method:: acquireImage() -> None
 
+      Legacy, kept for old scripts: appends the live view's current
+      image to a list that a script the Watcher widget runs gets, and that
+      nothing reads. Outside such a script it raises AttributeError. To get
+      images, use snapImage(True), getLiveFrame or recordFramesToMemory,
+      which return them.
+
       Always available.
 
    .. method:: activateRotScan(activate: bool)
@@ -74,13 +80,22 @@ api.imcontrol
 
    .. method:: changed3StepDelayPar(d3StepDelay)
 
+      Sets the Point scan widget's delay before each step of the third
+      axis.
+
       Needs the *Scan* widget (PointScan) in ``availableWidgets``.
 
    .. method:: changeRotationParameters(rotationPars)
 
+      Sets the rotation scan's parameters, the fields of the Rotation
+      scan widget, from ``rotationPars``.
+
       Needs *RotationScan* in ``availableWidgets``.
 
    .. method:: changeScanCenterPos(positionerName, positionerScanCenterPos)
+
+      Sets the centre of the scan along a positioner, in µm (the Scan
+      widget's *Center*).
 
       Needs the *Scan* widget (Advanced, PointScan) in ``availableWidgets``.
 
@@ -97,6 +112,9 @@ api.imcontrol
 
    .. method:: changeScanSize(positioner: str, size: float)
 
+      Sets the size of the scan along a positioner, in µm (the Scan
+      widget's *Size*).
+
       Needs the *Scan* widget (Advanced, PointScan) in ``availableWidgets``.
 
    .. method:: connectInstrument(name: 'str') -> 'dict'
@@ -107,6 +125,9 @@ api.imcontrol
       Needs *Instruments* in ``availableWidgets``.
 
    .. method:: deleteLaserPreset(name: str, context='live') -> bool
+
+      Delete the saved preset ``name`` from the setup file. Returns
+      False when there is no such preset.
 
       Needs *Laser* in ``availableWidgets``.
 
@@ -163,10 +184,21 @@ api.imcontrol
    .. method:: getDetectorParameters(detectorName: str) -> Dict[str, Dict[str, Any]]
 
       Returns all detector-specific parameters of the specified detector
-      as {parameter name: {'value', 'units', 'editable', 'options'}}. 'units'
-      is None for a parameter that picks from a list of 'options', and
-      'options' is None for a numerical one. Only an editable parameter can
-      be changed with setDetectorParameter.
+      as {parameter name: {'value', 'units', 'editable', 'options',
+      'configOwned'}}. 'units' is None for a parameter that picks from a list
+      of 'options', and 'options' is None for a numerical one. Only an
+      editable parameter can be changed with setDetectorParameter.
+      'configOwned' is True for a calibration the setup file declares (the
+      camera pixel size): the setup file owns it, not an acquisition.
+
+      Needs *Settings* in ``availableWidgets``.
+
+   .. method:: getDetectorPixelSize(detectorName: str) -> List[float]
+
+      Returns the size of the detector's pixels in the sample, in µm,
+      as ``[Z, Y, X]``: for a camera its pixel size setting, for a
+      scan-driven detector (APD, PMT, ...) the scan's step. ``Z`` is 1
+      when nothing steps it.
 
       Needs *Settings* in ``availableWidgets``.
 
@@ -175,6 +207,15 @@ api.imcontrol
       Gets the filename of the data to save.
 
       Needs *Recording* in ``availableWidgets``.
+
+   .. method:: getFocusLockState() -> str
+
+      The focus lock's state: ``'unlocked'``, ``'locked'``,
+      ``'suspended'`` (a scan owns the focus axis and the lock is held for
+      it), ``'reacquiring'`` (the scan is over and the lock waits for the
+      signal to come back) or ``'reacquire-failed'``.
+
+      Needs *FocusLock* in ``availableWidgets``.
 
    .. method:: getInstrumentDiagnostics(name: 'str') -> 'dict'
 
@@ -215,6 +256,15 @@ api.imcontrol
    .. method:: getLaserActive(laserName: str) -> bool
 
       Return the current Live ON/OFF state for ``laserName``.
+
+      Needs *Laser* in ``availableWidgets``.
+
+   .. method:: getLaserInfo(laserName: str) -> Dict[str, Any]
+
+      Describes the laser: ``wavelength`` in nm, the ``units`` of its
+      value with the ``min``, ``max`` and ``step`` of that value, and
+      ``binary`` (True for a laser that is only switched on and off, whose
+      value means nothing).
 
       Needs *Laser* in ``availableWidgets``.
 
@@ -273,6 +323,23 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
+   .. method:: getLiveFrame(detectorName: Optional[str] = None) -> numpy.ndarray
+
+      Returns the newest frame of a detector as a NumPy array
+      ``(rows, columns)`` -- what the live view shows -- without a snap or
+      a file. ``None`` means the current detector. The detector has to be
+      acquiring, with the live view on (setLiveViewActive) or a recording
+      running, for the frame to be new.
+
+      Needs *View* in ``availableWidgets``.
+
+   .. method:: getPositionerAxes(positionerName: str) -> List[str]
+
+      Returns the axes of a positioner (``'X'``, ``'Y'``, ``'Z'``,
+      ...), as movePositioner and setPositioner take them.
+
+      Needs *Positioner* in ``availableWidgets``.
+
    .. method:: getPositionerNames() -> List[str]
 
       Returns the device names of all positioners. These device names can
@@ -280,9 +347,16 @@ api.imcontrol
 
       Needs *Positioner* or *WellPlate* in ``availableWidgets``.
 
+   .. method:: getPositionerPosition(positionerName: str, axis: str) -> float
+
+      Returns the position of one axis of a positioner, in µm.
+
+      Needs *Positioner* in ``availableWidgets``.
+
    .. method:: getPositionerPositions() -> Dict[str, Dict[str, float]]
 
-      Returns the positions of all positioners.
+      Returns the positions of all positioners, in µm, as
+      ``{positioner: {axis: position}}``.
 
       Needs *Positioner* or *WellPlate* in ``availableWidgets``.
 
@@ -294,6 +368,19 @@ api.imcontrol
       Needs *Recording* in ``availableWidgets``.
 
    .. method:: getRecFolder() -> str
+
+      Returns the folder recordings and snaps are saved into.
+
+      Needs *Recording* in ``availableWidgets``.
+
+   .. method:: getRecordingSettings() -> Dict[str, Any]
+
+      What the Recording widget is set to: ``mode`` (``'SpecFrames'``,
+      ``'SpecTime'``, ``'ScanOnce'``, ``'ScanLapse'``, ``'UntilStop'`` or
+      ``'CameraLapse'``), ``frames`` (its *Number of frames*), ``seconds``
+      (its *Time to record*), ``lapses`` and ``lapseIntervalSeconds`` (a
+      scan time-lapse), ``detectors`` (the names it records),
+      ``fileFormat`` and ``folder``. The setRecMode functions set them.
 
       Needs *Recording* in ``availableWidgets``.
 
@@ -308,6 +395,32 @@ api.imcontrol
       Active reservations: owner and reserved resources.
 
       Needs *Reservation* in ``availableWidgets``.
+
+   .. method:: getRotatorNames() -> List[str]
+
+      Returns the names of all rotators (motorized rotation mounts),
+      as the other rotator functions take them.
+
+      Needs *Rotator* in ``availableWidgets``.
+
+   .. method:: getRotatorPosition(name: str) -> float
+
+      Returns the angle of the rotator ``name`` in degrees, read from
+      the mount, and shows it in the Rotator widget.
+
+      Needs *Rotator* in ``availableWidgets``.
+
+   .. method:: getScanParameters() -> dict
+
+      Returns the scan the Scan widget holds as a dict, the same
+      content saveScanParamsToFile writes: ``analogParameterDict`` (the
+      scanned devices with ``axis_length``, ``axis_step_size`` and
+      ``axis_centerpos`` per device, in µm, and ``sequence_time`` in s),
+      ``digitalParameterDict`` (the pulsed devices with ``TTL_start`` and
+      ``TTL_end`` in s) and ``positionersScan``. Edit it and give it back
+      with setScanParameters.
+
+      Needs the *Scan* widget (Advanced, Base, MoNaLISA, PointScan) in ``availableWidgets``.
 
    .. method:: getScanRequestStatus(requestId: str) -> dict
 
@@ -362,7 +475,22 @@ api.imcontrol
 
    .. method:: getStitchedImage() -> Optional[numpy.ndarray]
 
+      Returns the stitched overview of the tiling run as an array, or
+      None before the first run.
+
       Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: isFocusLocked() -> bool
+
+      Whether the focus is locked right now.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
+   .. method:: isLaserActive(laserName: str) -> bool
+
+      Whether the laser is switched on.
+
+      Needs *Laser* in ``availableWidgets``.
 
    .. method:: isRecording() -> bool
 
@@ -390,9 +518,16 @@ api.imcontrol
 
    .. method:: loadLaserPreset(name: str, context='live') -> bool
 
+      Apply the saved preset ``name`` to the lasers (in ``context`` when
+      Live and Scan powers are separate). Returns False when there is no
+      such preset, or it is not visible in that context.
+
       Needs *Laser* in ``availableWidgets``.
 
    .. method:: loadParams()
+
+      Loads the SLM parameters of the objective chosen in the SLM
+      widget; logs an error and does nothing while none is chosen.
 
       Needs *SLM* in ``availableWidgets``.
 
@@ -472,7 +607,10 @@ api.imcontrol
 
       Needs *FlipMirror* in ``availableWidgets``.
 
-   .. method:: moveAbs(name, pos)
+   .. method:: moveAbs(name: str, pos: float) -> None
+
+      Turns the rotator ``name`` to ``pos`` degrees: the older name of
+      setRotatorPosition, kept for existing scripts.
 
       Needs *Rotator* in ``availableWidgets``.
 
@@ -482,6 +620,13 @@ api.imcontrol
       micrometers.
 
       Needs *Positioner* or *WellPlate* in ``availableWidgets``.
+
+   .. method:: moveRotator(name: str, degrees: float) -> None
+
+      Turns the rotator ``name`` by ``degrees`` from where it is, either
+      way round (the Rotator widget's **+** and **-**, with any step).
+
+      Needs *Rotator* in ``availableWidgets``.
 
    .. method:: post_json(path: str, payload: dict) -> str
 
@@ -499,7 +644,50 @@ api.imcontrol
 
       Needs *Instruments* in ``availableWidgets``.
 
+   .. method:: recordFramesToMemory(detectorName: Union[List[str], str, int, NoneType], numFrames: int, timeout: float = 600.0, keep: bool = False, structured: bool = False) -> Union[numpy.ndarray, Dict[str, numpy.ndarray], imswitch.imcontrol.model.acquisition_result.AcquisitionResult]
+
+      Records ``numFrames`` frames of a detector, as the Recording
+      widget's *Number of frames* does, and returns them as a NumPy array
+      ``(frames, rows, columns)`` without writing a file. Everything else
+      is as for recordScanToMemory: ``detectorName`` (a name, a list, -1,
+      -2 or None), the result for several detectors, ``timeout``,
+      ``keep``, ``structured`` and the errors.
+
+      Needs *Recording* in ``availableWidgets``.
+
+   .. method:: recordScanToMemory(detectorName: Union[List[str], str, int, NoneType] = None, timeout: float = 600.0, keep: bool = False, structured: bool = False) -> Union[numpy.ndarray, Dict[str, numpy.ndarray], imswitch.imcontrol.model.acquisition_result.AcquisitionResult]
+
+      Runs the scan the Scan widget holds once and returns the frames
+      it triggers as a NumPy array ``(frames, rows, columns)``, without
+      writing a file: the recording goes to memory, is read back, and is
+      dropped. With several detectors the result is a dict that maps each
+      detector's name to its array.
+
+      ``detectorName`` is a detector's name, a list of names, ``-1`` for
+      the current detector, ``-2`` for all of them, or None for what the
+      Recording widget has selected. The call blocks until the scan and
+      the recording are over, at most ``timeout`` seconds; it raises
+      ``RuntimeError`` when the recording is refused or fails and
+      ``TimeoutError`` when it does not finish (the recording is stopped).
+      The Recording widget's settings are put back afterwards. With
+      ``keep=True`` the recording also stays listed in ImProcess, as a
+      recording to RAM does. It runs on the caller's thread, which must
+      not be the GUI thread (a script's is not).
+
+      ``structured=True`` returns an AcquisitionResult instead: the frames
+      of every detector with their axes and pixel size, which scan
+      position each frame was taken at (recorded by the scan, or
+      reconstructed from its plan -- the result says which), the settings
+      the recording wrote down, its start time and whether it is
+      complete, with show() and save().
+
+      Needs *Recording* in ``availableWidgets``.
+
    .. method:: renameLaserPreset(oldName: str, newName: str, context='live') -> bool
+
+      Rename the saved preset ``oldName`` to ``newName`` in the setup
+      file. Returns False when there is no such preset or ``newName`` is
+      empty.
 
       Needs *Laser* in ``availableWidgets``.
 
@@ -657,6 +845,23 @@ api.imcontrol
 
       Needs *Recording* in ``availableWidgets``.
 
+   .. method:: setFocusCameraActive(active: bool) -> None
+
+      Starts or stops the focus camera (the camera button of the Focus
+      Lock widget). A lock needs it running.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
+   .. method:: setFocusLocked(locked: bool) -> None
+
+      Locks the focus where it is (True) or releases it (False), as the
+      widget's **Lock**/**Unlock** button does. A lock asked for while a
+      scan owns the focus axis is engaged when the scan ends
+      (waitForFocusLock waits for that). Raises RuntimeError when the focus
+      camera is off.
+
+      Needs *FocusLock* in ``availableWidgets``.
+
    .. method:: setLaserActive(laserName: str, active: bool) -> None
 
       Sets whether the specified laser is powered on.
@@ -693,6 +898,9 @@ api.imcontrol
       Needs *View* in ``availableWidgets``.
 
    .. method:: setMask(maskMode)
+
+      Sets the mode of the mask chosen in the SLM widget, by MaskMode
+      value or by its name.
 
       Needs *SLM* in ``availableWidgets``.
 
@@ -781,6 +989,23 @@ api.imcontrol
 
       Needs *Recording* in ``availableWidgets``.
 
+   .. method:: setRotatorPosition(name: str, degrees: float) -> None
+
+      Turns the rotator ``name`` to the angle ``degrees`` (the Rotator
+      widget's **Abs**). Returns when the mount's manager does: the
+      shipped managers wait for the move.
+
+      Needs *Rotator* in ``availableWidgets``.
+
+   .. method:: setScanParameters(parameters: dict) -> None
+
+      Puts a dict from getScanParameters, edited or not, into the Scan
+      widget, as loadScanParamsFromFile does with a file. Raises
+      ValueError, naming what could not be applied, when the dict does
+      not fit the setup (a device the setup lacks, say).
+
+      Needs the *Scan* widget (Advanced, Base, MoNaLISA, PointScan) in ``availableWidgets``.
+
    .. method:: setSessionNote(note: str) -> None
 
       Set the free-text note attached to recordings made from now on.
@@ -800,9 +1025,15 @@ api.imcontrol
 
    .. method:: setSpecifyFileName(enable=True) -> None
 
+      Ticks (True) or clears *Specify file name* in the Recording
+      widget: ticked, recordings are named by setRecFilename; cleared, by
+      the time of day.
+
       Needs *Recording* in ``availableWidgets``.
 
    .. method:: setTileLabel(label: str) -> None
+
+      Sets the label the Tiling widget puts into the tiles' names.
 
       Needs *Tiling* in ``availableWidgets``.
 
@@ -847,6 +1078,10 @@ api.imcontrol
 
    .. method:: startTiling() -> None
 
+      Starts a tiling run with the Tiling widget's settings. Does
+      nothing on a setup without a ``tiling`` section, or while a run or
+      cell targeting is busy.
+
       Needs *Tiling* in ``availableWidgets``.
 
    .. method:: stepPositionerDown(positionerName: str, axis: str) -> None
@@ -874,9 +1109,13 @@ api.imcontrol
 
    .. method:: stopTiling() -> None
 
+      Asks the running tiling run, or cell targeting, to stop.
+
       Needs *Tiling* in ``availableWidgets``.
 
    .. method:: toggleSLMDisplay(enabled)
+
+      Shows or hides the SLM display window.
 
       Needs *SLM* in ``availableWidgets``.
 
@@ -885,3 +1124,12 @@ api.imcontrol
       Update user-editable metadata for a saved setup mode.
 
       Always available.
+
+   .. method:: waitForFocusLock(timeout: float = 10.0) -> bool
+
+      Blocks until a lock that was asked for is engaged, at most
+      ``timeout`` seconds: after a scan that owned the focus axis, say.
+      Returns whether the focus is locked; True at once when no lock was
+      asked for. Call it from a script, not from the GUI thread.
+
+      Needs *FocusLock* in ``availableWidgets``.
