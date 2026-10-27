@@ -20,6 +20,7 @@ from imswitch.improcess.fiji.protocol import HostError, resolve_launch_config
 from imswitch.improcess.fiji.session import FijiDied, FijiSession
 from imswitch.improcess.fiji.tracker import GRID_POLICY_VERSION, grid_preserved, history_for
 from imswitch.improcess.model.array_result import ArrayProcessingResult
+from imswitch.improcess.model.provenance import derive_history, graph_of, output_node
 
 FIJI_DIR = os.environ.get("IMSWITCH_FIJI_TEST_DIR")
 FIJI_PYTHON = os.environ.get("IMSWITCH_FIJI_TEST_PYTHON")
@@ -274,7 +275,6 @@ def _import_with_history(session, image_id, source):
         desc, data, source, sent=session.sent.get(image_id) or next(iter(session.sent.values())),
         preserves_grid=preserves,
         details={"fiji_history": history.to_details(), "grid_policy": GRID_POLICY_VERSION, "grid_policy_reason": reason},
-        history_details=history.to_details(),
     )
     return history, reason, imported
 
@@ -291,7 +291,10 @@ def test_a_blur_in_place_comes_back_on_the_inherited_grid_with_its_history(sessi
     assert blur.plugin_jar and blur.completeness == "recorded"
     assert history.unrecorded == "none observed" and history.completeness == "recorded"
     assert imported.grid == "inherit"
-    assert imported.result.metadata["fiji"]["history"]["steps"][-1]["command"] == "Gaussian Blur..."
+    assert "history" not in imported.result.metadata["fiji"]
+    labels = [step["label"] for step in derive_history(graph_of(imported.result))]
+    assert labels[-2].startswith("Fiji: Gaussian Blur... (") and "sigma=2" in labels[-2]
+    assert labels[-1] == "Imported from Fiji"
 
 
 def test_a_duplicate_blurred_in_fiji_comes_back_on_the_inherited_grid_in_two_steps(session):
@@ -318,7 +321,7 @@ def test_a_crop_in_fiji_is_fresh_and_the_reason_names_crop(session):
     assert [s.command for s in history.steps][-1] == "Crop"
     assert "Specify" in reason or "Crop" in reason
     assert imported.grid == "fresh"
-    assert imported.result.metadata["fiji"]["history"]["origin"] == "sent"
+    assert output_node(imported.result)["details"]["fiji_history"]["origin"] == "sent"
 
 
 def test_scrolling_after_a_filter_does_not_degrade_the_history(session):

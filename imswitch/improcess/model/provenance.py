@@ -956,6 +956,55 @@ def primary_chain(graph: dict) -> list[tuple[str, dict]]:
     return chain
 
 
+#: The ``schema`` of the history a Fiji import stores in its node's details
+#: (``fiji.tracker.HISTORY_SCHEMA``). Read as a string on purpose: this module
+#: must not import a tool's package to understand its node.
+_FIJI_HISTORY_SCHEMA = "fiji-history-v1"
+
+
+def _external_substeps(node_id: str, node: dict) -> list[dict]:
+    """What an external tool did before an import, as readable history steps.
+
+    An import node is one opaque step in the graph, but the tool may have
+    recorded what happened inside it (Fiji does: the commands run on the
+    image). Those are shown in the ONE place history is read, ahead of the
+    import step, so there is no second history to look in. They are readable
+    only: not graph nodes, not replayable, never seen by workflows. Any tool
+    whose details this does not know contributes nothing.
+    """
+    details = node.get("details")
+    fiji = details.get("fiji_history") if isinstance(details, dict) else None
+    if (
+        str(node.get("tool", "")) != "fiji"
+        or not isinstance(fiji, dict)
+        or fiji.get("schema") != _FIJI_HISTORY_SCHEMA
+        or not isinstance(fiji.get("steps"), list)
+    ):
+        return []
+    substeps = []
+    for number, recorded in enumerate(fiji["steps"], start=1):
+        if not isinstance(recorded, dict) or not recorded.get("command"):
+            continue
+        command = str(recorded["command"])
+        options = recorded.get("options")
+        shown = str(options).strip() if options else ""
+        substeps.append({
+            "operation": f"fiji:{command}",
+            "label": f"Fiji: {command}" + (f" ({shown})" if shown else ""),
+            "time": node.get("time", ""),
+            "params": {
+                "options": options,
+                "options_source": recorded.get("options_source"),
+                "completeness": recorded.get("completeness"),
+                "plugin_jar": recorded.get("plugin_jar"),
+            },
+            "step_id": f"{node_id}#{number}",
+            "tool": "fiji",
+            "replayable": False,
+        })
+    return substeps
+
+
 def derive_history(graph: dict) -> list[dict]:
     """The footprint's linear list, computed from the graph.
 
@@ -978,6 +1027,8 @@ def derive_history(graph: dict) -> list[dict]:
             # The readable chain says "filtered inside ROI cell-3", as the
             # linear footprint always did; the geometry stays on the node.
             params = {**params, "region": restriction["summary"]}
+        if op == "external-import":
+            history.extend(_external_substeps(node_id, node))
         step: dict[str, Any] = {
             "operation": node.get("plugin_id") or op,
             "label": node.get("label") or node.get("plugin_id") or op,

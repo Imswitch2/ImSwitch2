@@ -401,7 +401,6 @@ def import_fiji_image(
     # knows every operation recorded on the image, says all of them preserve it.
     preserves_grid: bool = False,
     details: dict | None = None,
-    history_details: dict | None = None,
     name: str | None = None,
 ) -> ImportedLayer:
     """Turn one Fiji image back into a result with honest provenance."""
@@ -417,8 +416,6 @@ def import_fiji_image(
     result = imported.result
     if result is not None:
         result.metadata["fiji"] = {"image_id": desc.image_id, "title": desc.title, "dropped": list(notes)}
-        if history_details is not None:
-            result.metadata["fiji"]["history"] = history_details
         if snapshot.metadata.get("channel_names"):
             result.metadata["channel_names"] = list(snapshot.metadata["channel_names"])
     return imported

@@ -36,7 +36,7 @@ from imswitch.improcess.fiji.protocol import (  # noqa: E402
 from imswitch.improcess.fiji.session import FijiDied, FijiSession, FijiStartError  # noqa: E402
 from imswitch.improcess.model.array_result import ArrayProcessingResult  # noqa: E402
 from imswitch.improcess.model.napari_import import NotImportable  # noqa: E402
-from imswitch.improcess.model.provenance import output_node  # noqa: E402
+from imswitch.improcess.model.provenance import derive_history, graph_of, output_node  # noqa: E402
 
 FAKE = "imswitch.improcess._test.fiji_fake_host"
 
@@ -377,7 +377,10 @@ def test_a_filter_only_history_lets_the_import_inherit_the_grid_and_is_stored(en
     assert details["fiji_history"]["completeness"] == "recorded" and details["fiji_history"]["origin"] == "sent"
     assert details["grid_policy"] == "fiji-grid-v1" and details["grid_policy_reason"] == ""
     assert details["imagej"] == "2.18.0"
-    assert result.metadata["fiji"]["history"] == details["fiji_history"]
+    assert "history" not in result.metadata["fiji"]           # the provenance is the one place
+    steps = [step["label"] for step in derive_history(graph_of(result))]
+    assert steps[-3].startswith("Fiji: Gaussian Blur...") and steps[-2] == "Fiji: Invert"
+    assert steps[-1] == "Imported from Fiji"
     assert "2 Fiji steps, history recorded" in env.status
 
 

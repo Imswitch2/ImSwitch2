@@ -44,6 +44,7 @@ from imswitch.improcess.fiji.session import (
     FijiStartError,
 )
 from imswitch.improcess.model.napari_import import NotImportable
+from imswitch.improcess.model.provenance import output_node
 from imswitch.improcess.view.FijiImportDialog import FijiImportDialog
 
 #: Time allowed, on top of the session's own stop bound, for the worker to
@@ -484,7 +485,6 @@ class FijiController(QtCore.QObject):
                 sent=sent_record_for(image_id, desc, session.sent),
                 preserves_grid=preserves,
                 details=details,
-                history_details=history.to_details(),
             )
             return image_id, imported
 
@@ -501,7 +501,9 @@ class FijiController(QtCore.QObject):
         fiji = result.metadata.get("fiji") or {}
         notes = len(fiji.get("dropped") or ())
         suffix = f" ({notes} metadata notes; see Metadata)" if notes else ""
-        history = fiji.get("history")
+        # The history lives only in the provenance, on the import step's details.
+        node = output_node(result) or {}
+        history = (node.get("details") or {}).get("fiji_history")
         if history is None:
             self._status(f"Imported {result.name} from Fiji{suffix}.")
             return

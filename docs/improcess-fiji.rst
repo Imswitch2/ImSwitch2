@@ -334,11 +334,17 @@ from three things ImageJ already exposes, while Fiji runs:
   carry their parameters with the command and are not in the recorder.
 
 Together they tell, for an imported image, which sent image it came from and
-the Fiji steps in between, oldest first. This is stored in the import step's
-details (``fiji_history``) and in the result's metadata under *Fiji*
-(``history``), and the status bar summarises it ("3 Fiji steps, history
-recorded"). It is useful scientific provenance, not a replay script: the
-import is still not replayable.
+the Fiji steps in between, oldest first. There is ONE place to read this: the
+result's **provenance**. Its history (Metadata → Provenance → steps, the save
+files' history, the workflow editor's notes) lists one line per Fiji step, such
+as ``Fiji: Gaussian Blur... (sigma=2)``, followed by ``Imported from Fiji``.
+The full record (commands, options, where the options came from, plugin jars,
+completeness) is stored in the import step's details (``fiji_history``); there
+is no second copy under the result's *Fiji* metadata, which holds only the
+image id, title and the notes of what could not be carried. The status bar
+summarises it ("3 Fiji steps, history recorded"). The Fiji lines are readable
+history, not replay steps: they are not nodes of the provenance graph and a
+workflow never sees them.
 
 How far to trust it
 -------------------
