@@ -369,7 +369,11 @@ class FijiController(QtCore.QObject):
         try:
             plan = plan_send(result)
         except NotSendable as exc:
-            self._status(f"{result.name} cannot be sent to Fiji: {exc}")
+            message = f"{result.name} cannot be sent to Fiji:\n{exc}"
+            self._status(message.replace("\n", " "))
+            # The user asked for this send, so a refusal deserves an answer they
+            # cannot miss; the status line alone vanished before it was read.
+            QtWidgets.QMessageBox.information(self._dialogParent(), "Send to Fiji", message)
             return
         self._markStarting()
 

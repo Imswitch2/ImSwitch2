@@ -272,11 +272,15 @@ def test_stop_returns_to_not_running(env):
 
 # -- sending --------------------------------------------------------------------
 
-def test_a_result_that_cannot_be_sent_starts_nothing(env):
+def test_a_result_that_cannot_be_sent_starts_nothing(env, monkeypatch):
+    shown = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: shown.append(a[1:]))
     bad = ArrayProcessingResult("angles", np.zeros((2, 4, 5), np.uint16), ["Angle", "Y", "X"])
     env.recon.active = bad
     env.controller.sendCurrent()
     assert "cannot be sent to Fiji" in env.status
+    ((title, text),) = shown                         # and the user is told in a box, not only the status bar
+    assert title == "Send to Fiji" and text.startswith("angles cannot be sent to Fiji:\n")
     assert FakeSession.instances == []
 
 

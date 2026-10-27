@@ -215,7 +215,8 @@ or *failed to start*) and these entries.
    * - **Send to Fiji**
      - Opens the current result in Fiji as a hyperstack, starting Fiji first
        if needed. A result with no honest ImageJ form is refused with the
-       reason (see below) and nothing is started.
+       reason (see below), in a message box as well as on the status bar, and
+       nothing is started.
    * - **Import from Fiji…**
      - Lists the images open in Fiji and imports the ones you tick. The list
        shows each image's title, ImageJ id, size, type, **origin** (*sent from*
