@@ -916,3 +916,19 @@ class TestFailures:
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_lattice_volume_exposes_orthogonal_views_and_yz_default():
+    result = MonalisaLatticeResult(
+        name="yz",
+        image=np.zeros((3, 4, 5), dtype=np.float32),
+        output_pixel_nm=(35.0, 35.0),
+        params={},
+        diagnostics={},
+        axis_labels=["Z", "Y", "X"],
+        plane_step_nm=100.0,
+        scanned_axes=("y", "z"),
+    )
+
+    assert [mode.name for mode in result.view_modes] == ["Standard", "Bottom", "Left"]
+    assert result.initial_view_mode_name() == "Left"

@@ -583,6 +583,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             axis_labels=labels,
             plane_step_nm=scan.plane_step_nm,
             condition_labels=scan.condition_labels if scan.num_conditions > 1 else (),
+            scanned_axes=tuple(scan.scanned_axes) + (("z",) if scan.num_planes > 1 else ()),
         )
 
     def consolidate(self, results: list) -> MonalisaLatticeResult:
@@ -633,6 +634,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             axis_labels=labels,
             plane_step_nm=first.plane_step_nm,
             condition_labels=first.condition_labels,
+            scanned_axes=first.scanned_axes,
         )
 
     @staticmethod
