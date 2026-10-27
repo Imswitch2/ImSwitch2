@@ -2400,11 +2400,11 @@ back to::
     reconstructors: ["view-only"]
     processors:     ["drift-correct"]
 
-The defaults differ when a setup starts an explicit plugin list but supplies
-only one side of it. If either ``reconstructors`` or ``processors`` is present,
-an omitted ``reconstructors`` key defaults to ``["monalisa"]`` and an omitted
-``processors`` key defaults to ``["drift-correct"]``. Use an explicit empty
-list when that side should load nothing.
+A setup that supplies only one side of the plugin list keeps the standalone
+default for the other side: an omitted ``reconstructors`` key is
+``["view-only"]`` and an omitted ``processors`` key is ``["drift-correct"]``,
+exactly as when the whole block is absent. Use an explicit empty list when that
+side should load nothing.
 
 Of the built-ins, only the IDs you list are instantiated during initial
 registry setup; drop-in plugins from the plugins folder are always

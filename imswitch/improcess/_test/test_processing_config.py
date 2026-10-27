@@ -11,6 +11,7 @@ from imswitch.improcess.model.processing_config import (
     is_file_watcher_panel_enabled,
     is_frc_panel_enabled,
     is_graph_panel_enabled,
+    is_live_display_in_imcontrol_enabled,
     is_multi_data_panel_enabled,
     is_multicolor_panel_enabled,
     is_parameter_panel_enabled,
@@ -167,6 +168,36 @@ def test_graph_panel_only_config_keeps_standalone_plugin_defaults():
     assert reconstructors == ["view-only"]
     assert processors == ["drift-correct"]
     assert not has_plugin_config
+
+
+def test_a_processors_only_block_falls_back_to_the_standalone_reconstructor():
+    """One side named, the other left at the standalone default, not at monalisa."""
+    reconstructors, processors, has_plugin_config = plugin_ids_from_config(
+        {"processors": ["x"]}
+    )
+
+    assert reconstructors == ["view-only"]
+    assert reconstructors == plugin_ids_from_config({})[0]
+    assert processors == ["x"]
+    assert has_plugin_config
+
+
+def test_a_reconstructors_only_block_falls_back_to_the_standalone_processor():
+    reconstructors, processors, has_plugin_config = plugin_ids_from_config(
+        {"reconstructors": ["monalisa"]}
+    )
+
+    assert reconstructors == ["monalisa"]
+    assert processors == plugin_ids_from_config({})[1]
+    assert has_plugin_config
+
+
+def test_live_display_in_imcontrol_is_off_by_default():
+    assert not is_live_display_in_imcontrol_enabled({})
+
+
+def test_live_display_in_imcontrol_can_be_enabled_explicitly():
+    assert is_live_display_in_imcontrol_enabled({"live_display_in_imcontrol": True})
 
 
 def test_plugin_ids_from_config_reports_explicit_plugin_config():

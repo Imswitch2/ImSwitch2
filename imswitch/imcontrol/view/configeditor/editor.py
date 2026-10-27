@@ -908,6 +908,32 @@ def _build_default_section(schema: dict) -> dict:
     return out
 
 
+#: ``schema["write_policy"]`` value meaning "write the section as the file has
+#: it": Apply writes a field only if the file already had its key, the
+#: operator touched it, or it is required. The default policy writes every
+#: schema field.
+WRITE_AS_WRITTEN = "as_written"
+
+
+def _writes_as_written(schema: dict) -> bool:
+    return schema.get("write_policy") == WRITE_AS_WRITTEN
+
+
+def _new_section_seed(schema: dict) -> dict:
+    """What a brand-new section starts from when the operator adds it.
+
+    Normally every field's default, so the dialog opens fully populated. A
+    schema that writes "as written" is seeded with its required fields only:
+    seeding the optional ones would make Apply write a key per field for a
+    section the operator never asked to spell out.
+    """
+    seed = _build_default_section(schema)
+    if not _writes_as_written(schema):
+        return seed
+    required = {f["key"] for f in schema.get("fields", []) if f.get("req")}
+    return {k: v for k, v in seed.items() if k in required}
+
+
 # Maps each widget in availableWidgets that needs a section to the section key.
 # Built from section schemas' requires_widget field (single source of truth).
 def _build_widget_requires_section_map() -> dict:
@@ -3207,7 +3233,7 @@ class PropertyEditor(QWidget):
                         QMessageBox.Yes
                     )
                     if reply == QMessageBox.Yes:
-                        defaults = _build_default_section(schema)
+                        defaults = _new_section_seed(schema)
                         editor = SectionEditorDialog(section_key, schema, defaults, self._data, self)
                         if editor.exec_() == QDialog.Accepted:
                             self._data[section_key] = editor.result_data
@@ -3412,7 +3438,7 @@ class PropertyEditor(QWidget):
         schema = SECTION_SCHEMAS[key]
         # Pre-populate with schema defaults so the editor opens with sensible
         # values that the user can then refine.
-        defaults = _build_default_section(schema)
+        defaults = _new_section_seed(schema)
         dlg = SectionEditorDialog(key, schema, defaults, self._data, self)
         if dlg.exec_() == QDialog.Accepted:
             self._data[key] = dlg.result_data
@@ -3867,6 +3893,11 @@ class SectionEditorDialog(QDialog):
     ``current`` that the schema does not define, in a "Custom" tab, and
     offers "Add property" to add more; Apply writes them back with the
     schema fields instead of dropping them.
+
+    A schema with ``"write_policy": "as_written"`` turns ``allow_custom_fields``
+    on and writes a schema field only if ``current`` already had its key, the
+    operator touched its widget, or it is required -- so Apply neither expands
+    a short block into every field nor loses a key the schema does not know.
     """
 
     def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *,
@@ -3876,7 +3907,12 @@ class SectionEditorDialog(QDialog):
         self._schema = schema
         self._data = data  # reference, used to populate ref combos
         self._result: dict = {}
-        self._allow_custom = allow_custom_fields
+        self._as_written = _writes_as_written(schema)
+        # Keeping unknown keys is half of "as written".
+        self._allow_custom = allow_custom_fields or self._as_written
+        # Insertion order kept: an as-written section is written back in the
+        # order the file had it.
+        self._received = list(current) if isinstance(current, dict) else []
         self._custom_widgets: dict = {}  # key → QLineEdit
 
         legacy = schema.get("legacy")
@@ -4024,6 +4060,10 @@ class SectionEditorDialog(QDialog):
             val = fw.get_value()
             if f.get("req") and (val is None or val == "" or val == []):
                 missing.append(f["label"])
+            if self._as_written and not (
+                f["key"] in self._received or fw.is_touched() or f.get("req")
+            ):
+                continue
             out[f["key"]] = val
         if missing:
             self._err_lbl.setText(
@@ -4036,6 +4076,9 @@ class SectionEditorDialog(QDialog):
                 out[k] = _coercion_module.raw_text_to_json(le.text(), original)
             else:
                 out[k] = _parse_freeform_value(le.text())
+        if self._as_written:
+            out = {**{k: out[k] for k in self._received if k in out},
+                   **{k: v for k, v in out.items() if k not in self._received}}
         self._result = out
         self.accept()
 
@@ -6414,7 +6457,7 @@ class MainWindow(QMainWindow):
             return
         current = self._data.get(section_key)
         if current in (None, {}, []):
-            current = _build_default_section(schema)
+            current = _new_section_seed(schema)
         dlg = SectionEditorDialog(section_key, schema, current, self._data, self)
         if dlg.exec_() == QDialog.Accepted:
             self._data[section_key] = dlg.result_data

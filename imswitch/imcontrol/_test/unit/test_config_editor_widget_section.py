@@ -162,7 +162,7 @@ def test_processing_section_exposes_minimal_gui_flags():
     ):
         assert fields[key]["type"] == "bool"
         assert fields[key]["default"] is True
-        assert fields[key]["grp"] == "Layout"
+        assert fields[key]["grp"] == "Startup layout"
 
     defaults = editor._build_default_section(schema)
     assert defaults["parameterPanel"] is True

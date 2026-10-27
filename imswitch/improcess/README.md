@@ -274,7 +274,7 @@ clears the registry and repopulates it:
 2. `plugin_ids_from_config(processing_config)` returns
    `(reconstructor_ids, processor_ids, has_plugin_config)`:
    - if the block contains a `reconstructors` **or** `processors` key →
-     **config-driven mode**, using those lists (defaults `["monalisa"]` /
+     **config-driven mode**, using those lists (defaults `["view-only"]` /
      `["drift-correct"]` if only one key is present);
    - otherwise → **standalone defaults**: `["view-only"]` reconstructor +
      `["drift-correct"]` processor.
@@ -579,7 +579,7 @@ Rules:
   ImProcess uses **standalone defaults**: reconstructor `["view-only"]`,
   processor `["drift-correct"]`. If at least one of the two keys is present,
   ImProcess is in **config-driven mode**; a missing companion key defaults to
-  `["monalisa"]` (reconstructors) / `["drift-correct"]` (processors). Ids not in
+  `["view-only"]` (reconstructors) / `["drift-correct"]` (processors). Ids not in
   the corresponding `_AVAILABLE_*` dict raise a startup `KeyError` that lists
   the unknown IDs and available built-ins. Explicit list order is preserved, so
   the first configured reconstructor is the initial active reconstructor. This

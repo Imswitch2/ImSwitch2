@@ -6,6 +6,7 @@ import numpy as np
 from imswitch.imcommon.controller import MainController
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.processing_config import (
+    is_live_display_in_imcontrol_enabled,
     load_processing_config,
     plugin_ids_from_config,
 )
@@ -1018,7 +1019,12 @@ class ImProcessMainController(MainController):
 
     def _bridgeResultToImcontrol(self, result, name):
         """Extract displayable image and emit to imcontrol viewer if configured."""
-        if not self._processingConfigValue('live_display_in_imcontrol', False):
+        config = self.__processingConfig
+        if isinstance(config, Mapping):
+            enabled = is_live_display_in_imcontrol_enabled(config)
+        else:
+            enabled = self._processingConfigValue('live_display_in_imcontrol', False)
+        if not enabled:
             return
 
         if not self.__moduleCommChannel.isModuleRegistered('imcontrol'):
