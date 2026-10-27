@@ -320,7 +320,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
                 self._check_pinhole_stack(result, scan.num_stacks)
-                if not reuse_localization:
+                if (
+                    not reuse_localization
+                    and bool(params.get("_cache_localization_reference", True))
+                ):
                     self._remember_geometry(
                         geometry, orientation, frames, data_obj.name
                     )
@@ -344,6 +347,11 @@ class MonalisaLatticeReconstructor(Reconstructor):
             f"reused from {reference_source}"
             if reuse_localization else f"from this recording ({data_obj.name})"
         )
+        diagnostics["resolved_localization"] = geometry.localization.to_dict()
+        diagnostics["resolved_orientation"] = str(orientation)
+        diagnostics["resolved_spot_sigma_px"] = float(geometry.spot_model.shared_sigma)
+        diagnostics["placement_method"] = str(first.diagnostics.get("placement", ""))
+        diagnostics["placement_residual_px"] = float(geometry.commensurate_residual)
         for key, value in diagnostics.items():
             self._logger.info(f"{data_obj.name}: {key}: {value}")
 
@@ -487,7 +495,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
                 self._check_pinhole_stack(result, scan.num_stacks)
-                if not reuse_localization:
+                if (
+                    not reuse_localization
+                    and bool(params.get("_cache_localization_reference", True))
+                ):
                     self._remember_geometry(
                         geometry, orientation, frames, data_obj.name
                     )
@@ -525,6 +536,11 @@ class MonalisaLatticeReconstructor(Reconstructor):
             f"reused from {reference_source}"
             if reuse_localization else f"from this recording ({data_obj.name})"
         )
+        diagnostics["resolved_localization"] = geometry.localization.to_dict()
+        diagnostics["resolved_orientation"] = str(orientation)
+        diagnostics["resolved_spot_sigma_px"] = float(geometry.spot_model.shared_sigma)
+        diagnostics["placement_method"] = str(first.diagnostics.get("placement", ""))
+        diagnostics["placement_residual_px"] = float(geometry.commensurate_residual)
         diagnostics.update(notes)
         for key, value in diagnostics.items():
             self._logger.info(f"{data_obj.name}: {key}: {value}")

@@ -391,6 +391,17 @@ class ReconstructorManagerController(ImProcessWidgetController):
         return True
 
     def _install_reconstructor_params(self, reconstructor):
+        # Multi-data relocalization is orchestration state, not a MoNaLISA
+        # reconstruction parameter. Keep it beside the list it governs and
+        # expose it only for the unified MoNaLISA plugin.
+        try:
+            multi = self._widget.multiDataFrame
+            is_monalisa = reconstructor.id == "monalisa"
+            multi.setRelocalizeEachDataItemVisible(is_monalisa)
+            multi.setRelocalizeEachDataItemEnabled(is_monalisa)
+        except Exception:
+            pass
+
         # Always reflect the active reconstructor in the Parameters dock so
         # the user can tell at a glance which plugin's parameters they are
         # editing — even for plugins that keep the legacy parameter tree.
@@ -515,8 +526,32 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     )
                     self._previewFrameSignalConnected = True
                 self._previewWidget = widget
+                if hasattr(widget, "sigLocalizationModeChanged"):
+                    widget.sigLocalizationModeChanged.connect(
+                        self._set_monalisa_relocalize_enabled
+                    )
+                    try:
+                        mode = widget.get_values().get("localization_mode", "Auto")
+                        self._set_monalisa_relocalize_enabled(mode)
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
+    @QtCore.Slot(str)
+    def _set_monalisa_relocalize_enabled(self, mode):
+        try:
+            self._widget.multiDataFrame.setRelocalizeEachDataItemEnabled(
+                str(mode) == "Auto"
+            )
+        except Exception:
+            pass
+
+    def _monalisa_relocalize_each_data_item(self) -> bool:
+        try:
+            return bool(self._widget.multiDataFrame.relocalizeEachDataItem())
+        except Exception:
+            return False
 
     def reconstructCurrent(self):
         if self._main._currentDataObj is None:
@@ -629,35 +664,48 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
 
         budget = self._default_memory_budget_bytes()
-        shared_auto_localization = None
+        shared_auto_localizations = {}
         relocalize_each = False
         if reconstructor.id == "monalisa" and len(data_objs) > 1:
             first_params = self._params_for_data_obj(reconstructor)
             if str(first_params.get("localization_mode", "Auto")) == "Auto":
-                relocalize_each = bool(
-                    first_params.get("relocalize_each_data_item", False)
-                )
+                relocalize_each = self._monalisa_relocalize_each_data_item()
                 if not relocalize_each:
-                    shared_auto_localization = dict(
-                        first_params.get("auto_localization") or {}
+                    from imswitch.improcess.reconstructors.monalisa.session_registry import (
+                        detector_identity,
                     )
-                    if not shared_auto_localization:
-                        localizer = getattr(reconstructor, "localize", None)
-                        if callable(localizer):
-                            self._setPreviewStatus(
-                                "Localizing first data item for multi-data reuse..."
-                            )
-                            try:
-                                localization, status = localizer(
-                                    data_objs[0], first_params
-                                )
-                            except Exception as exc:
-                                self._logger.error(
-                                    f"MoNaLISA localization failed: {exc}"
-                                )
-                                self._setPreviewStatus(f"Localization failed: {exc}")
-                                return
-                            shared_auto_localization = localization.to_dict()
+
+                    # Reuse once per detector, never across detectors.  The
+                    # normal timelapse case therefore still localizes exactly
+                    # once, while a mixed-detector batch remains physically safe.
+                    current_data = getattr(self._main, "_currentDataObj", None)
+                    current_detector = detector_identity(current_data) if current_data is not None else None
+                    current_payload = dict(first_params.get("auto_localization") or {})
+                    if current_payload and current_detector:
+                        shared_auto_localizations[current_detector] = current_payload
+
+                    first_by_detector = {}
+                    for item in data_objs:
+                        first_by_detector.setdefault(detector_identity(item), item)
+                    localizer = getattr(reconstructor, "localize", None)
+                    for detector, first_item in first_by_detector.items():
+                        if detector in shared_auto_localizations:
+                            continue
+                        if not callable(localizer):
+                            continue
+                        self._setPreviewStatus(
+                            f"Localizing first {detector} data item for multi-data reuse..."
+                        )
+                        localize_params = dict(first_params)
+                        localize_params["auto_localization"] = {}
+                        try:
+                            localization, status = localizer(first_item, localize_params)
+                        except Exception as exc:
+                            self._logger.error(f"MoNaLISA localization failed: {exc}")
+                            self._setPreviewStatus(f"Localization failed: {exc}")
+                            return
+                        shared_auto_localizations[detector] = localization.to_dict()
+                        if first_item is current_data:
                             widget = getattr(self, "_previewWidget", None)
                             setter = getattr(widget, "set_auto_localization", None)
                             if callable(setter):
@@ -670,9 +718,14 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 if relocalize_each:
                     params = dict(params)
                     params["auto_localization"] = {}
-                elif shared_auto_localization is not None:
-                    params = dict(params)
-                    params["auto_localization"] = dict(shared_auto_localization)
+                elif shared_auto_localizations:
+                    from imswitch.improcess.reconstructors.monalisa.session_registry import (
+                        detector_identity,
+                    )
+                    shared = shared_auto_localizations.get(detector_identity(data_obj))
+                    if shared is not None:
+                        params = dict(params)
+                        params["auto_localization"] = dict(shared)
             try:
                 validator = getattr(reconstructor, "validate_source", None)
                 if callable(validator):
@@ -773,6 +826,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 self._publishPluginResult(
                     result, result.name, reconstructor=reconstructor
                 )
+        widget = getattr(self, "_previewWidget", None)
+        sync = getattr(widget, "sync_current_transient", None)
+        if reconstructor is not None and reconstructor.id == "monalisa" and callable(sync):
+            try:
+                sync()
+            except Exception as exc:
+                self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
         self._set_reconstruction_job_state(
             False, progress=1.0, status="Reconstruction complete."
         )

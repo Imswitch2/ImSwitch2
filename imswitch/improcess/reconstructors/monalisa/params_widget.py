@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 
 from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtCore, QtWidgets
 
+from .calibration import PatternLocalization, ScanOrientation
 from .localization_settings import DEFAULT_LOCALIZATION_SETTINGS, LocalizationSettings, PeriodPrior
 from .params import (
     LOCALIZATION_AUTO,
+    LOCALIZATION_LOCKED,
     LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST,
     ORIENTATION_AUTO,
+    ORIENTATION_LOCKED,
     ORIENTATION_MANUAL,
     PLACEMENT_AUTO,
     PLACEMENT_DIRECT,
@@ -27,6 +31,7 @@ from .params import (
     default_params,
 )
 from .scan_frame import ORIENTATIONS
+from .session_registry import MonalisaSessionRegistry, detector_identity
 
 
 class LocalizationSettingsDialog(QtWidgets.QDialog):
@@ -139,10 +144,15 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     sigPreviewToggled = QtCore.Signal(bool)
     sigDetectionParamsChanged = QtCore.Signal()
     sigLocalizeRequested = QtCore.Signal()
+    sigLocalizationModeChanged = QtCore.Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, session_registry: MonalisaSessionRegistry | None = None):
         super().__init__(parent)
         values = default_params()
+        self._registry = session_registry
+        self._detector_id = "unknown"
+        self._current_data_obj = None
+        self._selected_locked_localization_id = ""
         self._localization_settings = LocalizationSettings.from_dict(
             values["localization_settings"]
         )
@@ -163,12 +173,11 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
              "limits": (0.0, 100000.0), "value": values["pixel_size_nm"],
              "tip": "Effective sample-plane detector pixel size."},
             {"name": "Localization", "type": "group", "children": [
-                {"name": "Mode", "type": "list", "values": [LOCALIZATION_AUTO, LOCALIZATION_MANUAL],
+                {"name": "Mode", "type": "list",
+                 "values": [LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL],
                  "value": values["localization_mode"]},
-                {"name": "Localize", "type": "action"},
-                {"name": "Relocalize each data item", "type": "bool",
-                 "value": values["relocalize_each_data_item"],
-                 "tip": "Multi-data only. Off reuses one Auto localization across all data items."},
+                {"name": "Locked localization", "type": "list", "values": {"—": ""}, "value": "",
+                 "tip": "Explicit session localization for the current detector."},
                 {"name": "Offset X", "type": "float", "suffix": "px", "value": values["manual_offset_x_px"]},
                 {"name": "Offset Y", "type": "float", "suffix": "px", "value": values["manual_offset_y_px"]},
                 {"name": "Period X", "type": "float", "suffix": "px", "limits": (0.001, 100000.0),
@@ -179,13 +188,22 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                  "value": values["stagger_axis"]},
                 {"name": "Stagger", "type": "float", "value": values["stagger"], "step": 0.05,
                  "tip": "Signed fraction of the period along the stagger axis."},
+                {"name": "Lock current…", "type": "action"},
+                {"name": "Rename locked…", "type": "action"},
+                {"name": "Delete locked", "type": "action"},
+                # Keep the explicit Auto action at the bottom beside its settings.
                 {"name": "Localization settings…", "type": "action"},
+                {"name": "Localize", "type": "action"},
             ]},
             {"name": "Orientation", "type": "group", "children": [
-                {"name": "Mode", "type": "list", "values": [ORIENTATION_AUTO, ORIENTATION_MANUAL],
+                {"name": "Mode", "type": "list",
+                 "values": [ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL],
                  "value": values["orientation_mode"]},
                 {"name": "Orientation", "type": "list", "values": list(ORIENTATIONS),
                  "value": values["orientation"]},
+                {"name": "Locked value", "type": "str", "value": "—", "readonly": True},
+                {"name": "Lock current", "type": "action"},
+                {"name": "Clear locked", "type": "action"},
             ]},
             {"name": "Spot model", "type": "group", "children": [
                 {"name": "Mode", "type": "list", "values": [SPOT_MANUAL, SPOT_AUTO],
@@ -257,27 +275,35 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.p.param("Preset").sigValueChanged.connect(self._preset_changed)
-        self.p.param("Localization").param("Localize").sigActivated.connect(
-            self.sigLocalizeRequested.emit
-        )
-        self.p.param("Localization").param("Localization settings…").sigActivated.connect(
-            self._open_localization_settings
-        )
+        localization = self.p.param("Localization")
+        localization.param("Localize").sigActivated.connect(self.sigLocalizeRequested.emit)
+        localization.param("Localization settings…").sigActivated.connect(self._open_localization_settings)
+        localization.param("Lock current…").sigActivated.connect(self._lock_current_localization)
+        localization.param("Rename locked…").sigActivated.connect(self._rename_locked_localization)
+        localization.param("Delete locked").sigActivated.connect(self._delete_locked_localization)
+        localization.param("Locked localization").sigValueChanged.connect(self._locked_localization_changed)
+        orientation = self.p.param("Orientation")
+        orientation.param("Lock current").sigActivated.connect(self._lock_current_orientation)
+        orientation.param("Clear locked").sigActivated.connect(self._clear_locked_orientation)
+
         for key, parameter in self._preset_controlled_parameters().items():
             parameter.sigValueChanged.connect(lambda _p, _v, key=key: self._controlled_changed(key))
-
         for parameter in self._localization_preview_parameters():
             parameter.sigValueChanged.connect(lambda *_: self.sigDetectionParamsChanged.emit())
 
-        self.p.param("Localization").param("Mode").sigValueChanged.connect(
-            self._localization_mode_changed
-        )
-        self.p.param("Orientation").param("Mode").sigValueChanged.connect(lambda *_: self._update_enabled())
+        localization.param("Mode").sigValueChanged.connect(self._localization_mode_changed)
+        orientation.param("Mode").sigValueChanged.connect(self._orientation_mode_changed)
         self.p.param("Spot model").param("Mode").sigValueChanged.connect(lambda *_: self._update_enabled())
         self.p.param("Spot model").param("FWHM unit").sigValueChanged.connect(self._spot_unit_changed)
         self.p.param("Corrections").param("Reassignment").sigValueChanged.connect(lambda *_: self._update_enabled())
         self.p.param("Outputs").param("Sharpened image").sigValueChanged.connect(lambda *_: self._update_enabled())
+
+        if self._registry is not None:
+            self._registry.add_listener(self._registry_changed)
+            self.destroyed.connect(lambda *_: self._registry.remove_listener(self._registry_changed))
+        self._refresh_registry_controls(clear_selection=True)
         self._update_enabled()
+        QtCore.QTimer.singleShot(0, self._offer_recovery_if_needed)
 
     def _preset_controlled_parameters(self):
         return {
@@ -296,6 +322,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             group.param("Offset X"), group.param("Offset Y"),
             group.param("Period X"), group.param("Period Y"),
             group.param("Stagger axis"), group.param("Stagger"),
+            group.param("Locked localization"),
         ]
 
     def _preset_changed(self, _parameter, value):
@@ -324,7 +351,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._update_enabled()
 
     def _spot_unit_changed(self, _parameter, value):
-        """Change display units without changing the represented physical width."""
         new_unit = str(value)
         old_unit = self._spot_unit
         if new_unit == old_unit:
@@ -342,16 +368,26 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     def _update_enabled(self):
         localization = self.p.param("Localization")
-        manual = localization.param("Mode").value() == LOCALIZATION_MANUAL
-        localization.param("Localize").setOpts(enabled=not manual)
-        localization.param("Relocalize each data item").setOpts(enabled=not manual)
+        mode = str(localization.param("Mode").value())
+        manual = mode == LOCALIZATION_MANUAL
+        locked = mode == LOCALIZATION_LOCKED
+        localization.param("Localize").setOpts(enabled=mode == LOCALIZATION_AUTO)
+        localization.param("Locked localization").setOpts(enabled=locked)
         for name in ("Offset X", "Offset Y", "Period X", "Period Y", "Stagger axis", "Stagger"):
             localization.param(name).setOpts(enabled=manual)
-        localization.param("Localization settings…").setOpts(enabled=not manual)
+        localization.param("Localization settings…").setOpts(enabled=mode == LOCALIZATION_AUTO)
+        has_lockable = self._lockable_localization() is not None
+        localization.param("Lock current…").setOpts(enabled=has_lockable and mode != LOCALIZATION_LOCKED)
+        selected = bool(self._selected_locked_localization_id)
+        localization.param("Rename locked…").setOpts(enabled=selected)
+        localization.param("Delete locked").setOpts(enabled=selected)
 
         orientation = self.p.param("Orientation")
-        orientation.param("Orientation").setOpts(
-            enabled=orientation.param("Mode").value() == ORIENTATION_MANUAL
+        orient_mode = str(orientation.param("Mode").value())
+        orientation.param("Orientation").setOpts(enabled=orient_mode == ORIENTATION_MANUAL)
+        orientation.param("Lock current").setOpts(enabled=self._lockable_orientation() is not None)
+        orientation.param("Clear locked").setOpts(
+            enabled=self._registry is not None and self._registry.locked_orientation(self._detector_id) is not None
         )
 
         spot = self.p.param("Spot model")
@@ -383,12 +419,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if previous == LOCALIZATION_AUTO and current == LOCALIZATION_MANUAL:
             self._seed_manual_from_auto()
         self._update_enabled()
+        self.sigLocalizationModeChanged.emit(current)
         self.sigDetectionParamsChanged.emit()
 
-    def _seed_manual_from_auto(self) -> None:
-        from .calibration import PatternLocalization
+    def _orientation_mode_changed(self, *_):
+        self._update_enabled()
 
+    def _seed_manual_from_auto(self) -> None:
         localization = PatternLocalization.from_dict(self._auto_localization)
+        if localization is None and self._registry is not None:
+            transient = self._registry.current_localization(self._detector_id)
+            localization = transient.localization if transient is not None else None
         if localization is None:
             return
         values = localization.manual_grid_parameters()
@@ -407,21 +448,230 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         group.param("Stagger").setValue(values["stagger"])
 
     def set_auto_localization(self, localization, status: str = "") -> None:
-        """Install an explicitly resolved Auto localization without locking it."""
         payload = localization.to_dict() if hasattr(localization, "to_dict") else dict(localization)
         provenance = dict(payload.get("provenance") or {})
         if status:
             provenance["status"] = str(status)
         payload["provenance"] = provenance
         self._auto_localization = payload
+        if self._registry is not None:
+            self._registry.set_current_localization(
+                self._detector_id,
+                PatternLocalization.from_dict(payload),
+                source=str(provenance.get("source") or "auto"),
+                source_dataset=str(provenance.get("dataset") or getattr(self._current_data_obj, "name", "") or ""),
+                source_path=str(getattr(self._current_data_obj, "dataPath", "") or ""),
+                diagnostics={"status": status} if status else {},
+            )
         self.setPreviewStatus(status or "Auto localization ready")
+        self._update_enabled()
         self.sigDetectionParamsChanged.emit()
 
     def clear_auto_localization(self, status: str = "Auto: press Localize") -> None:
         self._auto_localization = {}
         self.setPreviewStatus(status)
+        self._update_enabled()
         self.sigDetectionParamsChanged.emit()
 
+    # ----------------------------------------------------- session registry UI
+    def _registry_changed(self):
+        self._refresh_registry_controls()
+
+    def sync_current_transient(self):
+        """Pull Auto values resolved by a completed worker for this dataset."""
+        if self._registry is None:
+            return
+        transient = self._registry.current_localization(self._detector_id)
+        current_name = str(getattr(self._current_data_obj, "name", "") or "")
+        if (
+            transient is not None
+            and str(self.p.param("Localization").param("Mode").value()) == LOCALIZATION_AUTO
+            and (not transient.source_dataset or transient.source_dataset == current_name)
+        ):
+            payload = transient.localization.to_dict()
+            provenance = dict(payload.get("provenance") or {})
+            provenance.setdefault("status", "Auto localization resolved during reconstruction")
+            payload["provenance"] = provenance
+            self._auto_localization = payload
+            self.setPreviewStatus(str(provenance["status"]))
+        self._refresh_registry_controls()
+        self.sigDetectionParamsChanged.emit()
+
+    def _refresh_registry_controls(self, *, clear_selection: bool = False):
+        localization = self.p.param("Localization")
+        current = "" if clear_selection else str(self._selected_locked_localization_id or "")
+        choices = {"— choose locked localization —": ""}
+        if self._registry is not None:
+            for profile in self._registry.localization_profiles(self._detector_id):
+                label = profile.name
+                if label in choices:
+                    label = f"{profile.name} ({profile.id[:6]})"
+                choices[label] = profile.id
+        selector = localization.param("Locked localization")
+        selector.setLimits(choices)
+        if current and self._registry is not None:
+            profile = self._registry.localization_profile(current)
+            if profile is None or profile.detector != self._detector_id:
+                current = ""
+        self._selected_locked_localization_id = current
+        selector.setValue(current)
+
+        orientation = self.p.param("Orientation")
+        lock = self._registry.locked_orientation(self._detector_id) if self._registry else None
+        orientation.param("Locked value").setValue(
+            lock.orientation.to_literal() if lock is not None else "—"
+        )
+        self._update_enabled()
+
+    def _locked_localization_changed(self, _parameter, value):
+        self._selected_locked_localization_id = str(value or "")
+        self._update_enabled()
+        self.sigDetectionParamsChanged.emit()
+
+    def _manual_localization(self) -> PatternLocalization:
+        group = self.p.param("Localization")
+        axis = str(group.param("Stagger axis").value())
+        return PatternLocalization.manual_grid(
+            period_x=float(group.param("Period X").value()),
+            period_y=float(group.param("Period Y").value()),
+            offset_x=float(group.param("Offset X").value()),
+            offset_y=float(group.param("Offset Y").value()),
+            stagger_axis=None if axis.lower() == "none" else axis.lower(),
+            stagger=float(group.param("Stagger").value()),
+            source="manual",
+            dataset=str(getattr(self._current_data_obj, "name", "") or ""),
+        )
+
+    def _lockable_localization(self):
+        mode = str(self.p.param("Localization").param("Mode").value())
+        if mode == LOCALIZATION_MANUAL:
+            return self._manual_localization(), "manual"
+        if mode == LOCALIZATION_AUTO:
+            localization = PatternLocalization.from_dict(self._auto_localization)
+            source = "auto"
+            if localization is None and self._registry is not None:
+                transient = self._registry.current_localization(self._detector_id)
+                if transient is not None:
+                    localization, source = transient.localization, transient.source
+            if localization is not None:
+                return localization, source
+        return None
+
+    def _lock_current_localization(self):
+        if self._registry is None:
+            self.setPreviewStatus("Session localization registry is unavailable")
+            return
+        lockable = self._lockable_localization()
+        if lockable is None:
+            self.setPreviewStatus("Localize or reconstruct a good dataset before locking")
+            return
+        localization, source = lockable
+        profiles = self._registry.localization_profiles(self._detector_id)
+        default_name = f"Localization {len(profiles) + 1}"
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Lock localization", "Name", text=default_name
+        )
+        if not ok:
+            return
+        profile = self._registry.lock_localization(
+            name=str(name), detector=self._detector_id, localization=localization,
+            source=source,
+            source_dataset=str(getattr(self._current_data_obj, "name", "") or ""),
+            source_path=str(getattr(self._current_data_obj, "dataPath", "") or ""),
+            diagnostics=dict(localization.provenance),
+        )
+        self._selected_locked_localization_id = profile.id
+        self._refresh_registry_controls()
+        self.setPreviewStatus(f"Locked localization as {profile.name}")
+
+    def _rename_locked_localization(self):
+        if self._registry is None or not self._selected_locked_localization_id:
+            return
+        profile = self._registry.localization_profile(self._selected_locked_localization_id)
+        if profile is None:
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Rename locked localization", "Name", text=profile.name
+        )
+        if ok:
+            self._registry.rename_localization(profile.id, str(name))
+
+    def _delete_locked_localization(self):
+        if self._registry is None or not self._selected_locked_localization_id:
+            return
+        profile = self._registry.localization_profile(self._selected_locked_localization_id)
+        if profile is None:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "Delete locked localization?",
+            f"Delete '{profile.name}' from this session?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer == QtWidgets.QMessageBox.Yes:
+            self._registry.delete_localization(profile.id)
+            self._selected_locked_localization_id = ""
+            self._refresh_registry_controls(clear_selection=True)
+
+    def _lockable_orientation(self):
+        mode = str(self.p.param("Orientation").param("Mode").value())
+        if mode == ORIENTATION_MANUAL:
+            return ScanOrientation.from_literal(
+                str(self.p.param("Orientation").param("Orientation").value())
+            ), "manual"
+        if mode == ORIENTATION_AUTO and self._registry is not None:
+            transient = self._registry.current_orientation(self._detector_id)
+            if transient is not None:
+                return transient.orientation, transient.source
+        return None
+
+    def _lock_current_orientation(self):
+        if self._registry is None:
+            return
+        lockable = self._lockable_orientation()
+        if lockable is None:
+            self.setPreviewStatus("Reconstruct once to resolve Auto orientation before locking it")
+            return
+        orientation, source = lockable
+        self._registry.lock_orientation(
+            self._detector_id, orientation, source=source,
+            source_dataset=str(getattr(self._current_data_obj, "name", "") or ""),
+            source_path=str(getattr(self._current_data_obj, "dataPath", "") or ""),
+        )
+        self.setPreviewStatus(f"Locked orientation {orientation.to_literal()} for {self._detector_id}")
+
+    def _clear_locked_orientation(self):
+        if self._registry is None:
+            return
+        self._registry.clear_orientation(self._detector_id)
+
+    def _offer_recovery_if_needed(self):
+        if self._registry is None or self._registry.recovery_prompted:
+            return
+        self._registry.mark_recovery_prompted()
+        candidates = self._registry.recovery_candidates()
+        if not candidates:
+            return
+        candidate = candidates[0]
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Restore MoNaLISA session calibration?")
+        box.setText(
+            "An unfinished MoNaLISA calibration session was found "
+            f"({candidate.localization_count} localization profile(s), "
+            f"{candidate.orientation_count} orientation lock(s))."
+        )
+        box.setInformativeText("Restore it into this session, or discard the recovery journal.")
+        restore = box.addButton("Restore", QtWidgets.QMessageBox.AcceptRole)
+        discard = box.addButton("Discard", QtWidgets.QMessageBox.DestructiveRole)
+        box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.exec_()
+        if box.clickedButton() is restore:
+            self._registry.restore(candidate)
+            self.setPreviewStatus("Recovered MoNaLISA session calibration")
+        elif box.clickedButton() is discard:
+            self._registry.discard(candidate)
+
+    # --------------------------------------------------------------- values
     def get_values(self) -> dict:
         loc = self.p.param("Localization")
         orient = self.p.param("Orientation")
@@ -430,13 +680,20 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         placement = self.p.param("Placement")
         outputs = self.p.param("Outputs")
         scan = self.p.param("Scan overrides")
+
+        locked_profile = None
+        if self._registry is not None and self._selected_locked_localization_id:
+            locked_profile = self._registry.localization_profile(self._selected_locked_localization_id)
+        locked_orientation = self._registry.locked_orientation(self._detector_id) if self._registry else None
         return {
             "preset": str(self.p.param("Preset").value()),
             "device": str(self.p.param("CPU/GPU").value()),
             "pixel_size_nm": float(self.p.param("Camera pixel").value()),
             "localization_mode": str(loc.param("Mode").value()),
             "auto_localization": deepcopy(self._auto_localization),
-            "relocalize_each_data_item": bool(loc.param("Relocalize each data item").value()),
+            "locked_localization_id": locked_profile.id if locked_profile else "",
+            "locked_localization_name": locked_profile.name if locked_profile else "",
+            "locked_localization": locked_profile.localization.to_dict() if locked_profile else {},
             "localization_refinement": str(self._localization_refinement),
             "manual_offset_x_px": float(loc.param("Offset X").value()),
             "manual_offset_y_px": float(loc.param("Offset Y").value()),
@@ -447,6 +704,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "localization_settings": deepcopy(self._localization_settings.to_dict()),
             "orientation_mode": str(orient.param("Mode").value()),
             "orientation": str(orient.param("Orientation").value()),
+            "locked_orientation": locked_orientation.orientation.to_literal() if locked_orientation else "",
             "spot_width_mode": str(spot.param("Mode").value()),
             "spot_fwhm": float(spot.param("FWHM").value()),
             "spot_fwhm_unit": str(spot.param("FWHM unit").value()),
@@ -468,7 +726,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         }
 
     def set_pattern_params(self, row_offset: float, col_offset: float, row_period: float, col_period: float):
-        """Compatibility helper: put the old row/column grid into Manual mode."""
         loc = self.p.param("Localization")
         loc.param("Mode").setValue(LOCALIZATION_MANUAL)
         loc.param("Offset X").setValue(float(col_offset))
@@ -482,12 +739,16 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.previewStatusLabel.setText(str(text))
 
     def load_from_attrs(self, attrs: dict, data_obj=None) -> None:
-        """Seed detector-dependent defaults when recordings carry them."""
         attrs = dict(attrs or {})
+        old_detector = self._detector_id
+        self._current_data_obj = data_obj
+        self._detector_id = detector_identity(data_obj, attrs)
+        if old_detector != self._detector_id:
+            self._selected_locked_localization_id = ""
+            self._refresh_registry_controls(clear_selection=True)
+
         if self._auto_localization and data_obj is not None:
-            source = str(
-                (self._auto_localization.get("provenance") or {}).get("dataset", "")
-            )
+            source = str((self._auto_localization.get("provenance") or {}).get("dataset", ""))
             current = str(getattr(data_obj, "name", "") or "")
             if source and current and source != current:
                 self.clear_auto_localization("Auto: press Localize")
@@ -510,16 +771,79 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if pixel_nm is not None:
             self.p.param("Camera pixel").setValue(pixel_nm)
 
-        for key in ("monalisa:spot_fwhm_nm", "monalisaSpotFwhmNm"):
+        # A saved reconstruction can carry the exact calibration values used.
+        # Treat those as transient values belonging to this exact data object:
+        # never guess a matching profile and never promote them to Locked.
+        embedded = attrs.get("monalisa_calibration")
+        if isinstance(embedded, str):
             try:
-                fwhm = float(attrs.get(key, 0))
+                embedded = json.loads(embedded)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                embedded = None
+        if isinstance(embedded, dict) and "per_data_item" not in embedded:
+            try:
+                resolved = PatternLocalization.from_dict(embedded.get("resolved_localization"))
+            except (KeyError, TypeError, ValueError):
+                resolved = None
+            if resolved is not None:
+                payload = resolved.to_dict()
+                provenance = dict(payload.get("provenance") or {})
+                provenance.update({
+                    "source": "embedded",
+                    "dataset": str(getattr(data_obj, "name", "") or ""),
+                    "status": "Embedded localization loaded from this data",
+                })
+                payload["provenance"] = provenance
+                self._auto_localization = payload
+                if self._registry is not None:
+                    self._registry.set_current_localization(
+                        self._detector_id, PatternLocalization.from_dict(payload),
+                        source="embedded",
+                        source_dataset=str(getattr(data_obj, "name", "") or ""),
+                        source_path=str(getattr(data_obj, "dataPath", "") or ""),
+                        diagnostics={"status": provenance["status"]},
+                    )
+                self.setPreviewStatus(provenance["status"])
+            resolved_orientation = str(embedded.get("resolved_orientation") or "")
+            if resolved_orientation and self._registry is not None:
+                try:
+                    self._registry.set_current_orientation(
+                        self._detector_id, resolved_orientation, source="embedded",
+                        source_dataset=str(getattr(data_obj, "name", "") or ""),
+                        source_path=str(getattr(data_obj, "dataPath", "") or ""),
+                    )
+                except ValueError:
+                    pass
+
+        spot = self.p.param("Spot model")
+        embedded_fwhm_nm = None
+        embedded_fwhm_px = None
+        if isinstance(embedded, dict) and "per_data_item" not in embedded:
+            try:
+                embedded_fwhm_nm = float(embedded.get("resolved_spot_fwhm_nm"))
             except (TypeError, ValueError):
-                continue
-            if fwhm > 0:
-                spot = self.p.param("Spot model")
-                spot.param("FWHM unit").setValue("nm")
-                spot.param("FWHM").setValue(fwhm)
-                break
+                embedded_fwhm_nm = None
+            try:
+                embedded_fwhm_px = float(embedded.get("resolved_spot_fwhm_px"))
+            except (TypeError, ValueError):
+                embedded_fwhm_px = None
+        if embedded_fwhm_nm is not None and embedded_fwhm_nm > 0:
+            spot.param("FWHM unit").setValue("nm")
+            spot.param("FWHM").setValue(embedded_fwhm_nm)
+        elif embedded_fwhm_px is not None and embedded_fwhm_px > 0:
+            spot.param("FWHM unit").setValue("px")
+            spot.param("FWHM").setValue(embedded_fwhm_px)
+        else:
+            for key in ("monalisa:spot_fwhm_nm", "monalisaSpotFwhmNm"):
+                try:
+                    fwhm = float(attrs.get(key, 0))
+                except (TypeError, ValueError):
+                    continue
+                if fwhm > 0:
+                    spot.param("FWHM unit").setValue("nm")
+                    spot.param("FWHM").setValue(fwhm)
+                    break
+        self._refresh_registry_controls()
 
     def setOutputPixelSize(self, output_pixel_size_nm) -> None:
         label = self._outputPixelSizeLabel

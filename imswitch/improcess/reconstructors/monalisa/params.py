@@ -39,9 +39,15 @@ DEFAULT_PARAMS = {
     # Transient resolved Auto localization.  It is deliberately part of the
     # parameter contract rather than hidden reconstructor state so preview,
     # reconstruction and multi-data reuse all consume exactly the same value.
-    # Patch 3 promotes this concept into the session registry.
+    # The session registry mirrors this transient value without making it Locked.
     "auto_localization": {},
-    "relocalize_each_data_item": False,
+    # A Locked selection is resolved to an immutable payload by the parameter
+    # widget before a job starts.  The id/name are provenance; reconstruction
+    # consumes the payload so deleting/renaming the session entry cannot change
+    # an already queued job or an old result.
+    "locked_localization_id": "",
+    "locked_localization_name": "",
+    "locked_localization": {},
     # Presets select how expensive Auto localization/refinement may be.  This
     # remains hidden in the fixed widget: Custom keeps whichever preset it was
     # derived from.
@@ -55,6 +61,7 @@ DEFAULT_PARAMS = {
     "localization_settings": DEFAULT_LOCALIZATION_SETTINGS.to_dict(),
     "orientation_mode": ORIENTATION_AUTO,
     "orientation": "+x+y",
+    "locked_orientation": "",
     "spot_width_mode": SPOT_MANUAL,
     "spot_fwhm": DEFAULT_SPOT_FWHM_NM,
     "spot_fwhm_unit": "nm",

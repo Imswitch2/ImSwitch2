@@ -39,7 +39,7 @@ def test_fast_and_full_presets_only_change_processing_options():
     assert full["reassignment"] == "auto"
     assert full["localization_refinement"] == LOCALIZATION_REFINEMENT_FULL
     assert fast["sharpen"] is full["sharpen"] is False
-    assert fast["relocalize_each_data_item"] is False
+    assert "relocalize_each_data_item" not in fast
 
 
 def test_period_prior_constrains_search_without_becoming_a_fixed_period():

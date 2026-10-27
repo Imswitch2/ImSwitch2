@@ -21,20 +21,21 @@ from .calibration import PatternLocalization, ScanOrientation
 from .live_session import MonalisaLiveSession
 from .localization_settings import LocalizationSettings
 from .params import (
-    LOCALIZATION_AUTO, LOCALIZATION_MANUAL,
+    LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
-    ORIENTATION_AUTO, ORIENTATION_MANUAL,
+    ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL,
     PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE, PRESETS,
     SPOT_AUTO, SPOT_MANUAL, default_params as unified_default_params,
 )
 from .pipeline import PipelineParams, find_localization, needs_modulation_frame
-from .spot_settings import fwhm_to_sigma_px
+from .spot_settings import fwhm_to_sigma_px, sigma_px_to_fwhm
 from .orientation import auto_detect_scan_orientation
 from .scan_frame import ORIENTATIONS
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
 from .result import MonalisaProcessingResult
 from .signal_extractor import SignalExtractor
+from .session_registry import MonalisaSessionRegistry, detector_identity
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -76,7 +77,7 @@ class MonalisaReconstructor(StreamingReconstructor):
     # The fixed unified Gaussian parameter contract replaces the former
     # internal Fast/Legacy method selector. Old v1 dictionaries remain
     # accepted by process() during the migration window.
-    params_version = 3
+    params_version = 4
 
     @classmethod
     def default_params(cls) -> dict:
@@ -90,12 +91,15 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('device', 'select', defaults['device'], label='CPU/GPU', options=('GPU', 'CPU')),
             ParamField('pixel_size_nm', 'float', defaults['pixel_size_nm'], label='Camera pixel', suffix='nm', min=0.0),
             ParamField('localization_mode', 'select', defaults['localization_mode'], label='Mode',
-                       options=(LOCALIZATION_AUTO, LOCALIZATION_MANUAL), group='Localization'),
+                       options=(LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL), group='Localization'),
             ParamField('auto_localization', 'json', defaults['auto_localization'],
                        label='Resolved Auto localization', group='Localization', advanced=True),
-            ParamField('relocalize_each_data_item', 'bool', defaults['relocalize_each_data_item'],
-                       label='Relocalize each data item', group='Localization',
-                       help='Multi-data only: localize each item instead of reusing one localization'),
+            ParamField('locked_localization_id', 'str', defaults['locked_localization_id'],
+                       label='Locked localization id', group='Localization', advanced=True),
+            ParamField('locked_localization_name', 'str', defaults['locked_localization_name'],
+                       label='Locked localization name', group='Localization', advanced=True),
+            ParamField('locked_localization', 'json', defaults['locked_localization'],
+                       label='Resolved Locked localization', group='Localization', advanced=True),
             ParamField('localization_refinement', 'select', defaults['localization_refinement'],
                        label='Localization refinement',
                        options=(LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL),
@@ -110,9 +114,11 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('localization_settings', 'json', defaults['localization_settings'],
                        label='Localization settings', group='Localization', advanced=True),
             ParamField('orientation_mode', 'select', defaults['orientation_mode'], label='Mode',
-                       options=(ORIENTATION_AUTO, ORIENTATION_MANUAL), group='Orientation'),
+                       options=(ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL), group='Orientation'),
             ParamField('orientation', 'select', defaults['orientation'], label='Orientation',
                        options=tuple(ORIENTATIONS), group='Orientation'),
+            ParamField('locked_orientation', 'str', defaults['locked_orientation'],
+                       label='Locked orientation', group='Orientation', advanced=True),
             ParamField('spot_width_mode', 'select', defaults['spot_width_mode'], label='Mode',
                        options=(SPOT_MANUAL, SPOT_AUTO), group='Spot model'),
             ParamField('spot_fwhm', 'float', defaults['spot_fwhm'], label='FWHM', min=0.001, group='Spot model'),
@@ -137,6 +143,7 @@ class MonalisaReconstructor(StreamingReconstructor):
 
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
+        self.session_registry = MonalisaSessionRegistry()
         self._pattern_finder = PatternFinder()
         self._signal_extractor = None  # Lazy-loaded on first use (Windows-only)
         self._axis_labels = {
@@ -161,7 +168,7 @@ class MonalisaReconstructor(StreamingReconstructor):
     
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         """Create and return the MoNaLISA parameter widget."""
-        return MonalisaParamsWidget(parent)
+        return MonalisaParamsWidget(parent, session_registry=self.session_registry)
     
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         """
@@ -225,7 +232,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         if mode == LOCALIZATION_AUTO:
             return None
         if mode != LOCALIZATION_MANUAL:
-            raise ValueError(f"Localization mode {mode!r} is not available until the locked-localization pass")
+            raise ValueError(f"Localization mode {mode!r} is not Manual")
         axis = str(params.get("stagger_axis", "None"))
         return PatternLocalization.manual_grid(
             period_x=float(params["manual_period_x_px"]),
@@ -245,9 +252,12 @@ class MonalisaReconstructor(StreamingReconstructor):
             return cls._manual_localization(params)
         if mode == LOCALIZATION_AUTO:
             return PatternLocalization.from_dict(params.get("auto_localization"))
-        raise ValueError(
-            f"Localization mode {mode!r} is not available until the locked-localization pass"
-        )
+        if mode == LOCALIZATION_LOCKED:
+            localization = PatternLocalization.from_dict(params.get("locked_localization"))
+            if localization is None:
+                raise ValueError("Localization is Locked but no locked localization is selected")
+            return localization
+        raise ValueError(f"Unknown localization mode {mode!r}")
 
     @staticmethod
     def _spot_sigma_for_params(params: dict) -> float | None:
@@ -299,6 +309,12 @@ class MonalisaReconstructor(StreamingReconstructor):
         localization = PatternLocalization.from_lattice(
             finding.lattice, source=source, dataset=getattr(data_obj, "name", "")
         )
+        self.session_registry.set_current_localization(
+            detector_identity(data_obj), localization, source=source,
+            source_dataset=str(getattr(data_obj, "name", "") or ""),
+            source_path=str(getattr(data_obj, "dataPath", "") or ""),
+            diagnostics={"description": finding.describe()},
+        )
         return localization, finding.describe()
 
     @staticmethod
@@ -306,11 +322,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         mode = str(params.get("orientation_mode", ORIENTATION_AUTO))
         if mode == ORIENTATION_AUTO:
             return None
-        if mode != ORIENTATION_MANUAL:
-            raise ValueError(f"Orientation mode {mode!r} is not available until the locked-orientation pass")
-        # Parse and round-trip now so every manual value reaches the pipeline in
-        # the same canonical semantics used by future saved orientations.
-        return ScanOrientation.from_literal(str(params.get("orientation", "+x+y"))).to_literal()
+        if mode == ORIENTATION_MANUAL:
+            value = str(params.get("orientation", "+x+y"))
+        elif mode == ORIENTATION_LOCKED:
+            value = str(params.get("locked_orientation") or "")
+            if not value:
+                raise ValueError("Orientation is Locked but no detector orientation is locked")
+        else:
+            raise ValueError(f"Unknown orientation mode {mode!r}")
+        return ScanOrientation.from_literal(value).to_literal()
 
     def _process_unified_gaussian(self, data_obj, params: dict, context=None):
         """Run the experimental/general lattice orchestration as the one Gaussian plugin.
@@ -348,6 +368,9 @@ class MonalisaReconstructor(StreamingReconstructor):
             "pixel_size_nm": float(merged.get("pixel_size_nm", 0.0)),
             "orientation": AUTO if orientation is None else orientation,
             "reuse_localization": False,
+            # Unified MoNaLISA owns reuse through the session registry; do not
+            # populate the experimental plugin's temporary single-entry cache.
+            "_cache_localization_reference": False,
             "background": str(merged.get("background", "constant")),
             "frame_gain": bool(merged.get("intensity_correction", False)),
             "cell_offsets": bool(merged.get("cell_offsets", False)),
@@ -374,9 +397,89 @@ class MonalisaReconstructor(StreamingReconstructor):
         }
         result = MonalisaLatticeReconstructor().process(data_obj, lattice_params, context=context)
         result.name = f"{data_obj.name}_monalisa"
-        # Keep the user-facing unified settings with the result rather than the
-        # temporary compatibility-wrapper translation.
+
+        diagnostics = dict(getattr(result, "diagnostics", {}) or {})
+        resolved_localization = PatternLocalization.from_dict(
+            diagnostics.get("resolved_localization")
+        ) or localization
+        resolved_orientation = str(
+            diagnostics.get("resolved_orientation") or orientation or ""
+        )
+        detector = detector_identity(data_obj)
+        localization_mode = str(merged.get("localization_mode", LOCALIZATION_AUTO))
+        orientation_mode = str(merged.get("orientation_mode", ORIENTATION_AUTO))
+
+        if resolved_localization is not None and localization_mode == LOCALIZATION_AUTO:
+            self.session_registry.set_current_localization(
+                detector, resolved_localization, source="auto",
+                source_dataset=str(getattr(data_obj, "name", "") or ""),
+                source_path=str(getattr(data_obj, "dataPath", "") or ""),
+                diagnostics={"status": "Resolved during reconstruction"},
+            )
+        if resolved_orientation and orientation_mode == ORIENTATION_AUTO:
+            self.session_registry.set_current_orientation(
+                detector, resolved_orientation, source="auto",
+                source_dataset=str(getattr(data_obj, "name", "") or ""),
+                source_path=str(getattr(data_obj, "dataPath", "") or ""),
+            )
+
+        effective_sigma_px = (
+            float(diagnostics["resolved_spot_sigma_px"])
+            if diagnostics.get("resolved_spot_sigma_px") is not None
+            else (float(spot_sigma_px) if spot_sigma_px is not None else None)
+        )
+        resolved_fwhm_px = (
+            sigma_px_to_fwhm(effective_sigma_px, "px", None)
+            if effective_sigma_px is not None else None
+        )
+        pixel_nm = float(merged.get("pixel_size_nm", 0.0) or 0.0)
+        resolved_fwhm_nm = (
+            sigma_px_to_fwhm(effective_sigma_px, "nm", pixel_nm)
+            if effective_sigma_px is not None and pixel_nm > 0 else None
+        )
+
+        calibration_snapshot = {
+            "detector": detector,
+            "localization_source": localization_mode,
+            "resolved_localization": (
+                resolved_localization.to_dict() if resolved_localization is not None else {}
+            ),
+            "locked_localization_id": str(merged.get("locked_localization_id") or ""),
+            "locked_localization_name": str(merged.get("locked_localization_name") or ""),
+            "orientation_source": orientation_mode,
+            "resolved_orientation": resolved_orientation,
+            "spot_width_source": str(merged.get("spot_width_mode", SPOT_MANUAL)),
+            "spot_fwhm": float(merged.get("spot_fwhm", 0.0)),
+            "spot_fwhm_unit": str(merged.get("spot_fwhm_unit", "nm")),
+            "requested_spot_fwhm": float(merged.get("spot_fwhm", 0.0)),
+            "requested_spot_fwhm_unit": str(merged.get("spot_fwhm_unit", "nm")),
+            "resolved_spot_fwhm_px": resolved_fwhm_px,
+            "resolved_spot_fwhm_nm": resolved_fwhm_nm,
+            "effective_sigma_px": effective_sigma_px,
+            "preset": str(merged.get("preset", "")),
+            "placement_mode_requested": str(merged.get("placement_mode", PLACEMENT_AUTO)),
+            "placement_mode_used": str(diagnostics.get("placement_method") or ""),
+            "placement_residual_px": diagnostics.get("placement_residual_px"),
+            "placement_tolerance_px": float(merged.get("commensurate_tolerance", 0.05)),
+            "corrections": {
+                "intensity_correction": bool(merged.get("intensity_correction", False)),
+                "cell_offsets": bool(merged.get("cell_offsets", False)),
+                "reassignment": str(merged.get("reassignment", "off")),
+                "shift_factor": float(merged.get("shift_factor", 0.0)),
+                "variance_weighting": bool(merged.get("variance_weighting", False)),
+                "sharpen": bool(merged.get("sharpen", False)),
+            },
+        }
+
+        # Keep the user-facing unified settings and an immutable calibration
+        # snapshot with the result.  The metadata copy is what generic result
+        # writers persist beside the pixels, so later profile renames/deletes
+        # cannot make an old reconstruction ambiguous.
         result.params = dict(merged)
+        result.params["calibration_snapshot"] = copy.deepcopy(calibration_snapshot)
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        metadata["monalisa_calibration"] = copy.deepcopy(calibration_snapshot)
+        result.metadata = metadata
         return result
 
     def detection_preview(self, data_obj, displayed_image, params: dict):
@@ -644,7 +747,24 @@ class MonalisaReconstructor(StreamingReconstructor):
             from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
                 MonalisaLatticeReconstructor,
             )
-            return MonalisaLatticeReconstructor().consolidate(results)
+            merged = MonalisaLatticeReconstructor().consolidate(results)
+            snapshots = [
+                dict((getattr(result, "metadata", {}) or {}).get("monalisa_calibration") or {})
+                for result in results
+            ]
+            snapshots = [snapshot for snapshot in snapshots if snapshot]
+            if snapshots:
+                payload = (
+                    snapshots[0]
+                    if all(snapshot == snapshots[0] for snapshot in snapshots[1:])
+                    else {"per_data_item": snapshots}
+                )
+                metadata = dict(getattr(merged, "metadata", {}) or {})
+                metadata["monalisa_calibration"] = copy.deepcopy(payload)
+                merged.metadata = metadata
+                merged.params = dict(getattr(merged, "params", {}) or {})
+                merged.params["calibration_snapshot"] = copy.deepcopy(payload)
+            return merged
         for other in results[1:]:
             if other.data.shape[1:] != first.data.shape[1:]:
                 raise ValueError(
