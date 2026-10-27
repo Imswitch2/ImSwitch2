@@ -191,8 +191,12 @@ class ResultWindowManager(QtCore.QObject):
         self.sigWindowsChanged.emit()
 
     def closeAll(self) -> None:
+        """Dispose of every window. Safe to call again, and after Qt deleted some of them."""
         for window in list(self._windows.values()):
-            window.dispose()
+            try:
+                window.dispose()
+            except RuntimeError as error:  # wrapped C/C++ object already deleted
+                self._logger.debug("Window already gone: %s", error)
         self._windows.clear()
         self._active = None
 

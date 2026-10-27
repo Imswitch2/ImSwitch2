@@ -1089,6 +1089,10 @@ class ImProcessMainController(MainController):
         # The ROI Manager, ROI stats and Profile follow the active window.
         if hasattr(self.__mainView, 'bindWindowManager'):
             self.__mainView.bindWindowManager(manager)
+        # ImProcessMainView is a tab page, so Qt never delivers it a closeEvent
+        # and sigClosing is not emitted on the real shutdown path; closeEvent()
+        # below (called directly by the module shutdown) closes the windows.
+        # The connection stays for a view that is closed as a window.
         self.__mainView.sigClosing.connect(manager.closeAll)
 
     def _imageDisplayChosen(self, choice: str) -> None:
@@ -1108,7 +1112,21 @@ class ImProcessMainController(MainController):
                 'Image display saved. It takes effect the next time ImProcess starts.'
             )
 
+    def _closeImageWindows(self):
+        """Dispose of the separate image windows (window mode), if there are any."""
+        # getattr: this runs on a controller whose construction may have raised.
+        manager = getattr(self, 'resultWindowManager', None)
+        if manager is None:
+            return
+        try:
+            manager.closeAll()
+        except Exception as e:
+            self.__logger.warning(f'Failed to close the image windows: {e}')
+
     def closeEvent(self):
+        # The windows go first: they reference the results and the viewer facade
+        # that the controllers torn down below own.
+        self._closeImageWindows()
         # Persist the current dock layout before tearing the controllers down,
         # so the next launch can restore it.
         if self.__guiLayoutStateAdapter is not None:

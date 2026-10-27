@@ -503,3 +503,77 @@ def test_an_owned_window_stays_visible_while_another_application_is_active(qtbot
     assert unowned.windowType() == QtCore.Qt.Window
     assert not unowned.testAttribute(QtCore.Qt.WA_MacAlwaysShowToolWindow)
     manager.closeAll()
+
+
+# --------------------------------------------------------------------------
+# shutdown: ImProcessMainView is a tab page and never gets a closeEvent, so the
+# controller's own closeEvent (called by the module shutdown) must close the windows
+# --------------------------------------------------------------------------
+
+def _bare_main_controller(manager):
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ImProcessMainController import ImProcessMainController
+
+    controller = ImProcessMainController.__new__(ImProcessMainController)
+    controller._ImProcessMainController__guiLayoutStateAdapter = None
+    controller._ImProcessMainController__logger = SimpleNamespace(warning=lambda *a, **k: None)
+    calls = []
+    controller._ImProcessMainController__factory = SimpleNamespace(
+        closeAllCreatedControllers=lambda waitTimeoutS=None: calls.append("controllers"))
+    controller.resultWindowManager = manager
+    return controller, calls
+
+
+def test_the_controllers_close_event_closes_the_image_windows_before_the_controllers(qtbot):
+    from types import SimpleNamespace
+
+    order = []
+    manager = SimpleNamespace(closeAll=lambda: order.append("windows"))
+    controller, _calls = _bare_main_controller(manager)
+    controller._ImProcessMainController__factory.closeAllCreatedControllers = (
+        lambda waitTimeoutS=None: order.append("controllers"))
+
+    controller.closeEvent()
+
+    assert order == ["windows", "controllers"]
+
+
+def test_the_controllers_close_event_without_window_mode_or_with_a_failing_manager(qtbot):
+    from types import SimpleNamespace
+
+    controller, calls = _bare_main_controller(None)       # the default napari display
+    controller.closeEvent()
+    assert calls == ["controllers"]
+
+    def boom():
+        raise RuntimeError("wrapped C/C++ object of type ImageWindow has been deleted")
+
+    controller, calls = _bare_main_controller(SimpleNamespace(closeAll=boom))
+    controller.closeEvent()                                # the controllers still close
+    assert calls == ["controllers"]
+
+
+def test_close_all_survives_windows_qt_already_deleted(qtbot):
+    import numpy as np
+    from qtpy import QtWidgets
+    try:
+        import sip
+    except ImportError:  # pragma: no cover
+        from PyQt5 import sip
+
+    from imswitch.improcess.model.array_result import ArrayProcessingResult
+    from imswitch.improcess.view.result_windows import ResultWindowManager
+
+    main = QtWidgets.QMainWindow()
+    qtbot.addWidget(main)
+    manager = ResultWindowManager(main)
+    first = manager.show(ArrayProcessingResult("a", np.zeros((8, 8), np.float32), ["Y", "X"]))
+    second = manager.show(ArrayProcessingResult("b", np.zeros((8, 8), np.float32), ["Y", "X"]))
+    sip.delete(first)                      # Qt took the first one down with its owner
+
+    manager.closeAll()                     # must not raise, and must still dispose the second
+
+    assert manager.windows() == []
+    assert sip.isdeleted(first) and (sip.isdeleted(second) or not second.isVisible())
+    manager.closeAll()                     # and a second call is harmless
