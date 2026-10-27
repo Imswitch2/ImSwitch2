@@ -261,3 +261,71 @@ def test_uint16_values_above_int16_survive():
     desc = _roundtrip_desc(plan, source)
     out = import_fiji_image(desc, plan.data, source, sent=None).result
     assert out.data.dtype == np.uint16 and out.data[0, 0] == 65535
+
+
+# -- results whose writer lays them out differently --------------------------------
+
+class _ViewResult(ArrayProcessingResult):
+    """In-memory axes ImageJ cannot take; the writer's layout it can."""
+
+    def __init__(self, view_labels=("C", "Y", "X"), names=("a", "b")):
+        data = (np.arange(2 * 2 * 4 * 5) % 250).astype(np.uint16).reshape(2, 2, 4, 5)
+        super().__init__("multi", data, ["Dataset", "Base", "Y", "X"], axis_scales=[1, 1, 0.2, 0.1], scale_unit="um")
+        self._view_labels, self._names = list(view_labels), list(names)
+
+    def serialization_view(self):
+        from imswitch.improcess.model.result import SerializationView
+
+        folded = np.asarray(self.data).reshape(4, 4, 5) if len(self._view_labels) == 3 else np.asarray(self.data)
+        return SerializationView(
+            data=folded, axis_labels=self._view_labels, axis_scales=[1.0, 200.0, 100.0][-len(self._view_labels):],
+            scale_unit="nm", channel_names=[f"{n}{i}" for n in self._names for i in range(2)],
+        )
+
+
+def test_a_result_whose_axes_do_not_map_is_sent_in_its_serialization_layout():
+    result = _ViewResult()
+    plan = plan_send(result)
+    assert plan.source_axes == ("C", "Y", "X")             # what was sent, for restoring an import
+    assert plan.data.shape == (1, 1, 4, 4, 5)
+    assert plan.channel_names == ["a0", "a1", "b0", "b1"]
+    assert plan.calibration["unit"] == "nm" and plan.calibration["pixel_width"] == 100.0
+    assert plan.properties[PROP_RESULT_UID] == result.result_uid
+    assert any(
+        "sent in the layout the result is saved in (C, Y, X), not its in-memory axes (Dataset, Base, Y, X)" in n
+        for n in plan.notes
+    )
+
+
+def test_axes_that_map_keep_the_in_memory_layout_even_if_a_view_exists():
+    result = _result((3, 4, 5), "ZYX", scales=[0.5, 0.2, 0.1])
+    plan = plan_send(result)
+    assert plan.source_axes == ("Z", "Y", "X") and not any("saved in" in n for n in plan.notes)
+
+
+def test_neither_layout_mapping_is_refused_naming_both():
+    result = _ViewResult(view_labels=("Angle", "Y", "X"))
+    with pytest.raises(NotSendable) as err:
+        plan_send(result)
+    text = str(err.value)
+    assert "Dataset" in text and "Angle" in text and "Neither" in text
+
+
+def test_a_real_monalisa_result_is_sent_with_dataset_times_base_as_channels():
+    from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessingResult
+
+    coeffs = np.arange(1 * 2 * 4 * 2 * 5, dtype=np.float32).reshape(1, 2, 4, 2, 5)
+    scan_params = {
+        'dimensions': ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'],
+        'directions': ['pos', 'pos', 'pos'], 'steps': ['2', '2', '1', '1'],
+        'step_sizes': ['40', '80', '120', '1'], 'unidirectional': True,
+    }
+    labels = {'r_l_text': 'Right-Left', 'u_d_text': 'Up-Down', 'b_f_text': 'Back-Front',
+              'timepoints_text': 'Timepoints', 'p_text': 'pos', 'n_text': 'neg'}
+    result = MonalisaProcessingResult.from_coeffs("monalisa", coeffs, scan_params, labels)
+    plan = plan_send(result)
+    view = result.serialization_view()
+    assert plan.source_axes == ("T", "Z", "C", "Y", "X")
+    assert plan.data.shape[IMAGEJ_AXES.index("C")] == len(view.channel_names) == len(plan.channel_names)
+    np.testing.assert_array_equal(np.asarray(plan.data), np.asarray(view.data))
+    assert any("saved in" in n for n in plan.notes)

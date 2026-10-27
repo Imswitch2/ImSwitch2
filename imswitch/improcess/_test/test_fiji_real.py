@@ -106,6 +106,28 @@ def test_round_trip_is_exact(session, case):
     assert desc.properties[PROP_RESULT_UID] == source.result_uid
 
 
+def test_a_monalisa_serialization_view_round_trips_with_channel_names_as_slice_labels(session):
+    from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessingResult
+
+    coeffs = np.arange(1 * 2 * 4 * 2 * 5, dtype=np.float32).reshape(1, 2, 4, 2, 5)
+    scan_params = {
+        'dimensions': ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'],
+        'directions': ['pos', 'pos', 'pos'], 'steps': ['2', '2', '1', '1'],
+        'step_sizes': ['40', '80', '120', '1'], 'unidirectional': True,
+    }
+    labels = {'r_l_text': 'Right-Left', 'u_d_text': 'Up-Down', 'b_f_text': 'Back-Front',
+              'timepoints_text': 'Timepoints', 'p_text': 'pos', 'n_text': 'neg'}
+    result = MonalisaProcessingResult.from_coeffs("monalisa", coeffs, scan_params, labels)
+    view = result.serialization_view()
+    plan = plan_send(result)
+    image_id = session.send(plan)
+    data, desc = session.fetch(image_id)
+    np.testing.assert_array_equal(data, np.asarray(plan.data))
+    np.testing.assert_array_equal(data, np.asarray(view.data))
+    assert list(desc.channel_labels) == list(view.channel_names)
+    session.close_image(image_id)
+
+
 def test_refusals_happen_before_any_ipc(session):
     before = [d.image_id for d in session.list_images()]
     with pytest.raises(NotSendable):

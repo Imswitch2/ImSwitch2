@@ -101,29 +101,67 @@ class SendPlan:
     notes: list = field(default_factory=list)
 
 
+def _axes_problem(labels, raw_labels, ndim: int) -> str | None:
+    """Why these axis labels have no ImageJ form, or None when they map."""
+    if len(labels) != ndim:
+        return f"the result has {ndim} data axes but {len(labels)} axis labels {raw_labels}"
+    bad = [raw for raw, up in zip(raw_labels, labels) if up not in IMAGEJ_AXES]
+    if bad:
+        return (
+            f"axes {bad} have no ImageJ equivalent (ImageJ has {', '.join(IMAGEJ_AXES)}); "
+            "project or split them before sending"
+        )
+    duplicates = sorted({a for a in labels if labels.count(a) > 1})
+    if duplicates:
+        return f"axes {duplicates} appear more than once; project or split them before sending"
+    if "Y" not in labels or "X" not in labels:
+        return f"the result needs both Y and X axes, it has {raw_labels}"
+    return None
+
+
+def _labels_of(axis_labels) -> tuple[list, list]:
+    raw = [str(label) for label in (axis_labels or [])]
+    return [label.upper() for label in raw], raw
+
+
 def plan_send(result, *, title: str | None = None) -> SendPlan:
+    """Plan opening ``result`` in Fiji.
+
+    The result's own axes are used when they map onto ImageJ's. When they do
+    not, the layout its WRITER uses (:meth:`serialization_view`) is tried: it
+    is exactly what a user gets by saving the result to TIFF and opening that
+    in Fiji, e.g. MoNaLISA's ``(Dataset, Base, T, Z, Y, X)`` held in memory but
+    written as ``(T, Z, C, Y, X)``. Only when neither maps is the send refused.
+    """
     kind = result_kind(result)
     if kind not in ("image", "composite"):
         raise NotSendable(
             f"a {kind} result cannot be sent to Fiji yet; only images and composites can"
         )
     data = result.data
-    labels = [str(label).upper() for label in (result.axis_labels or [])]
-    raw_labels = [str(label) for label in (result.axis_labels or [])]
+    labels, raw_labels = _labels_of(result.axis_labels)
     ndim = int(getattr(data, "ndim", np.ndim(data)))
-    if len(labels) != ndim:
-        raise NotSendable(f"the result has {ndim} data axes but {len(labels)} axis labels {raw_labels}")
-    bad = [raw for raw, up in zip(raw_labels, labels) if up not in IMAGEJ_AXES]
-    if bad:
-        raise NotSendable(
-            f"axes {bad} have no ImageJ equivalent (ImageJ has {', '.join(IMAGEJ_AXES)}); "
-            "project or split them before sending"
+    problem = _axes_problem(labels, raw_labels, ndim)
+    scales_in, unit_in, channel_source = result.axis_scales, getattr(result, "scale_unit", ""), None
+    notes: list[str] = []
+    if problem is not None:
+        view = _view_that_maps(result)
+        if view is None:
+            view_labels = _view_axes(result)
+            if view_labels is None or view_labels == raw_labels:
+                raise NotSendable(problem)
+            raise NotSendable(
+                f"{problem}. Neither the result's axes {raw_labels} nor the layout it is saved "
+                f"in {view_labels} map onto ImageJ"
+            )
+        data = view.data
+        labels, raw_labels = _labels_of(view.axis_labels)
+        ndim = int(getattr(data, "ndim", np.ndim(data)))
+        scales_in, unit_in, channel_source = view.axis_scales, view.scale_unit, view.channel_names
+        notes.append(
+            f"sent in the layout the result is saved in ({', '.join(raw_labels)}), "
+            f"not its in-memory axes ({', '.join(str(a) for a in (result.axis_labels or []))})"
         )
-    duplicates = sorted({a for a in labels if labels.count(a) > 1})
-    if duplicates:
-        raise NotSendable(f"axes {duplicates} appear more than once; project or split them before sending")
-    if "Y" not in labels or "X" not in labels:
-        raise NotSendable(f"the result needs both Y and X axes, it has {raw_labels}")
     dtype = np.dtype(getattr(data, "dtype", None))
     if dtype not in IMAGEJ_DTYPES:
         raise NotSendable(
@@ -131,7 +169,6 @@ def plan_send(result, *, title: str | None = None) -> SendPlan:
             "(convert the result first; nothing is cast silently)"
         )
 
-    notes: list[str] = []
     order = [labels.index(a) for a in IMAGEJ_AXES if a in labels]
     missing = [i for i, a in enumerate(IMAGEJ_AXES) if a not in labels]
     if isinstance(data, np.ndarray):
@@ -147,8 +184,8 @@ def plan_send(result, *, title: str | None = None) -> SendPlan:
         for index in missing:
             view = np.expand_dims(view, index)
 
-    scales = {a: float(s) for a, s in zip(labels, list(result.axis_scales or []))}
-    unit = str(getattr(result, "scale_unit", "") or "px")
+    scales = {a: float(s) for a, s in zip(labels, list(scales_in or []))}
+    unit = str(unit_in or "px")
     unit = _SPATIAL_UNITS.get(unit.strip().lower(), unit)
     calibration = {
         "pixel_width": scales.get("X"),
@@ -165,7 +202,7 @@ def plan_send(result, *, title: str | None = None) -> SendPlan:
         if calibration[key] is None:
             notes.append(f"the {axis} axis has no scale; ImageJ's default applies")
 
-    channel_names = _channel_names(result, view.shape[IMAGEJ_AXES.index("C")], notes)
+    channel_names = _channel_names(result, view.shape[IMAGEJ_AXES.index("C")], notes, first=channel_source)
     return SendPlan(
         data=view,
         source_axes=tuple(labels),
@@ -180,8 +217,27 @@ def plan_send(result, *, title: str | None = None) -> SendPlan:
     )
 
 
-def _channel_names(result, n_channels: int, notes: list[str]) -> list[str]:
-    candidates = []
+def _view_axes(result):
+    """The raw axis labels of the result's serialization view, None when it has none."""
+    try:
+        return [str(a) for a in (result.serialization_view().axis_labels or [])]
+    except Exception:  # noqa: BLE001 - a result without a usable view simply has no second layout
+        return None
+
+
+def _view_that_maps(result):
+    """The result's serialization view when its axes and data map onto ImageJ, else None."""
+    try:
+        view = result.serialization_view()
+    except Exception:  # noqa: BLE001
+        return None
+    labels, raw = _labels_of(view.axis_labels)
+    ndim = int(getattr(view.data, "ndim", np.ndim(view.data)))
+    return view if _axes_problem(labels, raw, ndim) is None else None
+
+
+def _channel_names(result, n_channels: int, notes: list[str], *, first=None) -> list[str]:
+    candidates = [first]
     try:
         candidates.append(result.serialization_view().channel_names)
     except Exception:

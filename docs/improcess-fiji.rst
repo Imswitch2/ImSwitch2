@@ -282,7 +282,13 @@ What does not cross
   offset is not carried back, and the import notes list it.
 * **Other axes.** Axes such as dataset, angle or base have no ImageJ
   equivalent. Sending such a result is refused with a request to project or
-  split first; nothing is folded together for you.
+  split first; nothing is folded together for you. One exception: a result
+  whose *save* layout has ImageJ axes is sent in that layout. A MoNaLISA
+  reconstruction, held in memory as Dataset, Base, T, Z, Y, X, is saved as
+  T, Z, C, Y, X with C = Dataset × Base and named channels, so that is what
+  Fiji receives (the send notes say so), exactly what you would see opening
+  the saved TIFF in Fiji. Coming back, such an image lands on a fresh grid,
+  because its axes differ from the in-memory result's.
 * **RGB images.** They are shown in the import list but cannot be imported;
   convert them to an 8-bit stack in Fiji first.
 * **OME annotations and other metadata.** The original metadata stays on the
