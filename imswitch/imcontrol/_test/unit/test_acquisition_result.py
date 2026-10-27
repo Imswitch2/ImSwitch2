@@ -162,3 +162,13 @@ def test_show_without_an_image_view_says_so():
                                         ['Camera'])
     with pytest.raises(RuntimeError, match='no image view'):
         result.show()
+
+
+def test_the_recording_opens_from_memory_with_its_attributes():
+    frames = np.arange(12, dtype=np.uint16).reshape(3, 2, 2)
+    camera = acquisitionResultFromFiles({'c.hdf5': _file('Camera', frames)},
+                                        ['Camera']).detector('Camera')
+    with camera.openRecording() as recording:
+        np.testing.assert_array_equal(recording['Camera/data'][()], frames)
+        attrs = {**recording['Camera'].attrs, **recording['Camera/data'].attrs}
+        assert attrs['recording:completion_outcome'] == camera.outcome

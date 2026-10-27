@@ -89,6 +89,13 @@ class DetectorResult:
     def complete(self) -> bool:
         return self.outcome == 'complete'
 
+    def openRecording(self) -> h5py.File:
+        """The HDF5 recording these frames were read from, opened read-only
+        in memory: the file a recording to disk would have written, with all
+        its attributes, for code that reads recordings -- an ImProcess
+        reconstructor, say. Use it in a ``with`` block, which closes it."""
+        return h5py.File(io.BytesIO(self._bytes), 'r')
+
 
 class AcquisitionResult:
     """The frames of a recording to memory, and what they mean.

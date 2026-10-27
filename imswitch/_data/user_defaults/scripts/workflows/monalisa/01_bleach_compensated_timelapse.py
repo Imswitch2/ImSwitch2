@@ -1,13 +1,15 @@
 """MoNaLISA timelapse with live reconstruction and bleaching compensation.
 
 What it does
-  Records a MoNaLISA timelapse, one Scan-once HDF5 recording per timepoint,
-  and reconstructs each timepoint with the ImProcess MoNaLISA reconstructor
-  as soon as its file is written. The timepoints are grouped in blocks of
-  BLOCK_SIZE; when a block's mean reconstructed intensity is significantly
-  lower than the previous block's, the power of LASER is raised by the
-  factor that restores the previous block's level, through the calibrated
-  power response (see "Calibration"). The power never exceeds MAX_POWER.
+  Runs the scan the Scan widget holds once per timepoint and records it
+  into memory -- no file is written -- then reconstructs that timepoint
+  with the ImProcess MoNaLISA reconstructor straight from memory and shows
+  the reconstruction in the image view as it comes in. The timepoints are
+  grouped in blocks of BLOCK_SIZE; when a block's mean reconstructed
+  intensity is significantly lower than the previous block's, the power of
+  LASER is raised by the factor that restores the previous block's level,
+  through the calibrated power response (see "Calibration"). The power
+  never exceeds MAX_POWER.
 
   The illumination grid is localized once, on the first timepoint, and
   every later timepoint is reconstructed on that grid, so the intensities
@@ -31,33 +33,36 @@ Calibration
   block's mean, so a drop that is real but too small to matter does not
   move the laser.
 
-Output, in the recording folder
-  <NAME>_t000_rec_<CAMERA>.hdf5, ..._t001_...   one raw recording per timepoint
-  <NAME>_recon/                                 the reconstructions (SAVE_RECONSTRUCTIONS)
-  <NAME>_log.csv                                timepoint, time, power, intensity, block decision
+Output
+  The image view: the latest reconstruction ("MoNaLISA live"), and at the
+  end the whole timelapse as a stack ("MoNaLISA timelapse").
+  In the recording folder:
+    <NAME>_log.csv                timepoint, time, power, intensity, block decision
+    <NAME>_raw/ (SAVE_RAW)        each timepoint's raw recording, HDF5
+    <NAME>_timelapse.tif (SAVE_RECONSTRUCTIONS)   the reconstructed stack
 
 Setup
-  Your own microscope: a MoNaLISA Scan widget, a camera, the Laser and
-  Recording widgets. Set up the scan in the Scan widget first -- the script
-  records with whatever it shows. Change CAMERA, LASER and the powers to
-  yours (in the units the Laser widget shows).
-  Mock setup: mock_scan_monalisa_live.json has no laser; on a mock the
-  reconstructed intensity does not respond to the laser, so it shows the
-  wiring, not the compensation.
+  Your own microscope: a MoNaLISA Scan widget whose TTL cycle triggers the
+  camera, the camera, the Laser, Recording and Image widgets. Set up the
+  scan in the Scan widget first -- the script runs whatever it shows.
+  Change CAMERA, LASER and the powers to yours (in the units the Laser
+  widget shows).
+  On a mock setup the reconstructed intensity does not respond to the
+  laser, so it shows the wiring, not the compensation.
 """
 
 import csv
-import glob
 import math
 import os
 import time
 
-import h5py
 import numpy as np
+import tifffile
 
-from imswitch.imcommon.framework import FrameworkUtils
+from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.reconstructors.monalisa.localizer import localizer
-from imswitch.improcess.workflows import Reconstruct, Save, Source, Workflow, bootstrap_registry, run
+from imswitch.improcess.reconstructors.run import run_reconstruction
+from imswitch.improcess.workflows import bootstrap_registry
 
 # --- Your microscope ---------------------------------------------------------
 CAMERA = 'Camera'
@@ -87,65 +92,46 @@ RECON_PARAMS = {
 }
 PATTERN = None               # {'row_offset':..,'col_offset':..,'row_period':..,'col_period':..}
                              # or None: localize on the first timepoint
-SAVE_RECONSTRUCTIONS = True
+SAVE_RAW = False
+SAVE_RECONSTRUCTIONS = False
 
 log = getLogger()
-signals = api.imcontrol.signals()
 recFolder = api.imcontrol.getRecFolder()
-registry = bootstrap_registry()
+reconstructor = bootstrap_registry().get_reconstructor('monalisa')
 
 
-def recordTimepoint(fileName):
-    """One Scan-once recording; returns the path of the file it wrote."""
-    api.imcontrol.setRecFilename(fileName)
-    # A recording that fails emits recordingFailed and never recordingEnded;
-    # one refused before it starts (a camera the scan does not trigger, say)
-    # emits neither and is simply not recording. Watch for all three, so a
-    # failure stops the script at once instead of at the timeout. The
-    # handlers run on this script's thread, so the wait must deliver its
-    # events (getWaitForSignal does the same).
-    outcome = {}
-    onEnded = lambda *a: outcome.setdefault('ended', True)
-    onFailed = lambda *a: outcome.setdefault('failed', a)
-    signals.recordingEnded.connect(onEnded)
-    signals.recordingFailed.connect(onFailed)
-    try:
-        api.imcontrol.startRecording()
-        if not outcome and not api.imcontrol.isRecording():
-            outcome['failed'] = ('refused before it started',)
-        waitUntil(lambda: FrameworkUtils.processPendingEventsCurrThread() or outcome,
-                  timeout=600)
-    finally:
-        signals.recordingEnded.disconnect(onEnded)
-        signals.recordingFailed.disconnect(onFailed)
-    if 'failed' in outcome:
-        raise RuntimeError(f'recording {fileName} failed: {outcome["failed"]} '
-                           '(see the log; is the Scan widget set up to trigger the camera?)')
-    paths = glob.glob(os.path.join(recFolder, f'{fileName}_rec_{CAMERA}*'))
-    if not paths:
-        raise RuntimeError(f'no recording of {CAMERA} named {fileName} in {recFolder}')
-    return max(paths, key=os.path.getmtime)
+def recordTimepoint():
+    """One scan into memory; returns the camera's part of the result."""
+    result = api.imcontrol.recordScanToMemory(CAMERA, timeout=600, structured=True)
+    camera = result.detector(CAMERA)
+    if not camera.complete:
+        log.warning(f'{camera.framesRecorded} of {camera.framesExpected} frames '
+                    f'({camera.outcome}): reconstructing what arrived')
+    if SAVE_RAW:
+        result.save(os.path.join(recFolder, f'{NAME}_raw'))
+    return camera
 
 
-def localizePattern(path):
+def localizePattern(camera):
     """The illumination grid on the summed stack, as the reconstructor's params."""
-    with h5py.File(path, 'r') as f:
-        frames = np.asarray(f[f'{CAMERA}/data'], dtype=np.float32)
-    loc = localizer(frames)
+    loc = localizer(np.asarray(camera.data, dtype=np.float32))
     return {'row_offset': float(loc.yo), 'col_offset': float(loc.xo),
             'row_period': float(loc.yp), 'col_period': float(loc.xp)}
 
 
-def reconstruct(path, pattern, save):
-    """Reconstruct one recording; returns the mean of the reconstructed image."""
-    steps = [Source('raw', path=path),
-             Reconstruct('rec', 'monalisa', {**RECON_PARAMS, **pattern}, inputs=['raw'])]
-    if save:
-        steps.append(Save('save', input='rec', fmt='hdf5'))
-    outDir = os.path.join(recFolder, f'{NAME}_recon') if save else None
-    with run(Workflow(NAME, steps), registry=registry, out_dir=outDir) as report:
-        layers = report.result('rec').display_layer_data()
-        return float(np.mean(layers[0]))   # layer 0 = the reconstructed signal
+def reconstruct(camera, pattern, name):
+    """Reconstruct one timepoint from memory; returns the reconstructed image.
+
+    The reconstructor reads the in-memory recording exactly as it reads the
+    file a recording to disk writes: the frames and the scan geometry in its
+    attributes.
+    """
+    with camera.openRecording() as recording:
+        dataObj = DataObj(name, CAMERA, file=recording)
+        params = {**type(reconstructor).default_params(), **RECON_PARAMS, **pattern}
+        params = reconstructor.prepare_params(dataObj, params)
+        result = run_reconstruction(reconstructor, dataObj, params).result
+    return np.squeeze(result.display_layer_data()[0])   # layer 0 = the reconstructed signal
 
 
 def fitExponent(powers, intensities):
@@ -170,13 +156,9 @@ def compareBlocks(previous, current):
     return significant, -drop / mp, mp / mc
 
 
-previousFormat = api.imcontrol.getRecFileFormat()
-api.imcontrol.setRecFileFormat('HDF5')
-api.imcontrol.setDetectorToRecord(CAMERA)
-api.imcontrol.setRecModeScanOnce()
 power = START_POWER
 pattern = dict(PATTERN) if PATTERN else None
-rows = []
+rows, images = [], []
 try:
     api.imcontrol.setLaserValue(LASER, power)
     api.imcontrol.setLaserActive(LASER, True)
@@ -186,10 +168,10 @@ try:
         calIntensities = []
         for i, calPower in enumerate(CALIBRATION_POWERS):
             api.imcontrol.setLaserValue(LASER, calPower)
-            path = recordTimepoint(f'{NAME}_cal{i:02d}')
+            camera = recordTimepoint()
             if pattern is None:
-                pattern = localizePattern(path)
-            calIntensities.append(reconstruct(path, pattern, save=False))
+                pattern = localizePattern(camera)
+            calIntensities.append(float(np.mean(reconstruct(camera, pattern, f'cal{i:02d}'))))
             print(f'calibration: power {calPower} -> intensity {calIntensities[-1]:.4g}')
         exponent = fitExponent(CALIBRATION_POWERS, calIntensities)
         print(f'fitted RESPONSE_EXPONENT = {exponent:.3f}')
@@ -205,13 +187,16 @@ try:
             sleep(-lag)
         elif t > 0 and lag > 1:
             log.warning(f'timepoint {t} starts {lag:.1f} s late: '
-                        f'recording + reconstruction take longer than INTERVAL_S')
+                        f'scan + reconstruction take longer than INTERVAL_S')
         tStart = time.monotonic() - t0
-        path = recordTimepoint(f'{NAME}_t{t:03d}')
+        camera = recordTimepoint()
         if pattern is None:
-            pattern = localizePattern(path)
+            pattern = localizePattern(camera)
             print('grid:', {k: round(v, 2) for k, v in pattern.items()})
-        intensity = reconstruct(path, pattern, save=SAVE_RECONSTRUCTIONS)
+        image = reconstruct(camera, pattern, f'{NAME}_t{t:03d}')
+        images.append(image)
+        show(image, 'MoNaLISA live')
+        intensity = float(np.mean(image))
         intensities.append(intensity)
         row = {'timepoint': t, 'time_s': round(tStart, 2), 'power': power,
                'intensity': intensity, 'decision': ''}
@@ -241,11 +226,17 @@ finally:
     # Lasers first: whatever went wrong, the sample should not stay lit.
     api.imcontrol.setLaserValue(LASER, 0)
     api.imcontrol.setLaserActive(LASER, False)
-    api.imcontrol.setRecFilename(None)
-    api.imcontrol.setDetectorToRecord(-1)
-    api.imcontrol.setRecFileFormat(previousFormat)
+    if images and len({image.shape for image in images}) == 1:
+        stack = np.stack(images)
+        show(stack, 'MoNaLISA timelapse')
+        if SAVE_RECONSTRUCTIONS:
+            path = os.path.join(recFolder, f'{NAME}_timelapse.tif')
+            tifffile.imwrite(path, stack.astype(np.float32), imagej=True,
+                             metadata={'axes': 'TYX'})
+            print('reconstructions:', path)
     if rows:
         logPath = os.path.join(recFolder, f'{NAME}_log.csv')
+        os.makedirs(recFolder, exist_ok=True)
         with open(logPath, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0]))
             writer.writeheader()
