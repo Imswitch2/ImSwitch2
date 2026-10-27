@@ -15,7 +15,7 @@
       ],
       "req": true,
       "grp": "Reconstructors",
-      "tip": "Built-in reconstructor plugin IDs to register for this setup. Select 'monalisa' for MoNaLISA, including the live fast-Gauss path. This list picks which built-ins are registered; drop-in plugins in the plugins folder are active on their own and should not be listed here (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning, and if none is known ImProcess falls back to view-only. More can be loaded at runtime from Tools > Load reconstructor.",
+      "tip": "Tick the reconstructions this setup offers. The first one in the setup's list is active at startup; ticking another keeps that order and adds it after. This list picks which built-ins are registered: drop-ins are active on their own and should not be listed (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning, and if none is left ImProcess uses view-only. More can be loaded at runtime from Tools > Load reconstructor.",
       "opts": [
         "__improcess_reconstructors__"
       ]
@@ -29,7 +29,7 @@
       ],
       "req": false,
       "grp": "Processors",
-      "tip": "Built-in processor plugin IDs to register for this setup. Leave empty to disable processors. This list picks which built-ins are registered; drop-in plugins in the plugins folder are active on their own and should not be listed here (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning. The Analysis panels that register their own processor (projection, frc; see their tips) need not be listed, and processors that are not listed can still be loaded at runtime from the Load tool box of the Tools toolbar.",
+      "tip": "Tick the processing steps this setup offers. This list picks which built-ins are registered; the projection and frc panels register their processor themselves, and any other can still be loaded at runtime from the Load tool box of the Tools toolbar. Drop-ins are active on their own and should not be listed (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning.",
       "opts": [
         "__improcess_processors__"
       ]

@@ -641,7 +641,21 @@ def test_a_multiselect_shows_name_id_and_description_but_returns_ids(qapp):
     assert fw.get_value() is original and not fw.is_touched()
     fw._w.checkbox("monalisa").click()
     assert fw.is_touched()
-    assert fw.get_value() == ["monalisa", "view-only"], "ids, in the schema's option order"
+    assert fw.get_value() == ["view-only", "monalisa"], "ids: the file's order, new ones after"
+
+
+def test_ticking_keeps_the_files_order_so_the_startup_reconstructor_stays(qapp):
+    """The first reconstructor listed is the one active at startup.
+
+    The rows read in option order, but Apply must not reorder the file's list:
+    ids the file had keep their order, newly ticked ones follow in option
+    order, and unticking one removes only that one.
+    """
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa"])
+    fw._w.checkbox("beadrec").click()
+    assert fw.get_value() == ["view-only", "monalisa", "beadrec"]
+    fw._w.checkbox("view-only").click()
+    assert fw.get_value() == ["monalisa", "beadrec"]
 
 
 def test_every_reconstructor_row_has_a_description(qapp):
@@ -684,7 +698,7 @@ def test_a_multiselect_without_registry_descriptions_stays_a_plain_list(qapp):
     texts = [fw._w.item(i).text() for i in range(fw._w.count())]
     assert "MoNaLISA  (monalisa)" in texts
     fw._w.item(texts.index("MoNaLISA  (monalisa)")).setCheckState(Qt.Checked)
-    assert fw.get_value() == ["monalisa", "view-only"]
+    assert fw.get_value() == ["view-only", "monalisa"]
 
 
 def test_a_multiselect_without_labels_reads_as_before(qapp):
@@ -693,7 +707,7 @@ def test_a_multiselect_without_labels_reads_as_before(qapp):
     )
     assert [fw._w.item(i).text() for i in range(fw._w.count())] == ["a", "b"]
     fw._w.item(0).setCheckState(Qt.Checked)
-    assert fw.get_value() == ["a", "b"]
+    assert fw.get_value() == ["b", "a"]
 
 
 def test_grouped_processors_have_headers_and_keep_unknown_ids(qapp):
@@ -714,7 +728,7 @@ def test_grouped_processors_have_headers_and_keep_unknown_ids(qapp):
     value = fw.get_value()
     assert "user.tiny-test" in value and "resize" in value and "filter" in value
     ids = box.option_ids()
-    assert value == [i for i in ids if i in value], "stable: option order, extras last"
+    assert value == ["resize", "user.tiny-test", "filter"], "the file's order, new ones after"
     assert ids[-1] == "user.tiny-test"
 
 

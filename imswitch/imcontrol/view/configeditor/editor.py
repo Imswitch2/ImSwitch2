@@ -3066,8 +3066,15 @@ class FieldWidget(QWidget):
                     if self._w.item(i).data(Qt.UserRole) is not None
                     and self._w.item(i).checkState() == Qt.Checked
                 ]
+            # The file's order is kept: for ImProcess the first reconstructor
+            # listed is the one active at startup, so ticking another one must
+            # not reorder the list. Newly ticked ids follow, in option order.
             rank = {value: n for n, value in enumerate(self._option_order)}
-            return sorted(checked, key=lambda value: rank[value])
+            original = self._original if isinstance(self._original, list) else []
+            kept = [value for value in original if value in checked]
+            added = sorted((value for value in checked if value not in kept),
+                           key=lambda value: rank[value])
+            return kept + added
         if tp == "ref":
             txt = self._w.currentText().strip()
             return txt if txt else ""
