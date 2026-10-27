@@ -109,7 +109,7 @@ def test_a_fiji_chain_becomes_a_workflow_with_an_input(registry, tmp_path):
     assert "Fiji image -3" in replay.inputs[0][1] and "bind a file or a result" in replay.inputs[0][1]
     (warning,) = replay.interactive
     assert warning == (
-        "The Fiji step (Fiji image -3, 2 recorded Fiji steps) cannot be part of a workflow; the workflow "
+        "The Fiji step (image 'dup', Fiji image -3, 2 recorded Fiji steps) cannot be part of a workflow; the workflow "
         "saves what was sent to Fiji and starts again from an input 'from_fiji' you bind when running it."
     )
     assert warning in replay.warnings
@@ -271,3 +271,110 @@ def test_run_on_selected_results_fills_the_one_input(registry, tmp_path, monkeyp
     ((bindings, kw),) = calls
     assert bindings == [{"from_fiji": picked}]
     assert "rec1" not in [s.id for s in kw["workflow"].steps]
+
+
+# -- two interactive steps in a row, a deleted Save, and the wording --------------------
+
+
+def _import(sent, name, *, tool="fiji"):
+    """An import from ``tool`` of an image called ``name`` that was made from ``sent`` (or from nothing)."""
+    data = np.random.default_rng(7).random((2, 8, 8)).astype(np.float32)
+    return record_import(
+        ArrayProcessingResult(name, data, ["C", "Y", "X"]),
+        plugin_name="Fiji" if tool == "fiji" else "napari-x", widget_name=None, layer_name=name,
+        layer_type="image", grid="fresh", source_result=sent, tool=tool, details={"image_id": -3},
+    )
+
+
+def _fiji_twice(registry, tmp_path, *, then_process):
+    """source -> reconstruct -> blur -> Fiji -> Fiji [-> median]: the second step was sent the first one's image."""
+    sent = _chain(registry, tmp_path, after_import=False)         # the first import, already one Fiji step
+    second = _import(sent, "dup2")
+    if not then_process:
+        return second
+    final, _ = run_processor(registry.get_processor("filter"), [second], {"method": "median", "radius": 1.0}, None)
+    return final[0]
+
+
+def _sources(workflow):
+    return [s for s in workflow.steps if isinstance(s, Source)]
+
+
+def test_a_fiji_step_fed_by_another_leaves_only_the_input_the_workflow_reads(registry, tmp_path):
+    from imswitch.improcess.workflows.steps import unbound_inputs
+
+    final = _fiji_twice(registry, tmp_path, then_process=True)
+    replay = _replay(final, registry, allow_inputs=True)
+    workflow = Workflow.load(replay.workflow.save(tmp_path / "twice.yaml"))
+    assert [sid for sid, _ in replay.inputs] == ["from_fiji2"] == unbound_inputs(workflow)
+    assert [s.id for s in _sources(workflow) if not s.source.path] == ["from_fiji2"]
+    assert not any(s.id == "from_fiji" for s in workflow.steps)
+    first, second = replay.interactive
+    assert "saves what was sent to Fiji" in first and "'dup'" in first
+    assert "starts again from an input" not in first and "'from_fiji'" not in first
+    assert "starts again from an input 'from_fiji2'" in second and "'dup2'" in second
+    assert first in replay.warnings and second in replay.warnings
+    assert replay.warnings.index(first) < replay.warnings.index(second)
+    assert [step.id for step in workflow.steps if isinstance(step, Save)] == ["save_for_fiji", "save1"]
+
+
+def test_the_editor_document_and_the_controller_agree_with_the_one_input(registry, tmp_path, monkeypatch):
+    from imswitch.improcess.model.workfloweditor import WorkflowDocument, build_catalog
+
+    final = _fiji_twice(registry, tmp_path, then_process=True)
+    document = WorkflowDocument.from_result(final, build_catalog(registry), name="twice")
+    assert [sid for sid, _ in document.inputs] == ["from_fiji2"] and len(document.interactive) == 2
+    shown = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: shown.append(a[1:]))
+    controller, messages = _controller(final)
+    written = controller.exportWorkflow(tmp_path / "twice.yaml")
+    assert written is not None
+    assert "1 input to bind: from_fiji2" in messages[-1] and "from_fiji," not in messages[-1]
+    ((_title, text),) = shown
+    assert "Bind these when you run it:\n- from_fiji2:" in text and "- from_fiji:" not in text
+    # A single selected result runs it, instead of being told there are two inputs to bind.
+    calls = []
+    monkeypatch.setattr(controller, "_runBatch", lambda path, bindings, **kw: calls.append(bindings) or True)
+    picked = ArrayProcessingResult("picked", np.zeros((2, 8, 8), np.float32), ["C", "Y", "X"])
+    assert controller.runWorkflowObjectOnResults(Workflow.load(written), results=[picked]) is True
+    assert calls == [[{"from_fiji2": picked}]] and "inputs to bind" not in messages[-1]
+
+
+def test_two_fiji_steps_ending_the_result_have_no_input_and_two_true_texts(registry, tmp_path):
+    from imswitch.improcess.workflows.steps import unbound_inputs
+
+    final = _fiji_twice(registry, tmp_path, then_process=False)
+    replay = _replay(final, registry, allow_inputs=True)
+    assert [type(s).__name__ for s in replay.workflow.steps] == ["Source", "Reconstruct", "Process", "Save"]
+    assert replay.inputs == [] and unbound_inputs(replay.workflow) == []
+    first, last = replay.interactive
+    assert "saves what was sent to Fiji" in first and "starts again" not in first
+    assert last.startswith("The last step happened in Fiji (image 'dup2'") and "nothing replayable was sent" in last
+    assert first in replay.warnings and last in replay.warnings
+
+
+def test_two_fiji_steps_are_told_apart_by_what_the_images_were_called(registry, tmp_path):
+    final = _fiji_twice(registry, tmp_path, then_process=True)
+    first, second = _replay(final, registry, allow_inputs=True).interactive
+    assert first != second
+    assert first.startswith("The Fiji step (image 'dup',") and second.startswith("The Fiji step (image 'dup2',")
+
+
+def test_a_sole_import_with_nothing_before_it_is_refused_in_true_words(registry):
+    fresh = _import(None, "fresh")
+    with pytest.raises(ReplayError) as excinfo:
+        _replay(fresh, registry, allow_inputs=True)
+    assert "came from Fiji directly and nothing replayable precedes it" in str(excinfo.value)
+    assert "recording" not in str(excinfo.value)
+
+
+def test_run_on_results_says_so_when_the_inputs_save_was_deleted(registry, tmp_path):
+    """The editor's signal calls this directly: an exception there would show the user nothing."""
+    final = _chain(registry, tmp_path)
+    workflow = _replay(final, registry, allow_inputs=True).workflow
+    workflow.steps = [s for s in workflow.steps if s.id != "save1"]         # the user deleted the final Save
+    controller, messages = _controller(final)
+    controller._runBatch = lambda *a, **k: pytest.fail("nothing should run")
+    picked = ArrayProcessingResult("picked", np.zeros((2, 8, 8), np.float32), ["C", "Y", "X"])
+    assert controller.runWorkflowObjectOnResults(workflow, results=[picked]) is False
+    assert "'from_fiji' reaches no Save step" in messages[-1] and "add a Save" in messages[-1]

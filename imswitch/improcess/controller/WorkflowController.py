@@ -486,7 +486,7 @@ class WorkflowController(QtCore.QObject):
         return results
 
     def _runOnResults(self, path, workflow, results, *, out_dir=None, overwrite=None):
-        from imswitch.improcess.workflows.steps import part_from_input, unbound_inputs
+        from imswitch.improcess.workflows.steps import WorkflowError, part_from_input, unbound_inputs
 
         inputs = unbound_inputs(workflow)
         if len(inputs) == 1:
@@ -494,7 +494,16 @@ class WorkflowController(QtCore.QObject):
             # what came back from it, so it fills that input, and only the
             # part that continues from there runs.
             entry = inputs[0]
-            workflow = part_from_input(workflow, entry)
+            try:
+                workflow = part_from_input(workflow, entry)
+            except WorkflowError:
+                # E.g. the Save after the input was deleted in the editor. This
+                # runs from a Qt signal: raising here would show the user nothing.
+                self._status(
+                    f"Cannot run this workflow on results: the input {entry!r} reaches no Save step; "
+                    "add a Save after it in the editor."
+                )
+                return False
         elif len(inputs) > 1:
             self._status(
                 f"This workflow has {len(inputs)} inputs to bind ({', '.join(inputs)}); "
