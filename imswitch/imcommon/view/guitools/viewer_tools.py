@@ -127,6 +127,10 @@ class ViewerToolService(QtCore.QObject):
         Viewers that cannot be weak-referenced (test doubles, mostly) get a
         fresh service, which is harmless because nothing else shares them.
         """
+        if getattr(viewer, "is_window_viewer", False) is True:
+            # A stand-in for the viewer (ImProcess's separate image windows)
+            # brings its own tool service, backed by its windows.
+            return viewer.tool_service
         try:
             ref = cls._instances.get(viewer)
         except TypeError:

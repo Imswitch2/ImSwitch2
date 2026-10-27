@@ -256,6 +256,31 @@ def _shape_of(data) -> tuple[int, ...]:
     return tuple(int(size) for size in (shape if shape is not None else np.shape(data)))
 
 
+def spatial_identity(result, shape, labels, scales, unit, view_mode=None) -> dict:
+    """The spatial provenance the napari path writes onto a rendered layer.
+
+    The same keys ``ReconstructionViewController._resultIdentity`` produces
+    (minus the mutation token, which only that controller can mint), so a
+    measurement reads one frame from a window's layer exactly as from napari's.
+    """
+    labels = [str(label) for label in labels]
+    scales = list(scales or [1.0] * len(shape))
+    return {
+        "result_uid": getattr(result, "result_uid", None),
+        "dataset_uid": getattr(result, "dataset_uid", None),
+        "coordinate_space_uid": getattr(result, "coordinate_space_uid", None),
+        "identity_kind": getattr(result, "identity_kind", "minted"),
+        "lineage": tuple(getattr(result, "lineage", ()) or ()),
+        "plane_axes": tuple(labels[-2:]),
+        "view_mode": view_mode,
+        "axes": [
+            {"label": labels[a] if a < len(labels) else str(a), "size": int(shape[a]),
+             "scale": float(scales[a]) if a < len(scales) else 1.0, "unit": unit}
+            for a in range(len(shape))
+        ],
+    }
+
+
 def _component_of(spec) -> str:
     component = getattr(spec, "component", None)
     if component:
@@ -264,6 +289,91 @@ def _component_of(spec) -> str:
     if metadata.get("component"):
         return str(metadata["component"])
     return str(getattr(spec, "name", "layer"))
+
+
+class PermutedArray:
+    """A lazy view of ``data`` with its axes reordered to ``perm`` (displayed order).
+
+    ``numpy.transpose`` would read the whole array; measurements slice the
+    array themselves, so this reorders only what each slice reads. Axis ``k`` of
+    the view is axis ``perm[k]`` of the source.
+    """
+
+    def __init__(self, data, perm):
+        self._data = data
+        self._perm = [int(a) for a in perm]
+        source_shape = _shape_of(data)
+        self.shape = tuple(source_shape[a] for a in self._perm)
+        self.ndim = len(self.shape)
+        self.dtype = getattr(data, "dtype", None)
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getitem__(self, key):
+        if not isinstance(key, tuple):
+            key = (key,)
+        if any(k is Ellipsis for k in key):
+            at = next(i for i, k in enumerate(key) if k is Ellipsis)
+            fill = (slice(None),) * (self.ndim - (len(key) - 1))
+            key = key[:at] + fill + key[at + 1:]
+        key = key + (slice(None),) * (self.ndim - len(key))
+        source_key: list[Any] = [slice(None)] * self.ndim
+        for displayed, source in enumerate(self._perm):
+            source_key[source] = key[displayed]
+        out = np.asarray(self._data[tuple(source_key)])
+        # Axes that survive an integer index keep their source order; put them
+        # in displayed order.
+        kept = [source for source in range(self.ndim) if not isinstance(source_key[source], (int, np.integer))]
+        order = [kept.index(source) for source in self._perm if source in kept]
+        return np.transpose(out, order) if order != list(range(len(order))) else out
+
+    def __array__(self, dtype=None, copy=None):
+        out = np.transpose(np.asarray(self._data), self._perm)
+        return out.astype(dtype, copy=False) if dtype is not None else out
+
+
+class _CanvasViewBox(pg.ViewBox):
+    """The window's view box, with an optional drawing tool in front of panning.
+
+    While ``drawHandler`` is set, a left drag or click is offered to it first;
+    it returns True to take the event, and everything else (right-button zoom,
+    wheel, a drag the tool does not want) is the ordinary ViewBox behaviour.
+    A click nobody takes is announced on :attr:`sigViewClicked` so ROI outlines
+    can be picked.
+    """
+
+    sigViewClicked = QtCore.Signal(float, float, object)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        #: ``handler(kind, view_xy, event) -> bool`` with kind "drag-start", "drag",
+        #: "drag-finish", "click" or "double-click".
+        self.drawHandler = None
+
+    def _view_xy(self, pos):
+        point = self.mapToView(pos)
+        return float(point.x()), float(point.y())
+
+    def mouseDragEvent(self, ev, axis=None):  # noqa: N802 -- Qt/pyqtgraph override
+        if self.drawHandler is not None and ev.button() == QtCore.Qt.LeftButton:
+            kind = "drag-start" if ev.isStart() else "drag-finish" if ev.isFinish() else "drag"
+            where = ev.buttonDownPos() if ev.isStart() else ev.pos()
+            if self.drawHandler(kind, self._view_xy(where), ev):
+                ev.accept()
+                return
+        super().mouseDragEvent(ev, axis)
+
+    def mouseClickEvent(self, ev):  # noqa: N802 -- Qt/pyqtgraph override
+        if ev.button() == QtCore.Qt.LeftButton:
+            xy = self._view_xy(ev.pos())
+            if self.drawHandler is not None:
+                kind = "double-click" if ev.double() else "click"
+                if self.drawHandler(kind, xy, ev):
+                    ev.accept()
+                    return
+            self.sigViewClicked.emit(xy[0], xy[1], ev.modifiers())
+        super().mouseClickEvent(ev)
 
 
 @dataclass
@@ -327,6 +437,9 @@ class ImageWindow(QtWidgets.QWidget):
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
     sigImageLevelsChanged = QtCore.Signal(object, object)
+    #: The layers were rebuilt or their pixels swapped (a new result, a live
+    #: update, a view-mode switch): anything measuring the window should re-read.
+    sigContentChanged = QtCore.Signal()
 
     def __init__(self, result, parent=None):
         super().__init__(parent, QtCore.Qt.Window)
@@ -351,7 +464,8 @@ class ImageWindow(QtWidgets.QWidget):
 
         self._canvas = pg.GraphicsLayoutWidget()
         self._canvas.setBackground("k")
-        self._vb = self._canvas.addViewBox(lockAspect=True, invertY=True, enableMenu=False)
+        self._vb = _CanvasViewBox(lockAspect=True, invertY=True, enableMenu=False)
+        self._canvas.addItem(self._vb)
         self._vb.setBackgroundColor("k")
         self._scalebar = pg.ScaleBar(size=1.0, suffix="")
         self._scalebar.setParentItem(self._vb)
@@ -475,10 +589,16 @@ class ImageWindow(QtWidgets.QWidget):
             layer_id=str(result.name), name=str(result.name), component=None, data=data,
             colormap=colormap, levels=levels, visible=True, rgb=False, role="primary",
             metadata={"source_result": str(result.name), "axis_labels": labels,
-                      "scale_unit": result.scale_unit},
+                      "scale_unit": result.scale_unit,
+                      **self._identity(result, [shape[a] for a in perm], labels, scales,
+                                       result.scale_unit, mode.name if mode is not None else None)},
         )
         self._layers.append(layer)
         self._finishLoad()
+
+    @staticmethod
+    def _identity(result, shape, labels, scales, unit, view_mode=None) -> dict:
+        return spatial_identity(result, shape, labels, scales, unit, view_mode)
 
     def _setViewModesQuietly(self, modes) -> None:
         self._view_modes = list(modes or [])
@@ -549,6 +669,7 @@ class ImageWindow(QtWidgets.QWidget):
         self._updateScaleBar()
         self._sizeToImage()
         self._refreshStatus()
+        self.sigContentChanged.emit()
 
     def _settleLevels(self, layer: _Layer) -> None:
         """Give a layer levels: the remembered ones, else scaled to its data.
@@ -703,6 +824,36 @@ class ImageWindow(QtWidgets.QWidget):
         """Axis labels in displayed order (matches :meth:`current_index`)."""
         return list(self._axis_labels)
 
+    @property
+    def axis_scales(self) -> list[float]:
+        """Axis scales in displayed order (matches :meth:`axis_labels`)."""
+        return list(self._axis_scales)
+
+    @property
+    def scale_unit(self) -> str:
+        return self._scale_unit
+
+    def viewBox(self) -> _CanvasViewBox:
+        """The canvas's view box: tools add their items in its (calibrated) coordinates."""
+        return self._vb
+
+    def yxScales(self) -> tuple[float, float]:
+        """Calibrated size of one pixel along (row, col)."""
+        return self._yx_scales()
+
+    def measurementLayer(self) -> _Layer | None:
+        """The layer measurements apply to: the active intensity layer, not an RGB one."""
+        layer = self._activeLayer()
+        if layer is None or layer.kind != "image" or layer.rgb:
+            return None
+        return layer
+
+    def displayedData(self, layer: _Layer):
+        """``layer``'s full array with its axes in displayed order (lazy when reordered)."""
+        if self._perm == list(range(len(self._perm))):
+            return layer.data
+        return PermutedArray(layer.data, self._perm)
+
     def currentPlane(self):
         """The active layer's plane on screen (what the contrast dialog's "view" scope reads)."""
         layer = self._activeLayer()
@@ -846,6 +997,13 @@ class ImageWindow(QtWidgets.QWidget):
             metadata.setdefault("scale_unit", spec.scale_unit)
             metadata.setdefault("component", component)
             metadata.setdefault("source_result", str(getattr(self._result, "name", "")))
+            spec_shape = _shape_of(spec.data)
+            identity = self._identity(self._result, spec_shape, spec.axis_labels,
+                                      spec.axis_scales, spec.scale_unit)
+            if getattr(spec, "coordinate_space_uid", None):
+                identity["coordinate_space_uid"] = spec.coordinate_space_uid
+            for key, value in identity.items():
+                metadata.setdefault(key, value)
             extra = dict(spec.layer_kwargs or {})
             self._layers.append(self._makeLayer(
                 layer_id=component, name=str(spec.name), component=component, data=spec.data,
@@ -997,6 +1155,7 @@ class ImageWindow(QtWidgets.QWidget):
         self._clearLayers()
         self._rebuildSliders()
         self._refreshStatus()
+        self.sigContentChanged.emit()
 
     def tryFastLiveUpdate(self, result, transposeOrder) -> bool:
         """Swap the pixels of an unchanged layer structure; False (untouched) otherwise."""
@@ -1017,6 +1176,7 @@ class ImageWindow(QtWidgets.QWidget):
             layer.data = array
         self._result = result
         self._refreshPlanes()
+        self.sigContentChanged.emit()
         return True
 
     def moveDimStep(self, axis: int, step: int) -> None:
@@ -1212,4 +1372,6 @@ __all__ = [
     "label_table",
     "lut_table",
     "nice_length",
+    "PermutedArray",
+    "spatial_identity",
 ]
