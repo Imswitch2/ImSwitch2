@@ -29,10 +29,18 @@ Which layers are drawn, and how, mirrors ``ReconstructionView``:
   that is the whole rule for a channel axis being *drawn* as channels (added
   together, each with its own LUT). A plain result that merely has a ``C`` axis
   gets a slider for it, exactly as in the napari view.
+
+The other display-layer kinds are drawn read-only, over the images and on the
+same sliders: ``labels`` as a semi-transparent categorical colour layer (a
+raster, so it is read plane by plane like an image), ``points`` as a scatter of
+the points on the current plane, ``shapes`` as non-editable outlines. A layer
+that asks for the 3D canvas (``ndisplay == 3``) cannot be drawn here and is
+reported in the status line.
 """
 
 from __future__ import annotations
 
+import colorsys
 import functools
 import math
 from dataclasses import dataclass, field
@@ -73,6 +81,44 @@ MIN_CANVAS_SIDE_PX = 256
 #: Width of the colour lookup tables. pyqtgraph indexes an 8-bit table, so the
 #: levels span is cut into this many steps.
 LUT_STEPS = 256
+
+#: Opacity of a labels layer when its spec does not ask for one. The label
+#: producers in this package pass 0.6 (``SegmentationResult``), which lets the
+#: image under a mask stay readable; napari's own default is 0.7.
+LABELS_OPACITY = 0.6
+
+#: Distinct colours in the categorical label table; an id takes colour
+#: ``id % LABEL_COLOURS``. Sixty-four hues are well past what the eye can tell
+#: apart, so neighbouring ids differ and ids a table length apart are the only
+#: ones that share.
+LABEL_COLOURS = 64
+
+#: Successive label hues step by the golden-ratio conjugate (0.618...), the
+#: step that spreads any number of consecutive ids most evenly round the hue
+#: circle; saturation and value keep every colour vivid against a gray image.
+GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
+LABEL_SATURATION = 0.75
+LABEL_VALUE = 0.95
+
+#: napari's default point diameter, in data units, for a points layer whose
+#: spec gives no ``size``.
+DEFAULT_POINT_SIZE = 10.0
+DEFAULT_POINT_FACE = "white"
+DEFAULT_POINT_BORDER = "dimgray"
+
+#: A point is on a plane when its coordinate along every other axis is within
+#: half a pixel of the slider's index: napari's slicing rule for a points layer
+#: with its default one-pixel slice thickness.
+POINT_SLICE_HALF_THICKNESS = 0.5
+
+#: Default outline colour of a shapes layer, and its width in screen pixels.
+#: (napari measures ``edge_width`` in data units; a screen-pixel line stays
+#: visible at any zoom, which is what an outline over an image needs.)
+DEFAULT_SHAPE_EDGE = "white"
+SHAPE_PEN_WIDTH_PX = 2
+
+#: Vertices an ellipse outline is traced with; matches ``roi_outline``.
+ELLIPSE_SEGMENTS = 64
 
 #: Colours (RGB) of the single-hue ramps napari offers by those names.
 _RAMP_COLOURS = {
@@ -151,6 +197,60 @@ def is_known_colormap(name: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=None)
+def label_table() -> np.ndarray:
+    """A ``(LABEL_COLOURS, 3)`` uint8 table of distinct, vivid colours for label ids."""
+    rows = []
+    for index in range(LABEL_COLOURS):
+        hue = (index * GOLDEN_RATIO_CONJUGATE) % 1.0
+        rows.append([round(255 * v) for v in colorsys.hsv_to_rgb(hue, LABEL_SATURATION, LABEL_VALUE)])
+    return np.asarray(rows, dtype=np.uint8)
+
+
+def label_rgba(plane: np.ndarray) -> np.ndarray:
+    """A label plane as ``(H, W, 4)`` uint8: id 0 transparent, every other id coloured."""
+    ids = np.rint(np.asarray(plane)).astype(np.int64)
+    rgba = np.empty(ids.shape + (4,), dtype=np.uint8)
+    rgba[..., :3] = label_table()[np.mod(ids, LABEL_COLOURS)]
+    rgba[..., 3] = np.where(ids != 0, 255, 0)
+    return rgba
+
+
+def to_qcolor(value, default="white") -> QtGui.QColor:
+    """A colour from a name/hex string or an RGB(A) sequence (napari's 0..1 floats, or 0..255)."""
+    if isinstance(value, QtGui.QColor):
+        return QtGui.QColor(value)
+    if isinstance(value, str):
+        colour = QtGui.QColor(value)
+        return colour if colour.isValid() else QtGui.QColor(default)
+    try:
+        numbers = [float(v) for v in value]
+    except (TypeError, ValueError):
+        return QtGui.QColor(default)
+    if len(numbers) not in (3, 4):
+        return QtGui.QColor(default)
+    scale = 255.0 if max(numbers) <= 1.0 else 1.0
+    return QtGui.QColor(*(int(round(min(255.0, max(0.0, v * scale)))) for v in numbers))
+
+
+def colour_list(value, count: int, default) -> list:
+    """``count`` colours from one colour or a per-item list (napari accepts both)."""
+    if value is None:
+        return [default] * count
+    if isinstance(value, str):
+        return [value] * count
+    try:
+        array = np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        items = list(value)
+        return [items[i % len(items)] for i in range(count)] if items else [default] * count
+    if array.ndim == 1:
+        return [array] * count
+    if array.ndim == 2 and len(array):
+        return [array[i % len(array)] for i in range(count)]
+    return [default] * count
+
+
 def _shape_of(data) -> tuple[int, ...]:
     shape = getattr(data, "shape", None)
     return tuple(int(size) for size in (shape if shape is not None else np.shape(data)))
@@ -186,6 +286,34 @@ class _Layer:
     metadata: dict = field(default_factory=dict)
     plane: np.ndarray | None = None
     placed: tuple | None = None
+    #: ``"image"`` or ``"labels"``: both are rasters read plane by plane.
+    kind: str = "image"
+    opacity: float = 1.0
+
+
+@dataclass
+class _Overlay:
+    """One points or shapes layer: read-only items over the images."""
+
+    overlay_id: str
+    name: str
+    kind: str
+    visible: bool
+    role: str
+    metadata: dict
+    #: Calibrated size of one data unit along (row, col), from the spec's scales.
+    scales: tuple[float, float]
+    items: list = field(default_factory=list)
+    #: points: the (N, D) coordinates, the sizes/colours, and the scatter item.
+    coords: np.ndarray | None = None
+    size: float = DEFAULT_POINT_SIZE
+    face: list = field(default_factory=list)
+    border: Any = None
+    border_width: float | None = None
+    #: shapes: (leading coords, (V, 2) xy outline) per shape, grouped by colour
+    #: (``QColor.rgba()``); ``items[i]`` is the curve drawing ``groups[i]``.
+    outlines: dict = field(default_factory=dict)
+    groups: list = field(default_factory=list)
 
 
 class ImageWindow(QtWidgets.QWidget):
@@ -205,6 +333,7 @@ class ImageWindow(QtWidgets.QWidget):
         self._logger = initLogger(self, tryInheritParent=False)
         self._result = result
         self._layers: list[_Layer] = []
+        self._overlays: list[_Overlay] = []
         self._notes: list[str] = []
         self._perm: list[int] = []
         self._axis_labels: list[str] = []
@@ -296,7 +425,11 @@ class ImageWindow(QtWidgets.QWidget):
     def _clearLayers(self) -> None:
         for layer in self._layers:
             self._vb.removeItem(layer.item)
+        for overlay in self._overlays:
+            for item in overlay.items:
+                self._vb.removeItem(item)
         self._layers = []
+        self._overlays = []
         self._notes = []
         self._active_id = None
 
@@ -371,15 +504,18 @@ class ImageWindow(QtWidgets.QWidget):
         self._index = [0] * len(shape)
 
     def _makeLayer(self, *, layer_id, name, component, data, colormap, levels, visible,
-                   rgb, role, metadata) -> _Layer:
+                   rgb, role, metadata, kind="image", opacity=1.0) -> _Layer:
         item = pg.ImageItem(axisOrder="row-major")
-        item.setLookupTable(None if rgb else lut_table(colormap))
+        # A labels layer is coloured by id in _refreshPlanes (RGBA), so it has no LUT.
+        item.setLookupTable(None if rgb or kind == "labels" else lut_table(colormap))
+        if kind == "labels":
+            item.setOpacity(float(opacity))
         layer = _Layer(
             layer_id=layer_id, name=name, component=component, data=data, item=item,
             colormap=str(colormap), levels=None, visible=bool(visible), rgb=bool(rgb),
-            role=role, metadata=dict(metadata),
+            role=role, metadata=dict(metadata), kind=kind, opacity=float(opacity),
         )
-        if not is_known_colormap(layer.colormap):
+        if kind == "image" and not is_known_colormap(layer.colormap):
             self._notes.append(f"colormap {layer.colormap!r} is not available here; shown in gray")
         if levels is not None:
             layer.levels = safe_display_levels(*levels)
@@ -394,8 +530,16 @@ class ImageWindow(QtWidgets.QWidget):
                 layer.item.setCompositionMode(QtGui.QPainter.CompositionMode_Plus)
             layer.item.setZValue(index)
             self._vb.addItem(layer.item)
-        # Primary first: the toolbar's "active" layer is the first primary one.
-        primary = next((layer for layer in self._layers if layer.role == "primary"), first)
+        # Overlays sit above every raster, in spec order, like napari's layer list.
+        for offset, overlay in enumerate(self._overlays):
+            for item in overlay.items:
+                item.setZValue(len(self._layers) + offset)
+                self._vb.addItem(item)
+        # The toolbar's "active" layer is the first primary *image*: contrast
+        # does not apply to a labels layer, and napari keeps the image anchor active.
+        images = [layer for layer in self._layers if layer.kind == "image"]
+        primary = next((layer for layer in images if layer.role == "primary"),
+                       images[0] if images else first)
         self._active_id = primary.layer_id if primary is not None else None
         self._rebuildSliders()
         self._refreshPlanes()
@@ -413,7 +557,7 @@ class ImageWindow(QtWidgets.QWidget):
         data here; the slider's value range is worked out when the toolbar asks
         for it, so reopening a lazy result reads its plane and nothing else.
         """
-        if layer.rgb:
+        if layer.rgb or layer.kind != "image":
             return
         if layer.levels is None:
             try:
@@ -529,8 +673,14 @@ class ImageWindow(QtWidgets.QWidget):
                 self._logger.warning("Could not read a plane of %r: %s", layer.name, exc)
                 self._notes.append(f"could not read {layer.name!r}: {exc}")
                 continue
-            layer.item.setImage(layer.plane, autoLevels=False, levels=layer.levels if not layer.rgb else None)
+            if layer.kind == "labels":
+                layer.item.setImage(label_rgba(layer.plane), autoLevels=False)
+            else:
+                layer.item.setImage(layer.plane, autoLevels=False,
+                                    levels=layer.levels if not layer.rgb else None)
             self._place(layer)
+        if only is None:
+            self._refreshOverlays()
 
     def current_index(self) -> tuple[int | None, ...]:
         """The plane on screen, one entry per displayed axis.
@@ -658,31 +808,35 @@ class ImageWindow(QtWidgets.QWidget):
         self._finishLoad()
 
     def setDisplayLayers(self, layerSpecs, identity=None) -> None:
-        """Show the image-kind specs; other kinds are noted, not drawn (a later version)."""
+        """Show the specs: rasters (image, labels) as items, points and shapes as overlays."""
         self._clearLayers()
-        images = []
-        skipped: dict[str, int] = {}
+        rasters, others = [], []
         for spec in list(layerSpecs or []):
             kind = str(getattr(spec, "kind", "image") or "image")
-            if kind != "image":
-                skipped[kind] = skipped.get(kind, 0) + 1
+            if (spec.metadata or {}).get("ndisplay") == 3:
+                self._notes.append(f"{spec.name!r} is a 3D layer; it needs the napari view")
                 continue
+            if kind in ("points", "shapes"):
+                others.append((kind, spec))
+                continue
+            # "image", "labels" and any unknown kind (napari treats it as an image).
+            kind = "labels" if kind == "labels" else "image"
             if len(_shape_of(spec.data)) < 2:
                 self._notes.append(f"skipped {spec.name!r}: an image layer needs two axes")
                 continue
-            images.append(spec)
-        for kind in skipped:
-            self._notes.append(f"{kind} layers are shown in window mode in a later version")
-        if not images:
+            rasters.append((kind, spec))
+        if not rasters:
+            if others:
+                self._notes.append("points and shapes need an image or labels layer to sit on")
             self._rebuildSliders()
             self._refreshStatus()
             return
-        first = images[0]
+        first = rasters[0][1]
         shape = _shape_of(first.data)
         scales = list(first.axis_scales) if first.axis_scales is not None else [1.0] * len(shape)
         self._setGeometry(list(range(len(shape))), [str(a) for a in first.axis_labels], scales,
                           first.scale_unit, shape)
-        for spec in images:
+        for kind, spec in rasters:
             if len(_shape_of(spec.data)) != len(shape):
                 self._notes.append(f"skipped {spec.name!r}: its axes differ from {first.name!r}")
                 continue
@@ -692,13 +846,152 @@ class ImageWindow(QtWidgets.QWidget):
             metadata.setdefault("scale_unit", spec.scale_unit)
             metadata.setdefault("component", component)
             metadata.setdefault("source_result", str(getattr(self._result, "name", "")))
+            extra = dict(spec.layer_kwargs or {})
             self._layers.append(self._makeLayer(
                 layer_id=component, name=str(spec.name), component=component, data=spec.data,
-                colormap=spec.colormap, levels=spec.display_levels, visible=spec.visible,
-                rgb=bool(spec.rgb), role=str(getattr(spec, "role", "primary") or "primary"),
-                metadata=metadata,
+                colormap=spec.colormap, levels=spec.display_levels if kind == "image" else None,
+                visible=spec.visible, rgb=bool(spec.rgb) and kind == "image",
+                role=str(getattr(spec, "role", "primary") or "primary"),
+                metadata=metadata, kind=kind,
+                opacity=float(extra.get("opacity", LABELS_OPACITY)),
             ))
+        for kind, spec in others:
+            overlay = self._makeOverlay(kind, spec)
+            if overlay is not None:
+                self._overlays.append(overlay)
         self._finishLoad()
+
+    # ------------------------------------------------------------------
+    # points and shapes (read-only overlays)
+    # ------------------------------------------------------------------
+
+    def _makeOverlay(self, kind: str, spec) -> _Overlay | None:
+        """Build the items of one points/shapes spec, or None (and say why)."""
+        component = _component_of(spec)
+        extra = dict(spec.layer_kwargs or {})
+        try:
+            data = spec.data
+            scales = list(spec.axis_scales) if spec.axis_scales is not None else []
+            if len(scales) >= 2:
+                row_scale, col_scale = float(scales[-2] or 1.0), float(scales[-1] or 1.0)
+            else:
+                row_scale = col_scale = 1.0
+            overlay = _Overlay(
+                overlay_id=component, name=str(spec.name), kind=kind, visible=bool(spec.visible),
+                role=str(getattr(spec, "role", "primary") or "primary"),
+                metadata=dict(spec.metadata or {}), scales=(row_scale, col_scale),
+            )
+            if kind == "points":
+                coords = np.asarray(data, dtype=float)
+                if coords.ndim != 2 or coords.shape[1] < 2:
+                    raise ValueError(f"points need an (N, >=2) array, got shape {coords.shape}")
+                overlay.coords = coords
+                overlay.size = float(np.mean(np.atleast_1d(extra.get("size", DEFAULT_POINT_SIZE))))
+                overlay.face = colour_list(extra.get("face_color"), len(coords), DEFAULT_POINT_FACE)
+                border = extra.get("border_color", extra.get("edge_color"))
+                overlay.border = border if border is not None else DEFAULT_POINT_BORDER
+                width = extra.get("border_width", extra.get("edge_width"))
+                overlay.border_width = None if width is None else float(np.mean(np.atleast_1d(width)))
+                scatter = pg.ScatterPlotItem(pxMode=False)
+                overlay.items.append(scatter)
+            else:
+                self._buildOutlines(overlay, data, extra)
+        except Exception as exc:  # noqa: BLE001 -- one bad layer must not blank the window
+            self._logger.warning("Could not draw the %s layer %r: %s", kind, spec.name, exc)
+            self._notes.append(f"could not draw {spec.name!r}: {exc}")
+            return None
+        return overlay
+
+    def _buildOutlines(self, overlay: _Overlay, data, extra: dict) -> None:
+        """Trace every shape once; slicing and colouring happen on refresh."""
+        from imswitch.imcommon.algorithms.roi_geometry import ellipse_axes_from_quad
+
+        shapes = [np.asarray(vertices, dtype=float) for vertices in data]
+        types = extra.get("shape_type", "rectangle")
+        types = [types] * len(shapes) if isinstance(types, str) else list(types)
+        colours = colour_list(extra.get("edge_color"), len(shapes), DEFAULT_SHAPE_EDGE)
+        row_scale, col_scale = overlay.scales
+        for index, vertices in enumerate(shapes):
+            if vertices.ndim != 2 or vertices.shape[1] < 2 or len(vertices) < 2:
+                continue
+            kind = str(types[index % len(types)] if types else "rectangle").lower()
+            leading = vertices[:, :-2]
+            plane = vertices[:, -2:]
+            if kind in ("rectangle", "ellipse") and len(plane) == 2:
+                (r0, c0), (r1, c1) = plane
+                plane = np.array([[r0, c0], [r0, c1], [r1, c1], [r1, c0]])
+            closed = kind in ("rectangle", "polygon")
+            if kind == "ellipse":
+                centre, axis_a, axis_b = ellipse_axes_from_quad(plane)
+                angles = np.linspace(0.0, 2.0 * np.pi, ELLIPSE_SEGMENTS, endpoint=False)
+                plane = centre + np.outer(np.cos(angles), axis_a) + np.outer(np.sin(angles), axis_b)
+                closed = True
+            xy = np.column_stack([plane[:, 1] * col_scale, plane[:, 0] * row_scale])
+            if closed:
+                xy = np.vstack([xy, xy[:1]])
+            colour = to_qcolor(colours[index], DEFAULT_SHAPE_EDGE)
+            overlay.outlines.setdefault(colour.rgba(), []).append((leading, xy))
+        for rgba in overlay.outlines:
+            curve = pg.PlotCurveItem(pen=pg.mkPen(QtGui.QColor.fromRgba(rgba), width=SHAPE_PEN_WIDTH_PX),
+                                     connect="finite")
+            overlay.groups.append(rgba)
+            overlay.items.append(curve)
+
+    def _slice_matches(self, leading: np.ndarray, *, tolerance: float) -> np.ndarray:
+        """Which rows of ``leading`` (the non-plane coordinates) lie on the plane shown.
+
+        Aligned on the trailing axes, like napari: a 3-column points layer on a
+        4D window reads the last of the window's slider indices.
+        """
+        count = len(leading)
+        sliders = max(0, len(self._perm) - self._spatial_axes())
+        used = min(leading.shape[1], sliders)
+        if used == 0:
+            return np.ones(count, dtype=bool)
+        index = np.asarray(self._index[sliders - used:sliders], dtype=float)
+        return np.all(np.abs(leading[:, leading.shape[1] - used:] - index) <= tolerance, axis=1)
+
+    def _refreshOverlays(self) -> None:
+        for overlay in self._overlays:
+            for item in overlay.items:
+                item.setVisible(overlay.visible)
+            if not overlay.visible:
+                continue
+            if overlay.kind == "points":
+                self._refreshPoints(overlay)
+            else:
+                self._refreshOutlines(overlay)
+
+    def _refreshPoints(self, overlay: _Overlay) -> None:
+        coords = overlay.coords
+        keep = self._slice_matches(coords[:, :-2], tolerance=POINT_SLICE_HALF_THICKNESS)
+        row_scale, col_scale = overlay.scales
+        picked = np.flatnonzero(keep)
+        border = to_qcolor(overlay.border, DEFAULT_POINT_BORDER)
+        pen = pg.mkPen(None) if overlay.border_width == 0 else pg.mkPen(border, width=1)
+        overlay.items[0].setData(
+            x=coords[picked, -1] * col_scale, y=coords[picked, -2] * row_scale,
+            size=overlay.size * (row_scale + col_scale) / 2.0,
+            brush=[pg.mkBrush(to_qcolor(overlay.face[i], DEFAULT_POINT_FACE)) for i in picked],
+            pen=pen,
+        )
+
+    def _refreshOutlines(self, overlay: _Overlay) -> None:
+        for rgba, curve in zip(overlay.groups, overlay.items):
+            parts = [xy for leading, xy in overlay.outlines[rgba] if self._outline_on_plane(leading)]
+            if not parts:
+                curve.setData([], [])
+                continue
+            gap = np.full((1, 2), np.nan)
+            joined = np.vstack([block for xy in parts for block in (xy, gap)])
+            curve.setData(joined[:, 0], joined[:, 1])
+
+    def _outline_on_plane(self, leading: np.ndarray) -> bool:
+        """A shape lies on the plane when all its vertices round to the slider index."""
+        if leading.shape[1] == 0:
+            return True
+        rounded = np.rint(leading)
+        return bool(self._slice_matches(rounded, tolerance=0.0).all())
 
     def clearImage(self) -> None:
         self._clearLayers()
@@ -708,6 +1001,8 @@ class ImageWindow(QtWidgets.QWidget):
     def tryFastLiveUpdate(self, result, transposeOrder) -> bool:
         """Swap the pixels of an unchanged layer structure; False (untouched) otherwise."""
         try:
+            if self._overlays:
+                return False  # points/shapes are rebuilt, not patched
             arrays = list(result.display_layer_data()) if hasattr(result, "display_layer_data") else []
             if not arrays:
                 arrays = [result.data]
@@ -760,12 +1055,21 @@ class ImageWindow(QtWidgets.QWidget):
                 return layer
         return self._layers[0] if self._layers else None
 
+    def _imageLayers(self) -> list[_Layer]:
+        """The intensity layers: what the contrast toolbar and channel controls address."""
+        return [layer for layer in self._layers if layer.kind == "image"]
+
+    def _firstImage(self) -> _Layer | None:
+        images = self._imageLayers()
+        return images[0] if images else None
+
     def _layerById(self, layer_id: str) -> _Layer | None:
         requested = str(layer_id)
         return next((layer for layer in self._layers if layer.layer_id == requested), None)
 
     def getImage(self):
-        return self._layers[0].data if self._layers else np.zeros((1, 1))
+        first = self._firstImage()
+        return first.data if first is not None else np.zeros((1, 1))
 
     def getActiveImage(self):
         layer = self._activeLayer()
@@ -776,13 +1080,16 @@ class ImageWindow(QtWidgets.QWidget):
         return dict(layer.metadata) if layer is not None else {}
 
     def getImageDisplayLevels(self):
-        return self._layers[0].levels if self._layers else None
+        first = self._firstImage()
+        return first.levels if first is not None else None
 
     def getActiveImageDisplayLevels(self):
         layer = self._activeLayer()
         return layer.levels if layer is not None else None
 
     def _setLevels(self, layer: _Layer, minimum, maximum) -> None:
+        if layer.kind != "image":
+            return
         levels = safe_display_levels(minimum, maximum)
         layer.levels = levels
         if not layer.rgb:
@@ -791,8 +1098,9 @@ class ImageWindow(QtWidgets.QWidget):
         self.sigImageLevelsChanged.emit(dict(layer.metadata), tuple(float(v) for v in levels))
 
     def setImageDisplayLevels(self, minimum, maximum) -> None:
-        if self._layers:
-            self._setLevels(self._layers[0], minimum, maximum)
+        first = self._firstImage()
+        if first is not None:
+            self._setLevels(first, minimum, maximum)
 
     def setActiveImageDisplayLevels(self, minimum, maximum) -> None:
         layer = self._activeLayer()
@@ -800,8 +1108,9 @@ class ImageWindow(QtWidgets.QWidget):
             self._setLevels(layer, minimum, maximum)
 
     def setImageDisplayLevelsRange(self, minimum, maximum) -> None:
-        if self._layers:
-            self._layers[0].value_range = safe_display_levels(minimum, maximum)
+        first = self._firstImage()
+        if first is not None:
+            first.value_range = safe_display_levels(minimum, maximum)
 
     def setActiveImageDisplayLevelsRange(self, minimum, maximum) -> None:
         layer = self._activeLayer()
@@ -810,7 +1119,7 @@ class ImageWindow(QtWidgets.QWidget):
 
     def getActiveImageDisplayLevelsRange(self):
         layer = self._activeLayer()
-        if layer is None or layer.rgb:
+        if layer is None or layer.rgb or layer.kind != "image":
             return None
         if layer.value_range is None:
             layer.value_range = finite_range(layer.data)
@@ -821,6 +1130,8 @@ class ImageWindow(QtWidgets.QWidget):
         return layer.colormap if layer is not None else DEFAULT_COLORMAP
 
     def _setColormap(self, layer: _Layer, colormap: str) -> None:
+        if layer.kind != "image":
+            return
         layer.colormap = str(colormap)
         if not layer.rgb:
             layer.item.setLookupTable(lut_table(layer.colormap))
@@ -844,12 +1155,18 @@ class ImageWindow(QtWidgets.QWidget):
                 "display_levels": tuple(float(v) for v in layer.levels) if layer.levels else None,
                 "metadata": dict(layer.metadata),
             }
-            for layer in self._layers
+            for layer in self._imageLayers()
         ]
 
     def setImageLayerVisible(self, layer_id: str, visible: bool) -> None:
+        """Show or hide a layer of any kind (image, labels, points, shapes)."""
         layer = self._layerById(layer_id)
         if layer is None:
+            overlay = next((o for o in self._overlays if o.overlay_id == str(layer_id)), None)
+            if overlay is not None:
+                overlay.visible = bool(visible)
+                self._persistVisible(overlay, overlay.overlay_id)
+                self._refreshOverlays()
             return
         layer.visible = bool(visible)
         self._persistVisible(layer)
@@ -881,16 +1198,18 @@ class ImageWindow(QtWidgets.QWidget):
         elif hasattr(result, "setDisplayColormap"):
             result.setDisplayColormap(layer.colormap)
 
-    def _persistVisible(self, layer: _Layer) -> None:
+    def _persistVisible(self, layer, layer_id: str | None = None) -> None:
         result = self._result
         if hasattr(result, "setDisplayLayerVisible"):
-            result.setDisplayLayerVisible(layer.layer_id, layer.visible)
+            result.setDisplayLayerVisible(layer_id or layer.layer_id, layer.visible)
 
 
 __all__ = [
     "ImageWindow",
     "display_unit",
     "is_known_colormap",
+    "label_rgba",
+    "label_table",
     "lut_table",
     "nice_length",
 ]

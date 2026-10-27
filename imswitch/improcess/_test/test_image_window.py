@@ -231,15 +231,197 @@ def test_transposed_view_mode_transposes_the_plane(qtbot):
     assert np.array_equal(_items(window)[0].image, data.T)
 
 
-def test_non_image_layers_are_noted_not_drawn(qtbot):
+class _LayeredResult:
+    """A result that supplies its display layers directly (as SegmentationResult does)."""
+
+    def __init__(self, name, data, labels, specs):
+        self.name = name
+        self.data = data
+        self.axis_labels = list(labels)
+        self.axis_scales = [1.0] * data.ndim
+        self.scale_unit = "px"
+        self._specs = specs
+
+    def display_layers(self):
+        return list(self._specs)
+
+
+def _spec(name, data, labels, **kwargs):
     from imswitch.improcess.model.result import DisplayLayerSpec
 
-    image = DisplayLayerSpec("img", np.zeros((8, 8), np.uint8), ["Y", "X"], role="context")
-    labels = DisplayLayerSpec("lab", np.ones((8, 8), np.uint8), ["Y", "X"], kind="labels")
-    window = _window(qtbot, _result(np.zeros((8, 8), np.uint8), "YX"))
-    window.setDisplayLayers([image, labels])
-    assert len(_items(window)) == 1
-    assert "labels layers are shown in window mode in a later version" in window.statusText()
+    return DisplayLayerSpec(name, data, list(labels), **kwargs)
+
+
+def test_a_segmentation_like_result_shows_labels_over_its_image(qtbot):
+    image = np.arange(16 * 16, dtype=np.uint16).reshape(16, 16)
+    ids = np.zeros((16, 16), np.int32)
+    ids[2:6, 2:6] = 1
+    ids[8:12, 8:14] = 2
+    specs = [
+        _spec("img", image, "YX", role="context", component="source", colormap="gray"),
+        _spec("lab", ids, "YX", kind="labels", role="primary", component="labels",
+              layer_kwargs={"opacity": 0.6}),
+    ]
+    window = _window(qtbot, _LayeredResult("seg", ids, "YX", specs))
+
+    assert [layer.kind for layer in window._layers] == ["image", "labels"]
+    image_item, label_item = _items(window)
+    assert label_item.zValue() > image_item.zValue()
+    assert label_item.opacity() == pytest.approx(0.6)
+    rgba = label_item.image
+    assert rgba.shape == (16, 16, 4)
+    assert (rgba[0, 0, 3] == 0) and (rgba[3, 3, 3] == 255)  # 0 transparent, ids opaque
+    assert tuple(rgba[3, 3, :3]) != tuple(rgba[9, 9, :3])  # distinct ids, distinct colours
+    assert tuple(rgba[3, 3, :3]) == tuple(rgba[5, 4, :3])  # one id, one colour
+    # The contrast toolbar still addresses the image, not the labels.
+    assert window.getActiveImage() is image
+    assert [state["id"] for state in window.getImageLayerStates()] == ["source"]
+    assert "later version" not in window.statusText()
+    # Visibility goes through the same call as for an image layer.
+    window.setImageLayerVisible("labels", False)
+    assert not label_item.isVisible()
+
+
+def test_labels_follow_the_sliders(qtbot):
+    image = np.zeros((3, 10, 10), np.uint16)
+    ids = np.zeros((3, 10, 10), np.int32)
+    ids[1, 2:4, 2:4] = 7
+    specs = [_spec("img", image, "ZYX", component="i"),
+             _spec("lab", ids, "ZYX", kind="labels", component="l")]
+    window = _window(qtbot, _LayeredResult("seg", image, "ZYX", specs))
+    label_item = _items(window)[1]
+
+    assert label_item.image[..., 3].max() == 0  # plane 0 has no label
+    window.moveDimStep(0, 1)
+    assert label_item.image[2, 2, 3] == 255
+    window.moveDimStep(0, 2)
+    assert label_item.image[..., 3].max() == 0
+
+
+def test_a_labels_only_result_works(qtbot):
+    ids = np.zeros((8, 8), np.int32)
+    ids[1:3, 1:3] = 1
+    window = _window(qtbot, _LayeredResult("seg", ids, "YX", [_spec("lab", ids, "YX", kind="labels")]))
+    assert len(window._layers) == 1
+    assert window.getActiveImageDisplayLevelsRange() is None
+    window.setActiveImageDisplayLevels(0, 5)  # contrast does not apply to labels; no crash
+
+
+def test_points_on_a_stack_show_only_the_current_plane(qtbot):
+    image = np.zeros((4, 20, 30), np.uint16)
+    points = np.array([
+        [0, 5.0, 6.0],
+        [1, 7.0, 8.0],
+        [1, 9.0, 10.0],
+        [3, 1.0, 2.0],
+        [1.4, 3.0, 4.0],   # within half a plane of 1: shown on plane 1
+        [1.6, 3.0, 4.0],   # nearer to plane 2
+    ])
+    specs = [_spec("img", image, "ZYX", component="i"),
+             _spec("pts", points, "ZYX", kind="points", role="overlay", component="p",
+                   layer_kwargs={"size": 4, "face_color": "red"})]
+    window = _window(qtbot, _LayeredResult("res", image, "ZYX", specs))
+    scatter = window._overlays[0].items[0]
+
+    def shown():
+        data = scatter.getData()
+        return sorted(zip(data[0].tolist(), data[1].tolist()))  # (x=col, y=row)
+
+    assert shown() == [(6.0, 5.0)]
+    window.moveDimStep(0, 1)
+    assert shown() == [(4.0, 3.0), (8.0, 7.0), (10.0, 9.0)]
+    window.moveDimStep(0, 2)
+    assert shown() == [(4.0, 3.0)]
+    window.moveDimStep(0, 3)
+    assert shown() == [(2.0, 1.0)]
+    assert scatter.opts["size"] == pytest.approx(4.0)  # napari's data-unit size
+    assert scatter.data["brush"][0].color().name() == "#ff0000"
+
+
+def test_2d_points_always_show_and_hide_with_their_layer(qtbot):
+    image = np.zeros((4, 20, 30), np.uint16)
+    points = np.array([[2.0, 3.0], [4.0, 5.0]])
+    specs = [_spec("img", image, "ZYX", component="i"),
+             _spec("pts", points, "YX", kind="points", role="overlay", component="p")]
+    window = _window(qtbot, _LayeredResult("res", image, "ZYX", specs))
+    scatter = window._overlays[0].items[0]
+    assert len(scatter.getData()[0]) == 2
+    window.moveDimStep(0, 2)
+    assert len(scatter.getData()[0]) == 2
+    window.setImageLayerVisible("p", False)
+    assert not scatter.isVisible()
+
+
+def test_shapes_are_drawn_as_outlines_for_every_type(qtbot):
+    image = np.zeros((40, 40), np.uint16)
+    shapes = [
+        np.array([[2, 2], [10, 12]]),                                   # rectangle by 2 corners
+        np.array([[20, 20], [20, 30], [30, 30], [30, 20]]),             # ellipse by its box
+        np.array([[5, 25], [5, 35], [12, 30]]),                         # polygon
+        np.array([[30, 2], [35, 5], [38, 12]]),                         # path
+        np.array([[0, 0], [39, 39]]),                                   # line
+    ]
+    kinds = ["rectangle", "ellipse", "polygon", "path", "line"]
+    specs = [_spec("img", image, "YX", component="i"),
+             _spec("shp", shapes, "YX", kind="shapes", role="overlay", component="s",
+                   layer_kwargs={"shape_type": kinds, "edge_color": "yellow"})]
+    window = _window(qtbot, _LayeredResult("res", image, "YX", specs))
+
+    overlay = window._overlays[0]
+    assert len(overlay.items) == 1  # one colour: one curve for all five outlines
+    x, y = overlay.items[0].getData()
+    assert np.isnan(x).sum() == 5  # a break after each of the five shapes
+    assert np.nanmin(x) == 0 and np.nanmax(x) == 39
+    finite = np.isfinite(x)
+    pieces = np.split(np.column_stack([x, y]), np.flatnonzero(~finite))
+    sizes = [len(p[np.isfinite(p[:, 0])]) for p in pieces if len(p[np.isfinite(p[:, 0])])]
+    # rectangle closed (5), ellipse traced (ELLIPSE_SEGMENTS + 1), polygon closed (4), path (3), line (2)
+    from imswitch.improcess.view.image_window import ELLIPSE_SEGMENTS
+
+    assert sizes == [5, ELLIPSE_SEGMENTS + 1, 4, 3, 2]
+    assert overlay.items[0].opts["pen"].color().name() == "#ffff00"
+
+
+def test_nd_shapes_show_on_their_own_plane_only(qtbot):
+    image = np.zeros((3, 20, 20), np.uint16)
+    shapes = [np.array([[0, 2, 2], [0, 8, 8]]), np.array([[2, 3, 3], [2, 9, 9]])]
+    specs = [_spec("img", image, "ZYX", component="i"),
+             _spec("shp", shapes, "ZYX", kind="shapes", component="s",
+                   layer_kwargs={"shape_type": "line"})]
+    window = _window(qtbot, _LayeredResult("res", image, "ZYX", specs))
+    curve = window._overlays[0].items[0]
+
+    def finite_points():
+        x, _y = curve.getData()
+        return int(np.isfinite(x).sum()) if x is not None else 0
+
+    assert finite_points() == 2
+    window.moveDimStep(0, 1)
+    assert finite_points() == 0
+    window.moveDimStep(0, 2)
+    assert finite_points() == 2
+
+
+def test_a_3d_layer_is_reported_not_drawn(qtbot):
+    image = np.zeros((8, 8), np.uint8)
+    sphere = _spec("sphere", np.zeros((2, 3)), ["s1", "s2", "s3"], kind="points",
+                   metadata={"ndisplay": 3}, component="s")
+    window = _window(qtbot, _LayeredResult("res", image, "YX", [_spec("i", image, "YX"), sphere]))
+    assert window._overlays == []
+    assert "3D layer" in window.statusText()
+
+
+def test_label_colours_are_distinct_and_deterministic():
+    from imswitch.improcess.view.image_window import LABEL_COLOURS, label_rgba, label_table
+
+    table = label_table()
+    assert table.shape == (LABEL_COLOURS, 3)
+    assert len({tuple(row) for row in table}) == LABEL_COLOURS
+    plane = np.array([[0, 1], [2, LABEL_COLOURS + 1]])
+    rgba = label_rgba(plane)
+    assert rgba[0, 0, 3] == 0
+    assert tuple(rgba[0, 1, :3]) == tuple(rgba[1, 1, :3])  # ids a table length apart share a colour
+    assert tuple(rgba[0, 1, :3]) != tuple(rgba[1, 0, :3])
 
 
 def test_the_window_closes_by_hiding_and_reports_it(qtbot):
