@@ -276,7 +276,17 @@ def test_the_picker_names_the_selected_presets_reconstructors_with_their_descrip
     assert "Display raw frames without any reconstruction" in labels
     # the list's tooltip carries the names too
     row = dlg._list.currentRow()
-    assert "MoNaLISA, View only" in dlg._list.item(row).toolTip()
+    assert "MoNaLISA (starts active), View only" in dlg._list.item(row).toolTip()
+
+
+def test_the_picker_marks_the_first_reconstructor_as_the_one_that_starts_active(qapp):
+    dlg = _picker_on("monalisa_processor")
+    labels = _labels(dlg)
+    mark_text = f"({editor.IMPROCESS_STARTS_ACTIVE})"
+    assert labels.count(mark_text) == 1, "one mark, not one per row"
+    mark = labels.index(mark_text)
+    assert labels.index("MoNaLISA") < mark < labels.index("View only"), \
+        "beside the first row, before the second one begins"
 
 
 def test_the_picker_groups_processors_by_category_with_display_names(qapp):

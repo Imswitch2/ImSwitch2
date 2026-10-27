@@ -140,7 +140,7 @@ def test_the_card_summarises_the_block(qapp):
         "someFutureKey": 1,
     }})
     lines = [line.text() for line in canvas._improcess_lines]
-    assert "Reconstructors: MoNaLISA" in lines
+    assert "Reconstructors: MoNaLISA (starts active)" in lines
     assert "Processors: 2" in lines
     assert "Analysis panels: graph, ROI manager" in lines
     assert any(
@@ -149,6 +149,20 @@ def test_the_card_summarises_the_block(qapp):
         for line in lines
     )
     assert "1 custom key" in lines
+
+
+def test_the_card_marks_the_first_listed_reconstructor_as_the_one_that_starts_active(qapp):
+    canvas = editor.DeviceCanvas()
+    canvas.load({"processing": {"reconstructors": ["monalisa", "view-only"]}})
+    assert "Reconstructors: MoNaLISA (starts active), View only" in \
+        [line.text() for line in canvas._improcess_lines]
+    canvas.load({"processing": {"reconstructors": ["view-only", "monalisa"]}})
+    assert "Reconstructors: View only (starts active), MoNaLISA" in \
+        [line.text() for line in canvas._improcess_lines]
+    # no list in the file: the standalone default is not marked as the file's choice
+    canvas.load({"processing": {"processors": ["resize"]}})
+    assert "Reconstructors: View only (default)" in \
+        [line.text() for line in canvas._improcess_lines]
 
 
 def test_a_compare_pane_shows_the_card_read_only(qapp):
@@ -768,3 +782,186 @@ def test_the_tip_of_the_two_lists_is_said_once_at_the_top_of_the_page(qapp):
         layout = page.widget().layout()
         assert layout.itemAt(0).widget().text() == tip, "the first thing on the page"
         assert layout.itemAt(1).widget() is dlg._field_widgets[key], "then the list, nothing under it"
+
+
+# ── the reconstructor ImProcess starts with ────────────────────────────────
+def _combo(fw):
+    combo = fw._w.primary_combo()
+    assert combo is not None, "the reconstructors field has the 'Starts with' combo"
+    return combo
+
+
+def _items(combo) -> list:
+    return [(combo.itemData(i), combo.itemText(i)) for i in range(combo.count())]
+
+
+def _choose_in(combo, option_id):
+    """What the user does: pick the entry in the combo."""
+    index = combo.findData(option_id)
+    assert index >= 0, f"{option_id} is not offered"
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+
+def test_only_the_reconstructors_field_asks_for_the_starts_with_combo():
+    marked = [f["key"] for f in PROCESSING["fields"] if f.get("primary_choice")]
+    assert marked == ["reconstructors"]
+
+
+def test_the_combo_sits_above_the_rows_with_its_label_and_tip(qapp):
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa"])
+    layout = fw._w.layout()
+    top = layout.itemAt(0).widget()
+    assert top.findChild(editor.QComboBox) is _combo(fw)
+    assert [l.text() for l in top.findChildren(QLabel)] == [editor.PRIMARY_CHOICE_LABEL]
+    assert "Parameters dock picker" in _combo(fw).toolTip()
+    assert "Parameters dock picker" in _field("reconstructors")["tip"]
+
+
+def test_the_combo_lists_the_ticked_reconstructors_by_name_in_the_lists_order(qapp):
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa"])
+    combo = _combo(fw)
+    assert _items(combo) == [("view-only", "View only"), ("monalisa", "MoNaLISA")]
+    assert combo.currentData() == "view-only", "preselected on the first"
+    assert combo.isEnabled()
+    assert not fw.is_touched(), "building the combo touches nothing"
+
+
+def test_untouched_the_value_is_the_original_object(qapp):
+    original = ["view-only", "monalisa"]
+    fw = editor.FieldWidget(_field("reconstructors"), original)
+    assert fw.get_value() is original
+
+
+def test_choosing_moves_the_chosen_one_to_the_front_and_touches_the_field(qapp):
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa"])
+    _choose_in(_combo(fw), "monalisa")
+    assert fw.is_touched()
+    assert fw.get_value() == ["monalisa", "view-only"]
+
+
+def test_choosing_the_one_already_first_leaves_the_value_equal_to_the_input(qapp):
+    original = ["view-only", "monalisa", "beadrec"]
+    fw = editor.FieldWidget(_field("reconstructors"), original)
+    _choose_in(_combo(fw), "view-only")
+    assert fw.is_touched()
+    assert fw.get_value() == original and fw.get_value() is not original
+
+
+def test_ticking_adds_to_the_combo_and_a_new_one_can_be_chosen_first(qapp):
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa"])
+    fw._w.checkbox("beadrec").click()
+    combo = _combo(fw)
+    assert [i for i, _ in _items(combo)] == ["view-only", "monalisa", "beadrec"], "at the end"
+    assert combo.currentData() == "view-only", "ticking does not change the choice"
+    assert fw.get_value() == ["view-only", "monalisa", "beadrec"]
+    _choose_in(combo, "beadrec")
+    assert fw.get_value() == ["beadrec", "view-only", "monalisa"], "the rest in the file's order"
+
+
+def test_the_choice_survives_ticking_another_one(qapp):
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa"])
+    _choose_in(_combo(fw), "monalisa")
+    fw._w.checkbox("beadrec").click()
+    assert _combo(fw).currentData() == "monalisa"
+    assert fw.get_value() == ["monalisa", "view-only", "beadrec"]
+
+
+def test_unticking_the_chosen_one_makes_the_first_remaining_chosen(qapp):
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa", "beadrec"])
+    _choose_in(_combo(fw), "beadrec")
+    fw._w.checkbox("beadrec").click()
+    combo = _combo(fw)
+    assert [i for i, _ in _items(combo)] == ["view-only", "monalisa"]
+    assert combo.currentData() == "view-only"
+    assert fw.get_value() == ["view-only", "monalisa"]
+    # ticking it again does not bring the old choice back
+    fw._w.checkbox("beadrec").click()
+    assert combo.currentData() == "view-only"
+    assert fw.get_value() == ["view-only", "monalisa", "beadrec"]
+
+
+def test_unticking_the_first_one_without_choosing_makes_the_next_one_first(qapp):
+    fw = editor.FieldWidget(_field("reconstructors"), ["view-only", "monalisa"])
+    fw._w.checkbox("view-only").click()
+    assert _combo(fw).currentData() == "monalisa"
+    assert fw.get_value() == ["monalisa"]
+
+
+def test_with_nothing_ticked_the_combo_is_empty_and_disabled_and_apply_refuses(qapp):
+    dlg = _dialog({"reconstructors": ["view-only"]})
+    fw = dlg._field_widgets["reconstructors"]
+    fw._w.checkbox("view-only").click()
+    combo = _combo(fw)
+    assert combo.count() == 0 and not combo.isEnabled()
+    assert fw.get_value() == []
+    dlg._try_apply()
+    assert dlg.result() != QDialog.Accepted
+    assert "reconstructors" in dlg._err_lbl.text().lower()
+    fw._w.checkbox("monalisa").click()
+    assert combo.isEnabled() and combo.currentData() == "monalisa"
+
+
+def test_an_id_only_the_file_has_can_be_chosen_under_its_own_name(qapp):
+    original = ["view-only", "user.elsewhere"]
+    fw = editor.FieldWidget(_field("reconstructors"), original)
+    combo = _combo(fw)
+    assert _items(combo) == [("view-only", "View only"), ("user.elsewhere", "user.elsewhere")]
+    _choose_in(combo, "user.elsewhere")
+    assert fw.get_value() == ["user.elsewhere", "view-only"]
+
+
+def test_the_other_multiselects_have_no_combo(qapp):
+    fw = editor.FieldWidget(_field("processors"), ["resize"])
+    assert not fw._w.has_primary_choice() and fw._w.primary_combo() is None
+    fw._w.checkbox("filter").click()
+    assert fw.get_value() == ["resize", "filter"]
+
+
+def test_without_the_registries_there_is_no_combo_but_the_order_rule_holds(qapp):
+    field = {k: v for k, v in _field("reconstructors").items() if k != "option_descriptions"}
+    fw = editor.FieldWidget(field, ["monalisa", "view-only"])
+    assert isinstance(fw._w, editor.QListWidget)
+    assert not fw.findChildren(editor.QComboBox)
+    texts = [fw._w.item(i).text() for i in range(fw._w.count())]
+    fw._w.item(next(i for i, t in enumerate(texts) if t.endswith("(beadrec)"))
+               ).setCheckState(Qt.Checked)
+    assert fw.get_value() == ["monalisa", "view-only", "beadrec"]
+
+
+def test_the_dialog_page_has_the_combo_and_writes_the_choice(qapp):
+    dlg = _dialog({"reconstructors": ["view-only", "monalisa"], "processors": []})
+    page = dlg._stack.widget(dlg._page_titles.index("Reconstructors"))
+    combo = page.findChild(editor.QComboBox)
+    assert combo is dlg._field_widgets["reconstructors"]._w.primary_combo()
+    _choose_in(combo, "monalisa")
+    dlg._try_apply()
+    assert dlg.result_data == {"reconstructors": ["monalisa", "view-only"], "processors": []}
+
+
+def test_a_preset_page_is_rebuilt_with_the_combo_on_the_presets_first(qapp):
+    dlg = _dialog({"reconstructors": ["view-only"]})
+    dlg._clear_pages()
+    dlg._build_pages({"reconstructors": ["monalisa", "view-only"]})
+    assert _combo(dlg._field_widgets["reconstructors"]).currentData() == "monalisa"
+
+
+@pytest.mark.parametrize("name", sorted(WITH_BLOCK))
+def test_choosing_the_first_reconstructor_of_every_shipped_block_writes_the_block_as_it_was(qapp, name):
+    block = WITH_BLOCK[name]
+    dlg = _dialog(copy.deepcopy(block))
+    combo = _combo(dlg._field_widgets["reconstructors"])
+    listed = block.get("reconstructors")
+    if isinstance(listed, list) and listed:
+        assert combo.currentData() == listed[0], "the combo opens on what ImProcess opens on"
+        _choose_in(combo, listed[0])
+        assert dlg._field_widgets["reconstructors"].is_touched()
+    dlg._try_apply()
+    assert dlg.result() == QDialog.Accepted, dlg._err_lbl.text()
+    assert_json_identical(dlg.result_data, block)
+
+
+def test_the_ten_shipped_presets_are_among_the_blocks_checked_untouched():
+    from imswitch.imcontrol.model.configeditor.improcess_presets import shipped_improcess_presets
+    stems = {p.stem for p in shipped_improcess_presets()}
+    assert len(stems) == 10 and stems <= set(WITH_BLOCK)

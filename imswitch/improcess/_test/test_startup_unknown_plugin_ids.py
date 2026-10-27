@@ -132,3 +132,54 @@ def test_the_register_functions_stay_strict():
         register_default_reconstructors(registry, ["nope"])
     with pytest.raises(KeyError):
         register_default_processors(registry, ["nope"])
+
+
+# ── the order of the list decides what ImProcess starts with ───────────────
+# The config editor's "Starts with" combo writes the chosen reconstructor
+# first, and adds no key of its own: this is the ImProcess side of that
+# contract. The registry keeps registration order, registration follows the
+# setup's list, the manager activates the first registered one, and the
+# Parameters-dock picker opens on the active one.
+def _startup_surface(qapp):
+    """The real manager methods over a real combo, as ``initActiveReconstructor`` runs them."""
+    from PyQt5.QtWidgets import QComboBox
+
+    from imswitch.improcess.controller.ReconstructorManagerController import (
+        ReconstructorManagerController as Manager,
+    )
+    from imswitch.improcess.view.ImProcessMainView import ImProcessMainView
+
+    view = SimpleNamespace(_activeReconstructorCombo=QComboBox(),
+                           _updateParametersDockTitle=lambda: None)
+    view.setReconstructorChoices = ImProcessMainView.setReconstructorChoices.__get__(view)
+    manager = SimpleNamespace(
+        _main=SimpleNamespace(_activeReconstructor=None, _currentDataObj=None),
+        _widget=view, _logger=_Logger(),
+        _install_reconstructor_params=lambda reconstructor: None,
+    )
+    for name in ("initActiveReconstructor", "_select_reconstructor",
+                 "_publishReconstructorChoices", "_offerable",
+                 "_accepts_current_source", "_reopen_path_for"):
+        setattr(manager, name, getattr(Manager, name).__get__(manager))
+    return manager, view._activeReconstructorCombo
+
+
+@pytest.mark.parametrize("listed", [["view-only", "monalisa"], ["monalisa", "view-only"]])
+def test_the_first_reconstructor_listed_is_the_one_active_at_startup(start, qapp, listed):
+    registry, logger = start({"reconstructors": listed, "processors": []})
+    assert [p.id for p in registry.reconstructors()] == listed, "registration follows the list"
+    assert logger.warnings == []
+
+    manager, picker = _startup_surface(qapp)
+    manager.initActiveReconstructor()
+    assert manager._main._activeReconstructor.id == listed[0]
+    assert [picker.itemData(i) for i in range(picker.count())] == listed
+    assert picker.currentData() == listed[0], "the picker opens on the active one"
+
+
+def test_an_unknown_first_id_hands_the_start_to_the_first_one_this_computer_has(start, qapp):
+    registry, _ = start({"reconstructors": ["nope", "monalisa", "view-only"], "processors": []})
+    manager, picker = _startup_surface(qapp)
+    manager.initActiveReconstructor()
+    assert manager._main._activeReconstructor.id == "monalisa"
+    assert picker.currentData() == "monalisa"

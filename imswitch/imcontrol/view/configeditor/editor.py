@@ -1017,6 +1017,15 @@ DROPIN_RESCAN_BUTTON = "Rescan"
 IMPROCESS_PRESET_TOOLTIP = (
     "Start the ImProcess section from one of the processor setups ImSwitch ships"
 )
+#: What marks the first reconstructor of a setup's list on the card and in the
+#: preset picker: it is the one ImProcess has selected when it opens.
+IMPROCESS_STARTS_ACTIVE = "starts active"
+#: The label of the combo that chooses it.
+PRIMARY_CHOICE_LABEL = "Starts with:"
+PRIMARY_CHOICE_TOOLTIP = (
+    "The reconstruction ImProcess has selected when it opens; the others stay "
+    "available in the Parameters dock picker."
+)
 
 
 def _shipped_improcess_presets() -> list:
@@ -1048,13 +1057,20 @@ def _schema_fields(schema: dict) -> dict:
     return {f["key"]: f for f in schema.get("fields", [])}
 
 
-def _improcess_choice_names(field_def: dict, ids, *, with_ids: bool) -> str:
-    """``MoNaLISA, View only`` -- or ``MoNaLISA (monalisa), ...`` with ``with_ids``."""
+def _improcess_choice_names(field_def: dict, ids, *, with_ids: bool,
+                            mark_first: bool = False) -> str:
+    """``MoNaLISA, View only`` -- or ``MoNaLISA (monalisa), ...`` with ``with_ids``.
+
+    ``mark_first`` says of the first one that it ``starts active``.
+    """
     labels = field_def.get("option_labels") or {}
     names = []
-    for i in ids:
+    for n, i in enumerate(ids):
         name = str(labels.get(str(i)) or i)
-        names.append(f"{name} ({i})" if with_ids and name != str(i) else name)
+        text = f"{name} ({i})" if with_ids and name != str(i) else name
+        if mark_first and n == 0:
+            text += f" ({IMPROCESS_STARTS_ACTIVE})"
+        names.append(text)
     return ", ".join(names) if names else "none"
 
 
@@ -1083,7 +1099,11 @@ def _improcess_summary_lines(schema: dict, block: dict) -> list[str]:
         listed = block.get("reconstructors")
         shown = listed if isinstance(listed, list) else (_field_default(recon) or [])
         suffix = "" if isinstance(listed, list) else " (default)"
-        lines.append(f"Reconstructors: {_improcess_choice_names(recon, shown, with_ids=False)}{suffix}")
+        # ImProcess opens on the first one the setup lists; the standalone
+        # default is not a list the setup wrote, so it is not marked.
+        names = _improcess_choice_names(recon, shown, with_ids=False,
+                                        mark_first=isinstance(listed, list))
+        lines.append(f"Reconstructors: {names}{suffix}")
     proc = fields.get("processors")
     if proc is not None:
         listed = block.get("processors")
@@ -2733,14 +2753,23 @@ class _ChoiceList(QWidget):
     only how it reads. Choices may sit under non-checkable headers
     (``groups``); ids the schema does not offer (``unknown``) are listed under
     their own header and kept.
+
+    A field with ``primary_choice`` also gets a "Starts with" combo above the
+    rows: the ticked ids, by name, in the order ``order`` writes them, and
+    the one chosen is the one :meth:`ordered_ids` puts first. ``order`` is the
+    field's order rule, a function from the ticked ids to the list as it is
+    written.
     """
 
-    #: Emitted when the user clicks a check box -- never on construction.
+    #: Emitted when the user clicks a check box or the combo -- never on construction.
     sig_edited = pyqtSignal()
 
     def __init__(self, field_def: dict, options: list, unknown: list,
-                 selected: set, parent=None):
+                 selected: set, parent=None, order=None):
         super().__init__(parent)
+        self._order = order or list
+        self._chosen: str | None = None      # None: the first one listed
+        self._primary: QComboBox | None = None
         labels = field_def.get("option_labels") or {}
         descriptions = field_def.get("option_descriptions") or {}
         groups = field_def.get("option_groups") or {}
@@ -2756,6 +2785,13 @@ class _ChoiceList(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
+        self._names = {
+            str(opt): str(labels.get(str(opt)) or opt) if str(opt) not in unknown_ids
+            else str(opt)
+            for opt in options
+        }
+        if field_def.get("primary_choice"):
+            lay.addWidget(self._primary_row())
         if groups or unknown_ids:
             sections = _grouped_choices(options, unknown, groups)
         else:
@@ -2779,6 +2815,52 @@ class _ChoiceList(QWidget):
                     str(opt) in selected,
                 ))
         lay.addStretch()
+        self._refresh_primary()
+
+    def _primary_row(self) -> QWidget:
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        label = QLabel(PRIMARY_CHOICE_LABEL)
+        label.setTextFormat(Qt.PlainText)
+        label.setToolTip(PRIMARY_CHOICE_TOOLTIP)
+        font = label.font()
+        font.setBold(True)
+        label.setFont(font)
+        self._primary = QComboBox()
+        self._primary.setToolTip(PRIMARY_CHOICE_TOOLTIP)
+        self._primary.activated.connect(self._primary_activated)
+        line.addWidget(label)
+        line.addWidget(self._primary)
+        line.addStretch()
+        return row
+
+    def _primary_activated(self, index: int) -> None:
+        self._chosen = self._primary.itemData(index)
+        self.sig_edited.emit()
+
+    def _ticked(self) -> None:
+        """A check box was clicked: the combo follows the ticks."""
+        self._refresh_primary()
+        self.sig_edited.emit()
+
+    def _refresh_primary(self) -> None:
+        """List the ticked ids in order; keep the choice while it stays ticked,
+        else the first remaining is chosen."""
+        if self._primary is None:
+            return
+        listed = self._order(self.checked_ids())
+        if self._chosen not in listed:
+            self._chosen = None
+        combo = self._primary
+        combo.blockSignals(True)
+        combo.clear()
+        for option_id in listed:
+            combo.addItem(self._names.get(option_id, option_id), option_id)
+        combo.setCurrentIndex(max(combo.findData(self._chosen), 0) if listed else -1)
+        combo.setEnabled(bool(listed))
+        combo.blockSignals(False)
 
     def _row(self, option_id: str, name: str, description: str, checked: bool) -> QWidget:
         row = QWidget()
@@ -2790,7 +2872,7 @@ class _ChoiceList(QWidget):
         line.setSpacing(8)
         box = QCheckBox(name)
         box.setChecked(checked)
-        box.clicked.connect(lambda *_: self.sig_edited.emit())
+        box.clicked.connect(lambda *_: self._ticked())
         self._boxes[option_id] = box
         line.addWidget(box)
         if name != option_id:
@@ -2822,6 +2904,29 @@ class _ChoiceList(QWidget):
 
     def checked_ids(self) -> list[str]:
         return [option_id for option_id, box in self._boxes.items() if box.isChecked()]
+
+    def has_primary_choice(self) -> bool:
+        return self._primary is not None
+
+    def primary_combo(self) -> QComboBox | None:
+        """The "Starts with" combo, or None when the field has none."""
+        return self._primary
+
+    def chosen_id(self) -> str | None:
+        """The id the combo has chosen (the first listed unless the user chose
+        another); None with nothing ticked or no combo."""
+        if self._primary is None:
+            return None
+        return self._primary.currentData()
+
+    def ordered_ids(self) -> list[str]:
+        """The ticked ids as the value is written: the field's order rule, then
+        the chosen one moved to the front."""
+        listed = self._order(self.checked_ids())
+        first = self.chosen_id()
+        if first is None or first not in listed:
+            return listed
+        return [first] + [option_id for option_id in listed if option_id != first]
 
 
 # =============================================================================
@@ -2913,8 +3018,12 @@ class FieldWidget(QWidget):
             groups = self._def.get("option_groups") or {}
             if "option_descriptions" in self._def:
                 # The registries were read: rows that say what each choice is.
-                self._w = _ChoiceList(self._def, options, unknown, selected)
+                self._w = _ChoiceList(self._def, options, unknown, selected,
+                                      order=self._ordered)
             else:
+                # No registries (or no descriptions): a plain list, and so no
+                # "Starts with" combo. The order rule in get_value() still
+                # holds, so the first id of the file stays first.
                 self._w = QListWidget()
                 self._w.setMinimumHeight(92)
                 self._w.setMaximumHeight(150)
@@ -2977,6 +3086,21 @@ class FieldWidget(QWidget):
         lay.addWidget(self._w)
         if self._def.get("tip"):
             self._w.setToolTip(self._def["tip"])
+
+    def _ordered(self, checked) -> list:
+        """The ticked ids in the order the value is written.
+
+        The file's order is kept: for ImProcess the first reconstructor listed
+        is the one active at startup, so ticking another one must not reorder
+        the list. Newly ticked ids follow, in option order.
+        """
+        checked = list(checked)
+        rank = {value: n for n, value in enumerate(self._option_order)}
+        original = self._original if isinstance(self._original, list) else []
+        kept = [value for value in original if value in checked]
+        added = sorted((value for value in checked if value not in kept),
+                       key=lambda value: rank[value])
+        return kept + added
 
     def _choice_item(self, opt, selected: set) -> QListWidgetItem:
         item = QListWidgetItem(_multiselect_item_text(self._def, opt))
@@ -3066,15 +3190,10 @@ class FieldWidget(QWidget):
                     if self._w.item(i).data(Qt.UserRole) is not None
                     and self._w.item(i).checkState() == Qt.Checked
                 ]
-            # The file's order is kept: for ImProcess the first reconstructor
-            # listed is the one active at startup, so ticking another one must
-            # not reorder the list. Newly ticked ids follow, in option order.
-            rank = {value: n for n, value in enumerate(self._option_order)}
-            original = self._original if isinstance(self._original, list) else []
-            kept = [value for value in original if value in checked]
-            added = sorted((value for value in checked if value not in kept),
-                           key=lambda value: rank[value])
-            return kept + added
+            if isinstance(self._w, _ChoiceList) and self._w.has_primary_choice():
+                # the order rule, then the chosen one in front
+                return self._w.ordered_ids()
+            return self._ordered(checked)
         if tp == "ref":
             txt = self._w.currentText().strip()
             return txt if txt else ""
@@ -4999,7 +5118,9 @@ class ImProcessPresetDialog(QDialog):
             block = preset.processing if isinstance(preset.processing, dict) else {}
             names = self._summary(block)["reconstructors"]
             if names:
-                item.setToolTip("Reconstructors: " + ", ".join(name for name, _, _ in names))
+                item.setToolTip("Reconstructors: " + ", ".join(
+                    f"{name} ({IMPROCESS_STARTS_ACTIVE})" if n == 0 else name
+                    for n, (name, _, _) in enumerate(names)))
             self._list.addItem(item)
         self._list.setFixedWidth(self._list.sizeHintForColumn(0) + 2 * self._list.frameWidth() + 8)
         body.addWidget(self._list)
@@ -5089,7 +5210,7 @@ class ImProcessPresetDialog(QDialog):
         col = QVBoxLayout(box)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(4)
-        for name, ident, description in rows:
+        for n, (name, ident, description) in enumerate(rows):
             line = QHBoxLayout()
             line.setContentsMargins(0, 0, 0, 0)
             line.setSpacing(8)
@@ -5098,6 +5219,11 @@ class ImProcessPresetDialog(QDialog):
                 muted = self._plain(ident, muted=True)
                 muted.setWordWrap(False)
                 line.addWidget(muted)
+            if n == 0:
+                # ImProcess opens on the first one the preset lists
+                starts = self._plain(f"({IMPROCESS_STARTS_ACTIVE})", muted=True)
+                starts.setWordWrap(False)
+                line.addWidget(starts)
             line.addStretch()
             col.addLayout(line)
             if description:

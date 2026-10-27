@@ -14,8 +14,9 @@
         "view-only"
       ],
       "req": true,
+      "primary_choice": true,
       "grp": "Reconstructors",
-      "tip": "Tick the reconstructions this setup offers. The first one in the setup's list is active at startup; ticking another keeps that order and adds it after. This list picks which built-ins are registered: drop-ins are active on their own and should not be listed (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning, and if none is left ImProcess uses view-only. More can be loaded at runtime from Tools > Load reconstructor.",
+      "tip": "Tick the reconstructions this setup offers and choose under Starts with the one ImProcess has selected when it opens; the others stay available in the Parameters dock picker. The setup file lists the chosen one first. This list picks which built-ins are registered: drop-ins are active on their own and should not be listed (see the Drop-in plugins page). An id this computer does not have is skipped at startup with a warning, and if none is left ImProcess uses view-only. More can be loaded at runtime from Tools > Load reconstructor.",
       "opts": [
         "__improcess_reconstructors__"
       ]
