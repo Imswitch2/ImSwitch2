@@ -118,14 +118,23 @@ def test_build_default_section_for_requiring_sections():
 
 
 def test_microscope_stand_section_uses_loadable_manager_name():
-    """The config editor must not suggest the LeicaStand controller as a manager."""
+    """The config editor must not suggest the LeicaStand controller as a manager.
+
+    ``managerName`` has no code default, so the section starts with it empty
+    and the operator names it; the one name the tip offers as an example is a
+    manager the loader can build.
+    """
     schema = editor.SECTION_SCHEMAS.get("microscopeStand")
     assert schema is not None
 
     defaults = editor._build_default_section(schema)
+    assert defaults["managerName"] == ""
 
-    assert defaults["managerName"] == "LeicaDMIStandMockManager"
-    assert defaults["managerName"] in editor.CAT_MANAGERS.get("stands", [])
+    field = next(f for f in schema["fields"] if f["key"] == "managerName")
+    assert field["req"]
+    example = "LeicaDMIStandMockManager"
+    assert example in field["tip"]
+    assert example in editor.CAT_MANAGERS.get("stands", [])
 
 
 def test_processing_section_exposes_monalisa_reconstructor():

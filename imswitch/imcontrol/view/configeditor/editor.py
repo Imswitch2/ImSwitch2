@@ -940,22 +940,33 @@ def _build_default_section(schema: dict) -> dict:
 
 #: ``schema["write_policy"]`` value meaning "write the section as the file has
 #: it": Apply writes a field only if the file already had its key, the
-#: operator touched it, or it is required. The default policy writes every
-#: schema field.
+#: operator touched it, or it is required.
 WRITE_AS_WRITTEN = "as_written"
 
 
 def _writes_as_written(schema: dict) -> bool:
-    return schema.get("write_policy") == WRITE_AS_WRITTEN
+    """Whether Apply writes this schema's block as the file has it.
+
+    Every singleton section (``"section": true``: the System card and the
+    ImProcess block) does, unless its template says otherwise with an explicit
+    ``write_policy``. A section is a block of keys the code reads with its own
+    defaults, so expanding a short block into every template field, or dropping
+    a key the template does not list, changes the file without anyone asking.
+    A schema that is not a section (the per-category settings) keeps writing
+    every schema field.
+    """
+    default = WRITE_AS_WRITTEN if schema.get("section") else None
+    return schema.get("write_policy", default) == WRITE_AS_WRITTEN
 
 
 def _new_section_seed(schema: dict) -> dict:
     """What a brand-new section starts from when the operator adds it.
 
-    Normally every field's default, so the dialog opens fully populated. A
-    schema that writes "as written" is seeded with its required fields only:
-    seeding the optional ones would make Apply write a key per field for a
-    section the operator never asked to spell out.
+    A schema that writes "as written" is seeded with its required fields only
+    (empty: Apply refuses until each is filled in): seeding the optional ones
+    would make Apply write a key per field for a section the operator never
+    asked to spell out. Any other schema starts from every field's default, so
+    the dialog opens fully populated.
     """
     seed = _build_default_section(schema)
     if not _writes_as_written(schema):
@@ -2695,7 +2706,11 @@ class FieldWidget(QWidget):
             # property no schema can type -- so it must round-trip *every*
             # value. A string shows quoted and None shows as null: showing them
             # bare made "5" come back as 5 and null come back as {}.
-            self._w = QLineEdit(json.dumps(value))
+            # A required field with no value yet starts empty, not as the text
+            # "null" the operator would have to delete before typing; an empty
+            # box reads back as null, so nothing is lost.
+            empty_required = value is None and self._def.get("req")
+            self._w = QLineEdit("" if empty_required else json.dumps(value))
         elif tp == "path":
             row = QWidget()
             rl = QHBoxLayout(row)
@@ -4363,10 +4378,12 @@ class SectionEditorDialog(_CustomRowsMixin, QDialog):
     offers "Add property" to add more; Apply writes them back with the
     schema fields instead of dropping them.
 
-    A schema with ``"write_policy": "as_written"`` turns ``allow_custom_fields``
-    on and writes a schema field only if ``current`` already had its key, the
-    operator touched its widget, or it is required -- so Apply neither expands
-    a short block into every field nor loses a key the schema does not know.
+    A section schema (``"section": true``, see :func:`_writes_as_written`)
+    turns ``allow_custom_fields`` on and writes a schema field only if
+    ``current`` already had its key, the operator touched its widget, or it is
+    required -- so Apply neither expands a short block into every field nor
+    loses a key the schema does not know. The per-category settings schemas
+    are not sections and keep writing every field.
     """
 
     def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *,

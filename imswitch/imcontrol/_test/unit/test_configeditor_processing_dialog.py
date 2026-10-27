@@ -142,18 +142,25 @@ def test_a_new_section_does_not_gain_keys_on_apply(qapp):
     assert list(dlg.result_data) == ["reconstructors"]
 
 
-def test_other_schemas_still_seed_every_field():
+def test_a_section_is_seeded_with_its_required_fields_only():
     scan = editor.SECTION_SCHEMAS["scan"]
-    assert not editor._writes_as_written(scan)
-    assert editor._new_section_seed(scan) == editor._build_default_section(scan)
+    assert editor._writes_as_written(scan)
+    assert set(editor._new_section_seed(scan)) == {f["key"] for f in scan["fields"] if f["req"]}
 
 
-def test_a_schema_without_the_policy_still_writes_every_field(qapp):
-    """Regression guard: the policy is opt-in, the old behaviour stays the default."""
-    scan = editor.SECTION_SCHEMAS["scan"]
-    dlg = SectionEditorDialog("scan", scan, {}, {})
+def test_category_settings_still_seed_every_field():
+    """A schema that is not a section (the per-category settings) keeps the old policy."""
+    lasers = editor.CATEGORY_SCHEMAS["lasers"]
+    assert not editor._writes_as_written(lasers)
+    assert editor._new_section_seed(lasers) == editor._build_default_section(lasers)
+
+
+def test_a_schema_that_is_not_a_section_still_writes_every_field(qapp):
+    """Regression guard: only sections write as written; category settings write every field."""
+    lasers = editor.CATEGORY_SCHEMAS["lasers"]
+    dlg = SectionEditorDialog("lasers", lasers, {}, {})
     dlg._try_apply()
-    keys = {f["key"] for f in scan["fields"]}
+    keys = {f["key"] for f in lasers["fields"]}
     assert dlg.result_data, dlg._err_lbl.text()
     assert set(dlg.result_data) == keys
     assert not dlg._allow_custom
