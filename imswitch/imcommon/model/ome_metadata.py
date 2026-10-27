@@ -35,7 +35,7 @@ _MICROMETRES_PER_UNIT = {
     'nm': 1e-3, 'nanometer': 1e-3, 'nanometre': 1e-3,
     'um': 1.0, '\u00b5m': 1.0, '\u03bcm': 1.0, 'micrometer': 1.0, 'micrometre': 1.0,
     'micron': 1.0, 'microns': 1.0,
-    'mm': 1e3, 'millimeter': 1e3, 'millimetre': 1e3,
+    'mm': 1e3, 'millimeter': 1e3, 'millimetre': 1e3, 'cm': 1e4,
     'm': 1e6, 'meter': 1e6, 'metre': 1e6,
 }
 
@@ -287,10 +287,18 @@ class OmeImageMeta:
         }
 
     def element_size_um(self) -> List[float]:
-        """Fiji/ilastik ``element_size_um`` triplet ``[z, y, x]`` (HDF5 interop)."""
-        by_name = {a.name: s for a, s in zip(self.axes, self.scale)}
-        return [float(by_name.get('z', 1.0)), float(by_name.get('y', 1.0)),
-                float(by_name.get('x', 1.0))]
+        """Fiji/ilastik ``element_size_um`` triplet ``[z, y, x]`` (HDF5 interop).
+
+        In micrometres, whatever unit the axes carry: a result scaled in
+        nanometres (MoNaLISA's are) used to write its 40 nm pitch as 40 µm
+        here, and every reader of the attribute took it at its word.
+        """
+        by_name = {a.name: (s, a.unit) for a, s in zip(self.axes, self.scale)}
+        out = []
+        for name in ('z', 'y', 'x'):
+            scale, unit = by_name.get(name, (1.0, None))
+            out.append(float(scale) * (micrometres_per_unit(unit) or 1.0))
+        return out
 
 
 def build_ome_xml(

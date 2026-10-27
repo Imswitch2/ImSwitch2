@@ -133,6 +133,19 @@ class DataFrame(QtWidgets.QFrame):
     def setDetectionPreviewData(self, x, y):
         self.detectionScatter.setData(x, y)
 
+    def setDetectionPreviewStyle(self, marker):
+        """``"point"``: a dot on each found focus, as the pattern grid is
+        drawn; ``"circle"``: an open ring around each candidate."""
+        if str(marker) == "point":
+            self.detectionScatter.setPen(None)
+            self.detectionScatter.setBrush(pg.mkBrush(color=(255, 50, 50), antialias=True))
+            self.detectionScatter.setSize(1)
+        else:
+            self.detectionScatter.setPen(pg.mkPen(color=(255, 50, 50), width=1.5,
+                                                  style=QtCore.Qt.SolidLine, antialias=True))
+            self.detectionScatter.setBrush(None)
+            self.detectionScatter.setSize(8)
+
     def setCurrentFrame(self, value):
         self.frameNum.setText(str(value))
         self.slider.setValue(value)

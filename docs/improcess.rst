@@ -199,7 +199,14 @@ new results:
   *Split stack*, which the dialog says when a single stack is checked.
 * *Stack/Combine...* — stack same-shaped selected results along a new axis, or
   concatenate compatible results along an existing axis. Axis labels, pixel
-  scales and scale units must agree.
+  scales and scale units must agree. Two differences are forgiven because
+  they are not differences in the pixels: singleton axes one input has and
+  another lacks (a ``(1, 1, 1, 1, Y, X)`` MoNaLISA result combines with a
+  ``(Y, X)`` image; the combined result keeps only the axes they share, the
+  join axis included), and a length unit stated differently (``nm`` against
+  ``um``, converted before the scales are compared; the output takes the
+  first input's unit). The same applies to *Merge channels* and to the
+  compatibility check of the *Image calculator*.
 * *Image calculator...* — combine exactly two loaded results with pixel-wise
   add, subtract, multiply, divide, minimum, maximum, average or absolute
   difference operations.  A label mask published by the ROI manager's
@@ -464,6 +471,7 @@ ID                      Type           Purpose
 ======================= ============== ====================================================
 monalisa                Reconstructor  MoNaLISA point-scanning SIM (the full method needs Windows + CUDA DLL)
 monalisa-legacy         Reconstructor  Internal adapter behind MoNaLISA's full method; not for direct use
+monalisa-lattice        Reconstructor  Experimental MoNaLISA reconstruction for any lattice, geometry read from the frames
 view-only               Reconstructor  Pass-through; raw frames wrapped as a result
 widefield-starss        Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
 snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
@@ -578,7 +586,8 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
    * - ``channel-merge``
      - Dimensions and channels
      - Two or more selected rank >= 2 results with identical shape, axis
-       labels and compatible axis scales.
+       labels and compatible axis scales (singleton axes and nm/um
+       differences forgiven, see *Stack/Combine* above).
      - ``ArrayProcessingResult`` with a new leading channel axis, default
        label ``C``.
    * - ``stack-combine``
@@ -1856,7 +1865,11 @@ The SMLM parameter widget exposes:
   fine over a 20 µm field would be 1.5 GiB over a 200 µm one.  The
   ``smlm-render`` processor makes the publication render, with its own pixel
   size and blur.
-* **Preview detection** toggle — when enabled, candidate spots from the
+* **Preview detection** toggle (the MoNaLISA lattice reconstructor's
+  *Show found foci* is the same overlay, drawing the foci it reads from the
+  recording; any reconstructor whose widget has a ``previewCheckbox`` and a
+  ``sigPreviewToggled`` signal and that answers ``detection_preview`` gets
+  it) — when enabled, candidate spots from the
   detection step (before fitting) appear as a live scatter overlay on the
   raw-data frame viewer. The overlay updates automatically whenever detection
   parameters change or when the displayed frame changes (via the frame slider
@@ -2696,8 +2709,9 @@ Using a plugin
    ``_example_plugin.py`` template (underscore-prefixed files are ignored by
    discovery).  Ready-to-copy examples live in
    ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``, the
-   photophysics analysis ``photophysics_suite.py``, and the reconstructor
-   ``frame_average.py``).
+   photophysics analysis ``photophysics_suite.py``, the reconstructor
+   ``frame_average.py``, and ``lisai_restore.py``, see
+   `LISAI restoration`_).
 #. If you copied the file by hand, choose **Plugins → Reload plugins** (or
    restart ImProcess).
 #. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
@@ -2715,6 +2729,24 @@ active reconstructor hands over to the first registered one.  While a
 reconstruction is running the reconstructors are left untouched and the
 status bar says so — reload again when it has finished — so a running job
 never straddles two versions of one plugin.
+
+LISAI restoration
+-----------------
+
+``examples/improcess_plugins/lisai_restore.py`` runs a trained
+`LISAI <https://github.com/GuillaumeMinet/LISAI-resolft>`_ model (denoising
+and sub-sampled-image restoration for RESOLFT / MoNaLISA) on the selected
+result.  It is also listed in **Plugins → Browse online plugins...**.  It
+needs LISAI installed in the same Python environment as ImSwitch2 (with
+``torch``, ``torchvision`` and, for the HDN denoising models,
+``scikit-learn``), LISAI's one-time setup done from a terminal (any ``lisai`` command
+asks for a data root and writes ``configs/local_config.yml``; the plugin
+refuses to run until that file exists rather than trigger the prompt inside
+ImProcess), and at least one promoted model (``lisai models download <name>
+--install``).  The panel lists the installed promoted models; an
+up-sampling model's output gets correspondingly smaller pixel scales.  A
+multi-frame model predicts each frame from its neighbours, so the first and
+last frames of a time series are dropped unless *Pad edge frames* is ticked.
 
 Installing from the online store
 --------------------------------

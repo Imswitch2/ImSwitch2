@@ -8,15 +8,11 @@ from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
 from imswitch.improcess.live import InMemoryStackWrapper, ZarrLiveSource
 from imswitch.improcess.reconstructors.base import StackInfo, StreamInit, StreamingSession
 from imswitch.improcess.reconstructors.monalisa import MonalisaReconstructor
+from imswitch.improcess._test._monalisa_synthetic import make_scan
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
-    DEFAULT_FOOTPRINT_NUM_RECTS,
-    DEFAULT_GAUSSIAN_SIGMA_PX,
-    make_gauss_processor,
-)
-from imswitch.improcess.reconstructors.monalisa.scan_geometry import (
-    get_interp_coords,
-    get_pinhole_footprint,
-    get_rectangles_coords,
+    CUPY_AVAILABLE,
+    FastGaussExtractor,
+    make_fast_gauss_extractor,
 )
 
 
@@ -178,7 +174,7 @@ def test_live_session_begin(synthetic_stack):
     reconstructor = MonalisaReconstructor()
     session = reconstructor.make_session()
 
-    plan = session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+    plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert plan.out_shape[0] == 1
     assert plan.out_shape[1] == 1
@@ -245,7 +241,7 @@ def test_live_session_prefers_the_recorded_layout_over_stage_extents(synthetic_s
     )
 
     session = MonalisaReconstructor().make_session()
-    session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+    session.begin(init_obj, params={"use_gpu": False})
 
     assert (session.nx_s, session.ny_s) == (5, 20)
 
@@ -289,7 +285,7 @@ def test_live_session_refuses_conditions_laid_out_per_image(synthetic_stack):
 
     session = MonalisaReconstructor().make_session()
     with pytest.raises(ValueError, match="not interleaved per line"):
-        session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+        session.begin(init_obj, params={"use_gpu": False})
 
 
 def test_live_session_treats_null_lapse_metadata_as_missing(synthetic_stack):
@@ -448,7 +444,7 @@ def test_live_session_from_zarr_live_source(tmp_path, synthetic_stack):
 
     reconstructor = MonalisaReconstructor()
     session = reconstructor.make_session()
-    plan = session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+    plan = session.begin(init_obj, params={"use_gpu": False})
     result = session.result()
 
     assert result.data.shape == plan.out_shape
@@ -586,30 +582,6 @@ def test_live_session_begin_honors_bleaching_correction_param(synthetic_stack):
     assert session._bleach_reference_energy == pytest.approx(float(expected_reference))
 
 
-def test_live_session_begin_honors_fast_gauss_fit_options(synthetic_stack):
-    """Fast-Gauss live/offline params control the processor footprint fit."""
-    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
-    init_obj = StreamInit(
-        name="test_stack",
-        dataset_name="detector_0",
-        data=stack,
-        attrs=attrs,
-    )
-
-    session = MonalisaReconstructor().make_session()
-    session.begin(
-        init_obj,
-        params={
-            "use_gpu": False,
-            "fast_gauss_footprint_num_rects": 2,
-            "fast_gauss_gaussian_sigma_px": 1.25,
-        },
-    )
-
-    assert session.processor.num_rects == 2
-    assert session.processor.gaussian_sigma_px == pytest.approx(1.25)
-    assert session.processor.pts_per_focus == len(get_rectangles_coords(2)[0])
-
 
 def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
     """Offline MoNaLISA process() can use the live fast-Gauss algorithm."""
@@ -623,8 +595,6 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
     params = {
         "reconstruction_method": "Fast Gauss MoNaLISA",
         "device": "CPU",
-        "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
-        "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
         "bleaching_correction": False,
         "row_offset": 3.0,
         "col_offset": 4.0,
@@ -654,15 +624,15 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
     assert not np.all(result.data == 0)
 
 
-def test_fast_gauss_refuses_conditions_laid_out_per_image():
-    """The fast path de-interleaves conditions per line, nothing else.
+def test_fast_gauss_places_conditions_laid_out_per_image():
+    """The live session de-interleaves conditions per line, nothing else.
 
     An 18x18x2 scan whose conditions are interleaved per line is one 648-frame
-    stack the fast path now handles (``test_monalisa_linestep_layout_seam``);
+    stack the session handles (``test_monalisa_linestep_layout_seam``);
     reading it as two 324-frame time blocks was the bug this contract exists
     to prevent. A recording that declares one complete image per condition is
-    a different order the path cannot reassemble, so it is refused rather than
-    quietly reshaped.
+    a different order the session cannot reassemble; it used to be refused,
+    and is now placed frame by frame, one output plane per condition.
     """
     from imswitch.imcommon.model.acquisition_layout import (
         ACQUISITION_LAYOUT_SCHEMA,
@@ -702,9 +672,10 @@ def test_fast_gauss_refuses_conditions_laid_out_per_image():
     params = {
         "reconstruction_method": "Fast Gauss MoNaLISA",
         "device": "CPU",
-        "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
-        "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
         "bleaching_correction": False,
+        # Frames of zeros have no pattern to find; the panel's pattern stands in.
+        "row_offset": 2.0, "col_offset": 2.0, "row_period": 5.0, "col_period": 5.0,
+        "pixel_size_nm": 50.0,
         "scan_params": {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
             "directions": ["pos", "pos", "pos"],
@@ -714,8 +685,11 @@ def test_fast_gauss_refuses_conditions_laid_out_per_image():
         },
     }
 
-    with pytest.raises(ValueError, match="not interleaved per line"):
-        MonalisaReconstructor().process(data_obj, params)
+    result = MonalisaReconstructor().process(data_obj, params)
+    # One output plane per condition, on the T axis as the classic path has it.
+    assert result.data.shape[:4] == (1, 1, 2, 1)
+    assert result.placement is not None and result.placement.n_conditions == 2
+    assert result.acquisition_projection["display_name"] == "Condition"
 
 
 def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthetic_stack):
@@ -740,8 +714,6 @@ def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthet
     params = {
         "reconstruction_method": "Fast Gauss MoNaLISA",
         "device": "CPU",
-        "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
-        "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
         "bleaching_correction": False,
         "scan_params": {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
@@ -792,8 +764,6 @@ def test_fast_gauss_offline_reconstructs_line_interleaved_conditions(synthetic_s
     params = {
         'reconstruction_method': 'Fast Gauss MoNaLISA',
         'device': 'CPU',
-        'fast_gauss_footprint_num_rects': DEFAULT_FOOTPRINT_NUM_RECTS,
-        'fast_gauss_gaussian_sigma_px': DEFAULT_GAUSSIAN_SIGMA_PX,
         'bleaching_correction': False,
         'row_offset': 5.0,
         'col_offset': 5.0,
@@ -832,8 +802,6 @@ def test_fast_gauss_offline_accepts_legacy_scan_dimension_labels(synthetic_stack
     params = {
         "reconstruction_method": "Fast Gauss MoNaLISA",
         "device": "CPU",
-        "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
-        "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
         "bleaching_correction": False,
         "scan_params": {
             "dimensions": ["Up/Down", "Right/Left", "Back/Forth", "Timepoints"],
@@ -853,94 +821,35 @@ def test_fast_gauss_offline_accepts_legacy_scan_dimension_labels(synthetic_stack
     assert np.all(np.isfinite(result.data))
 
 
-def test_fast_gauss_uses_mini_recon_shell_footprint():
-    """The footprint is concentric rectangular shells, not a filled square.
-
-    The central pixel (innermost shell) appears exactly once — it is not
-    duplicated by the perimeter construction.
-    """
-    x_offsets, y_offsets = get_rectangles_coords(2)
-
-    expected = np.array([
-        [0.0, 0.0],
-        [-1.0, 1.0],
-        [0.0, 1.0],
-        [1.0, 1.0],
-        [-1.0, -1.0],
-        [0.0, -1.0],
-        [1.0, -1.0],
-        [-1.0, 0.0],
-        [1.0, 0.0],
-    ])
-    actual = np.column_stack((x_offsets, y_offsets))
-    np.testing.assert_array_equal(actual, expected)
 
 
-def test_get_pinhole_footprint_is_a_centered_disc():
-    """The pinhole footprint is a filled disc with the center included once."""
-    x, y = get_pinhole_footprint(1.0)
-    offsets = {(int(a), int(b)) for a, b in zip(x, y)}
-    # radius 1 keeps the center and the 4-neighbours, excludes the diagonals.
-    assert offsets == {(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)}
-    assert len(x) == 5  # no duplicated center
-
-    # radius scales the disc; center still appears exactly once.
-    x2, y2 = get_pinhole_footprint(2.5)
-    assert sum((a == 0 and b == 0) for a, b in zip(x2, y2)) == 1
-    assert np.all(x2 ** 2 + y2 ** 2 <= 2.5 ** 2)
 
 
-def test_fast_gauss_pinhole_footprint_overrides_shells(synthetic_stack):
-    """A pinhole radius (k×σ) replaces the shell footprint for both the interp
-    coords and the fit weights."""
-    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
-    init_obj = StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs)
-
+def test_fast_gauss_measures_the_spot_width_on_the_frames():
+    """The width is read from the mean frame, not from the PSF parameter: a
+    nominal 220 nm PSF on a rig whose foci are 1.6 px read every amplitude
+    through a filter a third too narrow."""
+    scan = make_scan(steps=(10, 10), sigma=2.0, background=20.0, offset=(4.0, 5.0))
+    attrs = {
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+        "ScanStage:axis_length": [0.45, 0.45, 1.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanStage:axis_step_size_unit": "um",
+    }
+    init_obj = StreamInit(name="s", dataset_name="d", data=scan.frames, attrs=attrs)
     session = MonalisaReconstructor().make_session()
     session.begin(init_obj, params={
         "use_gpu": False,
-        "fast_gauss_footprint_mode": "Circular pinhole",
-        "fast_gauss_gaussian_sigma_px": 2.0,
-        "fast_gauss_pinhole_radius_sigma": 1.5,  # radius = 3.0 px
+        "psf_fwhm_nm": 220.0, "pixel_size_nm": 77.0,       # would be 1.21 px
+        "_monalisa_pattern_params": {
+            "row_offset": 5.0, "col_offset": 4.0, "row_period": 11.0, "col_period": 11.0,
+        },
     })
-
-    assert session.processor.pinhole_radius_px == pytest.approx(3.0)
-    assert session.processor.pts_per_focus == len(get_pinhole_footprint(3.0)[0])
-
-
-def test_fast_gauss_default_footprint_mode_keeps_shells(synthetic_stack):
-    """A nonzero pinhole-radius default is ignored unless pinhole mode is selected."""
-    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
-    init_obj = StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs)
-
-    session = MonalisaReconstructor().make_session()
-    session.begin(init_obj, params={
-        "use_gpu": False,
-        "fast_gauss_footprint_mode": "Rectangular shells",
-        "fast_gauss_gaussian_sigma_px": 2.0,
-        "fast_gauss_pinhole_radius_sigma": 1.5,
-    })
-
-    assert session.processor.pinhole_radius_px is None
-    assert session.processor.pts_per_focus == len(
-        get_rectangles_coords(DEFAULT_FOOTPRINT_NUM_RECTS)[0]
-    )
-
-
-def test_fast_gauss_sigma_derived_from_psf(synthetic_stack):
-    """With no explicit sigma, sigma is derived from PSF FWHM and pixel size."""
-    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
-    init_obj = StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs)
-
-    session = MonalisaReconstructor().make_session()
-    session.begin(init_obj, params={
-        "use_gpu": False,
-        "fast_gauss_gaussian_sigma_px": 0.0,  # 0 = auto
-        "psf_fwhm_nm": 300.0,
-        "pixel_size_nm": 100.0,
-    })
-
-    assert session.processor.gaussian_sigma_px == pytest.approx(300.0 / (2.355 * 100.0))
+    assert session.processor.gaussian_sigma_px == pytest.approx(2.0, abs=0.1)
+    # Without frames the PSF parameter stands in.
+    assert session._resolve_gaussian_sigma_px(
+        {"psf_fwhm_nm": 300.0, "pixel_size_nm": 100.0}
+    ) == pytest.approx(300.0 / (2.355 * 100.0))
 
 
 def test_fast_gauss_no_background_uses_matched_filter(synthetic_stack):
@@ -954,27 +863,86 @@ def test_fast_gauss_no_background_uses_matched_filter(synthetic_stack):
     assert session.processor.fit_background is False
 
 
-def test_fast_gauss_interp_coords_clip_to_frame_edge():
-    """Footprint samples beyond the high edge stay on the edge, not column/row zero."""
-    x_interp, y_interp = get_interp_coords(
-        xp=10.0,
-        xo=9.0,
-        yp=10.0,
-        yo=9.0,
-        nx_c=1,
-        ny_c=1,
-        num_rows=10,
-        num_cols=10,
-        num_rects=3,
+
+
+def test_fast_gauss_extractor_is_the_joint_fit():
+    """The extractor recovers the amplitudes of overlapping Gaussian spots:
+    with the old isolated fit a neighbour's light was read as one's own."""
+    scan = make_scan(steps=(4, 4), sigma=2.0, background=20.0, offset=(4.0, 5.0))
+    rows, cols = scan.frames.shape[1:]
+    nx_c = int(np.ceil((cols - 4.0) / 11.0))
+    ny_c = int(np.ceil((rows - 5.0) / 11.0))
+    extractor = make_fast_gauss_extractor(
+        11.0, 4.0, 11.0, 5.0, nx_c, ny_c, 4, 4, rows, cols, gaussian_sigma_px=2.0
     )
+    assert isinstance(extractor, FastGaussExtractor)
+    assert extractor.operator.joint and extractor.operator.background == "constant"
+    amplitudes = extractor.process_chunk(scan.frames)
+    assert amplitudes.shape == (scan.frames.shape[0], nx_c * ny_c)
+    # The synthetic foci of make_scan include a margin outside the frame; the
+    # extractor's grid is the in-frame ones, in row-major order.
+    inside = (
+        (scan.focus_x >= 0) & (scan.focus_x < cols)
+        & (scan.focus_y >= 0) & (scan.focus_y < rows)
+    )
+    order = np.lexsort((scan.focus_x[inside], scan.focus_y[inside]))
+    truth = scan.amplitude[:, inside][:, order]
+    interior = (scan.focus_x[inside][order] > 8) & (scan.focus_x[inside][order] < cols - 8) \
+        & (scan.focus_y[inside][order] > 8) & (scan.focus_y[inside][order] < rows - 8)
+    np.testing.assert_allclose(amplitudes[:, interior], truth[:, interior], rtol=2e-3, atol=0.2)
+    # One frame at a time gives the same answer.
+    np.testing.assert_allclose(extractor.process_frame(scan.frames[3]), amplitudes[3], rtol=1e-5)
 
-    assert np.min(x_interp) >= 0
-    assert np.min(y_interp) >= 0
-    assert np.max(x_interp) == 9
-    assert np.max(y_interp) == 9
-    assert not np.any(x_interp == 0)
-    assert not np.any(y_interp == 0)
 
+def test_fast_gauss_extractor_rejects_a_zero_sigma():
+    with pytest.raises(ValueError, match="gaussian_sigma_px"):
+        FastGaussExtractor(10.0, 5.0, 10.0, 5.0, 10, 10, 10, 10, 100, 100, gaussian_sigma_px=0.0)
+
+
+def test_the_device_solve_mirrors_the_cpu_solve(monkeypatch):
+    """The GPU path is the CPU solve with CuPy in place of NumPy and SciPy.
+
+    Without a device it is run here with NumPy and SciPy standing in for
+    them, so that what the GPU would compute is checked against the
+    operator's own answer.
+    """
+    import types
+
+    import scipy.sparse
+    import scipy.sparse.linalg
+
+    from imswitch.improcess.reconstructors.monalisa import gauss_processor
+
+    fake_cp = types.SimpleNamespace(
+        asarray=np.asarray, asnumpy=np.asarray, where=np.where,
+        float32=np.float32, float64=np.float64, ndarray=np.ndarray,
+    )
+    monkeypatch.setattr(gauss_processor, "CUPY_AVAILABLE", True)
+    monkeypatch.setattr(gauss_processor, "cp", fake_cp)
+    monkeypatch.setattr(gauss_processor, "cusparse", scipy.sparse)
+    monkeypatch.setattr(gauss_processor, "cusparse_linalg", scipy.sparse.linalg)
+
+    scan = make_scan(steps=(3, 3), sigma=2.0, background=20.0, offset=(4.0, 5.0))
+    rows, cols = scan.frames.shape[1:]
+    nx_c = int(np.ceil((cols - 4.0) / 11.0))
+    ny_c = int(np.ceil((rows - 5.0) / 11.0))
+    args = (11.0, 4.0, 11.0, 5.0, nx_c, ny_c, 3, 3, rows, cols)
+    device = make_fast_gauss_extractor(*args, gaussian_sigma_px=2.0, use_gpu=True)
+    host = make_fast_gauss_extractor(*args, gaussian_sigma_px=2.0, use_gpu=False)
+    assert device.use_gpu is True and host.use_gpu is False
+    on_device = device.process_chunk_gpu(scan.frames)
+    np.testing.assert_allclose(on_device, host.process_chunk(scan.frames), rtol=1e-5, atol=1e-4)
+    np.testing.assert_allclose(device.process_chunk(scan.frames), on_device)
+
+
+@pytest.mark.skipif(CUPY_AVAILABLE, reason="CuPy is installed: the device path is taken")
+def test_a_gpu_request_without_cupy_runs_on_the_cpu():
+    extractor = make_fast_gauss_extractor(
+        10.0, 5.0, 10.0, 5.0, 10, 10, 10, 10, 100, 100, use_gpu=True
+    )
+    assert extractor.use_gpu is False
+    with pytest.raises(RuntimeError, match="GPU"):
+        extractor.process_chunk_gpu(np.zeros((1, 100, 100)))
 
 def test_live_session_finish(synthetic_stack):
     """Test StreamingSession finish returns final result."""
@@ -1019,30 +987,6 @@ def test_live_session_close(synthetic_stack):
 
     session.close()
 
-
-def test_gauss_processor_gpu_fallback():
-    """Test that make_gauss_processor falls back to CPU when GPU unavailable."""
-    processor = make_gauss_processor(
-        xp=10.0,
-        xo=5.0,
-        yp=10.0,
-        yo=5.0,
-        nx_c=10,
-        ny_c=10,
-        nx_s=10,
-        ny_s=10,
-        num_rows=100,
-        num_cols=100,
-        num_rects=2,
-        gaussian_sigma_px=1.25,
-        use_gpu=True,
-    )
-
-    assert processor is not None
-    assert hasattr(processor, "process_chunk")
-    assert processor.num_rects == 2
-    assert processor.gaussian_sigma_px == pytest.approx(1.25)
-    assert processor.pts_per_focus == len(get_rectangles_coords(2)[0])
 
 
 def _require_gpu():
@@ -1106,49 +1050,6 @@ def test_live_session_gpu_defers_d2h_until_result(synthetic_stack):
     assert session._hot_plane_dirty is False
     session.close()
 
-
-def test_make_gauss_processor_rejects_invalid_fast_gauss_options():
-    """Fast-Gauss magic numbers are validated when supplied as parameters."""
-    with pytest.raises(ValueError, match="num_rects"):
-        make_gauss_processor(
-            xp=10.0,
-            xo=5.0,
-            yp=10.0,
-            yo=5.0,
-            nx_c=10,
-            ny_c=10,
-            nx_s=10,
-            ny_s=10,
-            num_rows=100,
-            num_cols=100,
-            num_rects=0,
-            use_gpu=False,
-        )
-
-    with pytest.raises(ValueError, match="gaussian_sigma_px"):
-        make_gauss_processor(
-            xp=10.0,
-            xo=5.0,
-            yp=10.0,
-            yo=5.0,
-            nx_c=10,
-            ny_c=10,
-            nx_s=10,
-            ny_s=10,
-            num_rows=100,
-            num_cols=100,
-            gaussian_sigma_px=0,
-            use_gpu=False,
-        )
-
-
-
-# --- incremental timepoint planes ------------------------------------------
-#
-# live_plane() is the cheap live-update path: the viewer keeps its own buffer
-# and each refresh writes one timepoint into it, instead of receiving a fresh
-# copy of the whole growing volume. The plane must be a COPY -- the session
-# goes on writing to `reconstructed` from the process thread.
 
 
 def test_live_plane_is_a_copy_not_a_view(synthetic_stack):
@@ -1229,8 +1130,10 @@ def test_save_rejects_unsupported_formats(synthetic_stack, tmp_path):
     session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
                   params={"use_gpu": False})
 
+    # HDF5 and Zarr are image containers the shared writers take; a table
+    # format is not.
     with pytest.raises(ValueError, match="tiff"):
-        session.result().save(tmp_path / "s.zarr", "zarr")
+        session.result().save(tmp_path / "s.csv", "csv")
     session.close()
 
 
@@ -1335,7 +1238,7 @@ def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_st
     warnings = []
     session._logger.warning = lambda message, *args, **kwargs: warnings.append(str(message))
 
-    session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+    session.begin(init_obj, params={"use_gpu": False})
 
     assert session.detected_orientation is not None
     assert session.scan_params["unidirectional"] is True
