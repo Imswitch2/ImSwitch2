@@ -4,20 +4,11 @@ import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.model import initLogger
-from imswitch.improcess.model.contrast import auto_levels, finite_range
+from imswitch.improcess.model.contrast import AUTO_SATURATED_PERCENT, auto_levels, finite_range
 from imswitch.improcess.model.lazy_array import display_array
 from imswitch.improcess.model.result import result_kind
 from .basecontrollers import ImProcessWidgetController
 
-
-#: Total percentage of pixels allowed to saturate when a result is scaled
-#: automatically -- 2% is 1% off each tail, which is the rule a result's own
-#: display layers already use for their per-component levels. The two have to
-#: agree: a MoNaLISA reconstruction renders through the display-layer path and
-#: a duplicate of it through the plain-image path, and clipping the outliers in
-#: one while spanning the full range in the other made the same picture look
-#: like two different pictures depending on which was clicked.
-AUTO_SATURATED_PERCENT = 2.0
 
 
 class ReconstructionViewController(ImProcessWidgetController):
