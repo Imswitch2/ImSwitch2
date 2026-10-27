@@ -1094,14 +1094,203 @@ Three optional maps that let an event-triggered workflow (for example
    "smartMicroscopyModeSwitchingEnabled": {"EtSnouty": true}
 
 
+.. _setupinfo-processing:
+
 processing
 ----------
 
 Optional object read by ImProcess, not by ImControl: which ImProcess panels
-open at startup (``graphPanel``, ``roiManagerPanel`` and so on) and which
-``reconstructors`` and ``processors`` it offers.  The processing-only presets
-(``*_processor.json``, ``general_image_processing.json``) consist of little
-else.  See :ref:`improcess-processing-presets`.
+open at startup, the live-mode settings, and which ``reconstructors`` and
+``processors`` (and napari plugin endpoints) it offers.  The processing-only
+presets (``*_processor.json``, ``general_image_processing.json``) consist of
+little else.  See :ref:`improcess-processing-presets`; the config editor edits
+the block as :ref:`its own section <config-editor-improcess>`.
+
+Every key is optional; a key that is absent has the default below.  A
+``reconstructors`` or ``processors`` key that names only one side of the
+plugin list leaves the other side at its default.  Keys not listed here are
+kept as they are and ignored by ImProcess.  Settings that belong to a computer
+rather than to a setup (the Fiji location, the image display, the default
+data and save folders) are not part of this block; they are kept in
+``ImSwitchConfig/config/improcess_options.json`` and set from ImProcess's
+**Plugins** and **Preferences** menus.
+
+.. rubric:: Startup layout
+
+Which ImProcess docks are open at startup.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 10 14 54
+
+   * - Key
+     - Type
+     - Default
+     - Meaning
+   * - ``parameterPanel``
+     - bool
+     - ``true``
+     - The Parameters dock.  Hidden, the reconstructor parameters stay available internally.
+   * - ``napariLayerControls``
+     - bool
+     - ``true``
+     - napari's built-in layer-controls dock inside the reconstruction viewer.
+   * - ``reconstructionPanel``
+     - bool
+     - ``true``
+     - The Reconstruction viewer dock.  Hidden, it opens when the first result is displayed.
+   * - ``actionsPanel``
+     - bool
+     - ``true``
+     - The Actions dock.
+   * - ``fileWatcherPanel``
+     - bool
+     - ``true``
+     - The Directory watcher dock (the key keeps its old name).
+   * - ``multiDataPanel``
+     - bool
+     - ``true``
+     - The Multidata dock.
+   * - ``currentDataPanel``
+     - bool
+     - ``true``
+     - The Current data dock.
+   * - ``resultsPanel``
+     - bool
+     - ``true``
+     - The Results table dock.
+   * - ``logPanel``
+     - bool
+     - ``false``
+     - The Log dock starts open.  It is always available under **View → Log**; the key only decides whether it starts open.
+
+.. rubric:: Analysis panels
+
+Optional panels, closed unless switched on.  Each can still be opened later from the Tools menu or toolbar.  ``projectionPanel`` and ``frcPanel`` also register their processor at startup, even when it is not under ``processors``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 10 14 54
+
+   * - Key
+     - Type
+     - Default
+     - Meaning
+   * - ``graphPanel``
+     - bool
+     - ``false``
+     - The plot/graph panel.
+   * - ``profilePanel``
+     - bool
+     - ``false``
+     - The line/rectangle profile and fitting panel.
+   * - ``frcPanel``
+     - bool
+     - ``false``
+     - The Fourier ring correlation panel.
+   * - ``projectionPanel``
+     - bool
+     - ``false``
+     - The axis projection panel.
+   * - ``roiStatsPanel``
+     - bool
+     - ``false``
+     - The ROI statistics panel.
+   * - ``roiManagerPanel``
+     - bool
+     - ``false``
+     - The multi-ROI manager and per-ROI statistics panel.
+   * - ``segmentationPanel``
+     - bool
+     - ``false``
+     - The threshold and connected-component segmentation panel.
+   * - ``psfResolutionPanel``
+     - bool
+     - ``false``
+     - The bead/PSF Gaussian fitting panel.
+   * - ``colocalizationPanel``
+     - bool
+     - ``false``
+     - The channel colocalization panel.
+   * - ``multicolorPanel``
+     - bool
+     - ``false``
+     - The three-color strip registration and alignment panel.
+   * - ``metadataPanel``
+     - bool
+     - ``false``
+     - The HDF5/Zarr/TIFF metadata tree panel.
+
+.. rubric:: Localization viewer
+
+See :ref:`improcess-napari-storm`.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 10 14 54
+
+   * - Key
+     - Type
+     - Default
+     - Meaning
+   * - ``napariStormViewer``
+     - bool
+     - ``false``
+     - Draw localization results as GPU-rendered point clouds through the optional napari-storm package instead of their histogram preview.  Needs the ``storm`` extra; without it the key has no effect.
+   * - ``smlmRenderPanel``
+     - bool
+     - ``false``
+     - The panel that controls the point-cloud renderer.  That panel exists only when the key is set; useful together with ``napariStormViewer``.
+
+.. rubric:: Live mode
+
+Live reconstruction while a recording is written.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 10 14 54
+
+   * - Key
+     - Type
+     - Default
+     - Meaning
+   * - ``liveStallTimeoutS``
+     - number (seconds)
+     - absent = automatic
+     - How long a live reconstruction waits without a new frame and without a completion marker before it assumes the recording writer crashed and finalizes with the data received so far.  Absent: 300 seconds, except for time-lapse sources, which idle between timepoints and have the watchdog switched off.  A positive number: that many seconds, time-lapse included.  ``0``, ``null`` or ``false``: no watchdog.  A negative number: no watchdog; a value that is not a number: 300 seconds.
+   * - ``liveViewerUpdateIntervalS``
+     - number (seconds)
+     - ``0.2``
+     - Minimum time between live-viewer refreshes; in the GPU path also how often the reconstruction is copied back from the GPU.  ``0`` refreshes on every frame; a negative or non-numeric value gives ``0.2``.
+   * - ``live_display_in_imcontrol``
+     - bool
+     - ``false``
+     - When ImControl runs in the same session, also show live results in ImControl's image viewer (the key keeps its snake_case spelling).
+
+.. rubric:: Plugins
+
+Which plugins ImProcess registers; see :ref:`improcess-processing-presets` for how the lists are read.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 10 14 54
+
+   * - Key
+     - Type
+     - Default
+     - Meaning
+   * - ``reconstructors``
+     - list of ids
+     - ``["view-only"]``
+     - The built-in reconstructors to register; the first is the initial one.  Ids this computer does not have are skipped at startup with a warning, and if none is known ``view-only`` is registered.  Drop-in plugins are active on their own and should not be listed.
+   * - ``processors``
+     - list of ids
+     - ``["drift-correct"]``
+     - The built-in processors to register; ``[]`` registers none.  Unknown ids are skipped with a warning.  Others can be loaded at runtime from the Tools toolbar.
+   * - ``napariEndpoints``
+     - list of objects
+     - ``[]``
+     - napari plugin adapters that results can be sent to, each with at least an ``id``; see :doc:`improcess-napari-plugins`.  ``napari_endpoints`` is read as an alias when ``napariEndpoints`` is absent or empty.  An entry that cannot be read is skipped; the config editor checks every entry when you apply.
 
 
 rois

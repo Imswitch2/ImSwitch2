@@ -2404,7 +2404,8 @@ A setup that supplies only one side of the plugin list keeps the standalone
 default for the other side: an omitted ``reconstructors`` key is
 ``["view-only"]`` and an omitted ``processors`` key is ``["drift-correct"]``,
 exactly as when the whole block is absent. Use an explicit empty list when that
-side should load nothing.
+side should load nothing (for processors; the config editor's check asks for at
+least one reconstructor).
 
 Of the built-ins, only the IDs you list are instantiated during initial
 registry setup; drop-in plugins from the plugins folder are always
@@ -2461,6 +2462,16 @@ Ready-to-use minimal configs ship under
    * - ``general_image_processing.json``
      - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC and ROI tools, with the multicolor processors registered (the Multicolor panel opens from *Load tool*)
 
+The config editor's **Start from preset…** button (see
+:ref:`config-editor-improcess`) offers exactly the shipped setups that contain
+only a ``processing`` block, ignoring comment keys (``//`` ...) and reserved
+keys (``__`` ...): a setup file is a preset because of what it holds, not
+because it is on a list, so a new processor-only setup shows up by being added
+to the package data.  It reads them from the package, never from your
+``ImSwitchConfig`` copy, shows each one's ``// description``, and copies the
+block into the setup you are editing.  Every key of the block is listed in
+:ref:`the processing key reference <setupinfo-processing>`.
+
 The Fiji preset is intentionally sparse: it starts with ``view-only`` and no
 registered processors, then lets the *Image operations* and *Tools* toolbars register
 processor-backed tools only when the user opens them.
@@ -2496,6 +2507,18 @@ The ``processing:`` block also accepts:
   recorder prepares the next one; the reader automatically disables the
   watchdog for these lapse sources unless you explicitly set a value in this
   config key (an explicit value then applies everywhere).
+* **liveViewerUpdateIntervalS** (numeric, optional) — the minimum time in
+  seconds between live-viewer refreshes.  In the GPU streaming path it is also
+  the cadence at which the reconstruction is copied from the GPU back to the
+  host.  Defaults to 0.2 seconds (5 Hz); ``0`` refreshes on every frame, and a
+  negative or non-numeric value falls back to the default.
+* **live_display_in_imcontrol** (bool, default ``false``) — when ImControl runs
+  in the same session, also show live reconstruction results in ImControl's
+  image viewer.  The key keeps its snake_case spelling.
+* **napariEndpoints** (list of objects, default none) — napari plugin adapters
+  that results can be sent to, each entry with at least an ``id``; see
+  :doc:`improcess-napari-plugins`.  The config editor edits the list on its
+  Plugins page and checks each entry.
 * **napariStormViewer** (bool, default ``false``) — draw localization results
   as GPU point clouds through the optional napari-storm package instead of
   their histogram preview.  Needs the ``storm`` extra; without it the key has
@@ -2503,6 +2526,12 @@ The ``processing:`` block also accepts:
 * **smlmRenderPanel** (bool, default ``false``) — show the panel controlling
   the point-cloud renderer (Gaussian width, colour by depth, render range,
   appearance).  Only useful together with ``napariStormViewer``.
+
+The remaining keys, with their defaults, are in :ref:`the processing key
+reference <setupinfo-processing>`.  An ID in ``reconstructors`` or
+``processors`` that this computer does not have is skipped at startup with a
+logged warning (and if none of the reconstructors is known, ``view-only`` is
+registered), as described under `Config schema`_.
 
 To launch ImSwitch2 with *only* ImProcess (no ImControl GUI) and *only*
 the plugins from one of these setup presets:

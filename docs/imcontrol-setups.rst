@@ -82,6 +82,97 @@ file holds the per-computer settings that are not part of any setup:
    session, so nothing is asked.
 
 
+.. _config-editor-improcess:
+
+ImProcess settings in the config editor
+=======================================
+
+The setup file's ``processing`` block (which ImProcess panels open at
+startup, which reconstructors and processors it offers, the live-mode
+settings) has its own section on the editor's centre canvas, headed
+**ImProcess**.  It is always shown, below the device categories, and first
+for a setup with no devices at all, such as the processor-only presets.  The
+card under the heading says what the block does: the reconstructors by name,
+how many processors, which analysis panels open, any live-mode setting that
+differs from its default and how many keys the editor has no field for.  With
+no ``processing`` block it says which standalone defaults ImProcess then
+uses.
+
+.. image:: ./images/config-editor-improcess-canvas.png
+   :alt: The config editor with the ImProcess section on the canvas, showing its summary card and the Start from preset, Edit and Remove buttons
+   :align: center
+
+The card has three buttons:
+
+* **Configure…** (**Edit…** once the setup has a block) opens the ImProcess
+  dialog.
+* **Start from preset…** lists the processor-only setups ImSwitch ships, with
+  each one's description and block, and copies the chosen block into this
+  setup (:ref:`improcess-processing-presets`).  The preset file itself is not
+  changed.  If the setup already has a block you are asked before it is
+  replaced.  The dialog has the same button, which replaces what the dialog
+  shows; nothing is written until you press **Apply**.
+* **Remove** deletes the ``processing`` block from the setup, after asking.
+
+The dialog has one page per group of options, each option with its
+one-sentence explanation under it, and three pages that are not options:
+
+.. image:: ./images/config-editor-improcess-dialog.png
+   :alt: The ImProcess dialog on its Plugins page, with the reconstructors and the processors listed by name and id, the processors grouped by category
+   :align: center
+
+* **Startup layout**: which ImProcess docks open at startup.
+* **Analysis panels**: the optional panels that are closed unless switched on.
+* **Localization viewer**: the point-cloud rendering of localization results.
+* **Live mode**: the stall timeout, the viewer refresh interval and whether
+  live results also appear in ImControl.
+* **Plugins**: the built-in reconstructors and processors to register (by
+  name, with the id in brackets, processors grouped by category) and the
+  napari plugin endpoints, which are a JSON list in a text box; a list that
+  is not valid JSON, or an entry that is not a valid endpoint, is reported
+  when you press **Apply**, which stays on that page until it is fixed.
+* **Drop-in plugins**: what the plugins folder holds on this computer
+  (id, kind, name, file), with a **Rescan** button; read-only.  A drop-in
+  plugin is active on a computer whenever its file is in the plugins folder,
+  so it does not belong in the setup: an id listed there only makes the setup
+  look for a file that other computers may not have.  Listed drop-in ids are
+  marked on this page.  The folder is scanned by importing the plugin files,
+  so this happens when the dialog opens (once per editor session), not when
+  the editor starts; a file that fails to load is shown with the reason.
+* **Custom**: keys in the block that the editor has no field for, kept as
+  they are, and **⊕ Add property** for your own.
+* **Set on this computer**: the ImProcess settings that are *not* in a setup
+  (below).
+
+**Apply** writes the block as the file had it.  A key is written only if the
+file already had it, you changed it in the dialog, or it is required (the
+list of reconstructors, which may not be empty), so a short block stays
+short, opening the dialog and pressing **Apply** changes nothing, and keys
+come back in the order the file had them.  Keys the editor does not know stay
+on the Custom page and are written back unchanged.  A new section starts
+with the required key only.  The key reference is in :ref:`the
+processing section <setupinfo-processing>` of the setup reference.
+
+The editor's validation panel checks the plugin lists against what exists:
+
+* a reconstructor or processor id that is neither built in nor a drop-in on
+  this computer is an **error** (``processing.reconstructors contains unknown
+  plugin ID(s)``): ImProcess skips such an id at startup and starts with the
+  rest;
+* a drop-in plugin's id listed in the setup is a **warning**, for the reason
+  above;
+* ``reconstructors`` that is not a list, or is empty, is an error.
+
+Some ImProcess settings belong to a computer, not to a setup, and are neither
+in this dialog nor in the setup file.  They are set inside ImProcess and kept
+in ``ImSwitchConfig/config/improcess_options.json``:
+
+* the Fiji location: **Plugins → Fiji → Fiji location…**
+* the image display (embedded napari viewer or separate windows):
+  **Preferences → Image display**
+* the default data and save folders: **Preferences → Default folders…**
+
+
 How configurations are defined
 ==============================
 
