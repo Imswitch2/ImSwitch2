@@ -21,12 +21,17 @@ from imswitch.imcommon.model.acquisition_layout import (
 )
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import localizations_from_columns
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import StreamingReconstructor
 
 from .detection import detect_spots
 from .fitting import fit_spots
 from .params_widget import SmlmParamsWidget
 from .precision import localization_precision_nm
+
+#: Bin size (nm) of the histogram a fresh localization result is first shown
+#: as, unless the parameters say otherwise.
+DEFAULT_PREVIEW_PIXEL_SIZE_NM = 10.0
 
 #: Loop kinds that advance a chronological frame stream, which is what SMLM
 #: localizes. Every other kind is a second physical dimension, and flattening
@@ -118,6 +123,16 @@ def frame_indices_for_selection(layout: Any, selection: dict) -> list[int]:
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
+
+
+def preview_pixel_size_nm(params: dict) -> float:
+    """The preview bin size a run asked for; the default when it did not."""
+    value = params.get("preview_pixel_size_nm")
+    try:
+        number = float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        number = 0.0
+    return number if number > 0 else DEFAULT_PREVIEW_PIXEL_SIZE_NM
 
 
 def iter_frames(data: np.ndarray) -> Iterator[tuple[int, np.ndarray]]:
@@ -216,6 +231,10 @@ class SmlmLocalizer(StreamingReconstructor):
     accepted_source_kinds = ("image", "localizations")
     description = "Single-molecule localization (net-gradient detect + fit)"
     default_save_subdir = "smlm"
+    #: ``loop_selection`` picks one index per non-frame loop of a recorded
+    #: multi-loop acquisition (see ``_select_frame_stream``); the GUI fills
+    #: it from the source inspection, a workflow states it.
+    extra_param_keys = ("loop_selection",)
 
     @classmethod
     def default_params(cls) -> dict:
@@ -225,7 +244,45 @@ class SmlmLocalizer(StreamingReconstructor):
         'method': 'gausslq',
         # None: the recording's own calibration answers (the widget's
         # 'From the recording'); a number overrides it.
-        'pixel_size_nm': None}
+        'pixel_size_nm': None,
+        # Bin size of the histogram the result is first shown as.
+        'preview_pixel_size_nm': DEFAULT_PREVIEW_PIXEL_SIZE_NM}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'threshold', 'float', 500.0, label='Net-gradient threshold',
+                help='Minimum Picasso net gradient (inward slopes summed over the ROI) for a candidate peak. Tune with the Preview detection toggle: raise to reject noise, lower to catch dim emitters.',
+                min=0, group='Detection',
+            ),
+            ParamField(
+                'sigma', 'float', 1.0, label='Smoothing sigma',
+                help='Gaussian pre-smoothing width in pixels', min=0, max=20, group='Detection',
+            ),
+            ParamField(
+                'roi', 'int', 7, label='ROI size', help='Fitting window size in pixels (odd)',
+                min=3, max=31, group='Detection',
+            ),
+            ParamField(
+                'method', 'select', 'gausslq', label='Method',
+                help='gausslq: centroid + moments; mle: Poisson Gaussian MLE',
+                options=('gausslq', 'mle'), group='Fitting',
+            ),
+            ParamField(
+                'pixel_size_nm', 'float', None, label='Pixel size',
+                help="Empty: the recording's own calibration answers; a number overrides it",
+                min=0.0, max=1000000.0, suffix='nm', group='Calibration', nullable=True,
+            ),
+            ParamField(
+                'preview_pixel_size_nm', 'float', DEFAULT_PREVIEW_PIXEL_SIZE_NM,
+                label='Preview pixel size',
+                help='Bin size of the histogram the localizations are first shown as. '
+                     'Finer bins show more and cost memory: the preview holds one float '
+                     'per bin over the whole field.',
+                min=1.0, max=1000000.0, suffix='nm', group='Rendering',
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger('SmlmLocalizer')
@@ -267,6 +324,7 @@ class SmlmLocalizer(StreamingReconstructor):
             dims="2D",
             source_name=data_obj.name,
             source_shape=source_shape,
+            preview_pixel_size_nm=preview_pixel_size_nm(params),
             metadata={
                 "threshold": float(params.get("threshold", 500.0)),
                 "roi": int(params.get("roi", 7)),
@@ -369,4 +427,10 @@ class SmlmLocalizer(StreamingReconstructor):
         return data, source_shape
 
 
-__all__ = ["SmlmLocalizer", "localize_stack", "iter_frames"]
+__all__ = [
+    "DEFAULT_PREVIEW_PIXEL_SIZE_NM",
+    "SmlmLocalizer",
+    "iter_frames",
+    "localize_stack",
+    "preview_pixel_size_nm",
+]

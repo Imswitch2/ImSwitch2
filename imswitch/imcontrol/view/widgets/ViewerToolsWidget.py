@@ -23,12 +23,13 @@ from .basewidgets import Widget
 class ViewerToolsWidget(Widget):
     """Widget for switching napari viewer interaction modes."""
 
-    sigToolSelected = QtCore.Signal(str)  # 'pan', 'rectangle', 'line', 'crosshair', 'grid'
+    #: 'pan', 'rectangle', 'line', 'timetrace', 'crosshair' or 'grid'
+    sigToolSelected = QtCore.Signal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # All five tools are mutually exclusive
+        # All tools are mutually exclusive
         self.toolButtonGroup = QtWidgets.QButtonGroup()
         self.toolButtonGroup.setExclusive(True)
 
@@ -53,20 +54,30 @@ class ViewerToolsWidget(Widget):
         self.gridButton.setCheckable(True)
         self.gridButton.setToolTip('Show static grid overlay')
 
+        self.intensityTraceButton = guitools.BetterPushButton('ROI Intensity vs T')
+        self.intensityTraceButton.setCheckable(True)
+        self.intensityTraceButton.setToolTip(
+            'Draw a rectangle ROI and plot its mean intensity over time in the'
+            ' Line Profile panel (the whole frame until one is drawn)'
+        )
+
         for i, btn in enumerate([self.panButton, self.rectangleButton,
                                   self.lineButton, self.crosshairButton,
-                                  self.gridButton]):
+                                  self.gridButton, self.intensityTraceButton]):
             self.toolButtonGroup.addButton(btn, i)
 
         # Layout
-        layout = QtWidgets.QGridLayout()
+        self._layout = layout = QtWidgets.QGridLayout()
         self.setLayout(layout)
         layout.addWidget(QtWidgets.QLabel('Viewer Tools:'), 0, 0, 1, 2)
         layout.addWidget(self.panButton, 1, 0)
         layout.addWidget(self.rectangleButton, 1, 1)
         layout.addWidget(self.lineButton, 2, 0)
-        layout.addWidget(self.crosshairButton, 2, 1)
-        layout.addWidget(self.gridButton, 3, 0, 1, 2)
+        layout.addWidget(self.intensityTraceButton, 2, 1)
+        layout.addWidget(self.crosshairButton, 3, 0)
+        layout.addWidget(self.gridButton, 3, 1)
+        # Plotted by the Line Profile panel; offered once it is known to exist.
+        self.setIntensityTraceAvailable(False)
 
         # Signals
         self.panButton.clicked.connect(lambda: self.sigToolSelected.emit('pan'))
@@ -74,23 +85,33 @@ class ViewerToolsWidget(Widget):
         self.lineButton.clicked.connect(lambda: self.sigToolSelected.emit('line'))
         self.crosshairButton.clicked.connect(lambda: self.sigToolSelected.emit('crosshair'))
         self.gridButton.clicked.connect(lambda: self.sigToolSelected.emit('grid'))
+        self.intensityTraceButton.clicked.connect(
+            lambda: self.sigToolSelected.emit('timetrace'))
 
-    def setActiveTool(self, mode):
-        mapping = {
+    def _toolButtons(self):
+        return {
             'pan': self.panButton,
             'rectangle': self.rectangleButton,
             'line': self.lineButton,
+            'timetrace': self.intensityTraceButton,
             'crosshair': self.crosshairButton,
             'grid': self.gridButton,
         }
-        btn = mapping.get(mode)
+
+    def setIntensityTraceAvailable(self, available):
+        """Show the ROI Intensity vs T button, which needs the Line Profile panel."""
+        self.intensityTraceButton.setVisible(bool(available))
+        # Without it the Line button would sit beside a gap.
+        self._layout.removeWidget(self.lineButton)
+        self._layout.addWidget(self.lineButton, 2, 0, 1, 1 if available else 2)
+
+    def setActiveTool(self, mode):
+        btn = self._toolButtons().get(mode)
         if btn:
             btn.setChecked(True)
 
     def getActiveTool(self):
-        for name, btn in [('pan', self.panButton), ('rectangle', self.rectangleButton),
-                          ('line', self.lineButton), ('crosshair', self.crosshairButton),
-                          ('grid', self.gridButton)]:
+        for name, btn in self._toolButtons().items():
             if btn.isChecked():
                 return name
         return 'pan'

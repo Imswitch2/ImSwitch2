@@ -8,6 +8,7 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
+from imswitch.imcommon.view.LogWidget import LogWidget
 from . import widgets
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
@@ -253,6 +254,15 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
         hardware.addAction(self.configEditorAction)
 
+        # Checkable, but left unconnected until the dock it toggles exists --
+        # the menu bar is built before the dock area.
+        self.logAction = QtWidgets.QAction('Log', self, checkable=True)
+        self.logAction.setToolTip(
+            'Show the ImSwitch2 log. Records are buffered from startup at Debug'
+            ' level, so opening this shows what already happened.'
+        )
+        view.addAction(self.logAction)
+
         self.resetLayoutAction = QtWidgets.QAction('Reset panel layout', self)
         self.resetLayoutAction.setToolTip(
             'Put every panel back where this hardware setup puts it, at the'
@@ -260,6 +270,19 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.resetLayoutAction.triggered.connect(self.resetDockLayout)
         view.addAction(self.resetLayoutAction)
+
+        # Imported by class, not through the lazy ``widgets`` namespace: once
+        # anything imports the HardwareStatusWidget *module* directly, the
+        # package attribute of that name is the module, not the class.
+        from .widgets.HardwareStatusWidget import HardwareStatusWidget
+        self.hardwareStatusWidget = self.factory.createWidget(HardwareStatusWidget)
+        self.hardwareStatusWidget.hide()
+        self.hardwareStatusAction = QtWidgets.QAction('Hardware status…', self)
+        self.hardwareStatusAction.setToolTip(
+            'Connection state of every device in this setup.'
+        )
+        self.hardwareStatusAction.triggered.connect(self.showHardwareStatus)
+        hardware.addAction(self.hardwareStatusAction)
 
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
@@ -322,6 +345,10 @@ class ImConMainView(QtWidgets.QMainWindow):
             enabledDockKeys = []
         elif enabledDockKeys is True:
             enabledDockKeys = allDockKeys
+        # A setup with instruments always gets their panel: without it a
+        # connected power meter or polarimeter shows no reading anywhere.
+        if getattr(self.viewSetupInfo, 'instruments', None) and 'Instruments' not in enabledDockKeys:
+            enabledDockKeys = list(enabledDockKeys) + ['Instruments']
 
         if 'Image' in enabledDockKeys:
             self.docks['Image'] = Dock('Image Display', size=(1, 1))
@@ -341,6 +368,26 @@ class ImConMainView(QtWidgets.QMainWindow):
             {k: v for k, v in leftDockInfos.items() if k in enabledDockKeys},
             self.dockArea, 'left'
         )
+
+        # --- Log panel ---
+        # Deliberately not a _DEFAULT_*_DOCK_INFOS entry: those drive the widget
+        # and controller factories by name, and the log view is a plain view onto
+        # the process-wide buffer with no controller behind it.  For the same
+        # reason it stays out of self.widgets, which ImConMainController iterates
+        # to build a <Key>Controller for every entry.
+        #
+        # Built even when hidden -- it costs an empty text view, and a standalone
+        # bundle has no console behind it, so on macOS the log is otherwise
+        # unreachable.  The records it shows were buffered from startup, long
+        # before anyone opens the panel.
+        self.docks['Log'] = Dock('Log', size=(1, 1))
+        self.logWidget = LogWidget()
+        self.docks['Log'].addWidget(self.logWidget)
+        self.dockArea.addDock(self.docks['Log'], 'bottom')
+        if 'Log' not in enabledDockKeys:
+            self.docks['Log'].hide()
+        self.logAction.setChecked(not self.docks['Log'].isHidden())
+        self.logAction.toggled.connect(self._setLogVisible)
 
         # Add dock area to layout
         layout.addWidget(self.dockArea)
@@ -417,6 +464,11 @@ class ImConMainView(QtWidgets.QMainWindow):
             # viewer's width share has to be expressed against the panel
             # columns it sits next to rather than as a bare number.
             self.docks['Image'].setStretch(widestPanel * _IMAGE_WIDTH_MULTIPLE, 1)
+
+    def _setLogVisible(self, visible):
+        dock = self.docks.get('Log')
+        if dock is not None:
+            dock.show() if visible else dock.hide()
 
     def resetDockLayout(self):
         """ Put the panels back where this hardware setup puts them.
@@ -537,6 +589,12 @@ class ImConMainView(QtWidgets.QMainWindow):
             else:
                 # Action is disabled or has no binding
                 qAction.setText(baseText)
+
+    def showHardwareStatus(self):
+        """Show and raise the global read-only hardware status window."""
+        self.hardwareStatusWidget.show()
+        self.hardwareStatusWidget.raise_()
+        self.hardwareStatusWidget.activateWindow()
 
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()
@@ -668,6 +726,10 @@ class _DockInfo:
 # in the setup JSON so the dock title doesn't have to be specified separately.
 # Falls back to the raw key name for unknown/future widgets.
 _DOCK_DISPLAY_NAMES = {
+    # Not a factory-built widget (see the Log dock in __init__), but listed
+    # here so the config editor offers it in availableWidgets and does not
+    # flag a setup that asks for it as naming an unknown widget.
+    'Log': 'Log',
     'Autofocus': 'Autofocus',
     'FocusLock': 'Focus Lock',
     'EtSTED': 'EtSTED',
@@ -675,6 +737,7 @@ _DOCK_DISPLAY_NAMES = {
     'Positioner': 'Positioner',
     'Laser': 'Laser Control',
     'Rotator': 'Rotator',
+    'Instruments': 'Instruments',
     'MotCorr': 'Motorized Correction Collar',
     'SLMs': 'SLMs',
     'SLM': 'SLM',
@@ -724,6 +787,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'BSC203':        _DockInfo(name='BSC203 Stage',                  yPosition=0),
     'Laser':         _DockInfo(name='Laser Control',                 yPosition=0),
     'Rotator':       _DockInfo(name='Rotator',                       yPosition=1),
+    'Instruments':   _DockInfo(name='Instruments',                   yPosition=1),
     'MotCorr':       _DockInfo(name='Motorized Correction Collar',   yPosition=1),
     'SLMs':          _DockInfo(name='SLMs',                          yPosition=2),
     'Scan':          _DockInfo(name='Scan',                          yPosition=2),

@@ -14,6 +14,7 @@ from imswitch.improcess.analysis.multicolor import (
     split_axis_index,
 )
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import MulticolorRegistrationResult
@@ -40,6 +41,40 @@ class MulticolorRegistrationProcessor(Processor):
         'match_max_dist': 25.0,
         'ransac_n_iter': 2000,
         'ransac_inlier_px': 3.0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('n_slices', 'int', 3, label='Slices', min=2, max=16),
+            ParamField('split_axis', 'select', 'X', label='Split axis', options=('X', 'Y', 'Z')),
+            ParamField(
+                'bounds', 'text', '', label='Bounds',
+                help='blank = equal slices, or b0,b1,...,bN',
+            ),
+            ParamField(
+                'mode', 'select', 'maxproj', label='Mode',
+                options=('maxproj', 'volume', 'descriptor_3d'),
+            ),
+            ParamField('reference_channel', 'int', 0, label='Reference channel', min=0, max=2),
+            ParamField('time_index', 'int', 0, label='Timepoint', min=0, max=999999),
+            ParamField(
+                'bead_sigma', 'float', 1.5, label='Bead sigma', min=0.01, max=100, decimals=3,
+            ),
+            ParamField('bead_min_dist', 'int', 6, label='Bead min dist', min=1, max=9999),
+            ParamField(
+                'bead_thr_rel', 'float', 0.5, label='Bead threshold', min=0, max=1, step=0.05,
+                decimals=3,
+            ),
+            ParamField(
+                'match_max_dist', 'float', 25.0, label='Match max dist', min=0.1, max=10000,
+                decimals=2,
+            ),
+            ParamField('ransac_n_iter', 'int', 2000, label='RANSAC iter', min=1, max=1000000),
+            ParamField(
+                'ransac_inlier_px', 'float', 3.0, label='RANSAC inlier px', min=0.01, max=1000,
+                decimals=2,
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

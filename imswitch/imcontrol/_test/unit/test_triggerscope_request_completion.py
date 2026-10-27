@@ -1,6 +1,6 @@
-"""The TriggerScope family reports and resolves an exact completion only
-when the active request asked for one (plan A-05, Q-11); scan-mode
-Recording keeps its legacy path."""
+"""TriggerScope scan requests always report acceptance/refusal reasons.
+Exact-completion requests additionally receive a completion object resolved by
+the scan terminal; Recording-style requests keep their legacy completion path."""
 from types import SimpleNamespace
 
 from imswitch.imcontrol.controller.controllers._triggerscope_scan_lifecycle import (
@@ -26,6 +26,9 @@ class _Shell(TriggerScopeScanLifecycleMixin):
         self._widget = SimpleNamespace(setRepeatEnabled=lambda *_a: None)
         self._logger = SimpleNamespace(error=lambda *a, **k: None, debug=lambda *a, **k: None,
                                        warning=lambda *a, **k: None)
+        self._scanCoordinator = SimpleNamespace(
+            runForOwner=lambda _owner: self.token if self.bind else None
+        )
         self._externalTriggerScopeCompletion = None
         self._triggerScopeBoundCompletions = []
         self._triggerScopeRunOutcome = None
@@ -42,11 +45,17 @@ class _Shell(TriggerScopeScanLifecycleMixin):
             self._lastScanStartRejection = 'Ignoring duplicate TriggerScope scan start'
 
 
-def test_recording_style_requests_are_not_reported_on():
+def test_recording_style_request_reports_acceptance_without_exact_completion():
     workflow = _Workflow(exact=False)
     shell = _Shell(workflow, bind=True)
     shell._runTriggerScopeScanExternal(True, False)
-    assert workflow.reports == []                 # legacy path untouched (handled=False)
+
+    (owner, accepted, message, runToken, completion), = workflow.reports
+    assert owner is shell
+    assert accepted is True
+    assert message == ''
+    assert runToken is shell.token
+    assert completion is None
     assert shell._triggerScopeBoundCompletions == []
 
 

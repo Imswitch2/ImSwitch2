@@ -14,11 +14,13 @@ from imswitch.improcess.analysis.smlm_import import (
     read_localizations,
     sniff_localization_format,
 )
+from imswitch.imcommon.model.measurement_run import MeasurementRunFile, is_measurement_run_file
 from imswitch.improcess.model import result_io
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
     LOCALIZATIONS_SPEC,
     LOCATOR_DIRECTORY,
+    MEASUREMENT_RUN_SOURCE_KIND,
     TILING_MANIFEST_SPEC,
     file_dialog_filter,
     preferred_source_spec,
@@ -260,6 +262,11 @@ class FileIOController(ImProcessWidgetController):
         elif localizationFormat is not None:
             return self._loadLocalizationsAsResult(dataPath, localizationFormat)
 
+        # A measurement run is HDF5 by name but not an image: recognised by its
+        # schema marker and opened as a metadata source for run reconstructors.
+        if is_measurement_run_file(dataPath):
+            return self._loadMeasurementRunAsCurrent(dataPath)
+
         try:
             source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
             dataPath = str(source.path)
@@ -347,7 +354,9 @@ class FileIOController(ImProcessWidgetController):
             return 'cancelled'
 
         try:
-            result = read_generic_csv(dataPath, **kwargs)
+            result = read_generic_csv(
+                dataPath, preview_pixel_size_nm=self._previewPixelSizeNm(), **kwargs
+            )
         except Exception as exc:
             self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
             return 'empty'
@@ -361,11 +370,41 @@ class FileIOController(ImProcessWidgetController):
         publishes its output.
         """
         try:
-            result = read_localizations(dataPath)
+            result = read_localizations(
+                dataPath, preview_pixel_size_nm=self._previewPixelSizeNm()
+            )
         except Exception as exc:
             self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
             return 'empty'
         return self._publishLocalizations(result, dataPath, localizationFormat)
+
+    def _previewPixelSizeNm(self) -> float:
+        """The preview bin the SMLM localizer's panel is set to.
+
+        An imported table is shown exactly as a localized one would be, so
+        it takes the same *Rendering -> Preview pixel size*; the active
+        reconstructor's parameter widget is where that value lives. The
+        localizer's default when no panel is up to ask.
+        """
+        from imswitch.improcess.reconstructors.smlm.localizer import (
+            preview_pixel_size_nm,
+        )
+
+        # Through __dict__: on a controller whose Qt base __init__ has not run
+        # (tests build one without it) a plain getattr raises instead of
+        # answering None.
+        widget = self.__dict__.get('_widget')
+        getter = getattr(getattr(widget, 'parTree', None), 'get_values', None)
+        values = {}
+        if callable(getter):
+            try:
+                values = dict(getter() or {})
+            except Exception:
+                self._logger.debug(
+                    'Could not read the preview pixel size from the parameter widget',
+                    exc_info=True,
+                )
+        return preview_pixel_size_nm(values)
 
     def _publishLocalizations(self, result, dataPath, localizationFormat) -> str:
         """Hand a freshly read localization table to the reconstruction list."""
@@ -398,6 +437,24 @@ class FileIOController(ImProcessWidgetController):
             f"({localizationFormat})"
         )
         return 'current'
+
+    def _loadMeasurementRunAsCurrent(self, dataPath) -> str:
+        """Open a measurement run file as the current, non-image source."""
+        try:
+            run = MeasurementRunFile.load(dataPath)
+            data_obj = DataObj.fromMetadataSource(
+                os.path.basename(dataPath), Path(dataPath),
+                MEASUREMENT_RUN_SOURCE_KIND, run,
+            )
+            data_obj.sourceFingerprint = run.run_id
+        except Exception as exc:
+            self._logger.error(f"Could not open the measurement run {dataPath}: {exc}")
+            return 'empty'
+        self._logger.info(
+            f"Opened measurement run {run.run_id}: {run.n_points} points, "
+            f"acquisition {run.acquisition.value}"
+        )
+        return _route_as_current(self, data_obj)
 
     def _loadMetadataAsCurrent(self, source) -> str:
         """Inspect and route a non-array source without asking DataObj to open it."""

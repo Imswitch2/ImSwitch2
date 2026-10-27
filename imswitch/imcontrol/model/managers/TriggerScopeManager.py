@@ -18,6 +18,11 @@ from serial.serialutil import SerialException
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Timer, Worker
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.graph import (
+    DeviceDependencySpec, DeviceDescriptorSpec, DeviceRelationKind,
+    DeviceSection, HardwareDeviceId,
+)
+from imswitch.imcontrol.model.devices.status import DeviceId
 
 
 class TriggerScopeManager(SignalInterface):
@@ -39,6 +44,7 @@ class TriggerScopeManager(SignalInterface):
         self.__logger = initLogger(self)
 
         info = setupInfo.triggerScope
+        self._rs232Name = str(info.rs232device)
         self._rs232manager = rs232sManager[info.rs232device]
         self._rs232manager.setTimeout(100000)
         self.send('*')
@@ -99,6 +105,21 @@ class TriggerScopeManager(SignalInterface):
     # ------------------------------------------------------------------
     # Public properties
     # ------------------------------------------------------------------
+
+    def getDeviceDescriptorSpec(self):
+        return DeviceDescriptorSpec(
+            hardware_id=HardwareDeviceId('infrastructure', 'triggerscope'),
+            display_name='TriggerScope',
+            category='infrastructure',
+            section=DeviceSection.INFRASTRUCTURE,
+            dependencies=(
+                DeviceDependencySpec(
+                    DeviceRelationKind.USES_TRANSPORT,
+                    target=DeviceId('rs232', self._rs232Name),
+                    label=self._rs232Name,
+                ),
+            ),
+        )
 
     @property
     def deviceInfo(self):

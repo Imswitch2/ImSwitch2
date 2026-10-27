@@ -4,6 +4,7 @@
     "managerName": "TriggerScopePositionerManager",
     "managerProperties": {
       "conversionFactor": "example",
+      "defaultReferenceVoltage": null,
       "maxVolt": "example",
       "minVolt": "example"
     }

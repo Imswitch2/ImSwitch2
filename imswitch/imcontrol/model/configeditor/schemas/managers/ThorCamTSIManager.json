@@ -3,9 +3,11 @@
   "additionalProperties": true,
   "properties": {
     "cameraPixelSizeUm": {
+      "x-imswitch-kind": "number",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(get)"
+        "code:optional(get)",
+        "example:number"
       ]
     },
     "cameraSerial": {
@@ -97,6 +99,14 @@
       "x-imswitch-kind": "integer",
       "x-imswitch-source": [
         "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "When the camera cannot be opened, a mock camera stands in until **Reconnect** in Hardware status replaces it with the real one (a detector needs its sensor size at construction, so an absent camera cannot be left without a backend). ``false`` makes a missing camera a startup error.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
         "code:optional(get)"
       ]
     }

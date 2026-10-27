@@ -8,6 +8,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.analysis.segmentation import segment_image
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._extraction import axis_labels_for_data
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import SegmentationResult
@@ -45,6 +46,38 @@ class SegmentationProcessor(Processor):
         'z_index': 0,
         'c_index': 0,
         'axis_indices': ''}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'threshold_method', 'select', 'otsu', label='Method',
+                options=('otsu', 'manual', 'triangle', 'yen', 'local', 'watershed'),
+            ),
+            ParamField('threshold_value', 'float', 0.0, label='Manual value', decimals=6),
+            ParamField('min_area', 'int', 10, label='Min area', min=1),
+            ParamField(
+                'smooth_sigma', 'float', 0.0, label='Smooth sigma', min=0, max=1000, decimals=3,
+            ),
+            ParamField(
+                'background_radius', 'float', 0.0, label='Top-hat radius', min=0, max=10000,
+                decimals=1,
+            ),
+            ParamField('morphology_radius', 'int', 0, label='Morph radius', min=0, max=9999),
+            ParamField('fill_holes', 'bool', False, label='Fill holes'),
+            ParamField('clear_border', 'bool', False, label='Clear border'),
+            ParamField('local_block_size', 'int', 51, label='Local block', min=3, max=9999, step=2),
+            ParamField('local_offset', 'float', 0.0, label='Local offset', decimals=6),
+            ParamField(
+                'watershed_min_distance', 'int', 5, label='Watershed distance', min=1, max=9999,
+            ),
+            ParamField('t_index', 'int', 0, label='T index', min=0, max=999999),
+            ParamField('z_index', 'int', 0, label='Z index', min=0, max=999999),
+            ParamField('c_index', 'int', 0, label='C index', min=0, max=999999),
+            ParamField(
+                'axis_indices', 'text', '', label='Other axes', help='e.g. Dataset=0, Base=1',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

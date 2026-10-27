@@ -71,3 +71,28 @@ def test_mock_frames_span_plausible_camera_range():
     frame = cam.grabFrame()
     assert frame.max() > 0
     assert frame.max() <= 65535
+
+
+def test_mock_tis_properties_persist_for_reconnect_replay():
+    cam = MockCameraTIS()
+
+    cam.setPropertyValue('exposure', 17)
+    cam.setPropertyValue('gain', 4)
+    cam.setPropertyValue('brightness', 2)
+
+    assert cam.getPropertyValue('exposure') == 17
+    assert cam.getPropertyValue('gain') == 4
+    assert cam.getPropertyValue('brightness') == 2
+    assert cam.exposure == 17
+    assert cam.gain == 4
+    assert cam.brightness == 2
+
+
+def test_mock_tis_roi_updates_reported_dimensions():
+    cam = MockCameraTIS()
+
+    cam.setROI(11, 13, 320, 240)
+
+    assert cam.shape == (240, 320)
+    assert cam.getPropertyValue('image_width') == 320
+    assert cam.getPropertyValue('image_height') == 240

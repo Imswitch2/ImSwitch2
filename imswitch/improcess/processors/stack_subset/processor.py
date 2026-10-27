@@ -16,6 +16,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 
@@ -30,6 +31,16 @@ class StackSubsetProcessor(Processor):
     @classmethod
     def default_params(cls) -> dict:
         return {'ranges': [], 'copy': False}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'ranges', 'json', [], label='Ranges',
+                help='One object per axis to crop: {"axis": 0, "start": 0, "stop": 10, "step": 1}; axis is the 0-based index, stop is exclusive, step optional',
+            ),
+            ParamField('copy', 'bool', False, label='Copy data'),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

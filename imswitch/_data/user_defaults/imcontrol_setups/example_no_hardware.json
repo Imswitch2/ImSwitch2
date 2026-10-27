@@ -6,6 +6,7 @@
             "managerName": "AVManager",
             "managerProperties": {
                 "cameraListIndex": "mock",
+                "cameraPixelSizeUm": 0.15,
                 "avcam": {
                     "exposure": 100,
                     "gain": 1
@@ -20,6 +21,7 @@
             "managerName": "ThorCamTSIManager",
             "managerProperties": {
                 "cameraSerial": "MOCK_TSI_12345",
+                "cameraPixelSizeUm": 0.15,
                 "dllLocation": "dlls/64_lib",
                 "defaults": {
                     "exposure_us": 50000,
@@ -62,6 +64,18 @@
             }
         }
     },
+    "instruments": {
+        "Mock power meter": {
+            "managerName": "MockPowerMeterManager",
+            "transient": true,
+            "managerProperties": {"powerW": 0.001}
+        },
+        "Mock PAX": {
+            "managerName": "MockPAXManager",
+            "transient": true,
+            "managerProperties": {"plate1Rotator": "Mock QWP", "plate2Rotator": "Mock HWP"}
+        }
+    },
     "positioners": {
         "Mock X": {
             "analogChannel": null,
@@ -89,7 +103,6 @@
             "managerName": "KinesisStageManager",
             "managerProperties": {
                 "snr": "MOCK_MLS203",
-                "posRangeUm": {"X": [0, 25000], "Y": [0, 25000]},
                 "homeOnInit": false
             },
             "axes": ["X", "Y"],

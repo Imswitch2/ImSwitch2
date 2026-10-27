@@ -1,12 +1,13 @@
 import argparse
 import importlib
+import os
 import traceback
 
 import imswitch
 from imswitch.imcommon import prepareApp, launchApp
 from imswitch.imcommon.controller import ModuleCommunicationChannel, MultiModuleWindowController
-from imswitch.imcommon.model import modulesconfigtools, pythontools, initLogger
-from imswitch.imcommon.model.logging import setLogLevel
+from imswitch.imcommon.model import dirtools, modulesconfigtools, pythontools, initLogger
+from imswitch.imcommon.model.logging import attachLogFile, setLogLevel
 from imswitch.imcommon.view import MultiModuleWindow, ModuleLoadErrorView
 
 
@@ -22,6 +23,12 @@ def main():
         setLogLevel('DEBUG')
 
     logger = initLogger('main')
+
+    # Before the modules load, so a crash while loading one is still on disk.
+    # Records emitted even earlier than this (during imports) are in the
+    # in-memory buffer and get written into the file as its first lines.
+    attachLogFile(os.path.join(dirtools.UserFileDirs.Root, 'logs', 'imswitch.log'))
+
     logger.info(f'Starting ImSwitch {imswitch.__version__}')
 
     app = prepareApp(scale=args.scale)
@@ -69,7 +76,22 @@ def main():
             logger.error(f'Failed to initialize module {moduleId}')
             logger.error(traceback.format_exc())
             moduleCommChannel.unregister(modulePkg)
-            multiModuleWindow.addModule(moduleId, moduleName, ModuleLoadErrorView(e))
+            if moduleId == 'imcontrol':
+                # ImControl can fail because the selected hardware setup is not
+                # usable on this machine. Keep setup selection/config editing
+                # reachable even though its normal controller never finished.
+                try:
+                    from imswitch.imcontrol.view.ImControlLoadErrorView import (
+                        ImControlLoadErrorView,
+                    )
+                    errorView = ImControlLoadErrorView(e)
+                except Exception:
+                    logger.error('Failed to initialize ImControl recovery view')
+                    logger.error(traceback.format_exc())
+                    errorView = ModuleLoadErrorView(e)
+            else:
+                errorView = ModuleLoadErrorView(e)
+            multiModuleWindow.addModule(moduleId, moduleName, errorView)
         else:
             # Add module to window
             multiModuleWindow.addModule(moduleId, moduleName, view)

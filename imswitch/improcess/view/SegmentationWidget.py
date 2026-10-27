@@ -10,6 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
+from imswitch.improcess.view.runstate import RunState
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis, segment_image
 from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.processors import SegmentationProcessor
@@ -19,6 +20,8 @@ class SegmentationWidget(QtWidgets.QWidget):
     """Threshold + connected-component segmentation for the active image layer."""
 
     sigRunRequested = QtCore.Signal(object, dict)
+    sigCancelRequested = QtCore.Signal()
+    """**Cancel** was pressed while a run was going."""
 
     # Class attribute so layer-resolution helpers work even on partially
     # constructed instances (unit tests build the widget via __new__).
@@ -166,6 +169,8 @@ class SegmentationWidget(QtWidgets.QWidget):
         controls.addWidget(self.exportCsvButton)
         controls.addWidget(self.exportJsonButton)
         controls.addStretch()
+        self._runState = RunState(self.runButton, controls, self.sigCancelRequested.emit)
+        self.cancelButton = self._runState.cancelButton
 
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
@@ -214,7 +219,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         self._invalidate_preview()
         # Enable/disable Segment button based on whether result has image data
         has_image = result is not None and hasattr(result, 'data') and result.data is not None
-        self.runButton.setEnabled(has_image)
+        self._allowRun(has_image)
         
         # Capture analysis from SegmentationResult for ROI export
         if isinstance(result, SegmentationResult):
@@ -223,6 +228,23 @@ class SegmentationWidget(QtWidgets.QWidget):
             # Non-segmentation result: clear cached analysis
             # (ROI export will show "Run segmentation first.")
             self._last_analysis = None
+
+    def _allowRun(self, allowed: bool) -> None:
+        """Whether Run may be pressed, were nothing running."""
+        # Read through __dict__: a widget built without its __init__ (tests do)
+        # has no run state, and a plain getattr on it raises.
+        state = self.__dict__.get("_runState")
+        if state is None:
+            self.runButton.setEnabled(allowed)
+        else:
+            state.setRunEnabled(allowed)
+
+    def isRunning(self) -> bool:
+        return self._runState.running
+
+    def setRunning(self, running: bool) -> None:
+        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        self._runState.setRunning(running)
 
     def setStatusText(self, text: str):
         """Conform to result-processor widget contract: forward to summaryLabel."""

@@ -57,15 +57,17 @@ class HMockCamData:
 
 class MockHamamatsu:
 
-    def __init__(self):
+    def __init__(self, width=2048, height=2048):
         self.__logger = initLogger(self, tryInheritParent=True)
 
         self.buffer_index = 0
         self.camera_id = 9999
         self.camera_model = b'Mock Hamamatsu camera'
         self.debug = False
-        self.frame_x = 500
-        self.frame_y = 500
+        width = max(1, int(width))
+        height = max(1, int(height))
+        self.frame_x = width
+        self.frame_y = height
         self.frame_bytes = self.frame_x * self.frame_y * 2
         self.last_frame_number = 0
         self.properties = {}
@@ -98,13 +100,13 @@ class MockHamamatsu:
         self.properties = {'Name': 'MOCK Hamamatsu',
                            'exposure_time': 10,  # * self.s,
                            'accumulation_time': 99999,  # * self.s,
-                           'image_width': 2048,
-                           'image_height': 2048,
+                           'image_width': width,
+                           'image_height': height,
                            'image_framebytes': 8,
                            'subarray_hpos': 0,
                            'subarray_vpos': 0,
-                           'subarray_hsize': 2048,
-                           'subarray_vsize': 2048,
+                           'subarray_hsize': width,
+                           'subarray_vsize': height,
                            'subarray_mode': 'OFF',
                            'timing_readout_time': 10,
                            'internal_frame_rate': 10,
@@ -291,42 +293,42 @@ class MockHamamatsu:
                 'type': 'LONG',
                 'readable': True,
                 'writable': True,
-                'range': (64, 2048),
+                'range': (64, self.max_width),
                 'text_options': None
             },
             'image_height': {
                 'type': 'LONG',
                 'readable': True,
                 'writable': True,
-                'range': (64, 2048),
+                'range': (64, self.max_height),
                 'text_options': None
             },
             'subarray_hpos': {
                 'type': 'LONG',
                 'readable': True,
                 'writable': True,
-                'range': (0, 2048),
+                'range': (0, self.max_width),
                 'text_options': None
             },
             'subarray_vpos': {
                 'type': 'LONG',
                 'readable': True,
                 'writable': True,
-                'range': (0, 2048),
+                'range': (0, self.max_height),
                 'text_options': None
             },
             'subarray_hsize': {
                 'type': 'LONG',
                 'readable': True,
                 'writable': True,
-                'range': (64, 2048),
+                'range': (64, self.max_width),
                 'text_options': None
             },
             'subarray_vsize': {
                 'type': 'LONG',
                 'readable': True,
                 'writable': True,
-                'range': (64, 2048),
+                'range': (64, self.max_height),
                 'text_options': None
             },
             'subarray_mode': {

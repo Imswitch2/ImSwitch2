@@ -193,9 +193,9 @@ class TriggerScopePLSRController(
                 sigScanStartingEmitted=sigScanStartingEmitted,
                 isNonFinalPartOfSequence=isNonFinalPartOfSequence,
             )
-        except Exception:
+        except Exception as error:
             self._logger.error(traceback.format_exc())
-            self.scanFailed()
+            self.scanFailed(message=str(error))
 
     def abortScan(self):
         self._requestTriggerScopeStop()
@@ -203,9 +203,9 @@ class TriggerScopePLSRController(
     def scanDone(self):
         self._onTriggerScopeScanDone()
 
-    def scanFailed(self):
+    def scanFailed(self, message=None):
         self._logger.error('Scan failed')
-        self._failTriggerScopeScan()
+        self._failTriggerScopeScan(message)
 
     def getParameters(self):
         """Get parameters from widget field to controller dict."""

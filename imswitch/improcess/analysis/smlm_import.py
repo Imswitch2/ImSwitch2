@@ -271,6 +271,7 @@ def read_thunderstorm_csv(
     *,
     pixel_size_nm: float | None = None,
     name: str | None = None,
+    preview_pixel_size_nm: float | None = None,
 ) -> LocalizationResult:
     """Read a ThunderSTORM CSV export.
 
@@ -286,6 +287,8 @@ def read_thunderstorm_csv(
             Picasso export, and assumed when absent (see
             :data:`ASSUMED_PIXEL_SIZE_NM`).
         name: Result name; defaults to the file stem.
+        preview_pixel_size_nm: Bin size of the histogram the result is first
+            shown as; ``None`` leaves it to the result's own thumbnail rule.
     """
     path = Path(path)
     headers, raw = _read_csv_columns(path)
@@ -338,6 +341,7 @@ def read_thunderstorm_csv(
         name=name,
         dims="3D" if has_z else "2D",
         metadata=metadata,
+        preview_pixel_size_nm=preview_pixel_size_nm,
     )
 
 
@@ -349,6 +353,7 @@ def read_generic_csv(
     unit: str = "nm",
     frame_base: int = 0,
     name: str | None = None,
+    preview_pixel_size_nm: float | None = None,
 ) -> LocalizationResult:
     """Read an arbitrary CSV given an explicit column mapping.
 
@@ -364,6 +369,8 @@ def read_generic_csv(
         unit: Length unit of every spatial column in the file.
         frame_base: The file's first frame number, subtracted from ``frame``.
         name: Result name; defaults to the file stem.
+        preview_pixel_size_nm: Bin size of the histogram the result is first
+            shown as; ``None`` leaves it to the result's own thumbnail rule.
     """
     path = Path(path)
     unknown = set(mapping) - set(LOCALIZATION_COLUMNS)
@@ -401,6 +408,7 @@ def read_generic_csv(
         name=name,
         dims="3D" if has_z else "2D",
         metadata={"import_format": "generic-csv"},
+        preview_pixel_size_nm=preview_pixel_size_nm,
     )
 
 
@@ -412,6 +420,7 @@ def _build_result(
     name: str | None,
     dims: str,
     metadata: dict[str, Any],
+    preview_pixel_size_nm: float | None = None,
 ) -> LocalizationResult:
     """Assemble a result, recording whether the pixel size was a guess."""
     if not pixel_size_nm:
@@ -426,6 +435,7 @@ def _build_result(
         dims=dims,
         source_name=path.name,
         metadata=metadata,
+        preview_pixel_size_nm=preview_pixel_size_nm,
     )
 
 
@@ -473,6 +483,7 @@ def read_localizations(
     *,
     pixel_size_nm: float | None = None,
     name: str | None = None,
+    preview_pixel_size_nm: float | None = None,
 ) -> LocalizationResult:
     """Read any recognised localization file.
 
@@ -483,9 +494,15 @@ def read_localizations(
     path = Path(path)
     fmt = sniff_localization_format(path)
     if fmt == "picasso-hdf5":
-        return read_picasso_hdf5(path, pixel_size_nm=pixel_size_nm, name=name)
+        return read_picasso_hdf5(
+            path, pixel_size_nm=pixel_size_nm, name=name,
+            preview_pixel_size_nm=preview_pixel_size_nm,
+        )
     if fmt == "thunderstorm-csv":
-        return read_thunderstorm_csv(path, pixel_size_nm=pixel_size_nm, name=name)
+        return read_thunderstorm_csv(
+            path, pixel_size_nm=pixel_size_nm, name=name,
+            preview_pixel_size_nm=preview_pixel_size_nm,
+        )
     if fmt == "generic-csv":
         raise LocalizationImportError(
             f"{path.name} looks like a table but not a recognised localization "

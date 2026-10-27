@@ -12,7 +12,16 @@ _LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan'}
 
 
 def getSetupList():
-    return [Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json'))]
+    return sorted(Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json')))
+
+
+def _defaultSetupFileName(setupList):
+    """Choose the safest first-run setup deterministically."""
+    if 'example_no_hardware.json' in setupList:
+        return 'example_no_hardware.json'
+    if setupList:
+        return setupList[0]
+    return ''
 
 
 def getSetupFilesDir():
@@ -79,7 +88,7 @@ def loadOptions():
     optionsDidNotExist = False
     if not os.path.isfile(_optionsFilePath):
         _options = Options(
-            setupFileName=getSetupList()[0]
+            setupFileName=_defaultSetupFileName(getSetupList())
         )
         optionsDidNotExist = True
     else:

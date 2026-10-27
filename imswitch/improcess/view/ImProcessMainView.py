@@ -8,6 +8,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
+from imswitch.imcommon.view.LogWidget import LogWidget
 from imswitch.improcess.model.runtime_tools import (
     RuntimeAnalysisToolSpec,
     runtime_analysis_panel_shortcuts,
@@ -29,6 +30,7 @@ from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
 from .SmlmRenderWidget import SmlmRenderWidget
 from .ProfileWidget import ProfileWidget
+from .PythonConsoleWidget import PythonConsoleWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
@@ -84,6 +86,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # to each selected result, or its source to each chosen file.
     sigRunWorkflowOnResultsRequested = QtCore.Signal()
     sigRunWorkflowOverFilesRequested = QtCore.Signal()
+    # The workflow editor: a window to build, validate and run workflow files,
+    # optionally opened on the steps that made the current result.
+    sigOpenWorkflowEditor = QtCore.Signal()
+    sigEditWorkflowOfResultRequested = QtCore.Signal()
 
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
@@ -132,6 +138,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showPSFResolutionPanel: bool = False,
         showColocalizationPanel: bool = False,
         showMulticolorPanel: bool = False,
+        showLogPanel: bool = False,
         *args,
         **kwargs,
     ):
@@ -214,6 +221,24 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
 
         file.addSeparator()
+        workflowEditorAction = QtWidgets.QAction('Workflow editor…', self)
+        workflowEditorAction.setToolTip(
+            'Build, edit, validate and run ImProcess workflow files; every installed '
+            'reconstructor and processor is offered with its parameters'
+        )
+        workflowEditorAction.triggered.connect(
+            lambda _checked=False: self.sigOpenWorkflowEditor.emit()
+        )
+        file.addAction(workflowEditorAction)
+        editWorkflowAction = QtWidgets.QAction('Edit workflow of current result…', self)
+        editWorkflowAction.setToolTip(
+            'Open the steps that made the current result in the workflow editor, '
+            'to change them and run them again'
+        )
+        editWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigEditWorkflowOfResultRequested.emit()
+        )
+        file.addAction(editWorkflowAction)
         exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
         exportWorkflowAction.setToolTip(
             'Write the steps that made the current result as a workflow file '
@@ -556,6 +581,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     dock.hide()
             prevAnalysisDock = dock
             self._runtimeAnalysisDockAnchor = dock
+
+        # --- Log panel: built always, hidden until asked for ---
+        # Registered here, before the View menu is populated, so it picks up a
+        # View > Log toggle from the loop below like any other dock.  Built even
+        # when hidden: it costs an empty text view, and a standalone bundle has
+        # no console behind it -- on macOS the log would otherwise be
+        # unreachable.  The records it shows were buffered long before this.
+        logDock = Dock('Log', size=(6, 3))
+        self.logWidget = LogWidget()
+        logDock.addWidget(self.logWidget)
+        self.dockArea.addDock(logDock, 'bottom')
+        self.docks['Log'] = logDock
+        if not showLogPanel:
+            logDock.hide()
 
         # Snapshot the default layout for the View > Reset layout action and
         # for callers that drop a corrupt persisted state.
@@ -1021,7 +1060,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 # Any of these may be opened first, and the wiring runs in
                 # both directions, so it is redone whenever one arrives.
                 self._wireROIManagerToDependentWidgets()
-            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager'):
+            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager', 'graph'):
+                # 'graph' too: its Push to table was wired only when the panel
+                # was built at startup, so a Graph opened later (the default)
+                # pushed its rows nowhere.
                 self._connectResultPusher(widget)
             if spec.widget_kind == 'graph':
                 self._wireGraphToDependentWidgets()
@@ -1435,6 +1477,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 spec.processor_id or spec.id
             ),
             'graph': lambda: GraphWidget(),
+            'console': lambda: PythonConsoleWidget(),
             'profile': lambda: ProfileWidget(viewer),
             'metadata': lambda: MetadataWidget(),
             'segmentation': lambda: SegmentationWidget(
@@ -2220,6 +2263,12 @@ class ReconParTree(ParameterTree):
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
+            {'name': 'Auto-detect scan orientation', 'type': 'bool', 'value': True,
+             'tip': (
+                 'Override the scan-params dialog by picking the fast/slow axis '
+                 'and pos/neg direction that minimize total variation of the '
+                 'reconstructed image.'
+             )},
             {'name': 'File extension', 'type': 'list', 'values': ['hdf5', 'zarr']},
         ]
 
@@ -2254,6 +2303,7 @@ class ReconParTree(ParameterTree):
             'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
                 'Pinhole radius').value(),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
+            'auto_scan_orientation': self.p.param('Auto-detect scan orientation').value(),
         }
 
 

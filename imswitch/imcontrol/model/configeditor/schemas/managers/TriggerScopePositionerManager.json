@@ -7,6 +7,12 @@
         "code:required"
       ]
     },
+    "defaultReferenceVoltage": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
     "maxVolt": {
       "x-imswitch-source": [
         "code:required"

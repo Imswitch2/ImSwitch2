@@ -149,7 +149,7 @@ class CommunicationChannel(SignalInterface):
         ReconstructionViewController, ReconstructorManagerController,
         ResultProcessorController
     Listeners: GraphController, ImProcessMainController, ImageToolbarController,
-        ResultProcessorController, SmlmRenderController
+        PythonConsoleController, ResultProcessorController, SmlmRenderController
     """
 
     sigResultProduced = Signal(object, str)
@@ -168,8 +168,23 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: ImProcessMainController, ImageToolbarController,
         LiveReconstructionController, MemoryLiveController, MoNaLISAController,
-        NapariEndpointController, ReconstructorManagerController,
-        ResultProcessorController, WorkflowController
+        NapariEndpointController, PythonConsoleController,
+        ReconstructorManagerController, ResultProcessorController,
+        WorkflowController
+    Listeners: ImProcessMainController, ReconstructionViewController
+    """
+
+    sigResultReplaced = Signal(object, object, str)
+    """A loaded result was superseded in place. Payload: ``(old, new, displayName)``.
+
+    What a processor run emits instead of :attr:`sigResultProduced` when its
+    panel asked for the input to be replaced rather than copied (the SMLM
+    filter's *Copy* box, off): ``new`` takes ``old``'s entry in the
+    reconstruction list under ``displayName``, so refining a table step by
+    step does not leave one entry per step behind. A listener that does not
+    find ``old`` treats ``new`` as produced.
+
+    Emitters: ResultProcessorController
     Listeners: ImProcessMainController, ReconstructionViewController
     """
 
@@ -269,7 +284,8 @@ class CommunicationChannel(SignalInterface):
     removed, or ctrl-clicked into the selection.
 
     Emitters: ReconstructionViewController
-    Listeners: ImProcessMainController, ResultProcessorController
+    Listeners: ImProcessMainController, PythonConsoleController,
+        ResultProcessorController
     """
 
     sigSmlmRenderSettingsChanged = Signal(object, object, object)

@@ -235,6 +235,10 @@ def _hardwareManager(task):
     # Construct in simulation so tests never require an NI driver, then expose
     # the hardware branch with a fully controlled task factory.
     manager._NidaqManager__simulating = False
+    # This helper explicitly exercises the real-hardware transaction branch
+    # with a controlled fake task. CI intentionally has no nidaqmx installed,
+    # so mark the injected backend as available as well as disabling simulation.
+    manager._NidaqManager__backendAvailable = True
     manager._NidaqManager__scanSimulator = None
     manager._NidaqManager__createChanAOTask = (
         lambda *_args, **_kwargs: task
@@ -248,6 +252,9 @@ def _oneShotHardwareManager(task):
     })
     manager = NidaqManager(setup)
     manager._NidaqManager__simulating = False
+    # As above, this is a fake *available hardware* backend, not the
+    # unavailable-backend behavior covered by test_nidaq_simulation_startup.
+    manager._NidaqManager__backendAvailable = True
     manager._NidaqManager__scanSimulator = None
     manager._NidaqManager__createChanAOTask = (
         lambda *_args, **_kwargs: task

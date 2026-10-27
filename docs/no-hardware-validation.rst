@@ -86,9 +86,9 @@ The corresponding validation entry point is:
 view/controller graph with the no-hardware setup. It stubs heavy GUI rendering
 dependencies at the test boundary so the smoke test validates ImSwitch2 startup
 without requiring a compatible local napari/vispy/matplotlib stack. When it
-closes the window, ImControl asks the modal *Save Widget State* question;
-the test does not answer it, so run offscreen the test waits there and does
-not finish, and ``--timeout`` does not stop it.
+closes the window, ImControl asks the modal *Save Widget State* question.
+The test stubs the question out: left unanswered, the box answers *No* by
+itself, but only after 30 seconds, which would hold every run that long.
 
 Adding tests
 ------------

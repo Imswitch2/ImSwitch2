@@ -80,8 +80,11 @@ Standa-branded motorized rotation mounts (e.g. 8SMC5 controller).
    * - ``microstepsPerStep``
      - int
      - Microstep subdivision.  Total counts per turn = ``stepsPerTurn × microstepsPerStep``.
+   * - ``useMockOnFailure``
+     - bool
+     - Optional, default ``false``: install a simulation when the library or controller cannot be opened, instead of leaving the mount not connected (the default: the error shows in Hardware status, Reconnect brings it back). libximc's own virtual controller (opened when no controller is found) counts as not connected.
 
-All four fields are **required**; no defaults.
+The first four fields are **required**; no defaults.
 
 **Low-level dependencies**
 
@@ -142,6 +145,10 @@ Thorlabs K10CR1 motorized rotation mounts driven via the Kinesis stack.
      - bool
      - ``false``
      - If true, home the motor at startup before reading the initial position.
+   * - ``useMockOnFailure``
+     - bool
+     - ``false``
+     - When the hardware cannot be opened, install a simulation instead of leaving the device not connected (the default: the error shows in Hardware status, commands are refused, Reconnect brings it back).
 
 **Low-level dependencies**
 
