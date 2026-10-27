@@ -101,10 +101,11 @@ ImProcess block has its own place on the canvas
 as raw JSON.
 
 The dialog has one tab per group of options, each option with its explanation
-as a tooltip.  ``focusLock`` has the tabs Devices, Basic, Crop, Control and
-Reacquire; ``autofocus`` has Devices, Basic, Crop and Advanced; ``tiling`` has
-Devices, Basic, Acquisition, Saving and Mosaic; ``scan`` has Basic, Designers
-and DAQ clocks; ``teensyPulse`` has Basic and Advanced.  Choices the code defines are drop-downs: the tiling **Default pattern**
+as a tooltip, and a **Custom** tab last.  ``focusLock`` has the tabs Basic,
+Devices, Crop, Control and Reacquire; ``autofocus`` has Basic, Devices, Crop
+and Advanced; ``tiling`` has Basic, Devices, Acquisition, Saving and Mosaic;
+``scan`` has Basic, Designers and DAQ clocks; ``teensyPulse`` has Basic and
+Advanced.  Choices the code defines are drop-downs: the tiling **Default pattern**
 (spiral or serpentine), **Mode** and **Save format**, for example.  Rates are
 in the unit the code reads: the ``focusLock`` and ``autofocus`` **Update
 freq** is in hertz.
