@@ -429,8 +429,8 @@ Known limitations
   before the image appears.
 * Each Fiji session is a Java virtual machine of its own, sized by Fiji's own
   heap policy; stopping and starting Fiji starts a new one, and image ids do
-  not survive that. After Fiji stops unexpectedly the sent-image bookkeeping
-  is cleared.
+  not survive that. When Fiji stops unexpectedly, or you close it, the
+  sent-image bookkeeping is cleared.
 * A very large stack is copied through a temporary file on the way to and
   from Fiji, so it needs the disk space and takes time.
 
@@ -476,9 +476,12 @@ started or stopped again.
        ``'imagej'``) in the log
      - ``fijiPython`` points at an environment without PyImageJ; install it
        there or remove the key.
-   * - The menu says *Fiji stopped unexpectedly*
-     - Fiji's window was closed, or Fiji crashed. **Start Fiji** starts a new
-       one. Images sent before are no longer known to that new Fiji.
+   * - The menu says *Fiji stopped unexpectedly*, or the status bar said *Fiji was closed (exit code N)*
+     - Fiji's window was closed (File → Quit included), or Fiji crashed.
+       ImProcess notices at once, without a request, and shows no dialog:
+       closing Fiji is often deliberate. **Start Fiji**, or **Send to Fiji**
+       (which starts it), launches a new one. Images sent before are no
+       longer known to that new Fiji.
    * - Fiji runs out of memory on a large stack
      - Fiji gets the share of memory its own launcher would give it, set by
        the line ``cfg.max-heap`` in ``config/jaunch/fiji.toml`` inside the

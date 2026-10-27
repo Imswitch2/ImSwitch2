@@ -168,6 +168,37 @@ def test_a_killed_host_is_reported_dead():
         second.stop()
 
 
+#: Generous allowance for ImageJ's own File > Quit to take the host down:
+#: Fiji's disposal took ~0.2 s in P0, so this is the stop bound.
+QUIT_ALLOWANCE_S = 10.0
+
+
+def test_closing_fiji_itself_is_noticed_without_a_request():
+    """File > Quit (what closing Fiji's window does) ends the host; the session must notice."""
+    import time
+    from imswitch.improcess.fiji.session import STOP_TIMEOUT_S
+
+    codes = []
+    config = _config()
+    second = FijiSession(config, python=FIJI_PYTHON, on_exit=codes.append)
+    try:
+        second.start()                               # no images are open, so Quit asks nothing
+        try:
+            second.run_command(None, "Quit")
+            outcome = "replied"
+        except FijiDied:
+            outcome = "connection broke"
+        print(f"ImageJ Quit: {outcome}")
+        deadline = time.monotonic() + max(QUIT_ALLOWANCE_S, STOP_TIMEOUT_S)
+        while (second.state != "dead" or not codes) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert second.state == "dead" and len(codes) == 1
+        assert codes[0] == second.process.returncode
+        assert second.process.poll() is not None
+    finally:
+        second.stop()
+
+
 def test_a_run_command_event_carries_options_end_plugin_and_recorder_offset(session):
     source = _result((40, 50), "YX", np.uint16, scales=[0.2, 0.1])
     image_id = session.send(plan_send(source))

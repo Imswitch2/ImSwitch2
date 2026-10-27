@@ -110,8 +110,8 @@ def _desc(image_id, *, uid="", title="img", shape=(1, 1, 1, 4, 5), bit_depth=16)
 class FakeSession:
     instances: list = []
 
-    def __init__(self, config, python=None):
-        self.config, self.python = config, python
+    def __init__(self, config, python=None, on_exit=None):
+        self.config, self.python, self.on_exit = config, python, on_exit
         self.state = "stopped"
         self.sent: dict = {}
         self.ping_info = None
@@ -519,6 +519,29 @@ def test_fiji_dying_clears_the_sent_map_and_says_so(env):
     assert env.session is not first and env.session.state == "ready"      # a fresh host
 
 
+def test_closing_fiji_is_noticed_and_send_starts_a_fresh_one(env):
+    env.recon.active = _result()
+    env.controller.sendCurrent()
+    first = env.session
+    assert env.controller._sentResults
+    # what the session's watcher does when the process ends by itself
+    first.state = "dead"
+    first.on_exit(0)
+    assert env.controller._sentResults == {} and env.controller._imported == set()
+    assert env.status == "Fiji was closed (exit code 0). Start Fiji or Send to Fiji starts it again."
+    actions = env.actions()
+    assert "Fiji: stopped unexpectedly" in actions and actions["Start Fiji"].isEnabled()
+    env.controller.sendCurrent()
+    assert env.session is not first and env.session.state == "ready" and len(env.session.sent) == 1
+
+
+def test_a_stale_exit_notice_is_ignored_while_a_host_runs(env):
+    env.controller.startFiji()
+    count = len(env.view.statuses)
+    env.controller._sigHostExited.emit(0)
+    assert len(env.view.statuses) == count
+
+
 def test_a_start_error_shows_a_warning_with_the_message(env, warnings):
     class Failing(FakeSession):
         def __init__(self, *a, **k):
@@ -584,9 +607,9 @@ def test_closing_stops_the_session_inline(env):
 def test_real_thread_and_real_session_on_the_fake_host(tmp_path, qtbot):
     made = []
 
-    def factory(config, python=None):
+    def factory(config, python=None, on_exit=None):
         session = FijiSession(config, python=python, host_module=FAKE, temp_root=tmp_path,
-                              startup_timeout_s=60.0)
+                              startup_timeout_s=60.0, on_exit=on_exit)
         made.append(session)
         return session
 

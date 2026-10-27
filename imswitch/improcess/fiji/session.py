@@ -37,7 +37,7 @@ import threading
 import time
 from multiprocessing.connection import Listener
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 import numpy as np
 
@@ -133,6 +133,7 @@ class FijiSession:
         temp_root=None,
         extra_env: Mapping[str, str] | None = None,
         startup_timeout_s: float = STARTUP_TIMEOUT_S,
+        on_exit: Callable[[int | None], None] | None = None,
     ):
         self.config = config
         self._python = python
@@ -140,6 +141,7 @@ class FijiSession:
         self._temp_root = temp_root
         self._extra_env = dict(extra_env or {})
         self._startup_timeout_s = startup_timeout_s
+        self._on_exit = on_exit
 
         self._lock = threading.RLock()
         self._state = "stopped"
@@ -149,6 +151,12 @@ class FijiSession:
         self._listener = None
         self._temp_dir: Path | None = None
         self._counter = 0
+        #: Set by :meth:`stop` BEFORE it asks the host to quit, so the exit
+        #: watcher can tell our own stop from the user closing Fiji.
+        self._stopping = False
+        #: Guards only the watcher's check-and-set of ``dead``; never held
+        #: across I/O, so the watcher can never wait on a request.
+        self._exit_lock = threading.Lock()
         self.ping_info: PingInfo | None = None
         #: ``SentRecord`` per ImagePlus id this session created.
         self.sent: dict[int, SentRecord] = {}
@@ -193,6 +201,7 @@ class FijiSession:
             if self._state == "ready":
                 return
             self._teardown()
+            self._stopping = False
             self._state, self._error = "starting", ""
             try:
                 self._launch()
@@ -209,6 +218,37 @@ class FijiSession:
                 self._state = "failed"
                 raise
             self._state = "ready"
+            self._watch(self._proc)
+
+    def _watch(self, proc: subprocess.Popen) -> None:
+        """Notice when ``proc`` exits on its own, without any request being made.
+
+        Closing Fiji's window (or File > Quit) ends the host, and nothing else
+        would tell us until the next request failed: the menu would keep
+        saying Fiji is running. The thread watches the one ``proc`` it was
+        given; a watcher of an old process finds ``self._proc`` is another
+        object and does nothing, so it can never touch a newer session.
+        """
+        threading.Thread(target=self._wait_for_exit, args=(proc,), name="fiji-exit-watch", daemon=True).start()
+
+    def _wait_for_exit(self, proc: subprocess.Popen) -> None:
+        code = proc.wait()
+        # Not the request lock: a request in flight holds it until its recv()
+        # fails, and that is the same event we are reacting to. The tiny
+        # _exit_lock only makes "is it still ready? then mark it dead" atomic
+        # against a second watcher; the in-flight request still raises
+        # FijiDied itself when it reads EOF and may overwrite the message.
+        with self._exit_lock:
+            if proc is not self._proc or self._stopping:
+                return
+            if self._state == "ready":
+                self._error = self._describe(f"the Fiji host process exited (exit code {code})")
+                self._state = "dead"
+        if self._on_exit is not None:
+            try:
+                self._on_exit(code)
+            except Exception:  # noqa: BLE001 - a bad callback must not hide the exit
+                pass
 
     def _launch(self) -> None:
         self._temp_dir = Path(tempfile.mkdtemp(prefix="imswitch-fiji-", dir=self._temp_root))
@@ -274,6 +314,7 @@ class FijiSession:
 
     def stop(self, timeout_s: float = STOP_TIMEOUT_S) -> None:
         """Ask the host to quit, kill it after ``timeout_s``, and remove the temp files. Idempotent."""
+        self._stopping = True          # before Quit, so the watcher stays silent
         with self._lock:
             if self._state == "ready":
                 try:

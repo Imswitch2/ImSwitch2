@@ -17,6 +17,10 @@ FAKE = "imswitch.improcess._test.fiji_fake_host"
 MAX_HEAP_MB = 1234
 SHORT_TIMEOUT_S = 1.5       # for scenarios that must time out; the fake otherwise connects in well under a second
 SHORT_STOP_S = 0.5
+#: How long the fake host lives before it exits by itself ("the user closed Fiji").
+SELF_EXIT_DELAY_S = 0.3
+#: Generous wait for the watcher to react to that exit.
+WATCH_WAIT_S = 30.0
 
 
 @pytest.fixture
@@ -183,6 +187,55 @@ def test_death_on_a_request_marks_the_session_dead(make):
         session.list_images()
     with pytest.raises(FijiDied):
         session.send(plan)
+
+
+def test_a_host_that_exits_by_itself_is_noticed_without_any_request(make):
+    codes = []
+    session = make(f"exit_after={SELF_EXIT_DELAY_S}", on_exit=codes.append)
+    session.start()
+    deadline = time.monotonic() + WATCH_WAIT_S
+    while session.state != "dead" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert session.state == "dead" and "exit code 7" in session.error
+    deadline = time.monotonic() + WATCH_WAIT_S
+    while not codes and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert codes == [7]
+    with pytest.raises(FijiDied, match="exit code 7"):
+        session.list_images()
+    time.sleep(0.2)
+    assert codes == [7]                         # once, not again for the failed request
+    # and a send to a dead session is refused, a start launches a new one
+    session._extra_env["IMSWITCH_FIJI_FAKE"] = ""
+    session.start()
+    assert session.state == "ready"
+
+
+def test_stop_never_fires_on_exit(make):
+    codes = []
+    session = make(on_exit=codes.append)
+    session.start()
+    session.stop()
+    time.sleep(0.3)
+    assert codes == [] and session.state == "stopped"
+    session = make("slow_quit", on_exit=codes.append)       # killed rather than quitting
+    session.start()
+    session.stop(timeout_s=SHORT_STOP_S)
+    time.sleep(0.3)
+    assert codes == []
+
+
+def test_a_request_in_flight_when_the_host_dies_still_raises_died_and_notifies_once(make):
+    codes = []
+    session = make("die_on_request=2", on_exit=codes.append)
+    session.start()
+    with pytest.raises(FijiDied):
+        session.list_images()
+    deadline = time.monotonic() + WATCH_WAIT_S
+    while not codes and time.monotonic() < deadline:
+        time.sleep(0.02)
+    time.sleep(0.2)
+    assert codes == [7] and session.state == "dead"
 
 
 def test_restart_after_dead_is_a_new_process(make):

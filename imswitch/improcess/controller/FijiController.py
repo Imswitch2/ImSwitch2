@@ -124,6 +124,11 @@ def sent_record_for(image_id, desc, sent: dict):
 class FijiController(QtCore.QObject):
     """Owns the Plugins > Fiji menu, the session and its worker thread."""
 
+    #: The host process exited on its own (exit code). Emitted from the
+    #: session's watcher thread; Qt queues it to the GUI thread because this
+    #: object lives there.
+    _sigHostExited = QtCore.Signal(object)
+
     def __init__(
         self,
         commChannel,
@@ -157,6 +162,7 @@ class FijiController(QtCore.QObject):
         self._tickets = itertools.count(1)
         self._closed = False
         self._menu = None
+        self._sigHostExited.connect(self._onHostExited)
 
         menu_getter = getattr(mainView, "fijiMenu", None)
         if callable(menu_getter):
@@ -290,10 +296,28 @@ class FijiController(QtCore.QObject):
             session.stop()                    # tidy a dead or failed one before replacing it
         prefs = self.preferences()
         config = launch_config(prefs)
-        session = self._sessionFactory(config, python=prefs.fijiPython or sys.executable)
+        session = self._sessionFactory(
+            config, python=prefs.fijiPython or sys.executable, on_exit=self._sigHostExited.emit,
+        )
         self._session = session
         session.start()
         return session
+
+    @QtCore.Slot(object)
+    def _onHostExited(self, code) -> None:
+        """GUI thread: the Fiji process ended without our asking (the user closed Fiji).
+
+        No dialog: closing Fiji is often deliberate. The images it held are
+        gone, so what we remember about them goes too, and the next Send or
+        Start launches a fresh host.
+        """
+        session = self._session
+        if self._closed or (session is not None and session.state == "ready"):
+            return                      # a newer, running host: this is a stale notice
+        self._starting = False
+        self._sentResults.clear()
+        self._imported.clear()
+        self._status(f"Fiji was closed (exit code {code}). Start Fiji or Send to Fiji starts it again.")
 
     def _markStarting(self) -> None:
         """GUI thread: a start is about to be queued. Image ids do not survive a new host."""

@@ -14,6 +14,8 @@ round trip can be tested without Fiji.
 * ``headless``: report a headless Fiji;
 * ``die_on_request=N``: ``os._exit`` on the Nth request received (the start-up
   ping is request 1);
+* ``exit_after=S``: ``os._exit`` by itself S seconds after connecting, like a
+  user closing Fiji's window;
 * ``slow_quit``: acknowledge ``Quit`` but keep running, so the session's kill
   path is exercised.
 """
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import traceback
 from multiprocessing.connection import Client
@@ -147,6 +150,10 @@ def main() -> int:
     host, _, port = os.environ["IMSWITCH_FIJI_ADDR"].rpartition(":")
     conn = Client((host, int(port)), authkey=authkey)
     fiji = FakeFiji(flags)
+    if "exit_after" in flags:
+        timer = threading.Timer(float(flags["exit_after"]), os._exit, args=(DIED_CODE,))
+        timer.daemon = True
+        timer.start()
     die_at = int(flags["die_on_request"]) if "die_on_request" in flags else None
     received = 0
     while True:
