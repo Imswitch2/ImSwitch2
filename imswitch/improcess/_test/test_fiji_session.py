@@ -129,6 +129,7 @@ def test_the_sent_record_is_stored(make):
     record = session.sent[image_id]
     assert record.image_id == image_id and record.result_uid == plan.properties[PROP_RESULT_UID]
     assert record.source_axes == ("C", "Y", "X") and record.shape_tzcyx == (1, 1, 2, 4, 5)
+    assert plan.notes and record.notes == tuple(plan.notes)          # what the send could not carry is kept
 
 
 def test_start_while_ready_is_a_noop(make):

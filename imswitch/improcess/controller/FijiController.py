@@ -67,6 +67,14 @@ _STATUS_TEXT = {
 }
 
 
+def _sent_message(name: str, image_id, notes) -> str:
+    """The status line of a send; it lists what could not be carried to Fiji, which is also logged."""
+    if not notes:
+        return f"Sent {name} to Fiji (image {image_id})."
+    count = f"{len(notes)} note{'' if len(notes) == 1 else 's'}"
+    return f"Sent {name} to Fiji (image {image_id}); {count}: {'; '.join(notes)}."
+
+
 class _FijiWorker(QtCore.QObject):
     """Runs jobs one at a time on its thread and reports each outcome."""
 
@@ -422,7 +430,7 @@ class FijiController(QtCore.QObject):
         def done(image_id):
             self._starting = False
             self._sentResults[image_id] = result
-            self._status(f"Sent {result.name} to Fiji (image {image_id}).")
+            self._status(_sent_message(result.name, image_id, plan.notes))
 
         self._submit("send", job, done, self._onFailed)
 

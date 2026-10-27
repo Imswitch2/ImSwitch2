@@ -289,15 +289,22 @@ What does not cross
   whose *save* layout has ImageJ axes is sent in that layout. A MoNaLISA
   reconstruction, held in memory as Dataset, Base, T, Z, Y, X, is saved as
   T, Z, C, Y, X with C = Dataset × Base and named channels, so that is what
-  Fiji receives (the send notes say so), exactly what you would see opening
-  the saved TIFF in Fiji. Coming back, such an image lands on a fresh grid,
-  because its axes differ from the in-memory result's.
+  Fiji receives (the send notes say so, see below), exactly what you would
+  see opening the saved TIFF in Fiji. Coming back, such an image lands on a
+  fresh grid, because its axes differ from the in-memory result's.
 * **RGB images.** They are shown in the import list but cannot be imported;
   convert them to an 8-bit stack in Fiji first.
 * **OME annotations and other metadata.** The original metadata stays on the
   ImProcess side with the result you sent; Fiji is not trusted to carry it.
-  Everything that could not be carried is listed under the imported result's
-  *Fiji* entry in the metadata (``dropped``).
+  What could not be carried is reported in both directions. A send that could
+  not carry everything (the save layout was sent, lazy data was materialised, an
+  axis has no scale, channels have no names) says so on the status line, as
+  "Sent X to Fiji (image N); 2 notes: ..." (the same text is in the log). When
+  you import an image that comes from that send (the image itself or a
+  duplicate of it), those notes lead the imported result's *Fiji* entry in the
+  metadata (``dropped``) as ``on send: ...``, followed by what the import itself
+  could not carry. An image whose send is not known (it was opened in Fiji)
+  lists only the import's notes.
 
 Imported images and their coordinate grid
 =========================================

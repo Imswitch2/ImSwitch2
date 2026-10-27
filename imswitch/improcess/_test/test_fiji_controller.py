@@ -22,7 +22,7 @@ from qtpy import QtCore, QtWidgets  # noqa: E402
 
 from imswitch.improcess.controller import FijiController as controller_module  # noqa: E402
 from imswitch.improcess.controller.FijiController import FijiController, resolve_source, sent_record_for  # noqa: E402
-from imswitch.improcess.fiji.convert import PROP_RESULT_UID, SentRecord  # noqa: E402
+from imswitch.improcess.fiji.convert import PROP_RESULT_UID, SentRecord, plan_send  # noqa: E402
 from imswitch.improcess.fiji.preferences import (  # noqa: E402
     LOCATION_HINT,
     FijiPreferences,
@@ -307,6 +307,46 @@ def test_send_starts_fiji_then_sends_and_remembers_the_result(env):
     assert env.controller._sentResults[image_id] is result
     assert env.status == f"Sent src to Fiji (image {image_id})."
     assert session.python == sys.executable and session.config.fiji_dir == env.root
+
+
+def test_a_send_that_could_not_carry_everything_says_so_in_the_status_line_and_the_log(env, caplog):
+    import logging
+
+    result = ArrayProcessingResult("two", np.arange(40, dtype=np.uint16).reshape(2, 4, 5), ["C", "Y", "X"],
+                                   axis_scales=[1.0, 0.2, 0.1], scale_unit="um")
+    env.recon.active = result
+    with caplog.at_level(logging.INFO):
+        env.controller.sendCurrent()
+    (image_id,) = env.session.sent
+    plan_notes = plan_send(result).notes
+    assert plan_notes
+    n = len(plan_notes)
+    assert env.status == (
+        f"Sent two to Fiji (image {image_id}); {n} note{'' if n == 1 else 's'}: {'; '.join(plan_notes)}."
+    )
+    assert any(note in record.getMessage() for record in caplog.records for note in plan_notes)
+    assert controller_module._sent_message("a", -2, ["x"]) == "Sent a to Fiji (image -2); 1 note: x."
+    assert controller_module._sent_message("a", -2, []) == "Sent a to Fiji (image -2)."
+
+
+def test_an_import_lists_what_the_send_could_not_carry_before_what_the_way_back_lost(env):
+    from dataclasses import replace
+
+    env.controller.startFiji()
+    result = ArrayProcessingResult("two", np.arange(40, dtype=np.uint16).reshape(2, 4, 5), ["C", "Y", "X"],
+                                   axis_scales=[1.0, 0.2, 0.1], scale_unit="um")
+    env.recon.active = result
+    env.controller.sendCurrent()
+    session = env.session
+    ((image_id, record),) = session.sent.items()
+    session.sent[image_id] = replace(record, notes=tuple(plan_send(result).notes))
+    desc, data = session.images[image_id]
+    session.images[image_id] = (replace(desc, dims_xyczt=(5, 4, 2, 1, 1)), data)       # two channels, as sent
+    session.log = {"events": [], "recorder": None}
+    env.controller._importIds([image_id])
+    ((imported, _),) = env.comm.sigResultProduced.emitted
+    dropped = imported.metadata["fiji"]["dropped"]
+    assert dropped and dropped[0].startswith("on send: ") and "channel names" in dropped[0]
 
 
 def test_a_second_send_reuses_the_running_session(env):

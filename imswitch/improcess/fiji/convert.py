@@ -44,6 +44,9 @@ IMAGEJ_AXES = ("T", "Z", "C", "Y", "X")
 #: would need a cast, which would change the numbers, so it is refused.
 IMAGEJ_DTYPES = tuple(np.dtype(name) for name in IMAGEJ_DTYPE_NAMES)
 
+#: Prefix of an import note that was written on the way out, so one list can hold both directions.
+ON_SEND_PREFIX = "on send: "
+
 PROP_RESULT_UID = "imswitch.result_uid"
 PROP_AXES = "imswitch.axes"
 
@@ -260,12 +263,17 @@ def _channel_names(result, n_channels: int, notes: list[str], *, first=None) -> 
 
 @dataclass(frozen=True)
 class SentRecord:
-    """What the parent remembers about one send, keyed by ``image_id``."""
+    """What the parent remembers about one send, keyed by ``image_id``.
+
+    ``notes`` is what the send could not carry (``SendPlan.notes``); it is
+    kept so an image imported later can list it beside what the way back lost.
+    """
 
     image_id: int
     result_uid: str
     source_axes: tuple
     shape_tzcyx: tuple
+    notes: tuple[str, ...] = ()
 
 
 # --------------------------------------------------------------------------
@@ -403,8 +411,15 @@ def import_fiji_image(
     details: dict | None = None,
     name: str | None = None,
 ) -> ImportedLayer:
-    """Turn one Fiji image back into a result with honest provenance."""
-    snapshot, notes = to_snapshot(desc, data_tzcyx, sent=sent)
+    """Turn one Fiji image back into a result with honest provenance.
+
+    The notes (``details["notes"]`` and the result's ``fiji.dropped``) list what
+    could not be carried in either direction: first what the send to Fiji
+    could not carry, as ``"on send: ..."`` (when ``sent`` is known), then what
+    this import could not.
+    """
+    snapshot, import_notes = to_snapshot(desc, data_tzcyx, sent=sent)
+    notes = [*(f"{ON_SEND_PREFIX}{note}" for note in (sent.notes if sent is not None else ())), *import_notes]
     merged = dict(details or {})
     merged.update({"image_id": desc.image_id, "title": desc.title, "notes": list(notes)})
     imported = import_layer(

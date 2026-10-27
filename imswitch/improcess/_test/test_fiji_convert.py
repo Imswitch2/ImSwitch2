@@ -254,6 +254,25 @@ def test_provenance_and_metadata_carry_the_notes_and_channel_names():
     json.dumps(node["details"])
 
 
+def test_a_sent_record_without_notes_adds_nothing_and_one_with_notes_leads_the_import_notes():
+    source = _result((2, 4, 5), "CYX", scales=[1.0, 0.2, 0.1])
+    plan = plan_send(source)
+    assert plan.notes and SentRecord(-7, "u", plan.source_axes, plan.data.shape).notes == ()
+    desc = _roundtrip_desc(plan, source, x_origin=2.0, channel_labels=("DAPI", "GFP"))
+
+    plain = import_fiji_image(desc, plan.data, source, sent=SentRecord(-7, "u", plan.source_axes, plan.data.shape))
+    assert not any(n.startswith("on send: ") for n in plain.result.metadata["fiji"]["dropped"])
+
+    record = SentRecord(-7, "u", plan.source_axes, plan.data.shape, notes=tuple(plan.notes))
+    imported = import_fiji_image(desc, plan.data, source, sent=record)
+    dropped = imported.result.metadata["fiji"]["dropped"]
+    on_send = [f"on send: {n}" for n in plan.notes]
+    assert dropped[: len(on_send)] == on_send
+    assert any("origin" in n for n in dropped[len(on_send):])          # the way back's own notes follow
+    assert dropped == output_node(imported.result)["details"]["notes"]
+    json.dumps(output_node(imported.result)["details"])
+
+
 def test_uint16_values_above_int16_survive():
     source = _result((4, 5), "YX")
     source.data[0, 0] = 65535

@@ -542,6 +542,7 @@ class FijiSession:
                 result_uid=str(plan.properties.get(PROP_RESULT_UID, "")),
                 source_axes=tuple(plan.source_axes),
                 shape_tzcyx=tuple(int(n) for n in plan.data.shape),
+                notes=tuple(plan.notes),
             )
             return image_id
 
