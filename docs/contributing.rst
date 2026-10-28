@@ -74,3 +74,32 @@ CI does, after ``pip install -e ".[test]"``:
 A new test directory runs in CI only once it is added to one of the lanes.  The UI tests in
 ``imswitch/imcontrol/_test/ui`` need a display and run in the manually started
 ``imswitch-test`` workflow instead.
+
+
+The ``dev`` branch
+------------------
+``dev`` is ``main`` plus work that is not on ``main`` yet: half-finished features, branches
+whose pull request is still open, and what is coming soon, merged together so they can be
+tried, tested together and shown.  It is an integration branch only:
+
+* **Nothing reaches** ``main`` **through** ``dev``.  A feature goes to ``main`` the way it always
+  did, through a pull request from its own branch.  ``dev`` is never merged into ``main``.
+* **Never merge** ``dev`` **into a feature branch.**  That would carry every other half-finished
+  feature into it, and from there into its pull request.  To get ``main`` into a feature
+  branch, merge ``main``.
+* **A feature joins** ``dev`` by being merged into it, and again whenever it has new commits::
+
+     git switch dev && git pull
+     git merge --no-ff my-feature-branch
+     git push
+
+  Add the branch to ``tools/dev_branches.txt`` in the same commit.
+* **Keep** ``dev`` **current**: after a pull request is merged into ``main``, merge ``main`` into
+  ``dev``.  A branch that reached ``main`` comes off ``tools/dev_branches.txt``.
+* **Rebuild it** when it has drifted too far: reset ``dev`` to ``main`` and merge the branches
+  of ``tools/dev_branches.txt`` again, in their order.  Conflicts resolved in ``dev`` are
+  resolved again then; ``git config rerere.enabled true`` lets git remember and replay them.
+
+Fix a bug found in ``dev`` on the branch it belongs to (or on a new branch off ``main``) and
+merge that branch into ``dev``, so the fix can still reach ``main`` on its own.  A commit made
+directly on ``dev`` stays there, so keep those to what merging needs.

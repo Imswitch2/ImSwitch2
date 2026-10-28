@@ -1,0 +1,20 @@
+# Branches merged into dev, in merge order (see docs/contributing.rst, "The dev
+# branch"). Remove a line when its branch is merged into main. A rebuild is:
+#   git switch dev && git reset --hard origin/main
+#   then `git merge --no-ff <branch>` for each line below.
+# Notes say what had to be resolved in dev; the branch needs the same when it
+# merges main.
+
+fix/simple-scan-once-recording     # Scan once -> REC on the Simple panel; PR to open
+feat/scan-engines                  # Expert panel + Simple view, scan timing, Lifetime 2.0
+claude/monalisa-reconstruction-math-af9btj   # PR #69: MoNaLISA XZ/XYZ, fast Gauss joint fit
+feat/imcontrol-live-recon          # live MoNaLISA recon in ImControl, bleach compensation; carries #71
+                                   #   (its recordScanToMemory/recordFramesToMemory replace scan-engines' older one)
+feat/psf-bead-analysis             # PR #79: bead PSF measurement, data lists
+feat/improcess-fiji                # PR #82: Fiji link, image windows
+                                   #   (runner: a bound Source publishes on the data port, with main's port mapping;
+                                   #    test_workflow_boundaries no longer imports editor 1.0's steplist)
+feat/config-editor-improcess       # ImProcess + System sections in Config Studio
+                                   #   (section Apply: as-written + main's nested containers; scan.json
+                                   #    scanDesigner/TTLCycleDesigner optional for the Expert panel)
+feat/micromanager-bridge           # pymmcore device bridge
