@@ -156,6 +156,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/rotators
     devices/stands
     devices/instruments
+    devices/micromanager
     devices/pulse_generators
     devices/scan_engines
     devices/step-engine-protocol

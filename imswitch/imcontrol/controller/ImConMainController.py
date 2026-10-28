@@ -20,7 +20,7 @@ from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.model.resources import get_resource_registry
 from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.view import guitools
-from . import controllers
+from .controllers import resolve_controller
 from .CommunicationChannel import CommunicationChannel
 from .MasterController import MasterController
 from .PickSetupController import PickSetupController
@@ -107,7 +107,7 @@ class ImConMainController(MainController):
             PickDatasetsController, self.__mainView.pickDatasetsDialog
         )
         self.hardwareStatusController = self.__factory.createController(
-            controllers.HardwareStatusController, self.__mainView.hardwareStatusWidget
+            resolve_controller('HardwareStatusController'), self.__mainView.hardwareStatusWidget
         )
 
         self.controllers = {}
@@ -125,9 +125,9 @@ class ImConMainController(MainController):
 
         for widgetKey, widget in self.__mainView.widgets.items():
             self.controllers[widgetKey] = self.__factory.createController(
-                (getattr(controllers, f'{widgetKey}Controller')
+                (resolve_controller(f'{widgetKey}Controller')
                 if widgetKey != 'Scan' else
-                getattr(controllers, f'{widgetKey}Controller{resolve_scan_info(self.__setupInfo.scan).frontend_type}')),
+                resolve_controller(f'{widgetKey}Controller{resolve_scan_info(self.__setupInfo.scan).frontend_type}')),
                 widget,
                 **_extraKwargs.get(widgetKey, {})
             )
@@ -150,14 +150,14 @@ class ImConMainController(MainController):
         # Create API-only controllers (no widget needed)
         # WorkflowFacadeController provides build_facade_from_master via API
         self.workflowFacadeController = self.__factory.createController(
-            controllers.WorkflowFacadeController,
+            resolve_controller('WorkflowFacadeController'),
             widget=None,  # API-only, no widget
         )
         
         # ReservationController exports reserve(): exclusive, owner-bound
         # control of audited devices for scripts and measurement runs.
         self.reservationController = self.__factory.createController(
-            controllers.ReservationController,
+            resolve_controller('ReservationController'),
             widget=None,  # API-only, no widget
         )
 
@@ -167,7 +167,7 @@ class ImConMainController(MainController):
         self.instrumentsController = self.controllers.get('Instruments')
         if self.instrumentsController is None:
             self.instrumentsController = self.__factory.createController(
-                controllers.InstrumentsController,
+                resolve_controller('InstrumentsController'),
                 widget=None,  # API-only, no widget
             )
 

@@ -731,6 +731,67 @@ def test_configured_pixel_size_stays_on_screen_too(configuredCameras):
     assert shown == pytest.approx(camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value)
 
 
+def comboItems(param):
+    """The entries the combo box of a list parameter really offers (what the operator can pick)."""
+    widget = list(param.items.keys())[0].widget
+    return [widget.itemText(index) for index in range(widget.count())]
+
+
+def test_a_detector_that_gains_binnings_and_options_refreshes_the_combos_without_a_rebuild(cameras):
+    """A recovered camera is built with a placeholder binning list and gains the real one (and the
+    options of its list parameters) when it is adopted: the next refresh must show them, and the
+    binning it is at, in the same tree."""
+    controller, camera1, _ = cameras
+    tree = controller._widget.trees['Camera1']
+    binning = controller.allParams['Camera1'].binning
+    trigger = tree.p.param('Acquisition mode').param('Trigger source')
+    camera1.supportedBinnings = [1]                        # the placeholder an absent camera has
+    camera1.parameters['Trigger source'].options = ['Internal trigger']
+    controller.updateParamsFromDetector(detector=camera1, blockSignals=True)
+    assert comboItems(binning) == ['1'] and comboItems(trigger) == ['Internal trigger']
+    camera1.calls.clear()
+
+    camera1.supportedBinnings = [1, 2, 4, 8]               # adopted
+    camera1.parameters['Trigger source'].options = ['Internal trigger', 'External "start-trigger"']
+    camera1.binning = 2                                    # and it is at 2x
+    controller.updateParamsFromDetector(detector=camera1, blockSignals=True)
+
+    assert comboItems(binning) == ['1', '2', '4', '8']
+    assert displayedValue(binning) == '2' and int(binning.value()) == 2
+    assert comboItems(trigger) == ['Internal trigger', 'External "start-trigger"']
+    assert controller._widget.trees['Camera1'] is tree
+    assert camera1.calls == []                             # a refresh is a pure read: nothing reached the detector
+
+
+def test_a_detector_that_grows_its_binning_list_in_place_is_still_refreshed(cameras):
+    """The tree is handed the detector's own list object; a detector that extends it in place (the
+    Micro-Manager camera does) must not make the combo look up to date."""
+    controller, camera1, _ = cameras
+    binning = controller.allParams['Camera1'].binning
+    camera1.supportedBinnings[:] = [1]
+    controller.updateParamsFromDetector(detector=camera1, blockSignals=True)
+    assert comboItems(binning) == ['1']
+    camera1.supportedBinnings[:] = [1, 2, 4, 8]
+    controller.updateParamsFromDetector(detector=camera1, blockSignals=True)
+    assert comboItems(binning) == ['1', '2', '4', '8']
+
+
+def test_a_refresh_that_drops_the_displayed_binning_does_not_write_the_fallback_to_the_detector(cameras):
+    """pyqtgraph moves the value to the first option when the shown one disappears; that is not a
+    user choice and must not be sent to the detector."""
+    controller, camera1, _ = cameras
+    camera1.binning = 4
+    controller.updateParamsFromDetector(detector=camera1, blockSignals=True)
+    camera1.calls.clear()
+
+    camera1.supportedBinnings = [1, 2]
+    camera1.binning = 2
+    controller.updateParamsFromDetector(detector=camera1, blockSignals=True)
+
+    assert displayedValue(controller.allParams['Camera1'].binning) == '2'
+    assert camera1.calls == []
+
+
 def test_get_component_state_hazards_returns_empty(settings_controller):
     """Detector settings are passive configuration; no hazards in either mode."""
     state = savedState()

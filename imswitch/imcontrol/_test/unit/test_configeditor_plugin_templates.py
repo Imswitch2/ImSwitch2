@@ -591,3 +591,98 @@ class TestSetupFileShapedTemplates:
         assert templates == []
         assert len(errors) == 1
         assert "managerName" in errors[0].message
+
+
+class TestSharedTemplateOfOnePlugin:
+    """One plugin, one shared setup-file-shaped template, several managers.
+
+    The Micro-Manager template declares devices for five contributions. Each
+    manager used to report every device of the other four as "does not resolve
+    to the declaring manager" (24 spurious errors).
+    """
+
+    @pytest.fixture
+    def temp_package(self, tmp_path):
+        pkg_name = f"test_shared_pkg_{id(tmp_path)}"
+        pkg_path = tmp_path / pkg_name
+        pkg_path.mkdir()
+        (pkg_path / "__init__.py").write_text("")
+        (pkg_path / "templates").mkdir()
+        sys.path.insert(0, str(tmp_path))
+        yield pkg_name, pkg_path
+        if str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+        if pkg_name in sys.modules:
+            del sys.modules[pkg_name]
+
+    @staticmethod
+    def _manager(pkg_name, name, category, kind, resources, plugin="test-plugin"):
+        return ManagerInfo(
+            manager_name=name, category=category, kind=kind, display_name=name,
+            aliases=(), plugin_name=plugin, source_package=pkg_name,
+            docs_url=None, supported_platforms=(),
+            setup_templates=tuple(resources), is_builtin=False,
+            from_registry=True,
+        )
+
+    def _write_shared(self, pkg_path, extra=None):
+        data = {
+            "detectors": {"Cam": {"managerName": "CamManager", "managerProperties": {}}},
+            "lasers": {"Las": {"managerName": "LaserManager", "managerProperties": {}}},
+        }
+        if extra:
+            data["positioners"] = extra
+        (pkg_path / "templates" / "shared.json").write_text(json.dumps(data))
+
+    def test_sibling_contributions_load_each_their_own_device_without_errors(
+        self, temp_package
+    ):
+        pkg_name, pkg_path = temp_package
+        self._write_shared(pkg_path)
+        catalog = ManagerCatalog([
+            self._manager(pkg_name, "CamManager", "detectors", "detector",
+                          ["templates/shared.json"]),
+            self._manager(pkg_name, "LaserManager", "lasers", "laser",
+                          ["templates/shared.json"]),
+        ])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert errors == []
+        assert sorted((t.manager_name, t.category) for t in templates) == [
+            ("CamManager", "detectors"), ("LaserManager", "lasers"),
+        ]
+
+    def test_device_of_another_plugin_is_still_an_error(self, temp_package):
+        pkg_name, pkg_path = temp_package
+        self._write_shared(pkg_path)
+        catalog = ManagerCatalog([
+            self._manager(pkg_name, "CamManager", "detectors", "detector",
+                          ["templates/shared.json"]),
+            self._manager(pkg_name, "LaserManager", "lasers", "laser", [],
+                          plugin="other-plugin"),
+        ])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert [t.manager_name for t in templates] == ["CamManager"]
+        assert len(errors) == 1
+        assert errors[0].manager_name == "CamManager"
+        assert "does not resolve" in errors[0].message
+
+    def test_device_resolving_to_nothing_is_still_an_error(self, temp_package):
+        pkg_name, pkg_path = temp_package
+        self._write_shared(pkg_path, extra={
+            "Stage": {"managerName": "NoSuchManager", "managerProperties": {}}
+        })
+        catalog = ManagerCatalog([
+            self._manager(pkg_name, "CamManager", "detectors", "detector",
+                          ["templates/shared.json"]),
+            self._manager(pkg_name, "LaserManager", "lasers", "laser", []),
+        ])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert [t.manager_name for t in templates] == ["CamManager"]
+        assert len(errors) == 1
+        assert "does not resolve" in errors[0].message

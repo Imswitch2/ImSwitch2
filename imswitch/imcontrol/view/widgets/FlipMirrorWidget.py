@@ -1,10 +1,77 @@
+import re
+
 from qtpy import QtCore, QtWidgets
 
 from .basewidgets import Widget
 
 
+#: Most positions a row shows as buttons; a selector with more positions is a drop-down. The State
+#: column of the grid is about four 80 px buttons wide (the dock's width budget), so a fifth button
+#: would widen every flip-mirror dock for the sake of one wheel.
+MAX_BUTTON_POSITIONS = 4
+
+#: Positions of a switch that has no ``state_names``: a classic two-state flip mirror.
+DEFAULT_STATE_NAMES = {0: "0", 1: "1"}
+
+_BUTTON_STYLE = """
+QPushButton {
+    padding: 2px 8px;
+    border: 1px solid rgba(255,255,255,60);
+}
+
+QPushButton[edge="first"] {
+    border-top-left-radius: 5px;
+    border-bottom-left-radius: 5px;
+}
+
+QPushButton[edge="last"] {
+    border-top-right-radius: 5px;
+    border-bottom-right-radius: 5px;
+}
+
+QPushButton:hover {
+    border: 1px solid rgba(255,255,255,120);
+}
+
+QPushButton:checked {
+    background-color: rgba(120,180,255,120);
+    border: 1px solid rgba(120,180,255,200);
+}
+
+QPushButton:disabled {
+    color: rgba(255,255,255,70);
+    border: 1px solid rgba(255,255,255,25);
+}
+"""
+
+
+def parseStateNames(state_names):
+    """``[(state, text), ...]`` sorted by state number.
+
+    Keys may be ints or digit strings (a setup file's JSON keys are strings). ``None`` or an empty
+    mapping gives the two-state default. Raises ``ValueError`` for a key that is not a whole number
+    >= 0.
+    """
+    if not state_names:
+        state_names = DEFAULT_STATE_NAMES
+    parsed = {}
+    for key, text in state_names.items():
+        try:
+            state = int(key)
+        except (TypeError, ValueError):
+            state = -1
+        if state < 0 or isinstance(key, bool):
+            raise ValueError(f"Flip mirror state names are keyed by state numbers 0, 1, ...; got {key!r}")
+        parsed[state] = str(text)
+    return sorted(parsed.items())
+
+
 class FlipMirrorWidget(Widget):
-    """Widget for controlling binary flip mirrors."""
+    """Widget for controlling flip mirrors: switches with two or more named positions.
+
+    A row with up to ``MAX_BUTTON_POSITIONS`` positions is a group of checkable buttons; a row with
+    more is a drop-down. Both emit ``sigStateChanged(name, state)`` only for a choice the user makes.
+    """
 
     sigStateChanged = QtCore.Signal(str, int)
     sigLinkChanged = QtCore.Signal(str, object)  # follower_name, master_name or None
@@ -63,76 +130,20 @@ class FlipMirrorWidget(Widget):
         if name in self.rows:
             return
 
-        if state_names is None:
-            state_names = {0: "0", 1: "1"}
-
-        state0_text = str(state_names.get(0, state_names.get("0", "0")))
-        state1_text = str(state_names.get(1, state_names.get("1", "1")))
+        states = parseStateNames(state_names)
 
         row_index = len(self.rows) + self._firstDataRow
 
         nameLabel = QtWidgets.QLabel(name)
 
-        state0Btn = QtWidgets.QPushButton(state0_text)
-        state1Btn = QtWidgets.QPushButton(state1_text)
-        state0Btn.setObjectName("state0Btn")
-        state1Btn.setObjectName("state1Btn")
-        state0Btn.setCheckable(True)
-        state1Btn.setCheckable(True)
-        state0Btn.setMinimumWidth(40)
-        state1Btn.setMinimumWidth(40)
-        state0Btn.setMaximumWidth(80)
-        state1Btn.setMaximumWidth(80)
-        state0Btn.setMinimumHeight(24)
-        state1Btn.setMinimumHeight(24)
-
-        buttonGroup = QtWidgets.QButtonGroup(self)
-        buttonGroup.setExclusive(True)
-        buttonGroup.addButton(state0Btn)
-        buttonGroup.addButton(state1Btn)
-
-        stateStyle = """
-        QPushButton {
-            padding: 2px 8px;
-            border: 1px solid rgba(255,255,255,60);
-        }
-
-        QPushButton#state0Btn {
-            border-top-left-radius: 5px;
-            border-bottom-left-radius: 5px;
-        }
-
-        QPushButton#state1Btn {
-            border-top-right-radius: 5px;
-            border-bottom-right-radius: 5px;
-        }
-
-        QPushButton:hover {
-            border: 1px solid rgba(255,255,255,120);
-        }
-
-        QPushButton:checked {
-            background-color: rgba(120,180,255,120);
-            border: 1px solid rgba(120,180,255,200);
-        }
-
-        QPushButton:disabled {
-            color: rgba(255,255,255,70);
-            border: 1px solid rgba(255,255,255,25);
-        }
-        """
-
-        state0Btn.setStyleSheet(stateStyle)
-        state1Btn.setStyleSheet(stateStyle)
-
+        stateWidget = QtWidgets.QWidget()
         stateLayout = QtWidgets.QHBoxLayout()
         stateLayout.setContentsMargins(0, 0, 0, 0)
         stateLayout.setSpacing(0)
-        stateLayout.addWidget(state0Btn)
-        stateLayout.addWidget(state1Btn)
-
-        stateWidget = QtWidgets.QWidget()
         stateWidget.setLayout(stateLayout)
+
+        row = {}
+        self._fillStateControls(name, row, states, stateLayout)
 
         followCheck = QtWidgets.QCheckBox()
         masterCombo = QtWidgets.QComboBox()
@@ -148,22 +159,101 @@ class FlipMirrorWidget(Widget):
         self.grid.addWidget(masterCombo, row_index, 3, alignment=QtCore.Qt.AlignCenter)
         self.grid.addWidget(statusLabel, row_index, 4, alignment=QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
-        self.rows[name] = {
+        row.update({
             "nameLabel": nameLabel,
-            "state0Btn": state0Btn,
-            "state1Btn": state1Btn,
-            "buttonGroup": buttonGroup,
             "stateWidget": stateWidget,
             "followCheck": followCheck,
             "masterCombo": masterCombo,
             "statusLabel": statusLabel,
-        }
-
-        state0Btn.clicked.connect(lambda checked=False, n=name: self.sigStateChanged.emit(n, 0))
-        state1Btn.clicked.connect(lambda checked=False, n=name: self.sigStateChanged.emit(n, 1))
+        })
+        self.rows[name] = row
 
         followCheck.toggled.connect(lambda checked, n=name: self._onFollowToggled(n, checked))
         masterCombo.currentTextChanged.connect(lambda text, n=name: self._onMasterChanged(n, text))
+
+    def _fillStateControls(self, name, row, states, stateLayout):
+        """Buttons up to ``MAX_BUTTON_POSITIONS`` positions, a drop-down beyond; records the states shown."""
+        row["states"] = [state for state, _ in states]
+        row["stateNames"] = dict(states)
+        if len(states) <= MAX_BUTTON_POSITIONS:
+            self._fillStateButtons(name, row, states, stateLayout)
+        else:
+            self._fillStateCombo(name, row, states, stateLayout)
+
+    def stateNames(self, name):
+        """``{state: text}`` of the positions row ``name`` shows (empty for an unknown row)."""
+        row = self.rows.get(name)
+        return dict(row["stateNames"]) if row is not None else {}
+
+    def rebuildFlipMirror(self, name, state_names=None):
+        """Show row ``name`` with a new set of positions: its controls are removed and built again.
+
+        For a switch whose number of positions was not known when the row was built (a device that
+        was not connected then, and is a ten-position wheel now). Name, follow and master controls
+        and the status text stay; the new state controls emit ``sigStateChanged`` exactly as the
+        old ones did, none is selected until ``setState``, and ``setRowState`` decides whether they
+        are enabled. An unknown row is added.
+        """
+        if name not in self.rows:
+            self.addFlipMirror(name, state_names)
+            return
+
+        states = parseStateNames(state_names)
+        row = self.rows[name]
+        stateLayout = row["stateWidget"].layout()
+
+        buttonGroup = row.pop("buttonGroup", None)
+        if buttonGroup is not None:
+            buttonGroup.setParent(None)
+            buttonGroup.deleteLater()
+        for key in [k for k in row if re.fullmatch(r"state\d+Btn", k)] + ["stateButtons", "stateCombo"]:
+            row.pop(key, None)
+        while stateLayout.count():
+            item = stateLayout.takeAt(0)
+            control = item.widget()
+            if control is not None:
+                control.setParent(None)
+                control.deleteLater()
+
+        self._fillStateControls(name, row, states, stateLayout)
+
+    def _fillStateButtons(self, name, row, states, stateLayout):
+        """One checkable button per position. The first two are ``state0Btn`` and ``state1Btn``."""
+        buttonGroup = QtWidgets.QButtonGroup(self)
+        buttonGroup.setExclusive(True)
+
+        buttons = {}
+        for position, (state, text) in enumerate(states):
+            button = QtWidgets.QPushButton(text)
+            button.setObjectName(f"state{position}Btn")
+            button.setCheckable(True)
+            button.setMinimumWidth(40)
+            button.setMaximumWidth(80)
+            button.setMinimumHeight(24)
+            edge = "first" if position == 0 else ("last" if position == len(states) - 1 else "middle")
+            button.setProperty("edge", edge)
+            button.setStyleSheet(_BUTTON_STYLE)
+            buttonGroup.addButton(button)
+            stateLayout.addWidget(button)
+            button.clicked.connect(lambda checked=False, n=name, s=state: self.sigStateChanged.emit(n, s))
+            buttons[state] = button
+            row[f"state{position}Btn"] = button
+
+        row["buttonGroup"] = buttonGroup
+        row["stateButtons"] = buttons
+
+    def _fillStateCombo(self, name, row, states, stateLayout):
+        """A drop-down listing every position; the item data is the state number."""
+        stateCombo = QtWidgets.QComboBox()
+        stateCombo.setObjectName("stateCombo")
+        stateCombo.setMinimumHeight(24)
+        for state, text in states:
+            stateCombo.addItem(text, state)
+        # ``activated`` fires for the user's choice only, like a button click; ``setState`` is silent.
+        stateCombo.activated.connect(
+            lambda index, n=name, c=stateCombo: self.sigStateChanged.emit(n, int(c.itemData(index))))
+        stateLayout.addWidget(stateCombo)
+        row["stateCombo"] = stateCombo
 
     def _onFollowToggled(self, name, checked):
         if self._building:
@@ -205,18 +295,29 @@ class FlipMirrorWidget(Widget):
             self.sigLinkChanged.emit(name, master)
 
     def setState(self, name, state):
+        """Show ``state`` as the selected position; a state the row does not have selects none."""
         if name not in self.rows:
             return
 
         row = self.rows[name]
-        row["state0Btn"].blockSignals(True)
-        row["state1Btn"].blockSignals(True)
+        state = int(state)
 
-        row["state0Btn"].setChecked(int(state) == 0)
-        row["state1Btn"].setChecked(int(state) == 1)
+        combo = row.get("stateCombo")
+        if combo is not None:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(state))      # -1 (nothing shown) for an unknown state
+            combo.blockSignals(False)
+            return
 
-        row["state0Btn"].blockSignals(False)
-        row["state1Btn"].blockSignals(False)
+        group = row["buttonGroup"]
+        buttons = row["stateButtons"]
+        # An exclusive group refuses to uncheck its checked button, so release it for the update.
+        group.setExclusive(False)
+        for position, button in buttons.items():
+            button.blockSignals(True)
+            button.setChecked(position == state)
+            button.blockSignals(False)
+        group.setExclusive(True)
 
     def setMasterChoices(self, name, choices, current_master=None):
         if name not in self.rows:
@@ -281,8 +382,12 @@ class FlipMirrorWidget(Widget):
 
         row = self.rows[name]
 
-        row["state0Btn"].setEnabled(bool(connected and state_enabled))
-        row["state1Btn"].setEnabled(bool(connected and state_enabled))
+        stateEnabled = bool(connected and state_enabled)
+        if "stateCombo" in row:
+            row["stateCombo"].setEnabled(stateEnabled)
+        else:
+            for button in row["stateButtons"].values():
+                button.setEnabled(stateEnabled)
 
         row["followCheck"].setEnabled(bool(connected and link_enabled))
 

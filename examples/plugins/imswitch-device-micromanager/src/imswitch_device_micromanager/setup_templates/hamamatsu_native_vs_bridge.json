@@ -1,0 +1,50 @@
+{
+  "__comment__": "Rig comparison setup, NOT in the manifest (it needs a Hamamatsu camera). One camera, two drivers: HamamatsuNative (ImSwitch2's own DCAM manager) is enabled; HamamatsuMM (Micro-Manager's HamamatsuHam adapter through the bridge) sits under disabledDevices. DCAM allows one open handle per camera, so run one at a time: in the config editor right-click each device card and choose Disable device / Enable device (or move its entry between detectors and disabledDevices by hand), then run tools/compare_cameras.py once per variant and diff the two reports. Set cameraPixelSizeUm to the same measured value on BOTH entries. Set subarray_hsize / subarray_vsize to your sensor if it is not 2048 x 2048. The hub starts MMCore in both variants but loads no device, so DCAM is untouched while the native camera runs.",
+  "rs232devices": {
+    "MMCore": {
+      "managerName": "micromanager.core",
+      "managerProperties": {
+        "adapterPaths": [],
+        "circularBufferMB": null,
+        "logDir": null,
+        "adoptExistingCore": false
+      }
+    }
+  },
+  "detectors": {
+    "HamamatsuNative": {
+      "managerName": "HamamatsuManager",
+      "managerProperties": {
+        "cameraListIndex": 0,
+        "hamamatsu": {
+          "readout_speed": 3,
+          "trigger_global_exposure": 5,
+          "trigger_active": 2,
+          "trigger_polarity": 2,
+          "exposure_time": 0.01,
+          "trigger_source": 1,
+          "subarray_hpos": 0,
+          "subarray_vpos": 0,
+          "subarray_hsize": 2048,
+          "subarray_vsize": 2048
+        }
+      },
+      "forAcquisition": true
+    }
+  },
+  "disabledDevices": {
+    "detectors": {
+      "HamamatsuMM": {
+        "managerName": "micromanager.camera",
+        "managerProperties": {
+          "rs232device": "MMCore",
+          "label": "HamamatsuMM",
+          "adapter": "HamamatsuHam",
+          "device": "HamamatsuHam_DCAM"
+        },
+        "forAcquisition": true
+      }
+    }
+  },
+  "availableWidgets": ["Settings", "View", "Recording", "Image"]
+}

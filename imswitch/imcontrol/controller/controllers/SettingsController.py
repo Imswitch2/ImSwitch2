@@ -4,8 +4,9 @@ from typing import Any, List, Tuple, Dict
 
 import numpy as np
 
-from imswitch.imcommon.model import APIExport, RestoreWarning
+from imswitch.imcommon.model import APIExport, RestoreWarning, initLogger
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
+from imswitch.imcontrol.model.managers.detectors.DetectorManager import DetectorListParameter
 from imswitch.imcontrol.view import guitools as guitools
 from ..basecontrollers import (
     ComponentStateApplyMode,
@@ -46,8 +47,10 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.__logger = initLogger(self, tryInheritParent=True)
         self.settingAttr = False
         self.allParams = {}
+        self._parametersNotInTree = set()   # (detector, parameter) already reported by _updateParamsFromDetector
 
         # Set while the widget is being refreshed FROM the detector, so the
         # param handlers below can tell a readback from a user edit. See
@@ -485,6 +488,14 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         else:
             self._updateParamsFromDetector(detector)
 
+    @staticmethod
+    def _findParameterInTree(tree, group, name):
+        """The tree's row ``group`` / ``name``, or ``None`` if the tree has no such group or row."""
+        try:
+            return tree.p.param(group).param(name)
+        except KeyError:
+            return None
+
     def _updateParamsFromDetector(self, detector):
         params = self.allParams[detector.name]
 
@@ -492,13 +503,39 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
             param.setValue(value)
 
         # Detector parameters
+        tree = self._widget.trees[detector.name]
+        withoutRow = []
         for parameterName, parameter in detector.parameters.items():
-            paramInWidget = self._widget.trees[detector.name].p.param(parameter.group).param(
-                parameterName
-            )
+            paramInWidget = self._findParameterInTree(tree, parameter.group, parameterName)
+            if paramInWidget is None:
+                withoutRow.append(parameterName)
+                continue
+            if isinstance(parameter, DetectorListParameter):
+                # A list parameter's options can grow after the tree was built (a recovered
+                # camera gains the values of its properties): the combo follows the detector.
+                self._refreshListOptions(paramInWidget, parameter.options)
             setValue(paramInWidget, parameter.value)
+            if parameter.editable and tree.writable and paramInWidget.readonly():
+                # A read-only placeholder the detector declared before it could be edited (the
+                # exposure of a camera that was not connected at start-up) is editable now.
+                paramInWidget.setReadonly(False)
+        if withoutRow:
+            # The tree is built once, from the parameters the detector had at start-up. A detector
+            # that gained parameters since (a camera whose hub was down at start-up and was adopted
+            # later) has some the tree has no row for: they show after the next start-up. Raising
+            # here would stop the refresh of everything else.
+            new = [name for name in withoutRow if (detector.name, name) not in self._parametersNotInTree]
+            if new:
+                self._parametersNotInTree.update((detector.name, name) for name in new)
+                self.__logger.warning(
+                    f'Detector "{detector.name}" has {len(new)} parameter(s) with no row in the Settings panel, '
+                    f'which was built before the detector had them (they appear after ImSwitch2 is '
+                    f'restarted): {", ".join(new)}')
 
-        # Frame
+        # Frame. The binning combo offers the detector's CURRENT supported binnings: a camera
+        # that was absent at start-up is built with a placeholder list and gets the real one
+        # when it is adopted, and the value shown is the one the detector reports.
+        self._refreshListOptions(params.binning, detector.supportedBinnings)
         setValue(params.binning, detector.binning)
         frameStart = detector.frameStart
         shape = detector.shape
@@ -512,6 +549,26 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
         # Model
         setValue(params.model, detector.model)
+
+    def _refreshListOptions(self, param, options):
+        """Make the combo box of the list parameter ``param`` offer ``options``; nothing happens if it already does.
+
+        The tree is not rebuilt, only the items change. ``setLimits`` moves the current
+        value to the first option when the old one is no longer offered, which would be
+        written back to the detector as if the user had chosen it, so the write-back is
+        suppressed; the caller sets the detector's value right after.
+        """
+        options = list(options)
+        # What the combo was built from is the parameter's own mapping, NOT ``opts['limits']``: the tree
+        # was handed the detector's list object itself, which a detector may grow in place (the Micro-Manager
+        # camera does when it is adopted), so the limits would always look up to date.
+        if list(param.reverse[0]) == options:
+            return
+        # The stored limits may be the detector's own list, already changed in place: pyqtgraph skips
+        # (and does not tell the combo) a limits change that compares equal to what is stored.
+        param.opts['limits'] = list(param.reverse[0])
+        with self._writebackSuppressed():
+            param.setLimits(options)
 
     def _applyFrameModeFieldState(self, detector):
         """ Make the ROI fields editable only in 'Custom' mode, for the given

@@ -5,7 +5,7 @@
   "properties": {
     "initial_state": {
       "default": null,
-      "description": "Optional state to move to at startup. ``None`` keeps the current state.",
+      "description": "Optional state (``0`` to ``N-1``) to move to at startup. ``None`` keeps the current state.",
       "type": [
         "integer",
         "null"
@@ -18,7 +18,7 @@
     },
     "invert": {
       "default": false,
-      "description": "Whether logical states 0 and 1 are swapped from hardware states.",
+      "description": "Whether logical states 0 and 1 are swapped from hardware states. Applies to two-state devices only; a device with more positions does not support it.",
       "type": "boolean",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
@@ -57,7 +57,7 @@
     },
     "state_names": {
       "default": {},
-      "description": "Optional display names for logical states 0 and 1.",
+      "description": "Optional display names, keyed by the state numbers as strings (\"0\" to \"N-1\"). A state it does not name keeps its manager's own name.",
       "type": "object",
       "x-imswitch-kind": "object",
       "x-imswitch-source": [

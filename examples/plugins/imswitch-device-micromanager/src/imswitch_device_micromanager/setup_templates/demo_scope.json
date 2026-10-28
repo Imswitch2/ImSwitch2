@@ -1,0 +1,76 @@
+{
+  "rs232devices": {
+    "MMCore": {
+      "managerName": "micromanager.core",
+      "managerProperties": {
+        "configFile": "MMConfig_demo.cfg",
+        "adapterPaths": [],
+        "circularBufferMB": null,
+        "logDir": null,
+        "adoptExistingCore": false
+      }
+    }
+  },
+  "detectors": {
+    "Camera": {
+      "managerName": "micromanager.camera",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "Camera"
+      },
+      "forAcquisition": true
+    }
+  },
+  "positioners": {
+    "Z": {
+      "managerName": "micromanager.stage",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "Z"
+      },
+      "axes": ["Z"],
+      "forPositioning": true
+    },
+    "XY": {
+      "managerName": "micromanager.stage",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "XY",
+        "homeable": true
+      },
+      "axes": ["X", "Y"],
+      "forPositioning": true
+    }
+  },
+  "lasers": {
+    "LED": {
+      "managerName": "micromanager.light",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "LED Shutter",
+        "enable": {"kind": "shutter"}
+      },
+      "wavelength": 470,
+      "valueRangeMin": null,
+      "valueRangeMax": null
+    }
+  },
+  "flipMirrors": {
+    "WhiteLight": {
+      "managerName": "micromanager.flip-mirror",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "White Light Shutter"
+      },
+      "state_names": {"0": "Closed", "1": "Open"}
+    },
+    "Dichroic": {
+      "managerName": "micromanager.flip-mirror",
+      "managerProperties": {
+        "rs232device": "MMCore",
+        "label": "Dichroic"
+      }
+    }
+  },
+  "availableWidgets": ["Settings", "View", "Recording", "Image", "Positioner", "Laser", "FlipMirror"]
+}
