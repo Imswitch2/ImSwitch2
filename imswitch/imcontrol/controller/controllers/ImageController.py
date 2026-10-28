@@ -12,6 +12,7 @@ from imswitch.imcontrol.model.scan_frame import DisplayedScanGeometry, frame_geo
 from imswitch.imcommon.model import initLogger
 import numpy as np
 import re
+from qtpy import QtCore
 
 class ImageController(LiveUpdatedController, StatefulComponentMixin):
     """ Linked to ImageWidget."""
@@ -26,6 +27,8 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         super().__init__(*args, **kwargs)
 
         self.__logger = initLogger(self, tryInheritParent=True)
+        self.__pendingResultLayers = {}
+        self.__resultRenderScheduled = False
         getWidgetStatePersistence().register('Image', self)
         self._shownScanGeometry = {}   # detector -> DisplayedScanGeometry or None
         # The view's sum over the frames' extra dimensions (line steps, z,
@@ -60,10 +63,14 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._commChannel.sigUpsertStaticLayer.connect(self.upsertStaticLayer)
         self._commChannel.sigRemoveStaticLayer.connect(self.removeStaticLayer)
         self._commChannel.sigSetExposure.connect(lambda t: self.setExposure(t))
+        if hasattr(self._commChannel, 'sigResultLayersUpdated'):
+            self._commChannel.sigResultLayersUpdated.connect(self.resultLayersUpdated)
+            self._commChannel.sigResultLayersRemoved.connect(self.resultLayersRemoved)
 
         # Connect ModuleCommunicationChannel signals if available
         if self._moduleCommChannel is not None:
             self._moduleCommChannel.sigLiveReconResult.connect(self.liveReconResultAvailable)
+            self._moduleCommChannel.sigShowImage.connect(self.showImage)
 
     def autoLevels(self, detectorNames=None, im=None):
         """ Set histogram levels automatically with current detector image."""
@@ -226,9 +233,59 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._widget.removeStaticLayer(name)
 
     def liveReconResultAvailable(self, name, image, scale):
-        """ Adds live reconstruction result to widget. """
-        self._widget.addStaticLayer(name, image, scale)
-        if self._shouldResetView:
+        """A live result from ImProcess (module channel): one layer per name.
+
+        Routed through the result-layer path, so a stream of updates keeps
+        replacing the same layer instead of adding one per update.
+        """
+        kwargs = {'name': str(name)}
+        if scale is not None:
+            kwargs['scale'] = tuple(float(v) for v in scale)
+        self.resultLayersUpdated(f'ImProcess: {name}', [(np.asarray(image), kwargs, 'image')])
+
+    def resultLayersUpdated(self, jobName, layerData):
+        """Keep the newest layer data per job and draw once the event loop is free.
+
+        A producer that publishes faster than the viewer redraws must not
+        queue up redraws: only the latest data of each job is drawn.
+        """
+        self.__pendingResultLayers[jobName] = list(layerData or [])
+        if not self.__resultRenderScheduled:
+            self.__resultRenderScheduled = True
+            QtCore.QTimer.singleShot(0, self._renderPendingResultLayers)
+
+    def resultLayersRemoved(self, jobName):
+        self.__pendingResultLayers.pop(jobName, None)
+        self._widget.removeResultLayers(jobName)
+
+    def _renderPendingResultLayers(self):
+        self.__resultRenderScheduled = False
+        pending, self.__pendingResultLayers = self.__pendingResultLayers, {}
+        for jobName, layerData in pending.items():
+            try:
+                created = self._widget.setResultLayers(jobName, layerData)
+            except Exception:
+                self.__logger.error(
+                    f'Could not draw the result layers of {jobName!r}', exc_info=True
+                )
+                continue
+            # An empty viewer fits itself to the first thing shown in it, as
+            # it does for a snap; a viewer already showing a live view keeps
+            # the user's zoom.
+            if created and self.__dict__.get('_shouldResetView', False) and layerData:
+                shape = getattr(layerData[0][0], 'shape', None)
+                if shape is not None:
+                    self.adjustFrame(shape, instantResetView=True)
+
+    def showImage(self, name, image, scale):
+        """ A script's show(): the array in the layer called ``name``,
+        replacing that layer's data when it exists. """
+        try:
+            isNew = self._widget.setStaticLayer(name, image, scale)
+        except Exception:
+            self.__logger.error(f'Could not show {name!r}', exc_info=True)
+            return
+        if isNew and self._shouldResetView:
             self.adjustFrame(image.shape, instantResetView=True)
 
     def setExposure(self, exp):

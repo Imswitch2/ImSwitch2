@@ -89,7 +89,7 @@ class CommunicationChannel(SignalInterface):
     ``ImProcessMainController`` forwards it to
     ``ImProcessMainView.showStatusMessage``.
 
-    Emitters: DataFrameController, FileIOController
+    Emitters: DataFrameController, FileIOController, ImProcessMainController
     Listeners: ImProcessMainController
     """
 
@@ -248,6 +248,20 @@ class CommunicationChannel(SignalInterface):
     Listeners: ReconstructionViewController
     """
 
+    sigLivePatternLocalized = Signal(object)
+    """The illumination grid a live MoNaLISA session localized on its first stack.
+
+    Payload: ``(pattern,)``, a dict with ``row_offset``, ``col_offset``,
+    ``row_period`` and ``col_period`` in pixels and ``source`` (``auto`` for
+    a fresh localization, the live case). Emitted once per live run, when
+    the session has begun, so the operator can see that the run localized
+    anew and on what. Nothing writes it back into a parameter widget whose
+    values a later offline reconstruction would use.
+
+    Emitters: LiveReconstructionController
+    Listeners: ImProcessMainController
+    """
+
     sigLiveTimepointDone = Signal(int)
     """0-based index of a scan stack (timepoint) that just finished streaming.
 
@@ -256,6 +270,19 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: LiveReconstructionController
     Listeners: ReconstructionViewController
+    """
+
+    sigMemoryRecordingPolicyChanged = Signal(str)
+    """How a recording ImControl kept in memory is received from now on.
+
+    Payload: one of ``memory_recording_preferences.POLICIES`` -- ``list`` (a
+    Multidata row, opened by hand), ``current`` (opened as the current data
+    at once) or ``reconstruct`` (opened and run through the active
+    reconstructor). The Multidata panel owns the setting and persists it;
+    the RAM reconstruction controller follows it.
+
+    Emitters: MultiDataFrameController
+    Listeners: MemoryLiveController
     """
 
     sigResultsChanged = Signal()

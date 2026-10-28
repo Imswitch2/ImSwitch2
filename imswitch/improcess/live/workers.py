@@ -457,6 +457,7 @@ class LiveProcessWorker(QtCore.QObject):
         # The viewer needs one whole result before incremental planes mean
         # anything -- that first result is the buffer they get written into.
         self._sent_initial_result = False
+        self._last_published = None
         self._init_obj = None
         self._init_params: dict = {}
         self._logger = initLogger(self, tryInheritParent=False)
@@ -526,6 +527,15 @@ class LiveProcessWorker(QtCore.QObject):
         except Exception as e:
             self._logger.error(f"Session begin failed: {e}")
             self.sigFailed.emit(str(e))
+            return
+        # begin() consumed a whole stack: whatever the session made of it is
+        # ready now, not once the next frame happens to arrive. A session with
+        # nothing to show yet publishes nothing (see _publish_update).
+        try:
+            self._publish_update()
+        except Exception as e:
+            self._logger.error(f"Could not publish the first update: {e}")
+        self._last_result_emit = time.monotonic()
 
     @QtCore.Slot(int)
     def process_chunk(self, index: int) -> None:
@@ -595,6 +605,12 @@ class LiveProcessWorker(QtCore.QObject):
 
         A session that does not implement ``live_plane()`` (the base class
         returns ``None``) simply keeps receiving whole results.
+
+        ``result()`` may be ``None`` -- a batch session before its first
+        stack is complete -- and then there is nothing to show yet. A
+        snapshot is a fresh object (the copy is the session's thread
+        boundary), so the same object handed out twice is one the viewer
+        already has, and is not sent or recorded again.
         """
         if self._sent_initial_result:
             plane = self._session.live_plane()
@@ -605,9 +621,12 @@ class LiveProcessWorker(QtCore.QObject):
         # A whole result is a snapshot, and leaves with its provenance record;
         # if that cannot be made, nothing is emitted for it.
         result = self._session.result()
+        if result is None or result is self._last_published:
+            return
         self._record(result, "partial")
         self.sigResultUpdated.emit(result)
         self._sent_initial_result = True
+        self._last_published = result
 
     def _final_status(self) -> str:
         if self._stalled:

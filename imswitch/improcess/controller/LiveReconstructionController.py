@@ -5,6 +5,7 @@ from qtpy import QtCore
 from imswitch.imcommon.model.logging import initLogger
 from imswitch.improcess.live.buffer import RawDataBuffer
 from imswitch.improcess.live.workers import LiveProcessWorker, LiveStreamWorker
+from imswitch.improcess.live.batch_session import StackBatchSession
 from imswitch.improcess.model.processing_config import (
     live_stall_timeout_s,
     live_viewer_update_interval_s,
@@ -16,9 +17,12 @@ from imswitch.improcess.reconstructors.base import StreamInit
 class LiveReconstructionController(QtCore.QObject):
     """
     Controller for live reconstruction that works with any Reconstructor.
-    
-    For StreamingReconstructor: creates a session and runs the streaming path.
-    Streaming only: the session consumes frames as they arrive.
+
+    A ``StreamingReconstructor`` supplies its own session, which consumes
+    frames as they arrive. Any other reconstructor is driven through a
+    :class:`~imswitch.improcess.live.StackBatchSession`, which reconstructs
+    once per complete stack; the workers, buffer, cadence and provenance are
+    the same either way.
     """
 
     sigFinished = QtCore.Signal()
@@ -109,18 +113,6 @@ class LiveReconstructionController(QtCore.QObject):
         self._stack_info = None
         self._finishing = False
 
-        # Streaming only. The directory watcher offers itself solely to
-        # reconstructors declaring supports_streaming, so anything else
-        # reaching here is a wiring mistake rather than a fallback case.
-        # Read off the reconstructor, so the branch costs no I/O -- the
-        # streaming path opens the source lazily on its worker thread.
-        if not getattr(self._reconstructor, "supports_streaming", False):
-            self._logger.error(
-                "Live mode is only compatible with a reconstructor that "
-                "supports streaming."
-            )
-            return False
-
         self._is_streaming = True
         started = self._start_streaming_path()
 
@@ -130,6 +122,20 @@ class LiveReconstructionController(QtCore.QObject):
 
         self._running = True
         return True
+
+    def _make_session(self):
+        """The reconstructor's own session, or a stack-batch adapter around it.
+
+        Read off the reconstructor, so the branch costs no I/O -- the
+        streaming path opens the source lazily on its worker thread.
+        """
+        if getattr(self._reconstructor, "supports_streaming", False):
+            return self._reconstructor.make_session()
+        self._logger.info(
+            f"{getattr(self._reconstructor, 'name', type(self._reconstructor).__name__)} "
+            f"does not stream; reconstructing once per complete stack"
+        )
+        return StackBatchSession(self._reconstructor)
 
     def _effective_stall_timeout(self) -> float | None:
         """Compute the effective stall timeout for the current source.
@@ -323,7 +329,7 @@ class LiveReconstructionController(QtCore.QObject):
         """
         self._logger.debug("Starting streaming reconstruction path")
 
-        self._session = self._reconstructor.make_session()
+        self._session = self._make_session()
 
         # The process worker is built later, in _on_init_stack_ready, once the
         # stack shape is known (it needs the RawDataBuffer + frames_per_stack, both
@@ -431,6 +437,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._logger.debug(
             f"Session initialized with output shape {getattr(plan, 'out_shape', '?')}"
         )
+        self._announce_pattern()
         # A stall is forwarded so the final record says "stalled", not
         # "complete".
         self._stream_worker.sigStalled.connect(self._process_worker.markStalled)
@@ -441,6 +448,15 @@ class LiveReconstructionController(QtCore.QObject):
         self._stream_worker.sigStackComplete.connect(self._process_worker.finalize)
         self._stream_worker.frame_gate.consumed_through(self._frames_per_stack - 1)
         self._stream_worker.resume(self._raw_buffer)
+
+    def _announce_pattern(self) -> None:
+        """Tell the widgets which grid a MoNaLISA session localized (if it did)."""
+        pattern = getattr(self._session, 'pattern_params', None)
+        if not pattern:
+            return
+        payload = dict(pattern)
+        payload['source'] = getattr(self._session, 'pattern_source', None) or 'auto'
+        self._commChannel.sigLivePatternLocalized.emit(payload)
 
     @QtCore.Slot(str)
     def _on_stream_failed(self, message: str) -> None:

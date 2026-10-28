@@ -77,6 +77,23 @@ There are three ways to open data:
 With the **Time lapse** reconstructor active, opening any one file or group
 of a time lapse opens the whole lapse as one stack (see `Time lapses`_).
 
+A recording ImControl saves with **Save in memory for reconstruction**
+(HDF5) or **Save on disk and keep in memory** (HDF5 or Zarr) reaches
+ImProcess the moment it is finished.  The **In-memory recordings** setting in the Multidata dock
+decides what happens then: *List only* adds a row marked ``(MEMORY)`` to
+open by hand, *Open as current data* opens it at once, and *Open and
+reconstruct* opens it and runs the active reconstructor on it, so the result
+is in the results list before you look.  The setting is kept per computer in
+``improcess_options.json``.  A recording kept in memory only is saved to its
+planned path with the dock's *Save* action; until then a result made from it
+records a source that was not persisted.
+
+A reconstruction ImControl's live reconstruction tool made (see :doc:`gui`,
+*Live reconstruction tool*) arrives the same way when its **Send to
+ImProcess** button is pressed: it joins the reconstruction list as the
+current result, with the provenance the live run recorded, and the status
+bar says where it came from.
+
 When a recording is opened, ImProcess works out its **acquisition layout**
 — which frame belongs to which scan position, time point or condition.  A
 user override stored beside the file as ``<file>.imswitch-layout.json``
@@ -1735,6 +1752,14 @@ paths:
   and uses the fast-Gauss streaming session under
   ``imswitch/improcess/reconstructors/monalisa/live_session.py`` regardless
   of the offline selector.
+
+**The illumination grid.** A live run localizes the pattern afresh at the
+start of every run, on the sum of its own first stack: the sample is scanned
+under a fixed pattern, so the sum shows the grid with the sample averaged
+out.  It never reuses the ``Pattern`` values of the parameter widget or a
+previous run's grid, and the status bar says which grid it found.  The
+offline paths (*Reconstruct current*) use the ``Pattern`` values, which
+*Find pattern* fills from the mean of the loaded data.
 
 The MoNaLISA parameter widget's ``Bleaching correction`` checkbox applies to
 the full offline path, the fast-Gauss offline path, and live fast-Gauss. When

@@ -338,3 +338,109 @@ def test_memory_live_controller_handles_structured_layout():
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+# --------------------------------------------------------------------------- #
+# The policy, and reading the recording the way a file is read                #
+# --------------------------------------------------------------------------- #
+
+def _enabled_controller(reconstructor):
+    comm_channel = CommunicationChannel()
+    module_comm_channel = _FakeModuleCommChannel()
+    controller = MemoryLiveController(
+        comm_channel, _FakeWidget(), _FakeFactory(),
+        moduleCommChannel=module_comm_channel,
+        mainController=_FakeMainController(reconstructor),
+    )
+    controller.setEnabled(True)
+    results = []
+    comm_channel.sigResultProduced.connect(lambda result, name: results.append((result, name)))
+    return controller, comm_channel, module_comm_channel, results
+
+
+def test_persisted_reconstruct_policy_enables_the_controller(monkeypatch):
+    monkeypatch.setattr(
+        'imswitch.improcess.controller.MemoryLiveController.load_memory_recording_policy',
+        lambda: 'reconstruct',
+    )
+    controller = MemoryLiveController(
+        CommunicationChannel(), _FakeWidget(), _FakeFactory(),
+        moduleCommChannel=_FakeModuleCommChannel(),
+        mainController=_FakeMainController(_TestReconstructor()),
+    )
+    assert controller.enabled is True
+
+
+def test_policy_signal_switches_the_controller():
+    comm_channel = CommunicationChannel()
+    controller = MemoryLiveController(
+        comm_channel, _FakeWidget(), _FakeFactory(),
+        moduleCommChannel=_FakeModuleCommChannel(),
+        mainController=_FakeMainController(_TestReconstructor()),
+    )
+    assert controller.enabled is False
+
+    comm_channel.sigMemoryRecordingPolicyChanged.emit('reconstruct')
+    assert controller.enabled is True
+    comm_channel.sigMemoryRecordingPolicyChanged.emit('current')
+    assert controller.enabled is False
+
+
+def test_grouped_metadata_reaches_the_reconstructor():
+    """ScanStage/ScanTTL live under <det>/metadata/<Category>; the reconstructor
+    must see them flattened, as it does from the same file on disk."""
+    reconstructor = _TestReconstructor()
+    # Keep the controller referenced: a collected QObject takes its slots with it.
+    controller, _channel, module_comm_channel, results = _enabled_controller(reconstructor)
+
+    buf = BytesIO()
+    with h5py.File(buf, "w") as f:
+        grp = f.create_group("CAM")
+        dataset = grp.create_dataset("data", data=np.arange(12, dtype=np.uint16).reshape(3, 2, 2))
+        dataset.attrs["detector_name"] = "CAM"
+        stage = grp.create_group("metadata").create_group("ScanStage")
+        stage.attrs["axis_length"] = 0.6
+        stage.attrs["target_device"] = "X"
+
+    module_comm_channel.memoryRecordings.emit_dataset("grouped", _FakeVFileItem(buf))
+
+    assert len(results) == 1
+    attrs = reconstructor.last_data_obj.attrs
+    assert attrs["ScanStage:axis_length"] == 0.6
+    assert attrs["ScanStage:target_device"] == "X"
+    assert reconstructor.last_data_obj.datasetName == "CAM"
+
+
+def test_single_file_lapse_groups_are_each_reconstructed():
+    reconstructor = _TestReconstructor()
+    # Keep the controller referenced: a collected QObject takes its slots with it.
+    controller, _channel, module_comm_channel, results = _enabled_controller(reconstructor)
+
+    buf = BytesIO()
+    with h5py.File(buf, "w") as f:
+        for index in range(2):
+            grp = f.create_group(f"scan{index}").create_group("CAM")
+            grp.create_dataset("data", data=np.full((2, 2, 2), index, dtype=np.uint16))
+
+    module_comm_channel.memoryRecordings.emit_dataset("lapse", _FakeVFileItem(buf))
+
+    assert len(results) == 2
+    assert results[0][1] == "Live (RAM)"
+
+
+def test_a_zarr_group_payload_is_read_as_is(tmp_path):
+    import zarr
+
+    reconstructor = _TestReconstructor()
+    # Keep the controller referenced: a collected QObject takes its slots with it.
+    controller, _channel, module_comm_channel, results = _enabled_controller(reconstructor)
+
+    root = zarr.open_group(str(tmp_path / "rec.zarr"), mode="w")
+    array = root.create_group("CAM").create_array("data", shape=(2, 2, 2), dtype="uint16")
+    array[:] = np.arange(8, dtype=np.uint16).reshape(2, 2, 2)
+    array.attrs["detector_name"] = "CAM"
+
+    module_comm_channel.memoryRecordings.emit_dataset("zarr", _FakeVFileItem(root))
+
+    assert len(results) == 1
+    assert np.array_equal(reconstructor.last_data_obj.data, np.arange(8).reshape(2, 2, 2))

@@ -186,6 +186,8 @@ def test_live_session_begin(synthetic_stack):
     assert "Dataset" in plan.axis_labels
     assert "Base" in plan.axis_labels
     assert "T" in plan.axis_labels
+    assert session.pattern_source == "auto"
+    assert set(session.pattern_params) == {"row_offset", "col_offset", "row_period", "col_period"}
 
 
 def _recorded_stack_info(frame_shape, layout, num_frames):
@@ -1246,3 +1248,55 @@ def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_st
     else:
         assert not any("disagrees" in w for w in warnings)
     assert (session.nx_s, session.ny_s, session.num_linesteps) == (nx_s, ny_s, 1)
+
+
+def test_every_live_session_localizes_the_pattern_afresh_on_its_own_stack(
+    synthetic_stack, monkeypatch
+):
+    """A live run never reuses a pattern: not the parameter fields, not a previous run's.
+
+    Each session calls the localizer once, on its own whole first stack (the
+    localizer sums it), and the pattern values in ``params`` -- what a
+    parameter widget holds, possibly from an earlier session -- play no part.
+    """
+    from imswitch.improcess.reconstructors.monalisa import live_session as module
+    from imswitch.improcess.reconstructors.monalisa.localizer import localizer as real_localizer
+
+    stack, attrs, *_ = synthetic_stack
+    calls = []
+
+    def recording_localizer(data, *args, **kwargs):
+        calls.append(data)
+        return real_localizer(data, *args, **kwargs)
+
+    monkeypatch.setattr(module, "localizer", recording_localizer)
+    stale = {"row_offset": 1.0, "col_offset": 1.0, "row_period": 20.0, "col_period": 20.0}
+    runs = []
+    for name, data in (("run1", stack), ("run2", np.roll(stack, 3, axis=-1))):
+        session = MonalisaReconstructor().make_session()
+        session.begin(
+            StreamInit(name=name, dataset_name="CAM", data=data, attrs=attrs),
+            {"use_gpu": False, **stale},
+        )
+        runs.append((session, data))
+
+    assert len(calls) == 2                       # one fresh localization per run
+    for (session, data), seen in zip(runs, calls):
+        np.testing.assert_array_equal(seen, data)  # the run's own whole first stack
+        assert session.pattern_source == "auto"
+        assert session.pattern_params != stale    # the parameter fields are not used
+    assert runs[0][0].pattern_params != runs[1][0].pattern_params
+
+
+def test_an_explicit_pattern_is_the_offline_route_and_says_so(synthetic_stack):
+    stack, attrs, *_ = synthetic_stack
+    pattern = {"row_offset": 3.0, "col_offset": 4.0, "row_period": 20.0, "col_period": 25.0}
+    session = MonalisaReconstructor().make_session()
+
+    session.begin(
+        StreamInit(name="offline", dataset_name="CAM", data=stack, attrs=attrs),
+        {"use_gpu": False, "_monalisa_pattern_params": pattern},
+    )
+
+    assert session.pattern_source == "explicit"
+    assert session.pattern_params == pattern

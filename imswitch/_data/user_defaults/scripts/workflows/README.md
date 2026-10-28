@@ -6,6 +6,10 @@ script, and edit the device names and output folders before running.
 
 * `wfs/` -- WidefieldSTARSS and related widefield acquisitions
   (Kiralux camera, Teensy pulses, rotators).
+* `monalisa/` -- MoNaLISA timelapses recorded into memory and reconstructed
+  as they come in;
+  `01_bleach_compensated_timelapse.py` raises a laser's power when the
+  reconstructed intensity drops from one block of timepoints to the next.
 
 The time-resolved acquisitions (binned photon arrivals, gated STED, tau
 STED) are tutorials now: `../tutorial/timetagger/11_*` to `13_*`, which run

@@ -10,6 +10,14 @@ class ModuleCommunicationChannel(SignalInterface):
     sigRunScript = Signal(str)
     sigExecutionFinished = Signal()
     sigLiveReconResult = Signal(str, object, object)  # (name, image, scale)
+    #: A ``ProcessingResult`` made outside ImProcess -- ImControl's live
+    #: reconstruction tool sends the one it holds -- offered to ImProcess's
+    #: result list: ``(result, displayName)``. The object itself crosses,
+    #: as everything on this channel does; the modules share one process.
+    sigProcessingResultProduced = Signal(object, str)
+    #: A script's show(): display an array in ImControl's image view, in the
+    #: layer of that name (replaced when it exists).
+    sigShowImage = Signal(str, object, object)  # (name, image, scale)
 
     @property
     def memoryRecordings(self):

@@ -26,6 +26,9 @@ class ScriptRunResult:
         # True when the run was cancelled and its cleanup did not finish
         # within the executor's cleanup budget (see imcommon.model.cancellation).
         self.cleanup_timed_out: bool = False
+        # True for a run in the session (Run selection, Run cell), False for
+        # one in a fresh namespace (Run all).
+        self.session: bool = False
     
     def mark_started(self):
         """Reset the start time (a deferred run starts later than it was

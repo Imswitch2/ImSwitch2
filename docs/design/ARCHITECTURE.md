@@ -433,6 +433,10 @@ imcontrol recording (Zarr/HDF5 + recording:frames_committed barrier)
 
 The first streaming consumer is the MoNaLISA fast-Gauss path (`reconstructors/monalisa/live_session.py`). Completion is gated on the writer's stream-complete marker, with progressive updates for timelapse (`scan{N}`) stores. Remaining known gap: a crashed-writer stall fallback (tracked in ROADMAP M10).
 
+Reconstructors without streaming support run through the same workers via `live/batch_session.py` (`StackBatchSession`: `process()` once per complete stack).
+
+**In-process live reconstruction (ImControl).** The same runtime also runs with no file at all: `imcontrol/model/liverecon/DetectorChunkLiveSource` is a `LiveSource` over one detector chunk-consumer queue (`DetectorManager.readChunk`, the fan-out the recorder and BeadRec poll), and `imcontrol/controller/controllers/LiveReconController` (the `LiveRecon` widget) leases the detector at `sigScanStarting`, describes the stream with `recording_metadata.build_recording_attrs` (the recorder's own attribute block, shared through `RecordingPlan`), and drives `LiveReconstructionController` over a private ImProcess `CommunicationChannel`. Results reach the main viewer as `CommunicationChannel.sigResultLayersUpdated` → `ImageWidget.setResultLayers` (layers created once, updated in place). ImControl imports ImProcess's library layers lazily for this and never its views or module controller.
+
 ---
 
 ## Workflow Scripting Layer

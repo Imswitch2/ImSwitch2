@@ -84,6 +84,12 @@ class MonalisaLiveSession(StreamingSession):
         self.name = ""
         self.scan_params = {}
         self.output_pixel_size_nm = None
+        #: The grid this session assembles on (``LocalizationResult``), and
+        #: where it came from: ``auto`` (localized afresh on this session's
+        #: first stack, the live case) or ``explicit`` (the offline fast-Gauss
+        #: path passing the widget's pattern).
+        self.localization = None
+        self.pattern_source = None
         # GPU streaming path: accumulate the in-flight timepoint's output on the
         # device and copy back to ``reconstructed`` only at the viewer-refresh
         # cadence (see result()) or when the timepoint rolls over. Frames arrive
@@ -295,6 +301,10 @@ class MonalisaLiveSession(StreamingSession):
         )
 
         loc_result = self._resolve_localization(working_data, params)
+        self.localization = loc_result
+        self.pattern_source = (
+            "explicit" if params.get("_monalisa_pattern_params") else "auto"
+        )
         self.nx_c = loc_result.nx_c
         self.ny_c = loc_result.ny_c
 
@@ -611,6 +621,20 @@ class MonalisaLiveSession(StreamingSession):
         except (TypeError, ValueError):
             pass
         return DEFAULT_GAUSSIAN_SIGMA_PX
+
+    @property
+    def pattern_params(self) -> dict | None:
+        """The grid in the parameter widget's terms (row/col offset and period,
+        in pixels), or ``None`` before :meth:`begin`."""
+        loc = self.localization
+        if loc is None:
+            return None
+        return {
+            "row_offset": float(loc.yo),
+            "col_offset": float(loc.xo),
+            "row_period": float(loc.yp),
+            "col_period": float(loc.xp),
+        }
 
     @staticmethod
     def _resolve_localization(data: np.ndarray, params: dict):

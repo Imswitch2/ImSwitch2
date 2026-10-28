@@ -694,10 +694,14 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
     @APIExport(runOnUIThread=True)
     def getDetectorParameters(self, detectorName: str) -> Dict[str, Dict[str, Any]]:
         """ Returns all detector-specific parameters of the specified detector
-        as {parameter name: {'value', 'units', 'editable', 'options'}}. 'units'
-        is None for a parameter that picks from a list of 'options', and
-        'options' is None for a numerical one. Only an editable parameter can
-        be changed with setDetectorParameter. """
+        as {parameter name: {'value', 'units', 'editable', 'options',
+        'configOwned'}}. 'units' is None for a parameter that picks from a list
+        of 'options', and 'options' is None for a numerical one. Only an
+        editable parameter can be changed with setDetectorParameter.
+        'configOwned' is True for a calibration the setup file declares (the
+        camera pixel size): the setup file owns it, not an acquisition. """
+        detector = self._master.detectorsManager.getDevice(detectorName)
+        configOwned = getattr(detector, 'configOwnedParameters', frozenset())
         return {
             name: {
                 'value': parameter.value,
@@ -705,9 +709,9 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                 'editable': parameter.editable,
                 'options': (list(parameter.options) if hasattr(parameter, 'options')
                             else None),
+                'configOwned': name in configOwned,
             }
-            for name, parameter in self._master.detectorsManager.getDevice(
-                detectorName).parameters.items()
+            for name, parameter in detector.parameters.items()
         }
 
     def _getDetectorParameterObj(self, detectorName, parameterName):
@@ -718,6 +722,14 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                 f' its parameters are {", ".join(repr(name) for name in parameters)}'
             )
         return parameters[parameterName]
+
+    @APIExport()
+    def getDetectorPixelSize(self, detectorName: str) -> List[float]:
+        """ Returns the size of the detector's pixels in the sample, in µm,
+        as ``[Z, Y, X]``: for a camera its pixel size setting, for a
+        scan-driven detector (APD, PMT, ...) the scan's step. ``Z`` is 1
+        when nothing steps it. """
+        return [float(v) for v in self._master.detectorsManager[detectorName].pixelSizeUm]
 
     @APIExport(runOnUIThread=True)
     def setDetectorBinning(self, detectorName: str, binning: int) -> None:

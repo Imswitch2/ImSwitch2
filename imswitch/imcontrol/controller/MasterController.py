@@ -200,6 +200,15 @@ class MasterController:
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
+        # Release a memory recording's bytes once ImProcess removes it. A
+        # module channel without the collection (a test double) has nothing
+        # to release.
+        removal = getattr(
+            getattr(self.__moduleCommChannel, 'memoryRecordings', None),
+            'sigDataWillRemove', None,
+        )
+        if removal is not None:
+            removal.connect(self.memoryRecordingWillBeRemoved)
 
     def _cleanupAfterInitializationFailure(self):
         """Best-effort cleanup without masking the startup exception."""
@@ -233,6 +242,16 @@ class MasterController:
         self.__moduleCommChannel.memoryRecordings[name] = VFileItem(
             data=file, filePath=filePath, savedToDisk=savedToDisk
         )
+
+    def memoryRecordingWillBeRemoved(self, name):
+        """ImProcess is dropping a recording kept in memory: stop holding its bytes too."""
+        try:
+            filePath = self.__moduleCommChannel.memoryRecordings.getSavePath(name)
+        except KeyError:
+            return
+        release = getattr(self.recordingManager, 'releaseMemoryRecording', None)
+        if callable(release):
+            release(filePath)
 
     def _managerFinalizationCompleted(self, manager):
         completed = self.__dict__.setdefault(

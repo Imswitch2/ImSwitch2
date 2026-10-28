@@ -66,6 +66,12 @@ class ImProcessMainController(MainController):
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
         self.__commChannel.sigResultReplaced.connect(self._onResultReplaced)
         self.__commChannel.sigLiveResultUpdated.connect(self._onLiveResultUpdated)
+        self.__commChannel.sigLivePatternLocalized.connect(self._onLivePatternLocalized)
+        # A result another module made (ImControl's live reconstruction tool)
+        # joins the reconstruction list like one of ImProcess's own.
+        external = getattr(self.__moduleCommChannel, 'sigProcessingResultProduced', None)
+        if external is not None:
+            external.connect(self._onExternalResultProduced)
 
         # List of Controllers for the GUI Widgets
         self.__factory = ImProcessWidgetControllerFactory(
@@ -981,6 +987,35 @@ class ImProcessMainController(MainController):
         except Exception:
             return False
 
+    def _onExternalResultProduced(self, result, name):
+        """Fold a result produced by another module into the reconstruction list.
+
+        ImControl's live reconstruction tool sends the result it holds. It
+        arrives as an object, exactly as a panel's result does, so it is
+        published the same way: listed, made current, and bridged back to
+        the ImControl viewer when that display is on.
+        """
+        if result is None:
+            return
+        name = str(name or getattr(result, 'name', '') or 'result')
+        self.__commChannel.sigResultProduced.emit(result, name)
+        self.__commChannel.sigCurrentResultChanged.emit(result)
+        self.__commChannel.sigStatusMessage.emit(f'Received "{name}" from ImControl')
+
+    def _onLivePatternLocalized(self, pattern):
+        """Say which grid a live MoNaLISA run localized, in the status bar and the log."""
+        try:
+            text = (
+                f"Live MoNaLISA: pattern localized on the first stack: period "
+                f"{float(pattern['row_period']):.2f} x {float(pattern['col_period']):.2f} px, "
+                f"offset {float(pattern['row_offset']):.2f} / "
+                f"{float(pattern['col_offset']):.2f} px (row / col)"
+            )
+        except (KeyError, TypeError, ValueError):
+            return
+        self.__logger.info(text)
+        self.__commChannel.sigStatusMessage.emit(text)
+
     def _onLiveResultUpdated(self, result):
         """Bridge live result update to imcontrol if display is enabled."""
         self._bridgeResultToImcontrol(result, result.name if hasattr(result, 'name') else 'Live Result')
@@ -1003,6 +1038,14 @@ class ImProcessMainController(MainController):
         scale = None
         if hasattr(result, 'axis_scales') and result.axis_scales:
             scale = result.axis_scales[-2:] if len(result.axis_scales) >= 2 else None
+        if scale is not None:
+            # The ImControl viewer is in micrometres; a MoNaLISA result is in
+            # nanometres, and sending its scale unchanged drew it a thousand
+            # times too large.
+            from imswitch.imcommon.model.ome_metadata import micrometres_per_unit
+            factor = micrometres_per_unit(getattr(result, 'scale_unit', ''))
+            if factor is not None:
+                scale = [float(value) * factor for value in scale]
 
         self.__moduleCommChannel.sigLiveReconResult.emit(name, image, scale)
 

@@ -16,6 +16,7 @@ class MultiDataFrame(QtWidgets.QFrame):
     sigSaveAllDataClicked = QtCore.Signal()
     sigSetAsCurrentDataClicked = QtCore.Signal()
     sigSelectedItemChanged = QtCore.Signal()
+    sigMemoryRecordingPolicyChanged = QtCore.Signal(str)  # (policy)
 
     # Methods
     def __init__(self, *args, **kwargs):
@@ -60,6 +61,27 @@ class MultiDataFrame(QtWidgets.QFrame):
             'All',      self.sigDeleteAllDataClicked,
         )
 
+        # What to do with a recording ImControl hands over in memory.
+        self.memoryPolicyLabel = QtWidgets.QLabel('In-memory recordings:')
+        self.memoryPolicyLabel.setStyleSheet('color: palette(mid); font-size: 9pt;')
+        self.memoryPolicyCombo = QtWidgets.QComboBox()
+        for key, label in (
+            ('list', 'List only'),
+            ('current', 'Open as current data'),
+            ('reconstruct', 'Open and reconstruct'),
+        ):
+            self.memoryPolicyCombo.addItem(label, key)
+        self.memoryPolicyCombo.setToolTip(
+            'What happens when ImControl finishes a recording saved in memory: '
+            'list it here, open it as the current data, or open it and run the '
+            'active reconstructor on it.'
+        )
+        self.memoryPolicyCombo.currentIndexChanged.connect(
+            lambda index: self.sigMemoryRecordingPolicyChanged.emit(
+                str(self.memoryPolicyCombo.itemData(index))
+            )
+        )
+
         # Two-pane layout: list on the left, single column of compact controls
         # on the right. The old 11-button grid was hard to scan and had a
         # duplicate addWidget for Unload-all.
@@ -78,7 +100,9 @@ class MultiDataFrame(QtWidgets.QFrame):
         layout.addWidget(saveBtn, 4, 1)
         layout.addWidget(unloadBtn, 5, 1)
         layout.addWidget(removeBtn, 6, 1)
-        layout.setRowStretch(7, 1)
+        layout.addWidget(self.memoryPolicyLabel, 7, 1)
+        layout.addWidget(self.memoryPolicyCombo, 8, 1)
+        layout.setRowStretch(9, 1)
         layout.setColumnStretch(0, 1)
 
     def _makeMenuButton(self, title, label_a, signal_a, label_b, signal_b):
@@ -106,6 +130,19 @@ class MultiDataFrame(QtWidgets.QFrame):
         button.addAction(action_b)
 
         return button, action_a, action_b
+
+    def getMemoryRecordingPolicy(self):
+        return str(self.memoryPolicyCombo.currentData() or 'list')
+
+    def setMemoryRecordingPolicy(self, policy):
+        index = self.memoryPolicyCombo.findData(policy)
+        if index < 0:
+            return
+        self.memoryPolicyCombo.blockSignals(True)
+        try:
+            self.memoryPolicyCombo.setCurrentIndex(index)
+        finally:
+            self.memoryPolicyCombo.blockSignals(False)
 
     def requestFilePathsFromUser(self, defaultFolder=None):
         return QtWidgets.QFileDialog().getOpenFileNames(directory=defaultFolder)[0]
@@ -191,6 +228,18 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.dataList.currentItem().setBackground(
             QtGui.QColor('green' if highlighted else 'transparent')
         )
+
+    def setRowHighlightedByDataObj(self, dataObj, highlighted):
+        """Select the row holding ``dataObj`` and highlight it (or not)."""
+        for i in range(self.dataList.count()):
+            item = self.dataList.item(i)
+            if item.data(1) == dataObj:
+                self.dataList.setCurrentItem(item)
+                item.setBackground(
+                    QtGui.QColor('green' if highlighted else 'transparent')
+                )
+                return True
+        return False
 
     def setAllRowsHighlighted(self, highlighted):
         for i in range(self.dataList.count()):

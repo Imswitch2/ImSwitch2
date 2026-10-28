@@ -200,6 +200,45 @@ def test_controller_streaming_path():
     assert controller._raw_buffer is None
 
 
+class _PatternSession(_StreamingSession):
+    """A session that, like MoNaLISA's, knows the grid it assembles on."""
+
+    pattern_source = "auto"
+    pattern_params = {
+        "row_offset": 1.5, "col_offset": 2.5, "row_period": 10.0, "col_period": 11.0,
+    }
+
+
+class _PatternRecon(_StreamingRecon):
+    def make_session(self) -> StreamingSession:
+        return _PatternSession()
+
+
+def test_session_begun_announces_the_localized_pattern():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    stack = np.arange(6 * 4 * 5, dtype=np.float32).reshape(6, 4, 5)
+    channel = CommunicationChannel()
+    announced = []
+    channel.sigLivePatternLocalized.connect(announced.append)
+    controller = LiveReconstructionController(channel)
+
+    assert controller.start(_PatternRecon(), _TestSource(stack, chunk_size=2), {}) is True
+    assert _wait_for_finished(controller)
+
+    assert announced == [{
+        "row_offset": 1.5, "col_offset": 2.5, "row_period": 10.0, "col_period": 11.0,
+        "source": "auto",
+    }]
+
+    # A session without a grid (every other reconstructor) announces nothing.
+    announced.clear()
+    controller = LiveReconstructionController(channel)
+    assert controller.start(_StreamingRecon(), _TestSource(stack, chunk_size=2), {}) is True
+    assert _wait_for_finished(controller)
+    assert announced == []
+
+
 def test_controller_batch_fallback_path():
     """LiveReconstructionController sets up batch fallback for regular Reconstructor."""
     stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)

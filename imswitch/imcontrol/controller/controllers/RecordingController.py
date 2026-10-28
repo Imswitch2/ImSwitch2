@@ -1,15 +1,21 @@
 import os
 import inspect
+import threading
 import time
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Optional, Union, List, Dict, Any
+import h5py
 import numpy as np
 from qtpy import QtCore
 
-from imswitch.imcommon.framework import Signal, Timer
+from imswitch.imcommon.framework import FrameworkUtils, Signal, Timer
 from imswitch.imcommon.model import ostools, APIExport
 from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
+from imswitch.imcontrol.model.acquisition_result import (
+    AcquisitionResult, acquisitionResultFromFiles,
+)
 from imswitch.imcontrol.model.managers.RecordingManager import (
     DETECTOR_ARM_TIMEOUT_S, RECORDING_ARM_TIMEOUT, WRITER_OPEN_TIMEOUT_S,
     FailureKind,
@@ -89,6 +95,50 @@ def _dispatchWithoutLifecycle(dispatch, *args):
         if 'notify_starting' not in str(error):
             raise
     return dispatch(*args)
+
+
+def unsupported_memory_save_mode(saveMode, saveFormat):
+    """Why this save mode and format cannot be recorded, or ``None``.
+
+    Only HDF5 can be recorded to memory alone: Zarr has no memory store yet
+    (the writer would fail the recording after it started), though a Zarr
+    recording kept beside its file is handed over as a group and works. A
+    TIFF recording is never handed over in either mode, so *keep in memory*
+    would silently mean *on disk only*. Saying so before the first frame
+    beats either.
+    """
+    if saveMode not in (SaveMode.RAM, SaveMode.DiskAndRAM):
+        return None
+    if saveFormat == SaveFormat.HDF5:
+        return None
+    if saveFormat == SaveFormat.ZARR and saveMode == SaveMode.DiskAndRAM:
+        return None
+    if saveMode == SaveMode.RAM:
+        return (
+            f'"Save in memory for reconstruction" needs the HDF5 format; a '
+            f'{saveFormat.name} recording cannot be kept in memory alone. '
+            f'Choose HDF5, "Save on disk and keep in memory" (HDF5 or ZARR), '
+            f'or "Save on disk".'
+        )
+    return (
+        f'"Save on disk and keep in memory" is not available for the '
+        f'{saveFormat.name} format; a {saveFormat.name} recording is never '
+        f'handed over in memory. Choose HDF5 or ZARR, or "Save on disk".'
+    )
+
+
+def memory_save_mode_problem(widget):
+    """Why the widget's selected save mode and format cannot be recorded, or ``None``.
+
+    A widget that cannot answer (a bare test double, or none at all) has no
+    selection to check and is not refused.
+    """
+    try:
+        saveMode = SaveMode(widget.getRecSaveMode())
+        saveFormat = SaveFormat(widget.getSaveFormat())
+    except Exception:
+        return None
+    return unsupported_memory_save_mode(saveMode, saveFormat)
 
 
 class RecordingController(ImConWidgetController, StatefulComponentMixin):
@@ -363,7 +413,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self.updateRecAttrs(isSnapping=True)
 
         folder = self._widget.getRecFolder()
-        if not os.path.exists(folder):
+        if (
+            SaveMode(self._widget.getSnapSaveMode()) != SaveMode.RAM
+            and not os.path.exists(folder)
+        ):
             os.makedirs(folder)
         time.sleep(0.01)
 
@@ -493,6 +546,18 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self._finalizingRecCycle = False
             return
         if checked and not self.recording:
+            problem = memory_save_mode_problem(getattr(self, '_widget', None))
+            if problem is not None:
+                # Refused before anything is armed; keep the button honest
+                # without re-entering the stop path.
+                self.__logger.warning(problem)
+                self._finalizingRecCycle = True
+                try:
+                    self._widget.setRecButtonChecked(False)
+                finally:
+                    self._finalizingRecCycle = False
+                self._widget.showRecordingRefused(problem)
+                return
             self.stopRequested = False
             # Open a fresh two-terminal window before the writer can arm. A
             # completed previous ScanOnce must not let an early writer terminal
@@ -539,7 +604,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.updateRecAttrs(isSnapping=False)
 
                 folder = self._widget.getRecFolder()
-                if not os.path.exists(folder):
+                # A recording kept in memory only writes nothing there; the
+                # folder is created when it is saved from ImProcess.
+                if (
+                    SaveMode(self._widget.getRecSaveMode()) != SaveMode.RAM
+                    and not os.path.exists(folder)
+                ):
                     os.makedirs(folder)
                 time.sleep(0.01)
                 self._recordingBaseSavename = os.path.join(
@@ -3531,7 +3601,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport()
     def recordScanToMemory(self, detectorName: Union[List[str], str, int, None] = None,
-                           timeout: float = 600.0, keep: bool = False):
+                           timeout: float = 600.0, keep: bool = False,
+                           structured: bool = False
+                           ) -> Union[np.ndarray, Dict[str, np.ndarray], AcquisitionResult]:
         """ Runs the scan the Scan widget holds once and returns the frames
         it triggers as a NumPy array ``(frames, rows, columns)``, without
         writing a file: the recording goes to memory, is read back, and is
@@ -3542,169 +3614,252 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         the current detector, ``-2`` for all of them, or None for what the
         Recording widget has selected. The call blocks until the scan and
         the recording are over, at most ``timeout`` seconds; it raises
-        ``RuntimeError`` when the recording fails or another is running and
+        ``RuntimeError`` when the recording is refused or fails and
         ``TimeoutError`` when it does not finish (the recording is stopped).
         The Recording widget's settings are put back afterwards. With
         ``keep=True`` the recording also stays listed in ImProcess, as a
-        recording to RAM does. """
-        import threading
+        recording to RAM does. It runs on the caller's thread, which must
+        not be the GUI thread (a script's is not).
 
-        import h5py
+        ``structured=True`` returns an AcquisitionResult instead: the frames
+        of every detector with their axes and pixel size, which scan
+        position each frame was taken at (recorded by the scan, or
+        reconstructed from its plan -- the result says which), the settings
+        the recording wrote down, its start time and whether it is
+        complete, with show() and save(). """
+        if not self._commChannel.hasScanWidget():
+            raise RuntimeError(
+                'This setup has no Scan widget: a scan-once recording is only '
+                'armed here and started from the scan widget of the setup'
+            )
+        return self._recordToMemory(detectorName, timeout, keep,
+                                    self.recScanOnce, 'The scan recording', structured)
 
-        from imswitch.imcommon.framework import FrameworkUtils
+    @APIExport()
+    def recordFramesToMemory(self, detectorName: Union[List[str], str, int, None],
+                             numFrames: int, timeout: float = 600.0, keep: bool = False,
+                             structured: bool = False
+                             ) -> Union[np.ndarray, Dict[str, np.ndarray], AcquisitionResult]:
+        """ Records ``numFrames`` frames of a detector, as the Recording
+        widget's *Number of frames* does, and returns them as a NumPy array
+        ``(frames, rows, columns)`` without writing a file. Everything else
+        is as for recordScanToMemory: ``detectorName`` (a name, a list, -1,
+        -2 or None), the result for several detectors, ``timeout``,
+        ``keep``, ``structured`` and the errors. """
+        if int(numFrames) < 1:
+            raise ValueError('numFrames must be at least 1')
+        return self._recordToMemory(
+            detectorName, timeout, keep,
+            lambda: self.setRecModeSpecFrames(int(numFrames)), 'The recording',
+            structured,
+        )
 
+    def _recordToMemory(self, detectorName, timeout, keep, setRecMode, what,
+                        structured=False):
+        """The body of the record*ToMemory API calls: a recording to RAM in
+        the mode ``setRecMode`` selects, waited for, read back and dropped,
+        on the caller's thread. ``what`` names it in errors; ``structured``
+        returns an AcquisitionResult, read before the recording is dropped."""
         if self.__dict__.get('_shutdownRequested', False):
             raise RuntimeError('ImSwitch is shutting down')
+        if self._isControllerThread():
+            raise RuntimeError(
+                f'{what} blocks until it is over and cannot run on the GUI '
+                'thread; call it from a script'
+            )
         if self.recording:
             raise RuntimeError('A recording is already running; stop it first')
 
         manager = self._master.recordingManager
-        available: Dict[str, Any] = {}
+        files: Dict[str, BytesIO] = {}    # memory recording name -> its bytes
         ended = threading.Event()
-        failures: List[str] = []
+        failure: List[str] = []
 
-        def onMemoryRecording(name, file, _filePath, _savedToDisk):
-            available[str(name)] = file
+        # PyQt queues a plain function to the thread that connected it, and a
+        # script thread's event loop is blocked by the script: these run when
+        # the wait below pumps that loop, as the script waiters do. The files
+        # are announced by the writer before the end is published (once the
+        # writer has drained and the scan has ended), so every file is in
+        # ``files`` by the time ``ended`` is set.
+        def onFile(name, file, _filePath, _savedToDisk):
+            files[str(name)] = file
 
         def onEnded():
             ended.set()
 
         def onFailed(message):
-            failures.append(str(message))
+            failure.append(str(message))
             ended.set()
 
-        manager.sigMemoryRecordingAvailable.connect(onMemoryRecording)
-        self._commChannel.sigRecordingEnded.connect(onEnded)
-        self._commChannel.sigRecordingFailed.connect(onFailed)
-
-        token = f'scan_to_memory_{int(time.time() * 1000)}'
-        modeSetters = {
-            RecMode.SpecFrames: self.specFrames, RecMode.SpecTime: self.specTime,
-            RecMode.CameraLapse: self.specLapse, RecMode.ScanOnce: self.recScanOnce,
-            RecMode.ScanLapse: self.recScanLapse, RecMode.UntilStop: self.untilStop,
-        }
-
-        def start():
-            widget = self._widget
-            previous = {
-                'saveMode': widget.getRecSaveMode(),
-                'recMode': self.recMode,
-                'detectorMode': widget.getDetectorMode(),
-                'detectors': list(widget.getSelectedSpecificDetectors() or []),
-                'singleFile': widget.getMultiDetectorSingleFile(),
-                'filename': widget.getCustomFilename(),
-            }
-            if detectorName is not None:
-                self.setDetectorToRecord(detectorName)
-            widget.setRecSaveMode(SaveMode.RAM.value)
-            self.recScanOnce()
-            widget.setCustomFilename(token)
-            names = list(self.getDetectorNamesToCapture())
-            widget.setRecButtonChecked(True)
-            return previous, names
-
-        def restore(previous):
-            widget = self._widget
-            setter = modeSetters.get(previous['recMode'])
-            if setter is not None:
-                setter()
-            widget.setRecSaveMode(previous['saveMode'])
-            if previous['detectorMode'] == -3 and previous['detectors']:
-                widget.setDetectorMode(-3)
-                widget.setSelectedSpecificDetectors(previous['detectors'])
-            else:
-                widget.setDetectorMode(previous['detectorMode'])
-            widget.setMultiDetectorSingleFile(previous['singleFile'])
-            if previous['filename']:
-                widget.setCustomFilename(previous['filename'])
-            else:
-                widget.clearCustomFilename()
-
-        def discard():
-            recordings = self._moduleCommChannel.memoryRecordings
-            for name in list(available):
-                if name in recordings:
-                    del recordings[name]
-
+        connections = (
+            (manager.sigMemoryRecordingAvailable, onFile),
+            (self._commChannel.sigRecordingEnded, onEnded),
+            (self._commChannel.sigRecordingFailed, onFailed),
+        )
+        for signal, slot in connections:
+            signal.connect(slot)
         previous = None
         try:
-            previous, names = self._callOnControllerThread(start)
-            # A caller on a script thread receives these signals through
-            # that thread's event queue (as the script waiters do), so the
-            # wait pumps it; on the GUI thread the pump is a no-op.
+            previous, names = self._onControllerThread(
+                lambda: self._startRecordingToMemory(detectorName, setRecMode, what),
+                timeout,
+            )
             deadline = time.monotonic() + float(timeout)
-            while not ended.is_set():
+            while True:
                 FrameworkUtils.processPendingEventsCurrThread()
-                if ended.wait(0.05):
+                if ended.is_set():
                     break
                 if time.monotonic() > deadline:
-                    self._callOnControllerThread(
-                        lambda: self._widget.setRecButtonChecked(False)
-                    )
                     raise TimeoutError(
-                        f'The scan recording did not finish within {timeout} s'
+                        f'{what} did not finish within {timeout} s'
                     )
-            if failures:
-                raise RuntimeError(f'The scan recording failed: {failures[0]}')
-            # The files are announced just before recordingEnded, from the
-            # same thread; a short grace covers a queued delivery.
-            grace = time.monotonic() + 5.0
-            while not available and time.monotonic() < grace:
-                FrameworkUtils.processPendingEventsCurrThread()
+                # The script waiters' poll: short, so that a Stop pressed in
+                # ImScripting (an asynchronous exception) lands during the scan.
                 time.sleep(0.05)
-            arrays: Dict[str, np.ndarray] = {}
-            for file in available.values():
-                try:
-                    file.seek(0)
-                except Exception:
-                    pass
-                with h5py.File(file, 'r') as handle:
-                    for name in names:
-                        if name in arrays:
-                            continue
-                        node = handle.get(f'{name}/data')
-                        if node is None:
-                            node = handle.get(name)
-                        if isinstance(node, h5py.Dataset):
-                            arrays[name] = np.array(node)
-            missing = [name for name in names if name not in arrays]
-            if missing:
-                raise RuntimeError(
-                    f'The recording holds no frames for {", ".join(missing)}: '
-                    'did the scan trigger the detector?'
+            if failure:
+                raise RuntimeError(f'{what} failed: {failure[0]}')
+            if structured:
+                result = acquisitionResultFromFiles(
+                    {name: file.getvalue() for name, file in files.items()}, names,
+                    show=self._showInImageView,
                 )
+            else:
+                arrays = self._readMemoryRecordings(files.values(), names)
         finally:
-            for signal, slot in (
-                (manager.sigMemoryRecordingAvailable, onMemoryRecording),
-                (self._commChannel.sigRecordingEnded, onEnded),
-                (self._commChannel.sigRecordingFailed, onFailed),
-            ):
+            for signal, slot in connections:
                 try:
                     signal.disconnect(slot)
                 except (TypeError, RuntimeError):
                     pass
             if previous is not None:
-                self._callOnControllerThread(lambda: restore(previous))
-            if not keep and available:
-                self._callOnControllerThread(discard)
+                if self.recording and not ended.is_set():
+                    # Timed out or cancelled: stop what is still running.
+                    self._onControllerThread(
+                        lambda: self._widget.setRecButtonChecked(False), timeout
+                    )
+                self._onControllerThread(
+                    lambda: self._restoreRecordingSettings(previous), timeout
+                )
+            if not keep and files:
+                self._onControllerThread(
+                    lambda: self._dropMemoryRecordings(files), timeout
+                )
+        if structured:
+            return result
         return arrays[names[0]] if len(names) == 1 else arrays
 
-    def _callOnControllerThread(self, func, timeout: float = 30.0):
-        """Run ``func`` on this controller's (GUI) thread and return its value.
+    def _showInImageView(self, name, image, scale):
+        """AcquisitionResult.show(): an array to ImControl's image view, as a
+        script's show() sends it."""
+        channel = self._moduleCommChannel
+        signal = getattr(channel, 'sigShowImage', None)
+        try:
+            listening = signal is not None and channel.receivers(signal) > 0
+        except (AttributeError, TypeError):
+            listening = signal is not None
+        if not listening:
+            raise RuntimeError("Nothing can show the image: load ImControl's Image widget")
+        signal.emit(str(name), np.array(image, copy=True),
+                    None if scale is None else tuple(float(v) for v in scale))
 
-        Synchronous on the GUI thread itself; from a script thread it is
-        queued and waited for, so widget state is only ever touched where
-        Qt allows it.
-        """
-        import threading
+    def _startRecordingToMemory(self, detectorName, setRecMode, what):
+        """GUI thread: points the Recording widget at a recording to RAM in
+        the mode ``setRecMode`` selects and starts it. Returns the settings
+        it replaced and the detectors recorded; when it cannot, the settings
+        are put back and it raises."""
+        widget = self._widget
+        previous = {
+            'saveMode': widget.getRecSaveMode(),
+            'recMode': self.recMode,
+            'numFrames': widget.getNumExpositions(),
+            'detectorMode': widget.getDetectorMode(),
+            'detectors': list(widget.getSelectedSpecificDetectors() or []),
+            'singleFile': widget.getMultiDetectorSingleFile(),
+            'filename': widget.getCustomFilename(),
+        }
+        try:
+            if detectorName is not None:
+                self.setDetectorToRecord(detectorName)
+            names = list(self.getDetectorNamesToCapture() or [])
+            if not names:
+                raise RuntimeError('No detector is selected to record')
+            widget.setRecSaveMode(SaveMode.RAM.value)
+            setRecMode()
+            widget.clearCustomFilename()      # named by the time, as any RAM recording
+            widget.setRecButtonChecked(True)  # toggleREC: self.recording on success
+            if not self.recording:
+                # Refused on this thread (a scan is running, the scan manager
+                # said no, ...): nothing will be published for it.
+                raise RuntimeError(f'{what} did not start; the log says why')
+        except Exception:
+            self._restoreRecordingSettings(previous)
+            raise
+        return previous, names
 
+    def _restoreRecordingSettings(self, previous):
+        """GUI thread: the Recording widget as ``_startRecordingToMemory``
+        found it."""
+        widget = self._widget
+        {RecMode.SpecFrames: self.specFrames, RecMode.SpecTime: self.specTime,
+         RecMode.CameraLapse: self.specLapse, RecMode.ScanOnce: self.recScanOnce,
+         RecMode.ScanLapse: self.recScanLapse, RecMode.UntilStop: self.untilStop,
+         }[previous['recMode']]()
+        widget.setNumExpositions(previous['numFrames'])
+        widget.setRecSaveMode(previous['saveMode'])
+        widget.setDetectorMode(previous['detectorMode'])
+        widget.setSelectedSpecificDetectors(previous['detectors'])
+        widget.setMultiDetectorSingleFile(previous['singleFile'])
+        if previous['filename']:
+            widget.setCustomFilename(previous['filename'])
+        else:
+            widget.clearCustomFilename()
+
+    @staticmethod
+    def _readMemoryRecordings(files, names) -> Dict[str, np.ndarray]:
+        """The frames of ``names`` from the HDF5 files of a recording to RAM.
+        Each is read from a copy of its bytes: ImProcess may be reading the
+        same BytesIO, and a file position shared between threads would
+        corrupt both reads."""
+        arrays: Dict[str, np.ndarray] = {}
+        for file in files:
+            with h5py.File(BytesIO(file.getvalue()), 'r') as handle:
+                for name in names:
+                    node = handle.get(f'{name}/data')
+                    if isinstance(node, h5py.Dataset) and name not in arrays:
+                        arrays[name] = node[()]
+        missing = [name for name in names if name not in arrays]
+        if missing:
+            raise RuntimeError(
+                f'The recording holds no frames for {", ".join(missing)}: '
+                'did the scan trigger the detector?'
+            )
+        return arrays
+
+    def _dropMemoryRecordings(self, files):
+        """GUI thread: unlists the recordings from ImProcess, which closes
+        their bytes."""
+        recordings = self._moduleCommChannel.memoryRecordings
+        for name in files:
+            if name in recordings:
+                del recordings[name]
+
+    def _isControllerThread(self) -> bool:
+        try:
+            return QtCore.QThread.currentThread() is self.thread()
+        except Exception:
+            return False  # a lightweight non-Qt test adapter
+
+    def _onControllerThread(self, func, timeout: float):
+        """Runs ``func`` on this controller's (GUI) thread and returns its
+        value, or raises its exception, in the caller's thread; waits at most
+        ``timeout`` seconds for the GUI thread to get to it."""
         done = threading.Event()
         box: Dict[str, Any] = {}
 
         def run():
             try:
                 box['value'] = func()
-            except BaseException as error:        # re-raised on the caller
+            except BaseException as error:  # noqa: BLE001 - re-raised below
                 box['error'] = error
             finally:
                 done.set()
@@ -3944,6 +4099,26 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._widget.setTimelapseSingleFile(timelapseSingleFile)
 
     @APIExport(runOnUIThread=True)
+    def getRecordingSettings(self) -> Dict[str, Any]:
+        """ What the Recording widget is set to: ``mode`` (``'SpecFrames'``,
+        ``'SpecTime'``, ``'ScanOnce'``, ``'ScanLapse'``, ``'UntilStop'`` or
+        ``'CameraLapse'``), ``frames`` (its *Number of frames*), ``seconds``
+        (its *Time to record*), ``lapses`` and ``lapseIntervalSeconds`` (a
+        scan time-lapse), ``detectors`` (the names it records),
+        ``fileFormat`` and ``folder``. The setRecMode functions set them. """
+        widget = self._widget
+        return {
+            'mode': self.recMode.name,
+            'frames': int(widget.getNumExpositions()),
+            'seconds': float(widget.getTimeToRec()),
+            'lapses': int(widget.getTimelapseTime()),
+            'lapseIntervalSeconds': float(widget.getTimelapseFreq()),
+            'detectors': list(self.getDetectorNamesToCapture() or []),
+            'fileFormat': SaveFormat(widget.getSaveFormat()).name,
+            'folder': widget.getRecFolder(),
+        }
+
+    @APIExport(runOnUIThread=True)
     def setRecModeUntilStop(self) -> None:
         """ Sets the recording mode to record until recording is manually
         stopped. """
@@ -3980,7 +4155,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setRecFolder(folderPath)
     
     @APIExport(runOnUIThread=True)
-    def setSpecifyFileName(self,enable=True) -> None:
+    def setSpecifyFileName(self, enable=True) -> None:
+        """ Ticks (True) or clears *Specify file name* in the Recording
+        widget: ticked, recordings are named by setRecFilename; cleared, by
+        the time of day. """
         self._widget.specifyfile.setChecked(enable)
     
     @APIExport(runOnUIThread=True)
@@ -4016,6 +4194,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
     
     @APIExport(runOnUIThread=True)
     def getRecFolder(self) -> str:
+        """ Returns the folder recordings and snaps are saved into. """
         return self._widget.folderEdit.text()
     
     # Unified State Persistence Interface (StatefulComponentMixin)

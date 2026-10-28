@@ -983,8 +983,20 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport()
     def getPositionerPositions(self) -> Dict[str, Dict[str, float]]:
-        """ Returns the positions of all positioners. """
+        """ Returns the positions of all positioners, in µm, as
+        ``{positioner: {axis: position}}``. """
         return self.getPos()
+
+    @APIExport(runOnUIThread=True)
+    def getPositionerPosition(self, positionerName: str, axis: str) -> float:
+        """ Returns the position of one axis of a positioner, in µm. """
+        return self._master.positionersManager[positionerName].position[axis]
+
+    @APIExport()
+    def getPositionerAxes(self, positionerName: str) -> List[str]:
+        """ Returns the axes of a positioner (``'X'``, ``'Y'``, ``'Z'``,
+        ...), as movePositioner and setPositioner take them. """
+        return list(self._master.positionersManager[positionerName].axes)
 
     @APIExport(runOnUIThread=True)
     def setPositionerStepSize(self, positionerName: str, stepSize: float) -> None:

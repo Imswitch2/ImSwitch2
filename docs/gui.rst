@@ -668,8 +668,9 @@ Standa mounts (``StandaRotatorManager``); on Kinesis and Elliptec mounts they
 log an error and do nothing.  Saved widget state keeps each mount's step and
 speed, never its angle.
 
-Scripts can turn a mount to an angle with
-``api.imcontrol.moveAbs(name, angle)``.
+Scripts turn a mount with ``api.imcontrol.setRotatorPosition(name,
+degrees)`` (absolute) and ``moveRotator(name, degrees)`` (relative), and
+read it with ``getRotatorPosition(name)``; see :doc:`api/api.imcontrol`.
 
 .. image:: ./images/auto/RotatorWidget.png
    :align: center
@@ -1646,6 +1647,78 @@ next to it (Gaussian, donut, exponential, sine, …) to the displayed image;
 .. image:: ./images/auto/BeadRecWidget.png
    :align: center
    :width: 600px
+
+
+Live reconstruction tool
+------------------------
+
+Runs an ImProcess reconstructor on the frames as they are acquired, with no
+recording in between, and shows the result as it forms.  The
+**Reconstructor** picker offers the reconstructors named in the setup's
+``processing`` block (**Load…** adds any other one ImProcess knows), and the
+reconstructor's own parameters appear below it, exactly as in ImProcess.
+Pick the **Detector** to reconstruct from and a **Mode**:
+
+* **During scans** reconstructs each scan while it runs.  The tool arms the
+  detector and its frame queue when the scan is about to start, so no frame
+  is missed (a point detector, whose volume arrives once per scan, is set up
+  once the scan is built), reads the scan's geometry and acquisition layout
+  from the scan controller, and describes the stream with the same metadata
+  a recording would carry.  A reconstructor that streams (MoNaLISA fast
+  Gauss, the SMLM localizer, View only) updates several times per scan; any
+  other reconstructs once per complete scan stack, as soon as the stack is
+  in.  Switching **Live** on while a scan is already running starts at that
+  scan's next iteration or at the next scan, never in the middle of one: the
+  stacks are counted from the first frame the tool sees.
+* **Free-running** reconstructs the detector stream in chunks of **Frames
+  per update** frames until **Live** is switched off, for reconstructors
+  that do not need whole scan stacks.
+
+**Use displayed orientation** hands the reconstructor the frames as the
+viewer shows them (the detector's display rotation and flips applied)
+instead of as a recording stores them.  **Show in** puts the result in the
+main viewer as a layer named ``Recon: …`` that is updated in place (only the
+latest plane, unless **Full N-D layer** is ticked, in which case napari adds
+sliders for the other axes), or in the panel's own image view.  To look at
+a volume in the viewer's 3D mode, tick **Full N-D layer**: the latest-plane
+layer is flat, and 3D mode shows it as a single plane.  **Keep result after
+run** leaves the layer in the viewer once the run has ended; **Clear**
+removes it, and the raw frames kept with it.
+
+Tick **Live** to start.  The status line reports frames received, stacks
+reconstructed and, should the reconstruction fall behind the acquisition,
+frames lost: a live preview drops frames rather than stopping the
+acquisition, and a run that lost frames is reported as incomplete.  A
+recording running at the same time is unaffected; it reads its own frame
+queue.  Recording with **Save in memory for reconstruction** alongside is
+the way to keep the full data: the live tool shows the reconstruction as it
+forms, and the finished recording reaches ImProcess the moment it ends (see
+:doc:`improcess`, *Data ingest*).
+
+The reconstruction consumes the frames: once a stack is reconstructed its
+raw frames are gone, and a scan that was not recorded leaves no data behind.
+**Keep raw frames** changes that for the run at hand.  The tool then keeps
+the frames of the latest stack (one scan, or one free-running update) in
+RAM, at most two stacks of frames at a time, and the status line says how
+much is held and, at the end, how many frames were kept.  Once the run has
+ended, **Save raw data and reconstruction…** writes them: the raw frames as
+an ImSwitch HDF5 recording (the same detector group, metadata and
+acquisition layout a recording of that scan would carry, so ImProcess and
+Fiji open it like any other), at the path chosen in the dialog, and the
+reconstruction next to it with a ``_recon`` suffix, as OME-TIFF when the
+result supports it.  The dialog starts in today's recordings folder.
+
+**Send to ImProcess** adds the reconstruction shown here to ImProcess's
+result list, where it can be processed, measured and saved like a result
+ImProcess made itself; ImProcess must be loaded.  After the run the result
+object itself is handed over; during a run a snapshot of it goes instead,
+so the entry in ImProcess does not keep changing.
+
+A MoNaLISA run localizes the illumination grid afresh on the sum of its
+first scan, every run; it never reuses the values in the **Pattern** fields
+or a previous run's grid.  The status line reports the grid found, and the
+**Pattern** fields show it; here they are for display only.  See
+:doc:`improcess`, *MoNaLISA fast-Gauss mode*.
 
 
 Scripting

@@ -571,7 +571,7 @@ def _source_path_of(data_obj, kind: str):
         if not path:
             info = getattr(data_obj, "stack_info", None)
             path = getattr(info, "dataset_path", None)
-        return str(path) if path else None
+        return _file_path_or_none(path)
     info = getattr(data_obj, "source_info", None) or getattr(data_obj, "_source_info", None) or {}
     path = info.get("dataset_path") if isinstance(info, dict) else None
     if not path:
@@ -580,7 +580,28 @@ def _source_path_of(data_obj, kind: str):
             path = attrs.get("recording:dataset_path")
         except Exception:
             path = None
-    return str(path) if path else None
+    return _file_path_or_none(path)
+
+
+def _file_path_or_none(path) -> str | None:
+    """``path`` when it names a file on disk, else ``None``.
+
+    The fallbacks above read a *dataset* path: ``recording:dataset_path`` as
+    ImSwitch's recorder writes it (``/CAM/data``, the dataset inside the
+    container), a ``DataObj``'s array path inside the handle it was given,
+    a live stack's dataset path. None of those is a file a replay could
+    open; only a path that is on disk is recorded as one. A recording that
+    was never persisted, or a live stream read straight from the detector,
+    is then described without a path and its reconstruction marked
+    non-replayable, which is the truth.
+    """
+    if not path:
+        return None
+    path = str(path)
+    try:
+        return path if os.path.exists(path) else None
+    except (OSError, ValueError):
+        return None
 
 
 def describe_source(data_obj) -> dict:

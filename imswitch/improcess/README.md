@@ -376,33 +376,41 @@ streaming machinery:
   is complete enough to open (see `_is_store_complete` / `_lapse_key` for the
   completeness and timelapse-grouping rules).
 - **`MemoryLiveController`** ([`controller/MemoryLiveController.py`](controller/MemoryLiveController.py))
-  — routes in-RAM HDF5 recordings handed off directly from imcontrol (no disk
-  polling); currently runs them through the plain batch `process()` path.
+  — when the Multidata panel's *In-memory recordings* policy is *Open and
+  reconstruct*, runs each recording imcontrol hands over in memory through
+  the active reconstructor's batch `process()` (read via `DataObj`, so
+  grouped metadata and `scanN` lapse groups are seen as from a file). It
+  does not use the streaming machinery below.
+- **ImControl's `LiveRecon` widget** (`imswitch/imcontrol/controller/controllers/LiveReconController.py`)
+  — feeds the same `LiveReconstructionController` from a `LiveSource` over a
+  detector chunk queue (`imswitch/imcontrol/model/liverecon/`), with no file
+  in between.
 
 Both hand a `LiveSource` + the active reconstructor to the shared
-**`LiveReconstructionController`** ([`controller/LiveReconstructionController.py`](controller/LiveReconstructionController.py)),
-which branches on `reconstructor.supports_streaming`:
+**`LiveReconstructionController`** ([`controller/LiveReconstructionController.py`](controller/LiveReconstructionController.py)).
+The reconstructor's own session is used when it streams; any other
+reconstructor is wrapped in a `StackBatchSession`
+([`live/batch_session.py`](live/batch_session.py)), which collects one
+complete stack and runs `process()` on it, so the workers, buffer, cadence and
+provenance are the same either way:
 
 ```
-LiveSource.open(path)  ──►  StackInfo
-   │  poll() yields Chunks as the file grows
+LiveSource.open(arg)  ──►  StackInfo
+   │  poll() yields Chunks as frames arrive (a growing file, or a detector queue)
    ▼
-supports_streaming?
-   │                                                  │
-   │ yes (StreamingReconstructor)                     │ no (plain Reconstructor)
-   ▼                                                  ▼
-LiveStreamWorker (own QThread)                    LiveStreamWorker buffers all
-   │ first stack ──► session.begin() (StreamPlan)     Chunks until is_complete()
-   │ resume() gate releases remaining chunks              │
-   ▼                                                       ▼
-LiveProcessWorker (own QThread)                   reconstructor.process(buffered_data)
-   │ session.push(chunk) each Chunk                        │
-   │ session.result() every N chunks                        │
-   │   ──► emit sigLiveResultUpdated(result)                │
-   │ source complete ──► session.finish()                   │
-   └── emit sigResultProduced(result, "Live Reconstruction") ┘
-            └─► ReconstructionViewController.liveResultUpdated / resultProduced
-                 (refreshes the current list item in place, or adds one)
+LiveStreamWorker (own QThread)
+   │ first stack ──► session.begin() (StreamPlan)        session =
+   │ resume() gate releases remaining frames               make_session()        (streams)
+   ▼                                                    or StackBatchSession(r)  (batch: one
+LiveProcessWorker (own QThread)                            process() per complete stack)
+   │ session.push(frame) per frame from the RawDataBuffer
+   │ session.result() after begin(), at each stack end, else every
+   │   liveViewerUpdateIntervalS ──► emit sigLiveResultUpdated(result)
+   │   (None = nothing yet; the same object again = nothing new)
+   │ source complete ──► session.finish()
+   └── emit sigLiveResultUpdated(final result)
+            └─► ReconstructionViewController.liveResultUpdated
+                 (refreshes the run's list item in place)
 ```
 
 `LiveSource` ([`live/sources.py`](live/sources.py)) is the format-agnostic
@@ -496,9 +504,9 @@ for a compact, fully N-D example.
 
 Only worth doing if your modality benefits from an incrementally-updating
 display while the recording is still being written; otherwise skip this and
-your `Reconstructor` gets streamed via the batch-fallback path automatically
-(§3.4) — the whole recording is buffered and passed through your existing
-`process()` once it completes.
+your `Reconstructor` is driven through `StackBatchSession` automatically
+(§3.4) — each complete stack is passed through your existing `process()` as
+soon as it is in.
 
 1. Subclass `StreamingReconstructor` instead of `Reconstructor` and set
    `supports_streaming = True` (the default).
@@ -518,8 +526,10 @@ your `Reconstructor` gets streamed via the batch-fallback path automatically
      itself, since the source streams multiple timepoints as one continuous
      global range).
    - `result()` — return a cheap snapshot (e.g. `buffer.copy()`) for periodic
-     display refresh; keep this fast, it runs on every `update_cadence`-th
-     chunk (default every 5).
+     display refresh; keep this fast, it runs once right after `begin()`, at
+     every stack end and otherwise at most every `liveViewerUpdateIntervalS`
+     seconds (default 0.2). Returning `None` means "nothing to show yet", and
+     handing out the same object twice means "nothing new".
    - Optionally override `finish()` (default calls `result()`) and `close()`
      (default no-op) to release GPU buffers etc.
 4. Keep `finish()` robust and idempotent where possible. If it does raise,

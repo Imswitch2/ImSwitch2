@@ -108,6 +108,10 @@ class CommunicationChannel(SignalInterface):
     # Lifetime widget's lifetime / intensity / overlay images).
     sigUpsertStaticLayer = Signal(str, np.ndarray, object, object)  # (name, image, scale, options: colormap/rgb/contrast_limits)
     sigRemoveStaticLayer = Signal(str)  # (name)
+    # Result layers a controller keeps in the main viewer, updated in place:
+    # (jobName, [(data, layerKwargs, layerType), ...]) as napari LayerData.
+    sigResultLayersUpdated = Signal(str, object)
+    sigResultLayersRemoved = Signal(str)  # (jobName)
 
     # Recording events.
     sigRecordingStarted = Signal()
@@ -705,6 +709,11 @@ class CommunicationChannel(SignalInterface):
 
     @APIExport(runOnUIThread=True)
     def acquireImage(self) -> None:
+        """ Legacy, kept for old scripts: appends the live view's current
+        image to a list that a script the Watcher widget runs gets, and that
+        nothing reads. Outside such a script it raises AttributeError. To get
+        images, use snapImage(True), getLiveFrame or recordFramesToMemory,
+        which return them. """
         image = self.get_image()
         self.output.append(image)
 
