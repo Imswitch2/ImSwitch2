@@ -73,6 +73,7 @@ class ReconstructionView(QtWidgets.QFrame):
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
     sigLockSlicePerResultChanged = QtCore.Signal(bool)
+    sigLockZoomPerResultChanged = QtCore.Signal(bool)
     #: (layer metadata, (min, max)) -- a rendered layer's contrast changed,
     #: however it was changed: our toolbar, napari's own slider, or a render.
     sigImageLevelsChanged = QtCore.Signal(object, object)
@@ -141,11 +142,20 @@ class ReconstructionView(QtWidgets.QFrame):
             'When disabled, compatible views share the most recently selected slice '
             'to make comparisons across reconstructions easier.'
         )
+        self.lockZoomPerResult = QtWidgets.QCheckBox('Lock zoom per result')
+        self.lockZoomPerResult.setToolTip(
+            'When enabled, each reconstruction/view remembers its own zoom and center. '
+            'When disabled, compatible XY/YZ/XZ views share the most recent camera '
+            'to make visual comparisons easier.'
+        )
+
         self.viewLayout.addWidget(self.lockSlicePerResult)
+        self.viewLayout.addWidget(self.lockZoomPerResult)
 
         self.chooseViewBox.setLayout(self.viewLayout)
         self.chooseViewGroup.buttonClicked.connect(self.sigViewChanged)
         self.lockSlicePerResult.toggled.connect(self.sigLockSlicePerResultChanged)
+        self.lockZoomPerResult.toggled.connect(self.sigLockZoomPerResultChanged)
 
         # List for storing sevral data sets
         self.reconList = QtWidgets.QListWidget()
@@ -359,6 +369,10 @@ class ReconstructionView(QtWidgets.QFrame):
     def isSliceLockedPerResult(self):
         """Whether spatial slice positions are restored per reconstruction."""
         return bool(self.lockSlicePerResult.isChecked())
+
+    def isZoomLockedPerResult(self):
+        """Whether camera zoom/center are restored per reconstruction."""
+        return bool(self.lockZoomPerResult.isChecked())
 
     def getDimensionStepState(self):
         """Return current napari slider positions keyed by semantic axis label."""

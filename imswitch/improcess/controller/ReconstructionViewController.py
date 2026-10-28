@@ -40,6 +40,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         # when comparing repeated YZ/XZ scans); an optional viewer checkbox
         # makes restoration strictly per reconstruction instead.
         self._sharedSliceStateByPlane = {}
+        # Camera state follows the same two-level policy as slices. By default
+        # the most recent camera is shared by physical viewing plane (XY/YZ/XZ)
+        # so repeated measurements can be compared at identical framing. The
+        # optional viewer lock makes restoration result-local instead.
+        self._sharedCameraStateByPlane = {}
         self._restoringSliceState = False
         # The result currently on screen, held by reference rather than by
         # list index: removing a result shifts every index after it, and the
@@ -94,6 +99,8 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._widget.sigViewChanged.connect(self._viewChanged)
         if hasattr(self._widget, 'sigLockSlicePerResultChanged'):
             self._widget.sigLockSlicePerResultChanged.connect(self._sliceLockChanged)
+        if hasattr(self._widget, 'sigLockZoomPerResultChanged'):
+            self._widget.sigLockZoomPerResultChanged.connect(self._zoomLockChanged)
         if hasattr(self._widget, "sigSelectionChanged"):
             self._widget.sigSelectionChanged.connect(self._resultsChanged)
         if hasattr(self._widget, "sigResultsRemoved"):
@@ -300,33 +307,50 @@ class ReconstructionViewController(ImProcessWidgetController):
 
             target_plane = self._currentDisplayedPlaneAxes()
             state = self._viewerState(reconObj)
-            camera_by_plane = state.setdefault("camera_by_plane", {})
-            saved_camera = camera_by_plane.get(target_plane) if target_plane else None
+            target_key = self._cameraPlaneKey(target_plane)
+            per_result_camera = (
+                state.setdefault("camera_by_plane", {}).get(target_key)
+                if target_key is not None else None
+            )
+            shared_camera = (
+                self.__dict__.setdefault("_sharedCameraStateByPlane", {}).get(target_key)
+                if target_key is not None else None
+            )
 
-            if resetView:
-                # Explicit named-view changes keep the established behaviour:
-                # fit the newly requested plane rather than carrying the old
-                # plane's zoom into it.
-                self._widget.resetView()
-            elif saved_camera is not None:
-                # Returning to an existing reconstruction/view restores *its*
-                # camera, not the camera of whichever result was just shown.
-                self._restoreCameraState(saved_camera)
-            elif source_plane and target_plane and source_plane == target_plane:
-                # A fresh reconstruction object of the same physical plane
-                # inherits the current framing.  This is the useful case behind
-                # "switch reconstructor without losing my zoom".
+            if self._zoomLockedPerResult():
+                desired_camera = per_result_camera
+            else:
+                # Shared-by-plane is the normal comparison workflow. Fall back
+                # to this result's own camera only for older/session state where
+                # no shared entry has been established yet.
+                desired_camera = shared_camera or per_result_camera
+
+            if desired_camera is not None:
+                self._restoreCameraState(desired_camera)
+            elif (
+                not self._zoomLockedPerResult()
+                and source_plane
+                and target_plane
+                and self._cameraPlaneKey(source_plane) == target_key
+                and source_camera is not None
+            ):
+                # Defensive fallback for a first transition before shared state
+                # exists. Normally listItemChanged() has already stored source
+                # camera into the shared plane entry.
                 self._restoreCameraState(source_camera)
             else:
-                # First result, or an incompatible plane transition (XY<->YZ,
-                # XY<->XZ, ...): ask napari to frame the new geometry.
+                # No memory for this policy/plane yet. This includes a
+                # first-time result while per-result lock is enabled and any
+                # XY<->YZ/XZ transition whose target plane has never been seen.
                 self._widget.resetView()
 
-            if target_plane:
+            if target_key is not None:
                 state["display_plane"] = target_plane
                 current_camera = self._currentCameraState()
                 if current_camera is not None:
-                    camera_by_plane[target_plane] = current_camera
+                    self._storeCameraState(
+                        reconObj, target_plane, current_camera, updateShared=True
+                    )
         else:
             self._widget.clearImage()
 
@@ -665,7 +689,43 @@ class ReconstructionViewController(ImProcessWidgetController):
         if plane:
             state["display_plane"] = plane
             if camera is not None:
-                state.setdefault("camera_by_plane", {})[plane] = camera
+                self._storeCameraState(result, plane, camera, updateShared=True)
+
+    @staticmethod
+    def _cameraPlaneKey(plane):
+        """Canonical physical viewing plane used for shared camera memory."""
+        return ReconstructionViewController._slicePlaneKey(plane)
+
+    def _zoomLockedPerResult(self):
+        getter = getattr(self._widget, "isZoomLockedPerResult", None)
+        if not callable(getter):
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            return False
+
+    def _storeCameraState(self, result, plane, camera, *, updateShared=True):
+        """Record camera in both result-local and optional shared stores."""
+        if result is None or camera is None:
+            return
+        plane_key = self._cameraPlaneKey(plane)
+        if plane_key is None:
+            return
+        state = self._viewerState(result)
+        state.setdefault("camera_by_plane", {})[plane_key] = camera
+        if updateShared:
+            self.__dict__.setdefault("_sharedCameraStateByPlane", {})[plane_key] = camera
+
+    def _zoomLockChanged(self, _locked):
+        """Anchor both camera stores to the framing visible at toggle time."""
+        result = self._widget.getCurrentItemData()
+        if result is None:
+            return
+        plane = self._currentDisplayedPlaneAxes()
+        camera = self._currentCameraState()
+        if plane and camera is not None:
+            self._storeCameraState(result, plane, camera, updateShared=True)
 
     @staticmethod
     def _slicePlaneKey(plane):
@@ -798,11 +858,11 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.setViewModes(None)
 
     def _viewChanged(self):
-        """A named view choice is deliberate; remember it and fit that plane.
+        """Remember a named view choice and restore that plane's camera policy.
 
-        Unlike changing result/reconstructor, this is the one action that
-        intentionally resets the camera.  Raw napari dimension rolls remain
-        result-local and are preserved on ordinary redraws/selections.
+        Raw napari dimension rolls remain result-local. Named plane changes
+        use the same shared/per-result camera memory as result selection; an
+        unseen plane is fitted once and then remembered.
         """
         result = self._widget.getCurrentItemData()
         if result is not None:
@@ -811,7 +871,9 @@ class ReconstructionViewController(ImProcessWidgetController):
             old_plane = self._currentDisplayedPlaneAxes()
             old_camera = self._currentCameraState()
             if old_plane and old_camera is not None:
-                state.setdefault("camera_by_plane", {})[old_plane] = old_camera
+                self._storeCameraState(
+                    result, old_plane, old_camera, updateShared=True
+                )
             state["view_mode"] = self._widget.getViewName()
             state.pop("dimension_order", None)
         self.fullUpdate(levels=None, resetView=True, dimensionOrder=None)

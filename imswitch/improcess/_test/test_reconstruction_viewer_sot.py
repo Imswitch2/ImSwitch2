@@ -96,6 +96,7 @@ class _FakeReconstructionView:
         self.reset_view_calls = 0
         self._viewName = "standard"
         self._lockSlicePerResult = False
+        self._lockZoomPerResult = False
 
     def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip",
                  name=None, identity=None):
@@ -163,6 +164,9 @@ class _FakeReconstructionView:
 
     def isSliceLockedPerResult(self):
         return self._lockSlicePerResult
+
+    def isZoomLockedPerResult(self):
+        return self._lockZoomPerResult
 
     def getDimensionStepState(self):
         dims = self.napariViewer.dims
@@ -492,6 +496,7 @@ def _viewer_state_controller(view):
     controller._displayedResult = None
     controller._viewerStateByResult = {}
     controller._sharedSliceStateByPlane = {}
+    controller._sharedCameraStateByPlane = {}
     controller._restoringSliceState = False
     controller._liveResultUids = set()
     return controller
@@ -516,6 +521,95 @@ def test_switching_same_plane_results_preserves_camera_after_initial_fit():
     assert view.reset_view_calls == 1
     assert view.napariViewer.camera.zoom == 7.5
     assert view.napariViewer.camera.center == (0.0, 12.0, 13.0)
+
+
+def test_unlocked_same_plane_results_share_latest_camera():
+    """Default comparison mode keeps YZ/XY peers at identical framing."""
+    view = _FakeReconstructionView()
+    controller = _viewer_state_controller(view)
+    a = _orthogonal_volume_result("a", preferred="Left")
+    b = _orthogonal_volume_result("b", preferred="Left")
+    view._reconList = [a, b]
+
+    view._currentIndex = 0
+    controller.listItemChanged()
+    view.napariViewer.camera.zoom = 4.0
+    view.napariViewer.camera.center = (0.0, 10.0, 11.0)
+
+    view._currentIndex = 1
+    controller.listItemChanged()
+    assert view.napariViewer.camera.zoom == 4.0
+    assert view.napariViewer.camera.center == (0.0, 10.0, 11.0)
+
+    # Changing B becomes the new shared YZ framing, so A follows it too.
+    view.napariViewer.camera.zoom = 6.0
+    view.napariViewer.camera.center = (0.0, 20.0, 21.0)
+    view._currentIndex = 0
+    controller.listItemChanged()
+    assert view.napariViewer.camera.zoom == 6.0
+    assert view.napariViewer.camera.center == (0.0, 20.0, 21.0)
+
+
+def test_lock_zoom_per_result_restores_each_results_own_camera():
+    """Zoom lock opts out of shared same-plane comparison framing."""
+    view = _FakeReconstructionView()
+    controller = _viewer_state_controller(view)
+    a = _orthogonal_volume_result("a", preferred="Left")
+    b = _orthogonal_volume_result("b", preferred="Left")
+    view._reconList = [a, b]
+
+    view._currentIndex = 0
+    controller.listItemChanged()
+    view.napariViewer.camera.zoom = 2.0
+    view.napariViewer.camera.center = (0.0, 2.0, 3.0)
+
+    view._currentIndex = 1
+    controller.listItemChanged()
+    assert view.napariViewer.camera.zoom == 2.0
+
+    # Lock while B is visible, then give B its own framing.
+    view._lockZoomPerResult = True
+    controller._zoomLockChanged(True)
+    view.napariViewer.camera.zoom = 7.0
+    view.napariViewer.camera.center = (0.0, 7.0, 8.0)
+
+    view._currentIndex = 0
+    controller.listItemChanged()
+    assert view.napariViewer.camera.zoom == 2.0
+    assert view.napariViewer.camera.center == (0.0, 2.0, 3.0)
+
+    view._currentIndex = 1
+    controller.listItemChanged()
+    assert view.napariViewer.camera.zoom == 7.0
+    assert view.napariViewer.camera.center == (0.0, 7.0, 8.0)
+
+
+def test_camera_memory_is_separate_for_xy_and_yz_planes():
+    """Shared camera never leaks between incompatible physical planes."""
+    view = _FakeReconstructionView()
+    controller = _viewer_state_controller(view)
+    xy_a = _orthogonal_volume_result("xy-a", preferred="Standard")
+    yz = _orthogonal_volume_result("yz", preferred="Left")
+    xy_b = _orthogonal_volume_result("xy-b", preferred="Standard")
+    view._reconList = [xy_a, yz, xy_b]
+
+    view._currentIndex = 0
+    controller.listItemChanged()
+    view.napariViewer.camera.zoom = 8.0
+    view.napariViewer.camera.center = (0.0, 30.0, 31.0)
+
+    view._currentIndex = 1
+    controller.listItemChanged()
+    # First YZ view has no YZ memory yet, so it gets fitted rather than XY zoom.
+    assert view.napariViewer.camera.zoom == 1.0
+    view.napariViewer.camera.zoom = 3.0
+    view.napariViewer.camera.center = (0.0, 12.0, 13.0)
+
+    view._currentIndex = 2
+    controller.listItemChanged()
+    # A new XY result receives the shared XY camera, not the YZ camera.
+    assert view.napariViewer.camera.zoom == 8.0
+    assert view.napariViewer.camera.center == (0.0, 30.0, 31.0)
 
 
 def test_direct_napari_axis_roll_is_remembered_per_result_and_new_result_is_natural():
