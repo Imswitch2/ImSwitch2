@@ -16,7 +16,7 @@ whose orientation is read from the data, as before.
 from __future__ import annotations
 
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -27,15 +27,22 @@ from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstructor
 
 from ..monalisa.calibration import PatternLocalization
+from ..monalisa.calibration_frames import modulation_score
 from ..monalisa.localization_settings import LocalizationSettings
 from ..monalisa.pipeline import (
     PipelineParams,
+    StackGeometry,
+    geometry_with_step,
     find_foci,
     needs_modulation_frame,
     prepare_geometry,
     reconstruct_scan,
+    reconstruct_stack,
 )
-from ..monalisa.scan_frame import ORIENTATIONS
+from ..monalisa.extraction import ExtractionResult
+from ..monalisa.scan_frame import (
+    ORIENTATIONS, orient_recorded_index, orient_step_columns,
+)
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
 from .result import MonalisaLatticeResult
 from .scan import LayoutScan, layout_scan, recorded_scan
@@ -45,6 +52,74 @@ if TYPE_CHECKING:
 
 # A pinhole stack is some seventy images of the size of the reconstruction.
 PINHOLE_STACK_LIMIT_BYTES = 8 * 1024**3
+
+
+@dataclass(frozen=True)
+class _FastPlacementStack:
+    """Runtime-only retained extraction for one recorded stack."""
+
+    extracted: ExtractionResult
+    geometry: StackGeometry
+    stage_index: np.ndarray
+
+
+@dataclass(frozen=True)
+class _FastPlacementCache:
+    """Everything Fast mode needs to change orientation without refitting."""
+
+    scan: LayoutScan
+    step: np.ndarray | None
+    step_aspect: float | None
+    pixel_nm: float
+    stacks: dict[int, _FastPlacementStack]
+
+
+def _fast_placement_eligible(params: dict) -> bool:
+    """Whether placement can be recomputed from retained coefficients alone."""
+    return (
+        str(params.get("localization_refinement", "")).lower() == "fast"
+        and not bool(params.get("frame_gain", False))
+        and not bool(params.get("cell_offsets", False))
+        and str(params.get("reassignment", "off")) == "off"
+        and not bool(params.get("pinhole_stack", False))
+        and not bool(params.get("sharpen", False))
+        and not bool(params.get("variance_weighting", False))
+    )
+
+
+def _recorded_output_scale(scan: LayoutScan, geometry: StackGeometry, orientation: str, pixel_nm: float):
+    """Return ``(camera_pixel_nm, output_pixel_nm)`` for recorded geometry."""
+    swapped = str(orientation)[1] == "y"
+    step_px = np.asarray(geometry.step, dtype=float)
+    pitch_px = tuple(float(np.linalg.norm(step_px[:, axis])) for axis in (0, 1))
+    recorded_nm = tuple(
+        scan.step_nm[1 - axis if swapped else axis] for axis in (0, 1)
+    )
+    camera_pixel_nm = pixel_nm if pixel_nm > 0 else next(
+        (step_nm / pitch_px[axis] for axis, step_nm in enumerate(recorded_nm)
+         if step_nm and pitch_px[axis] > 0),
+        None,
+    )
+    output_nm = tuple(
+        pitch_px[axis] * camera_pixel_nm
+        if pixel_nm > 0 and camera_pixel_nm else (
+            step_nm if step_nm else (
+                pitch_px[axis] * camera_pixel_nm if camera_pixel_nm else None
+            )
+        )
+        for axis, step_nm in enumerate(recorded_nm)
+    )
+    output_pixel_nm = (output_nm[1], output_nm[0]) if all(output_nm) else None
+    return camera_pixel_nm, output_pixel_nm
+
+
+def _recorded_planes(scan: LayoutScan, results: dict[int, object], pick):
+    images = [pick(results[stack]) for stack in range(scan.num_stacks)]
+    if any(image is None for image in images):
+        return None
+    stacked = np.nan_to_num(np.stack(images)).astype(np.float32)
+    shape = tuple(n for n in scan.stack_shape if n > 1) + stacked.shape[1:]
+    return stacked.reshape(shape)
 
 
 def pipeline_params(params: dict) -> PipelineParams:
@@ -461,6 +536,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
 
         check_cancelled()
         order = self._stack_order(frames, scan)
+        if scan.num_stacks > 1:
+            notes["calibration stack"] = (
+                f"{order[0] + 1}/{scan.num_stacks} (highest in-plane modulation)"
+            )
         if reuse_localization:
             geometry, reference_orientation, reference_source = self._reuse_geometry(
                 frames, settings
@@ -470,13 +549,21 @@ class MonalisaLatticeReconstructor(Reconstructor):
             report("align", 0, 1, f"Reusing localization from {reference_source}")
         else:
             report("align", 0, 1, "Finding the lattice and the spot")
-            mean_frame = frames.mean(axis=0, dtype=np.float64)
+            # Calibrate on one complete in-plane scan, not on all Z planes /
+            # timepoints / conditions mixed together.  Across-stack specimen
+            # and defocus changes otherwise enter the temporal variance and
+            # can make the fitted Gaussian spot artificially broad.  The
+            # most-modulated stack is already the one chosen first for the
+            # reconstruction, so use that same representative scan here.
+            calibration_indices = scan.frames_of(order[0])
+            calibration_frames = frames[calibration_indices]
+            mean_frame = calibration_frames.mean(axis=0, dtype=np.float64)
             modulation_frame = (
-                frames.var(axis=0, dtype=np.float64)
+                calibration_frames.var(axis=0, dtype=np.float64)
                 if needs_modulation_frame(settings) else None
             )
             geometry = prepare_geometry(
-                mean_frame, step, scan.index[scan.frames_of(order[0])], settings,
+                mean_frame, step, scan.index[calibration_indices], settings,
                 localization=supplied_localization,
                 modulation_frame=modulation_frame, step_aspect=step_aspect,
             )
@@ -512,27 +599,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
         report("finalize", 0, 1, "Assembling the result")
 
         first = results[int(order[0])]
-        # The output raster is in camera axes; the mapping says which stage
-        # axis, and so which recorded step, lies along each.
-        swapped = str(orientation)[1] == "y"
-        step_px = np.asarray(geometry.step, dtype=float)
-        pitch_px = tuple(float(np.linalg.norm(step_px[:, axis])) for axis in (0, 1))
-        recorded_nm = tuple(
-            scan.step_nm[1 - axis if swapped else axis] for axis in (0, 1)
-        )
-        camera_pixel_nm = pixel_nm if pixel_nm > 0 else next(
-            (step_nm / pitch_px[axis] for axis, step_nm in enumerate(recorded_nm)
-             if step_nm and pitch_px[axis] > 0),
-            None,
-        )
-        output_nm = tuple(
-            step_nm if step_nm else (
-                pitch_px[axis] * camera_pixel_nm if camera_pixel_nm else None
-            )
-            for axis, step_nm in enumerate(recorded_nm)
-        )
-        output_pixel_nm = (
-            (output_nm[1], output_nm[0]) if all(output_nm) else None
+        # Report the physical spacing of the raster actually used.  A
+        # lattice/count lock can legitimately refine nominal metadata.
+        camera_pixel_nm, output_pixel_nm = _recorded_output_scale(
+            scan, geometry, orientation, pixel_nm
         )
         diagnostics = self._diagnostics(
             scan, first, camera_pixel_nm, output_pixel_nm,
@@ -565,13 +635,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         )
 
         def planes(pick):
-            images = [pick(results[stack]) for stack in range(scan.num_stacks)]
-            if any(image is None for image in images):
-                return None
-            stacked = np.nan_to_num(np.stack(images)).astype(np.float32)
-            # Stacks are numbered (t, c, z); an axis of one is left out.
-            shape = tuple(n for n in scan.stack_shape if n > 1) + stacked.shape[1:]
-            return stacked.reshape(shape)
+            return _recorded_planes(scan, results, pick)
 
         pinholes = None
         offsets = None
@@ -579,7 +643,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             pinholes = planes(lambda result: result.pinholes.images)
             offsets = (first.pinholes.dx, first.pinholes.dy)
         report("finalize", 1, 1, "Done")
-        return MonalisaLatticeResult(
+        final = MonalisaLatticeResult(
             name=f"{data_obj.name}_lattice",
             image=planes(lambda result: result.amplitude.image),
             output_pixel_nm=output_pixel_nm,
@@ -597,6 +661,26 @@ class MonalisaLatticeReconstructor(Reconstructor):
             condition_labels=scan.condition_labels if scan.num_conditions > 1 else (),
             scanned_axes=tuple(scan.scanned_axes) + (("z",) if scan.num_planes > 1 else ()),
         )
+        if _fast_placement_eligible(params):
+            retained = {}
+            for stack, stack_result in results.items():
+                if stack_result.extracted is None:
+                    break
+                chosen = scan.frames_of(stack)
+                retained[int(stack)] = _FastPlacementStack(
+                    extracted=stack_result.extracted,
+                    geometry=stack_result.geometry,
+                    stage_index=np.asarray(scan.index[chosen], dtype=int).copy(),
+                )
+            if len(retained) == scan.num_stacks:
+                final._fast_placement_cache = _FastPlacementCache(
+                    scan=scan,
+                    step=None if step is None else np.asarray(step, dtype=float).copy(),
+                    step_aspect=step_aspect,
+                    pixel_nm=pixel_nm,
+                    stacks=retained,
+                )
+        return final
 
     def consolidate(self, results: list) -> MonalisaLatticeResult:
         """The results of several recordings as one, along a ``T`` axis.
@@ -659,12 +743,81 @@ class MonalisaLatticeReconstructor(Reconstructor):
         """
         if scan.num_stacks == 1:
             return [0]
-        modulation = []
-        for stack in range(scan.num_stacks):
-            chosen = frames[scan.frames_of(stack)]
-            modulation.append(float(chosen.var(axis=0, dtype=np.float64).mean()))
+        modulation = [
+            modulation_score(frames[scan.frames_of(stack)])
+            for stack in range(scan.num_stacks)
+        ]
         first = int(np.argmax(modulation))
         return [first] + [stack for stack in range(scan.num_stacks) if stack != first]
+
+    @staticmethod
+    def update_fast_placement(result: MonalisaLatticeResult, orientation: str) -> MonalisaLatticeResult:
+        """Re-place a retained Fast result for another scan orientation.
+
+        No localization, Gaussian solve or raw-frame processing is repeated.
+        The cache is runtime-only and exists only for recorded Fast results
+        whose corrections/ISM do not require the raw frames.
+        """
+        cache = getattr(result, "_fast_placement_cache", None)
+        if not isinstance(cache, _FastPlacementCache):
+            raise ValueError(
+                "No Fast placement cache is available. Run a Fast reconstruction "
+                "before using Update reconstruction."
+            )
+        orientation = str(orientation)
+        if orientation not in ORIENTATIONS:
+            raise ValueError(f"Unknown orientation {orientation!r}")
+
+        rebuilt = {}
+        for stack in range(cache.scan.num_stacks):
+            saved = cache.stacks[int(stack)]
+            camera_index = orient_recorded_index(saved.stage_index, orientation)
+            candidate = geometry_with_step(
+                saved.geometry, orient_step_columns(cache.step, orientation),
+                camera_index,
+                aspect=(
+                    cache.step_aspect if orientation[1] == "x" else
+                    (None if cache.step_aspect is None else 1.0 / cache.step_aspect)
+                ),
+            )
+            rebuilt[int(stack)] = reconstruct_stack(
+                None, candidate, camera_index, extracted=saved.extracted
+            )
+
+        first = rebuilt[0]
+        geometry = first.geometry
+        _camera_pixel_nm, output_pixel_nm = _recorded_output_scale(
+            cache.scan, geometry, orientation, cache.pixel_nm
+        )
+        diagnostics = dict(result.diagnostics)
+        diagnostics.update(
+            orientation=orientation,
+            resolved_orientation=orientation,
+            coverage_holes=int(geometry.coverage.holes),
+            coverage_overlaps=int(geometry.coverage.overlaps),
+            placement_method=str(first.diagnostics.get("placement", "")),
+            placement_residual_px=float(geometry.commensurate_residual),
+            update="placement only (retained Fast extraction)",
+        )
+        updated = MonalisaLatticeResult(
+            name=result.name,
+            image=_recorded_planes(cache.scan, rebuilt, lambda item: item.amplitude.image),
+            output_pixel_nm=output_pixel_nm,
+            params=dict(result.params),
+            diagnostics=diagnostics,
+            background=_recorded_planes(
+                cache.scan, rebuilt,
+                lambda item: None if item.background is None else item.background.image,
+            ),
+            axis_labels=list(result.axis_labels),
+            plane_step_nm=result.plane_step_nm,
+            condition_labels=result.condition_labels,
+            scanned_axes=result.scanned_axes,
+        )
+        # Keep the original retained extraction so repeated orientation checks
+        # remain equally cheap.  Geometry is recomputed from it each time.
+        updated._fast_placement_cache = cache
+        return updated
 
     @staticmethod
     def _check_pinhole_stack(result, num_stacks: int) -> None:

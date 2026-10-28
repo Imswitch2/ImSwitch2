@@ -212,6 +212,10 @@ class StackReconstruction:
     background: PlacedImage | None
     haze: PlacedImage | None
     noise_sigma: np.ndarray
+    # Runtime-only fitted coefficients retained so Fast mode can re-place an
+    # already extracted stack when only the scan orientation changes.  This
+    # is deliberately not part of any persisted result format.
+    extracted: ExtractionResult | None = field(default=None, repr=False, compare=False)
     owner: np.ndarray | None = None
     sharpened: np.ndarray | None = None
     pinholes: PinholeStack | None = None
@@ -464,7 +468,7 @@ def prepare_geometry(
     lock_change = 0.0
     if params.lock_tolerance > 0:
         step, lock_change = lock_step_to_lattice(
-            lattice.matrix, step, params.lock_tolerance
+            lattice.matrix, step, params.lock_tolerance, scan_index=scan_index
         )
     index_matrix, residual = commensurability(lattice.matrix, step)
     cell_coverage = coverage(index_matrix, scan_index)
@@ -543,7 +547,7 @@ def geometry_with_step(
     lock_change = 0.0
     if params.lock_tolerance > 0:
         step, lock_change = lock_step_to_lattice(
-            lattice.matrix, step, params.lock_tolerance
+            lattice.matrix, step, params.lock_tolerance, scan_index=scan_index
         )
     index_matrix, residual = commensurability(lattice.matrix, step)
     cell_coverage = coverage(index_matrix, scan_index)
@@ -910,7 +914,7 @@ def _shift_factor_to_use(geometry: StackGeometry, scan_index: np.ndarray):
 
 
 def reconstruct_stack(
-    frames: np.ndarray,
+    frames: np.ndarray | None,
     geometry: StackGeometry,
     scan_index: np.ndarray,
     frame_gain: np.ndarray | None = None,
@@ -928,27 +932,33 @@ def reconstruct_stack(
         extracted: An extraction already solved for ``frames``. Supplying it
             makes reconstruction/corrections reuse that solve.
     """
-    frames = np.asarray(frames)
     scan_index = np.asarray(scan_index, dtype=float).reshape(-1, 2)
-    if scan_index.shape[0] != frames.shape[0]:
-        raise ValueError(
-            f"{frames.shape[0]} frames but {scan_index.shape[0]} scan positions"
-        )
     operator = geometry.operator
     params = geometry.params
-    if extracted is None:
-        extracted = operator.apply_device(frames, params.device)
-    elif extracted.amplitude.shape[0] != frames.shape[0]:
+    if frames is None:
+        if extracted is None:
+            raise ValueError("Placement-only reconstruction requires retained extraction")
+        num_frames = int(extracted.amplitude.shape[0])
+    else:
+        frames = np.asarray(frames)
+        num_frames = int(frames.shape[0])
+        if extracted is None:
+            extracted = operator.apply_device(frames, params.device)
+    if scan_index.shape[0] != num_frames:
         raise ValueError(
-            f"{frames.shape[0]} frames but {extracted.amplitude.shape[0]} extracted rows"
+            f"{num_frames} frames but {scan_index.shape[0]} scan positions"
+        )
+    if extracted.amplitude.shape[0] != num_frames:
+        raise ValueError(
+            f"{num_frames} frames but {extracted.amplitude.shape[0]} extracted rows"
         )
     gx, gy = _raster_coordinates(geometry, scan_index)
     valid = operator.valid
     gx, gy = gx[:, valid], gy[:, valid]
 
-    gain = np.ones(frames.shape[0])
+    gain = np.ones(num_frames)
     if frame_gain is not None:
-        gain = np.asarray(frame_gain, dtype=float).reshape(frames.shape[0])
+        gain = np.asarray(frame_gain, dtype=float).reshape(num_frames)
     amplitudes = extracted.amplitude / gain[:, None]
     alpha = _shift_factor_to_use(geometry, scan_index)
     variance = None
@@ -994,6 +1004,8 @@ def reconstruct_stack(
     if alpha is None:
         amplitude = placed(amplitudes, True)
     else:
+        if frames is None:
+            raise ValueError("Reassignment needs the raw frames; run a full reconstruction")
         model = geometry.spot_model
         amplitude = reassign(
             frames, operator, model.x, model.y,
@@ -1002,6 +1014,8 @@ def reconstruct_stack(
         )
     pinholes = None
     if geometry.params.pinhole_stack != "off":
+        if frames is None:
+            raise ValueError("Pinhole stacks need the raw frames; run a full reconstruction")
         if geometry.params.pinhole_stack not in ("raw", "shifted"):
             raise ValueError(
                 f"Unknown pinhole stack {geometry.params.pinhole_stack!r}"
@@ -1044,12 +1058,44 @@ def reconstruct_stack(
         background=placed(extracted.background, False),
         haze=placed(extracted.haze, False),
         noise_sigma=extracted.noise_sigma,
+        extracted=extracted,
         owner=owner,
         sharpened=sharpened,
         pinholes=pinholes,
         geometry=geometry,
         diagnostics=diagnostics,
     )
+
+
+def _choose_recorded_orientation(
+    scores: dict[str, float],
+    coverages: dict[str, Coverage],
+) -> tuple[str, tuple[str, ...]]:
+    """Choose a recorded scan orientation without letting image score
+    override known one-cell topology.
+
+    Coverage is a *validity filter*, not a general orientation score.  When
+    every finite candidate has the same topology (the usual symmetric XY
+    case), image/seam contrast decides exactly as before.  When at least one
+    candidate covers the measured cell exactly once and another does not, the
+    incomplete candidates are rejected and image contrast chooses only among
+    the exact candidates.  If no candidate is exact, coverage is deliberately
+    ignored rather than guessing that fewer holes means the right orientation.
+    """
+    finite = {name: score for name, score in scores.items() if np.isfinite(score)}
+    if not finite:
+        raise ValueError("No orientation produced an image")
+    exact = tuple(
+        name for name in finite
+        if name in coverages and coverages[name].exactly_once
+    )
+    if exact and len(exact) < len(finite):
+        eligible = {name: finite[name] for name in exact}
+        rejected = tuple(name for name in finite if name not in eligible)
+    else:
+        eligible = finite
+        rejected = ()
+    return min(eligible, key=eligible.get), rejected
 
 
 def reconstruct_scan(
@@ -1226,14 +1272,27 @@ def reconstruct_scan(
                     if np.unique(camera_index[:, axis]).size > 1
                 )
                 scores[name] = seam_contrast(image, owner, axes)
+            coverages = {
+                name: candidate.coverage
+                for name, (_camera_index, candidate) in candidates.items()
+            }
+            orientation, rejected = _choose_recorded_orientation(scores, coverages)
             finite = {name: score for name, score in scores.items() if np.isfinite(score)}
-            if not finite:
-                raise ValueError("No orientation produced an image")
-            orientation = min(finite, key=finite.get)
+            eligible_scores = [
+                score for name, score in finite.items() if name not in rejected
+            ]
             # Mappings that differ only along an axis of one position give
             # the same image; the lead is over the next distinct image.
-            ranked = sorted(set(np.round(list(finite.values()), 12)))
+            ranked = sorted(set(np.round(eligible_scores, 12)))
             diagnostics["orientation_scores"] = scores
+            diagnostics["orientation_topology"] = {
+                name: {
+                    "holes": int(coverages[name].holes),
+                    "overlaps": int(coverages[name].overlaps),
+                }
+                for name in candidates
+            }
+            diagnostics["orientation_topology_rejected"] = rejected
             diagnostics["orientation_margin"] = (
                 float((ranked[1] - ranked[0]) / max(ranked[-1] - ranked[0], 1e-30))
                 if len(ranked) > 1 else 0.0

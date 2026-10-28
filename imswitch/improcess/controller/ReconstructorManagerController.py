@@ -427,8 +427,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # - 'Reconstruct current' is ceremonial for pass-through plugins
         #   (process() is a no-op wrap), so hide it; currentDataChanged
         #   auto-routes the data to the viewer in that case.
-        # - 'Update reconstruction' is the classic SignalExtractor coefficient
-        #   re-render action; keep it only on the temporary Legacy integration.
+        # - 'Update reconstruction' reuses retained MoNaLISA coefficients.
+        #   Legacy has its classic coefficient re-render; unified MoNaLISA
+        #   exposes the placement-only Fast path for quick orientation checks.
         # - The multidata button stays visible for every plugin. Pass-through
         #   plugins get it relabeled as a batch 'load to viewer' action with
         #   the consolidate entry hidden; plugins without consolidation
@@ -444,7 +445,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         try:
             self._widget.setReconstructionActionsVisible(
                 reconstruct_current=not is_pass_through,
-                update_reconstruction=(reconstructor.id == 'monalisa-legacy'),
+                update_reconstruction=(reconstructor.id in ('monalisa', 'monalisa-legacy')),
                 reconstruct_multidata=True,
                 multidata_consolidate=(
                     'hidden' if is_pass_through
@@ -479,6 +480,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         if reconstructor.id == "monalisa-legacy":
             try:
                 self._widget.setLegacyMonalisaParameterWidget()
+                self._widget.setUpdateReconstructionEnabled(True)
             except Exception:
                 pass
             return
@@ -503,6 +505,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     widget.sigPlotMetricRequested.connect(self._main.wfsBatchController.plotMetric)
                 if hasattr(widget, "sigTablePlotRequested"):
                     widget.sigTablePlotRequested.connect(self._main.wfsBatchController.plotTable)
+            except Exception:
+                pass
+
+        if reconstructor.id == "monalisa" and hasattr(widget, "sigModeChanged"):
+            try:
+                widget.sigModeChanged.connect(self._set_monalisa_update_enabled)
+                self._set_monalisa_update_enabled(
+                    widget.get_values().get("preset", "Fast")
+                )
             except Exception:
                 pass
 
@@ -539,6 +550,18 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 pass
 
     @QtCore.Slot(str)
+    def _set_monalisa_update_enabled(self, mode):
+        try:
+            fast = str(mode) == "Fast"
+            self._widget.setUpdateReconstructionEnabled(
+                fast,
+                "Re-place the retained Fast extraction after changing scan orientation."
+                if fast else "Update reconstruction is currently available only in Fast mode.",
+            )
+        except Exception:
+            pass
+
+    @QtCore.Slot(str)
     def _set_monalisa_relocalize_enabled(self, mode):
         try:
             self._widget.multiDataFrame.setRelocalizeEachDataItemEnabled(
@@ -552,6 +575,46 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return bool(self._widget.multiDataFrame.relocalizeEachDataItem())
         except Exception:
             return False
+
+    def updateReconstruction(self):
+        """Refresh the active MoNaLISA result without repeating extraction."""
+        reconstructor = self._main._activeReconstructor
+        if reconstructor is None:
+            return
+        if reconstructor.id == "monalisa-legacy":
+            self._main.monalisaController.updateScanParams(applyOnCurrentRecon=True)
+            return
+        updater = getattr(reconstructor, "update_reconstruction", None)
+        if not callable(updater):
+            return
+        result = self._main.reconstructionController.getActiveResult()
+        if result is None:
+            self._set_reconstruction_job_state(
+                False, status="No reconstruction is selected to update."
+            )
+            return
+        try:
+            params = self._params_for_data_obj(reconstructor)
+            updated = updater(result, params)
+        except Exception as exc:
+            self._logger.warning(f"Could not update reconstruction: {exc}")
+            self._set_reconstruction_job_state(False, status=str(exc))
+            return
+        self._commChannel.sigResultReplaced.emit(
+            result, updated, getattr(updated, "name", "reconstruction")
+        )
+        widget = getattr(self, "_previewWidget", None)
+        sync = getattr(widget, "sync_reconstruction_results", None)
+        if callable(sync):
+            try:
+                sync([updated])
+            except Exception:
+                self._logger.debug(
+                    "Could not refresh MoNaLISA controls after update", exc_info=True
+                )
+        self._set_reconstruction_job_state(
+            False, status="Reconstruction placement updated from retained Fast extraction."
+        )
 
     def reconstructCurrent(self):
         if self._main._currentDataObj is None:

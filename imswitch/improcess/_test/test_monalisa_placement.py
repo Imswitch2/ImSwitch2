@@ -136,6 +136,47 @@ class TestStepLock:
         np.testing.assert_allclose(locked, step, atol=1e-12)
         assert commensurability(lattice, locked)[1] < 1e-9
 
+
+    def test_one_cell_lock_uses_the_acquired_phase_count(self):
+        """21 acquired phases stay 21 even when 35 nm is nearer 22 subdivisions.
+
+        The lattice period is 756 nm.  The recorded 35 nm is approximate; the
+        one-cell topology says 21 phase positions, so the effective step is
+        756 / 21 = 36 nm and coverage has no artificial hole.
+        """
+        pixel_nm = 77.0
+        period_nm = 756.0
+        lattice = np.diag([10.0, period_nm / pixel_nm])
+        nominal = np.diag([10.0, 35.0 / pixel_nm])
+        scan_index = np.column_stack([np.zeros(21, dtype=int), np.arange(21)])
+
+        locked, change = lock_step_to_lattice(
+            lattice, nominal, scan_index=scan_index
+        )
+        index_matrix, residual = commensurability(lattice, locked)
+
+        assert locked[1, 1] * pixel_nm == pytest.approx(36.0)
+        assert change == pytest.approx(1.0 / 35.0)
+        assert residual < 1e-12
+        assert abs(round(np.linalg.det(index_matrix))) == 21
+        assert coverage(index_matrix, scan_index).exactly_once
+
+    def test_nineteen_positions_of_nominal_40_nm_are_also_one_cell(self):
+        pixel_nm = 77.0
+        period_nm = 756.0
+        lattice = np.diag([10.0, period_nm / pixel_nm])
+        nominal = np.diag([10.0, 40.0 / pixel_nm])
+        scan_index = np.column_stack([np.zeros(19, dtype=int), np.arange(19)])
+
+        locked, _ = lock_step_to_lattice(
+            lattice, nominal, scan_index=scan_index
+        )
+        index_matrix, residual = commensurability(lattice, locked)
+
+        assert locked[1, 1] * pixel_nm == pytest.approx(period_nm / 19.0)
+        assert residual < 1e-12
+        assert coverage(index_matrix, scan_index).exactly_once
+
     def test_large_axis_does_not_hide_excessive_change_on_small_axis(self):
         """The 6.5 px X pitch must not mask a 5 % correction of Y."""
         lattice = np.array([[6.493, -6.520], [4.903, 4.920]])

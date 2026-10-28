@@ -18,6 +18,7 @@ from .coeffs_to_image import (
     placement_from_layout,
 )
 from .calibration import PatternLocalization, ScanOrientation
+from .calibration_frames import most_modulated_indices
 from .live_session import MonalisaLiveSession
 from .localization_settings import LocalizationSettings
 from .params import (
@@ -282,6 +283,54 @@ class MonalisaReconstructor(StreamingReconstructor):
             ),
         )
 
+    @staticmethod
+    def _calibration_frames(data_obj, frames: np.ndarray, params: dict) -> np.ndarray:
+        """One representative in-plane scan for Auto localization/calibration.
+
+        A recording may contain Z planes, timepoints or conditions.  Their
+        intensity/defocus differences are not scan modulation and must not be
+        folded into the temporal variance used to estimate the Gaussian spot.
+        Prefer the resolved acquisition layout; older recordings fall back to
+        the legacy scan metadata.
+        """
+        from imswitch.improcess.reconstructors.monalisa_lattice.scan import (
+            layout_scan, recorded_scan,
+        )
+
+        num_frames = int(np.asarray(frames).shape[0])
+        groups = None
+        try:
+            scan = layout_scan(getattr(data_obj, "acquisition_layout", None), num_frames)
+        except ValueError:
+            # A declared incompatible layout should keep its normal explicit
+            # failure during reconstruction; localization itself can still be
+            # attempted from the frames rather than mixing arbitrary stacks.
+            scan = None
+        if scan is not None:
+            groups = [scan.frames_of(stack) for stack in range(scan.num_stacks)]
+        else:
+            attrs = dict(getattr(data_obj, "attrs", None) or {})
+            try:
+                legacy = recorded_scan(
+                    attrs, num_frames,
+                    num_fast=int(params.get("scan_steps_fast", 0) or 0),
+                    num_slow=int(params.get("scan_steps_slow", 0) or 0),
+                    step_nm=float(params.get("scan_step_nm", 0.0) or 0.0),
+                )
+            except ValueError:
+                legacy = None
+            if legacy is not None and legacy.num_stacks > 1:
+                size = legacy.frames_per_stack
+                groups = [
+                    np.arange(stack * size, (stack + 1) * size, dtype=int)
+                    for stack in range(legacy.num_stacks)
+                ]
+
+        if not groups or len(groups) == 1:
+            return np.asarray(frames)
+        chosen = most_modulated_indices(frames, groups)
+        return np.asarray(frames)[chosen]
+
     def localize(self, data_obj, params: dict | None = None) -> tuple[PatternLocalization, str, dict]:
         """Explicit Auto-localization action used by the parameter widget.
 
@@ -300,9 +349,10 @@ class MonalisaReconstructor(StreamingReconstructor):
         if frames.ndim != 3:
             raise ValueError(f"Expected (frames, rows, cols), got {frames.shape}")
         pipeline_params = self._localization_pipeline_params(merged)
+        calibration_frames = self._calibration_frames(data_obj, frames, merged)
         finding = find_localization(
-            frames.mean(axis=0, dtype=np.float64),
-            frames.var(axis=0, dtype=np.float64)
+            calibration_frames.mean(axis=0, dtype=np.float64),
+            calibration_frames.var(axis=0, dtype=np.float64)
             if needs_modulation_frame(pipeline_params) else None,
             pipeline_params,
         )
@@ -336,6 +386,87 @@ class MonalisaReconstructor(StreamingReconstructor):
         else:
             raise ValueError(f"Unknown orientation mode {mode!r}")
         return ScanOrientation.from_literal(value).to_literal()
+
+    @classmethod
+    def _fast_update_signature(
+        cls, params: dict, *, localization: PatternLocalization | None = None,
+        spot_sigma_px: float | None = None,
+    ) -> dict:
+        """Canonical state that must stay unchanged for placement-only update."""
+        if localization is None:
+            localization = cls._resolved_localization(params)
+        if spot_sigma_px is None:
+            spot_sigma_px = cls._spot_sigma_for_params(params)
+        return {
+            "localization": None if localization is None else localization.to_dict(),
+            "spot_sigma_px": None if spot_sigma_px is None else float(spot_sigma_px),
+            "pixel_size_nm": float(params.get("pixel_size_nm", 0.0) or 0.0),
+            "background": str(params.get("background", "constant")),
+            "scan_steps_fast": int(params.get("scan_steps_fast", 0) or 0),
+            "scan_steps_slow": int(params.get("scan_steps_slow", 0) or 0),
+            "scan_step_nm": float(params.get("scan_step_nm", 0.0) or 0.0),
+            "placement_mode": str(params.get("placement_mode", PLACEMENT_AUTO)),
+            "commensurate_tolerance": float(params.get("commensurate_tolerance", 0.05)),
+            "variance_weighting": bool(params.get("variance_weighting", False)),
+            "intensity_correction": bool(params.get("intensity_correction", False)),
+            "cell_offsets": bool(params.get("cell_offsets", False)),
+            "reassignment": str(params.get("reassignment", "off")),
+            "pinhole_stack": bool(params.get("pinhole_stack", False)),
+            "sharpen": bool(params.get("sharpen", False)),
+        }
+
+    def update_reconstruction(self, result, params: dict):
+        """Fast placement-only refresh, primarily for visual orientation checks."""
+        from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
+            MonalisaLatticeReconstructor,
+        )
+
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        if str(merged.get("preset", "Fast")) != "Fast":
+            raise ValueError(
+                "Update reconstruction is currently available only in Fast mode."
+            )
+        expected = getattr(result, "_monalisa_fast_update_signature", None)
+        if expected is None or not hasattr(result, "_fast_placement_cache"):
+            raise ValueError(
+                "This result has no retained Fast extraction. Run Fast reconstruction first."
+            )
+        current = self._fast_update_signature(merged)
+        if current != expected:
+            raise ValueError(
+                "Localization, spot model, scan or extraction settings changed. "
+                "Run a full reconstruction before using Update reconstruction."
+            )
+
+        orientation = self._orientation_literal(merged)
+        if orientation is None:
+            orientation = str(
+                (getattr(result, "diagnostics", {}) or {}).get("resolved_orientation")
+                or (getattr(result, "diagnostics", {}) or {}).get("orientation")
+                or merged.get("orientation", "+x+y")
+            )
+        updated = MonalisaLatticeReconstructor.update_fast_placement(
+            result, orientation
+        )
+        updated.name = result.name
+        updated.params = dict(merged)
+        updated._monalisa_fast_update_signature = copy.deepcopy(expected)
+
+        snapshot = dict(
+            ((getattr(result, "metadata", {}) or {}).get("monalisa_calibration") or {})
+        )
+        snapshot.update(
+            orientation_source=str(merged.get("orientation_mode", ORIENTATION_AUTO)),
+            resolved_orientation=str(orientation),
+            placement_mode_used=str(updated.diagnostics.get("placement_method") or ""),
+            placement_residual_px=updated.diagnostics.get("placement_residual_px"),
+        )
+        updated.params["calibration_snapshot"] = copy.deepcopy(snapshot)
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        metadata["monalisa_calibration"] = copy.deepcopy(snapshot)
+        updated.metadata = metadata
+        return updated
 
     def _process_unified_gaussian(self, data_obj, params: dict, context=None):
         """Run the experimental/general lattice orchestration as the one Gaussian plugin.
@@ -493,6 +624,13 @@ class MonalisaReconstructor(StreamingReconstructor):
         metadata = dict(getattr(result, "metadata", {}) or {})
         metadata["monalisa_calibration"] = copy.deepcopy(calibration_snapshot)
         result.metadata = metadata
+        if str(merged.get("preset", "Fast")) == "Fast" and hasattr(
+            result, "_fast_placement_cache"
+        ):
+            result._monalisa_fast_update_signature = self._fast_update_signature(
+                merged, localization=resolved_localization,
+                spot_sigma_px=effective_sigma_px,
+            )
         return result
 
     def detection_preview(self, data_obj, displayed_image, params: dict):

@@ -149,6 +149,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     sigDetectionParamsChanged = QtCore.Signal()
     sigLocalizeRequested = QtCore.Signal()
     sigLocalizationModeChanged = QtCore.Signal(str)
+    sigModeChanged = QtCore.Signal(str)
 
     _MODE_LABELS = (
         ("Fast", PRESET_FAST),
@@ -471,6 +472,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             finally:
                 self._applying_preset = False
         self._update_ui()
+        self.sigModeChanged.emit(str(self._mode_value()))
 
     def _apply_controlled_values(self, values: dict) -> None:
         self._advanced_values["device"] = str(values["device"])
@@ -493,6 +495,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             finally:
                 self._applying_preset = False
         self._update_ui()
+        self.sigModeChanged.emit(str(self._mode_value()))
 
     def _update_ui(self) -> None:
         mode = self._mode_value()

@@ -24,8 +24,11 @@ from imswitch.improcess.reconstructors.monalisa.pipeline import (
     prepare_geometry,
     reconstruct_scan,
     reconstruct_stack,
+    _choose_recorded_orientation,
 )
 from imswitch.improcess.reconstructors.monalisa.lattice import Lattice
+from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+from imswitch.improcess.reconstructors.monalisa.placement import Coverage
 
 A = 11.0
 S = 10.41
@@ -146,6 +149,29 @@ class TestStep:
         np.testing.assert_allclose(geometry.step, scan.step, atol=1e-4)
         assert result.diagnostics["placement"] == "exact"
         assert _relative_error(scan, geometry, result) < 2e-3
+
+
+    def test_one_cell_phase_count_prevents_a_false_yz_hole(self):
+        """Recorded metric step cannot change 21 acquired phases into 22."""
+        pixel_nm = 77.0
+        lattice = Lattice.rectangular(10.0, 756.0 / pixel_nm)
+        scan_index = np.column_stack([
+            np.zeros(21, dtype=int), np.arange(21, dtype=int)
+        ])
+        nominal = np.diag([10.0, 35.0 / pixel_nm])
+        geometry = prepare_geometry(
+            np.ones((64, 64), dtype=float), nominal, scan_index,
+            PipelineParams(
+                spot_sigma_px=1.2, background="constant",
+                frame_gain="off", cell_offsets="off", reassignment="off",
+            ),
+            localization=PatternLocalization.from_lattice(lattice),
+        )
+
+        assert geometry.step[1, 1] * pixel_nm == pytest.approx(36.0)
+        assert geometry.diagnostics["coverage_cell_pixels"] == 21
+        assert geometry.diagnostics["coverage_holes"] == 0
+        assert geometry.diagnostics["coverage_overlaps"] == 0
 
     def test_a_real_step_error_is_gridded(self):
         """The scan really steps 1 % short: the samples are where they are,
@@ -551,3 +577,52 @@ class TestShotNoiseIsNotModulation:
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+class TestOrientationTopology:
+    @staticmethod
+    def _coverage(*counts):
+        return Coverage(cell_pixels=len(counts), counts=np.asarray(counts, dtype=int))
+
+    def test_exact_topology_rejects_a_smoother_invalid_swap(self):
+        scores = {"-x-y": 1.4, "-y-x": 1.1}
+        coverages = {
+            "-x-y": self._coverage(1, 1, 1, 1),
+            "-y-x": self._coverage(2, 1, 1, 0),
+        }
+        orientation, rejected = _choose_recorded_orientation(scores, coverages)
+        assert orientation == "-x-y"
+        assert rejected == ("-y-x",)
+
+    def test_symmetric_exact_candidates_still_use_image_score(self):
+        scores = {"+x+y": 1.4, "+y+x": 1.1}
+        exact = self._coverage(1, 1, 1, 1)
+        orientation, rejected = _choose_recorded_orientation(
+            scores, {"+x+y": exact, "+y+x": exact}
+        )
+        assert orientation == "+y+x"
+        assert rejected == ()
+
+    def test_if_none_is_exact_coverage_does_not_guess(self):
+        scores = {"+x+y": 1.4, "+y+x": 1.1}
+        orientation, rejected = _choose_recorded_orientation(
+            scores,
+            {
+                "+x+y": self._coverage(2, 1, 1, 0),
+                "+y+x": self._coverage(2, 2, 0, 0),
+            },
+        )
+        assert orientation == "+y+x"
+        assert rejected == ()
+
+
+class TestFastPlacementUpdate:
+    def test_retained_extraction_can_be_replaced_without_raw_frames(self):
+        scan, geometry, result = _reconstruct()
+        assert result.extracted is not None
+        updated = reconstruct_stack(
+            None, geometry, scan.scan_index, extracted=result.extracted
+        )
+        np.testing.assert_allclose(
+            updated.amplitude.image, result.amplitude.image, equal_nan=True
+        )

@@ -92,7 +92,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         )
         self._widget.sigQuickLoadData.connect(self.fileIOController.quickLoadData)
         self._widget.sigQuickLoadVirtualData.connect(self.fileIOController.quickLoadVirtualData)
-        self._widget.sigUpdate.connect(lambda: self.monalisaController.updateScanParams(applyOnCurrentRecon=True))
+        self._widget.sigUpdate.connect(self.reconstructorManager.updateReconstruction)
 
         self._widget.sigShowPatternChanged.connect(self.monalisaController.togglePattern)
         self._widget.sigFindPattern.connect(self.monalisaController.findPattern)

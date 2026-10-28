@@ -155,32 +155,8 @@ def commensurability(
     return integer.astype(int), float(np.max(np.abs(ratio - integer)))
 
 
-def lock_step_to_lattice(
-    lattice_matrix: np.ndarray, step: np.ndarray, tolerance: float = 0.02
-) -> tuple[np.ndarray, float]:
-    """The step closest to ``step`` that subdivides the lattice exactly.
-
-    A scan is set up to subdivide the illumination period, but its step and
-    the pixel size are only known to a percent or so, and a mismatch of 0.3 %
-    already costs a tenth of the image in error when the samples are placed
-    as if they were on the raster. The lattice is measured to 0.01 px, so
-    when the nominal step is within ``tolerance`` of subdividing it, the
-    subdividing step is the better estimate of the real one.
-
-    Returns ``(step, change)``: the locked step, or the input when locking
-    would change it by more than ``tolerance``, and the largest relative
-    change requested for either scan-axis vector.
-    """
-    lattice_matrix = np.asarray(lattice_matrix, dtype=float).reshape(2, 2)
-    step = np.asarray(step, dtype=float).reshape(2, 2)
-    integer, _ = commensurability(lattice_matrix, step)
-    if int(round(abs(np.linalg.det(integer)))) == 0:
-        return step, float("inf")
-    locked = lattice_matrix @ np.linalg.inv(integer)
-
-    # Judge the correction per scan axis.  A large raster pitch on one axis
-    # must not hide an excessive relative correction of the smaller step on
-    # the other axis (notably YZ scans of staggered lattices).
+def _relative_step_change(step: np.ndarray, locked: np.ndarray) -> float:
+    """Largest relative change of either scan-axis vector."""
     step_norm = np.linalg.norm(step, axis=0)
     delta_norm = np.linalg.norm(locked - step, axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -189,7 +165,92 @@ def lock_step_to_lattice(
             delta_norm / step_norm,
             np.where(delta_norm <= 1e-12, 0.0, np.inf),
         )
-    change = float(np.max(axis_change))
+    return float(np.max(axis_change))
+
+
+def _cell_count_integer(
+    lattice_matrix: np.ndarray, step: np.ndarray, scan_index: np.ndarray
+) -> np.ndarray | None:
+    """Nearest commensurate index matrix with one class per acquired position.
+
+    A MoNaLISA in-plane scan enumerates one illumination cell.  If it contains
+    ``P`` distinct positions, the quotient of the scan raster by the lattice
+    therefore has exactly ``P`` phase classes, i.e. ``|det N| == P`` for
+    ``N = step^-1 lattice``.  The recorded metric step is only an approximate
+    scale and must not silently change that topology (21 acquired phases into
+    22 expected phases, for example).
+    """
+    scan_index = np.rint(np.asarray(scan_index)).astype(np.int64).reshape(-1, 2)
+    positions = int(np.unique(scan_index, axis=0).shape[0])
+    if positions < 1:
+        return None
+
+    ratio = np.linalg.solve(step, lattice_matrix)
+    centre = np.rint(ratio).astype(int)
+    if int(round(abs(np.linalg.det(centre)))) == positions:
+        return centre
+
+    # Nominal stage/pixel calibration is normally only a few percent away, so
+    # the correct integer topology is close to the independently rounded one.
+    # Searching a small neighbourhood also handles rotated/staggered cells
+    # whose index matrix has off-diagonal entries.
+    best = None
+    best_score = None
+    ranges = [range(int(value) - 3, int(value) + 4) for value in centre.ravel()]
+    for a in ranges[0]:
+        for b in ranges[1]:
+            for c in ranges[2]:
+                for d in ranges[3]:
+                    candidate = np.array([[a, b], [c, d]], dtype=int)
+                    det = int(round(np.linalg.det(candidate)))
+                    if abs(det) != positions:
+                        continue
+                    try:
+                        locked = lattice_matrix @ np.linalg.inv(candidate)
+                    except np.linalg.LinAlgError:
+                        continue
+                    change = _relative_step_change(step, locked)
+                    distance = float(np.linalg.norm(ratio - candidate))
+                    score = (change, distance)
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best = candidate
+    return best
+
+
+def lock_step_to_lattice(
+    lattice_matrix: np.ndarray,
+    step: np.ndarray,
+    tolerance: float = 0.02,
+    scan_index: np.ndarray | None = None,
+) -> tuple[np.ndarray, float]:
+    """Lock the scan step to the measured illumination lattice.
+
+    With ``scan_index`` the acquisition itself says how many periodic phases
+    were sampled: a MoNaLISA scan is one illumination cell, so the locked
+    raster is constrained to have exactly one phase class per distinct scan
+    position.  This count/topology outranks the approximate metric step stored
+    in metadata.  The returned ``change`` still reports how far the effective
+    lattice-derived step is from that nominal value.
+
+    Without ``scan_index`` this keeps the historical behaviour: choose the
+    nearest integer subdivision and accept it only within ``tolerance``.
+    """
+    lattice_matrix = np.asarray(lattice_matrix, dtype=float).reshape(2, 2)
+    step = np.asarray(step, dtype=float).reshape(2, 2)
+
+    if scan_index is not None:
+        integer = _cell_count_integer(lattice_matrix, step, scan_index)
+        if integer is None or int(round(abs(np.linalg.det(integer)))) == 0:
+            return step, float("inf")
+        locked = lattice_matrix @ np.linalg.inv(integer)
+        return locked, _relative_step_change(step, locked)
+
+    integer, _ = commensurability(lattice_matrix, step)
+    if int(round(abs(np.linalg.det(integer)))) == 0:
+        return step, float("inf")
+    locked = lattice_matrix @ np.linalg.inv(integer)
+    change = _relative_step_change(step, locked)
     if change > tolerance:
         return step, change
     return locked, change
