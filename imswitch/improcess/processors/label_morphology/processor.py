@@ -64,6 +64,7 @@ class LabelMorphologyProcessor(Processor):
     # on one measures the same features on the other.
     preserves_grid = True
     kinds = ("labels",)
+    output_kind = "labels"
 
     @classmethod
     def default_params(cls) -> dict:

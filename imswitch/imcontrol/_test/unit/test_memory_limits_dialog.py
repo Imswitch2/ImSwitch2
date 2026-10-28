@@ -36,9 +36,9 @@ def dialog(qapp):
 
 def test_it_shows_what_the_file_holds(dialog):
     dialog.setValues(SimpleNamespace(writerQueueMB=128, perDetectorQueueMB=64,
-                                     processingWorkingSetMB=2048))
+                                     processingWorkingSetMB=2048, workflowCacheMB=1000))
     assert dialog.values() == {'writerQueueMB': 128, 'perDetectorQueueMB': 64,
-                               'processingWorkingSetMB': 2048}
+                               'processingWorkingSetMB': 2048, 'workflowCacheMB': 1000}
     assert not dialog.statusLabel.isVisibleTo(dialog)
 
 
@@ -46,7 +46,7 @@ def test_a_value_the_file_cannot_use_shows_the_default_in_force_and_says_so(dial
     dialog.setValues(SimpleNamespace(writerQueueMB='lots', perDetectorQueueMB=64,
                                      processingWorkingSetMB=None))
     assert dialog.values() == {'writerQueueMB': 512, 'perDetectorQueueMB': 64,
-                               'processingWorkingSetMB': 1024}
+                               'processingWorkingSetMB': 1024, 'workflowCacheMB': 4096}
     assert "'lots'" in dialog.statusLabel.text()
 
 
@@ -55,18 +55,18 @@ def test_restore_defaults_puts_back_the_shipped_numbers(dialog):
                                      processingWorkingSetMB=8))
     dialog.restoreDefaults()
     assert dialog.values() == {'writerQueueMB': 512, 'perDetectorQueueMB': 256,
-                               'processingWorkingSetMB': 1024}
+                               'processingWorkingSetMB': 1024, 'workflowCacheMB': 4096}
 
 
 def test_save_asks_the_controller_and_does_not_close_by_itself(dialog):
     asked = []
     dialog.sigSaveRequested.connect(asked.append)
     dialog.setValues(SimpleNamespace(writerQueueMB=100, perDetectorQueueMB=50,
-                                     processingWorkingSetMB=900))
+                                     processingWorkingSetMB=900, workflowCacheMB=2000))
     dialog.show()
     dialog.buttons.accepted.emit()
     assert asked == [{'writerQueueMB': 100, 'perDetectorQueueMB': 50,
-                      'processingWorkingSetMB': 900}]
+                      'processingWorkingSetMB': 900, 'workflowCacheMB': 2000}]
     assert dialog.result() != QtWidgets.QDialog.Accepted
 
 
@@ -94,7 +94,8 @@ def test_saving_writes_the_options_file_and_applies_the_limits_now(dialog, monke
     monkeypatch.setattr(module.configfiletools, 'loadOptions', lambda: (options, False))
     monkeypatch.setattr(module.configfiletools, 'saveOptions', saved.append)
 
-    save({'writerQueueMB': 100, 'perDetectorQueueMB': 50, 'processingWorkingSetMB': 900})
+    save({'writerQueueMB': 100, 'perDetectorQueueMB': 50, 'processingWorkingSetMB': 900,
+          'workflowCacheMB': 2000})
 
     assert len(saved) == 1
     assert saved[0].setupFileName == 'x.json'                    # nothing else changed
@@ -102,6 +103,7 @@ def test_saving_writes_the_options_file_and_applies_the_limits_now(dialog, monke
             saved[0].memory.processingWorkingSetMB) == (100, 50, 900)
     assert memory_limits.effectiveBytes('perDetectorQueueBytes', 1) == 50 * MIB
     assert memory_limits.effectiveBytes('processingWorkingSetBytes', 1) == 900 * MIB
+    assert memory_limits.effectiveBytes('workflowCacheBytes', 1) == 2000 * MIB
     assert dialog.result() == QtWidgets.QDialog.Accepted
 
 

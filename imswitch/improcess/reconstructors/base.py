@@ -214,11 +214,27 @@ class Reconstructor(ABC):
     acquisition_requirements: AcquisitionRequirements | None = None
     """Opt-in strict acquisition gate; ``None`` preserves legacy behaviour."""
 
+    #: The kind of result a reconstruction produces, declared (see
+    #: :attr:`~imswitch.improcess.processors.base.Processor.output_kind`).
+    output_kind: str | None = None
+    #: See :attr:`~imswitch.improcess.processors.base.Processor.deterministic`.
+    deterministic: bool = True
+
     #: Version of this reconstructor's parameter contract; see
     #: :attr:`~imswitch.improcess.processors.base.Processor.params_version`.
     params_version: int = 1
     #: Keys of :meth:`default_params` whose widget default is machine-dependent.
     default_params_volatile: tuple[str, ...] = ()
+
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        """The one port a reconstruction produces, ``out``, with its declared kind.
+
+        Same shape as a processor's, so a workflow editor treats both alike.
+        """
+        from imswitch.improcess.model.result import UNKNOWN_KIND
+        from imswitch.improcess.processors.base import OutputSpec
+
+        return OutputSpec(ports=("out",), kind=self.output_kind or UNKNOWN_KIND)
 
     @classmethod
     def default_params(cls) -> dict:

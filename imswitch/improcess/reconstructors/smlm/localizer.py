@@ -223,6 +223,7 @@ class SmlmLocalizer(StreamingReconstructor):
 
     name = "SMLM localizer"
     id = "smlm-localizer"
+    output_kind = "localization"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     # Image stacks are what this localizes. Localization tables are not input
     # to it at all -- they open straight to a result, bypassing the

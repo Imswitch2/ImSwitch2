@@ -52,6 +52,7 @@ class MonalisaReconstructor(StreamingReconstructor):
     
     name = "MoNaLISA"
     id = "monalisa"
+    output_kind = "image"
     file_extensions = ["hdf5", "zarr"]
     # One timepoint must be a whole nx*ny scan: the pattern reassignment has
     # nothing to reassemble from a single frame. Independent of being a

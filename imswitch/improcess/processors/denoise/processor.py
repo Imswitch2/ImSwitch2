@@ -24,6 +24,7 @@ class DenoiseProcessor(Processor):
 
     name = "Denoise"
     id = "denoise"
+    output_kind = "image"
     category = "Restoration"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.

@@ -35,6 +35,7 @@ class TransformProcessor(Processor):
 
     name = "Transform"
     id = "transform"
+    output_kind = "image"
     category = "Transform"
 
     @classmethod

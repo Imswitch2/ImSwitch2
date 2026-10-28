@@ -132,7 +132,8 @@
   ],
   "improcess_snippets/best_focus.py": [
    "01d05f43238046a2ff117bcb592250cfac504d057ae363f0a39864a419fbd7a1",
-   "6c1173fce010fda66f9d3a7eba98b8528bdfcf64d84388ba059acb406bd3aef2"
+   "6c1173fce010fda66f9d3a7eba98b8528bdfcf64d84388ba059acb406bd3aef2",
+   "9922b4c95b853811fae2bfe50ca0b8e0773758871f197cd1be302b3dd09a9b1b"
   ],
   "improcess_snippets/crosstalk.py": [
    "6c232af6530d134f6e764b16178fa1f5327580542fafa5eeef3e587291095ef1"
@@ -147,7 +148,8 @@
    "549331ccedd63232e1cdaa48671d1cf2983d59ab3a293047a2636c882723e980"
   ],
   "improcess_snippets/signal_trace.py": [
-   "627ede593eda3552c9ef79348899085e9b97e8f938608f799c0816663c436cd5"
+   "627ede593eda3552c9ef79348899085e9b97e8f938608f799c0816663c436cd5",
+   "ae5d8e99110e8bdf9ae1cbadf212adc1fdc176df0ac45edc47589b7619bf81c3"
   ],
   "improcess_snippets/snake_mosaic.py": [
    "f4a929584160759da9a9b0ff6f521acbcf0727b98b8801fc6b4518cdc7c17df2"
