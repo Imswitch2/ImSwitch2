@@ -21,7 +21,7 @@ Then change THRESHOLD_SIGMA in cell 2 and press Ctrl+Enter there: cell 2
 runs again on the frames cell 1 acquired. (Run all runs everything at once,
 in a fresh namespace, as for any other script.)
 
-Next: the scanning tutorials, starting with ../scanning/01_run_a_scan.py
+Next: 12_inputs_for_the_script_runner.py
 """
 
 # %% 1. Acquire, once.

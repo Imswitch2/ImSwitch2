@@ -122,6 +122,8 @@ class ViewSetupInfo(SetupInfo):
     - ``Timelapse`` (timelapse of camera frames, scans or tilings, with lasers on
       only for each timepoint; optional ``timelapse`` field for its defaults)
     - ``SetupModes`` (general setup modes widget)
+    - ``ScriptRunner`` (runs one script with a field for each of its
+      ``scriptInput`` values; requires the Scripting module)
 
     You can also set this to ``true`` to enable all widgets, or ``false`` to
     disable all widgets.

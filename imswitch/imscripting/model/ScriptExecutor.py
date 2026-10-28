@@ -105,10 +105,13 @@ class ScriptExecutor(SignalInterface):
     # ------------------------------------------------------------------ #
     # Running                                                             #
     # ------------------------------------------------------------------ #
-    def execute(self, scriptPath, code, *, session=False, firstLine=0):
+    def execute(self, scriptPath, code, *, session=False, firstLine=0, inputs=None,
+                requestId=None):
         """Executes the specified script code. scriptPath is the path to the
         script file if it exists, or None if the script has not been saved to
-        a file. Returns the ScriptRunResult object.
+        a file. inputs are the values the script's scriptInput() calls return,
+        by name; requestId is stored on the result for the caller to
+        recognise its run. Returns the ScriptRunResult object.
 
         ``session=False`` runs the code in a fresh namespace; ``session=True``
         runs it in :attr:`session`, where the variables of earlier session
@@ -119,7 +122,8 @@ class ScriptExecutor(SignalInterface):
         If a script is still running (or still stopping), it is cancelled and
         the new run starts once it has finished; the returned result then
         stays ``RUNNING`` until that moment."""
-        result = ScriptRunResult(script_path=scriptPath)
+        result = ScriptRunResult(script_path=scriptPath, inputs=inputs,
+                                 request_id=requestId)
         result.session = bool(session)
         run = _Run(self.session if session else None, int(firstLine))
         if self.isExecuting():
@@ -352,9 +356,9 @@ class ExecutionThread(Worker):
         if session is None:
             scriptScope = {}
             scriptScope.update(self._scriptScope)
-            scriptScope.update(getActionsScope(self._scriptScope, scriptPath))
+            scriptScope.update(getActionsScope(self._scriptScope, scriptPath, result.inputs))
         else:
-            scriptScope = session.prepareRun(scriptPath)
+            scriptScope = session.prepareRun(scriptPath, result.inputs)
 
         token = CancelToken(cleanupBudgetS=self._cleanupBudgetS)
         self._token = token
