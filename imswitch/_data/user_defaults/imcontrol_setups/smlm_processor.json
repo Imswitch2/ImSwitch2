@@ -1,0 +1,14 @@
+{
+    "// title": "Single-molecule localization",
+    "// description": "Localize blinking single-molecule data into a coordinate table, then correct drift, filter, merge repeated blinks and render a super-resolved image; FRC estimates the resolution of the render. With the optional 'storm' extra installed the localizations are drawn as point clouds, with their render controls; without it they keep the histogram preview and the render controls do nothing. No hardware is needed.",
+
+    "processing": {
+        "graphPanel": true,
+        "roiManagerPanel": true,
+        "roiStatsPanel": true,
+        "napariStormViewer": true,
+        "smlmRenderPanel": true,
+        "reconstructors": ["smlm-localizer", "view-only"],
+        "processors": ["smlm-drift", "smlm-filter", "smlm-group", "smlm-render", "table-to-localizations", "frc"]
+    }
+}

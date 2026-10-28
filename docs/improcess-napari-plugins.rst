@@ -239,6 +239,10 @@ An adapter is a ``NapariEndpoint`` (``imswitch.improcess.model.napari_endpoints`
 The built-in ones live in that module; yours go in the setup file or in a
 drop-in plugin.
 
+The config editor edits the ``napariEndpoints`` list on the **napari plugins** page
+of its ImProcess dialog (:ref:`config-editor-improcess`) and, when you apply,
+checks each entry the way ImProcess reads it.
+
 .. code-block:: json
 
    "processing": {
@@ -350,7 +354,8 @@ to a coding agent.
    back, and set ``preservesGrid`` only for operations that are pixel-aligned
    with their input (filters, thresholds, labelling), never for anything
    that crops, resamples or registers.
-5. **Write the entry**: a ``napariEndpoints`` item in the setup file, or a
+5. **Write the entry**: a ``napariEndpoints`` item in the setup file (the
+   config editor's ImProcess dialog validates it when you apply), or a
    Python ``NapariEndpoint`` in a drop-in plugin (see
    ``examples/improcess_napari_endpoints/``).
 6. **Test without the real plugin** using npe2's ``DynamicPlugin`` to

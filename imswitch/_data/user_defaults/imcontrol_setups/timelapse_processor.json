@@ -1,0 +1,14 @@
+{
+    "// title": "Time-lapse analysis",
+    "// description": "Open a saved camera or scan time lapse as one stack along time, correct its drift, subtract the background, crop a range of timepoints, project over time and measure regions of interest. No hardware is needed.",
+
+    "processing": {
+        "graphPanel": true,
+        "profilePanel": true,
+        "projectionPanel": true,
+        "roiManagerPanel": true,
+        "roiStatsPanel": true,
+        "reconstructors": ["time-lapse", "view-only"],
+        "processors": ["drift-correct", "projection", "stack-subset", "subtract-background"]
+    }
+}

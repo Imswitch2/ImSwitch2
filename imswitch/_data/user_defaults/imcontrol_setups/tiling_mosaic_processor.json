@@ -1,0 +1,12 @@
+{
+    "// title": "Tiling mosaics",
+    "// description": "Reassemble a saved tiling run into one stitched mosaic and work with it: maximum projections of a volumetric mosaic, resizing a large mosaic, converting its data type, line profiles and regions of interest. No hardware is needed.",
+
+    "processing": {
+        "projectionPanel": true,
+        "profilePanel": true,
+        "roiManagerPanel": true,
+        "reconstructors": ["tiling-mosaic", "view-only"],
+        "processors": ["projection", "resize", "convert-type"]
+    }
+}

@@ -14,6 +14,32 @@ module for that reason.
 
 from typing import Any
 
+#: Every key ImProcess reads from the ``processing`` block. The config editor's
+#: ImProcess section must offer exactly these (a test holds both directions),
+#: and a new flag belongs here the moment a reader for it is written.
+#: ``napari_endpoints`` (snake case) is an accepted alias of ``napariEndpoints``
+#: read in ``model/napari_endpoints.py``; the editor does not offer it.
+PROCESSING_KEYS: frozenset[str] = frozenset({
+    # Reconstructors, Processors (the editor's first two pages)
+    "reconstructors", "processors",
+    # Startup layout
+    "parameterPanel", "napariLayerControls", "reconstructionPanel",
+    "actionsPanel", "fileWatcherPanel", "multiDataPanel", "currentDataPanel",
+    "resultsPanel", "logPanel",
+    # Analysis panels
+    "graphPanel", "profilePanel", "frcPanel", "projectionPanel",
+    "roiStatsPanel", "roiManagerPanel", "segmentationPanel",
+    "psfResolutionPanel", "colocalizationPanel", "multicolorPanel",
+    "metadataPanel",
+    # Localization viewer
+    "napariStormViewer", "smlmRenderPanel",
+    # Live mode
+    "liveStallTimeoutS", "liveViewerUpdateIntervalS",
+    "live_display_in_imcontrol",
+    # napari plugins
+    "napariEndpoints",
+})
+
 
 def load_processing_config(logger: Any = None) -> dict[str, Any]:
     """Return the optional ``processing`` block from the selected setup JSON."""
@@ -164,16 +190,32 @@ def is_multicolor_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("multicolorPanel", False))
 
 
+def is_live_display_in_imcontrol_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether live reconstruction results are also shown in ImControl.
+
+    When ImControl runs in the same session, a live result is bridged into its
+    image viewer (see ``ImProcessMainController._bridgeResultToImcontrol``).
+    The key keeps its snake_case spelling because renaming it would break
+    existing setup files. Off by default.
+    """
+    return bool(processing_config.get("live_display_in_imcontrol", False))
+
+
 def plugin_ids_from_config(
     processing_config: dict[str, Any],
 ) -> tuple[list[str], list[str], bool]:
-    """Return reconstructor IDs, processor IDs and whether plugin config was explicit."""
+    """Return reconstructor IDs, processor IDs and whether plugin config was explicit.
+
+    A block that names only one side of the plugin list leaves the other side
+    at the standalone default (``view-only`` / ``drift-correct``), the same
+    values an absent block gives.
+    """
     has_plugin_config = (
         "reconstructors" in processing_config or "processors" in processing_config
     )
     if has_plugin_config:
         return (
-            processing_config.get("reconstructors", ["monalisa"]),
+            processing_config.get("reconstructors", ["view-only"]),
             processing_config.get("processors", ["drift-correct"]),
             True,
         )

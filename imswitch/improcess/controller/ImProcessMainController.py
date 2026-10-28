@@ -6,6 +6,7 @@ import numpy as np
 from imswitch.imcommon.controller import MainController
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.processing_config import (
+    is_live_display_in_imcontrol_enabled,
     load_processing_config,
     plugin_ids_from_config,
 )
@@ -225,8 +226,12 @@ class ImProcessMainController(MainController):
         2. Otherwise, load standalone defaults (view-only + universal processors)
         """
         from imswitch.improcess.reconstructors.registry import get_registry
-        from imswitch.improcess.reconstructors import register_default_reconstructors
-        from imswitch.improcess.processors import register_default_processors
+        from imswitch.improcess.reconstructors import (
+            _all_reconstructor_classes, register_default_reconstructors,
+        )
+        from imswitch.improcess.processors import (
+            _all_processor_classes, register_default_processors,
+        )
         from imswitch.improcess.plugins import load_user_plugins
 
         registry = get_registry()
@@ -273,6 +278,24 @@ class ImProcessMainController(MainController):
             # Standalone defaults
             self.__logger.info("Using standalone defaults: view-only + drift-correct")
         
+        # A setup may name an id this computer does not have (a drop-in plugin
+        # that lives on another computer, a typo, a plugin from a newer
+        # ImSwitch). That must not stop ImProcess from starting: skip it, say
+        # so, and register the rest. The register_* functions stay strict.
+        configured_reconstructors = reconstructor_ids
+        reconstructor_ids = self._known_plugin_ids(
+            "reconstructors", reconstructor_ids, _all_reconstructor_classes()
+        )
+        processor_ids = self._known_plugin_ids(
+            "processors", processor_ids, _all_processor_classes()
+        )
+        if configured_reconstructors and not reconstructor_ids:
+            reconstructor_ids = plugin_ids_from_config({})[0]
+            self.__logger.warning(
+                f"None of the configured reconstructors is available on this "
+                f"computer; registering the default {reconstructor_ids} instead."
+            )
+
         # Register only the plugins requested by config / standalone defaults.
         register_default_reconstructors(registry, reconstructor_ids)
         register_default_processors(registry, processor_ids)
@@ -282,6 +305,29 @@ class ImProcessMainController(MainController):
             f"{len(registry.reconstructors())} reconstructors, "
             f"{len(registry.processors())} processors"
         )
+
+    def _known_plugin_ids(self, key: str, ids, available: Mapping) -> list[str]:
+        """``ids`` without the ones ``available`` does not have, one warning each.
+
+        ``key`` is the ``processing`` key the list came from, named in the
+        warning so the setup file can be fixed.
+        """
+        if not isinstance(ids, list):
+            self.__logger.warning(
+                f"processing.{key} must be a list of plugin ids, not "
+                f"{type(ids).__name__}; ignoring it."
+            )
+            return []
+        known: list[str] = []
+        for plugin_id in ids:
+            if isinstance(plugin_id, str) and plugin_id in available:
+                known.append(plugin_id)
+            else:
+                self.__logger.warning(
+                    f"processing.{key} names {plugin_id!r}, which this computer does "
+                    f"not have; skipping it. Available: {sorted(available)}"
+                )
+        return known
 
     def _register_startup_runtime_processors(self) -> None:
         """Register processors required by config-enabled runtime panels."""
@@ -1053,7 +1099,12 @@ class ImProcessMainController(MainController):
 
     def _bridgeResultToImcontrol(self, result, name):
         """Extract displayable image and emit to imcontrol viewer if configured."""
-        if not self._processingConfigValue('live_display_in_imcontrol', False):
+        config = self.__processingConfig
+        if isinstance(config, Mapping):
+            enabled = is_live_display_in_imcontrol_enabled(config)
+        else:
+            enabled = self._processingConfigValue('live_display_in_imcontrol', False)
+        if not enabled:
             return
 
         if not self.__moduleCommChannel.isModuleRegistered('imcontrol'):

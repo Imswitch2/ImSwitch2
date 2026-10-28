@@ -8,13 +8,17 @@
   "fields": [
     {"key": "camera",       "label": "Detector",        "type": "ref",   "default": "",  "req": true,  "grp": "Devices",  "tip": "Detector used for the focus-lock IR spot. The detector should have forFocusLock=true.", "opts": ["detectors"]},
     {"key": "positioner",   "label": "Z Positioner",    "type": "ref",   "default": "",  "req": true,  "grp": "Devices",  "tip": "Z positioner used to apply focus corrections.", "opts": ["positioners"]},
-    {"key": "updateFreq",   "label": "Update freq (ms)","type": "int",   "default": 10,  "req": true,  "grp": "Basic",    "tip": "Loop tick period in milliseconds.", "opts": []},
-    {"key": "frameCropx",   "label": "Crop X",          "type": "int",   "default": 0,   "req": true,  "grp": "Crop",     "tip": "Starting X position of camera frame crop.", "opts": []},
-    {"key": "frameCropy",   "label": "Crop Y",          "type": "int",   "default": 0,   "req": true,  "grp": "Crop",     "tip": "Starting Y position of camera frame crop.", "opts": []},
-    {"key": "frameCropw",   "label": "Crop width",      "type": "int",   "default": 600, "req": true,  "grp": "Crop",     "tip": "Width of camera frame crop.", "opts": []},
-    {"key": "frameCroph",   "label": "Crop height",     "type": "int",   "default": 200, "req": true,  "grp": "Crop",     "tip": "Height of camera frame crop.", "opts": []},
+    {"key": "updateFreq",   "label": "Update freq (Hz)","type": "int",   "default": "null","req": true,  "grp": "Basic",    "tip": "Focus-estimate update rate in hertz: the camera is read and the correction computed this many times per second. Must be positive; rates above 1000 Hz are floored to a 1 ms timer.", "opts": []},
+    {"key": "frameCropx",   "label": "Crop X",          "type": "int",   "default": "null", "req": true,  "grp": "Crop",     "tip": "Starting X position of camera frame crop.", "opts": []},
+    {"key": "frameCropy",   "label": "Crop Y",          "type": "int",   "default": "null", "req": true,  "grp": "Crop",     "tip": "Starting Y position of camera frame crop.", "opts": []},
+    {"key": "frameCropw",   "label": "Crop width",      "type": "int",   "default": "null", "req": true,  "grp": "Crop",     "tip": "Width of camera frame crop.", "opts": []},
+    {"key": "frameCroph",   "label": "Crop height",     "type": "int",   "default": "null", "req": true,  "grp": "Crop",     "tip": "Height of camera frame crop.", "opts": []},
     {"key": "swapImageAxes","label": "Swap image axes", "type": "bool",  "default": false, "req": false, "grp": "Crop",   "tip": "Transpose the camera frame before locating the spot.", "opts": []},
-    {"key": "piKp",         "label": "PI Kp",           "type": "float", "default": 25.0,"req": true,  "grp": "Control",  "tip": "Proportional gain of the feedback loop.", "opts": []},
-    {"key": "piKi",         "label": "PI Ki",           "type": "float", "default": 0.1, "req": true,  "grp": "Control",  "tip": "Integral gain of the feedback loop.", "opts": []}
+    {"key": "piKp",         "label": "PI Kp",           "type": "float", "default": "null","req": true,  "grp": "Control",  "tip": "Proportional gain of the feedback loop.", "opts": []},
+    {"key": "piKi",         "label": "PI Ki",           "type": "float", "default": "null","req": true,  "grp": "Control",  "tip": "Integral gain of the feedback loop.", "opts": []},
+    {"key": "positionerAxis", "label": "Positioner axis", "type": "text", "default": "null", "req": false, "grp": "Devices", "tip": "Positioner axis used for focus-lock movements. Empty (null) uses \"Z\" if the configured positioner has it, otherwise axis 0.", "opts": []},
+    {"key": "reacquireTimeoutS", "label": "Settle allowance (s)", "type": "float", "default": 1.0, "req": false, "grp": "Reacquire", "tip": "Settle allowance for the actuator after a scan released it, in seconds. The reacquisition deadline is this plus the time the sample window takes, samples / update rate. On timeout the lock is left off and a warning is logged. Raise it on rigs whose piezo takes longer to settle than the camera takes to deliver the samples.", "opts": []},
+    {"key": "reacquireTolerancePx", "label": "Return tolerance (px)", "type": "float", "default": 0.5, "req": false, "grp": "Reacquire", "tip": "How close the focus signal must return to its pre-scan setpoint before the lock re-engages, in camera pixels. The default is a placeholder, not measured on hardware: the meaningful value depends on the rig's px-to-µm calibration (too loose re-engages against a defocused sample, too tight times out on every tile). Calibrate it before relying on 3D tiling.", "opts": []},
+    {"key": "reacquireSamples", "label": "Settle samples", "type": "int", "default": 5, "req": false, "grp": "Reacquire", "tip": "Number of consecutive focus estimates the reacquisition barrier averages before deciding the signal has settled. At least 2.", "opts": []}
   ]
 }

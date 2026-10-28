@@ -1,5 +1,6 @@
 {
-    "// description": "Minimal setup for running ImProcess as a stand-alone SNOUTY / OPM / MS-RESOLFT lightsheet processor. No hardware devices are declared - this setup is meant for opening existing HDF5/Zarr/TIFF acquisitions, running SNOUTY deskew or fast projection-preview reconstruction, calibrating/applying three-color strip alignment, and saving the result. To use, also set 'enabled' to ['improcess'] in modules.json.",
+    "// title": "SNOUTY / OPM light-sheet",
+    "// description": "Process SNOUTY, OPM and MS-RESOLFT light-sheet acquisitions: deskew or the fast projection preview, and three-color strip alignment (registration, then applying it), with the analysis panels and ROI tools open. View-only stays available. No hardware is needed.",
 
     "processing": {
         "graphPanel": true,

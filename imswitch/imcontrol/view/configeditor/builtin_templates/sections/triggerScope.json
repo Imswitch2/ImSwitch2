@@ -1,0 +1,10 @@
+{
+  "section": true,
+  "key": "triggerScope",
+  "group": "system",
+  "display": "TriggerScope",
+  "summary": "TriggerScope DAQ board settings. Required to use TriggerScope hardware: the board manager is built only when this section exists, and the TriggerScope laser and positioner devices drive their channels through it.",
+  "fields": [
+    {"key": "rs232device", "label": "RS232 device", "type": "ref", "default": "", "req": true, "grp": "Basic", "tip": "Name of the RS232 device key (in rs232devices) that connects to the TriggerScope board over serial.", "opts": ["rs232devices"]}
+  ]
+}

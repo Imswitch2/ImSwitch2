@@ -500,8 +500,10 @@ def test_the_corpus_is_what_the_plan_says():
     # expert_step_boards_mock_setup.json, the Expert panel on step boards.
     # 22: galvo_flim_mock_scan_setup.json, the Lifetime 2.0 FLIM mock. 23:
     # simple_monalisa_mock_scan_setup.json, the SimpleMoNaLISA cloak's mock
-    # (main has it too).
-    assert len(shipped_setups()) == 23
+    # (main has it too). 28: + the five ImProcess-only presets of
+    # feat/config-editor-improcess (SMLM, bead PSF, restoration, time lapse,
+    # tiling mosaic).
+    assert len(shipped_setups()) == 28
     # + the four scan engines, + the step-board positioner and laser managers;
     # + main's mock power meter, mock PAX, Thorlabs PM100 and PAX1000.
     assert len(generated_fixtures()) == 72

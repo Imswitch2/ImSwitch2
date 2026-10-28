@@ -17,23 +17,25 @@ The module therefore never touches ``QApplication`` state outside :func:`main`.
 import ast
 import colorsys
 import copy
+import inspect
 import json
 import math
 import os
 import re
 import shutil
 import sys
+from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 import glob
 from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox,
-    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QFileDialog, QFormLayout, QGridLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar, QHeaderView,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction,
-    QDialog, QTextEdit, QLayout, QLayoutItem, QStyle,
+    QDialog, QTextEdit, QLayout, QLayoutItem, QStyle, QPlainTextEdit, QStackedWidget,
 )
 
 # Try to import the manager catalog (Phase 1: registry-backed discovery)
@@ -47,6 +49,7 @@ _resources_module = None
 _roles_module = None
 _disabled_devices_module = None
 _comparison_module = None
+_improcess_presets_module = None
 _setup_kind_metadata = ()
 try:
     from imswitch.imcontrol.model.configeditor.catalog import build_catalog
@@ -58,6 +61,7 @@ try:
     from imswitch.imcontrol.model.configeditor import roles as _roles_module
     from imswitch.imcontrol.model.configeditor import disabled_devices as _disabled_devices_module
     from imswitch.imcontrol.model.configeditor import comparison as _comparison_module
+    from imswitch.imcontrol.model.configeditor import improcess_presets as _improcess_presets_module
     from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
     _setup_kind_metadata = setup_kinds()
 except ImportError as e:
@@ -352,6 +356,19 @@ IMPROCESS_PROCESSOR_FALLBACK = [
 PLUGIN_DISCOVERY_ERROR = None
 
 
+def _plugin_description(plugin_cls) -> str:
+    """One line saying what a registered plugin does.
+
+    The class's own ``description`` when it has one (every built-in
+    reconstructor does), else the first line of its docstring.
+    """
+    text = str(getattr(plugin_cls, "description", "") or "").strip()
+    if not text:
+        doc = inspect.getdoc(plugin_cls) or ""
+        text = doc.strip().splitlines()[0].strip() if doc.strip() else ""
+    return text
+
+
 def _resolve_section_dynamic_options(schema: dict) -> None:
     """Replace supported option placeholders with runtime-discovered values."""
     global PLUGIN_DISCOVERY_ERROR
@@ -384,10 +401,51 @@ def _resolve_section_dynamic_options(schema: dict) -> None:
             )
         PLUGIN_DISCOVERY_ERROR = str(exc)
 
+    # Display names (and, for processors, categories) from the same live
+    # registries. Without them the options stay bare ids.
+    labels = {"__improcess_reconstructors__": {}, "__improcess_processors__": {}}
+    groups = {"__improcess_processors__": {}}
+    descriptions = None     # None = the registries could not be read
+    if PLUGIN_DISCOVERY_ERROR is None:
+        try:
+            from imswitch.improcess.reconstructors import _all_reconstructor_classes
+            from imswitch.improcess.processors import (
+                _all_processor_classes, available_processor_specs,
+            )
+
+            found = {"__improcess_reconstructors__": {}, "__improcess_processors__": {}}
+            for plugin_id, plugin_cls in _all_reconstructor_classes().items():
+                name = str(getattr(plugin_cls, "name", "") or "")
+                if name:
+                    labels["__improcess_reconstructors__"][plugin_id] = name
+                found["__improcess_reconstructors__"][plugin_id] = _plugin_description(plugin_cls)
+            for plugin_id, name, category in available_processor_specs(origin="all"):
+                if name:
+                    labels["__improcess_processors__"][plugin_id] = str(name)
+                if category:
+                    groups["__improcess_processors__"][plugin_id] = str(category)
+            for plugin_id, plugin_cls in _all_processor_classes().items():
+                found["__improcess_processors__"][plugin_id] = _plugin_description(plugin_cls)
+            descriptions = found
+        except Exception:
+            labels = {"__improcess_reconstructors__": {}, "__improcess_processors__": {}}
+            groups = {"__improcess_processors__": {}}
+            descriptions = None
+
     for field in schema.get("fields", []):
         opts = field.get("opts") or []
         if len(opts) == 1 and opts[0] in resolved:
-            field["opts"] = resolved[opts[0]]
+            placeholder = opts[0]
+            field["opts"] = resolved[placeholder]
+            if labels.get(placeholder):
+                field["option_labels"] = dict(labels[placeholder])
+            if groups.get(placeholder):
+                field["option_groups"] = dict(groups[placeholder])
+            if descriptions is not None:
+                field["option_descriptions"] = {
+                    plugin_id: text
+                    for plugin_id, text in descriptions.get(placeholder, {}).items() if text
+                }
 
 
 def _hsv_palette(n: int, saturation: float = 0.60, value: float = 0.78) -> list:
@@ -914,6 +972,253 @@ def _build_default_section(schema: dict) -> dict:
     return out
 
 
+#: ``schema["write_policy"]`` value meaning "write the section as the file has
+#: it": Apply writes a field only if the file already had its key, the
+#: operator touched it, or it is required.
+WRITE_AS_WRITTEN = "as_written"
+
+
+def _writes_as_written(schema: dict) -> bool:
+    """Whether Apply writes this schema's block as the file has it.
+
+    Every singleton section (``"section": true``: the System card and the
+    ImProcess block) does, unless its template says otherwise with an explicit
+    ``write_policy``. A section is a block of keys the code reads with its own
+    defaults, so expanding a short block into every template field, or dropping
+    a key the template does not list, changes the file without anyone asking.
+    A schema that is not a section (the per-category settings) keeps writing
+    every schema field.
+    """
+    default = WRITE_AS_WRITTEN if schema.get("section") else None
+    return schema.get("write_policy", default) == WRITE_AS_WRITTEN
+
+
+def _new_section_seed(schema: dict) -> dict:
+    """What a brand-new section starts from when the operator adds it.
+
+    A schema that writes "as written" is seeded with its required fields only
+    (empty: Apply refuses until each is filled in): seeding the optional ones
+    would make Apply write a key per field for a section the operator never
+    asked to spell out. Any other schema starts from every field's default, so
+    the dialog opens fully populated.
+    """
+    seed = _build_default_section(schema)
+    if not _writes_as_written(schema):
+        return seed
+    required = {f["key"] for f in schema.get("fields", []) if f.get("req")}
+    return {k: v for k, v in seed.items() if k in required}
+
+
+#: The ImProcess block of a setup. It is edited on the centre canvas, in its
+#: own dialog, and is therefore not offered in the System card.
+IMPROCESS_SECTION_KEY = "processing"
+
+#: Sections that have their own place on the canvas instead of a System row.
+_CANVAS_SECTIONS = frozenset({IMPROCESS_SECTION_KEY})
+
+#: The button that starts the ImProcess section from a shipped preset.
+IMPROCESS_PRESET_BUTTON = "Start from preset\u2026"
+#: The drop-in page's button that scans the plugins folder again.
+DROPIN_RESCAN_BUTTON = "Rescan"
+IMPROCESS_PRESET_TOOLTIP = (
+    "Start the ImProcess section from one of the processor setups ImSwitch ships"
+)
+#: What marks the first reconstructor of a setup's list on the card and in the
+#: preset picker: it is the one ImProcess has selected when it opens.
+IMPROCESS_STARTS_ACTIVE = "starts active"
+#: The label of the combo that chooses it.
+PRIMARY_CHOICE_LABEL = "Starts with:"
+PRIMARY_CHOICE_TOOLTIP = (
+    "The reconstruction ImProcess has selected when it opens; the others stay "
+    "available in the Parameters dock picker."
+)
+
+
+def _shipped_improcess_presets() -> list:
+    """The shipped ImProcess presets (see ``improcess_presets``); none when unavailable."""
+    if _improcess_presets_module is None:
+        return []
+    try:
+        return _improcess_presets_module.shipped_improcess_presets()
+    except Exception:
+        return []
+
+
+def _improcess_block_is_set(data: dict) -> bool:
+    """Whether the document already has a ``processing`` block worth asking about."""
+    return data.get(IMPROCESS_SECTION_KEY) not in (None, {}, [])
+
+
+def _confirm_improcess_preset_replace(parent, title: str) -> bool:
+    """Ask before a preset replaces the ImProcess settings; the default is No."""
+    answer = QMessageBox.question(
+        parent, "Start from preset",
+        f"Replace the current ImProcess settings with '{title}'?",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+    )
+    return answer == QMessageBox.Yes
+
+
+def _schema_fields(schema: dict) -> dict:
+    return {f["key"]: f for f in schema.get("fields", [])}
+
+
+def _improcess_choice_names(field_def: dict, ids, *, with_ids: bool,
+                            mark_first: bool = False) -> str:
+    """``MoNaLISA, View only`` -- or ``MoNaLISA (monalisa), ...`` with ``with_ids``.
+
+    ``mark_first`` says of the first one that it ``starts active``.
+    """
+    labels = field_def.get("option_labels") or {}
+    names = []
+    for n, i in enumerate(ids):
+        name = str(labels.get(str(i)) or i)
+        text = f"{name} ({i})" if with_ids and name != str(i) else name
+        if mark_first and n == 0:
+            text += f" ({IMPROCESS_STARTS_ACTIVE})"
+        names.append(text)
+    return ", ".join(names) if names else "none"
+
+
+def _improcess_not_configured_text(schema: dict) -> str:
+    """What ImProcess does with no ``processing`` block, from the schema's own defaults."""
+    fields = _schema_fields(schema)
+    parts = []
+    for key, noun in (("reconstructors", "reconstructors"), ("processors", "processors")):
+        field_def = fields.get(key)
+        if field_def is not None:
+            parts.append(
+                f"{noun} {_improcess_choice_names(field_def, _field_default(field_def) or [], with_ids=True)}"
+            )
+    return (
+        "Not configured \u2014 ImProcess starts with its standalone defaults: "
+        + " + ".join(parts)
+    )
+
+
+def _improcess_summary_lines(schema: dict, block: dict) -> list[str]:
+    """The card of a configured ImProcess section, one line per fact."""
+    fields = _schema_fields(schema)
+    lines = []
+    recon = fields.get("reconstructors")
+    if recon is not None:
+        listed = block.get("reconstructors")
+        shown = listed if isinstance(listed, list) else (_field_default(recon) or [])
+        suffix = "" if isinstance(listed, list) else " (default)"
+        # ImProcess opens on the first one the setup lists; the standalone
+        # default is not a list the setup wrote, so it is not marked.
+        names = _improcess_choice_names(recon, shown, with_ids=False,
+                                        mark_first=isinstance(listed, list))
+        lines.append(f"Reconstructors: {names}{suffix}")
+    proc = fields.get("processors")
+    if proc is not None:
+        listed = block.get("processors")
+        if isinstance(listed, list):
+            lines.append(f"Processors: {len(listed)}")
+        else:
+            lines.append(f"Processors: {len(_field_default(proc) or [])} (default)")
+    panels = [
+        f["label"].removeprefix("Show ").removesuffix(" panel")
+        for f in schema.get("fields", [])
+        if f.get("grp") == "Analysis panels" and block.get(f["key"]) is True
+    ]
+    if panels:
+        lines.append("Analysis panels: " + ", ".join(panels))
+    live = []
+    for f in schema.get("fields", []):
+        if f.get("grp") != "Live mode" or f["key"] not in block:
+            continue
+        default = _field_default(f)
+        default = None if default == "null" else default
+        if block[f["key"]] != default:
+            live.append(f"{f['label']} = {json.dumps(block[f['key']])}")
+    if live:
+        lines.append("Live mode: " + "; ".join(live))
+    custom = [k for k in block if k not in fields]
+    if custom:
+        lines.append(f"{len(custom)} custom key{'s' if len(custom) != 1 else ''}")
+    return lines
+
+
+def _improcess_option_label(label: str) -> str:
+    """A flag's schema label as the name of the thing it shows: no "Show " lead."""
+    text = str(label).removeprefix("Show ").strip()
+    return text[:1].upper() + text[1:]
+
+
+def _improcess_value_in_words(value) -> str:
+    """A setting's value as a reader would say it; never JSON."""
+    if value is None:
+        return "not set"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, (list, dict)):
+        count = len(value)
+        return f"{count} {'entry' if count == 1 else 'entries'}"
+    return str(value)
+
+
+def _improcess_preset_summary(block: dict, schema: dict) -> dict:
+    """What a preset's ``processing`` block sets, in the editor's own words.
+
+    Only what differs from the schema's default is said: a part the block
+    leaves alone, or sets to its default, is not listed.
+
+    ``reconstructors``  ``[(name, id, description), ...]`` in the block's order,
+                        or ``None`` when the block does not set them.
+    ``processors``      ``[(category, [(name, id), ...]), ...]``, categories as
+                        the processor list reads them, or ``None``; an empty
+                        list (the block registers none) is ``[]``.
+    ``opens``           labels of the flags the block switches on that default off.
+    ``hidden``          labels of the flags the block switches off that default on.
+    ``other``           ``[(label, value in words), ...]`` for every other key.
+    """
+    fields = _schema_fields(schema)
+    out: dict = {"reconstructors": None, "processors": None,
+                 "opens": [], "hidden": [], "other": []}
+
+    def names_of(key):
+        field_def = fields.get(key) or {}
+        return (field_def.get("option_labels") or {},
+                field_def.get("option_descriptions") or {},
+                field_def.get("option_groups") or {})
+
+    listed = block.get("reconstructors")
+    if isinstance(listed, list):
+        labels, descriptions, _ = names_of("reconstructors")
+        out["reconstructors"] = [
+            (str(labels.get(str(i)) or i), str(i), str(descriptions.get(str(i), "")))
+            for i in listed
+        ]
+    listed = block.get("processors")
+    if isinstance(listed, list):
+        labels, _, groups = names_of("processors")
+        offered = {str(o) for o in (fields.get("processors") or {}).get("opts", [])}
+        unknown = [i for i in listed if str(i) not in offered] if offered else []
+        out["processors"] = [
+            (category, [(str(labels.get(str(i)) or i), str(i)) for i in members])
+            for category, members in _grouped_choices(list(listed), unknown, groups)
+        ]
+
+    for key, value in block.items():
+        if key in ("reconstructors", "processors"):
+            continue
+        field_def = fields.get(key)
+        if field_def is None:
+            out["other"].append((str(key), _improcess_value_in_words(value)))
+            continue
+        default = _field_default(field_def)
+        default = None if default == "null" else default
+        if value == default:
+            continue
+        label = _improcess_option_label(field_def.get("label", key))
+        if field_def.get("type") == "bool" and isinstance(value, bool):
+            out["opens" if value else "hidden"].append(label)
+        else:
+            out["other"].append((label, _improcess_value_in_words(value)))
+    return out
+
+
 # Maps each widget in availableWidgets that needs a section to the section key.
 # Built from section schemas' requires_widget field (single source of truth).
 def _build_widget_requires_section_map() -> dict:
@@ -957,16 +1262,9 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
     """
     try:
         from imswitch.imcontrol.model.plugins.registry import build_default_registry
-        from imswitch.imcontrol.model.plugins.validation import (
-            ValidationContext,
-            validate_setup_data,
-        )
+        from imswitch.imcontrol.model.plugins.validation import validate_setup_data
 
-        context = ValidationContext(
-            widget_requires_section=_WIDGET_REQUIRES_SECTION,
-            known_reconstructor_ids=tuple(_section_option_values("processing", "reconstructors")),
-            known_processor_ids=tuple(_section_option_values("processing", "processors")),
-        )
+        context = _improcess_validation_context(data)
         report = validate_setup_data(
             data,
             build_default_registry(discover=True),
@@ -1406,6 +1704,9 @@ class DeviceCanvas(QScrollArea):
     sig_copy_to_other   = pyqtSignal(str, str)
     sig_device_enabled_changed = pyqtSignal(str, str, bool)
     sig_category_settings = pyqtSignal(str)
+    sig_improcess_edit = pyqtSignal()
+    sig_improcess_remove = pyqtSignal()
+    sig_improcess_preset = pyqtSignal()
 
     def __init__(self, parent=None, *, compact: bool = False):
         super().__init__(parent)
@@ -1423,6 +1724,10 @@ class DeviceCanvas(QScrollArea):
         self._cards: dict[tuple, DeviceCard] = {}   # (cat, name) → card
         self._selected: object = None
         self._section_grids: dict[str, QLayout] = {}
+        self._section_order: list[str] = []   # "improcess" and category keys, top to bottom
+        self._improcess_box: QWidget | None = None
+        self._improcess_lay: QVBoxLayout | None = None
+        self._improcess_lines: list[QLabel] = []   # the card's text, for tests
 
     def load(
         self,
@@ -1435,18 +1740,34 @@ class DeviceCanvas(QScrollArea):
         self._comparison_states = comparison_states or {}
         self._compare_side = compare_side if self._comparison_states else None
         self._clear()
+        show_improcess = IMPROCESS_SECTION_KEY in SECTION_SCHEMAS
+        # A setup with no device in any category (the processor-only presets)
+        # is about ImProcess: it leads. Otherwise it follows the devices.
+        has_devices = any(
+            (data.get(cat) or {})
+            or (cat in DISABLEABLE_DEVICE_CATS and _device_section(data, cat, enabled=False))
+            for cat in DEVICE_CATS
+        )
+        if show_improcess and not has_devices:
+            self._add_improcess_section()
         for cat in DEVICE_CATS:
             devices = data.get(cat) or {}
             disabled = _device_section(data, cat, enabled=False) if cat in DISABLEABLE_DEVICE_CATS else {}
             # Always show categories from the registry, even if empty
             if cat in _CATEGORY_REGISTRY or cat == "others":
+                self._section_order.append(cat)
                 self._add_section(cat, devices, disabled, data)
+        if show_improcess and has_devices:
+            self._add_improcess_section()
         self._layout.addStretch()
 
     def _clear(self):
         self._cards.clear()
         self._selected = None
         self._section_grids.clear()
+        self._section_order.clear()
+        self._improcess_box = None
+        self._improcess_lay = None
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():
@@ -1596,6 +1917,108 @@ class DeviceCanvas(QScrollArea):
             self._cards[(cat, name)] = card
 
         self._layout.addWidget(grid_widget)
+
+    # ── ImProcess section ──────────────────────────────────────────────────
+    def _add_improcess_section(self) -> None:
+        """The ImProcess section: always shown, one summary card."""
+        self._section_order.append("improcess")
+        self._improcess_box = QWidget()
+        self._improcess_lay = QVBoxLayout(self._improcess_box)
+        self._improcess_lay.setContentsMargins(0, 0, 0, 0)
+        self._improcess_lay.setSpacing(self._layout.spacing())
+        self._layout.addWidget(self._improcess_box)
+        self._fill_improcess_section()
+
+    def refresh_improcess(self) -> None:
+        """Redraw only the ImProcess section, keeping the device selection."""
+        if self._improcess_box is not None:
+            self._fill_improcess_section()
+
+    def _fill_improcess_section(self) -> None:
+        lay = self._improcess_lay
+        while lay.count():
+            item = lay.takeAt(0)
+            old = item.widget()
+            if old is not None:
+                old.setParent(None)
+                old.deleteLater()
+        schema = SECTION_SCHEMAS[IMPROCESS_SECTION_KEY]
+        raw = self._data.get(IMPROCESS_SECTION_KEY)
+        configured = raw not in (None, {}, [])
+        block = raw if isinstance(raw, dict) else {}
+        colors = get_themed_colors(is_dark_mode())
+        read_only = self._compact or bool(self._compare_side)
+        display = schema.get("display", "ImProcess")
+
+        # Header: like a device category's, in theme colours.
+        header = QWidget()
+        hlay = QHBoxLayout(header)
+        hlay.setContentsMargins(0, 0, 0, 4)
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color:{colors['chip_border']}; font-size:14px;")
+        hlay.addWidget(dot)
+        state = "configured" if configured else "not configured"
+        lbl = QLabel(f"<b>{display}</b>  <span style='color:#999;font-size:9pt;'>({state})</span>")
+        lbl.setTextFormat(Qt.RichText)
+        hlay.addWidget(lbl)
+        hlay.addStretch()
+        lay.addWidget(header)
+
+        card = QFrame()
+        card.setObjectName("improcessCard")
+        card.setStyleSheet(
+            f"QFrame#improcessCard {{ background:{colors['card_bg']}; "
+            f"border:1px solid {colors['card_border']}; border-radius:6px; }}"
+        )
+        card.setToolTip(schema.get("summary", ""))
+        clay = QVBoxLayout(card)
+        clay.setContentsMargins(10, 8, 10, 8)
+        clay.setSpacing(2)
+        if not configured:
+            lines = [_improcess_not_configured_text(schema)]
+        elif not isinstance(raw, dict):
+            lines = [f"The {IMPROCESS_SECTION_KEY} entry is not an object; Edit\u2026 replaces it."]
+        else:
+            lines = _improcess_summary_lines(schema, block)
+        self._improcess_lines = []
+        for line in lines:
+            text = QLabel(line)
+            text.setTextFormat(Qt.PlainText)
+            text.setWordWrap(True)
+            text.setStyleSheet("font-size:9pt; border:none; background:transparent;")
+            clay.addWidget(text)
+            self._improcess_lines.append(text)
+
+        if not read_only:
+            buttons = QHBoxLayout()
+            buttons.setContentsMargins(0, 6, 0, 0)
+            buttons.addStretch()
+            button_style = (
+                f"QPushButton {{ font-size:8pt; padding:0 8px; border:1px solid {colors['chip_border']}; "
+                f"border-radius:3px; background:{colors['button_bg']}; }}"
+                f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
+            )
+            preset = QPushButton(IMPROCESS_PRESET_BUTTON)
+            preset.setFixedHeight(22)
+            preset.setStyleSheet(button_style)
+            preset.setToolTip(IMPROCESS_PRESET_TOOLTIP)
+            preset.clicked.connect(self.sig_improcess_preset.emit)
+            buttons.addWidget(preset)
+            edit = QPushButton("Edit…" if configured else "Configure…")
+            edit.setFixedHeight(22)
+            edit.setStyleSheet(button_style)
+            edit.setToolTip(f"Edit the {display} section of this setup")
+            edit.clicked.connect(self.sig_improcess_edit.emit)
+            buttons.addWidget(edit)
+            if configured:
+                remove = QPushButton("Remove")
+                remove.setFixedHeight(22)
+                remove.setStyleSheet(button_style)
+                remove.setToolTip(f"Remove the {display} section from this setup")
+                remove.clicked.connect(self.sig_improcess_remove.emit)
+                buttons.addWidget(remove)
+            clay.addLayout(buttons)
+        lay.addWidget(card)
 
     def _on_card_clicked(self, cat: str, name: str):
         self.select_device(cat, name, emit=True)
@@ -2273,6 +2696,15 @@ def _field_option_label(field_def: dict, option) -> str:
     return str(labels.get(str(option), _option_label(option)))
 
 
+def _multiselect_item_text(field_def: dict, option) -> str:
+    """How one multiselect choice reads: ``Display name  (id)`` when the
+    schema names it, else the bare id. The id stays the stored value."""
+    name = (field_def.get("option_labels") or {}).get(str(option))
+    if name and name != str(option):
+        return f"{name}  ({option})"
+    return str(option)
+
+
 def _parse_freeform_value(text: str):
     """Parse the value typed for a freeform field: JSON, then a Python
     literal, else the text itself as a string. Empty text is ``None``."""
@@ -2286,6 +2718,221 @@ def _parse_freeform_value(text: str):
             return ast.literal_eval(stripped)
         except Exception:
             return stripped
+
+
+#: Header of the bucket holding ids the schema offers without a category.
+_CHOICE_OTHER = "Other"
+#: Header of the bucket holding ids only the file has.
+_CHOICE_NOT_KNOWN = "Not known here (kept as written)"
+
+
+def _grouped_choices(options: list, unknown: list, groups: dict) -> list:
+    """``[(header, [option, ...]), ...]`` in reading order.
+
+    Categories read alphabetically; ids the schema offers without a category
+    come last under "Other", and ids only the file has under their own
+    header, so nothing the file lists is hidden.
+    """
+    unknown_ids = {str(option) for option in unknown}
+    buckets: dict[str, list] = {}
+    for opt in options:
+        if str(opt) in unknown_ids:
+            name = _CHOICE_NOT_KNOWN
+        else:
+            name = groups.get(str(opt)) or _CHOICE_OTHER
+        buckets.setdefault(name, []).append(opt)
+    trailing = (_CHOICE_OTHER, _CHOICE_NOT_KNOWN)
+
+    def reading_order(name: str):
+        return (1, trailing.index(name)) if name in trailing else (0, name.lower())
+
+    return [(name, buckets[name]) for name in sorted(buckets, key=reading_order)]
+
+
+class _ChoiceList(QWidget):
+    """A checkable list whose rows say what each choice is.
+
+    One row per option: a check box carrying the display name, the id muted
+    beside it, and under it a muted description. Used for the ImProcess
+    reconstructors and processors, where the name alone does not tell a user
+    what they are switching on. The stored value is the id; the rows are
+    only how it reads. Choices may sit under non-checkable headers
+    (``groups``); ids the schema does not offer (``unknown``) are listed under
+    their own header and kept.
+
+    A field with ``primary_choice`` also gets a "Starts with" combo above the
+    rows: the ticked ids, by name, in the order ``order`` writes them, and
+    the one chosen is the one :meth:`ordered_ids` puts first. ``order`` is the
+    field's order rule, a function from the ticked ids to the list as it is
+    written.
+    """
+
+    #: Emitted when the user clicks a check box or the combo -- never on construction.
+    sig_edited = pyqtSignal()
+
+    def __init__(self, field_def: dict, options: list, unknown: list,
+                 selected: set, parent=None, order=None):
+        super().__init__(parent)
+        self._order = order or list
+        self._chosen: str | None = None      # None: the first one listed
+        self._primary: QComboBox | None = None
+        labels = field_def.get("option_labels") or {}
+        descriptions = field_def.get("option_descriptions") or {}
+        groups = field_def.get("option_groups") or {}
+        self._muted = "#AAAAAA" if is_dark_mode() else "#666666"
+        self._boxes: dict[str, QCheckBox] = {}
+        self._headers: list[str] = []
+        unknown_ids = {str(option) for option in unknown}
+        # the label's text starts where the box's own text does
+        style = self.style()
+        self._indent = (style.pixelMetric(QStyle.PM_IndicatorWidth)
+                        + style.pixelMetric(QStyle.PM_CheckBoxLabelSpacing))
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self._names = {
+            str(opt): str(labels.get(str(opt)) or opt) if str(opt) not in unknown_ids
+            else str(opt)
+            for opt in options
+        }
+        if field_def.get("primary_choice"):
+            lay.addWidget(self._primary_row())
+        if groups or unknown_ids:
+            sections = _grouped_choices(options, unknown, groups)
+        else:
+            sections = [(None, list(options))]
+        for header, members in sections:
+            if header is not None:
+                title = QLabel(header)
+                title.setTextFormat(Qt.PlainText)
+                font = title.font()
+                font.setBold(True)
+                title.setFont(font)
+                title.setContentsMargins(0, 6, 0, 0)
+                self._headers.append(header)
+                lay.addWidget(title)
+            for opt in members:
+                known = str(opt) not in unknown_ids
+                lay.addWidget(self._row(
+                    str(opt),
+                    str(labels.get(str(opt)) or opt) if known else str(opt),
+                    str(descriptions.get(str(opt), "")) if known else "",
+                    str(opt) in selected,
+                ))
+        lay.addStretch()
+        self._refresh_primary()
+
+    def _primary_row(self) -> QWidget:
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        label = QLabel(PRIMARY_CHOICE_LABEL)
+        label.setTextFormat(Qt.PlainText)
+        label.setToolTip(PRIMARY_CHOICE_TOOLTIP)
+        font = label.font()
+        font.setBold(True)
+        label.setFont(font)
+        self._primary = QComboBox()
+        self._primary.setToolTip(PRIMARY_CHOICE_TOOLTIP)
+        self._primary.activated.connect(self._primary_activated)
+        line.addWidget(label)
+        line.addWidget(self._primary)
+        line.addStretch()
+        return row
+
+    def _primary_activated(self, index: int) -> None:
+        self._chosen = self._primary.itemData(index)
+        self.sig_edited.emit()
+
+    def _ticked(self) -> None:
+        """A check box was clicked: the combo follows the ticks."""
+        self._refresh_primary()
+        self.sig_edited.emit()
+
+    def _refresh_primary(self) -> None:
+        """List the ticked ids in order; keep the choice while it stays ticked,
+        else the first remaining is chosen."""
+        if self._primary is None:
+            return
+        listed = self._order(self.checked_ids())
+        if self._chosen not in listed:
+            self._chosen = None
+        combo = self._primary
+        combo.blockSignals(True)
+        combo.clear()
+        for option_id in listed:
+            combo.addItem(self._names.get(option_id, option_id), option_id)
+        combo.setCurrentIndex(max(combo.findData(self._chosen), 0) if listed else -1)
+        combo.setEnabled(bool(listed))
+        combo.blockSignals(False)
+
+    def _row(self, option_id: str, name: str, description: str, checked: bool) -> QWidget:
+        row = QWidget()
+        col = QVBoxLayout(row)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        line = QHBoxLayout()
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        box = QCheckBox(name)
+        box.setChecked(checked)
+        box.clicked.connect(lambda *_: self._ticked())
+        self._boxes[option_id] = box
+        line.addWidget(box)
+        if name != option_id:
+            ident = QLabel(option_id)
+            ident.setTextFormat(Qt.PlainText)
+            ident.setStyleSheet(f"color:{self._muted}; font-size:8pt;")
+            line.addWidget(ident)
+        line.addStretch()
+        col.addLayout(line)
+        if description:
+            text = QLabel(description)
+            text.setTextFormat(Qt.PlainText)
+            text.setWordWrap(True)
+            text.setContentsMargins(self._indent, 0, 0, 0)
+            text.setStyleSheet(f"color:{self._muted}; font-size:8pt;")
+            col.addWidget(text)
+        return row
+
+    def option_ids(self) -> list[str]:
+        """Every id with a row, in the order the rows read."""
+        return list(self._boxes)
+
+    def header_texts(self) -> list[str]:
+        """The non-checkable headers, in reading order."""
+        return list(self._headers)
+
+    def checkbox(self, option_id: str) -> QCheckBox:
+        return self._boxes[str(option_id)]
+
+    def checked_ids(self) -> list[str]:
+        return [option_id for option_id, box in self._boxes.items() if box.isChecked()]
+
+    def has_primary_choice(self) -> bool:
+        return self._primary is not None
+
+    def primary_combo(self) -> QComboBox | None:
+        """The "Starts with" combo, or None when the field has none."""
+        return self._primary
+
+    def chosen_id(self) -> str | None:
+        """The id the combo has chosen (the first listed unless the user chose
+        another); None with nothing ticked or no combo."""
+        if self._primary is None:
+            return None
+        return self._primary.currentData()
+
+    def ordered_ids(self) -> list[str]:
+        """The ticked ids as the value is written: the field's order rule, then
+        the chosen one moved to the front."""
+        listed = self._order(self.checked_ids())
+        first = self.chosen_id()
+        if first is None or first not in listed:
+            return listed
+        return [first] + [option_id for option_id in listed if option_id != first]
 
 
 # =============================================================================
@@ -2382,20 +3029,38 @@ class FieldWidget(QWidget):
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
         elif tp == "multiselect":
-            self._w = QListWidget()
-            self._w.setMinimumHeight(92)
-            self._w.setMaximumHeight(150)
-            selected = set(value if isinstance(value, list) else [])
+            listed = value if isinstance(value, list) else []
+            selected = {str(v) for v in listed}
             options = list(self._def.get("opts", []) or [])
-            # Keep choices from newer templates/plugins visible and checked.
-            for selected_value in selected:
-                if selected_value not in {str(option) for option in options}:
-                    options.append(selected_value)
-            for opt in options:
-                item = QListWidgetItem(str(opt))
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked if str(opt) in selected else Qt.Unchecked)
-                self._w.addItem(item)
+            known = {str(option) for option in options}
+            # Keep choices from newer templates/plugins visible and checked,
+            # in the order the file listed them.
+            unknown = []
+            for selected_value in listed:
+                if str(selected_value) not in known:
+                    known.add(str(selected_value))
+                    unknown.append(selected_value)
+            options.extend(unknown)
+            #: The order get_value() answers in: the schema's option order,
+            #: then ids the file had that the schema does not offer.
+            self._option_order = [str(option) for option in options]
+            groups = self._def.get("option_groups") or {}
+            if "option_descriptions" in self._def:
+                # The registries were read: rows that say what each choice is.
+                self._w = _ChoiceList(self._def, options, unknown, selected,
+                                      order=self._ordered)
+            else:
+                # No registries (or no descriptions): a plain list, and so no
+                # "Starts with" combo. The order rule in get_value() still
+                # holds, so the first id of the file stays first.
+                self._w = QListWidget()
+                self._w.setMinimumHeight(92)
+                self._w.setMaximumHeight(150)
+                if groups:
+                    self._fill_grouped(options, unknown, groups, selected)
+                else:
+                    for opt in options:
+                        self._w.addItem(self._choice_item(opt, selected))
         elif tp == "ref":
             # Cross-reference to a device in the live config. opts is the list
             # of categories ("detectors", "positioners", ...) to draw names from.
@@ -2420,7 +3085,11 @@ class FieldWidget(QWidget):
             # property no schema can type -- so it must round-trip *every*
             # value. A string shows quoted and None shows as null: showing them
             # bare made "5" come back as 5 and null come back as {}.
-            self._w = QLineEdit(json.dumps(value))
+            # A required field with no value yet starts empty, not as the text
+            # "null" the operator would have to delete before typing; an empty
+            # box reads back as null, so nothing is lost.
+            empty_required = value is None and self._def.get("req")
+            self._w = QLineEdit("" if empty_required else json.dumps(value))
         elif tp == "path":
             row = QWidget()
             rl = QHBoxLayout(row)
@@ -2449,6 +3118,52 @@ class FieldWidget(QWidget):
             for edit in getattr(self, "_pair_edits", ()):
                 edit.setToolTip(self._def["tip"])
 
+    def _ordered(self, checked) -> list:
+        """The ticked ids in the order the value is written.
+
+        The file's order is kept: for ImProcess the first reconstructor listed
+        is the one active at startup, so ticking another one must not reorder
+        the list. Newly ticked ids follow, in option order.
+        """
+        checked = list(checked)
+        rank = {value: n for n, value in enumerate(self._option_order)}
+        original = self._original if isinstance(self._original, list) else []
+        kept = [value for value in original if value in checked]
+        added = sorted((value for value in checked if value not in kept),
+                       key=lambda value: rank[value])
+        return kept + added
+
+    def _choice_item(self, opt, selected: set) -> QListWidgetItem:
+        item = QListWidgetItem(_multiselect_item_text(self._def, opt))
+        # The id is what the file holds; the text is only how it reads.
+        item.setData(Qt.UserRole, str(opt))
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if str(opt) in selected else Qt.Unchecked)
+        return item
+
+    def _fill_grouped(self, options: list, unknown: list, groups: dict, selected: set) -> None:
+        """Fill a multiselect under non-checkable category headers."""
+        for name, members in _grouped_choices(options, unknown, groups):
+            header = QListWidgetItem(name)
+            header.setFlags(Qt.ItemIsEnabled)
+            header.setData(Qt.UserRole, None)
+            font = header.font()
+            font.setBold(True)
+            header.setFont(font)
+            self._w.addItem(header)
+            for opt in members:
+                self._w.addItem(self._choice_item(opt, selected))
+
+    def fit_to_contents(self) -> None:
+        """Show every row of a list field, so a page scrolls instead of the list."""
+        if not isinstance(self._w, QListWidget):
+            return
+        height = sum(self._w.sizeHintForRow(i) for i in range(self._w.count()))
+        height += 2 * self._w.frameWidth()
+        self._w.setMinimumHeight(height)
+        self._w.setMaximumHeight(height)
+        self._w.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
     def _watch_for_edits(self):
         """Mark the field touched on user interaction, never on construction.
 
@@ -2475,6 +3190,8 @@ class FieldWidget(QWidget):
                 w.lineEdit().textEdited.connect(touch)
         elif isinstance(w, QListWidget):
             w.itemChanged.connect(touch)
+        elif isinstance(w, _ChoiceList):
+            w.sig_edited.connect(touch)
         elif isinstance(w, QLineEdit):
             w.textEdited.connect(touch)
 
@@ -2504,11 +3221,19 @@ class FieldWidget(QWidget):
         if tp == "select":
             return self._w.currentData()
         if tp == "multiselect":
-            return [
-                self._w.item(i).text()
-                for i in range(self._w.count())
-                if self._w.item(i).checkState() == Qt.Checked
-            ]
+            if isinstance(self._w, _ChoiceList):
+                checked = self._w.checked_ids()
+            else:
+                checked = [
+                    self._w.item(i).data(Qt.UserRole)
+                    for i in range(self._w.count())
+                    if self._w.item(i).data(Qt.UserRole) is not None
+                    and self._w.item(i).checkState() == Qt.Checked
+                ]
+            if isinstance(self._w, _ChoiceList) and self._w.has_primary_choice():
+                # the order rule, then the chosen one in front
+                return self._w.ordered_ids()
+            return self._ordered(checked)
         if tp == "ref":
             txt = self._w.currentText().strip()
             return txt if txt else ""
@@ -2715,7 +3440,7 @@ class PropertyEditor(QWidget):
         sys_lay.setContentsMargins(10, 10, 10, 10)
         sys_lay.setSpacing(8)
 
-        sys_hdr = QLabel("<b>System</b> <span style='color:#888;font-size:8pt;'>— processing, scan, focusLock, nidaq, …</span>")
+        sys_hdr = QLabel("<b>System</b> <span style='color:#888;font-size:8pt;'>— scan, focusLock, nidaq, …</span>")
         sys_hdr.setTextFormat(Qt.RichText)
         sys_hdr.setToolTip(
             "Integral system sections referenced by detector/positioner flags "
@@ -3247,10 +3972,15 @@ class PropertyEditor(QWidget):
                         QMessageBox.Yes
                     )
                     if reply == QMessageBox.Yes:
-                        defaults = _build_default_section(schema)
-                        editor = SectionEditorDialog(section_key, schema, defaults, self._data, self)
-                        if editor.exec_() == QDialog.Accepted:
-                            self._data[section_key] = editor.result_data
+                        if section_key == IMPROCESS_SECTION_KEY:
+                            applied = _edit_improcess_section(self._data, self)
+                        else:
+                            defaults = _new_section_seed(schema)
+                            editor = SectionEditorDialog(section_key, schema, defaults, self._data, self)
+                            applied = editor.exec_() == QDialog.Accepted
+                            if applied:
+                                self._data[section_key] = editor.result_data
+                        if applied:
                             self._refresh_sections()
                             self.sig_modified.emit()
 
@@ -3308,8 +4038,10 @@ class PropertyEditor(QWidget):
         )
 
         # ── System: only configured sections, sorted; + Add at the end ──
+        # Sections with their own place on the canvas (ImProcess) are not here.
+        system_keys = [k for k in sorted(SECTION_SCHEMAS.keys()) if k not in _CANVAS_SECTIONS]
         configured = [
-            k for k in sorted(SECTION_SCHEMAS.keys())
+            k for k in system_keys
             if k in self._data and self._data[k] not in (None, {}, [])
         ]
         if configured:
@@ -3325,7 +4057,7 @@ class PropertyEditor(QWidget):
             empty.setTextFormat(Qt.RichText)
             self._sys_sections_lay.addWidget(empty)
 
-        unconfigured = [k for k in sorted(SECTION_SCHEMAS.keys()) if k not in configured]
+        unconfigured = [k for k in system_keys if k not in configured]
         if unconfigured:
             add_sys_btn = QPushButton("＋ Add System Section…")
             add_sys_btn.setFixedHeight(26)
@@ -3428,6 +4160,11 @@ class PropertyEditor(QWidget):
         if schema is None:
             self._open_section_raw(key)
             return
+        if key == IMPROCESS_SECTION_KEY:
+            if _edit_improcess_section(self._data, self):
+                self._refresh_sections()
+                self.sig_modified.emit()
+            return
         current = self._data.get(key) if isinstance(self._data.get(key), dict) else None
         dlg = SectionEditorDialog(key, schema, current, self._data, self)
         if dlg.exec_() == QDialog.Accepted:
@@ -3445,7 +4182,8 @@ class PropertyEditor(QWidget):
         """Open the picker for adding a new system section."""
         candidates = [
             (k, SECTION_SCHEMAS[k]) for k in sorted(SECTION_SCHEMAS.keys())
-            if k not in self._data or self._data[k] in (None, {}, [])
+            if k not in _CANVAS_SECTIONS
+            and (k not in self._data or self._data[k] in (None, {}, []))
         ]
         if not candidates:
             return
@@ -3458,7 +4196,7 @@ class PropertyEditor(QWidget):
         schema = SECTION_SCHEMAS[key]
         # Pre-populate with schema defaults so the editor opens with sensible
         # values that the user can then refine.
-        defaults = _build_default_section(schema)
+        defaults = _new_section_seed(schema)
         dlg = SectionEditorDialog(key, schema, defaults, self._data, self)
         if dlg.exec_() == QDialog.Accepted:
             self._data[key] = dlg.result_data
@@ -3901,10 +4639,157 @@ class SectionPickerDialog(QDialog):
         return self._chosen
 
 
+def _collect_section_result(schema: dict, received, field_widgets: dict,
+                            custom_widgets: dict) -> tuple[dict, list]:
+    """What Apply writes for a section: ``(block, missing_required_labels)``.
+
+    ``received`` is the keys of the block the dialog was opened on, in file
+    order. With the default policy every schema field is written. With
+    ``write_policy == "as_written"`` a schema field is written only if the
+    file already had its key, the operator touched its widget, or it is
+    required, and the keys come back in the file's order. When a required
+    field is empty the block is incomplete and ``missing`` names it.
+    """
+    as_written = _writes_as_written(schema)
+    out: dict = {}
+    missing: list = []
+    for f in schema.get("fields", []):
+        fw = field_widgets.get(f["key"])
+        if fw is None:
+            continue
+        val = fw.get_value()
+        if f.get("req") and (val is None or val == "" or val == []):
+            missing.append(f["label"])
+        if as_written and not (
+            f["key"] in received or fw.is_touched() or f.get("req")
+        ):
+            continue
+        out[f["key"]] = val
+    if missing:
+        return out, missing
+    for k, le in custom_widgets.items():
+        original = le.property("originalValue")
+        if _coercion_module is not None:
+            out[k] = _coercion_module.raw_text_to_json(le.text(), original)
+        else:
+            out[k] = _parse_freeform_value(le.text())
+    if as_written:
+        out = {**{k: out[k] for k in received if k in out},
+               **{k: v for k, v in out.items() if k not in received}}
+    return out, []
+
+
+class _SectionFieldWidgets(dict):
+    """A section form's widgets by ``(section, key)``; a plain key name is
+    the direct field ``("field", key)``, as the flat section dialogs key it."""
+
+    def _key(self, key):
+        return ("field", key) if isinstance(key, str) else key
+
+    def __getitem__(self, key):
+        return super().__getitem__(self._key(key))
+
+    def __contains__(self, key):
+        return super().__contains__(self._key(key))
+
+    def get(self, key, default=None):
+        return super().get(self._key(key), default)
+
+
+class _CustomRowsMixin:
+    """The "Custom" page of a section dialog: the keys the schema has no field for.
+
+    The dialog provides ``_custom_widgets`` (``{}``), ``_field_widgets``,
+    ``_allow_custom``, ``_err_lbl`` and ``_show_custom_page()``.
+    """
+
+    def _build_custom_page(self, current: dict | None, known: set) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        self._custom_form = QFormLayout(inner)
+        self._custom_form.setContentsMargins(8, 8, 8, 8)
+        self._custom_form.setSpacing(4)
+        self._custom_empty_lbl = QLabel(
+            "<span style='color:#888;font-size:8pt;'>No custom properties. "
+            "Use ⊕ Add property to add one.</span>"
+        )
+        self._custom_empty_lbl.setTextFormat(Qt.RichText)
+        self._custom_form.addRow(self._custom_empty_lbl)
+        for k, v in (current or {}).items():
+            if k not in known:
+                self._add_custom_row(k, v)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _schema_keys(self) -> set:
+        """The keys the form edits; a custom property may not take one."""
+        return set(self._field_widgets)
+
+    def _add_property_button(self) -> QPushButton:
+        add_prop_btn = QPushButton("⊕ Add property")
+        add_prop_btn.setFixedHeight(22)
+        add_prop_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
+        add_prop_btn.setToolTip("Add an arbitrary key to these settings")
+        add_prop_btn.clicked.connect(self._prompt_custom_field)
+        return add_prop_btn
+
+    def add_custom_field(self, key: str, value) -> str:
+        """Add a custom key; returns an error message, or "" on success."""
+        if not self._allow_custom:
+            return "These settings take no custom properties."
+        key = key.strip()
+        if not key:
+            return "Key name is empty."
+        if key in self._schema_keys() or key in self._custom_widgets:
+            return f"'{key}' already exists in these settings."
+        self._add_custom_row(key, value)
+        self._show_custom_page()
+        return ""
+
+    def _prompt_custom_field(self):
+        key, ok = QInputDialog.getText(self, "Add Property", "Key name:")
+        if not ok or not key.strip():
+            return
+        val_str, ok2 = QInputDialog.getText(
+            self, "Add Property",
+            'Value  (JSON: 42, true, "text", null, [1,2], {...}):',
+            text="null",
+        )
+        if not ok2:
+            return
+        self._err_lbl.setText(self.add_custom_field(key, _parse_freeform_value(val_str)))
+
+    def _add_custom_row(self, key: str, value):
+        le = QLineEdit(json.dumps(value) if not isinstance(value, str) else value)
+        # Bare text cannot say whether "5" was a string or a number; the
+        # read-back asks the original rather than guessing.
+        le.setProperty("originalValue", value)
+        row = QWidget()
+        row_lay = QHBoxLayout(row)
+        row_lay.setContentsMargins(0, 0, 0, 0)
+        row_lay.setSpacing(2)
+        row_lay.addWidget(le, 1)
+        del_btn = QPushButton("×")
+        del_btn.setFixedSize(20, 20)
+        del_btn.setToolTip(f"Remove '{key}'")
+        del_btn.clicked.connect(lambda _, k=key, r=row: self._remove_custom_row(k, r))
+        row_lay.addWidget(del_btn)
+        self._custom_form.addRow(QLabel(key), row)
+        self._custom_widgets[key] = le
+        self._custom_empty_lbl.setVisible(False)
+
+    def _remove_custom_row(self, key: str, row: QWidget):
+        self._custom_widgets.pop(key, None)
+        self._custom_form.removeRow(row)
+        self._custom_empty_lbl.setVisible(not self._custom_widgets)
+
+
 # =============================================================================
 # SectionEditorDialog – schema-driven editor for singleton sections
 # =============================================================================
-class SectionEditorDialog(QDialog):
+class SectionEditorDialog(_CustomRowsMixin, QDialog):
     """Modal form editor for one top-level system section (focusLock, scan, …).
 
     Reuses :class:`FieldWidget` so its inputs match the device editor.
@@ -3920,6 +4805,13 @@ class SectionEditorDialog(QDialog):
     ``nested``.  Nested fields follow the same important editing contract as
     device ``managerProperties``: untouched absent containers stay absent and
     unknown/unexposed keys are preserved when an exposed child is edited.
+
+    A section schema (``"section": true``, see :func:`_writes_as_written`)
+    turns ``allow_custom_fields`` on and writes a schema field only if
+    ``current`` already had its key, the operator touched its widget, or it is
+    required -- so Apply neither expands a short block into every field nor
+    loses a key the schema does not know. The per-category settings schemas
+    are not sections and keep writing every field.
     """
 
     def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *,
@@ -3930,7 +4822,12 @@ class SectionEditorDialog(QDialog):
         self._data = data  # reference, used to populate ref combos
         self._current = copy.deepcopy(current) if isinstance(current, dict) else {}
         self._result: dict = {}
-        self._allow_custom = allow_custom_fields
+        self._as_written = _writes_as_written(schema)
+        # Keeping unknown keys is half of "as written".
+        self._allow_custom = allow_custom_fields or self._as_written
+        # Insertion order kept: an as-written section is written back in the
+        # order the file had it.
+        self._received = list(current) if isinstance(current, dict) else []
         self._custom_widgets: dict = {}  # key → QLineEdit
 
         legacy = schema.get("legacy")
@@ -3979,8 +4876,9 @@ class SectionEditorDialog(QDialog):
         lay.addWidget(tabs, 1)
 
         # Keys are ("field", key) for direct children and
-        # ("nested:<container>", key) for structured child dictionaries.
-        self._field_widgets: dict = {}
+        # ("nested:<container>", key) for structured child dictionaries; a
+        # plain name looks up the direct field.
+        self._field_widgets: dict = _SectionFieldWidgets()
         self._tab_sections: dict = {}   # tab index -> {"field" | "nested:<container>"}
         self._shown_when = schema.get("nested_shown_when", {})
         groups: dict[str, list] = {}
@@ -4038,35 +4936,13 @@ class SectionEditorDialog(QDialog):
 
         # ── Custom tab: keys the schema does not define ──
         if self._allow_custom:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            inner = QWidget()
-            self._custom_form = QFormLayout(inner)
-            self._custom_form.setContentsMargins(8, 8, 8, 8)
-            self._custom_form.setSpacing(4)
-            self._custom_empty_lbl = QLabel(
-                "<span style='color:#888;font-size:8pt;'>No custom properties. "
-                "Use ⊕ Add property to add one.</span>"
-            )
-            self._custom_empty_lbl.setTextFormat(Qt.RichText)
-            self._custom_form.addRow(self._custom_empty_lbl)
-            known = self._schema_keys()
-            for k, v in (current or {}).items():
-                if k not in known:
-                    self._add_custom_row(k, v)
-            scroll.setWidget(inner)
+            scroll = self._build_custom_page(current, self._schema_keys())
             self._custom_tab = scroll
             tabs.addTab(scroll, "Custom")
             self._tabs = tabs
 
             add_row = QHBoxLayout()
-            add_prop_btn = QPushButton("⊕ Add property")
-            add_prop_btn.setFixedHeight(22)
-            add_prop_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
-            add_prop_btn.setToolTip("Add an arbitrary key to these settings")
-            add_prop_btn.clicked.connect(self._prompt_custom_field)
-            add_row.addWidget(add_prop_btn)
+            add_row.addWidget(self._add_property_button())
             add_row.addStretch()
             lay.addLayout(add_row)
 
@@ -4124,36 +5000,24 @@ class SectionEditorDialog(QDialog):
             self._tab_widget.setTabVisible(index, shown)
 
     def _try_apply(self):
-        # Start from the file's section, not a blank dict.  This is what makes
-        # a curated section form safe for plugin/future keys it does not know.
-        out: dict = copy.deepcopy(self._current)
-        missing: list = []
+        fields = {key: fw for (section, key), fw in self._field_widgets.items()
+                  if section == "field"}
+        out, missing = _collect_section_result(
+            self._schema, self._received, fields, self._custom_widgets
+        )
 
-        # Preserve historical section-editor behaviour for direct fields:
-        # applying the form materializes their displayed defaults.
-        for f in self._schema.get("fields", []):
-            fw = self._field_widgets.get(("field", f["key"]))
-            if fw is None:
-                continue
-            val = fw.get_value()
-            if f.get("req") and (val is None or val == "" or val == []):
-                missing.append(f["label"])
-            out[f["key"]] = val
-
-        # Nested containers are deliberately different: they are optional
-        # structured configuration. Merely opening/applying a section must not
-        # create simplePointScan/simpleMoNaLISA (or seed their defaults). Only
-        # operator edits materialize absent children; existing unknown keys are
-        # retained by modifying a copy of the original container in place.
+        # Nested containers are optional structured configuration. Merely
+        # opening/applying a section must not create simplePointScan /
+        # simpleMoNaLISA (or seed their defaults): only operator edits
+        # materialize an absent child, and a container the file had is kept
+        # with its unknown keys, edited in a copy.
         for nest_key, nest_fields in self._schema.get("nested", {}).items():
             original_container = self._current.get(nest_key)
             container = copy.deepcopy(original_container) if isinstance(original_container, dict) else None
             touched_any = False
             for f in nest_fields:
                 fw = self._field_widgets.get((f"nested:{nest_key}", f["key"]))
-                if fw is None:
-                    continue
-                if not fw.is_touched():
+                if fw is None or not fw.is_touched():
                     continue
                 touched_any = True
                 val = fw.get_value()
@@ -4164,18 +5028,23 @@ class SectionEditorDialog(QDialog):
                 container[f["key"]] = val
             if touched_any:
                 out[nest_key] = container
+            elif nest_key in self._current:
+                out[nest_key] = copy.deepcopy(original_container)
+        if not self._allow_custom:
+            # No Custom page shows them: a key the form does not show is kept
+            # as it was (with a Custom page, a removed row is a removed key).
+            known = self._schema_keys()
+            for k, v in self._current.items():
+                if k not in known and k not in out:
+                    out[k] = copy.deepcopy(v)
+        out = {**{k: out[k] for k in self._received if k in out},
+               **{k: v for k, v in out.items() if k not in self._received}}
 
         if missing:
             self._err_lbl.setText(
                 "Missing required: " + ", ".join(missing)
             )
             return
-        for k, le in self._custom_widgets.items():
-            original = le.property("originalValue")
-            if _coercion_module is not None:
-                out[k] = _coercion_module.raw_text_to_json(le.text(), original)
-            else:
-                out[k] = _parse_freeform_value(le.text())
         self._result = out
         self.accept()
 
@@ -4186,59 +5055,830 @@ class SectionEditorDialog(QDialog):
         return ({f["key"] for f in self._schema.get("fields", [])}
                 | set(self._schema.get("nested", {})))
 
-    def add_custom_field(self, key: str, value) -> str:
-        """Add a custom key; returns an error message, or "" on success."""
-        if not self._allow_custom:
-            return "These settings take no custom properties."
-        key = key.strip()
-        if not key:
-            return "Key name is empty."
-        if key in self._schema_keys() or key in self._custom_widgets:
-            return f"'{key}' already exists in these settings."
-        self._add_custom_row(key, value)
+    def _show_custom_page(self):
         self._tabs.setCurrentWidget(self._custom_tab)
-        return ""
-
-    def _prompt_custom_field(self):
-        key, ok = QInputDialog.getText(self, "Add Property", "Key name:")
-        if not ok or not key.strip():
-            return
-        val_str, ok2 = QInputDialog.getText(
-            self, "Add Property",
-            'Value  (JSON: 42, true, "text", null, [1,2], {...}):',
-            text="null",
-        )
-        if not ok2:
-            return
-        self._err_lbl.setText(self.add_custom_field(key, _parse_freeform_value(val_str)))
-
-    def _add_custom_row(self, key: str, value):
-        le = QLineEdit(json.dumps(value) if not isinstance(value, str) else value)
-        # Bare text cannot say whether "5" was a string or a number; the
-        # read-back asks the original rather than guessing.
-        le.setProperty("originalValue", value)
-        row = QWidget()
-        row_lay = QHBoxLayout(row)
-        row_lay.setContentsMargins(0, 0, 0, 0)
-        row_lay.setSpacing(2)
-        row_lay.addWidget(le, 1)
-        del_btn = QPushButton("×")
-        del_btn.setFixedSize(20, 20)
-        del_btn.setToolTip(f"Remove '{key}'")
-        del_btn.clicked.connect(lambda _, k=key, r=row: self._remove_custom_row(k, r))
-        row_lay.addWidget(del_btn)
-        self._custom_form.addRow(QLabel(key), row)
-        self._custom_widgets[key] = le
-        self._custom_empty_lbl.setVisible(False)
-
-    def _remove_custom_row(self, key: str, row: QWidget):
-        self._custom_widgets.pop(key, None)
-        self._custom_form.removeRow(row)
-        self._custom_empty_lbl.setVisible(not self._custom_widgets)
 
     @property
     def result_data(self) -> dict:
         return self._result
+
+
+# =============================================================================
+# ImProcessSectionDialog – the dedicated, explained editor of the ImProcess block
+# =============================================================================
+@dataclass
+class _DropIns:
+    """What discovery found in the drop-in plugins folder, for display only."""
+
+    directory: str = ""
+    #: ``(id, kind, display name, file)`` per discovered plugin class.
+    entries: list = dc_field(default_factory=list)
+    #: ``(file, message)`` per file that failed to load.
+    errors: list = dc_field(default_factory=list)
+    #: Why discovery could not run at all, or "".
+    unavailable: str = ""
+
+
+def _discover_dropins(directory: str | None = None) -> _DropIns:
+    """Scan the drop-in plugins folder; install nothing.
+
+    Runs only when the ImProcess dialog opens. ``discover_plugins`` imports
+    each plugin file (they are Python), so this is deliberately not done at
+    editor import time; it never calls ``load_user_plugins``, so the plugin
+    registries are left as they were. Any failure -- ImProcess not importable
+    included -- is reported in ``unavailable`` instead of raised.
+    """
+    found = _DropIns(directory=directory or "")
+    try:
+        from imswitch.improcess.plugins.user_plugins import (
+            discover_plugins, user_plugins_directory,
+        )
+
+        found.directory = directory or user_plugins_directory(create=False)
+        discovered = discover_plugins(found.directory)
+    except Exception as exc:
+        found.unavailable = f"{type(exc).__name__}: {exc}"
+        return found
+
+    def source_file(plugin_cls) -> str:
+        module = sys.modules.get(getattr(plugin_cls, "__module__", ""))
+        return str(getattr(module, "__file__", "") or "")
+
+    for kind, classes in (("reconstructor", discovered.reconstructors),
+                          ("processor", discovered.processors)):
+        for plugin_id, plugin_cls in classes.items():
+            found.entries.append((
+                plugin_id, kind,
+                str(getattr(plugin_cls, "name", "") or plugin_id),
+                source_file(plugin_cls),
+            ))
+    found.errors = [(err.path, err.message) for err in discovered.errors]
+    return found
+
+
+#: What drop-in discovery found, per folder (None = the default plugins
+#: folder), for the whole editor session. Discovery imports the plugin files,
+#: so it runs the first time it is needed and not on every validation pass.
+_DROPIN_CACHE: dict = {}
+
+
+def _cached_dropins(directory: str | None = None, *, refresh: bool = False) -> _DropIns:
+    """The drop-in plugins of ``directory``, discovered once and kept."""
+    if refresh or directory not in _DROPIN_CACHE:
+        _DROPIN_CACHE[directory] = _discover_dropins(directory)
+    return _DROPIN_CACHE[directory]
+
+
+def _improcess_builtin_ids() -> tuple[tuple, tuple]:
+    """``(reconstructor ids, processor ids)`` of the built-in plugins only.
+
+    From ImProcess's own tables, not from the editor's option lists, which also
+    carry any drop-in already loaded in this process. When ImProcess cannot be
+    imported the offline lists stand in; a test pins them to the real ones.
+    """
+    try:
+        from imswitch.improcess.processors import available_processor_specs
+        from imswitch.improcess.reconstructors import builtin_reconstructor_ids
+
+        return (
+            tuple(builtin_reconstructor_ids()),
+            tuple(spec[0] for spec in available_processor_specs(origin="builtin")),
+        )
+    except Exception:
+        return tuple(IMPROCESS_RECONSTRUCTOR_FALLBACK), tuple(IMPROCESS_PROCESSOR_FALLBACK)
+
+
+def _improcess_validation_context(data: dict):
+    """The ``ValidationContext`` for ``data``: widget map, built-in ids, drop-in ids.
+
+    The drop-in folder is discovered (once per session) only when the
+    ``processing`` block lists an id that is not built-in; a setup that lists
+    only built-ins never causes a plugin file to be imported. When discovery is
+    unavailable the drop-in ids are empty.
+    """
+    from imswitch.imcontrol.model.plugins.validation import ValidationContext
+
+    reconstructors, processors = _improcess_builtin_ids()
+    block = data.get(IMPROCESS_SECTION_KEY)
+    block = block if isinstance(block, dict) else {}
+    listed_r = block.get("reconstructors") if isinstance(block.get("reconstructors"), list) else []
+    listed_p = block.get("processors") if isinstance(block.get("processors"), list) else []
+    dropin_r: tuple = ()
+    dropin_p: tuple = ()
+    if any(i not in reconstructors for i in listed_r) or any(i not in processors for i in listed_p):
+        found = _cached_dropins()
+        dropin_r = tuple(e[0] for e in found.entries if e[1] == "reconstructor")
+        dropin_p = tuple(e[0] for e in found.entries if e[1] == "processor")
+    return ValidationContext(
+        widget_requires_section=_WIDGET_REQUIRES_SECTION,
+        known_reconstructor_ids=reconstructors,
+        known_processor_ids=processors,
+        dropin_reconstructor_ids=dropin_r,
+        dropin_processor_ids=dropin_p,
+    )
+
+
+class _EndpointsEditor(QWidget):
+    """The napari endpoints list as pretty-printed JSON in a multi-line box.
+
+    Quacks like :class:`FieldWidget` for :func:`_collect_section_result`:
+    untouched it answers the value the file had, byte for byte.
+    """
+
+    def __init__(self, field_def: dict, value, parent=None):
+        super().__init__(parent)
+        self._def = field_def
+        self._original = value
+        self._touched = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._w = QPlainTextEdit(json.dumps(value, indent=2))
+        self._w.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._w.setMinimumHeight(self._w.sizeHint().height())
+        if field_def.get("tip"):
+            self._w.setToolTip(field_def["tip"])
+        # Connected after the text is in place: construction is not an edit.
+        self._w.textChanged.connect(self._on_changed)
+        lay.addWidget(self._w)
+
+    def _on_changed(self) -> None:
+        self._touched = True
+
+    def is_touched(self) -> bool:
+        return self._touched
+
+    def _text(self) -> str:
+        return self._w.toPlainText().strip()
+
+    def get_value(self):
+        if not self._touched:
+            return self._original
+        text = self._text()
+        if not text:
+            return []
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+    def validation_error(self) -> str:
+        """Why the edited text cannot be written, or "" when it can."""
+        if not self._touched or not self._text():
+            return ""
+        label = self._def.get("label", "Napari endpoints")
+        try:
+            value = json.loads(self._text())
+        except json.JSONDecodeError as exc:
+            return f"{label}: not valid JSON ({exc.msg}, line {exc.lineno}, column {exc.colno})."
+        if not isinstance(value, list):
+            return f"{label}: must be a list of objects, one per endpoint."
+        try:
+            from imswitch.improcess.model.napari_endpoints import endpoint_from_dict
+        except Exception:
+            endpoint_from_dict = None
+        problems = []
+        for number, item in enumerate(value, 1):
+            if not isinstance(item, dict):
+                problems.append(f"entry {number} is not an object")
+            elif endpoint_from_dict is not None:
+                try:
+                    endpoint_from_dict(item)
+                except Exception as exc:
+                    problems.append(f"entry {number}: {exc}")
+            elif not str(item.get("id") or "").strip():
+                problems.append(f"entry {number} has no id")
+        if problems:
+            return f"{label}: " + "; ".join(problems) + "."
+        return ""
+
+
+class ImProcessPresetDialog(QDialog):
+    """Pick one of the shipped ImProcess presets.
+
+    The titles on the left; for the selected one, on the right, what it is
+    for and what it sets -- the reconstructors and processors by name, what
+    opens and what stays hidden at startup, and any other setting -- read
+    from the block with the editor's own labels. Nothing of the file's JSON
+    is shown.
+    """
+
+    def __init__(self, presets: list, parent=None, schema: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Start from preset")
+        # by the name a person reads, not by file name
+        self._presets = sorted(presets, key=lambda preset: preset.title.casefold())
+        self._schema = schema if schema is not None else (
+            SECTION_SCHEMAS.get(IMPROCESS_SECTION_KEY) or {})
+        self._chosen = None
+        self._muted = "#AAAAAA" if is_dark_mode() else "#666666"
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+        intro = QLabel(
+            "These are the processor setups ImSwitch ships. The chosen one's "
+            "ImProcess settings are copied into this setup; the preset file "
+            "itself is not changed."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color:{self._muted}; font-size:9pt;")
+        lay.addWidget(intro)
+
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        self._list = QListWidget()
+        for preset in self._presets:
+            item = QListWidgetItem(preset.title)
+            block = preset.processing if isinstance(preset.processing, dict) else {}
+            names = self._summary(block)["reconstructors"]
+            if names:
+                item.setToolTip("Reconstructors: " + ", ".join(
+                    f"{name} ({IMPROCESS_STARTS_ACTIVE})" if n == 0 else name
+                    for n, (name, _, _) in enumerate(names)))
+            self._list.addItem(item)
+        self._list.setFixedWidth(self._list.sizeHintForColumn(0) + 2 * self._list.frameWidth() + 8)
+        body.addWidget(self._list)
+
+        self._detail = QWidget()
+        self._detail_lay = QVBoxLayout(self._detail)
+        self._detail_lay.setContentsMargins(8, 4, 8, 4)
+        self._detail_lay.setSpacing(6)
+        self._title = QLabel()
+        self._title.setTextFormat(Qt.PlainText)
+        self._title.setWordWrap(True)
+        font = self._title.font()
+        font.setBold(True)
+        font.setPointSizeF(font.pointSizeF() * 1.4)
+        self._title.setFont(font)
+        self._description = QLabel()
+        self._description.setTextFormat(Qt.PlainText)
+        self._description.setWordWrap(True)
+        self._detail_lay.addWidget(self._title)
+        self._detail_lay.addWidget(self._description)
+        self._sections: list[QWidget] = []     # rebuilt for every preset
+        self._detail_lay.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(self._detail)
+        body.addWidget(scroll, 1)
+        lay.addLayout(body, 1)
+
+        if not self._presets:
+            self._description.setText("No shipped presets were found.")
+
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        self._use = QPushButton("Use preset")
+        self._use.setDefault(True)
+        self._use.clicked.connect(self._accept_selected)
+        row.addWidget(cancel)
+        row.addWidget(self._use)
+        lay.addLayout(row)
+
+        self._list.currentRowChanged.connect(self._show_row)
+        self._use.setEnabled(False)
+        self.resize(780, 580)
+        if self._presets:
+            self._list.setCurrentRow(0)
+
+    def _summary(self, block: dict) -> dict:
+        return _improcess_preset_summary(block, self._schema)
+
+    # ── the right-hand side ────────────────────────────────────────────────
+    def _clear_sections(self) -> None:
+        for widget in self._sections:
+            self._detail_lay.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+        self._sections = []
+
+    def _add_section(self, heading: str, content: QWidget) -> None:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 6, 0, 0)
+        col.setSpacing(3)
+        title = QLabel(heading)
+        title.setTextFormat(Qt.PlainText)
+        font = title.font()
+        font.setBold(True)
+        title.setFont(font)
+        col.addWidget(title)
+        col.addWidget(content)
+        # above the stretch that keeps the sections at the top
+        self._detail_lay.insertWidget(self._detail_lay.count() - 1, box)
+        self._sections.append(box)
+
+    def _plain(self, text: str, *, muted: bool = False) -> QLabel:
+        label = QLabel(text)
+        label.setTextFormat(Qt.PlainText)
+        label.setWordWrap(True)
+        if muted:
+            label.setStyleSheet(f"color:{self._muted};")
+        return label
+
+    def _reconstructor_rows(self, rows: list) -> QWidget:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        for n, (name, ident, description) in enumerate(rows):
+            line = QHBoxLayout()
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(8)
+            line.addWidget(self._plain(name))
+            if name != ident:
+                muted = self._plain(ident, muted=True)
+                muted.setWordWrap(False)
+                line.addWidget(muted)
+            if n == 0:
+                # ImProcess opens on the first one the preset lists
+                starts = self._plain(f"({IMPROCESS_STARTS_ACTIVE})", muted=True)
+                starts.setWordWrap(False)
+                line.addWidget(starts)
+            line.addStretch()
+            col.addLayout(line)
+            if description:
+                col.addWidget(self._plain(description, muted=True))
+        return box
+
+    def _processor_rows(self, groups: list) -> QWidget:
+        box = QWidget()
+        grid = QGridLayout(box)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(3)
+        for row, (category, members) in enumerate(groups):
+            head = self._plain(category, muted=True)
+            head.setWordWrap(False)
+            grid.addWidget(head, row, 0, Qt.AlignTop)
+            grid.addWidget(self._plain(", ".join(name for name, _ in members)), row, 1)
+        grid.setColumnStretch(1, 1)
+        return box
+
+    def _show_row(self, row: int) -> None:
+        self._clear_sections()
+        if not 0 <= row < len(self._presets):
+            self._title.setText("")
+            self._description.setText("")
+            self._use.setEnabled(False)
+            return
+        preset = self._presets[row]
+        self._title.setText(preset.title)
+        self._description.setText(preset.description or "(no description)")
+        block = preset.processing if isinstance(preset.processing, dict) else {}
+        summary = self._summary(block)
+        if summary["reconstructors"]:
+            self._add_section("Reconstructors", self._reconstructor_rows(summary["reconstructors"]))
+        if summary["processors"] is not None:
+            if summary["processors"]:
+                self._add_section("Processors", self._processor_rows(summary["processors"]))
+            else:
+                self._add_section("Processors", self._plain(
+                    "None at startup; tools can still be loaded from the Tools toolbar."))
+        if summary["opens"]:
+            self._add_section("Opens at startup", self._plain(", ".join(summary["opens"])))
+        if summary["hidden"]:
+            self._add_section("Hidden at startup", self._plain(", ".join(summary["hidden"])))
+        if summary["other"]:
+            self._add_section("Other settings", self._plain(
+                "\n".join(f"{label}: {text}" for label, text in summary["other"])))
+        self._use.setEnabled(True)
+
+    def _accept_selected(self) -> None:
+        row = self._list.currentRow()
+        if 0 <= row < len(self._presets):
+            self._chosen = self._presets[row]
+            self.accept()
+
+    @property
+    def chosen(self):
+        """The preset picked with "Use preset", or None."""
+        return self._chosen
+
+
+def _pick_improcess_preset(parent=None):
+    """Let the operator pick a shipped preset; None when cancelled or none exist."""
+    presets = _shipped_improcess_presets()
+    if not presets:
+        QMessageBox.information(
+            parent, "Start from preset", "No shipped ImProcess presets were found.",
+        )
+        return None
+    dlg = ImProcessPresetDialog(presets, parent)
+    if dlg.exec_() != QDialog.Accepted:
+        return None
+    return dlg.chosen
+
+
+class ImProcessSectionDialog(_CustomRowsMixin, QDialog):
+    """Modal editor of the setup's ``processing`` block.
+
+    Pages on the left (the schema's groups, Drop-in plugins right after the
+    Processors, then Custom and Set on this computer), the page on the right,
+    and under every option its one-sentence explanation in plain view. Writes follow the schema's
+    ``as_written`` policy through :func:`_collect_section_result`, exactly as
+    :class:`SectionEditorDialog` does: open, Apply untouched, and the block is
+    what it was.
+    """
+
+    #: Field types that sit on one line with their label; the rest (lists,
+    #: the endpoints box) get the width of the page below it.
+    _INLINE_TYPES = frozenset(
+        {"bool", "bool_auto", "int", "float", "select", "text", "path", "ref"}
+    )
+
+    #: The drop-in plugins page, and the schema group it follows.
+    _DROPIN_PAGE = "Drop-in plugins"
+    _DROPIN_AFTER = "Processors"
+
+    def __init__(self, schema: dict, current: dict | None, data: dict, parent=None, *,
+                 dropin_directory: str | None = None):
+        super().__init__(parent)
+        self._key = IMPROCESS_SECTION_KEY
+        self._schema = schema
+        self._data = data
+        self._result: dict = {}
+        self._received = list(current) if isinstance(current, dict) else []
+        self._allow_custom = True
+        self._custom_widgets: dict = {}
+        self._field_widgets: dict = {}
+        self._endpoints: _EndpointsEditor | None = None
+        self._page_titles: list[str] = []
+        self._muted = "#AAAAAA" if is_dark_mode() else "#666666"
+        self._dropin_directory = dropin_directory
+        self._dropins = _cached_dropins(dropin_directory)
+        self.setWindowTitle(f"Edit section: {schema.get('display', self._key)}")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        summary = schema.get("summary", "")
+        if summary:
+            hint = QLabel(summary)
+            hint.setTextFormat(Qt.PlainText)
+            hint.setWordWrap(True)
+            hint.setStyleSheet(f"color:{self._muted}; font-size:9pt;")
+            header.addWidget(hint, 1)
+        else:
+            header.addStretch()
+        preset_btn = QPushButton(IMPROCESS_PRESET_BUTTON)
+        preset_btn.setToolTip(IMPROCESS_PRESET_TOOLTIP)
+        preset_btn.clicked.connect(self._start_from_preset)
+        header.addWidget(preset_btn, 0, Qt.AlignTop)
+        lay.addLayout(header)
+
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        self._page_list = QListWidget()
+        self._stack = QStackedWidget()
+        body.addWidget(self._page_list)
+        body.addWidget(self._stack, 1)
+        lay.addLayout(body, 1)
+
+        self._build_pages(current)
+        self._page_list.currentRowChanged.connect(self._stack.setCurrentIndex)
+        self._page_list.setCurrentRow(0)
+        self.resize(560 + self._page_list.width(), 560)
+
+        self._err_lbl = QLabel()
+        self._err_lbl.setStyleSheet("color:#C04000; font-size:8pt;")
+        self._err_lbl.setWordWrap(True)
+        lay.addWidget(self._err_lbl)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("Apply")
+        ok_btn.setDefault(True)
+        ok_btn.setStyleSheet(
+            "QPushButton { background:#3A7FC1; color:white; padding:4px 16px; }"
+            "QPushButton:hover { background:#2A6FAF; }"
+        )
+        ok_btn.clicked.connect(self._try_apply)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(ok_btn)
+        lay.addLayout(btns)
+
+    # ── pages ───────────────────────────────────────────────────────────────
+    def _build_pages(self, current: dict | None) -> None:
+        """(Re)build every page from ``current``; the drop-in scan is reused."""
+        self._loaded = copy.deepcopy(current) if isinstance(current, dict) else {}
+        self._received = list(current) if isinstance(current, dict) else []
+        self._field_widgets = {}
+        self._custom_widgets = {}
+        self._endpoints = None
+        groups: dict[str, list] = {}
+        for f in self._schema.get("fields", []):
+            groups.setdefault(f.get("grp", "Basic"), []).append(f)
+        for grp, fields in groups.items():
+            self._add_page(grp, self._build_group_page(fields, current))
+            if grp == self._DROPIN_AFTER:
+                # About the reconstructors and processors, so right behind them.
+                self._add_page(self._DROPIN_PAGE, self._build_dropin_page(current))
+        if self._DROPIN_PAGE not in self._page_titles:
+            self._add_page(self._DROPIN_PAGE, self._build_dropin_page(current))
+        self._add_page("Custom", self._build_custom_tab(current))
+        self._add_page("Set on this computer", self._build_computer_page())
+        # The list is as wide as its longest page title, no wider.
+        self._page_list.setFixedWidth(
+            self._page_list.sizeHintForColumn(0) + 2 * self._page_list.frameWidth() + 8
+        )
+
+    def _clear_pages(self) -> None:
+        self._page_list.blockSignals(True)
+        self._page_list.clear()
+        self._page_list.blockSignals(False)
+        while self._stack.count():
+            page = self._stack.widget(0)
+            self._stack.removeWidget(page)
+            page.setParent(None)
+            page.deleteLater()
+        self._page_titles = []
+
+    def _has_unapplied_edits(self) -> bool:
+        """Whether the pages hold something other than the block they were built from."""
+        out, missing = _collect_section_result(
+            self._schema, self._received, self._field_widgets, self._custom_widgets
+        )
+        return bool(missing) or out != self._loaded
+
+    def _start_from_preset(self) -> None:
+        """Replace the dialog's settings with a shipped preset (Apply writes them)."""
+        preset = _pick_improcess_preset(self)
+        if preset is None:
+            return
+        if (_improcess_block_is_set(self._data) or self._has_unapplied_edits()) \
+                and not _confirm_improcess_preset_replace(self, preset.title):
+            return
+        row = max(self._page_list.currentRow(), 0)
+        self._err_lbl.setText("")
+        self._clear_pages()
+        self._build_pages(copy.deepcopy(preset.processing))
+        self._page_list.setCurrentRow(min(row, self._page_list.count() - 1))
+
+    def _add_page(self, title: str, widget: QWidget) -> None:
+        self._page_titles.append(title)
+        self._page_list.addItem(title)
+        self._stack.addWidget(widget)
+
+    def _show_page(self, title: str) -> None:
+        self._page_list.setCurrentRow(self._page_titles.index(title))
+
+    def _show_custom_page(self) -> None:
+        self._show_page("Custom")
+
+    def _scrolling(self, inner: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _note(self, text: str, *, rich: bool = False) -> QLabel:
+        label = QLabel(text)
+        label.setTextFormat(Qt.RichText if rich else Qt.PlainText)
+        label.setWordWrap(True)
+        label.setStyleSheet(f"color:{self._muted}; font-size:8pt;")
+        return label
+
+    def _build_group_page(self, fields: list, current: dict | None) -> QScrollArea:
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(12)
+        for f in fields:
+            if f.get("type") == "multiselect" and "option_descriptions" in f:
+                # A page of its own rows: what the list does is said once, on
+                # top, and the page title already names the list.
+                if f.get("tip"):
+                    lay.addWidget(self._note(f["tip"]))
+                lay.addWidget(self._field_row(f, current, announced=True))
+            else:
+                lay.addWidget(self._field_row(f, current))
+        lay.addStretch()
+        return self._scrolling(inner)
+
+    def _field_row(self, f: dict, current: dict | None, *, announced: bool = False) -> QWidget:
+        """One field. ``announced``: its label and tip are already on the page."""
+        cur = (current or {}).get(f["key"], _MISSING)
+        if cur is _MISSING:
+            cur = _field_default(f)
+            if cur == "null":
+                cur = None
+        if f["key"] == "napariEndpoints":
+            fw = _EndpointsEditor(f, cur)
+            self._endpoints = fw
+        else:
+            fw = FieldWidget(f, cur)
+            fw.fit_to_contents()
+        self._field_widgets[f["key"]] = fw
+
+        if announced:
+            return fw
+        label = QLabel(f"<b>{f['label']}</b> *" if f.get("req") else f["label"])
+        label.setTextFormat(Qt.RichText)
+        label.setWordWrap(True)
+        label.setToolTip(f.get("tip", ""))
+
+        row = QWidget()
+        col = QVBoxLayout(row)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        if f["type"] in self._INLINE_TYPES:
+            line = QHBoxLayout()
+            line.setSpacing(8)
+            if f["type"] == "bool":
+                line.addWidget(fw)
+                line.addWidget(label, 1)
+            else:
+                line.addWidget(label, 2)
+                line.addWidget(fw, 3)
+            col.addLayout(line)
+        else:
+            col.addWidget(label)
+            col.addWidget(fw)
+        if f.get("tip"):
+            col.addWidget(self._note(f["tip"]))
+        return row
+
+    def _build_dropin_page(self, current: dict | None) -> QScrollArea:
+        found = self._dropins
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
+        lay.addWidget(self._note(
+            "Drop-in plugins are active on this computer whenever their file is "
+            "in the plugins folder, so they are not listed in the setup file."
+        ))
+        folder_row = QHBoxLayout()
+        folder = QLabel(f"Folder: {found.directory or 'unknown'}")
+        folder.setTextFormat(Qt.PlainText)
+        folder.setWordWrap(True)
+        folder.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        folder_row.addWidget(folder, 1)
+        rescan = QPushButton(DROPIN_RESCAN_BUTTON)
+        rescan.setToolTip(
+            "Look in the plugins folder again (this imports the plugin files). "
+            "The editor otherwise scans once per session."
+        )
+        rescan.clicked.connect(self._rescan_dropins)
+        folder_row.addWidget(rescan, 0, Qt.AlignTop)
+        lay.addLayout(folder_row)
+
+        self._dropin_tree = QTreeWidget()
+        self._dropin_tree.setRootIsDecorated(False)
+        self._dropin_tree.setHeaderLabels(["Id", "Kind", "Name", "File", ""])
+        self._dropin_tree.setEditTriggers(QTreeWidget.NoEditTriggers)
+        lay.addWidget(self._dropin_tree)
+
+        self._dropin_notice = None
+        if found.unavailable:
+            self._dropin_notice = (
+                f"Drop-in discovery is unavailable: {found.unavailable}"
+            )
+        elif not found.entries and not found.errors:
+            self._dropin_notice = "No drop-in plugin files found in this folder."
+        if self._dropin_notice:
+            notice = QLabel(self._dropin_notice)
+            notice.setTextFormat(Qt.PlainText)
+            notice.setWordWrap(True)
+            lay.addWidget(notice)
+
+        listed = set()
+        for key in ("reconstructors", "processors"):
+            value = (current or {}).get(key)
+            if isinstance(value, list):
+                listed.update(str(v) for v in value)
+        for plugin_id, kind, name, path in found.entries:
+            note = (
+                "listed in this setup — not portable to computers without the file"
+                if plugin_id in listed else ""
+            )
+            item = QTreeWidgetItem([plugin_id, kind, name, os.path.basename(path), note])
+            item.setToolTip(3, path)
+            self._dropin_tree.addTopLevelItem(item)
+        for column in range(self._dropin_tree.columnCount()):
+            self._dropin_tree.resizeColumnToContents(column)
+        self._dropin_tree.setVisible(bool(found.entries))
+
+        for path, message in found.errors:
+            last = next((ln for ln in reversed(message.splitlines()) if ln.strip()), message)
+            err = QLabel(f"Could not load {os.path.basename(path)}: {last.strip()}")
+            err.setTextFormat(Qt.PlainText)
+            err.setWordWrap(True)
+            err.setToolTip(message)
+            err.setStyleSheet("color:#C04000;")
+            lay.addWidget(err)
+        lay.addStretch()
+        return self._scrolling(inner)
+
+    def _rescan_dropins(self) -> None:
+        """Discover the drop-in folder again and redraw the page."""
+        self._dropins = _cached_dropins(self._dropin_directory, refresh=True)
+        index = self._page_titles.index(self._DROPIN_PAGE)
+        was_current = self._page_list.currentRow() == index
+        old = self._stack.widget(index)
+        self._stack.removeWidget(old)
+        old.setParent(None)
+        old.deleteLater()
+        self._stack.insertWidget(index, self._build_dropin_page(self._loaded))
+        if was_current:
+            self._stack.setCurrentIndex(index)
+
+    def _build_custom_tab(self, current: dict | None) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
+        lay.addWidget(self._note(
+            "Keys in the block that this editor has no field for. They are kept "
+            "as written; add your own here."
+        ))
+        known = {f["key"] for f in self._schema.get("fields", [])}
+        lay.addWidget(self._build_custom_page(current, known), 1)
+        row = QHBoxLayout()
+        row.addWidget(self._add_property_button())
+        row.addStretch()
+        lay.addLayout(row)
+        return page
+
+    def _build_computer_page(self) -> QWidget:
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
+        text = QLabel(
+            "<p>Some ImProcess settings belong to a computer, not to a setup, so "
+            "they are not in this editor and not in the setup file. They are set "
+            "inside ImProcess and stored in "
+            "<b>ImSwitchConfig/config/improcess_options.json</b>:</p>"
+            "<ul>"
+            "<li><b>Fiji location</b> — Plugins → Fiji → Fiji location…</li>"
+            "<li><b>Image display</b> (napari or separate windows) — "
+            "Preferences → Image display</li>"
+            "<li><b>Default folders</b> — Preferences → Default folders…</li>"
+            "</ul>"
+        )
+        text.setTextFormat(Qt.RichText)
+        text.setWordWrap(True)
+        lay.addWidget(text)
+        lay.addStretch()
+        return self._scrolling(inner)
+
+    # ── Apply ───────────────────────────────────────────────────────────────
+    def _try_apply(self):
+        if self._endpoints is not None:
+            problem = self._endpoints.validation_error()
+            if problem:
+                self._show_page(
+                    self._schema_fields_group("napariEndpoints") or self._page_titles[0]
+                )
+                self._err_lbl.setText(problem)
+                return
+        out, missing = _collect_section_result(
+            self._schema, self._received, self._field_widgets, self._custom_widgets
+        )
+        if missing:
+            self._err_lbl.setText("Missing required: " + ", ".join(missing))
+            return
+        self._result = out
+        self.accept()
+
+    def _schema_fields_group(self, key: str) -> str:
+        field_def = _schema_fields(self._schema).get(key) or {}
+        return field_def.get("grp", "")
+
+    @property
+    def result_data(self) -> dict:
+        return self._result
+
+
+def _edit_improcess_section(data: dict, parent=None) -> bool:
+    """Open the ImProcess dialog on ``data``'s block; write it back on Apply.
+
+    A missing or empty block opens on the new-section seed. Returns whether
+    the operator applied; the caller refreshes what shows the block and
+    marks the document modified.
+    """
+    schema = SECTION_SCHEMAS.get(IMPROCESS_SECTION_KEY)
+    if schema is None:
+        return False
+    current = data.get(IMPROCESS_SECTION_KEY)
+    if not isinstance(current, dict) or not current:
+        current = _new_section_seed(schema)
+    dlg = ImProcessSectionDialog(schema, current, data, parent)
+    if dlg.exec_() != QDialog.Accepted:
+        return False
+    data[IMPROCESS_SECTION_KEY] = dlg.result_data
+    return True
 
 
 class WidgetPickerDialog(QDialog):
@@ -5109,20 +6749,13 @@ class ValidationPanel(QFrame):
         # Try to use model validation service (Phase 4)
         try:
             from imswitch.imcontrol.model.plugins.registry import build_default_registry
-            from imswitch.imcontrol.model.plugins.validation import (
-                validate_setup_data,
-                ValidationContext,
-            )
+            from imswitch.imcontrol.model.plugins.validation import validate_setup_data
             
             # Build registry
             registry = build_default_registry(discover=True)
             
             # Build context with editor-supplied inputs
-            context = ValidationContext(
-                widget_requires_section=_WIDGET_REQUIRES_SECTION,
-                known_reconstructor_ids=tuple(_section_option_values("processing", "reconstructors")),
-                known_processor_ids=tuple(_section_option_values("processing", "processors")),
-            )
+            context = _improcess_validation_context(data)
             
             # Validate using model
             report = validate_setup_data(data, registry, context=context)
@@ -5525,6 +7158,10 @@ class MainWindow(QMainWindow):
         canvas.sig_category_settings.connect(
             lambda cat, p=pane: self._on_category_settings(cat, p)
         )
+        if pane == "primary":
+            canvas.sig_improcess_edit.connect(self._on_improcess_edit)
+            canvas.sig_improcess_remove.connect(self._on_improcess_remove)
+            canvas.sig_improcess_preset.connect(self._on_improcess_preset)
 
     def _pane_data(self, pane: str) -> dict:
         return self._compare_data if pane == "compare" else self._data
@@ -6552,16 +8189,60 @@ class MainWindow(QMainWindow):
     def _on_extras_modified(self):
         pane = self._editor_pane if self._compare_mode else "primary"
         self._mark_pane_modified(pane)
+        # An edit made in the System card or from a validation link can
+        # change the ImProcess block; its card on the canvas follows.
+        self._pane_canvas(pane).refresh_improcess()
         self._validate_pane(pane)
+
+    def _on_improcess_edit(self):
+        """Configure / Edit on the canvas's ImProcess card."""
+        if _edit_improcess_section(self._data, self):
+            self._after_improcess_change()
+
+    def _on_improcess_preset(self):
+        """Start from preset on the canvas's ImProcess card."""
+        preset = _pick_improcess_preset(self)
+        if preset is None:
+            return
+        if _improcess_block_is_set(self._data) \
+                and not _confirm_improcess_preset_replace(self, preset.title):
+            return
+        self._data[IMPROCESS_SECTION_KEY] = copy.deepcopy(preset.processing)
+        self._after_improcess_change()
+
+    def _after_improcess_change(self):
+        # The canvas's card belongs to the primary pane, whichever pane the
+        # inspector follows.
+        self._editor._refresh_sections()
+        self._mark_pane_modified("primary")
+        self._canvas.refresh_improcess()
+        self._validate_pane("primary")
+
+    def _on_improcess_remove(self):
+        """Remove on the canvas's ImProcess card, after confirmation."""
+        r = QMessageBox.question(
+            self, "Remove section",
+            f"Remove the '{IMPROCESS_SECTION_KEY}' section from this config?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if r != QMessageBox.Yes:
+            return
+        self._data.pop(IMPROCESS_SECTION_KEY, None)
+        self._after_improcess_change()
 
     def _on_fix_section_from_validation(self, section_key: str):
         """Handle 'Configure…' link clicks from validation warnings."""
         schema = SECTION_SCHEMAS.get(section_key)
         if not schema:
             return
+        if section_key == IMPROCESS_SECTION_KEY:
+            if _edit_improcess_section(self._data, self):
+                self._editor._refresh_sections()
+                self._on_extras_modified()
+            return
         current = self._data.get(section_key)
         if current in (None, {}, []):
-            current = _build_default_section(schema)
+            current = _new_section_seed(schema)
         dlg = SectionEditorDialog(section_key, schema, current, self._data, self)
         if dlg.exec_() == QDialog.Accepted:
             self._data[section_key] = dlg.result_data

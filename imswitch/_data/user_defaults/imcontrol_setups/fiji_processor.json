@@ -1,5 +1,6 @@
 {
-    "// description": "Ultimate minimal setup for using ImProcess as a Fiji/ImageJ-like stand-alone processor. No hardware devices are declared. The initial GUI starts as menus/toolbars only: core docks, optional analysis docks, napari layer controls and the Reconstruction dock are hidden until opened or data is displayed. Fiji-like image toolbar actions and Analysis toolbar panel shortcuts remain available; processor-backed tools register on demand. To use, also set 'enabled' to ['improcess'] in modules.json.",
+    "// title": "Fiji-like image processing",
+    "// description": "ImProcess as a stand-alone image viewer and processor in the style of Fiji and ImageJ. It starts with menus and toolbars only: every dock stays hidden until you open it or data is shown, and processing tools register when you first use them. No hardware is needed.",
 
     "processing": {
         "parameterPanel": false,

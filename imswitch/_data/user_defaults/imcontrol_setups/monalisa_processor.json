@@ -1,5 +1,6 @@
 {
-    "// description": "Minimal setup for running ImProcess as a stand-alone post-acquisition processor with the MoNaLISA reconstruction pipeline. No hardware devices are declared - this setup is meant for opening existing acquisitions (HDF5/Zarr/TIFF), reconstructing them, and saving the result. Set processing.graphPanel to true to show the optional graph panel. Optional analysis panels can be enabled with processing.projectionPanel, processing.segmentationPanel, processing.psfResolutionPanel, processing.colocalizationPanel, processing.frcPanel, processing.roiManagerPanel and processing.roiStatsPanel. To use, also set 'enabled' to ['improcess'] in modules.json.",
+    "// title": "MoNaLISA reconstruction",
+    "// description": "Reconstruct existing MoNaLISA acquisitions and analyse the result: drift correction, projections, segmentation, PSF resolution, colocalization and FRC, with their panels and the ROI tools open. View-only stays available for the raw data. No hardware is needed.",
 
     "processing": {
         "graphPanel": true,
