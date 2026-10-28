@@ -1,31 +1,31 @@
 """MoNaLISA timelapse with live reconstruction and bleaching compensation.
 
 What it does
-  Runs the scan the Scan widget holds once per timepoint and records it
-  into memory -- no file is written -- then reconstructs that timepoint
-  with the ImProcess MoNaLISA reconstructor straight from memory and shows
-  the reconstruction in the image view as it comes in. The timepoints are
+  Runs the scan the Scan widget holds once per timepoint, records it into
+  memory -- no file is written -- and reconstructs that timepoint with the
+  ImProcess MoNaLISA reconstructor straight from memory, showing the
+  reconstruction in the image view as it comes in. The timepoints are
   grouped in blocks of BLOCK_SIZE; when a block's mean reconstructed
   intensity is significantly lower than the previous block's, the power of
-  LASER is raised by the factor that restores the previous block's level,
-  through the calibrated power response (see "Calibration"). The power
-  never exceeds MAX_POWER.
+  the activation laser ACT_LASER is raised by the factor that restores the
+  previous block's level, through the calibrated power response (see
+  "Calibration"). It never exceeds MAX_POWER_ACT. The excitation and
+  off-switching lasers stay at EXC_POWER and OFF_POWER throughout.
 
   The illumination grid is localized once, on the first timepoint, and
   every later timepoint is reconstructed on that grid, so the intensities
   of all timepoints are measured on the same foci.
 
 Calibration
-  Reconstructed intensity is modelled as I = a * P**RESPONSE_EXPONENT. To
-  restore I_previous from I_now the power is multiplied by
+  Reconstructed intensity is modelled as I = a * P_act**RESPONSE_EXPONENT.
+  To restore I_previous from I_now the activation power is multiplied by
       (I_previous / I_now) ** (1 / RESPONSE_EXPONENT).
-  RESPONSE_EXPONENT = 1 is fluorescence excited below saturation (emission
-  proportional to excitation). For an activation laser (405 nm) or near
-  saturation it is not 1: list powers in CALIBRATION_POWERS and the script
-  first scans once at each, reconstructs, and fits the exponent from the
-  log-log slope. Those scans bleach the sample too -- calibrate on a spot
-  next to the one you image, or on a sacrificial sample, and copy the fitted
-  exponent printed here into RESPONSE_EXPONENT for the real run.
+  Measure the exponent separately (reconstructed intensity at a few 405
+  powers, slope of log I against log P) and set RESPONSE_EXPONENT. Near
+  saturation of the activation it is well below 1, and more 405 adds little
+  signal: once the switchable protein is used up, the power climbs to
+  MAX_POWER_ACT without restoring the level -- the log then shows a run of
+  "capped" decisions.
 
   "Significantly lower" is a one-sided test on the two block means: the
   drop must exceed SIGNIFICANCE_Z standard errors (from the scatter of the
@@ -37,7 +37,7 @@ Output
   The image view: the latest reconstruction ("MoNaLISA live"), and at the
   end the whole timelapse as a stack ("MoNaLISA timelapse").
   In the recording folder:
-    <NAME>_log.csv                timepoint, time, power, intensity, block decision
+    <NAME>_log.csv                timepoint, time, act_power, intensity, block decision
     <NAME>_raw/ (SAVE_RAW)        each timepoint's raw recording, HDF5
     <NAME>_timelapse.tif (SAVE_RECONSTRUCTIONS)   the reconstructed stack
 
@@ -45,10 +45,20 @@ Setup
   Your own microscope: a MoNaLISA Scan widget whose TTL cycle triggers the
   camera, the camera, the Laser, Recording and Image widgets. Set up the
   scan in the Scan widget first -- the script runs whatever it shows.
-  Change CAMERA, LASER and the powers to yours (in the units the Laser
-  widget shows).
+  Change CAMERA, the laser names and the powers to yours (in the units the
+  Laser widget shows).
+
+  The script assumes two things of the setup:
+  * The scan's TTL cycle switches the three lasers on and off: the script
+    sets their powers but never switches them on.
+  * The scan runs the lasers at their Live power (setLaserValue). With
+    separate Live and Scan powers and a Scan power saved, or a laser whose
+    power the scan's analog output drives, a power the script sets does
+    not reach the acquisition. getLaserAcquisitionState(name) says which
+    power a scan would use.
+
   On a mock setup the reconstructed intensity does not respond to the
-  laser, so it shows the wiring, not the compensation.
+  lasers, so it shows the wiring, not the compensation.
 """
 
 import csv
@@ -65,10 +75,14 @@ from imswitch.improcess.reconstructors.run import run_reconstruction
 from imswitch.improcess.workflows import bootstrap_registry
 
 # --- Your microscope ---------------------------------------------------------
-CAMERA = 'Camera'
-LASER = '488 (EXC)'
-START_POWER = 2.0            # laser units; the power of the first block
-MAX_POWER = 8.0              # laser units; never set higher than this
+CAMERA = 'Green'
+EXC_LASER = '488 (EXC)'
+EXC_POWER = 2.0              # laser units; fixed
+OFF_LASER = '488 (OFF)'
+OFF_POWER = 150              # laser units; fixed
+ACT_LASER = '405 (ON)'
+START_POWER_ACT = 2.0        # laser units; the activation power of the first block
+MAX_POWER_ACT = 50.0         # laser units; never set higher than this
 
 # --- The timelapse -----------------------------------------------------------
 NAME = 'monalisa_bleach_comp'
@@ -77,8 +91,7 @@ INTERVAL_S = 10.0            # from the start of one timepoint to the next
 BLOCK_SIZE = 5               # timepoints compared as one block
 
 # --- Compensation ------------------------------------------------------------
-RESPONSE_EXPONENT = 1.0      # I ~ P**exponent; 1 = linear excitation (see Calibration)
-CALIBRATION_POWERS = []      # e.g. [1.0, 2.0, 4.0] to fit the exponent first
+RESPONSE_EXPONENT = 1.0      # I ~ P_act**exponent; measured separately (see Calibration)
 SIGNIFICANCE_Z = 2.0         # one-sided, ~2.3 % false-alarm rate per block
 MIN_RELATIVE_DROP = 0.05     # ignore drops below 5 % of the previous block
 
@@ -134,12 +147,6 @@ def reconstruct(camera, pattern, name):
     return np.squeeze(result.display_layer_data()[0])   # layer 0 = the reconstructed signal
 
 
-def fitExponent(powers, intensities):
-    """Slope of log I against log P."""
-    slope, _ = np.polyfit(np.log(powers), np.log(intensities), 1)
-    return float(slope)
-
-
 def compareBlocks(previous, current):
     """(significant, relative change, previous/current) of two blocks' means.
 
@@ -156,26 +163,13 @@ def compareBlocks(previous, current):
     return significant, -drop / mp, mp / mc
 
 
-power = START_POWER
+power = START_POWER_ACT
 pattern = dict(PATTERN) if PATTERN else None
 rows, images = [], []
 try:
-    api.imcontrol.setLaserValue(LASER, power)
-    api.imcontrol.setLaserActive(LASER, True)
-
-    exponent = RESPONSE_EXPONENT
-    if CALIBRATION_POWERS:
-        calIntensities = []
-        for i, calPower in enumerate(CALIBRATION_POWERS):
-            api.imcontrol.setLaserValue(LASER, calPower)
-            camera = recordTimepoint()
-            if pattern is None:
-                pattern = localizePattern(camera)
-            calIntensities.append(float(np.mean(reconstruct(camera, pattern, f'cal{i:02d}'))))
-            print(f'calibration: power {calPower} -> intensity {calIntensities[-1]:.4g}')
-        exponent = fitExponent(CALIBRATION_POWERS, calIntensities)
-        print(f'fitted RESPONSE_EXPONENT = {exponent:.3f}')
-        api.imcontrol.setLaserValue(LASER, power)
+    api.imcontrol.setLaserValue(ACT_LASER, power)
+    api.imcontrol.setLaserValue(EXC_LASER, EXC_POWER)
+    api.imcontrol.setLaserValue(OFF_LASER, OFF_POWER)
 
     intensities = []
     t0 = time.monotonic()
@@ -198,9 +192,9 @@ try:
         show(image, 'MoNaLISA live')
         intensity = float(np.mean(image))
         intensities.append(intensity)
-        row = {'timepoint': t, 'time_s': round(tStart, 2), 'power': power,
+        row = {'timepoint': t, 'time_s': round(tStart, 2), 'act_power': power,
                'intensity': intensity, 'decision': ''}
-        print(f't={t:3d}  {tStart:7.1f} s  power {power:.3g}  intensity {intensity:.4g}')
+        print(f't={t:3d}  {tStart:7.1f} s  405 power {power:.3g}  intensity {intensity:.4g}')
 
         # A block is complete: compare it with the one before.
         if (t + 1) % BLOCK_SIZE == 0 and t + 1 >= 2 * BLOCK_SIZE:
@@ -210,22 +204,28 @@ try:
             if change is None:
                 row['decision'] = 'no positive intensity to compare'
             elif significant:
-                wanted = power * ratio ** (1.0 / exponent)
-                newPower = min(wanted, MAX_POWER)
+                wanted = power * ratio ** (1.0 / RESPONSE_EXPONENT)
+                newPower = min(wanted, MAX_POWER_ACT)
                 row['decision'] = f'{change:+.1%}: power {power:.3g} -> {newPower:.3g}'
                 if newPower < wanted:
                     row['decision'] += f' (capped, wanted {wanted:.3g})'
-                    log.warning(f'power capped at MAX_POWER = {MAX_POWER}')
+                    log.warning(f'power capped at MAX_POWER_ACT = {MAX_POWER_ACT}')
                 power = newPower
-                api.imcontrol.setLaserValue(LASER, power)
+                api.imcontrol.setLaserValue(ACT_LASER, power)
             else:
                 row['decision'] = f'{change:+.1%}: not a significant drop'
             print('   block:', row['decision'])
         rows.append(row)
 finally:
-    # Lasers first: whatever went wrong, the sample should not stay lit.
-    api.imcontrol.setLaserValue(LASER, 0)
-    api.imcontrol.setLaserActive(LASER, False)
+    # Lasers first: whatever went wrong, the sample should not stay lit. Each
+    # laser on its own, so one that fails does not leave the others on.
+    for laser in (ACT_LASER, EXC_LASER, OFF_LASER):
+        try:
+            api.imcontrol.setLaserValue(laser, 0)
+            api.imcontrol.setLaserActive(laser, False)
+        except Exception as error:
+            log.error(f'could not switch {laser} off: {error}')
+
     if images and len({image.shape for image in images}) == 1:
         stack = np.stack(images)
         show(stack, 'MoNaLISA timelapse')

@@ -396,7 +396,8 @@
   ],
   "scripts/workflows/monalisa/01_bleach_compensated_timelapse.py": [
    "0a31d08a7cc60eff85491e8082219c19ec903b8a656e0d7b8dd5d3f1f7277fff",
-   "b47485adf2e36c72b91ef7a890e2dbc733636964e3e03687d3ee208a6fefaea5"
+   "b47485adf2e36c72b91ef7a890e2dbc733636964e3e03687d3ee208a6fefaea5",
+   "e282f7bd8fab56b0094ab042867b4c5144bddaca62677d12980f71386fe54cb3"
   ],
   "scripts/workflows/timeresolved/01_binned_photon_arrivals.py": [
    "dd1d25460ea63e07ade1ec9cc41c1ee0f75fcb59691cd351b919808f32a98e70"
