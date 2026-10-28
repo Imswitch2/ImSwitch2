@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional
 
 from imswitch.imcommon.framework import Signal, FrameworkUtils
 from imswitch.imcommon.model import (
-    APIExport, cancellableSleep, checkpoint, generateAPI, initLogger,
+    APIExport, cancellableSleep, checkpoint, convertInputText, generateAPI, initLogger,
 )
 
 
@@ -14,9 +14,10 @@ class _Actions:
     """ Additional functions intended to be made available through the
     scripting API. """
 
-    def __init__(self, scriptScope, scriptPath=None):
+    def __init__(self, scriptScope, scriptPath=None, inputs=None):
         self._scriptScope = scriptScope
         self._scriptPath = scriptPath
+        self._inputs = dict(inputs or {})
         self._scriptLogger = initLogger('script')
 
     @APIExport()
@@ -35,10 +36,28 @@ class _Actions:
 
         # Set script/actions scope
         script.__dict__.update(self._scriptScope)
-        script.__dict__.update(getActionsScope(self._scriptScope, self._scriptPath))
+        script.__dict__.update(
+            getActionsScope(self._scriptScope, self._scriptPath, self._inputs)
+        )
 
         # Return
         return script
+
+    @APIExport()
+    def scriptInput(self, name: str, default: Any = None, description: str = '') -> Any:
+        """ Returns the value given for the input ``name`` when the script was
+        started with inputs (e.g. from the ScriptRunner widget), otherwise
+        ``default``. The ScriptRunner widget finds these calls in the script
+        without running it and shows a field for each, so write the name (and
+        ideally the default) as a plain value: ``exposure =
+        scriptInput('exposure_ms', 10.0, 'Exposure per frame')``. A value given
+        as text is converted to the type of the default. """
+        if name not in self._inputs:
+            return default
+        value = self._inputs[name]
+        if isinstance(value, str) and isinstance(default, (bool, int, float)):
+            value = convertInputText(value, type(default))
+        return value
 
     @APIExport()
     def getScriptDirPath(self) -> str:
@@ -187,9 +206,10 @@ class _Actions:
                 time.sleep(pollIntervalSeconds)
 
 
-def getActionsScope(otherScope, scriptPath=None):
-    """ Returns the script scope for the actions. """
-    return generateAPI([_Actions(otherScope, scriptPath)])._asdict()
+def getActionsScope(otherScope, scriptPath=None, inputs=None):
+    """ Returns the script scope for the actions. ``inputs`` are the values
+    ``scriptInput`` returns, by input name. """
+    return generateAPI([_Actions(otherScope, scriptPath, inputs)])._asdict()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

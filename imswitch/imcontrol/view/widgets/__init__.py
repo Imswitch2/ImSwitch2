@@ -40,6 +40,7 @@ _WIDGET_MODULES = {
     "ScanWidgetBase": "ScanWidgetBase",
     "ScanWidgetMoNaLISA": "ScanWidgetMoNaLISA",
     "ScanWidgetPointScan": "ScanWidgetPointScan",
+    "ScriptRunnerWidget": "ScriptRunnerWidget",
     "SettingsWidget": "SettingsWidget",
     "SetupStatusWidget": "SetupStatusWidget",
     "SetupModesWidget": "SetupModesWidget",

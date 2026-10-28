@@ -97,6 +97,35 @@ can decide whether to wait for the end of the recording
 ``tutorial/scanning/05_laser_power_series.py`` is this pattern in full,
 runnable on a mock setup.
 
+.. _scripting-inputs:
+
+Script inputs and the Script Runner panel
+==========================================
+
+``scriptInput(name, default, description)`` declares a value that can be
+set without editing the script, and returns it:
+
+.. code-block:: python
+
+    exposure = scriptInput('exposure_ms', 10.0, 'Exposure per frame, in ms')
+    frames = scriptInput('frames', 100)
+
+Run from the editor it returns the default. The **Script Runner** panel in
+Hardware Control (``ScriptRunner`` in ``availableWidgets``; it needs the
+Scripting module) shows the chosen script's name, a **Choose script…**
+button, one text field per ``scriptInput`` call, and **Run** / **Stop**.
+The panel reads the calls from the file without running it, so the name
+and the default must be plain values; a default that is computed
+(``2 * np.pi``) still gets a field, filled with nothing, and an empty field
+always means the script's own default. The default's type decides what may
+be typed -- ``10.0`` a number, ``100`` a whole number, ``True`` a yes/no,
+``'x'`` any text -- and a value that does not fit is marked before anything
+runs. The form follows the file as it is saved; values you typed are kept
+per script, also across restarts. The run is an ordinary script run: its
+output is in the Scripting tab, and the panel refuses to start while
+another script runs rather than stopping it. ``tutorial/basic/09`` is an
+example.
+
 Reserving devices and instruments
 =================================
 
@@ -140,7 +169,8 @@ what it will do, and only then press **Run all**.
     and to files, camera settings and the live view, recording a number of
     frames and reading the file back, clean-up that survives the Stop
     button, and sharing code between scripts with ``importScript()``. Then
-    two cameras and stages (``example_no_hardware.json``, steps 07-08).
+    two cameras and stages (``example_no_hardware.json``, steps 07-08), and
+    inputs for the Script Runner panel with ``scriptInput()`` (step 09).
 
 ``tutorial/scanning``
     Scans that trigger a camera, one frame per scan position, and scan

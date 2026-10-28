@@ -16,6 +16,10 @@ from .state_contracts import (
     rewordRestoreWarning,
 )
 from .WidgetStatePersistence import WidgetStatePersistence, getWidgetStatePersistence
+from .script_inputs import (
+    SCRIPT_INPUT_FUNCTION, ScriptInputScan, ScriptInputSpec, convertInputText,
+    findScriptInputs,
+)
 from .acquisition_layout import (
     ACQUISITION_LAYOUT_SCHEMA,
     MAX_INLINE_LAYOUT_BYTES,

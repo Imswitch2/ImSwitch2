@@ -54,6 +54,7 @@ class ScriptExecutor(SignalInterface):
 
     sigOutputAppended = Signal(str)  # (outputText)
     _sigExecute = Signal(str, str, object)  # (scriptPath, code, result)
+    sigExecutionStarted = Signal(object)  # (ScriptRunResult)
     sigExecutionFinished = Signal(object)  # (ScriptRunResult)
 
     def __init__(self, scriptScope, *, cleanupBudgetS=DEFAULT_CLEANUP_BUDGET_S,
@@ -95,15 +96,18 @@ class ScriptExecutor(SignalInterface):
     # ------------------------------------------------------------------ #
     # Running                                                             #
     # ------------------------------------------------------------------ #
-    def execute(self, scriptPath, code):
+    def execute(self, scriptPath, code, inputs=None, requestId=None):
         """Executes the specified script code. scriptPath is the path to the
         script file if it exists, or None if the script has not been saved to
-        a file. Returns the ScriptRunResult object.
+        a file. inputs are the values the script's scriptInput() calls return,
+        by name; requestId is stored on the result for the caller to
+        recognise its run. Returns the ScriptRunResult object.
 
         If a script is still running (or still stopping), it is cancelled and
         the new run starts once it has finished; the returned result then
         stays ``RUNNING`` until that moment."""
-        result = ScriptRunResult(script_path=scriptPath)
+        result = ScriptRunResult(script_path=scriptPath, inputs=inputs,
+                                 request_id=requestId)
         if self.isExecuting():
             self.cancel()
             replaced = self._pendingRun
@@ -123,6 +127,7 @@ class ScriptExecutor(SignalInterface):
         self._currentResult = result
         result.mark_started()
         self._executionThread.start()
+        self.sigExecutionStarted.emit(result)
         self._sigExecute.emit(scriptPath, code, result)
 
     def _onWorkerFinished(self, result):
@@ -311,7 +316,7 @@ class ExecutionThread(Worker):
         """Execute script code with per-run output capture and structured result."""
         scriptScope = {}
         scriptScope.update(self._scriptScope)
-        scriptScope.update(getActionsScope(self._scriptScope, scriptPath))
+        scriptScope.update(getActionsScope(self._scriptScope, scriptPath, result.inputs))
 
         token = CancelToken(cleanupBudgetS=self._cleanupBudgetS)
         self._token = token

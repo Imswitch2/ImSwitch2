@@ -9,6 +9,14 @@ class ModuleCommunicationChannel(SignalInterface):
     """
     sigRunScript = Signal(str)
     sigExecutionFinished = Signal()
+    # Runs of a script file with scriptInput() values (imcontrol's
+    # ScriptRunner widget -> imscripting). Started/finished are emitted for
+    # every run, whoever asked for it, with its ScriptRunResult; a refused
+    # request is reported as finished (failed) without a start.
+    sigRunScriptFile = Signal(str, object, str)  # (scriptPath, inputs, requestId)
+    sigStopScriptRun = Signal(str)  # (requestId)
+    sigScriptRunStarted = Signal(object)  # (ScriptRunResult)
+    sigScriptRunFinished = Signal(object)  # (ScriptRunResult)
     sigLiveReconResult = Signal(str, object, object)  # (name, image, scale)
 
     @property

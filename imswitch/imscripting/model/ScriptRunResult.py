@@ -15,9 +15,15 @@ class ScriptRunStatus(Enum):
 class ScriptRunResult:
     """Structured result for a script run."""
     
-    def __init__(self, script_path: Optional[str] = None):
+    def __init__(self, script_path: Optional[str] = None, inputs: Optional[dict] = None,
+                 request_id: Optional[str] = None):
         self.id: str = str(uuid.uuid4())
         self.script_path: Optional[str] = script_path
+        # Values the script's scriptInput() calls return, by input name.
+        self.inputs: dict = dict(inputs or {})
+        # Set by whoever asked for the run (e.g. the ScriptRunner widget) to
+        # recognise its own run among the started/finished notifications.
+        self.request_id: Optional[str] = request_id
         self.status: ScriptRunStatus = ScriptRunStatus.RUNNING
         self.stdout: str = ""
         self.error: Optional[str] = None

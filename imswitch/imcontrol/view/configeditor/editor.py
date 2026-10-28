@@ -3653,6 +3653,7 @@ def _load_widget_registry() -> dict:
         "EtMonalisa": "Advanced",
         "Tiling": "Advanced",
         "Watcher": "Advanced",
+        "ScriptRunner": "Advanced",
     }
 
     # ── Source 1: hardcoded baseline (always present) ──
@@ -3696,6 +3697,7 @@ def _load_widget_registry() -> dict:
             ("EtMonalisa", "EtMonalisa widget"),
             ("Tiling",     "Spiral tiling scan"),
             ("Watcher",    "File watcher"),
+            ("ScriptRunner", "Run a script with inputs"),
         ],
     }
 

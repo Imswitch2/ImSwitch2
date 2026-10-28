@@ -54,6 +54,16 @@ Global-level functions
    stopped (the running scan then finishes on its own). ``source`` picks
    the scan controller on rigs with several. 
 
+.. method:: scriptInput(name: str, default: Any = None, description: str = '') -> Any
+
+   Returns the value given for the input ``name`` when the script was
+   started with inputs (e.g. from the ScriptRunner widget), otherwise
+   ``default``. The ScriptRunner widget finds these calls in the script
+   without running it and shows a field for each, so write the name (and
+   ideally the default) as a plain value: ``exposure =
+   scriptInput('exposure_ms', 10.0, 'Exposure per frame')``. A value given
+   as text is converted to the type of the default. 
+
 .. method:: sleep(seconds: float) -> None
 
    Sleeps for the specified number of seconds. Unlike ``time.sleep``,

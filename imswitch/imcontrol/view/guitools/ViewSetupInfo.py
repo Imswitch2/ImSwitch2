@@ -120,6 +120,8 @@ class ViewSetupInfo(SetupInfo):
     - ``BFTimelapse`` (BFTimelapse widget)
     - ``Tiling`` (spiral tiling scan widget; requires ``tiling`` field to be defined)
     - ``SetupModes`` (general setup modes widget)
+    - ``ScriptRunner`` (runs one script with a field for each of its
+      ``scriptInput`` values; requires the Scripting module)
 
     You can also set this to ``true`` to enable all widgets, or ``false`` to
     disable all widgets.

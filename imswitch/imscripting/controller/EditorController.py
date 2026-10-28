@@ -1,7 +1,9 @@
 import os
 
 from imswitch.imcommon.model import dirtools
-from imswitch.imscripting.model import ScriptExecutor, ScriptStore, ScriptEntry
+from imswitch.imscripting.model import (
+    ScriptEntry, ScriptExecutor, ScriptRunResult, ScriptStore,
+)
 from imswitch.imcommon.model import initLogger
 from imswitch.imscripting.view import guitools
 from .basecontrollers import ImScrWidgetController
@@ -21,6 +23,9 @@ class EditorController(ImScrWidgetController):
 
         # Connect ScriptExecutor signals
         self.scriptExecutor.sigOutputAppended.connect(self._commChannel.sigOutputAppended)
+        self.scriptExecutor.sigExecutionStarted.connect(
+            self._moduleCommChannel.sigScriptRunStarted
+        )
         self.scriptExecutor.sigExecutionFinished.connect(self._onExecutionFinished)
 
         # Connect CommunicationChannel signals
@@ -30,6 +35,8 @@ class EditorController(ImScrWidgetController):
         self._commChannel.sigSaveFile.connect(self.saveFile)
         self._commChannel.sigSaveAsFile.connect(self.saveAsFile)
         self._commChannel.sigRunScript.connect(self.runScript)
+        self._moduleCommChannel.sigRunScriptFile.connect(self.runScriptFile)
+        self._moduleCommChannel.sigStopScriptRun.connect(self.stopScriptRun)
 
         # Connect EditorView signals
         self._widget.sigRunAllClicked.connect(self.runCurrentCode)
@@ -139,6 +146,7 @@ class EditorController(ImScrWidgetController):
         # The module-level signal carries no payload (the old signal-to-signal
         # connection dropped the result silently).
         self._moduleCommChannel.sigExecutionFinished.emit()
+        self._moduleCommChannel.sigScriptRunFinished.emit(result)
 
     def closeEvent(self):
         """ Module close: stop a running script with a bound. The application
@@ -181,6 +189,45 @@ class EditorController(ImScrWidgetController):
     def runScript(self, code):
         """Execute script code from external/remote source without a known file path."""
         self.scriptExecutor.execute(None, code)
+
+    def runScriptFile(self, scriptPath, inputs, requestId):
+        """ Runs the script file at scriptPath with the given scriptInput()
+        values, for a caller in another module (the ScriptRunner widget).
+        While another script runs the request is refused, reported as a
+        failed run that never started: unlike the editor's Run button there
+        is nobody to ask whether the running script may be stopped. """
+        # getCurrentResult(): isExecuting() only turns true once the script
+        # thread has picked the run up.
+        if self.scriptExecutor.isExecuting() or self.scriptExecutor.getCurrentResult():
+            self._refuseRun(scriptPath, inputs, requestId,
+                            'Another script is running; stop it first.')
+            return
+        try:
+            code = ScriptEntry.loadFromFile(scriptPath).code
+        except OSError as e:
+            self._refuseRun(scriptPath, inputs, requestId,
+                            f'Could not read {scriptPath}: {e}')
+            return
+
+        self._commChannel.sigExecutionStarted.emit()
+        self.scriptExecutor.execute(scriptPath, code, inputs=inputs, requestId=requestId)
+
+    def stopScriptRun(self, requestId):
+        """ Stops the running script if it was started with requestId. No
+        confirmation: whoever started it asked to stop it. """
+        result = self.scriptExecutor.getCurrentResult()
+        if result is None or result.request_id != requestId:
+            return
+        if self.scriptExecutor.isStopping():
+            return
+        self.scriptExecutor.cancel()
+        self._widget.setStopping(True)
+
+    def _refuseRun(self, scriptPath, inputs, requestId, reason):
+        self.__logger.warning(reason)
+        result = ScriptRunResult(script_path=scriptPath, inputs=inputs, request_id=requestId)
+        result.mark_failed(reason)
+        self._moduleCommChannel.sigScriptRunFinished.emit(result)
 
 _untitledFileName = '(untitled)'
 _scriptsFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'scripts')

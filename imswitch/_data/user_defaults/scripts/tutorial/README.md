@@ -71,6 +71,7 @@ back, delete your copy and restart ImSwitch.
 | 06 | `06_share_code_between_scripts.py` | `example_mock.json` | `importScript()` (uses `tutorial_helpers.py`) |
 | 07 | `07_two_cameras.py` | `example_no_hardware.json` | one camera after the other, then both together |
 | 08 | `08_move_the_stage.py` | `example_no_hardware.json` | move stages, wait for them, snap a grid |
+| 09 | `09_inputs_for_the_script_runner.py` | `example_mock.json` | `scriptInput()`; run a script from the Script Runner widget |
 
 ## scanning
 

@@ -188,6 +188,7 @@
    "ba8e94139039ffbe2ba1a6922448c23ad0db8d3e13e6d7df80442313b6e11bc8"
   ],
   "scripts/tutorial/README.md": [
+   "22cbf4a3e14661c0405c4bd6629a86ed53552767e7eadb63dc8ca0da0cca925e",
    "40711c2c3bc22851052349080561e25285f864207bdb6b0212946a0256e3759c",
    "913c776a98180c33ce284e19416e58e4c197e5c83c3343dae4a350415307e1fa",
    "9e1f5152c82cc64572abfd2497c8d0b8baa8598bf1928822c26f81c813e8caf8",
@@ -197,7 +198,8 @@
   ],
   "scripts/tutorial/basic/01_hello_imswitch.py": [
    "2a661eceb758b42d934de34210a40e06562de80d47d6ea8b0c4178d7ee60eb80",
-   "7047bad75f83319bfee430184d2af6e97f502c16f29863b46809ca45c48ad322"
+   "7047bad75f83319bfee430184d2af6e97f502c16f29863b46809ca45c48ad322",
+   "9d0e81369c9350f36940d38c50d920757636daf7554b4fbad07a33471da17068"
   ],
   "scripts/tutorial/basic/02_snap_an_image.py": [
    "0b6f447d025318db6f7839853b29e962fef9056f769ef2174155aaa7b65e1a31",
@@ -236,10 +238,14 @@
    "1f3b51e3be7869fad615964373fc16ad89a1ec6768c5eeae916761a7965411ee"
   ],
   "scripts/tutorial/basic/08_move_the_stage.py": [
+   "3163cf655912ea203e91a18300dc8839f1dc9d26274509deceb8fd38113f5d2b",
    "fe59a5ce4ae7358983f5aed8890eb364d409d24dde0c5ec3430237e502b2d3e0"
   ],
   "scripts/tutorial/basic/08_share_code_between_scripts.py": [
    "0b10fce6e6422fa14af8258ac33ef48d7b2fc9712ee7bcc4019444eb4ac056fd"
+  ],
+  "scripts/tutorial/basic/09_inputs_for_the_script_runner.py": [
+   "88235a2d96b4582895b3feff545900c96af2d4bc2deaea3b03c96fc920b52f0a"
   ],
   "scripts/tutorial/basic/tutorial_helpers.py": [
    "397753663c4a54be2423a2b62d6cd9f9aadf4d3cf5b235d5cee4026666226c23",
