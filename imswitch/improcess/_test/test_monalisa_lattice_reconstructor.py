@@ -901,6 +901,79 @@ class TestFailures:
         assert fractions == sorted(fractions)
 
 
+class TestReusedLocalization:
+    """A reused localization is the reference's lattice on this scan."""
+
+    def test_a_raster_reuse_takes_its_step_from_its_own_scan(self):
+        # The reference covers the cell in 11 steps, the reused scan in 9:
+        # the step and the raster are the reused scan's, as if localized.
+        reference = make_scan(steps=(11, 11), background=0.0)
+        other = make_scan(steps=(9, 9), background=0.0)
+        plugin = MonalisaLatticeReconstructor()
+        plugin.process(
+            _recording(reference.frames, name="reference"),
+            _params(scan_steps_fast=11, scan_steps_slow=11, **PLAIN),
+        )
+        params = _params(scan_steps_fast=9, scan_steps_slow=9, **PLAIN)
+        fresh = MonalisaLatticeReconstructor().process(
+            _recording(other.frames, name="other"), params
+        )
+        reused = plugin.process(
+            _recording(other.frames, name="other"),
+            {**params, "reuse_localization": True},
+        )
+        assert reused.diagnostics["localization"] == "reused from reference"
+        assert reused.data.shape == fresh.data.shape
+        inner = (slice(20, -20), slice(20, -20))
+        assert np.allclose(
+            reused.data[inner], fresh.data[inner],
+            rtol=0.02, atol=0.02 * float(np.max(fresh.data[inner])),
+        )
+
+    def test_the_settings_of_the_extraction_are_the_references(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        params = _params(scan_steps_fast=11, scan_steps_slow=11, **PLAIN)
+        plugin = MonalisaLatticeReconstructor()
+        plugin.process(_recording(scan.frames, name="good"), params)
+        same = plugin.process(
+            _recording(scan.frames, name="again"),
+            {**params, "reuse_localization": True},
+        )
+        assert "localization_settings" not in same.diagnostics
+        changed = plugin.process(
+            _recording(scan.frames, name="again"),
+            {**params, "reuse_localization": True, "background": "none"},
+        )
+        assert changed.diagnostics["localization_settings"] == (
+            "background kept from good"
+        )
+
+    def test_a_run_that_did_not_finish_is_not_cached(self):
+        scan = make_scan(steps=(11, 11), background=0.0)
+        params = _params(scan_steps_fast=11, scan_steps_slow=11, **PLAIN)
+        plugin = MonalisaLatticeReconstructor()
+        plugin.process(_recording(scan.frames, name="good"), params)
+
+        # Three scans; cancelled once the second has started, before the third.
+        token = CancellationToken()
+
+        def progress(update):
+            if update.phase == "assemble" and update.completed == 1:
+                token.cancel()
+
+        context = ReconstructionContext(
+            progress_callback=progress, cancellation_token=token
+        )
+        frames = np.concatenate([scan.frames] * 3)
+        with pytest.raises(ReconstructionCancelled):
+            plugin.process(_recording(frames, name="cancelled"), params, context=context)
+
+        reused = plugin.process(
+            _recording(scan.frames, name="later"),
+            {**params, "reuse_localization": True},
+        )
+        assert reused.diagnostics["localization"] == "reused from good"
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #

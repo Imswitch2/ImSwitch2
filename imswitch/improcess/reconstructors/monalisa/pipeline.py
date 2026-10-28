@@ -227,7 +227,10 @@ def projected_axis_period(lattice: Lattice, axis: int) -> float:
     translation used historically.
     """
     axis = int(axis)
-    basis = np.asarray([lattice.a1, lattice.a2], dtype=float)
+    # A reduced basis has the shortest vectors, whose projections are the
+    # column spacings; a long basis vector's projection need not be.
+    reduced = lattice.reduced()
+    basis = np.asarray([reduced.a1, reduced.a2], dtype=float)
     components = np.abs(basis[:, axis])
     scale = float(np.max(components))
     if scale <= 1e-12:
@@ -324,7 +327,9 @@ def prepare_geometry(
             camera's x and y, as columns. A column of NaN, or ``None`` for
             both, is taken from the lattice (:func:`complete_step`): the
             period along that axis over the number of positions the scan
-            has along it -- for an axis that is not scanned, the period.
+            has along it -- for an axis that is not scanned, the spacing
+            of the lattice's focus columns along it
+            (:func:`projected_axis_period`).
         scan_index: ``(frames, 2)`` integer scan positions in steps.
         params: Pipeline parameters.
         lattice: The illumination lattice, when already known; detected
@@ -869,8 +874,8 @@ def reconstruct_scan(
             the stage-to-camera mapping (:func:`.scan_frame.orient_recorded_index`),
             chosen by smoothness when ``None``. ``step`` has the stage axes'
             steps as columns. Either axis may have one position: it is then
-            not scanned, and the output raster is one lattice period along
-            it.
+            not scanned, and the output raster has one pixel per focus
+            column of the lattice along it (:func:`projected_axis_period`).
         gain_positions: With ``scan_index``, the ``(fast, slow)`` position
             of every frame in the order visited, for the gain of the frames
             (:func:`.frame_gain.fit_frame_gain`); ``scan_index`` itself

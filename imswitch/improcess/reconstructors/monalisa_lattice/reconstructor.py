@@ -29,10 +29,11 @@ from imswitch.improcess.reconstructors.base import DetectionPreview, Reconstruct
 from ..monalisa.pipeline import (
     PipelineParams,
     find_foci,
+    geometry_with_step,
     prepare_geometry,
     reconstruct_scan,
 )
-from ..monalisa.scan_frame import ORIENTATIONS
+from ..monalisa.scan_frame import ORIENTATIONS, raster_scan_index
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
 from .result import MonalisaLatticeResult
 from .scan import LayoutScan, layout_scan, recorded_scan
@@ -42,6 +43,14 @@ if TYPE_CHECKING:
 
 # A pinhole stack is some seventy images of the size of the reconstruction.
 PINHOLE_STACK_LIMIT_BYTES = 8 * 1024**3
+
+
+# The settings the extraction operator and the spot model are built with. A
+# reused localization keeps its operator, so it keeps these too.
+_LOCALIZATION_FIELDS = (
+    "reach_sigma", "background", "haze_sigma_px", "joint",
+    "spot_mode", "spot_sigma_px", "period_band_px",
+)
 
 
 def pipeline_params(params: dict) -> PipelineParams:
@@ -87,6 +96,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
         "placed by the acquisition layout"
     )
     execution_policy = "worker"
+    output_kind = "image"
     requires_frame_stacks = True
     supports_consolidation = True
 
@@ -112,6 +122,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
             ParamField('orientation', 'select', AUTO, label='Orientation',
                        options=(AUTO, *ORIENTATIONS), group='Scan',
                        help='Fast axis first, for recordings without an acquisition layout'),
+            ParamField('reuse_localization', 'bool', False,
+                       label='Reuse last localization', group='Estimator',
+                       help='The lattice and spot of the last reconstruction made '
+                            'with this off, for frames too dim to localize'),
             ParamField('background', 'select', 'constant', label='Background',
                        options=('constant', 'none', 'auto'), group='Estimator',
                        help='auto: a haze term where the mean frame calls for one'),
@@ -208,8 +222,20 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 f"shape {reference['frame_shape']}, but this recording has "
                 f"shape {frame_shape}. Re-localize a compatible recording first."
             )
-        geometry = replace(reference["geometry"], params=settings)
-        return geometry, reference["orientation"], reference["source"]
+        # The operator and the spot model come with the geometry, built with
+        # the reference's settings; only what is read per scan follows the
+        # panel. A changed Background would otherwise be reported but not
+        # used.
+        kept = {
+            name: getattr(reference["geometry"].params, name)
+            for name in _LOCALIZATION_FIELDS
+        }
+        differ = [name for name in kept if getattr(settings, name) != kept[name]]
+        geometry = replace(reference["geometry"], params=replace(settings, **kept))
+        note = (
+            f"{', '.join(differ)} kept from {reference['source']}" if differ else None
+        )
+        return geometry, reference["orientation"], reference["source"], note
 
     def _remember_geometry(self, geometry, orientation, frames, source) -> None:
         """Keep one successful localization for an explicit later reuse."""
@@ -273,13 +299,20 @@ class MonalisaLatticeReconstructor(Reconstructor):
         settings = pipeline_params(params)
         reuse_localization = bool(params["reuse_localization"])
         reference_source = None
+        reuse_note = None
         geometry = None
         if reuse_localization:
-            geometry, reference_orientation, reference_source = self._reuse_geometry(
-                frames, settings
+            geometry, reference_orientation, reference_source, reuse_note = (
+                self._reuse_geometry(frames, settings)
             )
             if orientation is None:
                 orientation = reference_orientation
+            # The step and the raster are this scan's, not the reference's:
+            # read anew, as for every orientation of a layout-placed scan.
+            geometry = geometry_with_step(
+                geometry, step,
+                raster_scan_index(scan.num_fast, scan.num_slow, orientation),
+            )
         shape = (scan.num_fast, scan.num_slow)
         per_stack = scan.frames_per_stack
 
@@ -304,11 +337,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
                 self._check_pinhole_stack(result, scan.num_stacks)
-                if not reuse_localization:
-                    self._remember_geometry(
-                        geometry, orientation, frames, data_obj.name
-                    )
             results.append(result)
+        if not reuse_localization:
+            # Only a reconstruction that went through is worth reusing.
+            self._remember_geometry(geometry, orientation, frames, data_obj.name)
         report("finalize", 0, 1, "Assembling the result")
 
         first = results[0]
@@ -328,6 +360,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
             f"reused from {reference_source}"
             if reuse_localization else f"from this recording ({data_obj.name})"
         )
+        if reuse_note:
+            diagnostics["localization_settings"] = reuse_note
         for key, value in diagnostics.items():
             self._logger.info(f"{data_obj.name}: {key}: {value}")
 
@@ -425,12 +459,15 @@ class MonalisaLatticeReconstructor(Reconstructor):
         orientation = None if params["orientation"] == AUTO else str(params["orientation"])
         reuse_localization = bool(params["reuse_localization"])
         reference_source = None
+        reuse_note = None
 
         check_cancelled()
         order = self._stack_order(frames, scan)
         if reuse_localization:
-            geometry, reference_orientation, reference_source = self._reuse_geometry(
-                frames, settings
+            # The step and the raster are read anew for this scan by
+            # reconstruct_scan, for whichever orientation it takes.
+            geometry, reference_orientation, reference_source, reuse_note = (
+                self._reuse_geometry(frames, settings)
             )
             if orientation is None:
                 orientation = reference_orientation
@@ -464,11 +501,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
                 self._check_pinhole_stack(result, scan.num_stacks)
-                if not reuse_localization:
-                    self._remember_geometry(
-                        geometry, orientation, frames, data_obj.name
-                    )
             results[int(stack)] = result
+        if not reuse_localization:
+            # Only a reconstruction that went through is worth reusing.
+            self._remember_geometry(geometry, orientation, frames, data_obj.name)
         report("finalize", 0, 1, "Assembling the result")
 
         first = results[int(order[0])]
@@ -502,6 +538,8 @@ class MonalisaLatticeReconstructor(Reconstructor):
             f"reused from {reference_source}"
             if reuse_localization else f"from this recording ({data_obj.name})"
         )
+        if reuse_note:
+            diagnostics["localization_settings"] = reuse_note
         diagnostics.update(notes)
         for key, value in diagnostics.items():
             self._logger.info(f"{data_obj.name}: {key}: {value}")
