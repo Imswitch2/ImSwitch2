@@ -316,7 +316,13 @@ class ScanCloakController:
 
     def _onStopClicked(self):
         """Stop: no further frame. A running frame completes (NI-DAQ cannot
-        be interrupted mid-iteration; decided 2026-09-25)."""
+        be interrupted mid-iteration; decided 2026-09-25).
+
+        Between two Live frames, unticking Repeat is the whole stop: the
+        pending re-arm sees it and ends the run as done. Aborting there
+        failed the run instead (an error logged, waiting requests told it
+        failed) for what is an ordinary stop.
+        """
         self._widget.setRepeatEnabled(False)
         if self._isBusy():
             remaining = self._remainingFrameS()
@@ -325,7 +331,8 @@ class ScanCloakController:
                 + (f' (about {remaining:.0f} s)' if remaining and remaining >= 1 else '')
                 + '.'
             )
-            self.abortScan()
+            if not getattr(self, '_repeatPending', False):
+                self.abortScan()
 
     def scanDone(self):
         if self._onSimplePage():
