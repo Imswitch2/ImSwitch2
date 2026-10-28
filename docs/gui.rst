@@ -839,7 +839,9 @@ its header switches between the two, on the same scan.
 
 - **Overview** scans live at about one frame per second, and shows the
   measured frame rate. Its **Size** slider sets the field (default 60 µm,
-  up to what the scanners reach); pixels and dwell follow it.
+  up to what the scanners reach); pixels and dwell follow it, and nothing
+  else changes them. The measured rate also counts the re-arm between
+  frames, which the one second leaves out, so on a rig it reads lower.
 - **Acquisition** scans a chosen region, with sliders for pixel size
   (overview to Nyquist) and dwell, and an estimate of the scan time.
 - While a scan runs, a progress bar under the scan time shows the elapsed

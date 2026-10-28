@@ -407,6 +407,32 @@ def test_stale_input_completion_cannot_close_new_same_named_task():
     assert done == [True]
 
 
+def test_a_detector_teardown_closes_its_task_and_completes_the_scan_after():
+    """A detector closing its input task inside its own teardown must not run
+    the scan-done listeners there: the final one releases the detector
+    leases, whose stop waits on that teardown (APD quarantined on the rig)."""
+    simulator = _Simulator()
+    manager = _simulatedManager(simulator=simulator)
+    task = _Task()
+    manager.tasks["APD"] = task
+    manager._taskGenerations["APD"] = 23
+    manager._scanGeneration = 23
+    manager._scanTransactionActive = False
+    manager.signalSent = False
+    manager.busy = True
+    done = []
+    manager.sigScanDone.connect(lambda: done.append(True))
+
+    assert manager.inputTaskDone("APD", 23, completeScan=False) is True
+    assert task.closeCalls == 1
+    assert done == []
+
+    assert manager.completeScanIfIdle() is True
+    assert done == [True]
+    manager.completeScanIfIdle()                 # reported once
+    assert done == [True]
+
+
 def test_stale_output_waiter_or_generation_cannot_complete_new_task():
     simulator = _Simulator()
     manager = _simulatedManager(simulator=simulator)

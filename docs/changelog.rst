@@ -7,6 +7,19 @@ Unreleased
 
 **Fixes**
 
+- Ending an NI-DAQ point scan no longer hangs for 2-4 s and quarantines an APD
+  or PMT ("APD scan teardown did not finish within 2 s", the detector then
+  missing from every later scan). The detector that closed the scan's last
+  input task reported the scan done inside its own teardown; the final
+  scan-done released the detector leases, whose bounded stop waited on that
+  teardown. The scan now completes once the teardown has finished. Only real
+  hardware closes input tasks, so the simulated scans never showed it.
+- SimplePointScan: the overview's pixels follow the Size slider only. Measured
+  Live frames (which include the re-arm between frames) used to re-plan it,
+  so a restart came up at another resolution and a slow re-arm collapsed every
+  size to 64 pixels. A Stop between two Live frames ends the run as done
+  instead of logging "Scan failed".
+
 - Hardware Control no longer fails startup solely because a setup requests
   real NI-DAQ channels while the ``nidaqmx`` backend is unavailable. The
   NI-DAQ infrastructure stays in an explicit unavailable real-hardware state,

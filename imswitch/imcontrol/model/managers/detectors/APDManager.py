@@ -529,6 +529,17 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
                         'APD scan-finish acknowledgement failed'
                     )
 
+        # Only now, with this teardown finished and signalled, may the scan
+        # complete: its listeners release the detector leases, and a release
+        # stops this detector by waiting on this very teardown
+        # (NidaqManager.inputTaskDone).
+        # The worker's close() marks a real NI input task closed, never a
+        # simulated one.
+        if getattr(worker, '_inputTaskClosed', False):
+            try:
+                worker._manager._nidaqManager.completeScanIfIdle()
+            except Exception as error:
+                errors.append(error)
         if errors:
             for error in errors:
                 self.__logger.warning(
@@ -1617,8 +1628,9 @@ class ScanWorker(Worker):
 
     def close(self):
         if not self._manager._simulation_mode and not self._inputTaskClosed:
+            # The teardown completes the scan once it has finished.
             self._manager._nidaqManager.inputTaskDone(
-                self._name, self._inputTaskGeneration
+                self._name, self._inputTaskGeneration, completeScan=False
             )
             self._inputTaskClosed = True
 
