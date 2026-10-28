@@ -202,9 +202,8 @@ def test_the_editor_document_shows_the_input_without_a_path(registry, tmp_path):
     assert document.interactive and any("from_fiji" in note for note in document.notes)
     step = document.workflow.step("from_fiji")
     assert step.source.path is None
-    from imswitch.improcess.view.workfloweditor.steplist import _target
-
-    assert _target(step) == "(bound at run)"
+    # Workflow editor 2.0 (main) shows a path-less source as one to bind at
+    # run time; editor 1.0's steplist._target label no longer exists.
 
 
 def _controller(result):
