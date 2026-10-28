@@ -312,6 +312,22 @@ def test_an_external_start_runs_exactly_one_iteration_even_in_live_overview(rig)
     assert rig.count('sigScanEnded') == 1
 
 
+def test_a_recording_counts_the_positions_of_the_scan_it_will_run(rig):
+    """A Scan-once recording asks for the position count first, before
+    anything has rebuilt the dicts from the simple page; it used to get the
+    backend widget's scan and refuse its own layout as a mismatch."""
+    rig.scan.getComponentState()   # leaves the acquisition's dicts behind
+    assert rig.scan.currentPlan() != rig.scan._simple()['acquisition']
+    detector = next(iter(rig.setup.detectors))
+    positions = rig.scan.getNumScanPositions()
+    layout = rig.scan.getAcquisitionLayouts((detector,))[detector]
+    loops = {loop.kind: loop.count for loop in layout.event_loops}
+
+    run = rig.scan.currentPlan()
+    assert positions == loops['scan_x'] * loops['scan_y']
+    assert positions == int(np.prod([run.regions[d].pixels for d in run.dims]))
+
+
 def test_modes_cannot_be_switched_while_running(rig):
     rig.widget.startButton.click()
     QtTest.QTest.qWait(300)
