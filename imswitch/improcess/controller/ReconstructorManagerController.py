@@ -699,7 +699,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
                         localize_params = dict(first_params)
                         localize_params["auto_localization"] = {}
                         try:
-                            localization, status = localizer(first_item, localize_params)
+                            localized = localizer(first_item, localize_params)
+                            localization, status = localized[:2]
+                            details = localized[2] if len(localized) > 2 else {}
                         except Exception as exc:
                             self._logger.error(f"MoNaLISA localization failed: {exc}")
                             self._setPreviewStatus(f"Localization failed: {exc}")
@@ -710,6 +712,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
                             setter = getattr(widget, "set_auto_localization", None)
                             if callable(setter):
                                 setter(localization, status)
+                            set_spot = getattr(widget, "set_auto_spot_sigma_px", None)
+                            if callable(set_spot) and isinstance(details, dict):
+                                set_spot(details.get("spot_sigma_px"))
 
         jobs = []
         for data_obj in data_objs:
@@ -828,11 +833,18 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 )
         widget = getattr(self, "_previewWidget", None)
         sync = getattr(widget, "sync_current_transient", None)
-        if reconstructor is not None and reconstructor.id == "monalisa" and callable(sync):
-            try:
-                sync()
-            except Exception as exc:
-                self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
+        if reconstructor is not None and reconstructor.id == "monalisa":
+            sync_spot = getattr(widget, "sync_reconstruction_results", None)
+            if callable(sync_spot):
+                try:
+                    sync_spot(outcome.results)
+                except Exception as exc:
+                    self._logger.debug(f"Could not refresh MoNaLISA spot width: {exc}")
+            if callable(sync):
+                try:
+                    sync()
+                except Exception as exc:
+                    self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
         self._set_reconstruction_job_state(
             False, progress=1.0, status="Reconstruction complete."
         )
@@ -922,12 +934,17 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
         self._setPreviewStatus("Localizing...")
         try:
-            localization, status = localizer(data_obj, widget.get_values())
+            localized = localizer(data_obj, widget.get_values())
+            localization, status = localized[:2]
+            details = localized[2] if len(localized) > 2 else {}
         except Exception as exc:
             self._logger.error(f"Localization failed: {exc}")
             self._setPreviewStatus(f"Localization failed: {exc}")
             return
         setter(localization, status)
+        set_spot = getattr(widget, "set_auto_spot_sigma_px", None)
+        if callable(set_spot) and isinstance(details, dict):
+            set_spot(details.get("spot_sigma_px"))
         self._updatePreview()
 
     def _setPreviewStatus(self, text):

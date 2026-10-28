@@ -279,7 +279,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             ),
         )
 
-    def localize(self, data_obj, params: dict | None = None) -> tuple[PatternLocalization, str]:
+    def localize(self, data_obj, params: dict | None = None) -> tuple[PatternLocalization, str, dict]:
         """Explicit Auto-localization action used by the parameter widget.
 
         Loading/viewing data never calls this.  Reconstruction may still run
@@ -315,7 +315,9 @@ class MonalisaReconstructor(StreamingReconstructor):
             source_path=str(getattr(data_obj, "dataPath", "") or ""),
             diagnostics={"description": finding.describe()},
         )
-        return localization, finding.describe()
+        return localization, finding.describe(), {
+            "spot_sigma_px": float(finding.spot.shared_sigma),
+        }
 
     @staticmethod
     def _orientation_literal(params: dict):

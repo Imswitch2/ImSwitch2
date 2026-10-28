@@ -28,8 +28,10 @@ def test_fast_and_full_presets_only_change_processing_options():
     fast = apply_preset(base, PRESET_FAST)
     full = apply_preset(base, PRESET_FULL)
 
-    for key in ("localization_mode", "orientation_mode", "spot_width_mode", "spot_fwhm"):
+    for key in ("localization_mode", "orientation_mode", "spot_fwhm"):
         assert fast[key] == full[key] == base[key]
+    assert fast["spot_width_mode"] == "Manual/default"
+    assert full["spot_width_mode"] == "Auto"
     assert fast["intensity_correction"] is False
     assert fast["cell_offsets"] is False
     assert fast["reassignment"] == "off"

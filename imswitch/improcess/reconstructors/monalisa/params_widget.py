@@ -32,6 +32,7 @@ from .params import (
 )
 from .scan_frame import ORIENTATIONS
 from .session_registry import MonalisaSessionRegistry, detector_identity
+from .spot_settings import sigma_px_to_fwhm
 
 
 class LocalizationSettingsDialog(QtWidgets.QDialog):
@@ -220,6 +221,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                  "tip": "Corrects smooth frame-to-frame intensity variations, for example from bleaching, "
                         "illumination drift, or laser-power fluctuations."},
                 {"name": "Cell offsets", "type": "bool", "value": values["cell_offsets"]},
+            ]},
+            {"name": "ISM", "type": "group", "children": [
                 {"name": "Reassignment", "type": "list", "values": ["off", "auto", "fixed"],
                  "value": values["reassignment"]},
                 {"name": "Shift factor", "type": "float", "limits": (0.0, 1.0), "step": 0.05,
@@ -295,7 +298,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         orientation.param("Mode").sigValueChanged.connect(self._orientation_mode_changed)
         self.p.param("Spot model").param("Mode").sigValueChanged.connect(lambda *_: self._update_enabled())
         self.p.param("Spot model").param("FWHM unit").sigValueChanged.connect(self._spot_unit_changed)
-        self.p.param("Corrections").param("Reassignment").sigValueChanged.connect(lambda *_: self._update_enabled())
+        self.p.param("ISM").param("Reassignment").sigValueChanged.connect(lambda *_: self._update_enabled())
         self.p.param("Outputs").param("Sharpened image").sigValueChanged.connect(lambda *_: self._update_enabled())
 
         if self._registry is not None:
@@ -310,7 +313,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "device": self.p.param("CPU/GPU"),
             "intensity_correction": self.p.param("Corrections").param("Intensity correction"),
             "cell_offsets": self.p.param("Corrections").param("Cell offsets"),
-            "reassignment": self.p.param("Corrections").param("Reassignment"),
+            "spot_width_mode": self.p.param("Spot model").param("Mode"),
+            "reassignment": self.p.param("ISM").param("Reassignment"),
             "placement_mode": self.p.param("Placement").param("Mode"),
             "variance_weighting": self.p.param("Placement").param("Variance weighting"),
             "sharpen": self.p.param("Outputs").param("Sharpened image"),
@@ -395,9 +399,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         spot.param("FWHM").setOpts(enabled=spot_manual)
         spot.param("FWHM unit").setOpts(enabled=spot_manual)
 
-        corrections = self.p.param("Corrections")
-        corrections.param("Shift factor").setOpts(
-            enabled=corrections.param("Reassignment").value() == "fixed"
+        ism = self.p.param("ISM")
+        ism.param("Shift factor").setOpts(
+            enabled=ism.param("Reassignment").value() == "fixed"
         )
         outputs = self.p.param("Outputs")
         sharpen = bool(outputs.param("Sharpened image").value())
@@ -496,6 +500,72 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self.setPreviewStatus(str(provenance["status"]))
         self._refresh_registry_controls()
         self.sigDetectionParamsChanged.emit()
+
+    def set_auto_spot_sigma_px(self, sigma_px: float) -> None:
+        """Show an Auto-estimated width without changing Spot model mode."""
+        if str(self.p.param("Spot model").param("Mode").value()) != SPOT_AUTO:
+            return
+        try:
+            sigma_px = float(sigma_px)
+        except (TypeError, ValueError):
+            return
+        if sigma_px <= 0:
+            return
+        spot = self.p.param("Spot model")
+        unit = str(spot.param("FWHM unit").value())
+        pixel_nm = float(self.p.param("Camera pixel").value())
+        try:
+            value = sigma_px_to_fwhm(
+                sigma_px, unit, pixel_nm if unit == "nm" else None
+            )
+        except ValueError:
+            return
+        spot.param("FWHM").setValue(float(value))
+
+    def sync_reconstruction_results(self, results) -> None:
+        """Reflect an Auto-estimated spot width from the current reconstruction.
+
+        This updates only the displayed FWHM value.  The mode remains Auto;
+        switching Spot model to Manual/default then freezes that resolved value.
+        """
+        if str(self.p.param("Spot model").param("Mode").value()) != SPOT_AUTO:
+            return
+        results = tuple(results or ())
+        if not results:
+            return
+        current_name = str(getattr(self._current_data_obj, "name", "") or "")
+        selected = None
+        for result in results:
+            if current_name and str(getattr(result, "name", "")).startswith(f"{current_name}_monalisa"):
+                selected = result
+                break
+        if selected is None and len(results) == 1:
+            selected = results[0]
+        if selected is None:
+            return
+        metadata = dict(getattr(selected, "metadata", {}) or {})
+        snapshot = metadata.get("monalisa_calibration")
+        if not isinstance(snapshot, dict):
+            params = dict(getattr(selected, "params", {}) or {})
+            snapshot = params.get("calibration_snapshot")
+        if not isinstance(snapshot, dict):
+            return
+        try:
+            sigma_px = float(snapshot.get("effective_sigma_px"))
+        except (TypeError, ValueError):
+            sigma_px = 0.0
+        if sigma_px > 0:
+            self.set_auto_spot_sigma_px(sigma_px)
+            return
+        spot = self.p.param("Spot model")
+        unit = str(spot.param("FWHM unit").value())
+        key = "resolved_spot_fwhm_nm" if unit == "nm" else "resolved_spot_fwhm_px"
+        try:
+            value = float(snapshot.get(key))
+        except (TypeError, ValueError):
+            return
+        if value > 0:
+            spot.param("FWHM").setValue(value)
 
     def _refresh_registry_controls(self, *, clear_selection: bool = False):
         localization = self.p.param("Localization")
@@ -677,6 +747,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         orient = self.p.param("Orientation")
         spot = self.p.param("Spot model")
         corrections = self.p.param("Corrections")
+        ism = self.p.param("ISM")
         placement = self.p.param("Placement")
         outputs = self.p.param("Outputs")
         scan = self.p.param("Scan overrides")
@@ -711,8 +782,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "background": str(spot.param("Background").value()),
             "intensity_correction": bool(corrections.param("Intensity correction").value()),
             "cell_offsets": bool(corrections.param("Cell offsets").value()),
-            "reassignment": str(corrections.param("Reassignment").value()),
-            "shift_factor": float(corrections.param("Shift factor").value()),
+            "reassignment": str(ism.param("Reassignment").value()),
+            "shift_factor": float(ism.param("Shift factor").value()),
             "placement_mode": str(placement.param("Mode").value()),
             "commensurate_tolerance": float(placement.param("Direct tolerance").value()),
             "variance_weighting": bool(placement.param("Variance weighting").value()),

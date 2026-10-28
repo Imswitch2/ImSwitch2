@@ -88,6 +88,7 @@ PRESET_VALUES = {
     PRESET_FAST: {
         "device": "GPU",
         "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
+        "spot_width_mode": SPOT_MANUAL,
         "intensity_correction": False,
         "cell_offsets": False,
         "reassignment": "off",
@@ -98,6 +99,7 @@ PRESET_VALUES = {
     PRESET_FULL: {
         "device": "GPU",
         "localization_refinement": LOCALIZATION_REFINEMENT_FULL,
+        "spot_width_mode": SPOT_AUTO,
         "intensity_correction": True,
         "cell_offsets": True,
         "reassignment": "auto",
