@@ -65,6 +65,20 @@ def _weak_handler(handler):
     return _resolve
 
 
+#: Tooltip of a control that needs the napari viewer and stays disabled with
+#: ImProcess's separate image windows.
+WINDOW_MODE_UNSUPPORTED_TOOLTIP = "Not yet supported with separate windows"
+
+
+def is_window_viewer(viewer) -> bool:
+    """True for the stand-in viewer of ImProcess's separate image windows.
+
+    A strict ``is True`` test, so test doubles that answer every attribute
+    (mocks) are not mistaken for it.
+    """
+    return getattr(viewer, "is_window_viewer", False) is True
+
+
 class StaleToolToken(RuntimeError):
     """Raised when a token from a superseded acquisition is used."""
 
@@ -127,6 +141,10 @@ class ViewerToolService(QtCore.QObject):
         Viewers that cannot be weak-referenced (test doubles, mostly) get a
         fresh service, which is harmless because nothing else shares them.
         """
+        if is_window_viewer(viewer):
+            # A stand-in for the viewer (ImProcess's separate image windows)
+            # brings its own tool service, backed by its windows.
+            return viewer.tool_service
         try:
             ref = cls._instances.get(viewer)
         except TypeError:
@@ -512,4 +530,10 @@ class ViewerToolService(QtCore.QObject):
         self._owner_shapes[owner_key] = []
 
 
-__all__ = ["StaleToolToken", "ToolToken", "ViewerToolService"]
+__all__ = [
+    "StaleToolToken",
+    "ToolToken",
+    "ViewerToolService",
+    "WINDOW_MODE_UNSUPPORTED_TOOLTIP",
+    "is_window_viewer",
+]

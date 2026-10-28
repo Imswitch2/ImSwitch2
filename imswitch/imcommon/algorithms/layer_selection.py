@@ -45,8 +45,13 @@ def is_image_layer(layer, *, min_ndim: int = 2, exclude_names=()) -> bool:
     if layer is None or not hasattr(layer, "data"):
         return False
     name = str(getattr(layer, "name", ""))
+    # A window-mode layer (a stand-in for a napari layer) may hold lazy data,
+    # which the ndarray test would refuse; it says so itself.
+    array_like = isinstance(layer.data, np.ndarray) or (
+        getattr(layer, "is_window_layer", False) is True and hasattr(layer.data, "ndim")
+    )
     return (
-        isinstance(layer.data, np.ndarray)
+        array_like
         and layer.data.ndim >= min_ndim
         and getattr(layer, "visible", True)
         and not name.startswith("_")

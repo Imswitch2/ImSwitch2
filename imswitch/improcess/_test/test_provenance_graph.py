@@ -282,10 +282,40 @@ def test_a_napari_import_is_recorded_as_non_replayable():
         source_result=shown,
     )
     node = prov.output_node(imported)
-    assert node["op"] == "napari-import"
+    assert node["op"] == "external-import"
+    assert node["tool"] == "napari"
     assert node["replayable"] is False
     assert node["inputs"] == [prov.output_ref(shown)]
     assert history_of(imported)[-1]["label"] == "Imported from napari-segment-anything"
+
+
+def test_a_legacy_napari_import_node_still_validates_and_has_history():
+    imported = prov.record_import(
+        _image("mask"), plugin_name="napari-x", widget_name="w",
+        layer_name="mask", layer_type="labels", grid="fresh",
+    )
+    graph = json.loads(json.dumps(prov.graph_of(imported)))
+    node_id, _port = prov.output_of(graph)
+    graph["nodes"][node_id]["op"] = "napari-import"        # what an older file holds
+    graph["nodes"][node_id].pop("tool")
+    prov.validate_graph(graph)
+    assert prov.derive_history(graph)[-1]["label"] == "Imported from napari-x"
+
+
+def test_a_fiji_import_records_the_tool_reason_and_json_safe_details():
+    imported = prov.record_import(
+        _image("fiji result"), plugin_name="Fiji", widget_name=None,
+        layer_name="blurred", layer_type="image", grid="fresh",
+        tool="fiji", details={"image_id": -3, "notes": ["origin dropped"], "arr": np.arange(3)},
+    )
+    node = prov.output_node(imported)
+    assert node["op"] == "external-import"
+    assert node["tool"] == "fiji"
+    assert node["replayable"] is False
+    assert node["reasons"] == ["produced interactively in Fiji"]
+    assert node["details"]["image_id"] == -3
+    assert json.loads(json.dumps(node["details"])) == node["details"]
+    prov.validate_graph(json.loads(json.dumps(prov.graph_of(imported))))
 
 
 # --------------------------------------------------------------------------
@@ -469,3 +499,56 @@ def test_the_graph_is_not_flattened_into_the_generic_annotations(tmp_path):
 
     result = _run(_Filter(), _image(), {"gain": 2.0})[0]
     assert prov.PROVENANCE_KEY not in result_annotations(result)
+
+
+# -- an external tool's recorded steps are read in the one history ----------------
+
+FIJI_DETAILS = {"fiji_history": {
+    "schema": "fiji-history-v1", "image_id": -3, "origin": "sent", "origin_id": -2, "completeness": "recorded",
+    "unrecorded": "none observed", "unrecorded_notes": [],
+    "steps": [
+        {"command": "Gaussian Blur...", "options": " sigma=2 stack", "options_source": "macro",
+         "completeness": "recorded", "plugin_jar": "ij.jar"},
+        {"command": "Invert", "options": None, "options_source": None,
+         "completeness": "partial", "plugin_jar": None},
+    ],
+}}
+
+
+def _import_of(tool, details):
+    shown = _run(_Filter(), _image())[0]
+    return prov.record_import(
+        _image("imported"), plugin_name=tool.capitalize(), widget_name=None, layer_name="x",
+        layer_type="image", grid="fresh", source_result=shown, tool=tool, details=details,
+    )
+
+
+def test_a_fiji_import_lists_each_fiji_step_before_the_import_step():
+    imported = _import_of("fiji", FIJI_DETAILS)
+    history = prov.derive_history(prov.graph_of(imported))
+    labels = [step["label"] for step in history]
+    assert labels[-3:] == ["Fiji: Gaussian Blur... (sigma=2 stack)", "Fiji: Invert", "Imported from Fiji"]
+    first, second, import_step = history[-3:]
+    node_id = import_step["step_id"]
+    assert first["step_id"] == f"{node_id}#1" and second["step_id"] == f"{node_id}#2"
+    assert first["operation"] == "fiji:Gaussian Blur..." and first["tool"] == "fiji" and first["replayable"] is False
+    assert first["params"] == {
+        "options": " sigma=2 stack", "options_source": "macro", "completeness": "recorded", "plugin_jar": "ij.jar",
+    }
+    assert import_step["operation"] == "external-import"
+    # readable history only: the graph has no node for them
+    assert not any("#" in key for key in prov.graph_of(imported)["nodes"])
+
+
+def test_a_napari_import_history_is_unchanged_by_substeps():
+    imported = _import_of("napari", {"fiji_history": FIJI_DETAILS["fiji_history"]})
+    history = prov.derive_history(prov.graph_of(imported))
+    assert [s["label"] for s in history][-1] == "Imported from Napari"
+    assert not any(s.get("tool") == "fiji" for s in history)
+
+
+def test_the_fiji_substeps_read_well_in_the_formatted_history():
+    from imswitch.improcess.model.footprint import format_history
+
+    text = format_history(_import_of("fiji", FIJI_DETAILS))
+    assert "Fiji: Gaussian Blur... (sigma=2 stack)" in text and "plugin_jar" not in text

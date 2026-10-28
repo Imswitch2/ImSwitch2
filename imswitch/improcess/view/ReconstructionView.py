@@ -66,7 +66,13 @@ def _applyIdentityMetadata(layer, identity, *, overrides=None) -> None:
 
 
 class ReconstructionView(QtWidgets.QFrame):
-    """ Frame for showing the reconstructed image"""
+    """Frame for showing the reconstructed image: the embedded napari display.
+
+    Implements :class:`~imswitch.improcess.view.result_display.ResultDisplay`
+    (rendering and contrast) and
+    :class:`~imswitch.improcess.view.result_display.ResultListPane` (the list
+    of loaded results); ``_test/test_result_display.py`` guards both.
+    """
 
     # Signals
     sigItemSelected = QtCore.Signal()
@@ -165,6 +171,7 @@ class ReconstructionView(QtWidgets.QFrame):
 
         # --- Left pane: napari viewer + the view-mode chooser --------------
         leftPane = QtWidgets.QWidget()
+        self._canvasPane = leftPane
         leftLayout = QtWidgets.QGridLayout(leftPane)
         leftLayout.setContentsMargins(0, 0, 0, 0)
         leftLayout.addWidget(self.napariViewer.get_widget(), 0, 0, 4, 1)
@@ -205,6 +212,15 @@ class ReconstructionView(QtWidgets.QFrame):
         outerLayout = QtWidgets.QVBoxLayout(self)
         outerLayout.setContentsMargins(0, 0, 0, 0)
         outerLayout.addWidget(self._reconSplitter)
+
+    def setCanvasVisible(self, visible: bool) -> None:
+        """Show or hide the napari canvas pane, leaving the results list in place.
+
+        Window mode shows results in their own windows, so the canvas has
+        nothing to draw; the list pane (and the viewer object itself, which
+        napari plugins and the storm display still use) stay.
+        """
+        self._canvasPane.setVisible(bool(visible))
 
     def setNapariLayerControlsVisible(self, visible: bool) -> None:
         """Show/hide napari's built-in layer controls dock."""

@@ -11,7 +11,7 @@ it was made.
 
 from __future__ import annotations
 
-from imswitch.improcess.processors.base import normalize_processor_output
+from imswitch.improcess.processors.base import ProcessorInputError, normalize_processor_output
 
 
 class Failure(str):
@@ -128,6 +128,14 @@ def run_batch(processor, inputs, params: dict, logger):
             results.extend(
                 normalize_processor_output(output, input_result, processor, params)
             )
+        except ProcessorInputError as exc:
+            logger.warning(
+                "Processor %s cannot run on %s: %s",
+                getattr(processor, "id", type(processor).__name__),
+                getattr(input_result, "name", type(input_result).__name__),
+                exc,
+            )
+            failures.append((input_result, str(exc)))
         except Exception as exc:
             logger.exception(
                 "Failed to run processor %s on %s",

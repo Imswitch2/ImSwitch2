@@ -335,8 +335,8 @@ def test_crop_substack_dialog_converts_first_last_to_processor_ranges(qapp):
 
     assert dialog.selected_params() == {
         "ranges": [
-            {"axis": 0, "start": 1, "stop": 3, "step": 1},
-            {"axis": 2, "start": 0, "stop": 5, "step": 2},
+            {"axis": 0, "label": "Z", "start": 1, "stop": 3, "step": 1},
+            {"axis": 2, "label": "X", "start": 0, "stop": 5, "step": 2},
         ],
         "copy": False,
     }
@@ -735,3 +735,29 @@ def test_crop_works_with_no_roi_manager_open(monkeypatch):
 
     controller.cropSubstack()
     assert seen["rois"] == []
+
+
+def test_crop_with_separate_windows_draws_no_outline_on_the_hidden_napari_viewer(monkeypatch):
+    data = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    toolbar_module = importlib.import_module(
+        "imswitch.improcess.controller.ImageToolbarController"
+    )
+    seen = {}
+    monkeypatch.setattr(
+        toolbar_module.StackSubsetDialog,
+        "get_params",
+        staticmethod(
+            lambda _result, parent=None, napari_viewer=None, rois=(), **_k: (
+                seen.update(viewer=napari_viewer) or None
+            )
+        ),
+    )
+    controller, view, _recon = _controller(data)
+    view.reconstructionWidget = SimpleNamespace(napariViewer=object())
+
+    controller.cropSubstack()
+    assert seen["viewer"] is view.reconstructionWidget.napariViewer
+
+    view.imageDisplayMode = lambda: "windows"
+    controller.cropSubstack()
+    assert seen["viewer"] is None

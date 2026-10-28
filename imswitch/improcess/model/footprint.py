@@ -187,6 +187,8 @@ def format_history(result) -> str:
     lines = []
     for index, step in enumerate(history_of(result), start=1):
         params = step.get("params") or {}
+        if step.get("tool") and step.get("replayable") is False:
+            params = {}         # a tool's recorded sub-step: its label already carries the options
         rendered = ", ".join(f"{key}={value}" for key, value in sorted(params.items()))
         lines.append(f"{index}. {step.get('label', '?')}" + (f" ({rendered})" if rendered else ""))
     return "\n".join(lines)

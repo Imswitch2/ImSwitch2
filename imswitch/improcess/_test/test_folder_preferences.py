@@ -218,7 +218,7 @@ def test_the_preferences_menu_offers_it_and_the_app_entries_join_it(qapp):
         menus = {a.text(): [b.text() for b in a.menu().actions() if not b.isSeparator()]
                  for a in menuBar.actions() if a.menu() is not None}
         assert list(menus) == ["&View", "&Preferences", "&Help"]
-        assert menus["&Preferences"] == ["Default folders…", "Set active modules…",
+        assert menus["&Preferences"] == ["Default folders…", "Image display", "Set active modules…",
                                          "Open user files folder"]
         opened = []
         view.sigOpenFolderPreferences.connect(lambda: opened.append(True))

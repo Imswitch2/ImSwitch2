@@ -249,3 +249,25 @@ def test_tree_serializes_to_json(imswitch_h5):
 
     text = json.dumps(payload)  # must not raise on numpy attribute values
     assert "488 Laser" in text
+
+
+def test_the_provenance_group_lists_readable_labels_including_fiji_steps():
+    from imswitch.improcess.model.array_result import ArrayProcessingResult
+    from imswitch.improcess.model.metadata_tree import metadata_tree_from_result
+    from imswitch.improcess.model import provenance as prov
+
+    shown = ArrayProcessingResult("src", np.zeros((4, 5), np.float32), ["Y", "X"])
+    details = {"fiji_history": {"schema": "fiji-history-v1", "steps": [
+        {"command": "Gaussian Blur...", "options": "sigma=2", "options_source": "macro",
+         "completeness": "recorded", "plugin_jar": None}]}}
+    imported = prov.record_import(
+        ArrayProcessingResult("in", np.zeros((4, 5), np.float32), ["Y", "X"]), plugin_name="Fiji",
+        widget_name=None, layer_name="x", layer_type="image", grid="fresh", source_result=shown,
+        tool="fiji", details=details,
+    )
+    tree = metadata_tree_from_result(imported)
+    steps = next(n for n in tree.iter_nodes() if n.path == "/provenance/steps")
+    shown_text = json.dumps(metadata_tree_to_dict(tree))
+    assert "Fiji: Gaussian Blur... (sigma=2)" in shown_text and "Imported from Fiji" in shown_text
+    assert "external-import: " not in shown_text
+    assert steps is not None

@@ -11,6 +11,15 @@ from qtpy import QtWidgets
 from imswitch.improcess.model.result import UNKNOWN_KIND, ProcessingResult, result_kind
 
 
+class ProcessorInputError(ValueError):
+    """The parameters do not fit the input they were given.
+
+    A mistake the person can fix in the panel (a crop range set for another
+    image), not a defect: the runner reports it in the panel's status line and
+    logs one warning line instead of a traceback.
+    """
+
+
 @dataclass(frozen=True)
 class OutputSpec:
     """Which output ports a processor run will produce.

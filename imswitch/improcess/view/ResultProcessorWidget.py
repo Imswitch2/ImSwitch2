@@ -286,8 +286,28 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         Late-bound and optional: both panels are runtime-loaded, in either
         order, and a processor must still run without one.
         """
+        previous = getattr(self, "_roiManagerWidget", None)
         self._roiManagerWidget = panel
         self._refreshROIChoices()
+        self._refreshParamROIs()
+        if panel is previous:
+            return      # wired again by a later panel opening; already listening
+        # A region drawn after this panel opened is a region the person expects
+        # to find here. The manager's state signal is debounced, which is soon
+        # enough for a list the person looks at next.
+        changed = getattr(panel, "sigStateChanged", None)
+        if changed is not None:
+            changed.connect(self._roiSetChanged)
+
+    def _roiSetChanged(self) -> None:
+        self._refreshROIChoices()
+        self._refreshParamROIs()
+
+    def _refreshParamROIs(self) -> None:
+        """Re-offer the manager's ROIs to a parameter widget that lists them."""
+        setter = getattr(self.paramWidget, "setROIs", None)
+        if callable(setter):
+            setter(self._visibleROIs())
 
     def _retargetParamWidget(self, result) -> None:
         """Tell a parameter widget which result it is now editing.

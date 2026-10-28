@@ -221,7 +221,7 @@ def metadata_tree_from_result(result: Any, *, limits: MetadataLimits = DEFAULT_L
         history = derive_history(graph)
         provenance: dict[str, Any] = {
             "steps": [
-                f"{step.get('operation', step.get('op', '?'))}: {step.get('plugin_id', '')}"
+                str(step.get("label") or step.get("operation") or step.get("op") or "?")
                 for step in history
             ],
             "history": history,

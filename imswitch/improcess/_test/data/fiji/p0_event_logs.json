@@ -1,0 +1,876 @@
+{
+ "about": "Raw ImageJ event logs recorded against Fiji 2.18.0/1.54p (macOS arm64) on 2026-10-26 by the P0 prototype. 'gui' = a person used the menus (Duplicate, Gaussian Blur sigma=2, Duplicate, rectangle + Crop); 'scripted' = IJ.run calls with options (Duplicate, Gaussian Blur, Specify + Duplicate, Z Project, 8-bit, Scale). P0's event schema: kind/command/current_id/options/id/title/thread and 't' (seconds since host start); no recorder offsets, no end times, no 'changes' flag (P4 adds those).",
+ "gui": {
+  "source_id": -2,
+  "events": [
+   {
+    "t": 8.46,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -2,
+    "title": "imswitch_src"
+   },
+   {
+    "t": 8.461,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -2,
+    "title": "imswitch_src"
+   },
+   {
+    "t": 716.572,
+    "kind": "command",
+    "thread": "Duplicate...",
+    "command": "Duplicate...",
+    "current_id": -2,
+    "options": null
+   },
+   {
+    "t": 720.308,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -3,
+    "title": "imswitch_src-1"
+   },
+   {
+    "t": 720.309,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -3,
+    "title": "imswitch_src-1"
+   },
+   {
+    "t": 720.63,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -3,
+    "title": "imswitch_src-1"
+   },
+   {
+    "t": 737.538,
+    "kind": "command",
+    "thread": "Gaussian Blur...",
+    "command": "Gaussian Blur...",
+    "current_id": -3,
+    "options": null
+   },
+   {
+    "t": 745.008,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -3,
+    "title": "imswitch_src-1"
+   },
+   {
+    "t": 755.221,
+    "kind": "command",
+    "thread": "Duplicate...",
+    "command": "Duplicate...",
+    "current_id": -3,
+    "options": null
+   },
+   {
+    "t": 756.385,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -4,
+    "title": "imswitch_src-2"
+   },
+   {
+    "t": 756.386,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -4,
+    "title": "imswitch_src-2"
+   },
+   {
+    "t": 756.805,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -4,
+    "title": "imswitch_src-2"
+   },
+   {
+    "t": 769.684,
+    "kind": "command",
+    "thread": "Crop",
+    "command": "Crop",
+    "current_id": -4,
+    "options": null
+   },
+   {
+    "t": 769.706,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -5,
+    "title": "DUP_imswitch_src-2"
+   },
+   {
+    "t": 769.716,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -4,
+    "title": "imswitch_src-2"
+   },
+   {
+    "t": 769.72,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -4,
+    "title": "imswitch_src-2"
+   }
+  ],
+  "recorder": "selectImage(\"imswitch_src\");\nrun(\"Duplicate...\", \" \");\nrun(\"Gaussian Blur...\", \"sigma=2\");\nrun(\"Duplicate...\", \" \");\nmakeRectangle(76, 100, 94, 80);\nselectImage(\"imswitch_src-1\");\nselectImage(\"imswitch_src-2\");\nrun(\"Crop\");\n",
+  "listing": [
+   {
+    "id": -2,
+    "title": "imswitch_src",
+    "dims_xyczt": [
+     256,
+     256,
+     1,
+     5,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.result_uid": "result-gui"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -3,
+    "title": "imswitch_src-1",
+    "dims_xyczt": [
+     256,
+     256,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": true,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.result_uid": "result-gui",
+     "UniqueName": "true"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -4,
+    "title": "imswitch_src-2",
+    "dims_xyczt": [
+     94,
+     80,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": true,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.result_uid": "result-gui",
+     "UniqueName": "true"
+    },
+    "slice_labels": [
+     null
+    ]
+   }
+  ]
+ },
+ "scripted": {
+  "source_id": -14,
+  "steps": {
+   "duplicate": {
+    "current_id": -15
+   },
+   "gaussian_on_dup": {
+    "current_id": -15
+   },
+   "crop_dup": {
+    "current_id": -16
+   },
+   "zproject": {
+    "current_id": -17
+   },
+   "8bit_inplace_on_crop": {
+    "current_id": -17
+   },
+   "scale_x2": {
+    "current_id": -18
+   }
+  },
+  "events": [
+   {
+    "t": 10.695,
+    "kind": "command",
+    "thread": "Run$_Thread-5",
+    "command": "Duplicate...",
+    "current_id": -14,
+    "options": "title=dup duplicate "
+   },
+   {
+    "t": 10.704,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -14,
+    "title": "src"
+   },
+   {
+    "t": 10.704,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -14,
+    "title": "src"
+   },
+   {
+    "t": 10.722,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -15,
+    "title": "dup"
+   },
+   {
+    "t": 10.722,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -15,
+    "title": "dup"
+   },
+   {
+    "t": 10.8,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -15,
+    "title": "dup"
+   },
+   {
+    "t": 10.828,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -15,
+    "title": "dup"
+   },
+   {
+    "t": 10.828,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -15,
+    "title": "dup"
+   },
+   {
+    "t": 10.828,
+    "kind": "command",
+    "thread": "Run$_Thread-5",
+    "command": "Gaussian Blur...",
+    "current_id": -15,
+    "options": "sigma=2 stack "
+   },
+   {
+    "t": 10.837,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -15,
+    "title": "dup"
+   },
+   {
+    "t": 10.837,
+    "kind": "command",
+    "thread": "Run$_Thread-5",
+    "command": "Specify...",
+    "current_id": -14,
+    "options": "width=20 height=10 x=5 y=7 slice=1 "
+   },
+   {
+    "t": 10.894,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -14,
+    "title": "src"
+   },
+   {
+    "t": 10.895,
+    "kind": "command",
+    "thread": "Run$_Thread-5",
+    "command": "Duplicate...",
+    "current_id": -14,
+    "options": "title=crop duplicate "
+   },
+   {
+    "t": 10.897,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -16,
+    "title": "crop"
+   },
+   {
+    "t": 10.897,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -16,
+    "title": "crop"
+   },
+   {
+    "t": 10.977,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -16,
+    "title": "crop"
+   },
+   {
+    "t": 11.001,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -16,
+    "title": "crop"
+   },
+   {
+    "t": 11.001,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -16,
+    "title": "crop"
+   },
+   {
+    "t": 11.002,
+    "kind": "command",
+    "thread": "Run$_Thread-5",
+    "command": "Z Project...",
+    "current_id": -14,
+    "options": "projection=[Max Intensity] "
+   },
+   {
+    "t": 11.005,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -17,
+    "title": "MAX_src"
+   },
+   {
+    "t": 11.095,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -17,
+    "title": "MAX_src"
+   },
+   {
+    "t": 11.097,
+    "kind": "command",
+    "thread": "Run$_Thread-5",
+    "command": "8-bit",
+    "current_id": -16,
+    "options": null
+   },
+   {
+    "t": 11.104,
+    "kind": "command",
+    "thread": "Run$_Thread-5",
+    "command": "Scale...",
+    "current_id": -14,
+    "options": "x=2 y=2 z=1.0 interpolation=Bilinear average create title=scaled "
+   },
+   {
+    "t": 11.104,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -16,
+    "title": "crop"
+   },
+   {
+    "t": 11.105,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -16,
+    "title": "crop"
+   },
+   {
+    "t": 11.106,
+    "kind": "updated",
+    "thread": "AWT-EventQueue-0",
+    "id": -18,
+    "title": "scaled"
+   },
+   {
+    "t": 11.196,
+    "kind": "opened",
+    "thread": "AWT-EventQueue-0",
+    "id": -18,
+    "title": "scaled"
+   }
+  ],
+  "recorder": "selectImage(\"u8_2d\");\nselectImage(\"u16_2d\");\nselectImage(\"u8_2d\");\nselectImage(\"u16_2d\");\nselectImage(\"f32_2d\");\nselectImage(\"u16_2d\");\nselectImage(\"f32_2d\");\nselectImage(\"zstack\");\nselectImage(\"f32_2d\");\nselectImage(\"zstack\");\nselectImage(\"cyx\");\nselectImage(\"zstack\");\nselectImage(\"cyx\");\nselectImage(\"tyx\");\nselectImage(\"cyx\");\nselectImage(\"tyx\");\nselectImage(\"tzcyx\");\nselectImage(\"tyx\");\nselectImage(\"tzcyx\");\nselectImage(\"xzcy\");\nselectImage(\"tzcyx\");\nselectImage(\"xzcy\");\nselectImage(\"view\");\nselectImage(\"xzcy\");\nselectImage(\"view\");\nselectImage(\"src\");\nselectImage(\"view\");\nselectImage(\"src\");\nsetOption(\"ScaleConversions\", true);\n",
+  "listing": [
+   {
+    "id": -2,
+    "title": "u8_2d",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 8,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.2,
+     "pixelDepth": 1.0,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.axes": "Y,X",
+     "imswitch.result_uid": "result-u8_2d"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -3,
+    "title": "u16_2d",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.065,
+     "pixelHeight": 0.065,
+     "pixelDepth": 1.0,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.axes": "Y,X",
+     "imswitch.result_uid": "result-u16_2d"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -4,
+    "title": "f32_2d",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 32,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 1.0,
+     "pixelHeight": 1.0,
+     "pixelDepth": 1.0,
+     "unit": "pixel",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.axes": "Y,X",
+     "imswitch.result_uid": "result-f32_2d"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -5,
+    "title": "zstack",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     7,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.axes": "Z,Y,X",
+     "imswitch.result_uid": "result-zstack"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -7,
+    "title": "cyx",
+    "dims_xyczt": [
+     80,
+     64,
+     3,
+     1,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 1.0,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.axes": "C,Y,X",
+     "imswitch.result_uid": "result-cyx"
+    },
+    "slice_labels": [
+     "DAPI",
+     "GFP",
+     "mCherry"
+    ]
+   },
+   {
+    "id": -8,
+    "title": "tyx",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     1,
+     5
+    ],
+    "bitDepth": 32,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 1.0,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 2.5,
+     "timeUnit": "s"
+    },
+    "props": {
+     "imswitch.axes": "T,Y,X",
+     "imswitch.result_uid": "result-tyx"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -10,
+    "title": "tzcyx",
+    "dims_xyczt": [
+     40,
+     32,
+     2,
+     4,
+     3
+    ],
+    "bitDepth": 8,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.5,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 1.0,
+     "timeUnit": "s"
+    },
+    "props": {
+     "imswitch.axes": "T,Z,C,Y,X",
+     "imswitch.result_uid": "result-tzcyx"
+    },
+    "slice_labels": [
+     "a",
+     "b"
+    ]
+   },
+   {
+    "id": -12,
+    "title": "xzcy",
+    "dims_xyczt": [
+     40,
+     32,
+     2,
+     3,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.2,
+     "pixelDepth": 0.5,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.axes": "X,Z,C,Y",
+     "imswitch.result_uid": "result-xzcy"
+    },
+    "slice_labels": [
+     null,
+     null
+    ]
+   },
+   {
+    "id": -13,
+    "title": "view",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 1.0,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.axes": "Y,X",
+     "imswitch.result_uid": "result-view"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -14,
+    "title": "src",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     5,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.result_uid": "result-src"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -15,
+    "title": "dup",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     5,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": true,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.result_uid": "result-src",
+     "UniqueName": "true"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -16,
+    "title": "crop",
+    "dims_xyczt": [
+     20,
+     10,
+     1,
+     5,
+     1
+    ],
+    "bitDepth": 8,
+    "changes": true,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.result_uid": "result-src",
+     "UniqueName": "true"
+    },
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -17,
+    "title": "MAX_src",
+    "dims_xyczt": [
+     80,
+     64,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": false,
+    "cal": {
+     "pixelWidth": 0.1,
+     "pixelHeight": 0.1,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {},
+    "slice_labels": [
+     null
+    ]
+   },
+   {
+    "id": -18,
+    "title": "scaled",
+    "dims_xyczt": [
+     40,
+     20,
+     1,
+     1,
+     1
+    ],
+    "bitDepth": 16,
+    "changes": true,
+    "cal": {
+     "pixelWidth": 0.05,
+     "pixelHeight": 0.05,
+     "pixelDepth": 0.3,
+     "unit": "\u00b5m",
+     "xOrigin": 0.0,
+     "yOrigin": 0.0,
+     "zOrigin": 0.0,
+     "frameInterval": 0.0,
+     "timeUnit": "sec"
+    },
+    "props": {
+     "imswitch.result_uid": "result-src"
+    },
+    "slice_labels": [
+     null
+    ]
+   }
+  ]
+ }
+}

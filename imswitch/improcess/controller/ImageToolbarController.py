@@ -19,6 +19,7 @@ from imswitch.improcess.processors.make_composite import MakeCompositeProcessor
 from imswitch.improcess.processors.make_rgb import MakeRGBProcessor
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
 from imswitch.improcess.processors.stack_split import StackSplitProcessor
+from imswitch.improcess.model.display_preferences import IMAGE_DISPLAY_WINDOWS
 from imswitch.improcess.processors.stack_subset import StackSubsetProcessor
 from imswitch.improcess.processors._axis_split import resolve_axis, shape_for_result
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
@@ -220,7 +221,13 @@ class ImageToolbarController:
 
     def resetView(self) -> None:
         try:
-            self._view.reconstructionWidget.resetView()
+            # Through the controller, which knows whether the picture is the
+            # embedded canvas or the active image window.
+            reset = getattr(self._reconstructionController, "resetView", None)
+            if callable(reset):
+                reset()
+            else:
+                self._view.reconstructionWidget.resetView()
         except Exception:
             self._logger.exception("Could not reset reconstruction view")
 
@@ -248,7 +255,10 @@ class ImageToolbarController:
         if not self._resultHasImage(result):
             return
         try:
-            napari_viewer = getattr(
+            # The live crop outline is drawn on the napari viewer; with
+            # separate windows that canvas is hidden, so there is none.
+            windows = getattr(self._view, "imageDisplayMode", lambda: None)() == IMAGE_DISPLAY_WINDOWS
+            napari_viewer = None if windows else getattr(
                 getattr(self._view, "reconstructionWidget", None), "napariViewer", None
             )
             params = StackSubsetDialog.get_params(

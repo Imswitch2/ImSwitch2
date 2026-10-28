@@ -197,11 +197,14 @@ class ROIStatsWidget(QtWidgets.QWidget):
         layer = self._active_image_layer()
         if layer is None:
             return None
-        data = np.asarray(layer.data)
+        # Slice before converting: a lazy stack read whole is not a plane.
+        data = layer.data
+        if not hasattr(data, "ndim"):
+            data = np.asarray(data)
         if data.ndim < 2:
             return None
         if data.ndim == 2:
-            return data
+            return np.asarray(data)
         step = self._current_step(data.ndim)
         indexer = []
         for axis, size in enumerate(data.shape):
