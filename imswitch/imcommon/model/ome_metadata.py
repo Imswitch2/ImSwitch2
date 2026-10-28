@@ -29,6 +29,17 @@ import numpy as np
 
 #: OME UnitsLength for micrometer, and UnitsTime for second.
 _SPACE_UNIT = '\u00b5m'
+#: Factors to micrometres for the length units a result may be scaled in. A
+#: unit not listed (pixels, none) is taken as already in micrometres, as
+#: ``element_size_um`` always did.
+_TO_MICROMETRES = {
+    'nm': 1e-3, 'um': 1.0, '\u00b5m': 1.0, '\u03bcm': 1.0, 'micron': 1.0,
+    'mm': 1e3, 'cm': 1e4, 'm': 1e6,
+}
+
+
+def _unit_key(unit) -> str:
+    return str(unit).strip().lower() if unit is not None else ''
 _OME_NAMESPACE = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
 #: Namespace of the one MapAnnotation ImSwitch attaches to an image: the
 #: acquisition layout, recording outcome and any other key/value metadata
@@ -272,10 +283,18 @@ class OmeImageMeta:
         }
 
     def element_size_um(self) -> List[float]:
-        """Fiji/ilastik ``element_size_um`` triplet ``[z, y, x]`` (HDF5 interop)."""
-        by_name = {a.name: s for a, s in zip(self.axes, self.scale)}
-        return [float(by_name.get('z', 1.0)), float(by_name.get('y', 1.0)),
-                float(by_name.get('x', 1.0))]
+        """Fiji/ilastik ``element_size_um`` triplet ``[z, y, x]`` (HDF5 interop).
+
+        In micrometres, whatever unit the axes carry: a result scaled in
+        nanometres (MoNaLISA's are) used to write its 40 nm pitch as 40 µm
+        here, and every reader of the attribute took it at its word.
+        """
+        by_name = {a.name: (s, a.unit) for a, s in zip(self.axes, self.scale)}
+        out = []
+        for name in ('z', 'y', 'x'):
+            scale, unit = by_name.get(name, (1.0, None))
+            out.append(float(scale) * _TO_MICROMETRES.get(_unit_key(unit), 1.0))
+        return out
 
 
 def build_ome_xml(
