@@ -60,7 +60,11 @@ def test_exported_class_leaves_anything_else_alone():
 
 def test_the_widget_factory_accepts_the_module(qtbot):
     from imswitch.imcontrol.view.widgets import basewidgets
-    import imswitch.imcontrol.view.widgets.LiveReconWidget as module   # binds the module
+    import importlib
+
+    # The module itself: ``import a.b.C as m`` binds whatever ``a.b.C`` is,
+    # the class once something has resolved the lazy export.
+    module = importlib.import_module('imswitch.imcontrol.view.widgets.LiveReconWidget')
 
     factory = basewidgets.WidgetFactory(SimpleNamespace())
     widget = factory.createWidget(module)

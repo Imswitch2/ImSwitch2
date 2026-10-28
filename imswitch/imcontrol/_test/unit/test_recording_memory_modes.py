@@ -37,7 +37,8 @@ def test_rec_is_refused_before_anything_is_armed():
     widget = Mock()
     widget.getRecSaveMode.return_value = SaveMode.RAM.value
     widget.getSaveFormat.return_value = SaveFormat.ZARR.value
-    stub = SimpleNamespace(_widget=widget, recording=False, _finalizingRecCycle=False)
+    stub = SimpleNamespace(_widget=widget, recording=False, _finalizingRecCycle=False,
+                           _recordingAcquisitionStartAllowed=lambda: True)
     stub._RecordingController__logger = Mock()
 
     RecordingController.toggleREC.__get__(stub)(True)
