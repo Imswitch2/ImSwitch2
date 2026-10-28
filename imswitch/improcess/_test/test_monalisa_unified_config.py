@@ -185,3 +185,40 @@ def test_fast_auto_localization_skips_spot_refinement(monkeypatch):
     finding = pipeline.find_localization(image, None, params)
     assert finding.calibration.name == "mean-fast"
     assert finding.spot.shared_sigma == pytest.approx(1.3)
+
+
+def test_presets_reset_asymmetric_reassignment():
+    base = default_params()
+    base["reassignment_asymmetric"] = True
+    fast = apply_preset(base, PRESET_FAST)
+    full = apply_preset(base, PRESET_FULL)
+    assert fast["reassignment_asymmetric"] is False
+    assert full["reassignment_asymmetric"] is False
+
+
+def test_reassignment_is_masked_to_the_scanned_camera_axis():
+    from types import SimpleNamespace
+
+    from imswitch.improcess.reconstructors.monalisa.pipeline import _shift_factor_to_use
+
+    scan_index = np.column_stack([np.zeros(5), np.arange(5)])
+    geometry = SimpleNamespace(
+        params=PipelineParams(reassignment=0.4),
+        shift_factor=None,
+        step=np.eye(2),
+    )
+    assert _shift_factor_to_use(geometry, scan_index) == pytest.approx((0.0, 0.4))
+
+
+def test_asymmetric_reassignment_is_masked_to_the_scanned_camera_axis():
+    from types import SimpleNamespace
+
+    from imswitch.improcess.reconstructors.monalisa.pipeline import _shift_factor_to_use
+
+    scan_index = np.column_stack([np.arange(5), np.zeros(5)])
+    geometry = SimpleNamespace(
+        params=PipelineParams(reassignment=(0.2, 0.7)),
+        shift_factor=None,
+        step=np.eye(2),
+    )
+    assert _shift_factor_to_use(geometry, scan_index) == pytest.approx((0.2, 0.0))

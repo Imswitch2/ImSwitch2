@@ -153,7 +153,7 @@ class PipelineParams:
     smoothing: float = DEFAULT_SMOOTHING
     placement_mode: str = "auto"
     device: str = "CPU"
-    reassignment: str | float = "auto"
+    reassignment: str | float | tuple[float, float] = "auto"
     frame_gain: str = "smooth"
     cell_offsets: str = "seams"
     variance_weighting: bool = True
@@ -853,8 +853,41 @@ def _raster_coordinates(geometry: StackGeometry, scan_index: np.ndarray):
     return geometry.raster.coordinates(qx, qy)
 
 
-def _shift_factor_to_use(geometry: StackGeometry):
-    """The shift factor to reassign with, or ``None`` to place amplitudes."""
+def _scanned_camera_axes(geometry: StackGeometry, scan_index: np.ndarray) -> np.ndarray:
+    """Boolean camera X/Y mask for directions genuinely sampled by the scan."""
+    offsets = (
+        np.asarray(scan_index, dtype=float).reshape(-1, 2)
+        @ np.asarray(geometry.step, dtype=float).T
+    )
+    if offsets.size == 0:
+        return np.zeros(2, dtype=bool)
+    span = np.nanmax(offsets, axis=0) - np.nanmin(offsets, axis=0)
+    return np.isfinite(span) & (np.abs(span) > 1e-12)
+
+
+def _masked_reassignment(values, geometry: StackGeometry, scan_index: np.ndarray):
+    """Mask one or two camera-axis reassignment values to sampled directions."""
+    scanned = _scanned_camera_axes(geometry, scan_index)
+    if not np.any(scanned):
+        return None
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if values.size == 1:
+        values = np.repeat(values, 2)
+    elif values.size != 2:
+        raise ValueError("Reassignment factor must be one value or (x, y)")
+    values = np.where(scanned, values, 0.0)
+    return tuple(float(v) for v in values)
+
+
+def _shift_factor_to_use(geometry: StackGeometry, scan_index: np.ndarray):
+    """The camera-axis shift factor to reassign with.
+
+    Reassignment is meaningful only along camera-plane directions actually
+    sampled by the scan.  This matters for e.g. YZ data: an X displacement
+    must not be introduced merely because the detector image has an X axis.
+    Scalar manual factors are broadcast only onto scanned camera axes;
+    asymmetric factors are masked the same way.
+    """
     choice = geometry.params.reassignment
     if isinstance(choice, str):
         if choice == "off":
@@ -862,10 +895,18 @@ def _shift_factor_to_use(geometry: StackGeometry):
         if choice != "auto":
             raise ValueError(f"Unknown reassignment {choice!r}")
         factor = geometry.shift_factor
-        if factor is None or factor.alpha < CONFINED_SHIFT_FACTOR:
+        if factor is None:
             return None
-        return (factor.alpha_x, factor.alpha_y)
-    return float(choice)
+        values = _masked_reassignment(
+            (factor.alpha_x, factor.alpha_y), geometry, scan_index
+        )
+        if values is None:
+            return None
+        scanned_values = [abs(value) for value in values if abs(value) > 0.0]
+        if not scanned_values or max(scanned_values) < CONFINED_SHIFT_FACTOR:
+            return None
+        return values
+    return _masked_reassignment(choice, geometry, scan_index)
 
 
 def reconstruct_stack(
@@ -909,7 +950,7 @@ def reconstruct_stack(
     if frame_gain is not None:
         gain = np.asarray(frame_gain, dtype=float).reshape(frames.shape[0])
     amplitudes = extracted.amplitude / gain[:, None]
-    alpha = _shift_factor_to_use(geometry)
+    alpha = _shift_factor_to_use(geometry, scan_index)
     variance = None
     # Variance is only consumed by direct amplitude placement. Reassigned
     # images and diagnostic/background planes do not need the expensive
@@ -969,9 +1010,13 @@ def reconstruct_stack(
         factor = geometry.shift_factor
         shift = None
         if geometry.params.pinhole_stack == "shifted":
-            shift = alpha if alpha is not None else (
-                (factor.alpha_x, factor.alpha_y) if factor is not None else 0.0
-            )
+            shift = alpha
+            if shift is None and factor is not None:
+                shift = _masked_reassignment(
+                    (factor.alpha_x, factor.alpha_y), geometry, scan_index
+                )
+            if shift is None:
+                shift = 0.0
         pinholes = pinhole_stack(
             frames, model.x[valid], model.y[valid],
             scan_index @ geometry.step.T, geometry.raster,

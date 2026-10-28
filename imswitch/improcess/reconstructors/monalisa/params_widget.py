@@ -1,13 +1,13 @@
-"""Fixed parameter tree for the unified Gaussian MoNaLISA reconstructor."""
+"""Compact workflow UI for the unified Gaussian MoNaLISA reconstructor."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 import json
 
-from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtCore, QtWidgets
 
+from .advanced_settings import AdvancedReconstructionDialog
 from .calibration import PatternLocalization, ScanOrientation
 from .localization_settings import DEFAULT_LOCALIZATION_SETTINGS, LocalizationSettings, PeriodPrior
 from .params import (
@@ -18,10 +18,6 @@ from .params import (
     ORIENTATION_AUTO,
     ORIENTATION_LOCKED,
     ORIENTATION_MANUAL,
-    PLACEMENT_AUTO,
-    PLACEMENT_DIRECT,
-    PLACEMENT_INTERPOLATE,
-    PRESET_CONTROLLED_KEYS,
     PRESET_CUSTOM,
     PRESET_FAST,
     PRESET_FULL,
@@ -31,6 +27,7 @@ from .params import (
     default_params,
 )
 from .scan_frame import ORIENTATIONS
+from .scanning_settings import ScanningAdvancedDialog
 from .session_registry import MonalisaSessionRegistry, detector_identity
 from .spot_settings import sigma_px_to_fwhm
 
@@ -140,12 +137,25 @@ class LocalizationSettingsDialog(QtWidgets.QDialog):
 
 
 class MonalisaParamsWidget(QtWidgets.QWidget):
-    """One fixed parameter tree for every Gaussian MoNaLISA configuration."""
+    """Compact workflow-oriented controls for unified Gaussian MoNaLISA.
+
+    The widget intentionally does not mirror the parameter dictionary one row
+    at a time.  Normal reconstruction decisions stay visible; implementation
+    details remain in small advanced dialogs.  ``get_values`` is still the one
+    adapter to the stable backend/headless parameter contract.
+    """
 
     sigPreviewToggled = QtCore.Signal(bool)
     sigDetectionParamsChanged = QtCore.Signal()
     sigLocalizeRequested = QtCore.Signal()
     sigLocalizationModeChanged = QtCore.Signal(str)
+
+    _MODE_LABELS = (
+        ("Fast", PRESET_FAST),
+        ("Robust", PRESET_FULL),
+        ("Custom", PRESET_CUSTOM),
+    )
+    _ISM_LABELS = (("Off", "off"), ("Auto", "auto"), ("Manual", "fixed"))
 
     def __init__(self, parent=None, *, session_registry: MonalisaSessionRegistry | None = None):
         super().__init__(parent)
@@ -154,260 +164,400 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._detector_id = "unknown"
         self._current_data_obj = None
         self._selected_locked_localization_id = ""
-        self._localization_settings = LocalizationSettings.from_dict(
-            values["localization_settings"]
-        )
-        self._applying_preset = False
-        self._spot_unit = str(values["spot_fwhm_unit"])
-        self._auto_localization = deepcopy(values["auto_localization"])
+        self._localization_settings = LocalizationSettings.from_dict(values["localization_settings"])
         self._localization_refinement = str(values["localization_refinement"])
         self._localization_mode = str(values["localization_mode"])
+        self._auto_localization = deepcopy(values["auto_localization"])
+        self._spot_unit = str(values["spot_fwhm_unit"])
+        self._applying_preset = False
+        self._recorded_scan_summary = ""
+        self._scanned_lateral_axes = {"x", "y"}
+        self._scan_overrides = {
+            "scan_steps_fast": int(values["scan_steps_fast"]),
+            "scan_steps_slow": int(values["scan_steps_slow"]),
+            "scan_step_nm": float(values["scan_step_nm"]),
+        }
+        self._advanced_values = {
+            "device": str(values["device"]),
+            "pixel_size_nm": float(values["pixel_size_nm"]),
+            "placement_mode": str(values["placement_mode"]),
+            "commensurate_tolerance": float(values["commensurate_tolerance"]),
+            "variance_weighting": bool(values["variance_weighting"]),
+            "sharpen_sigma_px": float(values["sharpen_sigma_px"]),
+            "sharpen_regularization": float(values["sharpen_regularization"]),
+        }
 
-        params = [
-            {"name": "Preset", "type": "list", "values": [PRESET_FAST, PRESET_FULL, PRESET_CUSTOM],
-             "value": values["preset"],
-             "tip": "Fast prioritizes speed; Full enables the additional reconstruction corrections. "
-                    "Changing a preset-controlled option switches to Custom."},
-            {"name": "CPU/GPU", "type": "list", "values": ["GPU", "CPU"],
-             "value": values["device"]},
-            {"name": "Camera pixel", "type": "float", "suffix": "nm",
-             "limits": (0.0, 100000.0), "value": values["pixel_size_nm"],
-             "tip": "Effective sample-plane detector pixel size."},
-            {"name": "Localization", "type": "group", "children": [
-                {"name": "Mode", "type": "list",
-                 "values": [LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL],
-                 "value": values["localization_mode"]},
-                {"name": "Locked localization", "type": "list", "values": {"—": ""}, "value": "",
-                 "tip": "Explicit session localization for the current detector."},
-                {"name": "Offset X", "type": "float", "suffix": "px", "value": values["manual_offset_x_px"]},
-                {"name": "Offset Y", "type": "float", "suffix": "px", "value": values["manual_offset_y_px"]},
-                {"name": "Period X", "type": "float", "suffix": "px", "limits": (0.001, 100000.0),
-                 "value": values["manual_period_x_px"]},
-                {"name": "Period Y", "type": "float", "suffix": "px", "limits": (0.001, 100000.0),
-                 "value": values["manual_period_y_px"]},
-                {"name": "Stagger axis", "type": "list", "values": ["None", "X", "Y"],
-                 "value": values["stagger_axis"]},
-                {"name": "Stagger", "type": "float", "value": values["stagger"], "step": 0.05,
-                 "tip": "Signed fraction of the period along the stagger axis."},
-                {"name": "Lock current…", "type": "action"},
-                {"name": "Rename locked…", "type": "action"},
-                {"name": "Delete locked", "type": "action"},
-                # Keep the explicit Auto action at the bottom beside its settings.
-                {"name": "Localization settings…", "type": "action"},
-                {"name": "Localize", "type": "action"},
-            ]},
-            {"name": "Orientation", "type": "group", "children": [
-                {"name": "Mode", "type": "list",
-                 "values": [ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL],
-                 "value": values["orientation_mode"]},
-                {"name": "Orientation", "type": "list", "values": list(ORIENTATIONS),
-                 "value": values["orientation"]},
-                {"name": "Locked value", "type": "str", "value": "—", "readonly": True},
-                {"name": "Lock current", "type": "action"},
-                {"name": "Clear locked", "type": "action"},
-            ]},
-            {"name": "Spot model", "type": "group", "children": [
-                {"name": "Mode", "type": "list", "values": [SPOT_MANUAL, SPOT_AUTO],
-                 "value": values["spot_width_mode"]},
-                {"name": "FWHM", "type": "float", "limits": (0.001, 100000.0),
-                 "value": values["spot_fwhm"]},
-                {"name": "FWHM unit", "type": "list", "values": ["nm", "px"],
-                 "value": values["spot_fwhm_unit"]},
-                {"name": "Background", "type": "list", "values": ["constant", "none", "auto"],
-                 "value": values["background"]},
-            ]},
-            {"name": "Corrections", "type": "group", "children": [
-                {"name": "Intensity correction", "type": "bool", "value": values["intensity_correction"],
-                 "tip": "Corrects smooth frame-to-frame intensity variations, for example from bleaching, "
-                        "illumination drift, or laser-power fluctuations."},
-                {"name": "Cell offsets", "type": "bool", "value": values["cell_offsets"]},
-            ]},
-            {"name": "ISM", "type": "group", "children": [
-                {"name": "Reassignment", "type": "list", "values": ["off", "auto", "fixed"],
-                 "value": values["reassignment"]},
-                {"name": "Shift factor", "type": "float", "limits": (0.0, 1.0), "step": 0.05,
-                 "value": values["shift_factor"]},
-            ]},
-            {"name": "Placement", "type": "group", "children": [
-                {"name": "Mode", "type": "list", "values": [PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE],
-                 "value": values["placement_mode"]},
-                {"name": "Direct tolerance", "type": "float", "suffix": " px", "limits": (0.0, 1.0),
-                 "step": 0.01, "value": values["commensurate_tolerance"],
-                 "tip": "Maximum off-grid residual accepted for direct placement; exposed temporarily for validation."},
-                {"name": "Variance weighting", "type": "bool", "value": values["variance_weighting"],
-                 "tip": "Use extraction variance when duplicate samples land on one direct-placement pixel."},
-            ]},
-            {"name": "Outputs", "type": "group", "children": [
-                {"name": "Sharpened image", "type": "bool", "value": values["sharpen"]},
-                {"name": "Sharpening blur", "type": "float", "suffix": "px", "limits": (0.1, 10.0),
-                 "value": values["sharpen_sigma_px"]},
-                {"name": "Sharpening regularization", "type": "float", "limits": (0.001, 10.0),
-                 "value": values["sharpen_regularization"]},
-                {"name": "Pinhole stack", "type": "bool", "value": values["pinhole_stack"]},
-            ]},
-            {"name": "Scan overrides", "type": "group", "children": [
-                {"name": "Steps, fast axis", "type": "int", "limits": (0, 10000), "value": values["scan_steps_fast"],
-                 "tip": "0: use the recording"},
-                {"name": "Steps, slow axis", "type": "int", "limits": (0, 10000), "value": values["scan_steps_slow"],
-                 "tip": "0: use the recording"},
-                {"name": "Step", "type": "float", "suffix": "nm", "limits": (0.0, 100000.0),
-                 "value": values["scan_step_nm"], "tip": "0: use the recording"},
-            ]},
-        ]
-
-        self.p = Parameter.create(name="params", type="group", children=params)
-        self.tree = ParameterTree(showHeader=False)
-        self.tree.setParameters(self.p, showTop=False)
-
-        self.previewCheckbox = QtWidgets.QCheckBox("Show pattern")
-        self.previewCheckbox.setToolTip(
-            "Overlay the localization currently used by reconstruction. In Manual mode, editing the grid moves this overlay."
-        )
-        self.previewCheckbox.toggled.connect(self.sigPreviewToggled)
-        self.previewStatusLabel = QtWidgets.QLabel("")
-        self.previewStatusLabel.setWordWrap(True)
-        self.previewStatusLabel.setStyleSheet("color: palette(mid); font-size: 9pt; padding: 0px 4px;")
-        self._outputPixelSizeLabel = QtWidgets.QLabel("Output pixel size: — (set after reconstruction)")
-        self._outputPixelSizeLabel.setStyleSheet("color: palette(mid); font-size: 9pt; padding: 2px 4px;")
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self.tree)
-        layout.addWidget(self.previewCheckbox)
-        layout.addWidget(self.previewStatusLabel)
-        layout.addWidget(self._outputPixelSizeLabel)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.p.param("Preset").sigValueChanged.connect(self._preset_changed)
-        localization = self.p.param("Localization")
-        localization.param("Localize").sigActivated.connect(self.sigLocalizeRequested.emit)
-        localization.param("Localization settings…").sigActivated.connect(self._open_localization_settings)
-        localization.param("Lock current…").sigActivated.connect(self._lock_current_localization)
-        localization.param("Rename locked…").sigActivated.connect(self._rename_locked_localization)
-        localization.param("Delete locked").sigActivated.connect(self._delete_locked_localization)
-        localization.param("Locked localization").sigValueChanged.connect(self._locked_localization_changed)
-        orientation = self.p.param("Orientation")
-        orientation.param("Lock current").sigActivated.connect(self._lock_current_orientation)
-        orientation.param("Clear locked").sigActivated.connect(self._clear_locked_orientation)
-
-        for key, parameter in self._preset_controlled_parameters().items():
-            parameter.sigValueChanged.connect(lambda _p, _v, key=key: self._controlled_changed(key))
-        for parameter in self._localization_preview_parameters():
-            parameter.sigValueChanged.connect(lambda *_: self.sigDetectionParamsChanged.emit())
-
-        localization.param("Mode").sigValueChanged.connect(self._localization_mode_changed)
-        orientation.param("Mode").sigValueChanged.connect(self._orientation_mode_changed)
-        self.p.param("Spot model").param("Mode").sigValueChanged.connect(lambda *_: self._update_enabled())
-        self.p.param("Spot model").param("FWHM unit").sigValueChanged.connect(self._spot_unit_changed)
-        self.p.param("ISM").param("Reassignment").sigValueChanged.connect(lambda *_: self._update_enabled())
-        self.p.param("Outputs").param("Sharpened image").sigValueChanged.connect(lambda *_: self._update_enabled())
-
+        self._build_ui(values)
+        self._connect_signals()
         if self._registry is not None:
             self._registry.add_listener(self._registry_changed)
             self.destroyed.connect(lambda *_: self._registry.remove_listener(self._registry_changed))
         self._refresh_registry_controls(clear_selection=True)
-        self._update_enabled()
+        self._update_ui()
         QtCore.QTimer.singleShot(0, self._offer_recovery_if_needed)
 
-    def _preset_controlled_parameters(self):
-        return {
-            "device": self.p.param("CPU/GPU"),
-            "intensity_correction": self.p.param("Corrections").param("Intensity correction"),
-            "cell_offsets": self.p.param("Corrections").param("Cell offsets"),
-            "spot_width_mode": self.p.param("Spot model").param("Mode"),
-            "reassignment": self.p.param("ISM").param("Reassignment"),
-            "placement_mode": self.p.param("Placement").param("Mode"),
-            "variance_weighting": self.p.param("Placement").param("Variance weighting"),
-            "sharpen": self.p.param("Outputs").param("Sharpened image"),
-        }
+    # --------------------------------------------------------------- builders
+    @staticmethod
+    def _section(title: str):
+        box = QtWidgets.QGroupBox(title)
+        grid = QtWidgets.QGridLayout(box)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
+        return box, grid
 
-    def _localization_preview_parameters(self):
-        group = self.p.param("Localization")
-        return [
-            group.param("Offset X"), group.param("Offset Y"),
-            group.param("Period X"), group.param("Period Y"),
-            group.param("Stagger axis"), group.param("Stagger"),
-            group.param("Locked localization"),
-        ]
+    @staticmethod
+    def _double_spin(value, minimum=-1e9, maximum=1e9, decimals=3, suffix=""):
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setRange(float(minimum), float(maximum))
+        spin.setDecimals(int(decimals))
+        spin.setValue(float(value))
+        if suffix:
+            spin.setSuffix(str(suffix))
+        return spin
 
-    def _preset_changed(self, _parameter, value):
-        if self._applying_preset or value == PRESET_CUSTOM:
-            return
-        values = apply_preset(self.get_values(), str(value))
-        self._applying_preset = True
-        try:
-            for key, parameter in self._preset_controlled_parameters().items():
-                parameter.setValue(values[key])
-            self._localization_refinement = str(values["localization_refinement"])
-        finally:
-            self._applying_preset = False
-        self._update_enabled()
+    @staticmethod
+    def _combo(items, value=None):
+        combo = QtWidgets.QComboBox()
+        for item in items:
+            if isinstance(item, tuple):
+                combo.addItem(str(item[0]), item[1])
+            else:
+                combo.addItem(str(item), item)
+        if value is not None:
+            MonalisaParamsWidget._set_combo_data(combo, value)
+        return combo
 
-    def _controlled_changed(self, _key):
+    @staticmethod
+    def _set_combo_data(combo, value):
+        for index in range(combo.count()):
+            if combo.itemData(index) == value or combo.itemText(index) == str(value):
+                combo.setCurrentIndex(index)
+                return True
+        return False
+
+    @staticmethod
+    def _combo_data(combo):
+        value = combo.currentData()
+        return combo.currentText() if value is None else value
+
+    def _build_ui(self, values: dict) -> None:
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(6)
+
+        modeRow = QtWidgets.QHBoxLayout()
+        modeRow.addWidget(QtWidgets.QLabel("Mode"))
+        self.modeCombo = self._combo(self._MODE_LABELS, values["preset"])
+        self.modeCombo.setToolTip(
+            "Fast keeps the minimal reconstruction path. Robust enables automatic "
+            "spot calibration, ISM and corrections. Custom exposes expert choices."
+        )
+        modeRow.addWidget(self.modeCombo, 1)
+        self.advancedButton = QtWidgets.QPushButton("Advanced reconstruction…")
+        modeRow.addWidget(self.advancedButton)
+        root.addLayout(modeRow)
+
+        # Localization -------------------------------------------------------
+        self.localizationBox, loc = self._section("Localization")
+        self.localizationModeCombo = self._combo(
+            [LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL],
+            values["localization_mode"],
+        )
+        loc.addWidget(QtWidgets.QLabel("Source"), 0, 0)
+        loc.addWidget(self.localizationModeCombo, 0, 1)
+
+        self.lockedLocalizationLabel = QtWidgets.QLabel("Profile")
+        self.lockedLocalizationCombo = QtWidgets.QComboBox()
+        self.renameLocalizationButton = QtWidgets.QPushButton("Rename…")
+        self.deleteLocalizationButton = QtWidgets.QPushButton("Delete")
+        loc.addWidget(self.lockedLocalizationLabel, 0, 2)
+        loc.addWidget(self.lockedLocalizationCombo, 0, 3)
+        loc.addWidget(self.renameLocalizationButton, 0, 4)
+        loc.addWidget(self.deleteLocalizationButton, 0, 5)
+
+        self.manualLocalizationWidget = QtWidgets.QWidget()
+        manual = QtWidgets.QGridLayout(self.manualLocalizationWidget)
+        manual.setContentsMargins(0, 0, 0, 0)
+        manual.setHorizontalSpacing(6)
+        manual.setVerticalSpacing(3)
+        self.periodXSpin = self._double_spin(values["manual_period_x_px"], 0.001, 100000, 3, " px")
+        self.periodYSpin = self._double_spin(values["manual_period_y_px"], 0.001, 100000, 3, " px")
+        self.offsetXSpin = self._double_spin(values["manual_offset_x_px"], -100000, 100000, 3, " px")
+        self.offsetYSpin = self._double_spin(values["manual_offset_y_px"], -100000, 100000, 3, " px")
+        self.staggerAxisCombo = self._combo(["None", "X", "Y"], values["stagger_axis"])
+        self.staggerSpin = self._double_spin(values["stagger"], -10.0, 10.0, 3)
+        self.staggerSpin.setSingleStep(0.05)
+        manual.addWidget(QtWidgets.QLabel("Period"), 0, 0)
+        manual.addWidget(QtWidgets.QLabel("X"), 0, 1)
+        manual.addWidget(self.periodXSpin, 0, 2)
+        manual.addWidget(QtWidgets.QLabel("Y"), 0, 3)
+        manual.addWidget(self.periodYSpin, 0, 4)
+        manual.addWidget(QtWidgets.QLabel("Offset"), 1, 0)
+        manual.addWidget(QtWidgets.QLabel("X"), 1, 1)
+        manual.addWidget(self.offsetXSpin, 1, 2)
+        manual.addWidget(QtWidgets.QLabel("Y"), 1, 3)
+        manual.addWidget(self.offsetYSpin, 1, 4)
+        manual.addWidget(QtWidgets.QLabel("Stagger"), 2, 0)
+        manual.addWidget(self.staggerAxisCombo, 2, 1, 1, 2)
+        manual.addWidget(self.staggerSpin, 2, 3, 1, 2)
+        loc.addWidget(self.manualLocalizationWidget, 1, 0, 1, 6)
+
+        actionRow = QtWidgets.QHBoxLayout()
+        self.previewCheckbox = QtWidgets.QCheckBox("Show foci")
+        self.previewCheckbox.setToolTip(
+            "Overlay the localization currently used by reconstruction."
+        )
+        self.localizationSettingsButton = QtWidgets.QPushButton("Settings…")
+        self.localizeButton = QtWidgets.QPushButton("Localize")
+        self.lockLocalizationButton = QtWidgets.QPushButton("Lock…")
+        actionRow.addWidget(self.previewCheckbox)
+        actionRow.addStretch(1)
+        actionRow.addWidget(self.localizationSettingsButton)
+        actionRow.addWidget(self.localizeButton)
+        actionRow.addWidget(self.lockLocalizationButton)
+        loc.addLayout(actionRow, 2, 0, 1, 6)
+
+        self.previewStatusLabel = QtWidgets.QLabel("Auto: press Localize")
+        self.previewStatusLabel.setWordWrap(True)
+        self.previewStatusLabel.setStyleSheet("color: palette(mid);")
+        loc.addWidget(self.previewStatusLabel, 3, 0, 1, 6)
+        root.addWidget(self.localizationBox)
+
+        # Scanning -----------------------------------------------------------
+        self.scanningBox, scan = self._section("Scanning")
+        self.orientationModeCombo = self._combo(
+            [ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL],
+            values["orientation_mode"],
+        )
+        self.orientationCombo = self._combo(list(ORIENTATIONS), values["orientation"])
+        self.lockOrientationButton = QtWidgets.QPushButton("Lock")
+        self.clearOrientationButton = QtWidgets.QPushButton("Clear lock")
+        self.scanningAdvancedButton = QtWidgets.QPushButton("Advanced…")
+        scan.addWidget(QtWidgets.QLabel("Orientation"), 0, 0)
+        scan.addWidget(self.orientationModeCombo, 0, 1)
+        scan.addWidget(self.orientationCombo, 0, 2)
+        scan.addWidget(self.lockOrientationButton, 0, 3)
+        scan.addWidget(self.clearOrientationButton, 0, 4)
+        scan.addWidget(self.scanningAdvancedButton, 0, 5)
+        root.addWidget(self.scanningBox)
+
+        # Spot model ---------------------------------------------------------
+        self.spotBox, spot = self._section("Spot model")
+        self.spotModeLabel = QtWidgets.QLabel("Mode")
+        self.spotModeCombo = self._combo([SPOT_MANUAL, SPOT_AUTO], values["spot_width_mode"])
+        spot.addWidget(self.spotModeLabel, 0, 0)
+        spot.addWidget(self.spotModeCombo, 0, 1)
+        self.fwhmSpin = self._double_spin(values["spot_fwhm"], 0.001, 100000, 3)
+        self.fwhmUnitCombo = self._combo(["nm", "px"], values["spot_fwhm_unit"])
+        self.backgroundCombo = self._combo(["constant", "none", "auto"], values["background"])
+        spot.addWidget(QtWidgets.QLabel("FWHM"), 1, 0)
+        spot.addWidget(self.fwhmSpin, 1, 1)
+        spot.addWidget(self.fwhmUnitCombo, 1, 2)
+        spot.addWidget(QtWidgets.QLabel("Background"), 1, 3)
+        spot.addWidget(self.backgroundCombo, 1, 4)
+        spot.setColumnStretch(5, 1)
+        root.addWidget(self.spotBox)
+
+        # ISM ---------------------------------------------------------------
+        self.ismBox, ism = self._section("ISM")
+        self.reassignmentCombo = self._combo(self._ISM_LABELS, values["reassignment"])
+        self.shiftFactorSpin = self._double_spin(values["shift_factor"], 0.0, 1.0, 3)
+        self.shiftFactorSpin.setSingleStep(0.05)
+        self.asymmetricCheck = QtWidgets.QCheckBox("Asymmetric")
+        self.asymmetricCheck.setChecked(bool(values.get("reassignment_asymmetric", False)))
+        self.pinholeCheck = QtWidgets.QCheckBox("Pinhole stack")
+        self.pinholeCheck.setChecked(bool(values["pinhole_stack"]))
+        ism.addWidget(QtWidgets.QLabel("Reassignment"), 0, 0)
+        ism.addWidget(self.reassignmentCombo, 0, 1)
+        ism.addWidget(QtWidgets.QLabel("Shift"), 0, 2)
+        ism.addWidget(self.shiftFactorSpin, 0, 3)
+        ism.addWidget(self.asymmetricCheck, 0, 4)
+        ism.addWidget(self.pinholeCheck, 0, 5)
+
+        self.asymmetricWidget = QtWidgets.QWidget()
+        asym = QtWidgets.QHBoxLayout(self.asymmetricWidget)
+        asym.setContentsMargins(0, 0, 0, 0)
+        self.shiftXLabel = QtWidgets.QLabel("X")
+        self.shiftYLabel = QtWidgets.QLabel("Y")
+        self.shiftXSpin = self._double_spin(values.get("shift_factor_x", values["shift_factor"]), 0.0, 1.0, 3)
+        self.shiftYSpin = self._double_spin(values.get("shift_factor_y", values["shift_factor"]), 0.0, 1.0, 3)
+        self.shiftXSpin.setSingleStep(0.05)
+        self.shiftYSpin.setSingleStep(0.05)
+        asym.addStretch(1)
+        asym.addWidget(self.shiftXLabel)
+        asym.addWidget(self.shiftXSpin)
+        asym.addWidget(self.shiftYLabel)
+        asym.addWidget(self.shiftYSpin)
+        ism.addWidget(self.asymmetricWidget, 1, 0, 1, 6)
+        root.addWidget(self.ismBox)
+
+        # Corrections --------------------------------------------------------
+        self.correctionsBox, corrections = self._section("Corrections")
+        self.intensityCheck = QtWidgets.QCheckBox("Intensity correction")
+        self.intensityCheck.setChecked(bool(values["intensity_correction"]))
+        self.cellOffsetsCheck = QtWidgets.QCheckBox("Cell offsets")
+        self.cellOffsetsCheck.setChecked(bool(values["cell_offsets"]))
+        corrections.addWidget(self.intensityCheck, 0, 0)
+        corrections.addWidget(self.cellOffsetsCheck, 0, 1)
+        corrections.setColumnStretch(2, 1)
+        root.addWidget(self.correctionsBox)
+
+        # Output -------------------------------------------------------------
+        self.outputBox, output = self._section("Output")
+        self.sharpenCheck = QtWidgets.QCheckBox("Sharpened image")
+        self.sharpenCheck.setChecked(bool(values["sharpen"]))
+        output.addWidget(self.sharpenCheck, 0, 0)
+        output.setColumnStretch(1, 1)
+        root.addWidget(self.outputBox)
+
+        self._outputPixelSizeLabel = QtWidgets.QLabel("Output pixel size: — (set after reconstruction)")
+        self._outputPixelSizeLabel.setStyleSheet("color: palette(mid);")
+        root.addWidget(self._outputPixelSizeLabel)
+        root.addStretch(1)
+
+    def _connect_signals(self) -> None:
+        self.modeCombo.currentIndexChanged.connect(self._mode_changed)
+        self.localizationModeCombo.currentIndexChanged.connect(self._localization_mode_changed)
+        self.lockedLocalizationCombo.currentIndexChanged.connect(self._locked_localization_changed)
+        self.orientationModeCombo.currentIndexChanged.connect(self._orientation_mode_changed)
+        self.spotModeCombo.currentIndexChanged.connect(self._controlled_changed)
+        self.reassignmentCombo.currentIndexChanged.connect(self._controlled_changed)
+        self.asymmetricCheck.toggled.connect(self._controlled_changed)
+        self.intensityCheck.toggled.connect(self._controlled_changed)
+        self.cellOffsetsCheck.toggled.connect(self._controlled_changed)
+        self.sharpenCheck.toggled.connect(self._controlled_changed)
+
+        self.previewCheckbox.toggled.connect(self.sigPreviewToggled)
+        self.localizeButton.clicked.connect(self.sigLocalizeRequested.emit)
+        self.localizationSettingsButton.clicked.connect(self._open_localization_settings)
+        self.lockLocalizationButton.clicked.connect(self._lock_current_localization)
+        self.renameLocalizationButton.clicked.connect(self._rename_locked_localization)
+        self.deleteLocalizationButton.clicked.connect(self._delete_locked_localization)
+        self.lockOrientationButton.clicked.connect(self._lock_current_orientation)
+        self.clearOrientationButton.clicked.connect(self._clear_locked_orientation)
+        self.scanningAdvancedButton.clicked.connect(self._open_scanning_advanced)
+        self.advancedButton.clicked.connect(self._open_advanced_reconstruction)
+
+        for control in (
+            self.periodXSpin, self.periodYSpin, self.offsetXSpin, self.offsetYSpin,
+            self.staggerSpin,
+        ):
+            control.valueChanged.connect(lambda *_: self.sigDetectionParamsChanged.emit())
+        self.staggerAxisCombo.currentIndexChanged.connect(
+            lambda *_: self.sigDetectionParamsChanged.emit()
+        )
+        self.fwhmUnitCombo.currentIndexChanged.connect(self._spot_unit_changed)
+        self.asymmetricCheck.toggled.connect(lambda *_: self._update_ui())
+        self.reassignmentCombo.currentIndexChanged.connect(lambda *_: self._update_ui())
+
+    # --------------------------------------------------------------- mode/UI
+    def _mode_value(self) -> str:
+        return str(self._combo_data(self.modeCombo))
+
+    def _set_mode_value(self, value: str) -> None:
+        self._set_combo_data(self.modeCombo, value)
+
+    def _mode_changed(self, *_):
         if self._applying_preset:
             return
-        preset = self.p.param("Preset")
-        if preset.value() != PRESET_CUSTOM:
+        mode = self._mode_value()
+        if mode != PRESET_CUSTOM:
+            values = apply_preset(self.get_values(), mode)
             self._applying_preset = True
             try:
-                preset.setValue(PRESET_CUSTOM)
+                self._apply_controlled_values(values)
+                self._localization_refinement = str(values["localization_refinement"])
             finally:
                 self._applying_preset = False
-        self._update_enabled()
+        self._update_ui()
 
-    def _spot_unit_changed(self, _parameter, value):
-        new_unit = str(value)
-        old_unit = self._spot_unit
-        if new_unit == old_unit:
+    def _apply_controlled_values(self, values: dict) -> None:
+        self._advanced_values["device"] = str(values["device"])
+        self._advanced_values["placement_mode"] = str(values["placement_mode"])
+        self._advanced_values["variance_weighting"] = bool(values["variance_weighting"])
+        self.intensityCheck.setChecked(bool(values["intensity_correction"]))
+        self.cellOffsetsCheck.setChecked(bool(values["cell_offsets"]))
+        self._set_combo_data(self.spotModeCombo, values["spot_width_mode"])
+        self._set_combo_data(self.reassignmentCombo, values["reassignment"])
+        self.asymmetricCheck.setChecked(bool(values.get("reassignment_asymmetric", False)))
+        self.sharpenCheck.setChecked(bool(values["sharpen"]))
+
+    def _controlled_changed(self, *_):
+        if self._applying_preset:
             return
-        spot = self.p.param("Spot model")
-        width = float(spot.param("FWHM").value())
-        pixel_nm = float(self.p.param("Camera pixel").value())
-        if pixel_nm > 0:
-            if old_unit == "nm" and new_unit == "px":
-                width = width / pixel_nm
-            elif old_unit == "px" and new_unit == "nm":
-                width = width * pixel_nm
-            spot.param("FWHM").setValue(width)
-        self._spot_unit = new_unit
+        if self._mode_value() != PRESET_CUSTOM:
+            self._applying_preset = True
+            try:
+                self._set_mode_value(PRESET_CUSTOM)
+            finally:
+                self._applying_preset = False
+        self._update_ui()
 
-    def _update_enabled(self):
-        localization = self.p.param("Localization")
-        mode = str(localization.param("Mode").value())
-        manual = mode == LOCALIZATION_MANUAL
-        locked = mode == LOCALIZATION_LOCKED
-        localization.param("Localize").setOpts(enabled=mode == LOCALIZATION_AUTO)
-        localization.param("Locked localization").setOpts(enabled=locked)
-        for name in ("Offset X", "Offset Y", "Period X", "Period Y", "Stagger axis", "Stagger"):
-            localization.param(name).setOpts(enabled=manual)
-        localization.param("Localization settings…").setOpts(enabled=mode == LOCALIZATION_AUTO)
-        has_lockable = self._lockable_localization() is not None
-        localization.param("Lock current…").setOpts(enabled=has_lockable and mode != LOCALIZATION_LOCKED)
+    def _update_ui(self) -> None:
+        mode = self._mode_value()
+        fast = mode == PRESET_FAST
+        self.advancedButton.setVisible(not fast)
+        self.ismBox.setVisible(not fast)
+        self.correctionsBox.setVisible(not fast)
+        self.outputBox.setVisible(not fast)
+        self.spotModeLabel.setVisible(not fast)
+        self.spotModeCombo.setVisible(not fast)
+
+        localization_mode = str(self._combo_data(self.localizationModeCombo))
+        manual = localization_mode == LOCALIZATION_MANUAL
+        locked = localization_mode == LOCALIZATION_LOCKED
+        self.manualLocalizationWidget.setVisible(manual)
+        for widget in (
+            self.lockedLocalizationLabel, self.lockedLocalizationCombo,
+            self.renameLocalizationButton, self.deleteLocalizationButton,
+        ):
+            widget.setVisible(locked)
+        self.localizeButton.setEnabled(localization_mode == LOCALIZATION_AUTO)
+        self.localizationSettingsButton.setEnabled(localization_mode == LOCALIZATION_AUTO)
+        self.lockLocalizationButton.setEnabled(
+            self._lockable_localization() is not None and not locked
+        )
         selected = bool(self._selected_locked_localization_id)
-        localization.param("Rename locked…").setOpts(enabled=selected)
-        localization.param("Delete locked").setOpts(enabled=selected)
+        self.renameLocalizationButton.setEnabled(selected)
+        self.deleteLocalizationButton.setEnabled(selected)
 
-        orientation = self.p.param("Orientation")
-        orient_mode = str(orientation.param("Mode").value())
-        orientation.param("Orientation").setOpts(enabled=orient_mode == ORIENTATION_MANUAL)
-        orientation.param("Lock current").setOpts(enabled=self._lockable_orientation() is not None)
-        orientation.param("Clear locked").setOpts(
-            enabled=self._registry is not None and self._registry.locked_orientation(self._detector_id) is not None
+        orient_mode = str(self._combo_data(self.orientationModeCombo))
+        self.orientationCombo.setEnabled(orient_mode == ORIENTATION_MANUAL)
+        self.lockOrientationButton.setEnabled(self._lockable_orientation() is not None)
+        self.clearOrientationButton.setEnabled(
+            self._registry is not None
+            and self._registry.locked_orientation(self._detector_id) is not None
         )
 
-        spot = self.p.param("Spot model")
-        spot_manual = spot.param("Mode").value() == SPOT_MANUAL
-        spot.param("FWHM").setOpts(enabled=spot_manual)
-        spot.param("FWHM unit").setOpts(enabled=spot_manual)
+        spot_auto = str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO
+        self.fwhmSpin.setEnabled(not spot_auto)
+        # The unit remains editable in Auto: changing units changes only how
+        # the resolved value is displayed, not how it was estimated.
+        self.fwhmUnitCombo.setEnabled(True)
 
-        ism = self.p.param("ISM")
-        ism.param("Shift factor").setOpts(
-            enabled=ism.param("Reassignment").value() == "fixed"
+        reassignment = str(self._combo_data(self.reassignmentCombo))
+        can_be_asymmetric = len(self._scanned_lateral_axes) > 1
+        asymmetric = (
+            bool(self.asymmetricCheck.isChecked())
+            and reassignment != "off"
+            and can_be_asymmetric
         )
-        outputs = self.p.param("Outputs")
-        sharpen = bool(outputs.param("Sharpened image").value())
-        outputs.param("Sharpening blur").setOpts(enabled=sharpen)
-        outputs.param("Sharpening regularization").setOpts(enabled=sharpen)
+        manual_ism = reassignment == "fixed"
+        self.shiftFactorSpin.setEnabled(manual_ism and not asymmetric)
+        self.asymmetricCheck.setEnabled(reassignment != "off" and can_be_asymmetric)
+        self.asymmetricCheck.setToolTip(
+            "Use separate camera X/Y reassignment factors."
+            if can_be_asymmetric else
+            "Only one lateral scan axis is present; reassignment is applied only along that sampled direction."
+        )
+        self.asymmetricWidget.setVisible(asymmetric)
+        self.shiftXSpin.setEnabled(manual_ism)
+        self.shiftYSpin.setEnabled(manual_ism)
+        self.shiftXLabel.setEnabled(True)
+        self.shiftYLabel.setEnabled(True)
 
+    # -------------------------------------------------------------- dialogs
     def _open_localization_settings(self):
         dialog = LocalizationSettingsDialog(self._localization_settings, self)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
@@ -416,18 +566,35 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 "Localization settings changed — press Localize to update"
             )
 
-    def _localization_mode_changed(self, _parameter, value):
+    def _open_scanning_advanced(self):
+        dialog = ScanningAdvancedDialog(
+            self._scan_overrides,
+            recorded_summary=self._recorded_scan_summary,
+            parent=self,
+        )
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self._scan_overrides = dialog.values()
+
+    def _open_advanced_reconstruction(self):
+        before = dict(self._advanced_values)
+        dialog = AdvancedReconstructionDialog(self._advanced_values, self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self._advanced_values.update(dialog.values())
+        controlled = ("device", "placement_mode", "variance_weighting")
+        if any(self._advanced_values[key] != before[key] for key in controlled):
+            self._controlled_changed()
+
+    # --------------------------------------------------------- localization
+    def _localization_mode_changed(self, *_):
         previous = self._localization_mode
-        current = str(value)
+        current = str(self._combo_data(self.localizationModeCombo))
         self._localization_mode = current
         if previous == LOCALIZATION_AUTO and current == LOCALIZATION_MANUAL:
             self._seed_manual_from_auto()
-        self._update_enabled()
+        self._update_ui()
         self.sigLocalizationModeChanged.emit(current)
         self.sigDetectionParamsChanged.emit()
-
-    def _orientation_mode_changed(self, *_):
-        self._update_enabled()
 
     def _seed_manual_from_auto(self) -> None:
         localization = PatternLocalization.from_dict(self._auto_localization)
@@ -443,13 +610,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 "exactly by the Manual period/offset/stagger controls."
             )
             return
-        group = self.p.param("Localization")
-        group.param("Offset X").setValue(values["offset_x"])
-        group.param("Offset Y").setValue(values["offset_y"])
-        group.param("Period X").setValue(values["period_x"])
-        group.param("Period Y").setValue(values["period_y"])
-        group.param("Stagger axis").setValue(values["stagger_axis"])
-        group.param("Stagger").setValue(values["stagger"])
+        self.offsetXSpin.setValue(values["offset_x"])
+        self.offsetYSpin.setValue(values["offset_y"])
+        self.periodXSpin.setValue(values["period_x"])
+        self.periodYSpin.setValue(values["period_y"])
+        self._set_combo_data(self.staggerAxisCombo, values["stagger_axis"])
+        self.staggerSpin.setValue(values["stagger"])
 
     def set_auto_localization(self, localization, status: str = "") -> None:
         payload = localization.to_dict() if hasattr(localization, "to_dict") else dict(localization)
@@ -468,152 +634,30 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 diagnostics={"status": status} if status else {},
             )
         self.setPreviewStatus(status or "Auto localization ready")
-        self._update_enabled()
+        self._update_ui()
         self.sigDetectionParamsChanged.emit()
 
     def clear_auto_localization(self, status: str = "Auto: press Localize") -> None:
         self._auto_localization = {}
         self.setPreviewStatus(status)
-        self._update_enabled()
-        self.sigDetectionParamsChanged.emit()
-
-    # ----------------------------------------------------- session registry UI
-    def _registry_changed(self):
-        self._refresh_registry_controls()
-
-    def sync_current_transient(self):
-        """Pull Auto values resolved by a completed worker for this dataset."""
-        if self._registry is None:
-            return
-        transient = self._registry.current_localization(self._detector_id)
-        current_name = str(getattr(self._current_data_obj, "name", "") or "")
-        if (
-            transient is not None
-            and str(self.p.param("Localization").param("Mode").value()) == LOCALIZATION_AUTO
-            and (not transient.source_dataset or transient.source_dataset == current_name)
-        ):
-            payload = transient.localization.to_dict()
-            provenance = dict(payload.get("provenance") or {})
-            provenance.setdefault("status", "Auto localization resolved during reconstruction")
-            payload["provenance"] = provenance
-            self._auto_localization = payload
-            self.setPreviewStatus(str(provenance["status"]))
-        self._refresh_registry_controls()
-        self.sigDetectionParamsChanged.emit()
-
-    def set_auto_spot_sigma_px(self, sigma_px: float) -> None:
-        """Show an Auto-estimated width without changing Spot model mode."""
-        if str(self.p.param("Spot model").param("Mode").value()) != SPOT_AUTO:
-            return
-        try:
-            sigma_px = float(sigma_px)
-        except (TypeError, ValueError):
-            return
-        if sigma_px <= 0:
-            return
-        spot = self.p.param("Spot model")
-        unit = str(spot.param("FWHM unit").value())
-        pixel_nm = float(self.p.param("Camera pixel").value())
-        try:
-            value = sigma_px_to_fwhm(
-                sigma_px, unit, pixel_nm if unit == "nm" else None
-            )
-        except ValueError:
-            return
-        spot.param("FWHM").setValue(float(value))
-
-    def sync_reconstruction_results(self, results) -> None:
-        """Reflect an Auto-estimated spot width from the current reconstruction.
-
-        This updates only the displayed FWHM value.  The mode remains Auto;
-        switching Spot model to Manual/default then freezes that resolved value.
-        """
-        if str(self.p.param("Spot model").param("Mode").value()) != SPOT_AUTO:
-            return
-        results = tuple(results or ())
-        if not results:
-            return
-        current_name = str(getattr(self._current_data_obj, "name", "") or "")
-        selected = None
-        for result in results:
-            if current_name and str(getattr(result, "name", "")).startswith(f"{current_name}_monalisa"):
-                selected = result
-                break
-        if selected is None and len(results) == 1:
-            selected = results[0]
-        if selected is None:
-            return
-        metadata = dict(getattr(selected, "metadata", {}) or {})
-        snapshot = metadata.get("monalisa_calibration")
-        if not isinstance(snapshot, dict):
-            params = dict(getattr(selected, "params", {}) or {})
-            snapshot = params.get("calibration_snapshot")
-        if not isinstance(snapshot, dict):
-            return
-        try:
-            sigma_px = float(snapshot.get("effective_sigma_px"))
-        except (TypeError, ValueError):
-            sigma_px = 0.0
-        if sigma_px > 0:
-            self.set_auto_spot_sigma_px(sigma_px)
-            return
-        spot = self.p.param("Spot model")
-        unit = str(spot.param("FWHM unit").value())
-        key = "resolved_spot_fwhm_nm" if unit == "nm" else "resolved_spot_fwhm_px"
-        try:
-            value = float(snapshot.get(key))
-        except (TypeError, ValueError):
-            return
-        if value > 0:
-            spot.param("FWHM").setValue(value)
-
-    def _refresh_registry_controls(self, *, clear_selection: bool = False):
-        localization = self.p.param("Localization")
-        current = "" if clear_selection else str(self._selected_locked_localization_id or "")
-        choices = {"— choose locked localization —": ""}
-        if self._registry is not None:
-            for profile in self._registry.localization_profiles(self._detector_id):
-                label = profile.name
-                if label in choices:
-                    label = f"{profile.name} ({profile.id[:6]})"
-                choices[label] = profile.id
-        selector = localization.param("Locked localization")
-        selector.setLimits(choices)
-        if current and self._registry is not None:
-            profile = self._registry.localization_profile(current)
-            if profile is None or profile.detector != self._detector_id:
-                current = ""
-        self._selected_locked_localization_id = current
-        selector.setValue(current)
-
-        orientation = self.p.param("Orientation")
-        lock = self._registry.locked_orientation(self._detector_id) if self._registry else None
-        orientation.param("Locked value").setValue(
-            lock.orientation.to_literal() if lock is not None else "—"
-        )
-        self._update_enabled()
-
-    def _locked_localization_changed(self, _parameter, value):
-        self._selected_locked_localization_id = str(value or "")
-        self._update_enabled()
+        self._update_ui()
         self.sigDetectionParamsChanged.emit()
 
     def _manual_localization(self) -> PatternLocalization:
-        group = self.p.param("Localization")
-        axis = str(group.param("Stagger axis").value())
+        axis = str(self._combo_data(self.staggerAxisCombo))
         return PatternLocalization.manual_grid(
-            period_x=float(group.param("Period X").value()),
-            period_y=float(group.param("Period Y").value()),
-            offset_x=float(group.param("Offset X").value()),
-            offset_y=float(group.param("Offset Y").value()),
+            period_x=float(self.periodXSpin.value()),
+            period_y=float(self.periodYSpin.value()),
+            offset_x=float(self.offsetXSpin.value()),
+            offset_y=float(self.offsetYSpin.value()),
             stagger_axis=None if axis.lower() == "none" else axis.lower(),
-            stagger=float(group.param("Stagger").value()),
+            stagger=float(self.staggerSpin.value()),
             source="manual",
             dataset=str(getattr(self._current_data_obj, "name", "") or ""),
         )
 
     def _lockable_localization(self):
-        mode = str(self.p.param("Localization").param("Mode").value())
+        mode = str(self._combo_data(self.localizationModeCombo))
         if mode == LOCALIZATION_MANUAL:
             return self._manual_localization(), "manual"
         if mode == LOCALIZATION_AUTO:
@@ -654,6 +698,11 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._refresh_registry_controls()
         self.setPreviewStatus(f"Locked localization as {profile.name}")
 
+    def _locked_localization_changed(self, *_):
+        self._selected_locked_localization_id = str(self._combo_data(self.lockedLocalizationCombo) or "")
+        self._update_ui()
+        self.sigDetectionParamsChanged.emit()
+
     def _rename_locked_localization(self):
         if self._registry is None or not self._selected_locked_localization_id:
             return
@@ -683,12 +732,15 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self._selected_locked_localization_id = ""
             self._refresh_registry_controls(clear_selection=True)
 
+    # ----------------------------------------------------------- orientation
+    def _orientation_mode_changed(self, *_):
+        self._refresh_orientation_display()
+        self._update_ui()
+
     def _lockable_orientation(self):
-        mode = str(self.p.param("Orientation").param("Mode").value())
+        mode = str(self._combo_data(self.orientationModeCombo))
         if mode == ORIENTATION_MANUAL:
-            return ScanOrientation.from_literal(
-                str(self.p.param("Orientation").param("Orientation").value())
-            ), "manual"
+            return ScanOrientation.from_literal(str(self._combo_data(self.orientationCombo))), "manual"
         if mode == ORIENTATION_AUTO and self._registry is not None:
             transient = self._registry.current_orientation(self._detector_id)
             if transient is not None:
@@ -711,109 +763,266 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.setPreviewStatus(f"Locked orientation {orientation.to_literal()} for {self._detector_id}")
 
     def _clear_locked_orientation(self):
+        if self._registry is not None:
+            self._registry.clear_orientation(self._detector_id)
+
+    def _refresh_orientation_display(self) -> None:
+        mode = str(self._combo_data(self.orientationModeCombo))
+        value = None
+        if self._registry is not None:
+            if mode == ORIENTATION_LOCKED:
+                item = self._registry.locked_orientation(self._detector_id)
+                value = item.orientation.to_literal() if item is not None else None
+            elif mode == ORIENTATION_AUTO:
+                item = self._registry.current_orientation(self._detector_id)
+                value = item.orientation.to_literal() if item is not None else None
+        if value:
+            old = self.orientationCombo.blockSignals(True)
+            try:
+                self._set_combo_data(self.orientationCombo, value)
+            finally:
+                self.orientationCombo.blockSignals(old)
+
+    # ----------------------------------------------------------- spot / ISM
+    def _spot_unit_changed(self, *_):
+        new_unit = str(self._combo_data(self.fwhmUnitCombo))
+        old_unit = self._spot_unit
+        if new_unit == old_unit:
+            return
+        width = float(self.fwhmSpin.value())
+        pixel_nm = float(self._advanced_values.get("pixel_size_nm", 0.0))
+        if pixel_nm > 0:
+            if old_unit == "nm" and new_unit == "px":
+                width /= pixel_nm
+            elif old_unit == "px" and new_unit == "nm":
+                width *= pixel_nm
+            old = self.fwhmSpin.blockSignals(True)
+            try:
+                self.fwhmSpin.setValue(width)
+            finally:
+                self.fwhmSpin.blockSignals(old)
+        self._spot_unit = new_unit
+
+    def set_auto_spot_sigma_px(self, sigma_px: float) -> None:
+        if str(self._combo_data(self.spotModeCombo)) != SPOT_AUTO:
+            return
+        try:
+            sigma_px = float(sigma_px)
+        except (TypeError, ValueError):
+            return
+        if sigma_px <= 0:
+            return
+        unit = str(self._combo_data(self.fwhmUnitCombo))
+        pixel_nm = float(self._advanced_values.get("pixel_size_nm", 0.0))
+        try:
+            value = sigma_px_to_fwhm(sigma_px, unit, pixel_nm if unit == "nm" else None)
+        except ValueError:
+            return
+        self.fwhmSpin.setValue(float(value))
+
+    @staticmethod
+    def _result_for_current_data(results, current_name: str):
+        results = tuple(results or ())
+        for result in results:
+            if current_name and str(getattr(result, "name", "")).startswith(f"{current_name}_monalisa"):
+                return result
+        return results[0] if len(results) == 1 else None
+
+    def sync_reconstruction_results(self, results) -> None:
+        selected = self._result_for_current_data(
+            results, str(getattr(self._current_data_obj, "name", "") or "")
+        )
+        if selected is None:
+            return
+        metadata = dict(getattr(selected, "metadata", {}) or {})
+        snapshot = metadata.get("monalisa_calibration")
+        if not isinstance(snapshot, dict):
+            params = dict(getattr(selected, "params", {}) or {})
+            snapshot = params.get("calibration_snapshot")
+        if not isinstance(snapshot, dict):
+            return
+
+        if str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO:
+            try:
+                sigma_px = float(snapshot.get("effective_sigma_px"))
+            except (TypeError, ValueError):
+                sigma_px = 0.0
+            if sigma_px > 0:
+                self.set_auto_spot_sigma_px(sigma_px)
+            else:
+                unit = str(self._combo_data(self.fwhmUnitCombo))
+                key = "resolved_spot_fwhm_nm" if unit == "nm" else "resolved_spot_fwhm_px"
+                try:
+                    value = float(snapshot.get(key))
+                except (TypeError, ValueError):
+                    value = 0.0
+                if value > 0:
+                    self.fwhmSpin.setValue(value)
+
+        if str(self._combo_data(self.reassignmentCombo)) == "auto":
+            try:
+                scalar = float(snapshot.get("resolved_shift_factor"))
+            except (TypeError, ValueError):
+                scalar = 0.0
+            xy = snapshot.get("resolved_shift_factor_xy")
+            if scalar > 0:
+                self.shiftFactorSpin.setValue(scalar)
+            if isinstance(xy, (list, tuple)) and len(xy) == 2:
+                try:
+                    self.shiftXSpin.setValue(float(xy[0]))
+                    self.shiftYSpin.setValue(float(xy[1]))
+                except (TypeError, ValueError):
+                    pass
+
+    # ------------------------------------------------------ session registry
+    def _registry_changed(self):
+        self._refresh_registry_controls()
+
+    def _refresh_registry_controls(self, *, clear_selection: bool = False):
+        current = "" if clear_selection else str(self._selected_locked_localization_id or "")
+        old = self.lockedLocalizationCombo.blockSignals(True)
+        try:
+            self.lockedLocalizationCombo.clear()
+            self.lockedLocalizationCombo.addItem("— choose locked localization —", "")
+            if self._registry is not None:
+                names = set()
+                for profile in self._registry.localization_profiles(self._detector_id):
+                    label = profile.name
+                    if label in names:
+                        label = f"{profile.name} ({profile.id[:6]})"
+                    names.add(label)
+                    self.lockedLocalizationCombo.addItem(label, profile.id)
+            if current and self._registry is not None:
+                profile = self._registry.localization_profile(current)
+                if profile is None or profile.detector != self._detector_id:
+                    current = ""
+            self._selected_locked_localization_id = current
+            self._set_combo_data(self.lockedLocalizationCombo, current)
+        finally:
+            self.lockedLocalizationCombo.blockSignals(old)
+        self._refresh_orientation_display()
+        self._update_ui()
+
+    def sync_current_transient(self):
         if self._registry is None:
             return
-        self._registry.clear_orientation(self._detector_id)
-
-    def _offer_recovery_if_needed(self):
-        if self._registry is None or self._registry.recovery_prompted:
-            return
-        self._registry.mark_recovery_prompted()
-        candidates = self._registry.recovery_candidates()
-        if not candidates:
-            return
-        candidate = candidates[0]
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle("Restore MoNaLISA session calibration?")
-        box.setText(
-            "An unfinished MoNaLISA calibration session was found "
-            f"({candidate.localization_count} localization profile(s), "
-            f"{candidate.orientation_count} orientation lock(s))."
-        )
-        box.setInformativeText("Restore it into this session, or discard the recovery journal.")
-        restore = box.addButton("Restore", QtWidgets.QMessageBox.AcceptRole)
-        discard = box.addButton("Discard", QtWidgets.QMessageBox.DestructiveRole)
-        box.addButton(QtWidgets.QMessageBox.Cancel)
-        box.exec_()
-        if box.clickedButton() is restore:
-            self._registry.restore(candidate)
-            self.setPreviewStatus("Recovered MoNaLISA session calibration")
-        elif box.clickedButton() is discard:
-            self._registry.discard(candidate)
+        transient = self._registry.current_localization(self._detector_id)
+        current_name = str(getattr(self._current_data_obj, "name", "") or "")
+        if (
+            transient is not None
+            and str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_AUTO
+            and (not transient.source_dataset or transient.source_dataset == current_name)
+        ):
+            payload = transient.localization.to_dict()
+            provenance = dict(payload.get("provenance") or {})
+            provenance.setdefault("status", "Auto localization resolved during reconstruction")
+            payload["provenance"] = provenance
+            self._auto_localization = payload
+            self.setPreviewStatus(str(provenance["status"]))
+        self._refresh_registry_controls()
+        self.sigDetectionParamsChanged.emit()
 
     # --------------------------------------------------------------- values
     def get_values(self) -> dict:
-        loc = self.p.param("Localization")
-        orient = self.p.param("Orientation")
-        spot = self.p.param("Spot model")
-        corrections = self.p.param("Corrections")
-        ism = self.p.param("ISM")
-        placement = self.p.param("Placement")
-        outputs = self.p.param("Outputs")
-        scan = self.p.param("Scan overrides")
-
         locked_profile = None
         if self._registry is not None and self._selected_locked_localization_id:
             locked_profile = self._registry.localization_profile(self._selected_locked_localization_id)
         locked_orientation = self._registry.locked_orientation(self._detector_id) if self._registry else None
         return {
-            "preset": str(self.p.param("Preset").value()),
-            "device": str(self.p.param("CPU/GPU").value()),
-            "pixel_size_nm": float(self.p.param("Camera pixel").value()),
-            "localization_mode": str(loc.param("Mode").value()),
+            "preset": self._mode_value(),
+            "device": str(self._advanced_values["device"]),
+            "pixel_size_nm": float(self._advanced_values["pixel_size_nm"]),
+            "localization_mode": str(self._combo_data(self.localizationModeCombo)),
             "auto_localization": deepcopy(self._auto_localization),
             "locked_localization_id": locked_profile.id if locked_profile else "",
             "locked_localization_name": locked_profile.name if locked_profile else "",
             "locked_localization": locked_profile.localization.to_dict() if locked_profile else {},
             "localization_refinement": str(self._localization_refinement),
-            "manual_offset_x_px": float(loc.param("Offset X").value()),
-            "manual_offset_y_px": float(loc.param("Offset Y").value()),
-            "manual_period_x_px": float(loc.param("Period X").value()),
-            "manual_period_y_px": float(loc.param("Period Y").value()),
-            "stagger_axis": str(loc.param("Stagger axis").value()),
-            "stagger": float(loc.param("Stagger").value()),
+            "manual_offset_x_px": float(self.offsetXSpin.value()),
+            "manual_offset_y_px": float(self.offsetYSpin.value()),
+            "manual_period_x_px": float(self.periodXSpin.value()),
+            "manual_period_y_px": float(self.periodYSpin.value()),
+            "stagger_axis": str(self._combo_data(self.staggerAxisCombo)),
+            "stagger": float(self.staggerSpin.value()),
             "localization_settings": deepcopy(self._localization_settings.to_dict()),
-            "orientation_mode": str(orient.param("Mode").value()),
-            "orientation": str(orient.param("Orientation").value()),
+            "orientation_mode": str(self._combo_data(self.orientationModeCombo)),
+            "orientation": str(self._combo_data(self.orientationCombo)),
             "locked_orientation": locked_orientation.orientation.to_literal() if locked_orientation else "",
-            "spot_width_mode": str(spot.param("Mode").value()),
-            "spot_fwhm": float(spot.param("FWHM").value()),
-            "spot_fwhm_unit": str(spot.param("FWHM unit").value()),
-            "background": str(spot.param("Background").value()),
-            "intensity_correction": bool(corrections.param("Intensity correction").value()),
-            "cell_offsets": bool(corrections.param("Cell offsets").value()),
-            "reassignment": str(ism.param("Reassignment").value()),
-            "shift_factor": float(ism.param("Shift factor").value()),
-            "placement_mode": str(placement.param("Mode").value()),
-            "commensurate_tolerance": float(placement.param("Direct tolerance").value()),
-            "variance_weighting": bool(placement.param("Variance weighting").value()),
-            "sharpen": bool(outputs.param("Sharpened image").value()),
-            "sharpen_sigma_px": float(outputs.param("Sharpening blur").value()),
-            "sharpen_regularization": float(outputs.param("Sharpening regularization").value()),
-            "pinhole_stack": bool(outputs.param("Pinhole stack").value()),
-            "scan_steps_fast": int(scan.param("Steps, fast axis").value()),
-            "scan_steps_slow": int(scan.param("Steps, slow axis").value()),
-            "scan_step_nm": float(scan.param("Step").value()),
+            "spot_width_mode": str(self._combo_data(self.spotModeCombo)),
+            "spot_fwhm": float(self.fwhmSpin.value()),
+            "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
+            "background": str(self._combo_data(self.backgroundCombo)),
+            "intensity_correction": bool(self.intensityCheck.isChecked()),
+            "cell_offsets": bool(self.cellOffsetsCheck.isChecked()),
+            "reassignment": str(self._combo_data(self.reassignmentCombo)),
+            "shift_factor": float(self.shiftFactorSpin.value()),
+            "reassignment_asymmetric": bool(
+                self.asymmetricCheck.isChecked() and len(self._scanned_lateral_axes) > 1
+            ),
+            "shift_factor_x": float(self.shiftXSpin.value()),
+            "shift_factor_y": float(self.shiftYSpin.value()),
+            "placement_mode": str(self._advanced_values["placement_mode"]),
+            "commensurate_tolerance": float(self._advanced_values["commensurate_tolerance"]),
+            "variance_weighting": bool(self._advanced_values["variance_weighting"]),
+            "sharpen": bool(self.sharpenCheck.isChecked()),
+            "sharpen_sigma_px": float(self._advanced_values["sharpen_sigma_px"]),
+            "sharpen_regularization": float(self._advanced_values["sharpen_regularization"]),
+            "pinhole_stack": bool(self.pinholeCheck.isChecked()),
+            **self._scan_overrides,
         }
 
     def set_pattern_params(self, row_offset: float, col_offset: float, row_period: float, col_period: float):
-        loc = self.p.param("Localization")
-        loc.param("Mode").setValue(LOCALIZATION_MANUAL)
-        loc.param("Offset X").setValue(float(col_offset))
-        loc.param("Offset Y").setValue(float(row_offset))
-        loc.param("Period X").setValue(float(col_period))
-        loc.param("Period Y").setValue(float(row_period))
-        loc.param("Stagger axis").setValue("None")
-        loc.param("Stagger").setValue(0.0)
+        self._set_combo_data(self.localizationModeCombo, LOCALIZATION_MANUAL)
+        self.offsetXSpin.setValue(float(col_offset))
+        self.offsetYSpin.setValue(float(row_offset))
+        self.periodXSpin.setValue(float(col_period))
+        self.periodYSpin.setValue(float(row_period))
+        self._set_combo_data(self.staggerAxisCombo, "None")
+        self.staggerSpin.setValue(0.0)
 
     def setPreviewStatus(self, text: str) -> None:
         self.previewStatusLabel.setText(str(text))
+
+    # ----------------------------------------------------------- data source
+    @staticmethod
+    def _source_scan_info(attrs: dict, data_obj) -> tuple[str, set[str]]:
+        resolved = getattr(data_obj, "acquisition_layout", None)
+        layout = getattr(resolved, "layout", None)
+        if layout is not None:
+            loops = {
+                loop.kind: loop for loop in getattr(layout, "event_loops", ())
+                if loop.kind in ("scan_x", "scan_y", "scan_z") and int(loop.count) > 1
+            }
+            lateral = {axis for axis in "xy" if f"scan_{axis}" in loops}
+            parts = []
+            for axis in "xyz":
+                loop = loops.get(f"scan_{axis}")
+                if loop is None:
+                    continue
+                step = "" if loop.step is None else f", step {loop.step:g} {loop.unit or ''}".rstrip()
+                parts.append(f"{axis.upper()} {int(loop.count)}{step}")
+            if parts:
+                return "Recorded: " + ", ".join(parts), lateral or {"x", "y"}
+        lateral = set()
+        try:
+            nx = int(float(attrs.get("ScanTTL:Nx", 0)))
+            ny = int(float(attrs.get("ScanTTL:Ny", 0)))
+            if nx > 1:
+                lateral.add("x")
+            if ny > 1:
+                lateral.add("y")
+            if nx > 0 and ny > 0:
+                return f"Recorded: {nx} × {ny} scan", lateral or {"x", "y"}
+        except (TypeError, ValueError):
+            pass
+        return "Recorded metadata: used by default", {"x", "y"}
 
     def load_from_attrs(self, attrs: dict, data_obj=None) -> None:
         attrs = dict(attrs or {})
         old_detector = self._detector_id
         self._current_data_obj = data_obj
         self._detector_id = detector_identity(data_obj, attrs)
+        self._recorded_scan_summary, self._scanned_lateral_axes = self._source_scan_info(attrs, data_obj)
         if old_detector != self._detector_id:
             self._selected_locked_localization_id = ""
             self._refresh_registry_controls(clear_selection=True)
@@ -823,6 +1032,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             current = str(getattr(data_obj, "name", "") or "")
             if source and current and source != current:
                 self.clear_auto_localization("Auto: press Localize")
+
         pixel_nm = None
         for key in ("monalisa:camera_pixel_nm", "camera_pixel_nm"):
             try:
@@ -840,11 +1050,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             if physical_um > 0:
                 pixel_nm = 1000.0 * physical_um
         if pixel_nm is not None:
-            self.p.param("Camera pixel").setValue(pixel_nm)
+            self._advanced_values["pixel_size_nm"] = float(pixel_nm)
 
-        # A saved reconstruction can carry the exact calibration values used.
-        # Treat those as transient values belonging to this exact data object:
-        # never guess a matching profile and never promote them to Locked.
         embedded = attrs.get("monalisa_calibration")
         if isinstance(embedded, str):
             try:
@@ -886,24 +1093,22 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 except ValueError:
                     pass
 
-        spot = self.p.param("Spot model")
-        embedded_fwhm_nm = None
-        embedded_fwhm_px = None
+        embedded_fwhm_nm = embedded_fwhm_px = None
         if isinstance(embedded, dict) and "per_data_item" not in embedded:
             try:
                 embedded_fwhm_nm = float(embedded.get("resolved_spot_fwhm_nm"))
             except (TypeError, ValueError):
-                embedded_fwhm_nm = None
+                pass
             try:
                 embedded_fwhm_px = float(embedded.get("resolved_spot_fwhm_px"))
             except (TypeError, ValueError):
-                embedded_fwhm_px = None
+                pass
         if embedded_fwhm_nm is not None and embedded_fwhm_nm > 0:
-            spot.param("FWHM unit").setValue("nm")
-            spot.param("FWHM").setValue(embedded_fwhm_nm)
+            self._set_combo_data(self.fwhmUnitCombo, "nm")
+            self.fwhmSpin.setValue(embedded_fwhm_nm)
         elif embedded_fwhm_px is not None and embedded_fwhm_px > 0:
-            spot.param("FWHM unit").setValue("px")
-            spot.param("FWHM").setValue(embedded_fwhm_px)
+            self._set_combo_data(self.fwhmUnitCombo, "px")
+            self.fwhmSpin.setValue(embedded_fwhm_px)
         else:
             for key in ("monalisa:spot_fwhm_nm", "monalisaSpotFwhmNm"):
                 try:
@@ -911,10 +1116,38 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 except (TypeError, ValueError):
                     continue
                 if fwhm > 0:
-                    spot.param("FWHM unit").setValue("nm")
-                    spot.param("FWHM").setValue(fwhm)
+                    self._set_combo_data(self.fwhmUnitCombo, "nm")
+                    self.fwhmSpin.setValue(fwhm)
                     break
         self._refresh_registry_controls()
+        self._update_ui()
+
+    # ------------------------------------------------------------- recovery
+    def _offer_recovery_if_needed(self):
+        if self._registry is None or self._registry.recovery_prompted:
+            return
+        self._registry.mark_recovery_prompted()
+        candidates = self._registry.recovery_candidates()
+        if not candidates:
+            return
+        candidate = candidates[0]
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Restore MoNaLISA session calibration?")
+        box.setText(
+            "An unfinished MoNaLISA calibration session was found "
+            f"({candidate.localization_count} localization profile(s), "
+            f"{candidate.orientation_count} orientation lock(s))."
+        )
+        box.setInformativeText("Restore it into this session, or discard the recovery journal.")
+        restore = box.addButton("Restore", QtWidgets.QMessageBox.AcceptRole)
+        discard = box.addButton("Discard", QtWidgets.QMessageBox.DestructiveRole)
+        box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.exec_()
+        if box.clickedButton() is restore:
+            self._registry.restore(candidate)
+            self.setPreviewStatus("Recovered MoNaLISA session calibration")
+        elif box.clickedButton() is discard:
+            self._registry.discard(candidate)
 
     def setOutputPixelSize(self, output_pixel_size_nm) -> None:
         label = self._outputPixelSizeLabel

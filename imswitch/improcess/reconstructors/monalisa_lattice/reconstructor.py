@@ -51,7 +51,13 @@ def pipeline_params(params: dict) -> PipelineParams:
     """The pipeline's parameters for the parameters of the panel."""
     reassignment = str(params["reassignment"])
     if reassignment == "fixed":
-        reassignment = float(params["shift_factor"])
+        if bool(params.get("reassignment_asymmetric", False)):
+            reassignment = (
+                float(params.get("shift_factor_x", params["shift_factor"])),
+                float(params.get("shift_factor_y", params["shift_factor"])),
+            )
+        else:
+            reassignment = float(params["shift_factor"])
     elif reassignment not in ("auto", "off"):
         raise ValueError(f"Unknown reassignment {reassignment!r}")
     background = str(params["background"])
@@ -350,6 +356,12 @@ class MonalisaLatticeReconstructor(Reconstructor):
         diagnostics["resolved_localization"] = geometry.localization.to_dict()
         diagnostics["resolved_orientation"] = str(orientation)
         diagnostics["resolved_spot_sigma_px"] = float(geometry.spot_model.shared_sigma)
+        if geometry.shift_factor is not None:
+            diagnostics["resolved_shift_factor"] = float(geometry.shift_factor.alpha)
+            diagnostics["resolved_shift_factor_xy"] = (
+                float(geometry.shift_factor.alpha_x),
+                float(geometry.shift_factor.alpha_y),
+            )
         diagnostics["placement_method"] = str(first.diagnostics.get("placement", ""))
         diagnostics["placement_residual_px"] = float(geometry.commensurate_residual)
         for key, value in diagnostics.items():
@@ -436,16 +448,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
             supplied_localization = PatternLocalization.from_dict(supplied_localization)
         notes = {}
         if len(scan.scanned_axes) == 1:
-            # The shift factor is a displacement in the plane; a scan that
-            # samples one axis cannot measure it, and a stack shifted by an
-            # unmeasured factor would say nothing.
-            if settings.reassignment == "auto":
-                settings = replace(settings, reassignment="off")
-                notes["reassignment"] = (
-                    f"not measured: only {scan.scanned_axes[0]} is scanned"
-                )
-            if settings.pinhole_stack == "shifted":
-                settings = replace(settings, pinhole_stack="raw")
+            # Reassignment is still useful along the sampled lateral axis.
+            # The common pipeline masks the unscanned camera direction after
+            # the scan orientation is resolved.
+            notes["reassignment axes"] = f"{scan.scanned_axes[0]} only"
         # The layout says where every frame is along the stage axes; how the
         # stage lies against the camera (signs, a swap) is read from the data
         # unless it is set, as for a raster.
@@ -539,6 +545,12 @@ class MonalisaLatticeReconstructor(Reconstructor):
         diagnostics["resolved_localization"] = geometry.localization.to_dict()
         diagnostics["resolved_orientation"] = str(orientation)
         diagnostics["resolved_spot_sigma_px"] = float(geometry.spot_model.shared_sigma)
+        if geometry.shift_factor is not None:
+            diagnostics["resolved_shift_factor"] = float(geometry.shift_factor.alpha)
+            diagnostics["resolved_shift_factor_xy"] = (
+                float(geometry.shift_factor.alpha_x),
+                float(geometry.shift_factor.alpha_y),
+            )
         diagnostics["placement_method"] = str(first.diagnostics.get("placement", ""))
         diagnostics["placement_residual_px"] = float(geometry.commensurate_residual)
         diagnostics.update(notes)
