@@ -87,6 +87,9 @@ class MockHamamatsu:
         # queued from one thread and drained from the recording thread.
         self._mock_trigger_lock = threading.Lock()
         self._mock_pending_frames = 0
+        # Optional frame source (a MockLatticeFrames, set by the manager for a
+        # ``mockSample``); None keeps the random frames.
+        self.mock_frame_source = None
 
         self.s = 1.0  # time unit placeholder (seconds)
 
@@ -108,7 +111,11 @@ class MockHamamatsu:
                            'subarray_hsize': width,
                            'subarray_vsize': height,
                            'subarray_mode': 'OFF',
-                           'timing_readout_time': 10,
+                           # Seconds, as DCAM reports it; recomputed from
+                           # the ROI height (see _updateMockReadoutTime). It
+                           # was 10 -- ten seconds a frame -- so a MoNaLISA
+                           # cycle derived from it took minutes per position.
+                           'timing_readout_time': 0.01,
                            'internal_frame_rate': 10,
                            # Seconds per frame, as DCAM reports it on hardware:
                            # the reciprocal of the rate above, which is also
@@ -125,6 +132,25 @@ class MockHamamatsu:
         # Get camera max width, height.
         self.max_width = self.getPropertyValue("image_width")[0]
         self.max_height = self.getPropertyValue("image_height")[0]
+
+    #: Full-chip readout time, s (ORCA-Flash 4.0, standard scan: 2048 rows).
+    MOCK_FULL_READOUT_S = 0.01
+
+    def _updateMockReadoutTime(self):
+        """Readout scales with the rows read out, as on a CMOS camera."""
+        try:
+            mode = self.properties.get('subarray_mode', 'OFF')
+            if isinstance(mode, bytes):
+                mode = mode.decode(errors='replace')
+            rows = int(self.properties['subarray_vsize'])
+            if str(mode).strip().upper() != 'ON':
+                rows = int(self.properties['image_height'])
+            rows = max(1, min(rows, int(self.max_height)))
+        except Exception:
+            return
+        self.properties['timing_readout_time'] = (
+            self.MOCK_FULL_READOUT_S * rows / float(self.max_height)
+        )
 
     def captureSetup(self):
         ''' (internal use only). This is called at the start of new acquisition
@@ -172,6 +198,14 @@ class MockHamamatsu:
             num_frames = cur_frame_number - self.last_frame_number
             self.last_frame_number = cur_frame_number
 
+        source = self.mock_frame_source
+        if source is not None and num_frames > 0:
+            if int(self.properties.get('trigger_source', 1)) != 1:
+                frames = source.nextFrames(num_frames, (frame_y, frame_x))
+            else:
+                frames = [source.liveFrame((frame_y, frame_x)) for _ in range(num_frames)]
+            return frames, (frame_x, frame_y)
+
         for i in range(num_frames):
             # Create storage
             hc_data = HMockCamData(frame_x * frame_y, self.mock_data_max_value)
@@ -181,6 +215,8 @@ class MockHamamatsu:
 
     def getLast(self):
         frame_x, frame_y = self.frame_x, self.frame_y
+        if self.mock_frame_source is not None:
+            return self.mock_frame_source.liveFrame((frame_y, frame_x))
         hc_data = HMockCamData(frame_x * frame_y, self.mock_data_max_value)
         return np.reshape(hc_data.getData(), (frame_y, frame_x))
 
@@ -454,6 +490,8 @@ class MockHamamatsu:
         # corresponding numerical property value is.
 
         self.properties[property_name] = property_value
+        if property_name in ('subarray_vsize', 'subarray_mode', 'image_height'):
+            self._updateMockReadoutTime()
         # self.__logger.debug(f'{property_name} set to: {self.properties[property_name]}')
         #     if (property_value in text_values):
         #         property_value = float(text_values[property_value])

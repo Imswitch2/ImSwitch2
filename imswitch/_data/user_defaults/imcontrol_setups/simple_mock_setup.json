@@ -1,0 +1,171 @@
+{
+  "__comment__": "The default ImSwitch2 setup: a hardware-free point-scanning microscope with one camera and one APD, everything simulated. The camera (AVManager mock) shows a live widefield image; the APD (counter-input detector on a SIMULATED NIDAQ, nidaq.simulation = true) images a synthetic sample of cells and beads from the galvo waveforms (mockSample), driven by the SimplePointScan panel: an overview (Size slider, default 60 um), a region drawn in the viewer, pixel size and dwell sliders, and three gated lasers in channels; the Advanced scan panel is one switch away. X/Y are galvo-like smooth axes reaching 100 um (5 um/V over +-10 V, vel_max 0.1 um/us, acc_max 1e-4 um/us^2); Z is a piezo-like stepped axis. To use real hardware, pick or edit another setup (Pick hardware setup...).",
+  "detectors": {
+    "Camera": {
+      "managerName": "AVManager",
+      "managerProperties": {
+        "cameraListIndex": "mock",
+        "cameraPixelSizeUm": 0.1,
+        "avcam": {
+          "exposure": 50,
+          "gain": 1
+        }
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    },
+    "APD": {
+      "managerName": "APDManager",
+      "managerProperties": {
+        "ctrInputLine": "Dev1/ctr0",
+        "terminal": "PFI0",
+        "displayRotation": "0",
+        "displayFlipX": "False",
+        "displayFlipY": "False",
+        "mockSample": {
+          "axes": {
+            "X": 5.0,
+            "Y": 5.0
+          }
+        }
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    }
+  },
+  "lasers": {
+    "405 (ON)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line2",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 405,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "488 (EXC)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line1",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "561 (EXC)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line3",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 561,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    }
+  },
+  "positioners": {
+    "X": {
+      "analogChannel": "Dev1/ao0",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 5.0,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "X"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Y": {
+      "analogChannel": "Dev1/ao1",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 5.0,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "Y"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Z": {
+      "analogChannel": "Dev1/ao2",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.0,
+        "minVolt": 0,
+        "maxVolt": 10,
+        "vel_max": 1000.0,
+        "acc_max": 1000.0,
+        "smoothScan": false
+      },
+      "axes": [
+        "Z"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    }
+  },
+  "scan": {
+    "scanWidgetType": "Advanced",
+    "cloak": "SimplePointScan",
+    "scanDesigner": "GalvoScanDesigner",
+    "scanDesignerParams": {},
+    "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+    "TTLCycleDesignerParams": {},
+    "sampleRate": 100000,
+    "maxScanTimeMin": 0,
+    "lineClockLine": null,
+    "frameStartClockLine": null,
+    "frameEndClockLine": null,
+    "simplePointScan": {
+      "objectiveNA": 1.4,
+      "overviewFrameTimeS": 1.0
+    }
+  },
+  "nidaq": {
+    "timerCounterChannel": null,
+    "startTrigger": false,
+    "simulation": true
+  },
+  "availableWidgets": [
+    "Settings",
+    "View",
+    "Recording",
+    "Image",
+    "Laser",
+    "Positioner",
+    "Scan"
+  ],
+  "processing": {
+    "graphPanel": false,
+    "profilePanel": false,
+    "frcPanel": false,
+    "projectionPanel": false,
+    "roiStatsPanel": false,
+    "roiManagerPanel": false,
+    "segmentationPanel": false,
+    "psfResolutionPanel": false,
+    "colocalizationPanel": false,
+    "multicolorPanel": false,
+    "reconstructors": [
+      "monalisa",
+      "view-only"
+    ],
+    "processors": []
+  }
+}

@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 56,
-    "docs_agree": 164,
-    "docs_documented": 164,
-    "keys": 244,
+    "docs_agree": 166,
+    "docs_documented": 166,
+    "keys": 246,
     "managers": 66,
-    "none_default_only": 38,
+    "none_default_only": 40,
     "none_only": 16,
-    "optional": 178,
+    "optional": 180,
     "reads_any": 61,
     "refs": 15,
     "required": 66,
     "typed_by_code": 121,
-    "typed_with_docs": 188,
-    "typed_with_examples": 156,
+    "typed_with_docs": 190,
+    "typed_with_examples": 158,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 61,
@@ -87,7 +87,7 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 9,
+      "properties": 10,
       "required": 2
     },
     "AVManager": {
@@ -257,7 +257,7 @@
         "DetectorManager"
       ],
       "overridden": true,
-      "properties": 3,
+      "properties": 4,
       "required": 2
     },
     "HamamatsuSLMdviManager": {

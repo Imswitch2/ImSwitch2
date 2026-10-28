@@ -47,3 +47,12 @@ def test_clear_returns_to_time_based_names(widget):
     assert widget.getCustomFilename() is None
     assert not widget.specifyfile.isChecked()
     assert not widget.filenameEdit.isEnabled()
+
+
+def test_scan_owner_lock_keeps_timepoint_file_grouping_editable(widget):
+    widget.setAcquisitionControlsLocked(True, 'configured by scan widget')
+
+    assert not widget.recButton.isEnabled()
+    assert not widget.recScanOnceBtn.isEnabled()
+    assert not widget.recScanLapseBtn.isEnabled()
+    assert widget.singleFileLapseBox.isEnabled()

@@ -9,6 +9,7 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
 from imswitch.imcommon.view.LogWidget import LogWidget
+from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from . import widgets
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
@@ -671,7 +672,7 @@ class ImConMainView(QtWidgets.QMainWindow):
             self.widgets[widgetKey] = self.factory.createWidget(
                 getattr(widgets, f'{widgetKey}Widget')
                 if widgetKey != 'Scan' else
-                getattr(widgets, f'{widgetKey}Widget{self.viewSetupInfo.scan.scanWidgetType}')
+                getattr(widgets, f'{widgetKey}Widget{resolve_scan_info(self.viewSetupInfo.scan).frontend_type}')
             )
             self.docks[widgetKey] = Dock(dockInfo.name, size=(1, 1))
             self.docks[widgetKey].addWidget(self.widgets[widgetKey])
