@@ -36,10 +36,13 @@ class ReconstructionViewController(ImProcessWidgetController):
         # toggling between results.
         self._viewerStateByResult = weakref.WeakKeyDictionary()
         # Spatial slider memory is intentionally separate from camera/view
-        # state.  By default compatible views share their last slice (useful
-        # when comparing repeated YZ/XZ scans); an optional viewer checkbox
-        # makes restoration strictly per reconstruction instead.
-        self._sharedSliceStateByPlane = {}
+        # state. Per-result locking remembers an exact discrete slice index.
+        # Normal comparison mode instead remembers a physical/world position,
+        # but only reapplies it when the sliced spatial axis disappeared in the
+        # intervening view (for example YZ -> 2-D XY -> YZ). Compatible YZ->YZ
+        # transitions are deliberately left to napari, which can preserve the
+        # physical point correctly when the two stacks have different spacing.
+        self._sharedSlicePositionByPlane = {}
         # Camera state follows the same two-level policy as slices. By default
         # the most recent camera is shared by physical viewing plane (XY/YZ/XZ)
         # so repeated measurements can be compared at identical framing. The
@@ -285,12 +288,15 @@ class ReconstructionViewController(ImProcessWidgetController):
     ):
         reconObj = self._widget.getCurrentItemData()
         if reconObj is not None:
-            # Capture the camera/plane *before* replacing the layer data.  A
-            # camera is reusable across another XY result, but the same zoom
-            # and centre have no useful meaning when the displayed plane turns
-            # into YZ/XZ.
+            # Capture viewer state *before* replacing the layer data. A camera
+            # is reusable across another XY result, but the same zoom/centre has
+            # no useful meaning when the displayed plane turns into YZ/XZ. For
+            # slices, knowing which semantic spatial axes existed before the
+            # redraw is what lets us avoid overriding napari on compatible
+            # YZ->YZ/XZ->XZ transitions.
             source_plane = self._currentDisplayedPlaneAxes()
             source_camera = self._currentCameraState()
+            source_slice_axes = set(self._currentSpatialSliceState())
 
             # Ordinary redraws preserve any raw napari axis roll the user made
             # on the result.  Selection changes pass the saved order explicitly
@@ -301,9 +307,15 @@ class ReconstructionViewController(ImProcessWidgetController):
             try:
                 self.setImgSlice(autoLevels=autoLevels, levels=levels)
                 self._restoreDimensionOrder(reconObj, dimensionOrder)
-                self._restoreSliceState(reconObj)
+                self._restoreSliceState(
+                    reconObj, sourceSpatialAxes=source_slice_axes
+                )
             finally:
                 self.__dict__["_restoringSliceState"] = False
+            # Rendering can move a slider without emitting a useful persistence
+            # callback while _restoringSliceState is set. Capture the final
+            # napari-resolved position once the redraw is complete.
+            self._rememberSliceState(reconObj, updateShared=True)
 
             target_plane = self._currentDisplayedPlaneAxes()
             state = self._viewerState(reconObj)
@@ -741,7 +753,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         return tuple(sorted(spatial, key=rank.__getitem__))
 
     def _currentSpatialSliceState(self):
-        """Spatial slider positions not currently drawn on the 2-D canvas."""
+        """Discrete spatial slider indices not currently drawn on the canvas."""
         getter = getattr(self._widget, "getDimensionStepState", None)
         if not callable(getter):
             return {}
@@ -757,6 +769,23 @@ class ReconstructionViewController(ImProcessWidgetController):
             and str(label).upper() not in plane
         }
 
+    def _currentSpatialSlicePositionState(self):
+        """World positions of spatial slider axes not drawn on the canvas."""
+        getter = getattr(self._widget, "getDimensionPositionState", None)
+        if not callable(getter):
+            return {}
+        try:
+            positions = getter() or {}
+        except Exception:
+            return {}
+        plane = {str(label).upper() for label in self._currentDisplayedPlaneAxes()}
+        return {
+            str(label).upper(): float(position)
+            for label, position in positions.items()
+            if str(label).upper() in ("X", "Y", "Z")
+            and str(label).upper() not in plane
+        }
+
     def _sliceLockedPerResult(self):
         getter = getattr(self._widget, "isSliceLockedPerResult", None)
         if not callable(getter):
@@ -767,7 +796,14 @@ class ReconstructionViewController(ImProcessWidgetController):
             return False
 
     def _rememberSliceState(self, result, *, updateShared=True):
-        """Remember the current spatial slice for both available policies."""
+        """Remember exact local index plus the shared physical position.
+
+        The two stores intentionally have different semantics. The result-local
+        store backs ``Lock slice per result`` and therefore remembers exactly
+        which discrete slice was selected. The shared store is a world
+        coordinate so a denser/sparser reconstruction can map to the same
+        physical sample position.
+        """
         if result is None or self.__dict__.get("_restoringSliceState", False):
             return
         plane_key = self._slicePlaneKey(self._currentDisplayedPlaneAxes())
@@ -776,45 +812,79 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
         state = self._viewerState(result)
         state.setdefault("slice_by_plane", {})[plane_key] = dict(slice_state)
-        if updateShared:
-            shared = self.__dict__.setdefault("_sharedSliceStateByPlane", {})
-            shared.setdefault(plane_key, {}).update(slice_state)
 
-    def _restoreSliceState(self, result):
-        """Restore spatial sliders using shared or per-result policy."""
+        if updateShared:
+            positions = self._currentSpatialSlicePositionState()
+            if positions:
+                shared = self.__dict__.setdefault(
+                    "_sharedSlicePositionByPlane", {}
+                )
+                shared.setdefault(plane_key, {}).update(positions)
+
+    def _restoreSliceState(self, result, *, sourceSpatialAxes=()):
+        """Restore only the slice state that ImProcess actually owns.
+
+        In normal comparison mode, a compatible transition such as YZ A -> YZ
+        B is left untouched: napari already carries the current world point
+        through a scale change, which correctly maps different multifoci
+        densities onto different discrete X indices. ImProcess intervenes only
+        when that sliced semantic axis was absent immediately beforehand (for
+        example YZ -> 2-D XY -> YZ), restoring the remembered world position.
+
+        Per-result lock is intentionally different: it restores the exact
+        discrete index saved for that result/view.
+        """
         if result is None:
-            return
-        setter = getattr(self._widget, "setDimensionStepState", None)
-        if not callable(setter):
             return
         plane_key = self._slicePlaneKey(self._currentDisplayedPlaneAxes())
         if plane_key is None:
             return
+
         state = self._viewerState(result)
         per_result = state.get("slice_by_plane", {}).get(plane_key, {})
-        shared = self.__dict__.setdefault("_sharedSliceStateByPlane", {}).get(
-            plane_key, {}
-        )
-        desired = per_result if self._sliceLockedPerResult() else (shared or per_result)
-        if not desired:
-            # A genuinely new result/view should not inherit an unrelated
-            # napari slider index just because the array rank happens to match.
-            desired = {axis: 0 for axis in self._currentSpatialSliceState()}
-            if not desired:
+        if self._sliceLockedPerResult():
+            if not per_result:
                 return
+            setter = getattr(self._widget, "setDimensionStepState", None)
+            if not callable(setter):
+                return
+            try:
+                setter(per_result)
+            except Exception as exc:
+                self._logger.debug(
+                    "Could not restore per-result spatial slice state: %s", exc
+                )
+            return
+
+        current_axes = set(self._currentSpatialSliceState())
+        reappeared_axes = current_axes.difference(
+            str(axis).upper() for axis in (sourceSpatialAxes or ())
+        )
+        if not reappeared_axes:
+            # Most important path: same semantic sliced axis before/after. Do
+            # not replace napari's physically meaningful world-coordinate
+            # mapping with one of our own indices.
+            return
+
+        shared = self.__dict__.setdefault(
+            "_sharedSlicePositionByPlane", {}
+        ).get(plane_key, {})
+        desired = {
+            axis: shared[axis]
+            for axis in reappeared_axes
+            if axis in shared
+        }
+        if not desired:
+            return
+        setter = getattr(self._widget, "setDimensionPositionState", None)
+        if not callable(setter):
+            return
         try:
             setter(desired)
         except Exception as exc:
-            self._logger.debug("Could not restore spatial slice state: %s", exc)
-            return
-
-        # Store the actually restored (possibly clamped) position as this
-        # result/view's own state. Do not rewrite the shared state here: a
-        # programmatic restore while per-result locking is enabled must not
-        # change what unlocked comparison mode will later use.
-        actual = self._currentSpatialSliceState()
-        if actual:
-            state.setdefault("slice_by_plane", {})[plane_key] = dict(actual)
+            self._logger.debug(
+                "Could not restore shared spatial position: %s", exc
+            )
 
     def _sliceLockChanged(self, _locked):
         """Anchor shared mode to the slice visible when the policy changes."""

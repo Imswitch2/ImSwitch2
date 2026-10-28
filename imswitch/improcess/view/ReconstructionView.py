@@ -408,6 +408,63 @@ class ReconstructionView(QtWidgets.QFrame):
         except Exception as exc:
             self._logger.debug('Could not restore napari dimension steps: %s', exc)
 
+    def getDimensionPositionState(self):
+        """Return current napari world positions keyed by semantic axis label."""
+        try:
+            dims = self.napariViewer.dims
+            labels = tuple(str(label) for label in dims.axis_labels)
+            points = getattr(dims, 'point', None)
+            if points is not None and len(points) == len(labels):
+                return {label: float(points[index]) for index, label in enumerate(labels)}
+
+            # Older napari fallback: derive the world point from the dimension
+            # range and its discrete current step.
+            current = tuple(int(step) for step in dims.current_step)
+            ranges = tuple(dims.range)
+            if len(current) != len(labels) or len(ranges) != len(labels):
+                return {}
+            positions = {}
+            for axis, label in enumerate(labels):
+                start, _stop, increment = ranges[axis]
+                positions[label] = float(start) + float(increment) * current[axis]
+            return positions
+        except Exception:
+            return {}
+
+    def setDimensionPositionState(self, state):
+        """Restore world positions by semantic axis, using napari's own mapping.
+
+        ``Dims.set_point`` performs the world-coordinate -> discrete-step
+        conversion for the newly displayed result. The fallback implements the
+        same nearest-step/clamping rule for older napari versions.
+        """
+        if not state:
+            return
+        try:
+            dims = self.napariViewer.dims
+            labels = tuple(str(label) for label in dims.axis_labels)
+            set_point = getattr(dims, 'set_point', None)
+            ranges = tuple(dims.range)
+            for axis, label in enumerate(labels):
+                if label not in state or axis >= len(ranges):
+                    continue
+                value = float(state[label])
+                start, stop, increment = (float(v) for v in ranges[axis])
+                lo, hi = sorted((start, stop))
+                value = max(lo, min(value, hi))
+                if callable(set_point):
+                    set_point(axis, value)
+                    continue
+                if increment == 0:
+                    step = 0
+                else:
+                    step = int(round((value - start) / increment))
+                nsteps = tuple(int(v) for v in getattr(dims, 'nsteps', ()))
+                max_step = max(0, nsteps[axis] - 1) if axis < len(nsteps) else max(0, step)
+                dims.set_current_step(axis, max(0, min(step, max_step)))
+        except Exception as exc:
+            self._logger.debug('Could not restore napari dimension positions: %s', exc)
+
     def getDimensionOrder(self):
         """Return napari's raw axis order for the result currently on screen."""
         return tuple(self.napariViewer.dims.order)

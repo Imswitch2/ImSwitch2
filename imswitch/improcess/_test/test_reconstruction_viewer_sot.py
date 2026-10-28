@@ -51,10 +51,27 @@ class _FakeDims:
         self.range = ((0, 0, 1), (0, 0, 1))
         self.events = SimpleNamespace(connect=lambda x: None)
 
+    @property
+    def point(self):
+        return tuple(
+            float(start) + float(increment) * int(step)
+            for step, (start, _stop, increment) in zip(self.current_step, self.range)
+        )
+
     def set_current_step(self, axis, step):
         current = list(self.current_step)
         current[axis] = int(step)
         self.current_step = tuple(current)
+
+    def set_point(self, axis, value):
+        start, stop, increment = (float(v) for v in self.range[axis])
+        lo, hi = sorted((start, stop))
+        value = max(lo, min(float(value), hi))
+        if increment == 0:
+            step = 0
+        else:
+            step = int(round((value - start) / increment))
+        self.set_current_step(axis, max(0, min(step, self.nsteps[axis] - 1)))
 
 
 class _FakeScaleBar:
@@ -94,6 +111,7 @@ class _FakeReconstructionView:
         self.set_image_calls = 0
         self.clear_image_calls = 0
         self.reset_view_calls = 0
+        self.position_restore_calls = 0
         self._viewName = "standard"
         self._lockSlicePerResult = False
         self._lockZoomPerResult = False
@@ -116,17 +134,24 @@ class _FakeReconstructionView:
         for key, value in (identity or {}).items():
             self.imgLayer.metadata[key] = value
         dims = self.napariViewer.dims
-        old_steps = tuple(dims.current_step)
+        old_positions = dict(zip(dims.axis_labels, dims.point))
         dims.axis_labels = tuple(axisLabels)
         dims.ndim = len(axisLabels)
         dims.nsteps = tuple(int(size) for size in np.shape(im))
-        dims.range = tuple((0, max(0, size - 1), 1) for size in dims.nsteps)
-        if len(dims.order) != len(axisLabels):
-            dims.order = tuple(range(len(axisLabels)))
-        dims.current_step = tuple(
-            min(old_steps[i] if i < len(old_steps) else 0, max(0, size - 1))
+        scales = tuple(float(v) for v in (axisScales if axisScales is not None else [1.0] * dims.ndim))
+        dims.range = tuple(
+            (0.0, max(0, size - 1) * scales[i], scales[i])
             for i, size in enumerate(dims.nsteps)
         )
+        if len(dims.order) != len(axisLabels):
+            dims.order = tuple(range(len(axisLabels)))
+        dims.current_step = tuple(0 for _ in dims.nsteps)
+        # Approximate napari's useful behaviour for compatible result swaps:
+        # preserve the current world position when the same semantic axis is
+        # still present, remapping it to the new spacing.
+        for axis, label in enumerate(dims.axis_labels):
+            if label in old_positions:
+                dims.set_point(axis, old_positions[label])
 
     def clearImage(self):
         self.clear_image_calls += 1
@@ -178,6 +203,17 @@ class _FakeReconstructionView:
             if label in state:
                 hi = max(0, dims.nsteps[axis] - 1)
                 dims.set_current_step(axis, max(0, min(int(state[label]), hi)))
+
+    def getDimensionPositionState(self):
+        dims = self.napariViewer.dims
+        return dict(zip(dims.axis_labels, dims.point))
+
+    def setDimensionPositionState(self, state):
+        self.position_restore_calls += 1
+        dims = self.napariViewer.dims
+        for axis, label in enumerate(dims.axis_labels):
+            if label in state:
+                dims.set_point(axis, float(state[label]))
 
     def getDimensionOrder(self):
         return tuple(self.napariViewer.dims.order)
@@ -495,7 +531,7 @@ def _viewer_state_controller(view):
     controller._prevViewId = None
     controller._displayedResult = None
     controller._viewerStateByResult = {}
-    controller._sharedSliceStateByPlane = {}
+    controller._sharedSlicePositionByPlane = {}
     controller._sharedCameraStateByPlane = {}
     controller._restoringSliceState = False
     controller._liveResultUids = set()
@@ -754,13 +790,14 @@ def test_switching_xy_to_yz_refits_camera_then_restores_each_results_camera():
     assert view.napariViewer.camera.center == (0.0, 20.0, 30.0)
 
 
-def _orthogonal_volume_result(name, preferred="Standard", shape=(6, 7, 8)):
+def _orthogonal_volume_result(name, preferred="Standard", shape=(6, 7, 8), axis_scales=None):
     class _VolumeResult(ProcessingResult):
         def __init__(self):
             super().__init__(
                 name=name,
                 data=np.zeros(shape, dtype=np.float32),
                 axis_labels=["Z", "Y", "X"],
+                axis_scales=axis_scales or [1.0, 1.0, 1.0],
                 view_modes=[
                     SimpleNamespace(name="Standard", transpose=(0, 1, 2)),
                     SimpleNamespace(name="Bottom", transpose=(1, 0, 2)),
@@ -781,50 +818,65 @@ def _move_spatial_step(controller, view, axis_label, step):
     controller.axisStepChanged(tuple(view.napariViewer.dims.current_step))
 
 
-def test_yz_slice_survives_switch_through_2d_xy_result():
-    """A 2-D result must not erase the last X slice used in a YZ view."""
+def test_yz_physical_slice_survives_switch_through_2d_xy_result():
+    """When X disappears, restore its physical position when YZ reappears."""
     view = _FakeReconstructionView()
     controller = _viewer_state_controller(view)
-    yz = _orthogonal_volume_result("yz", preferred="Left", shape=(5, 6, 9))
+    coarse = _orthogonal_volume_result(
+        "coarse", preferred="Left", shape=(5, 6, 9), axis_scales=[1.0, 1.0, 2.0]
+    )
     xy = _FakeResult("xy", np.ones((6, 9), dtype=np.float32))
-    view._reconList = [yz, xy]
+    dense = _orthogonal_volume_result(
+        "dense", preferred="Left", shape=(5, 6, 18), axis_scales=[1.0, 1.0, 1.0]
+    )
+    view._reconList = [coarse, xy, dense]
 
     view._currentIndex = 0
     controller.listItemChanged()
     assert view.getDisplayedPlaneAxes() == ("Z", "Y")
-    _move_spatial_step(controller, view, "X", 7)
-    assert view.getDimensionStepState()["X"] == 7
+    _move_spatial_step(controller, view, "X", 3)
+    assert view.getDimensionPositionState()["X"] == pytest.approx(6.0)
 
     view._currentIndex = 1
     controller.listItemChanged()
     assert view.getDisplayedPlaneAxes() == ("Y", "X")
 
-    view._currentIndex = 0
+    calls_before = view.position_restore_calls
+    view._currentIndex = 2
     controller.listItemChanged()
     assert view.getDisplayedPlaneAxes() == ("Z", "Y")
-    assert view.getDimensionStepState()["X"] == 7
+    assert view.position_restore_calls == calls_before + 1
+    assert view.getDimensionStepState()["X"] == 6
+    assert view.getDimensionPositionState()["X"] == pytest.approx(6.0)
 
 
-def test_unlocked_yz_views_share_the_most_recent_x_slice():
-    """Default comparison mode follows the same physical slice across YZ results."""
+def test_unlocked_yz_to_yz_leaves_physical_mapping_to_napari():
+    """Compatible YZ swaps must not force the same X index across spacings."""
     view = _FakeReconstructionView()
     controller = _viewer_state_controller(view)
-    a = _orthogonal_volume_result("a", preferred="Left", shape=(5, 6, 10))
-    b = _orthogonal_volume_result("b", preferred="Left", shape=(5, 6, 10))
+    # A has 2-um X spacing, B has 1-um spacing. X=3 in A and X=6 in B
+    # therefore refer to the same physical 6-um sample position.
+    a = _orthogonal_volume_result(
+        "a", preferred="Left", shape=(5, 6, 10), axis_scales=[1.0, 1.0, 2.0]
+    )
+    b = _orthogonal_volume_result(
+        "b", preferred="Left", shape=(5, 6, 20), axis_scales=[1.0, 1.0, 1.0]
+    )
     view._reconList = [a, b]
 
     view._currentIndex = 0
     controller.listItemChanged()
     _move_spatial_step(controller, view, "X", 3)
+    calls_before = view.position_restore_calls
 
     view._currentIndex = 1
     controller.listItemChanged()
-    assert view.getDimensionStepState()["X"] == 3
-    _move_spatial_step(controller, view, "X", 6)
 
-    view._currentIndex = 0
-    controller.listItemChanged()
+    # No ImProcess shared-position restore: napari carried 6 um through the
+    # scale change and selected the corresponding denser index itself.
+    assert view.position_restore_calls == calls_before
     assert view.getDimensionStepState()["X"] == 6
+    assert view.getDimensionPositionState()["X"] == pytest.approx(6.0)
 
 
 def test_lock_slice_per_result_restores_each_yz_results_own_slice():
