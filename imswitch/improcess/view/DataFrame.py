@@ -5,6 +5,58 @@ from .DataEditDialog import DataEditDialog
 from .guitools import BetterPushButton
 
 
+class _ElidingLabel(QtWidgets.QLabel):
+    """A QLabel whose contents never impose a horizontal minimum width.
+
+    File and dataset names can be arbitrarily long.  A normal QLabel feeds the
+    full text width into its parent layout's minimum-size calculation; because
+    Current data shares a dock column with the other left-hand panels, loading
+    one long filename can otherwise make the entire column impossible to
+    shrink again.
+    """
+
+    def __init__(self, text='', *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fullText = ''
+        self.setMinimumWidth(0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored,
+            QtWidgets.QSizePolicy.Preferred,
+        )
+        self.setText(text)
+
+    def setText(self, text):
+        self._fullText = str(text)
+        self.setToolTip(self._fullText)
+        self._updateElidedText()
+
+    def fullText(self):
+        return self._fullText
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._updateElidedText()
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def _updateElidedText(self):
+        width = max(0, self.contentsRect().width())
+        shown = self.fontMetrics().elidedText(
+            self._fullText,
+            QtCore.Qt.ElideMiddle,
+            width,
+        )
+        super().setText(shown)
+
+
 class DataFrame(QtWidgets.QFrame):
     """Frame for showing and examining the raw data"""
 
@@ -49,8 +101,8 @@ class DataFrame(QtWidgets.QFrame):
                                                      self.sigFrameNumberChanged.emit(int(x))))
         self.frameNum.setFixedWidth(45)
 
-        self.dataName = QtWidgets.QLabel('File:')
-        self.datasetName = QtWidgets.QLabel('Dataset:')
+        self.dataName = _ElidingLabel('File:')
+        self.datasetName = _ElidingLabel('Dataset:')
         numFramesLabel = QtWidgets.QLabel('No. frames:')
         self.numFrames = QtWidgets.QLabel('')
 
