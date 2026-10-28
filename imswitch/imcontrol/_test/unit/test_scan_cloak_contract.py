@@ -98,6 +98,33 @@ EDITS = {
 CLOAKS = sorted(SCAN_CLOAKS)
 
 
+def _pickProfile(rig, profile_id):
+    """Choose a MoNaLISA profile as a user does (the combo reacts to
+    ``activated``, not to a programmatic index change)."""
+    index = rig.view.profileCombo.findData(profile_id)
+    assert index >= 0, profile_id
+    rig.view.profileCombo.setCurrentIndex(index)
+    rig.view._profileChanged(index)
+
+
+def _moNaLISAPrepareRun(rig):
+    """A MoNaLISA acquisition needs the camera's live view running (the
+    frames arrive through it) and the Settings controller, through which it
+    switches the camera's trigger; returns what ends the live view."""
+    rig.main.controllers['Settings'] = rig.factory.createController(
+        _controllerClass('SettingsController'), widgets.SettingsWidget(optionsBasic))
+    detectors = rig.master.detectorsManager
+    handle = detectors.startAcquisition(liveView=True)
+    return lambda: detectors.stopAcquisition(handle, liveView=True)
+
+
+#: Per cloak: what a run needs before Start, or None.
+PREPARE_RUN = {
+    'SimplePointScan': None,
+    'SimpleMoNaLISA': _moNaLISAPrepareRun,
+}
+
+
 def _controllerClass(name):
     # Through its module: once a sibling imported it, the lazy package
     # attribute of that name is the module (imports of the module rely on it).
@@ -306,7 +333,7 @@ def test_an_edit_it_cannot_show_has_the_cloaks_declared_behavior(rig, monkeypatc
         # Explicitly selecting/reapplying a profile re-establishes ownership
         # and overwrites the custom sequence/geometry with the Simple plan.
         profile_id = before.profile_id
-        rig.view.profileCombo.setCurrentIndex(rig.view.profileCombo.findData(profile_id))
+        _pickProfile(rig, profile_id)
         rig.settle()
         assert rig.scan.cloakOwnsBackend()
         assert rig.acquisition().profile_id == profile_id
@@ -337,6 +364,8 @@ def test_discarding_can_be_asked_for_directly(rig):
 
 
 def test_the_switch_waits_for_a_running_scan(rig):
+    prepare = PREPARE_RUN[rig.type]
+    finish = prepare(rig) if prepare else None
     rig.view.setLive(True)
     rig.view.startButton.click()
     try:
@@ -351,6 +380,8 @@ def test_the_switch_waits_for_a_running_scan(rig):
         assert rig.view.stopButton.isEnabled()
         rig.view.stopButton.click()
         assert rig.waitForEnd()
+        if finish:
+            finish()
 
 
 def test_private_extras_from_another_cloak_are_not_applied(rig):
@@ -559,6 +590,67 @@ def _monalisaSetupWithPowerMode(mode):
     return json.dumps(data)
 
 
+def _monalisaSetupWithThreeProfiles():
+    """The mock setup with the three-profile set the model tests use (green,
+    dual OFF, dual colour), on its own laser names plus two more lasers."""
+    data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
+    template = copy.deepcopy(data['lasers']['488 (OFF)'])
+    for name, line, wavelength in (('488 (OFF) 2', 'Dev1/port0/line6', 488),
+                                   ('590', 'Dev1/port0/line7', 590)):
+        laser = copy.deepcopy(template)
+        laser['digitalLine'] = line
+        laser['wavelength'] = wavelength
+        data['lasers'][name] = laser
+    on, off, off2, exc, red, cam = '405 (ON)', '488 (OFF)', '488 (OFF) 2', '488 (EXC)', '590', 'Camera'
+    readout = {'id': 'readout', 'label': 'Readout', 'role': 'readout', 'ttlDevices': [exc, cam],
+               'defaultDurationMs': 1, 'durationEditable': False}
+    simple = dict(data['scan'].get('simpleMoNaLISA') or {})
+    simple['defaultProfile'] = 'green'
+    simple['profiles'] = {
+        'green': {
+            'label': 'Green', 'defaultMode': 'resolft',
+            'steps': [
+                {'id': 'on', 'label': 'ON', 'role': 'on', 'ttlDevices': [on], 'defaultDurationMs': 1},
+                {'id': 'off', 'label': 'OFF', 'role': 'off', 'ttlDevices': [off], 'defaultDurationMs': 2},
+                readout,
+            ],
+            'modes': {
+                'resolft': {'label': 'RESOLFT', 'enabledSteps': ['on', 'off', 'readout']},
+                'confocal': {'label': 'Confocal', 'enabledSteps': ['on', 'readout']},
+            },
+        },
+        'dual_off': {
+            'label': 'Dual OFF', 'defaultMode': 'resolft',
+            'steps': [
+                {'id': 'on', 'role': 'on', 'ttlDevices': [on], 'defaultDurationMs': 1},
+                {'id': 'off', 'role': 'off', 'ttlDevices': [off, off2], 'defaultDurationMs': 2},
+                readout,
+            ],
+            'modes': {'resolft': {'enabledSteps': ['on', 'off', 'readout']}},
+        },
+        'dual_color': {
+            'label': 'Dual colour', 'defaultMode': 'resolft',
+            'steps': [
+                {'id': 'on', 'role': 'on', 'ttlDevices': [on], 'defaultDurationMs': 1},
+                {'id': 'green_off', 'role': 'off', 'ttlDevices': [off], 'defaultDurationMs': 2},
+                {'id': 'green_ro', 'role': 'readout', 'ttlDevices': [exc, cam],
+                 'defaultDurationMs': 1, 'durationEditable': False},
+                {'id': 'red_off', 'role': 'off', 'ttlDevices': [red], 'defaultDurationMs': 2.5},
+                {'id': 'red_ro', 'role': 'readout', 'ttlDevices': [red, cam],
+                 'defaultDurationMs': 1, 'durationEditable': False},
+            ],
+            'modes': {
+                'resolft': {'label': 'RESOLFT',
+                            'enabledSteps': ['on', 'green_off', 'green_ro', 'red_off', 'red_ro']},
+                'confocal': {'label': 'Confocal', 'enabledSteps': ['on', 'green_ro', 'red_ro']},
+                'green': {'label': 'Green only', 'enabledSteps': ['on', 'green_off', 'green_ro']},
+            },
+        },
+    }
+    data['scan']['simpleMoNaLISA'] = simple
+    return json.dumps(data)
+
+
 def _monalisaSetupWithoutProfiles():
     data = json.load(open(MOCK_SETUPS['SimpleMoNaLISA']))
     simple = dict(data['scan'].get('simpleMoNaLISA') or {})
@@ -755,14 +847,13 @@ def test_monalisa_transitional_profile_live_sources_are_read_and_migrated(qtbot)
     finally:
         rig.close()
 def test_monalisa_profiles_and_modes_are_explicit_simple_choices(qtbot):
-    rig = CloakRig('SimpleMoNaLISA')
+    rig = CloakRig('SimpleMoNaLISA', _monalisaSetupWithThreeProfiles())
     try:
         assert [rig.view.profileCombo.itemData(i) for i in range(rig.view.profileCombo.count())] == [
             'green', 'dual_off', 'dual_color'
         ]
         before = rig.acquisition()
-        index = rig.view.profileCombo.findData('dual_color')
-        rig.view.profileCombo.setCurrentIndex(index)
+        _pickProfile(rig, 'dual_color')
         rig.settle()
         selected = rig.acquisition()
         assert selected.profile_id == 'dual_color'
@@ -781,7 +872,7 @@ def test_monalisa_profiles_and_modes_are_explicit_simple_choices(qtbot):
 
 
 def test_monalisa_deleting_active_profile_refreshes_combo_and_plan(qtbot, monkeypatch):
-    rig = CloakRig('SimpleMoNaLISA')
+    rig = CloakRig('SimpleMoNaLISA', _monalisaSetupWithThreeProfiles())
     try:
         # Avoid touching the user's setup file; the controller still updates
         # its in-memory profile store exactly as after a successful save.
@@ -1195,8 +1286,8 @@ def test_monalisa_save_acquire_delegates_one_scan_to_recording(qtbot, monkeypatc
             accepted = True
             reason = ''
 
-        def record_scan_series(source, detector_names, frames=1):
-            calls.append((source, tuple(detector_names), frames))
+        def record_scan_series(source, detector_names, *, use_series=True):
+            calls.append((source, tuple(detector_names), use_series))
             return Result()
 
         monkeypatch.setattr(
@@ -1212,9 +1303,192 @@ def test_monalisa_save_acquire_delegates_one_scan_to_recording(qtbot, monkeypatc
         assert calls == [(
             rig.scan,
             rig.scan._activeProfileDetectors(),
-            1,
+            False,
         )]
         assert not rig.scan._isBusy()
+    finally:
+        rig.close()
+
+
+def test_monalisa_timelapse_checkbox_controls_this_acquisition_only(qtbot, monkeypatch):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        calls = []
+
+        class Result:
+            accepted = True
+            reason = ''
+
+        def record_scan_series(source, detector_names, *, use_series=True):
+            calls.append(use_series)
+            return Result()
+
+        monkeypatch.setattr(
+            rig.channel.recordingWorkflow,
+            'record_scan_series',
+            record_scan_series,
+        )
+        rig.channel.recordingWorkflow.set_scan_series_settings(
+            timepoints=6, interval_s=2.0, single_file=False
+        )
+        rig.view.saveAcquireCheck.setChecked(True)
+
+        rig.view.seriesEnabledCheck.setChecked(False)
+        rig.scan.runScan()
+        assert calls == [False]
+        assert rig.channel.recordingWorkflow.get_scan_series_settings().timepoints == 6
+
+        rig.view.seriesEnabledCheck.setChecked(True)
+        rig.scan.runScan()
+        assert calls == [False, True]
+    finally:
+        rig.close()
+
+
+def test_monalisa_series_cadence_is_shared_runtime_state(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        workflow = rig.channel.recordingWorkflow
+        workflow.set_scan_series_settings(
+            timepoints=7, interval_s=2.5, single_file=False
+        )
+        assert rig.view.seriesTimepointsSpin.value() == 7
+        assert rig.view.seriesIntervalSpin.value() == pytest.approx(2.5)
+        assert not rig.view.seriesSingleFileCheck.isChecked()
+
+        rig.view.saveAcquireCheck.setChecked(True)
+        rig.view.seriesEnabledCheck.setChecked(True)
+        rig.view.seriesTimepointsSpin.setValue(4)
+        rig.view.seriesIntervalSpin.setValue(1.25)
+        rig.view.seriesSingleFileCheck.setChecked(True)
+        settings = workflow.get_scan_series_settings()
+        assert settings.timepoints == 4
+        assert settings.interval_s == pytest.approx(1.25)
+        assert settings.single_file is True
+    finally:
+        rig.close()
+
+
+def test_monalisa_acquire_options_follow_save_checkbox(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        rig.view.saveAcquireCheck.setChecked(False)
+        assert not rig.view.recordingSuffixCheck.isEnabled()
+        assert not rig.view.seriesEnabledCheck.isEnabled()
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+        assert not rig.view.seriesIntervalSpin.isEnabled()
+        assert not rig.view.seriesSingleFileCheck.isEnabled()
+
+        rig.view.saveAcquireCheck.setChecked(True)
+        assert rig.view.recordingSuffixCheck.isEnabled()
+        assert rig.view.seriesEnabledCheck.isEnabled()
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+
+        rig.view.seriesEnabledCheck.setChecked(True)
+        assert rig.view.seriesTimepointsSpin.value() >= 2
+        assert rig.view.seriesTimepointsSpin.isEnabled()
+        assert rig.view.seriesIntervalSpin.isEnabled()
+        assert rig.view.seriesSingleFileCheck.isEnabled()
+
+        stored = rig.view.seriesTimepointsSpin.value()
+        rig.view.seriesEnabledCheck.setChecked(False)
+        assert rig.view.seriesTimepointsSpin.value() == stored
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+        assert not rig.view.seriesIntervalSpin.isEnabled()
+        assert not rig.view.seriesSingleFileCheck.isEnabled()
+    finally:
+        rig.close()
+
+
+def test_monalisa_scan_load_does_not_touch_series_cadence(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        state = copy.deepcopy(rig.scan.getComponentState())
+        workflow = rig.channel.recordingWorkflow
+        workflow.set_scan_series_settings(timepoints=9, interval_s=4.0)
+
+        rig.scan.applyComponentState(
+            state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+        )
+
+        settings = workflow.get_scan_series_settings()
+        assert settings.timepoints == 9
+        assert settings.interval_s == pytest.approx(4.0)
+    finally:
+        rig.close()
+
+
+def test_monalisa_scan_load_is_refused_while_series_retains_run(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        before = copy.deepcopy(rig.scan.getComponentState())
+        changed = copy.deepcopy(before)
+        axis = changed['analogParameterDict']['target_device'][0]
+        index = changed['analogParameterDict']['target_device'].index(axis)
+        changed['analogParameterDict']['axis_centerpos'][index] += 10.0
+
+        rig.scan.__dict__['_scanRunToken'] = object()
+        warnings = rig.scan.applyComponentState(
+            changed, applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+        )
+
+        assert any('scan acquisition is active' in warning for warning in warnings)
+        assert rig.scan.getComponentState() == before
+    finally:
+        rig.scan.__dict__['_scanRunToken'] = None
+        rig.close()
+
+
+def test_monalisa_series_activity_freezes_controls_and_routes_scan_stop(
+    qtbot, monkeypatch
+):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        stopped = []
+        monkeypatch.setattr(
+            rig.channel.recordingWorkflow,
+            'stop_scan_series',
+            lambda source: stopped.append(source) or True,
+        )
+        rig.view.saveAcquireCheck.setChecked(True)
+        rig.view.setScanSeriesSettings(3, 1.0)
+        rig.view.seriesEnabledCheck.setChecked(True)
+        rig.scan._onScanSeriesActivityChanged(rig.scan, True)
+
+        assert not rig.view.stopButton.isEnabled()
+        assert not rig.view.scanStopButton.isHidden()
+        assert rig.view.scanStopButton.isEnabled()
+        assert not rig.view.startButton.isEnabled()
+        assert not rig.view.profileCombo.isEnabled()
+        assert not rig.view.seriesTimepointsSpin.isEnabled()
+
+        rig.scan._onScanStopClicked()
+        assert stopped == [rig.scan]
+    finally:
+        rig.close()
+
+
+def test_monalisa_one_timepoint_series_has_no_scan_stop(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        rig.view.setScanSeriesSettings(1, 0.0)
+        rig.scan._onScanSeriesActivityChanged(rig.scan, True)
+
+        assert not rig.view.scanStopButton.isVisible()
+        assert not rig.view.stopButton.isEnabled()
+    finally:
+        rig.close()
+
+
+def test_monalisa_progress_is_rehomed_into_run_scan_row(qtbot):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        # The same ScanCloakView progress widget is reused, but MoNaLISA
+        # reparents it into its RUN SCAN action row.
+        assert rig.view.progressRow.parentWidget() is not rig.view
+        assert rig.view.liveActionTitle.text() == 'LIVE'
+        assert rig.view.acquireActionTitle.text() == 'ACQUIRE'
+        assert rig.view.screeningButton.width() == rig.view.startButton.width()
     finally:
         rig.close()
 
@@ -1252,14 +1526,33 @@ def test_monalisa_coupled_yz_exposes_editable_y_lateral_geometry(qtbot):
         qtbot.wait(10)
 
         assert rig.scan.acquisitionPlan().scan_type == 'YZ'
-        assert rig.view.pixelField.isVisible()
+        assert not rig.view.pixelField.isHidden()
         assert rig.view.pixelCaption.text() == 'Y pixel size'
         assert rig.view.lateralStepControl.isEnabled()
-        assert not rig.view.yStepField.isVisible()
+        assert rig.view.yStepField.isHidden()
 
         rig.view.lateralStepControl.spin.setValue(73.0)
         qtbot.wait(10)
         assert rig.scan.acquisitionPlan().step_um_for_axis('Y') == pytest.approx(0.073)
         assert rig.scan.acquisitionPlan().step_um_for_axis('X') == pytest.approx(0.073)
+    finally:
+        rig.close()
+
+
+def test_monalisa_profile_edit_to_a_manual_extent_applies_it(qtbot, monkeypatch):
+    rig = CloakRig('SimpleMoNaLISA')
+    try:
+        monkeypatch.setattr(rig.scan, '_persistSimpleConfig', lambda raw: None)
+        profile_id = rig.scan.acquisitionPlan().profile_id
+        current = rig.limits().profile_store.profile(profile_id)
+        edited = dataclasses.replace(current, scan_extent_source='manual', manual_scan_extent_um=2.0)
+        monkeypatch.setattr(rig.view, 'editProfileDefinition', lambda *args, **kwargs: edited)
+
+        rig.scan._onProfileEditRequested(profile_id)
+
+        plan = rig.scan.acquisitionPlan()
+        assert plan.length_um_for_axis('X') == pytest.approx(2.0)
+        assert plan.length_um_for_axis('Y') == pytest.approx(2.0)
+        assert rig.held() == rig.acquisition()
     finally:
         rig.close()

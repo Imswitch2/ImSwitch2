@@ -7,6 +7,7 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
 from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
+from imswitch.imcontrol.model.devices.status import DeviceNotConnectedError, DeviceRuntimeMode
 
 
 def _as_bool(value):
@@ -35,7 +36,10 @@ class MPBLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **kwargs):
         self.__logger = initLogger(self, instanceName=name)
-        self._isMock = False
+        #: True once the startup exchange succeeded on the current port; the
+        #: transport reconnect hook runs it again.
+        self._initialised = False
+        self._mpbName = name          # self.name exists only after LaserManager.__init__
         self._rs232manager = None
         self._enabled = None
         self._desired_power = None
@@ -55,17 +59,62 @@ class MPBLaserManager(LaserManager):
         self._ramp_down_dwell_s = max(
             0.0, float(properties.get('rampDownDwellS', 0.0))
         )
+        # P-2 (device-reconnect-2.0.md): a unit that does not answer is left
+        # not connected, with the error shown; a mock only on explicit request.
         self._use_mock_on_failure = _as_bool(
-            properties.get('useMockOnFailure', True)
+            properties.get('useMockOnFailure', False)
         )
 
         self._rs232Name = properties['rs232device']
         try:
             self._rs232manager = kwargs['rs232sManager']._subManagers[self._rs232Name]
-            # Recovery comes before identity/diagnostic queries so a laser left
-            # live by a crashed process spends the least possible time emitting.
-            mode_reply = self._queryRequired('GETPOWERENABLE')
+            self._initialiseHardware()
+        except Exception as exc:
+            # Initialization is the recovery path after a crashed ImSwitch
+            # process. Never enter mock fallback without first making an
+            # independent best-effort attempt to darken a real connected unit.
+            off_acknowledged = self._bestEffortImmediateOff()
+            message = (
+                f'MPB laser {name!r} initialization failed: {exc}. '
+                f'Best-effort immediate OFF '
+                f'{"was acknowledged" if off_acknowledged else "was not acknowledged"}.'
+            )
+            if not off_acknowledged:
+                self.__logger.critical(message)
+            elif self._use_mock_on_failure:
+                self.__logger.warning(f'{message} Entering mock mode.')
+            else:
+                self.__logger.warning(f'{message} Not connected; reconnect it from '
+                                      f'Hardware status.')
+            self._setConnectionError(
+                exc,
+                summary=("MPB laser initialization failed; mock fallback active"
+                         if self._use_mock_on_failure else "MPB laser not connected"),
+                mock_active=self._use_mock_on_failure,
+            )
 
+        super().__init__(
+            laserInfo,
+            name,
+            isBinary=False,
+            valueUnits='mW',
+            valueDecimals=0,
+        )
+
+    def _initialiseHardware(self):
+        """The startup exchange: darken a unit left live, make sure it is in
+        APC mode, read its power limits. Raises on any failure. Run at
+        startup and again after the port was reconnected."""
+        self._initialised = False
+        # The exchange talks to a real port: a mock installed by an earlier
+        # failure (useMockOnFailure) must not swallow it. The except path
+        # below restores the mock if the exchange fails again.
+        self._deviceRuntimeMode = DeviceRuntimeMode.REAL
+        # Recovery comes before identity/diagnostic queries so a laser left
+        # live by a crashed process spends the least possible time emitting.
+        mode_reply = self._queryRequired('GETPOWERENABLE')
+        self._initialised = True       # commands reach the unit from here on
+        try:
             if self._isApcModeReply(mode_reply):
                 # Response format: 'F >99 3050'. APC power limits are required
                 # to build a valid equipment-friendly recovery ramp.
@@ -94,42 +143,76 @@ class MPBLaserManager(LaserManager):
                 f'{self.__min_max_powers[1]} mW'
             )
             serial_number = self._queryRequired('GETSN')
-            self.__logger.debug(f'MPB laser {name}, SN: {serial_number}')
+            self.__logger.debug(f'MPB laser {self._mpbName}, SN: {serial_number}')
 
             self.setTriggerSource(0)  # internal; not implemented by this driver
-            self._setConnected("MPB laser initialized")
+        except Exception:
+            self._initialised = False
+            raise
+        self._setConnected("MPB laser initialized")
 
+    @property
+    def _isMock(self):
+        """A simulation stands in for the unit: the port is a mock, or the
+        setup asked for a mock on failure and startup failed. Derived, never
+        stored. A real unit that did not answer is *not* a mock: it is not
+        connected, and commands raise (``_requireUnit``)."""
+        if self.runtimeMode is DeviceRuntimeMode.MOCK:
+            return True
+        mode = getattr(self._rs232manager, 'runtimeMode', None)
+        return getattr(mode, 'value', None) == 'mock'
+
+    def _requireUnit(self, what='command'):
+        """Refuse a command while the startup exchange has not succeeded on
+        the current port (nothing is sent to an unknown unit)."""
+        if not self._initialised:
+            raise DeviceNotConnectedError(
+                f'MPB laser {self._mpbName}: {what} refused, '
+                f'{self.connectionStatusSummary or "not connected"}')
+
+    def _lifecycleProbe(self):
+        """Check: the unit's serial number (Hardware status -> Check)."""
+        if self._isMock:
+            return f'MPB laser {self._mpbName}: mock'
+        self._requireUnit('check')
+        serial = str(self._queryRequired('GETSN')).split('>')[-1].strip()
+        return f'MPB laser SN {serial} answers'
+
+    # Transport hooks (DeviceLifecycleService): the port was, or is about to
+    # be, reopened in place.
+    def _lifecycleSafeState(self, *, verified: bool):
+        if not verified:
+            self._bestEffortImmediateOff()
+            return []
+        try:
+            self.safeDisable(reason='reconnect')
         except Exception as exc:
-            # Initialization is the recovery path after a crashed ImSwitch
-            # process. Never enter mock fallback without first making an
-            # independent best-effort attempt to darken a real connected unit.
-            off_acknowledged = self._bestEffortImmediateOff()
-            message = (
-                f'MPB laser {name!r} initialization failed: {exc}. '
-                f'Best-effort immediate OFF '
-                f'{"was acknowledged" if off_acknowledged else "was not acknowledged"}.'
-            )
-            if not off_acknowledged:
-                self.__logger.critical(message)
-            elif self._use_mock_on_failure:
-                self.__logger.warning(f'{message} Entering mock mode.')
+            return [f'safe OFF failed: {exc}']
+        return []
 
-            if not self._use_mock_on_failure:
-                raise RuntimeError(message) from exc
-            self._isMock = True
+    def _onTransportReconnected(self, real: bool):
+        """Run the startup exchange again on the reopened port (it darkens
+        the unit and verifies APC mode); the errors found, if any."""
+        if not real:
+            self._initialised = False
+            details = getattr(self._rs232manager, 'connectionStatusDetails', None)
             self._setConnectionError(
-                exc,
-                summary="MPB laser initialization failed; mock fallback active",
-                mock_active=True,
+                details or 'transport unavailable',
+                summary='MPB laser transport did not reconnect'
+                        + ('; mock fallback active' if self._use_mock_on_failure else ''),
+                mock_active=self._use_mock_on_failure,
             )
-
-        super().__init__(
-            laserInfo,
-            name,
-            isBinary=False,
-            valueUnits='mW',
-            valueDecimals=0,
-        )
+            return [details or 'transport unavailable']
+        try:
+            self._initialiseHardware()
+        except Exception as exc:
+            off_acknowledged = self._bestEffortImmediateOff()
+            self._setConnectionError(
+                exc, summary='MPB laser did not re-initialize after reconnect',
+                mock_active=self._use_mock_on_failure)
+            return [f'{exc} (best-effort OFF '
+                    f'{"acknowledged" if off_acknowledged else "NOT acknowledged"})']
+        return []
 
     def getDeviceDescriptorSpec(self):
         return rs232BackedPrimarySpec(
@@ -289,6 +372,7 @@ class MPBLaserManager(LaserManager):
     def setEnabled(self, enabled):
         if self._isMock:
             return
+        self._requireUnit('emission switch')
         if not enabled:
             return self.safeDisable(reason='setEnabled(False)')
 
@@ -322,6 +406,7 @@ class MPBLaserManager(LaserManager):
     def setValue(self, power):
         if self._isMock:
             return
+        self._requireUnit('power')
         try:
             numeric_power = float(power)
         except (TypeError, ValueError):
@@ -353,6 +438,7 @@ class MPBLaserManager(LaserManager):
     def setMode(self, mode):
         if self._isMock:
             return
+        self._requireUnit('mode')
         self._queryRequired(f'POWERENABLE {int(mode)}')
 
     def setTriggerSource(self, source):
@@ -365,6 +451,7 @@ class MPBLaserManager(LaserManager):
         """Ensure APC mode without ever re-enabling emission."""
         if self._isMock:
             return
+        self._requireUnit('trigger source')
         with self._command_lock:
             answer = self._queryRequired('GETPOWERENABLE')
             if not self._isApcModeReply(answer):

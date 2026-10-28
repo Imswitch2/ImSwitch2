@@ -36,6 +36,16 @@ RESULT_KINDS = (
 )
 
 
+#: What a workflow *port* may carry, beyond the result kinds: a Source's
+#: recording (before any reconstruction), ``any`` for a step that declares its
+#: output depends on the run (the Python step), and ``unknown`` for a plugin
+#: that declares nothing. Only a declared result kind is ever checked.
+RECORDING_KIND = "recording"
+ANY_KIND = "any"
+UNKNOWN_KIND = "unknown"
+PORT_KINDS = RESULT_KINDS + (RECORDING_KIND, ANY_KIND, UNKNOWN_KIND)
+
+
 def result_kind(result) -> str:
     """Semantic kind of ``result``; duck-typed/legacy results count as images."""
     return str(getattr(result, "kind", "image") or "image")

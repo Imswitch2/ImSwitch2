@@ -34,6 +34,7 @@ class SnoutyProjectionsReconstructor(Reconstructor):
     
     name = "SNOUTY projections"
     id = "snouty-projections"
+    output_kind = "image"
     file_extensions = ["hdf5", "h5", "tiff"]
     description = "Fast projection-only preview for SNOUTY/OPM/MS-RESOLFT data"
     

@@ -34,6 +34,7 @@ KIND_INFO_CLASSES: dict[str, str] = {
     "rs232": "RS232Info",
     "slm": "SLMsInfo",
     "flip_mirror": "FlipMirrorInfo",
+    "instrument": "InstrumentInfo",
     "stand": "MicroscopeStandInfo",
     "scan_engine": "ScanEngineInfo",
     "pulse_generator": "PulseGeneratorInfo",

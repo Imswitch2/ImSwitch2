@@ -30,6 +30,7 @@ from imswitch.imcontrol.model.simple_monalisa_scan import (
     dicts_to_plan,
     normalize_plan,
     plan_with_backend_geometry,
+    render_recording_suffix,
     select_mode,
     select_profile,
 )
@@ -73,6 +74,16 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._view.sigProfileRenameRequested.connect(self._onProfileRenameRequested)
         self._view.sigProfileDeleteRequested.connect(self._onProfileDeleteRequested)
         self._view.sigSetupEditRequested.connect(self._onSetupEditRequested)
+        self._view.sigRecordingSuffixToggled.connect(
+            self._onRecordingSuffixToggled
+        )
+        self._view.sigSaveAcquisitionToggled.connect(
+            self._onSaveAcquisitionToggled
+        )
+        self._view.sigScanStopClicked.connect(self._onScanStopClicked)
+        self._view.sigScanSeriesSettingsEdited.connect(
+            self._onScanSeriesSettingsEdited
+        )
         self._view.sigCameraReadoutAutoRequested.connect(
             self._onCameraReadoutAutoRequested
         )
@@ -89,16 +100,31 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self._commChannel.sigDetectorParametersChanged.connect(
             self._onDetectorParametersChanged
         )
+        self._recordedSeriesActive = False
+        recordingWorkflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        settingsChanged = getattr(
+            recordingWorkflow, 'sigScanSeriesSettingsChanged', None
+        )
+        if settingsChanged is not None:
+            settingsChanged.connect(self._onScanSeriesSettingsChanged)
+        activityChanged = getattr(
+            recordingWorkflow, 'sigScanSeriesActivityChanged', None
+        )
+        if activityChanged is not None:
+            activityChanged.connect(self._onScanSeriesActivityChanged)
+
         self._refreshResolvedSetup(refreshView=False)
         state = self._monalisa()
         self._view.configure(state['limits'])
         self._view.setPlan(state['plan'])
         self._view.setBinding(state['binding'])
+        self._syncScanSeriesSettings()
         self._refreshSetupSummary()
         self._refreshLiveControls()
         self._refreshEstimate()
         self._mirrorToBackend(force=True)
         self._panel.showPage(self.scanPage())
+        self._syncRecordingAcquisitionOwnership()
 
     def _monalisa(self) -> dict:
         # Advanced's constructor can ask this cloak for parameters before this
@@ -137,8 +163,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         plan = plan if plan is not None else self.acquisitionPlan()
         if plan is None:
             return ()
-        profile = limits.profile_store.profile(plan.profile_id)
-        mode = profile.mode(plan.mode_id)
+        try:
+            profile = limits.profile_store.profile(plan.profile_id)
+            mode = profile.mode(plan.mode_id)
+        except MoNaLISAProfileError:
+            # The plan names a profile this store no longer has (the moment
+            # between a deletion and the plan's replacement).
+            return ()
         detectorNames = set(self._master.detectorsManager.getAllDeviceNames())
         result = []
         # Prefer semantic Readout steps for the normal MoNaLISA case, then
@@ -315,6 +346,128 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
 
     def cloakOwnsBackend(self) -> bool:
         return self.acquisitionPlan() is not None and self.profileBinding().is_bound
+
+    def _syncScanSeriesSettings(self) -> None:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        getter = getattr(workflow, 'get_scan_series_settings', None)
+        if not callable(getter):
+            return
+        settings = getter()
+        self._view.setScanSeriesSettings(
+            settings.timepoints, settings.interval_s, settings.single_file
+        )
+        activeFor = getattr(workflow, 'scan_series_active_for', None)
+        active = bool(activeFor(self)) if callable(activeFor) else False
+        self._recordedSeriesActive = active
+        self._view.setAcquisitionSeriesActive(active)
+
+    def _setRecordingAcquisitionOwnership(self, active: bool) -> bool:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        setter = getattr(workflow, 'set_recording_acquisition_owner', None)
+        if not callable(setter):
+            return not active
+        try:
+            return bool(setter(self, bool(active)))
+        except Exception:
+            self._logger.warning(
+                'Could not update Recording acquisition ownership.',
+                exc_info=True,
+            )
+            return False
+
+    def _syncRecordingAcquisitionOwnership(self) -> None:
+        wantsOwnership = bool(
+            self._onSimplePage() and self._view.saveAcquisitionRequested()
+        )
+        if self._setRecordingAcquisitionOwnership(wantsOwnership):
+            return
+        if wantsOwnership:
+            self._view.setSaveAcquisitionRequested(False)
+            self._view.showMessage(
+                'Recording acquisition is already configured by another scan widget.',
+                error=True,
+            )
+
+    def _onSaveAcquisitionToggled(self, checked: bool) -> None:
+        if checked and not self._onSimplePage():
+            return
+        self._syncRecordingAcquisitionOwnership()
+
+    def _onScanSeriesSettingsEdited(
+        self, timepoints, interval_s, single_file
+    ) -> None:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        setter = getattr(workflow, 'set_scan_series_settings', None)
+        if not callable(setter):
+            return
+        try:
+            setter(
+                timepoints=timepoints, interval_s=interval_s,
+                single_file=single_file,
+            )
+        except Exception as error:
+            self._view.showMessage(
+                f'Invalid acquisition cadence: {error}', error=True
+            )
+            self._syncScanSeriesSettings()
+
+    def _onScanSeriesSettingsChanged(self, settings) -> None:
+        self._view.setScanSeriesSettings(
+            settings.timepoints, settings.interval_s, settings.single_file
+        )
+
+    def _onScanSeriesActivityChanged(self, source, active) -> None:
+        if source is not self:
+            return
+        self._recordedSeriesActive = bool(active)
+        self._view.setAcquisitionSeriesActive(active)
+
+    def _notifyRecordingFilenameSuffixChanged(self) -> None:
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        notify = getattr(workflow, 'recording_filename_suffix_changed', None)
+        if callable(notify):
+            try:
+                notify(self)
+            except Exception:
+                self._logger.debug(
+                    'Could not refresh Recording filename suffix preview.',
+                    exc_info=True,
+                )
+
+    def getRecordingFilenameSuffix(self):
+        """Return the setup-configured suffix for this bound Simple scan."""
+        if self._savedMoNaLISAMetadata() is None:
+            return None
+        state = self._monalisa()
+        naming = state['limits'].recording_naming
+        if not naming.enabled:
+            return None
+        laser_states = {}
+        if naming.include_power:
+            getter = getattr(
+                getattr(self._commChannel, 'scanWorkflow', None),
+                'laser_acquisition_states',
+                None,
+            )
+            if callable(getter):
+                try:
+                    laser_states = getter()
+                except Exception:
+                    self._logger.warning(
+                        'Could not resolve laser powers for recording filename.',
+                        exc_info=True,
+                    )
+        try:
+            suffix = render_recording_suffix(
+                state['plan'], state['limits'], laser_states=laser_states
+            )
+        except Exception:
+            self._logger.warning(
+                'Could not render SimpleMoNaLISA recording filename suffix.',
+                exc_info=True,
+            )
+            return None
+        return suffix or None
 
     def parseBackendPlan(self, analog, digital, *, referencePlan=None):
         # Parse against exactly the profile/mode that Simple already owns.
@@ -549,6 +702,40 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         except Exception:
             self._setupInfo.scan = previous_scan
             raise
+
+    def _onRecordingSuffixToggled(self, enabled: bool):
+        """Persist the main-panel recording suffix switch."""
+        state = self._monalisa()
+        current = bool(state['limits'].recording_naming.enabled)
+        if self._isBusy() or self.__dict__.get('_screeningActive', False):
+            self._view.setRecordingSuffixEnabled(current)
+            return
+
+        configured = dict(
+            getattr(self._setupInfo.scan, 'simpleMoNaLISA', None) or {}
+        )
+        naming = configured.get('recordingNaming')
+        naming = dict(naming) if isinstance(naming, dict) else {}
+        naming['enabled'] = bool(enabled)
+        configured['recordingNaming'] = naming
+
+        try:
+            self._persistSimpleConfig(configured)
+        except Exception as error:
+            self._view.setRecordingSuffixEnabled(current)
+            self._view.showMessage(
+                f'Could not save recording suffix setting: {error}', error=True
+            )
+            return
+
+        state['limits'] = dataclasses.replace(
+            state['limits'],
+            recording_naming=dataclasses.replace(
+                state['limits'].recording_naming, enabled=bool(enabled)
+            ),
+        )
+        self._view.setRecordingSuffixEnabled(bool(enabled))
+        self._notifyRecordingFilenameSuffixChanged()
 
     def _onSetupEditRequested(self):
         if self._isBusy() or self.__dict__.get('_screeningActive', False):
@@ -815,8 +1002,13 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             if (current.scan_extent_source != edited.scan_extent_source
                     and edited.scan_extent_source == 'manual'
                     and edited.manual_scan_extent_um is not None):
+                # normalize_plan prefers the per-axis lengths, which the
+                # adaptation above set to the old uLens length.
                 plan = dataclasses.replace(
-                    plan, lateral_length_um=edited.manual_scan_extent_um
+                    plan,
+                    lateral_length_um=edited.manual_scan_extent_um,
+                    x_length_um=edited.manual_scan_extent_um,
+                    y_length_um=edited.manual_scan_extent_um,
                 )
             self._setBoundPlan(plan)
         else:
@@ -872,18 +1064,38 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._view.showMessage(str(error), error=True)
             return
         active = state['plan'] is not None and state['plan'].profile_id == profile_id
+        previous = (state['plan'], state['binding'])
+        plan = None
+        if active and new_store.profiles:
+            # The replacement is chosen against the new store, and the plan
+            # leaves the deleted profile before the store is replaced: the
+            # resolution the save runs reads the plan's profile from the
+            # store, and the old plan's profile is no longer in it.
+            new_limits = dataclasses.replace(state['limits'], profile_store=new_store)
+            plan = select_profile(
+                state['plan'], new_store.default_profile, new_limits, preserve_if_same=False
+            )
+        if active:
+            state['plan'] = plan
+            state['binding'] = (
+                MoNaLISAProfileBinding.bound(new_store.profile(plan.profile_id), plan.mode_id)
+                if plan is not None else MoNaLISAProfileBinding.unbound()
+            )
         # Do not refresh through the old plan while persisting.  If the active
         # profile is being deleted, setPlan(old_plan) can otherwise reinsert
         # the deleted id into the combo before we select the replacement.
         if not self._saveProfileStoreOrReport(new_store, refresh_view=False):
+            state['plan'], state['binding'] = previous
             return
         state = self._monalisa()
+        if active:
+            # The view still shows the deleted profile's plan; configure()
+            # reads the shown plan's profile from the new store.
+            self._view.setPlan(None)
         self._view.configure(state['limits'])
-        if active and not new_store.profiles:
+        if active and plan is None:
             self._setUnboundProfileState()
         elif active:
-            replacement_id = new_store.default_profile
-            plan = self._planForProfile(replacement_id, preserve_if_same=False)
             self._setBoundPlan(plan)
         else:
             self._refreshViewAfterProfileStoreChange()
@@ -1382,11 +1594,21 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._releaseScreeningTriggerOverride()
 
     def _runSimpleAcquisition(
-        self, start, *, requireLiveView, keepPreparedIfIdle=False
+        self, start, *, requireLiveView, keepPreparedIfIdle=False,
+        refreshSetup=True,
     ):
-        # Capture ROI/readout-speed changes that may have happened without a
-        # dedicated UI signal immediately before the acquisition is compiled.
-        self._refreshResolvedSetup(refreshView=True, mirror=True)
+        # Refused before the camera is touched: a second start while an
+        # acquisition runs used to rewrite the running camera's trigger
+        # before the base refused it.
+        if self._isBusy():
+            self._recordScanStartRejection('An acquisition is already running.')
+            return None
+        # The first point captures ROI/readout-speed changes immediately before
+        # compilation. Continuations of one retained ScanLapse deliberately do
+        # not re-resolve/mirror Simple state: that acquisition was frozen at its
+        # first timepoint.
+        if refreshSetup:
+            self._refreshResolvedSetup(refreshView=True, mirror=True)
         if self.__dict__.get('_screeningActive', False) and not self._stopScreening():
             return None
         try:
@@ -1418,7 +1640,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             detectors = self._activeProfileDetectors()
             try:
                 result = self._commChannel.recordingWorkflow.record_scan_series(
-                    self, detectors, frames=1
+                    self, detectors, use_series=self._view.scanSeriesEnabled()
                 )
             except Exception as error:
                 self._view.showMessage(
@@ -1447,6 +1669,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             ),
             requireLiveView=False,
             keepPreparedIfIdle=bool(isNonFinalPartOfSequence),
+            refreshSetup=bool(recalculateSignals),
         )
 
     def _onStopClicked(self):
@@ -1479,9 +1702,41 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             return
         return super()._onStopClicked()
 
+    def _onScanStopClicked(self):
+        """Gracefully stop a recorded timelapse after the current point."""
+        if not self._onSimplePage():
+            return
+        if not self.__dict__.get('_recordedSeriesActive', False):
+            return
+        workflow = getattr(self._commChannel, 'recordingWorkflow', None)
+        stop = getattr(workflow, 'stop_scan_series', None)
+        if callable(stop) and stop(self):
+            self._view.showMessage(
+                'Stopping timelapse; the current scan will finish if one is running.'
+            )
+            return
+        self._view.showMessage(
+            'Could not stop the active recorded acquisition series.',
+            error=True,
+        )
+
     def _onScanRejected(self, reason):
         super()._onScanRejected(reason)
-        self._restoreAcquisitionTrigger()
+        # The signal is global: while an acquisition runs, a refusal is
+        # somebody else's start (REC, a script, another panel) and the
+        # running camera keeps its frame trigger. Only a refusal of this
+        # panel's own pending start gives the camera back.
+        if not self._isBusy():
+            self._restoreAcquisitionTrigger()
+
+    def _relinquishSimpleOwnership(self) -> bool:
+        """Leaving the simple page: screening lasers off and the camera's
+        pre-Live trigger back. The Stop control disappears on Advanced, so
+        Simple-owned illumination never crosses the page boundary. False
+        when something stayed as it was (the message says what)."""
+        if self.__dict__.get('_screeningActive', False) and not self._stopScreening():
+            return False
+        return self._releaseScreeningTriggerOverride()
 
     def closeEvent(self):
         # Screening is not a scan lifecycle, so the generic scan close path
@@ -1492,6 +1747,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         self.__dict__['_closingSimpleMoNaLISA'] = True
         if self.__dict__.get('_screeningActive', False):
             self._stopScreening()
+        self._setRecordingAcquisitionOwnership(False)
         result = super().closeEvent()
         if '_acquisitionTriggerSnapshot' not in self.__dict__:
             self._releaseScreeningTriggerOverride()
@@ -1512,6 +1768,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._panel.showNote('')
             self._refreshLiveControls()
             self._refreshEstimate()
+            self._syncRecordingAcquisitionOwnership()
             return True
 
         # Refused before anything is touched, as the base refuses it: while an
@@ -1523,18 +1780,15 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._panel.showNote('Stop the scan before switching panels.')
             return False
 
-        # The Stop control disappears on Advanced, so do not carry Simple-owned
-        # illumination or its persistent camera-trigger override across the
-        # page boundary.
         leavingSimple = self._onSimplePage() and page != self.scanPage()
-        if leavingSimple and self.__dict__.get('_screeningActive', False):
-            if not self._stopScreening():
-                return False
-        if leavingSimple and not self._releaseScreeningTriggerOverride():
+        if leavingSimple and not self._relinquishSimpleOwnership():
             return False
         switched = super().setScanPage(page, discardAdvanced=discardAdvanced)
         if switched and self._onSimplePage():
             self._refreshLiveControls()
+        if switched:
+            self._syncRecordingAcquisitionOwnership()
+            self._notifyRecordingFilenameSuffixChanged()
         return switched
 
     def _acquisitionContext(self, profile_id: str) -> dict:
@@ -1968,8 +2222,11 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
         if not result.compatible:
             self._clearLoadedSimpleBinding()
+            if self._onSimplePage():
+                self._relinquishSimpleOwnership()
             self._enterPage('advanced')
             self._panel.showPage('advanced')
+            self._panel.showNote(f'{result.message} It is shown on the Advanced page.')
             self._showPendingLoadResolution(result)
             return
 
@@ -2095,11 +2352,17 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         """Load backend first; re-bind Simple only when provenance still matches."""
         original_page = self.scanPage()
         if self._isBusy():
-            return super().applyComponentState(state, applyMode=applyMode)
+            self.__dict__['_stateApplied'] = False
+            return ['A scan acquisition is active; scan parameters were not changed.']
 
         # Applying while Advanced prevents ScanCloakController.setParameters()
         # from interpreting/recompiling the incoming dictionaries before they
-        # have been accepted as the authoritative saved acquisition.
+        # have been accepted as the authoritative saved acquisition. The page
+        # may stay Advanced, so what Simple owns is handed back first (a
+        # setup-mode switch or a state load during Live screening left the
+        # lasers on with the Stop control gone).
+        if original_page == 'simple':
+            self._relinquishSimpleOwnership()
         self._enterPage('advanced')
         self._panel.showPage('advanced')
         warnings = super().applyComponentState(state, applyMode=applyMode)
@@ -2128,7 +2391,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             self._clearLoadedSimpleBinding()
             self._enterPage('advanced')
             self._panel.showPage('advanced')
-            self._panel.showNote('')
+            self._panel.showNote(f'{result.message} It is shown on the Advanced page.')
             self._setPendingLoadResolution(metadata, state, result)
             warning = f'Loaded scan kept unchanged in Advanced. {result.message}'
             warnings.append(warning)
@@ -2165,6 +2428,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
             else:
                 refusal = 'Select/reapply a profile to return to a Simple acquisition.'
             self._view.setEstimate(0.0, refusal=refusal)
+            self._notifyRecordingFilenameSuffixChanged()
             return
         refusal = self._setupRefusal()
         plan = self.acquisitionPlan()
@@ -2187,6 +2451,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
                 f'{plan.dwell_s(limits) * 1e3:g} ms/pixel · stage returns included.'
             )
         self._view.setEstimate(plan.estimate_s(limits), note=note, refusal=refusal)
+        self._notifyRecordingFilenameSuffixChanged()
 
 
 __all__ = ['ScanControllerSimpleMoNaLISA']

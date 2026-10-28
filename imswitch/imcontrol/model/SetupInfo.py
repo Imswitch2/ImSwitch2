@@ -34,6 +34,15 @@ class DeviceInfo:
     set level): ``"notRequired"``, ``{"durationS": seconds}`` or ``"unknown"``.
     Absent is not zero: see the scan-program plan, §2.4. """
 
+    transient: bool = False
+    """ Declared but not required at startup: left absent (not an error, no
+    mock) until connected from the Hardware status window or a script. For
+    devices that are plugged in only when needed. """
+
+    connectOnStartup: bool = False
+    """ For a transient device: still try to connect at startup; a failure
+    leaves it absent with the error shown, never in mock. """
+
     def ttlLevel(self, on: bool) -> bool:
         """ The electrical level for logical ``on``/off on the digital line.
 
@@ -632,7 +641,12 @@ class NidaqInfo:
     output, whatever this says. """
 
     simulation: Optional[bool] = False
-    """ Boolean for allowing to run nidaq-commands without access to a nidaq card. """
+    """ Use software NI-DAQ/scan simulation instead of physical NI-DAQ hardware.
+
+    If ``False`` and the NI-DAQmx backend is unavailable, ImControl still
+    starts but NI-DAQ operations remain unavailable rather than silently
+    switching to simulated acquisition.
+    """
 
     detectionRateHz: Optional[float] = None
     """ Rate of the timer counter's pulse train the point detectors (APD, PMT)
@@ -675,7 +689,7 @@ class TeensyPulseInfo:
     purely a convenience for scripts to refer to ``pinMap['laser488']``
     rather than hardcoded integers. """
 
-    useMockOnFailure: bool = True
+    useMockOnFailure: bool = False
     """ Fall back to the in-process mock if the port can't be opened.
     Set False to make a missing device a hard failure. """
 
@@ -833,6 +847,13 @@ class FlipMirrorInfo:
     """ Optional manager-specific properties. """
 
 
+@dataclass(frozen=True, kw_only=True)
+class InstrumentInfo(DeviceInfo):
+    """ A measurement instrument: one physical device sampled as a whole
+    (``docs/design/plans/transient-instruments-step-scans.md``). Usually
+    ``transient``. """
+
+
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass
 class SetupInfo:
@@ -841,6 +862,16 @@ class SetupInfo:
     detectors: Dict[str, DetectorInfo] = field(default_factory=dict)
     """ Detectors in this setup. This is a map from unique detector names to
     DetectorInfo objects. """
+
+    disabledDevices: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+    """ Device definitions parked by the configuration editor.
+
+    The outer key is the normal setup section name (for example ``detectors``
+    or ``positioners``), and the inner mapping keeps the original raw device
+    dictionaries keyed by device name. Disabled entries intentionally do not
+    appear in the active device mappings above/below, so runtime manager
+    construction and controllers continue to see only enabled hardware.
+    """
 
     lasers: Dict[str, LaserInfo] = field(default_factory=dict)
     """ Lasers in this setup. This is a map from unique laser names to
@@ -882,6 +913,10 @@ class SetupInfo:
 
     flipMirrors: Optional[Dict[str, FlipMirrorInfo]] = field(default_factory=lambda: None)
     """ Motorized flip mirror settings. """
+
+    instruments: Optional[Dict[str, InstrumentInfo]] = field(default_factory=lambda: None)
+    """ Measurement instruments (power meters, polarimeters, ...). Usually
+    ``transient``: declared here, connected only when needed. """
 
     microscopeStand: Optional[MicroscopeStandInfo] = field(default_factory=lambda: None)
     """ Microscope stand settings. Required to be defined to use MotCorr widget. """

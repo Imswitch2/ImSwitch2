@@ -11,6 +11,7 @@ from .channel_merge import ChannelMergeProcessor
 from .channel_split import ChannelSplitProcessor
 from .colocalization import ColocalizationProcessor
 from .combine import StackCombineProcessor
+from .deconvolution import RichardsonLucyProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
 from .filters import FilterProcessor
@@ -54,6 +55,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'multicolor-apply': MulticolorApplyProcessor,
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
+    'deconvolve-rl': RichardsonLucyProcessor,
     'projection': ProjectionProcessor,
     'python': PythonStepProcessor,
     'psf-resolution': PSFResolutionProcessor,
@@ -243,6 +245,7 @@ __all__ = [
     "MulticolorApplyProcessor",
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",
+    "RichardsonLucyProcessor",
     "ProjectionProcessor",
     "PythonStepProcessor",
     "PSFResolutionProcessor",

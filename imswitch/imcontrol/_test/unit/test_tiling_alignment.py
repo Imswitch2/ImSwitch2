@@ -136,7 +136,8 @@ def test_the_run_solve_leaves_a_consistent_layout_alone():
     positions, accepted = solve_links(nominal, links)
 
     assert len(accepted) == 2
-    assert positions == pytest.approx(nominal)
+    # As arrays: pytest >= 9.2 refuses approx over a list of tuples.
+    assert np.asarray(positions) == pytest.approx(np.asarray(nominal))
 
 
 def test_a_tile_no_measurement_reached_keeps_its_commanded_place():

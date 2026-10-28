@@ -20,7 +20,7 @@
     },
     {
       "constrained": 1,
-      "keys": 3,
+      "keys": 4,
       "name": "AVManager",
       "refs": 0,
       "required": 2,
@@ -164,7 +164,7 @@
     },
     {
       "constrained": 1,
-      "keys": 3,
+      "keys": 4,
       "name": "HamamatsuManager",
       "refs": 0,
       "required": 2,
@@ -218,7 +218,7 @@
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "KinesisRotatorManager",
       "refs": 0,
       "required": 1,
@@ -227,7 +227,7 @@
     },
     {
       "constrained": 0,
-      "keys": 6,
+      "keys": 7,
       "name": "KinesisStageManager",
       "refs": 0,
       "required": 1,
@@ -298,9 +298,27 @@
       "unresolved": 0
     },
     {
+      "constrained": 3,
+      "keys": 6,
+      "name": "MockPAXManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 0,
       "keys": 0,
       "name": "MockPositionerManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 2,
+      "keys": 3,
+      "name": "MockPowerMeterManager",
       "refs": 0,
       "required": 0,
       "uncertain": 0,
@@ -371,7 +389,7 @@
     },
     {
       "constrained": 1,
-      "keys": 3,
+      "keys": 4,
       "name": "PhotometricsManager",
       "refs": 0,
       "required": 1,
@@ -380,7 +398,7 @@
     },
     {
       "constrained": 1,
-      "keys": 4,
+      "keys": 5,
       "name": "PiCamManager",
       "refs": 0,
       "required": 3,
@@ -506,7 +524,7 @@
     },
     {
       "constrained": 0,
-      "keys": 4,
+      "keys": 5,
       "name": "StandaRotatorManager",
       "refs": 0,
       "required": 4,
@@ -569,7 +587,7 @@
     },
     {
       "constrained": 3,
-      "keys": 6,
+      "keys": 7,
       "name": "ThorCamTSIManager",
       "refs": 0,
       "required": 0,
@@ -595,6 +613,24 @@
       "unresolved": 0
     },
     {
+      "constrained": 3,
+      "keys": 7,
+      "name": "ThorlabsPAX1000Manager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 4,
+      "name": "ThorlabsPM100Manager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 0,
       "keys": 3,
       "name": "TriggerScopeLaserManager",
@@ -615,23 +651,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 48,
-    "docs_agree": 168,
-    "docs_documented": 168,
-    "keys": 248,
-    "managers": 68,
-    "none_default_only": 53,
+    "constrained": 57,
+    "docs_agree": 196,
+    "docs_documented": 196,
+    "keys": 276,
+    "managers": 72,
+    "none_default_only": 58,
     "none_only": 16,
-    "optional": 186,
-    "reads_any": 63,
+    "optional": 212,
+    "reads_any": 67,
     "refs": 14,
-    "required": 62,
-    "typed_by_code": 103,
-    "typed_with_docs": 192,
-    "typed_with_examples": 141,
+    "required": 64,
+    "typed_by_code": 126,
+    "typed_with_docs": 220,
+    "typed_with_examples": 167,
     "uncertain": 0,
     "unresolved_reads": 0,
-    "with_keys": 63,
+    "with_keys": 67,
     "writes": 0
   }
 }

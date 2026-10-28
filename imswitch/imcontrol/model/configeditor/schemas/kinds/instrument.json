@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a instrument entry in a setup file, as imswitch.imcontrol.model.SetupInfo.InstrumentInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "analogChannel": {
+      "default": null,
+      "description": "Channel for analog communication. ``null`` if the device is digital or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/ao{analogChannel}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.analogChannel: Optional[Union[str, int]]"
+      ]
+    },
+    "connectOnStartup": {
+      "default": false,
+      "description": "For a transient device: still try to connect at startup; a failure leaves it absent with the error shown, never in mock.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.connectOnStartup: bool"
+      ]
+    },
+    "digitalLine": {
+      "default": null,
+      "description": "Line for digital communication. ``null`` if the device is analog or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/port0/line{digitalLine}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.digitalLine: Optional[Union[str, int]]"
+      ]
+    },
+    "managerName": {
+      "description": "Manager class name.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Properties to be read by the manager. Empty when omitted.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerProperties: Dict[str, Any]"
+      ]
+    },
+    "preparation": {
+      "default": null,
+      "description": "Time from the request of the device's state (the line's edge, or the command) until it is ready (a shutter fully open, a laser emitting at its set level): ``\"notRequired\"``, ``{\"durationS\": seconds}`` or ``\"unknown\"``. Absent is not zero: see the scan-program plan, §2.4.",
+      "type": [
+        "string",
+        "object",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "object"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.preparation: Optional[Union[str, Dict[str, float]]]"
+      ]
+    },
+    "transient": {
+      "default": false,
+      "description": "Declared but not required at startup: left absent (not an error, no mock) until connected from the Hardware status window or a script. For devices that are plugged in only when needed.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.transient: bool"
+      ]
+    },
+    "ttlActiveLevel": {
+      "default": "high",
+      "description": "The electrical level of the ``digitalLine`` that means *on*: ``\"high\"`` (default) or ``\"low\"`` for an inverted input. Every path that drives the line -- a scan, manual control, stopping, failure cleanup -- maps the device's logical on/off through it.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.ttlActiveLevel: str"
+      ]
+    }
+  },
+  "required": [
+    "managerName"
+  ],
+  "title": "instrument device entry (InstrumentInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "InstrumentInfo",
+    "DeviceInfo"
+  ],
+  "x-imswitch-info-class": "InstrumentInfo"
+}

@@ -47,7 +47,7 @@ def main(argv=None) -> int:
         root = Path(tempfile.mkdtemp(prefix="improcess_workflow_"))
         from _synthetic import write_synthetic_recording
 
-        recording = write_synthetic_recording(root / "cells.h5", frames=2)
+        recording = write_synthetic_recording(root / "cells.h5", frames=2, axes="CYX")
         out_dir = root / "results"
 
     workflow = build_workflow(recording)

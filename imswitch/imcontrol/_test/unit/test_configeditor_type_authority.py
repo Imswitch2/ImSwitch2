@@ -222,11 +222,17 @@ class TestMaterialize:
             "dllLocation": "text", "flushFrameLimit": "int",
             # The SDK ring depth, declared when the audit made it settable.
             "frameBufferDepth": "int",
+            # Reconnect 2.0: the fallback mock is an explicit (here: default) opt-in.
+            "useMockOnFailure": "bool",
         }
         assert props["cameraSerial"]["nullable"] is True
         assert props["cameraSerial"]["tip"].startswith("Camera serial number")
-        assert {f["key"] for f in form["top"]} == {"analogChannel", "digitalLine", "forAcquisition", "forFocusLock",
-                                                  "preparation", "ttlActiveLevel"}
+        assert {f["key"] for f in form["top"]} == {
+            "analogChannel", "digitalLine", "forAcquisition", "forFocusLock",
+            "preparation", "ttlActiveLevel",
+            # Every device can be declared transient (device-reconnect-2.0 P-2).
+            "transient", "connectOnStartup",
+        }
 
     def test_a_union_kind_gets_the_text_box_even_over_a_template_int(self):
         form = editor._schema_for_manager("HamamatsuManager")
@@ -493,10 +499,12 @@ def test_the_corpus_is_what_the_plan_says():
     # 20: expert_mock_scan_setup.json, the Expert panel's mock setup. 21:
     # expert_step_boards_mock_setup.json, the Expert panel on step boards.
     # 22: galvo_flim_mock_scan_setup.json, the Lifetime 2.0 FLIM mock. 23:
-    # simple_monalisa_mock_scan_setup.json, the SimpleMoNaLISA cloak's mock.
+    # simple_monalisa_mock_scan_setup.json, the SimpleMoNaLISA cloak's mock
+    # (main has it too).
     assert len(shipped_setups()) == 23
-    # + the four scan engines, + the step-board positioner and laser managers
-    assert len(generated_fixtures()) == 68
+    # + the four scan engines, + the step-board positioner and laser managers;
+    # + main's mock power meter, mock PAX, Thorlabs PM100 and PAX1000.
+    assert len(generated_fixtures()) == 72
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 

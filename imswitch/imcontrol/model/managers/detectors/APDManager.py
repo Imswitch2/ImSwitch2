@@ -14,6 +14,7 @@ from ._frame_publication import (
     pending_scan_geometry,
     read_with_frame_geometry,
     remember_scan_geometry,
+    repeats_placement,
 )
 from .DetectorManager import (
     _queueBudgetBytes,
@@ -835,16 +836,18 @@ class APDManager(TrajectoryDetectorMixin, DetectorManager):
         # A trajectory's gridded rate is float too, NaN where unvisited.
         image_dtype = np.float32 if (self._ttlmultiplying or self._trajectoryMode) else np.uint16
 
-        # A scan carrying a geometry always gets fresh storage: frames already
-        # published for the previous scan share the old buffer (napari's layer
-        # shows it directly), and rewriting it would change pixels on screen
-        # that still claim the old geometry. Scans without one keep reusing a
-        # same-shape buffer, as before.
+        # A scan carrying a geometry gets fresh storage when its pixels land
+        # elsewhere: frames already published for the previous scan share the
+        # old buffer (napari's layer shows it directly), and rewriting it would
+        # change pixels on screen that still claim the old geometry. The same
+        # placement again (a live overview's next frame) overwrites in place,
+        # as scans without a geometry always have, so the image never blanks.
         geometry = pending_scan_geometry(self)
+        inPlace = repeats_placement(self, geometry)
         begin_frame_storage(self)
         shapeChanged = (np.shape(self._image) != img_dims_extra
                         or self._image.dtype != image_dtype)
-        if geometry is not None and not shapeChanged:
+        if geometry is not None and not shapeChanged and not inPlace:
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)
         if shapeChanged:
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)

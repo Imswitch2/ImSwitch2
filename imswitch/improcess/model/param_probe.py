@@ -269,7 +269,11 @@ def _form_labels(widget) -> dict:
             field_item = form.itemAt(row, QtWidgets.QFormLayout.FieldRole)
             if label_item is None or field_item is None or label_item.widget() is None:
                 continue
-            text = label_item.widget().text().rstrip(":").strip()
+            # Read the text through Qt's meta-object, not the wrapper's class:
+            # for a label Qt made itself (addRow("Slices:", ...)) PyQt can hand
+            # back a stale wrapper of another class left at the same address
+            # (seen once under xdist as a QMenu with no .text()).
+            text = str(label_item.widget().property("text") or "").rstrip(":").strip()
             for control in _controls_in(field_item):
                 labels.setdefault(control, text)
     return labels

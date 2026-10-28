@@ -21,6 +21,7 @@ class TestMasterControllerShutdown:
         setup.positioners = {}
         setup.rotators = {}
         setup.flipMirrors = {}
+        setup.instruments = {}
         setup.slms = {}
         setup.triggerScope = None
         setup.microscopeStand = None
@@ -76,6 +77,7 @@ class TestMasterControllerShutdown:
             'positionersManager': Mock(finalize=Mock()),
             'rotatorsManager': Mock(finalize=Mock()),
             'flipMirrorsManager': Mock(finalize=Mock()),
+            'instrumentsManager': Mock(finalize=Mock()),
             'recordingManager': Mock(finalize=Mock(), endRecording=Mock()),
             'slmsManager': Mock(finalize=Mock()),
             'nidaqManager': Mock(finalize=Mock()),
@@ -434,3 +436,140 @@ class TestMasterControllerShutdown:
 
         # Verify close was called (since finalize is not available)
         mock_manager.close.assert_called_once()
+
+    def test_initialization_failure_finalizes_completed_managers(
+            self, mock_setup_info, mock_comm_channel,
+            mock_module_comm_channel):
+        """A later startup failure releases managers already owned by master."""
+        nidaq = Mock(finalize=Mock())
+        rs232 = Mock(finalize=Mock())
+        detectors = Mock(finalize=Mock())
+        lasers = Mock(finalize=Mock())
+        positioners = Mock(finalize=Mock())
+        rotators = Mock(finalize=Mock())
+        flip_mirrors = Mock(finalize=Mock())
+        recording = Mock(endRecording=Mock(), finalize=Mock())
+        coordinator = Mock(activeToken=None, activeRunToken=None)
+        startup_error = RuntimeError("SLM startup failed")
+
+        with patch('imswitch.imcontrol.controller.MasterController.NidaqManager', return_value=nidaq), \
+             patch('imswitch.imcontrol.controller.MasterController.RS232sManager', return_value=rs232), \
+             patch('imswitch.imcontrol.controller.MasterController.DetectorsManager', return_value=detectors), \
+             patch('imswitch.imcontrol.controller.MasterController.LasersManager', return_value=lasers), \
+             patch('imswitch.imcontrol.controller.MasterController.PositionersManager', return_value=positioners), \
+             patch('imswitch.imcontrol.controller.MasterController.RotatorsManager', return_value=rotators), \
+             patch('imswitch.imcontrol.controller.MasterController.FlipMirrorsManager', return_value=flip_mirrors), \
+             patch('imswitch.imcontrol.controller.MasterController.RecordingManager', return_value=recording), \
+             patch('imswitch.imcontrol.controller.MasterController.SLMsManager', side_effect=startup_error), \
+             patch('imswitch.imcontrol.controller.MasterController.getSharedScanExecutionCoordinator', return_value=coordinator):
+            from imswitch.imcontrol.controller.MasterController import MasterController
+
+            with pytest.raises(RuntimeError, match="SLM startup failed") as exc_info:
+                MasterController(
+                    mock_setup_info,
+                    mock_comm_channel,
+                    mock_module_comm_channel,
+                )
+
+        assert exc_info.value is startup_error
+        recording.endRecording.assert_called_once_with(
+            emitSignal=False, wait=True
+        )
+        for manager in (
+            detectors, lasers, positioners, rotators, flip_mirrors,
+            recording, nidaq, rs232,
+        ):
+            manager.finalize.assert_called_once_with()
+
+    def test_initialization_failure_only_finalizes_managers_constructed_so_far(
+            self, mock_setup_info, mock_comm_channel,
+            mock_module_comm_channel):
+        nidaq = Mock(finalize=Mock())
+        rs232 = Mock(finalize=Mock())
+        detectors = Mock(finalize=Mock())
+        lasers = Mock(finalize=Mock())
+        positioner_error = RuntimeError("positioner startup failed")
+        coordinator = Mock(activeToken=None, activeRunToken=None)
+
+        with patch('imswitch.imcontrol.controller.MasterController.NidaqManager', return_value=nidaq), \
+             patch('imswitch.imcontrol.controller.MasterController.RS232sManager', return_value=rs232), \
+             patch('imswitch.imcontrol.controller.MasterController.DetectorsManager', return_value=detectors), \
+             patch('imswitch.imcontrol.controller.MasterController.LasersManager', return_value=lasers), \
+             patch('imswitch.imcontrol.controller.MasterController.PositionersManager', side_effect=positioner_error), \
+             patch('imswitch.imcontrol.controller.MasterController.RotatorsManager') as rotators_cls, \
+             patch('imswitch.imcontrol.controller.MasterController.RecordingManager') as recording_cls, \
+             patch('imswitch.imcontrol.controller.MasterController.SLMsManager') as slms_cls, \
+             patch('imswitch.imcontrol.controller.MasterController.getSharedScanExecutionCoordinator', return_value=coordinator):
+            from imswitch.imcontrol.controller.MasterController import MasterController
+
+            with pytest.raises(RuntimeError, match="positioner startup failed") as exc_info:
+                MasterController(
+                    mock_setup_info,
+                    mock_comm_channel,
+                    mock_module_comm_channel,
+                )
+
+        assert exc_info.value is positioner_error
+        for manager in (detectors, lasers, nidaq, rs232):
+            manager.finalize.assert_called_once_with()
+        rotators_cls.assert_not_called()
+        recording_cls.assert_not_called()
+        slms_cls.assert_not_called()
+
+    def test_cleanup_error_does_not_mask_initialization_error(
+            self, mock_setup_info, mock_comm_channel,
+            mock_module_comm_channel):
+        startup_error = RuntimeError("SLM startup failed")
+
+        with patch('imswitch.imcontrol.controller.MasterController.NidaqManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.RS232sManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.DetectorsManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.LasersManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.PositionersManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.RotatorsManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.FlipMirrorsManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.RecordingManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.SLMsManager', side_effect=startup_error), \
+             patch('imswitch.imcontrol.controller.MasterController.getSharedScanExecutionCoordinator', return_value=Mock(activeToken=None, activeRunToken=None)):
+            from imswitch.imcontrol.controller.MasterController import MasterController
+
+            with patch.object(
+                MasterController,
+                'closeEvent',
+                side_effect=RuntimeError("cleanup failed"),
+            ):
+                with pytest.raises(RuntimeError, match="SLM startup failed") as exc_info:
+                    MasterController(
+                        mock_setup_info,
+                        mock_comm_channel,
+                        mock_module_comm_channel,
+                    )
+
+        assert exc_info.value is startup_error
+
+    def test_successful_initialization_does_not_run_failure_cleanup(
+            self, mock_setup_info, mock_comm_channel,
+            mock_module_comm_channel):
+        with patch('imswitch.imcontrol.controller.MasterController.NidaqManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.RS232sManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.DetectorsManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.LasersManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.PositionersManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.RotatorsManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.FlipMirrorsManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.RecordingManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.SLMsManager'), \
+             patch('imswitch.imcontrol.controller.MasterController.getSharedScanExecutionCoordinator', return_value=Mock(activeToken=None, activeRunToken=None)):
+            from imswitch.imcontrol.controller.MasterController import MasterController
+
+            with patch.object(
+                MasterController,
+                '_cleanupAfterInitializationFailure',
+            ) as cleanup:
+                MasterController(
+                    mock_setup_info,
+                    mock_comm_channel,
+                    mock_module_comm_channel,
+                )
+
+        cleanup.assert_not_called()

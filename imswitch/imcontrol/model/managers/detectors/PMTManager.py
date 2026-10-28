@@ -14,6 +14,7 @@ from ._frame_publication import (
     pending_scan_geometry,
     read_with_frame_geometry,
     remember_scan_geometry,
+    repeats_placement,
 )
 from .DetectorManager import (
     _queueBudgetBytes,
@@ -735,14 +736,16 @@ class PMTManager(TrajectoryDetectorMixin, DetectorManager):
         # preserved for the TTL-multiplying "no-data" marker.
         image_dtype = np.float32
 
-        # See APDManager.initiateImage: a scan carrying a geometry always gets
-        # fresh storage, so published frames of the previous scan keep their
-        # pixels. Scans without one keep reusing a same-shape buffer.
+        # See APDManager.initiateImage: a scan carrying a geometry gets fresh
+        # storage unless it repeats the previous placement, so published frames
+        # of the previous scan never get pixels from elsewhere. Scans without
+        # one keep reusing a same-shape buffer.
         geometry = pending_scan_geometry(self)
+        inPlace = repeats_placement(self, geometry)
         begin_frame_storage(self)
         shapeChanged = (np.shape(self._image) != img_dims_extra
                         or self._image.dtype != image_dtype)
-        if geometry is not None and not shapeChanged:
+        if geometry is not None and not shapeChanged and not inPlace:
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)
         if shapeChanged:
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)

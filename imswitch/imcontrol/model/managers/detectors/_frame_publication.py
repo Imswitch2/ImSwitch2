@@ -7,8 +7,14 @@ viewer to map a drawn rectangle back to the scanners, each published object
 must carry the geometry of the scan whose pixels it holds
 (docs/simple-point-scan-plan.md, D1). That holds by construction when:
 
-* a scan that carries a geometry gets **fresh** display storage, so pixels
-  already published for the previous scan are never rewritten, and
+* a scan that carries a geometry gets **fresh** display storage when its
+  pixels land somewhere else than the previous scan's, so pixels already
+  published for that scan are never rewritten under a geometry that no longer
+  describes them. A scan that repeats the previous placement (the next frame
+  of a live overview: same axes, only the run/iteration differ) overwrites
+  the storage in place, line by line, as a scan without a geometry does --
+  the geometry published with the old pixels still says where they are, and
+  the image does not go blank at the start of every frame, and
 * the storage and its geometry are swapped together, and a reader on another
   thread can tell whether it read both from the same swap.
 
@@ -56,6 +62,14 @@ def remember_scan_geometry(manager: Any, scanInfoDict) -> Optional[FrameGeometry
 
 def pending_scan_geometry(manager: Any) -> Optional[FrameGeometry]:
     return manager.__dict__.get(_PENDING)
+
+
+def repeats_placement(manager: Any, geometry: Optional[FrameGeometry]) -> bool:
+    """Whether ``geometry`` puts its pixels where the storage in place has its
+    own: the same scan again, which may overwrite that storage."""
+    current = current_frame_geometry(manager)
+    return (geometry is not None and current is not None
+            and geometry.axes == current.axes)
 
 
 def begin_frame_storage(manager: Any) -> None:
@@ -123,5 +137,6 @@ __all__ = [
     'display_frame',
     'pending_scan_geometry',
     'read_with_frame_geometry',
+    'repeats_placement',
     'remember_scan_geometry',
 ]

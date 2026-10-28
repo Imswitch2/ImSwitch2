@@ -94,10 +94,11 @@ Launch:
 
 On first launch ImSwitch2 creates ``~/ImSwitchConfig/`` (or
 ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows) and opens a
-setup-picker dialog with ``simple_mock_setup.json`` preselected: a
-point-scanning microscope with one camera and one APD, all simulated, so
-the UI can be explored without any device connected. Choose your own setup
-there, or later with **Pick hardware setup…**.
+setup-picker dialog with ``example_no_hardware.json`` preselected.
+``simple_mock_setup.json`` is a point-scanning microscope with one camera
+and one APD, all simulated, so the UI can be explored without any device
+connected. Choose your own setup there, or later with
+**Pick hardware setup…**.
 
 
 Vendor SDKs (not installed by pip)

@@ -61,6 +61,8 @@ _CONTROLLER_MODULES = {
     "WatcherController": "WatcherController",
     "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",
+    "ReservationController": "ReservationController",
+    "InstrumentsController": "InstrumentsController",
 }
 
 

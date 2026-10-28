@@ -332,10 +332,11 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
     analog['sequence_time'] = float(plan.dwell_s)
     analog['phase_delay'] = plan.phase_delay_us
 
-    # A plan with no channel still scans: one line pass that fires nothing
-    # (a scanner without digital lines, or every laser taken out). Zero line
-    # passes is not a scan the designers can build.
-    lanes = list(plan.channels) or [()]
+    # No laser chosen yet is one line pass that fires nothing: what the
+    # Advanced panel holds for it (its step count never drops below one),
+    # so the plan survives the trip to that page and back. Starting it is
+    # refused by the controller with the reason.
+    lanes = plan.channels or ((),)
     steps = len(lanes)
     fired = plan.lasers()
     targets = [name for name in limits.ttl_devices if name in fired]
@@ -438,7 +439,10 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
             name for name in targets
             if step < len(enable.get(name) or ()) and enable[name][step]
         )
-        if not lane and steps > 1:
+        if not lane:
+            if steps == 1:
+                lanes = []      # no laser chosen: the panel's empty lanes
+                break
             raise PlanNotRepresentable(
                 f'Line pass {step + 1} of this scan fires no laser, which the '
                 'point-scan panel cannot show; open it in the Advanced scan panel.'

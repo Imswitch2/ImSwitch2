@@ -10,6 +10,11 @@ may name the step's output ports::
 
 The header is the only thing that is not the code itself; it is stripped on
 load, so what the panel shows is exactly what ``save_snippet`` was given.
+
+A comment line ``# curves: level, area`` among the leading comments says which
+of those ports are curves (one-dimensional outputs). It stays in the code, as
+a note to the reader, and :func:`snippet_curves` reads it: a workflow built
+around the snippet saves those ports as CSV, since a curve cannot be a TIFF.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from imswitch.imcommon.model import dirtools
 _SNIPPETS_SUBDIR = "improcess_snippets"
 _SUFFIX = ".py"
 _HEADER = re.compile(r"^#\s*ports\s*:(.*)$", re.IGNORECASE)
+_CURVES = re.compile(r"^#\s*curves\s*:(.*)$", re.IGNORECASE)
 #: What a snippet name may contain: it becomes a file name, so no separators,
 #: no leading dot and nothing a common file system refuses.
 _NAME = re.compile(r"^[\w][\w ()+.\-]*$")
@@ -113,4 +119,21 @@ def save_snippet(name: str, code: str, ports: str, *, overwrite: bool = True) ->
     return path
 
 
-__all__ = ["list_snippets", "load_snippet", "parse_snippet", "save_snippet", "snippets_directory"]
+def snippet_curves(text: str) -> tuple[str, ...]:
+    """The ports a ``# curves: a, b`` line among the leading comments names.
+
+    Reads the snippet's text or its code (the ``# ports:`` line may be there or
+    not); stops at the first line that is not a comment. Empty when there is
+    no such line.
+    """
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            break
+        match = _CURVES.match(stripped)
+        if match:
+            return tuple(name.strip() for name in match.group(1).split(",") if name.strip())
+    return ()
+
+
+__all__ = ["list_snippets", "load_snippet", "parse_snippet", "save_snippet", "snippet_curves", "snippets_directory"]

@@ -119,21 +119,45 @@ def test_without_a_viewer_there_is_nothing_to_draw_on(qtbot):
         rig.close()
 
 
-def test_the_overview_shows_no_rectangle_until_draw_is_clicked(rig):
-    """The overview scans its own field: a region shows only once asked for."""
+def test_the_rectangle_shows_only_from_draw_until_accept(rig):
+    """Left up, the rectangle covers the image it was drawn on: it shows
+    while being drawn or adjusted, in either mode, and not otherwise."""
     rig.channel.sigScanGeometryShown.emit('APD', _overviewShown(rig))
     assert not _showing(rig)
+    assert not rig.widget.acceptRegionButton.isVisibleTo(rig.widget)
 
     rig.widget.drawButton.click()
     assert _showing(rig)
+    assert rig.widget.acceptRegionButton.isVisibleTo(rig.widget)
 
     rig.widget.overviewButton.click()            # back to Overview: gone again
     assert not _showing(rig)
 
-    rig.widget.acquisitionButton.click()         # Acquisition always shows it
-    assert _showing(rig)
-    rig.widget.overviewButton.click()
+    rig.widget.acquisitionButton.click()         # Acquisition alone shows none
     assert not _showing(rig)
+    rig.widget.drawButton.click()
+    assert _showing(rig)
+
+
+def test_accept_keeps_the_region_and_takes_the_layer_off_the_viewer(rig, viewer, qtbot):
+    shown = _overviewShown(rig)
+    rig.channel.sigScanGeometryShown.emit('APD', shown)
+    overview = rig.scan._simple()['overview']
+    low = overview.centres_um[0] - 5.0
+    _draw(rig, qtbot, {'X': (low, low + 8.0), 'Y': (low, low + 6.0)}, shown)
+    plan = rig.scan._simple()['acquisition']
+    layer = _layer(rig)
+    assert layer in viewer.layers
+
+    rig.widget.acceptRegionButton.click()
+
+    assert layer not in viewer.layers
+    assert _layer(rig) is None
+    assert not rig.widget.acceptRegionButton.isVisibleTo(rig.widget)
+    assert rig.scan._simple()['acquisition'] == plan
+    # A new live frame elsewhere does not bring it back.
+    rig.channel.sigScanGeometryShown.emit('APD', _overviewShown(rig, DisplayTransform(rotation=90)))
+    assert _layer(rig) is None
 
 
 def test_the_reference_choice_lists_the_point_detectors(rig):
@@ -178,6 +202,7 @@ def test_moving_the_rectangle_moves_the_region(rig, qtbot):
     rig.scan.setSimpleScanMode('acquisition')
     shown = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', shown)
+    rig.widget.drawButton.click()
     before = rig.scan._simple()['acquisition']
     corners = np.asarray(_layer(rig).data[0])
 
@@ -210,6 +235,7 @@ def test_an_xz_scan_drawn_on_the_xy_overview_parks_y_at_the_rectangle(rig, qtbot
     rig.scan.setSimpleScanMode('acquisition')
     shown = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', shown)
+    rig.widget.drawButton.click()
     # Y is not scanned: the rectangle is a line at Y's current position.
     ((_, y0), ) = [(d, e) for d, e in _shownExtents(rig, shown).items() if d == 'Y']
     assert y0[0] == pytest.approx(y0[1])
@@ -235,6 +261,7 @@ def test_editing_the_numbers_moves_the_rectangle(rig):
     rig.scan.setSimpleScanMode('acquisition')
     shown = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', shown)
+    rig.widget.drawButton.click()
     plan = rig.scan._simple()['acquisition']
     x = plan.regions['X']
 
@@ -251,6 +278,7 @@ def test_the_rectangle_stays_put_when_the_image_under_it_changes(rig):
     rig.scan.setSimpleScanMode('acquisition')
     overview = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', overview)
+    rig.widget.drawButton.click()
     before = np.asarray(_layer(rig).data[0])
     plan = rig.scan._simple()['acquisition']
     x, y = plan.regions['X'], plan.regions['Y']
@@ -276,6 +304,7 @@ def test_changing_the_reference_redraws_with_that_layers_geometry(rig):
     turned = _overviewShown(rig, DisplayTransform(rotation=90))
     rig.channel.sigScanGeometryShown.emit('APD', plain)
     rig.channel.sigScanGeometryShown.emit('APD 2', turned)
+    rig.widget.drawButton.click()
     onApd = np.asarray(_layer(rig).data[0])
 
     rig.widget.referenceCombo.setCurrentIndex(1)
