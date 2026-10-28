@@ -18,6 +18,10 @@
     {"key": "frameStartClockLine",   "label": "Frame start clock",   "type": "text",   "default": "null", "req": false,"grp": "DAQ clocks","tip": "Digital line for frame-start clock output. null if unused.", "opts": []},
     {"key": "frameEndClockLine",     "label": "Frame end clock",     "type": "text",   "default": "null", "req": false,"grp": "DAQ clocks","tip": "Digital line for frame-end clock output. null if unused.",   "opts": []}
   ],
+  "nested_shown_when": {
+    "simplePointScan": [{"cloak": "SimplePointScan"}, {"scanWidgetType": "SimplePointScan"}],
+    "simpleMoNaLISA":  [{"cloak": "SimpleMoNaLISA"},  {"scanWidgetType": "SimpleMoNaLISA"}]
+  },
   "nested": {
     "simplePointScan": [
       {"key": "objectiveNA",           "label": "Objective NA",                     "type": "float", "default": null, "req": false, "grp": "SimplePointScan", "tip": "Objective numerical aperture used to derive the default Nyquist pixel size when no explicit override is set. Leave blank if unknown.", "opts": []},

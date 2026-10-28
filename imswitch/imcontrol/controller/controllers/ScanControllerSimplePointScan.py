@@ -93,6 +93,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         self._view.sigOverviewFieldChanged.connect(self.setOverviewField)
         self._view.sigRegionDrawn.connect(self._onRegionDrawn)
         self._view.sigDrawRegionClicked.connect(self._onDrawClicked)
+        self._view.sigRegionAccepted.connect(self._onRegionAccepted)
         self._view.sigReferenceDetectorChanged.connect(self.setReferenceDetector)
         self._commChannel.sigScanGeometryShown.connect(self._onScanGeometryShown)
 
@@ -140,8 +141,8 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
                 # each detector's layer shows (plan D1 point 6).
                 'reference': next(iter(self._pointDetectorNames()), None),
                 'shown': {},
-                # The rectangle shows in Acquisition, or in Overview once
-                # Draw was clicked; the overview alone has no region to show.
+                # The rectangle shows from Draw until Accept (or back to
+                # Overview): left up, it covers the image it was drawn on.
                 'regionRequested': False,
             }
             state['overview'] = self._planOverview()
@@ -594,7 +595,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
                 False, f'{reference} shows no scanned image yet: start the overview first.')
         else:
             self._view.setDrawing(True)
-        visible = state['mode'] == ACQUISITION or state['regionRequested']
+        visible = state['regionRequested']
         extents = self._regionExtents(shown) if visible and shown is not None else None
         self._view.showRegion(
             extents_to_rectangle(extents, shown) if extents is not None else None)
@@ -602,6 +603,13 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
     def _onDrawClicked(self):
         self._simple()['regionRequested'] = True
         self._pushRegion()
+
+    def _onRegionAccepted(self):
+        """The rectangle is the region already (every edit is adopted as it
+        lands); accepting only takes it, and its layer, off the viewer."""
+        self._simple()['regionRequested'] = False
+        self._pushRegion()
+        self._view.showMessage('Region accepted.')
 
     def _onRegionDrawn(self, vertices):
         """A rectangle drawn, moved or resized on the reference layer.

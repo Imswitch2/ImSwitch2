@@ -758,12 +758,17 @@ its header switches between the two, on the same scan.
   (overview to Nyquist) and dwell, and an estimate of the scan time.
 - While a scan runs, a progress bar under the scan time shows the elapsed
   and expected time, and the frame number in Live, as in the Advanced panel.
+- Each mode shows only its own controls: the overview's size and channel in
+  Overview, the region numbers and sampling sliders in Acquisition.
 - **Draw in viewer** draws the region as a rectangle on the live image (on
   the ``Scan region`` layer). Moving or resizing it changes the region;
   editing the numbers moves it. Drawing needs an image the scanners made,
-  so start the overview first. The rectangle shows in Acquisition, and in
-  Overview once Draw is clicked; the region numbers and sampling sliders
-  are greyed in Overview, which scans its own field.
+  so start the overview first. **Accept as ROI** keeps the region and takes
+  the rectangle and its layer off the viewer; going back to Overview does
+  the same.
+- Live overview frames overwrite the previous frame line by line, as a
+  repeated Advanced scan does; the image starts blank only when the field
+  changes.
 - **Lasers and channels:** drag a laser from the palette onto a channel,
   onto *Drop a laser here for a new channel*, or between channels; the ×
   or a drag back to the palette removes it. Lasers in one channel fire

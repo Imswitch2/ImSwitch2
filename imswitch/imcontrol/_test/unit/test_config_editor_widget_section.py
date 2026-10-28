@@ -296,3 +296,54 @@ def test_touching_nested_field_materializes_only_that_field(qapp):
     dlg._try_apply()
 
     assert dlg.result_data["simple"] == {"period": pytest.approx(0.9)}
+
+
+def _tabTitles(dlg, *, visible=True):
+    tabs = dlg._tab_widget
+    return {tabs.tabText(i) for i in range(tabs.count()) if tabs.isTabVisible(i) == visible}
+
+
+def _scanDialog(current):
+    return editor.SectionEditorDialog(
+        "scan", editor.SECTION_SCHEMAS["scan"], current, {}, None
+    )
+
+
+@pytest.mark.parametrize("cloak, shown, hidden", [
+    (None, set(), {"SimplePointScan", "SimpleMoNaLISA"}),
+    ("SimplePointScan", {"SimplePointScan"}, {"SimpleMoNaLISA"}),
+    ("SimpleMoNaLISA", {"SimpleMoNaLISA"}, {"SimplePointScan"}),
+])
+def test_a_cloaks_options_tab_shows_only_while_that_cloak_is_selected(qapp, cloak, shown, hidden):
+    dlg = _scanDialog({"scanWidgetType": "Advanced", "cloak": cloak})
+
+    assert shown <= _tabTitles(dlg)
+    assert hidden <= _tabTitles(dlg, visible=False)
+    assert "Basic" in _tabTitles(dlg)
+
+
+def test_the_legacy_cloak_spelling_shows_its_options_tab(qapp):
+    dlg = _scanDialog({"scanWidgetType": "SimplePointScan"})
+
+    assert "SimplePointScan" in _tabTitles(dlg)
+    assert "SimpleMoNaLISA" in _tabTitles(dlg, visible=False)
+
+
+def test_choosing_a_cloak_in_the_form_shows_its_tab_and_hiding_keeps_its_options(qapp):
+    current = {
+        "scanWidgetType": "Advanced",
+        "cloak": "SimplePointScan",
+        "simplePointScan": {"objectiveNA": 1.4, "futureKey": 1},
+    }
+    dlg = _scanDialog(current)
+    combo = dlg._field_widgets[("field", "cloak")]._w
+
+    combo.setCurrentIndex(combo.findData("SimpleMoNaLISA"))
+    combo.activated.emit(combo.currentIndex())     # what a user's pick sends
+
+    assert "SimpleMoNaLISA" in _tabTitles(dlg)
+    assert "SimplePointScan" in _tabTitles(dlg, visible=False)
+    dlg._try_apply()
+    assert dlg.result_data["cloak"] == "SimpleMoNaLISA"
+    assert dlg.result_data["simplePointScan"] == current["simplePointScan"]
+    assert "simpleMoNaLISA" not in dlg.result_data

@@ -2289,6 +2289,8 @@ def _parse_freeform_value(text: str):
 # FieldWidget – single editable field row
 # =============================================================================
 class FieldWidget(QWidget):
+    sig_edited = pyqtSignal()   # the operator changed the value (never on construction)
+
     def __init__(self, field_def: dict, current_value, parent=None, device_pool: dict | None = None):
         super().__init__(parent)
         self._def = field_def
@@ -2454,6 +2456,7 @@ class FieldWidget(QWidget):
         """
         def touch(*_args):
             self._touched = True
+            self.sig_edited.emit()
 
         if self._def.get("type") == "float_pair":
             for edit in self._pair_edits:
@@ -2481,6 +2484,7 @@ class FieldWidget(QWidget):
         if path:
             self._w.setText(path)
             self._touched = True
+            self.sig_edited.emit()
 
     def get_value(self):
         if not self._touched:
@@ -3966,6 +3970,8 @@ class SectionEditorDialog(QDialog):
         # Keys are ("field", key) for direct children and
         # ("nested:<container>", key) for structured child dictionaries.
         self._field_widgets: dict = {}
+        self._tab_sections: dict = {}   # tab index -> {"field" | "nested:<container>"}
+        self._shown_when = schema.get("nested_shown_when", {})
         groups: dict[str, list] = {}
         for f in schema.get("fields", []):
             groups.setdefault(f.get("grp", "Basic"), []).append(("field", f))
@@ -4005,7 +4011,19 @@ class SectionEditorDialog(QDialog):
                 form.addRow(lbl, fw)
                 self._field_widgets[(section, f["key"])] = fw
             scroll.setWidget(inner)
-            tabs.addTab(scroll, grp)
+            index = tabs.addTab(scroll, grp)
+            self._tab_sections[index] = {section for section, _f in groups[grp]}
+
+        # A nested container that only matters for one choice (the scan
+        # cloak's options) shows its tab only while that choice is made.
+        self._tab_widget = tabs
+        for alternatives in self._shown_when.values():
+            for condition in alternatives:
+                for key in condition:
+                    fw = self._field_widgets.get(("field", key))
+                    if fw is not None:
+                        fw.sig_edited.connect(self._update_conditional_tabs)
+        self._update_conditional_tabs()
 
         # ── Custom tab: keys the schema does not define ──
         if self._allow_custom:
@@ -4062,6 +4080,37 @@ class SectionEditorDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(ok_btn)
         lay.addLayout(btns)
+
+    def _nested_shown(self, nest_key) -> bool:
+        """Whether a nested container applies to the values the form shows now.
+
+        ``nested_shown_when`` lists alternatives, each a {field: value} dict
+        that must match entirely; a container it does not name always shows.
+        """
+        alternatives = self._shown_when.get(nest_key)
+        if not alternatives:
+            return True
+        for condition in alternatives:
+            if all(self._form_value(key) == value for key, value in condition.items()):
+                return True
+        return False
+
+    def _form_value(self, key):
+        fw = self._field_widgets.get(("field", key))
+        return fw.get_value() if fw is not None else self._current.get(key)
+
+    def _update_conditional_tabs(self):
+        """Hide a tab whose every field belongs to a container that does not apply.
+
+        Hiding is display only: an untouched container is applied exactly as
+        the file had it, so switching the choice back and forth loses nothing.
+        """
+        for index, sections in self._tab_sections.items():
+            shown = any(
+                section == "field" or self._nested_shown(section.split(":", 1)[1])
+                for section in sections
+            )
+            self._tab_widget.setTabVisible(index, shown)
 
     def _try_apply(self):
         # Start from the file's section, not a blank dict.  This is what makes

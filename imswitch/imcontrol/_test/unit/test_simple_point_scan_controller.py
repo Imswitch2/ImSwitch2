@@ -206,6 +206,24 @@ def test_the_overview_runs_live_until_stop_and_ends_once(rig):
     assert frames and all(frame_geometry_of(f) is not None for f in frames)
 
 
+def test_a_live_overview_draws_each_frame_over_the_last(rig):
+    """Every Live frame lands where the last one did: the APD keeps one
+    buffer, so the image is overwritten line by line instead of starting
+    blank at every frame."""
+    apd = rig.master.detectorsManager['APD']
+    storages = []
+    rig.master.nidaqManager.sigScanDone.connect(lambda *a: storages.append(apd._image))
+    rig.widget.startButton.click()
+    deadline = time.monotonic() + 20.0
+    while len(storages) < 3 and time.monotonic() < deadline:
+        QtTest.QTest.qWait(50)
+    rig.widget.stopButton.click()
+    assert rig.waitForEnd()
+
+    assert len(storages) >= 3
+    assert all(storage is storages[0] for storage in storages)
+
+
 def test_an_acquisition_runs_one_frame(rig):
     rig.scan.setSimpleScanMode('acquisition')
     rig.widget.startButton.click()
