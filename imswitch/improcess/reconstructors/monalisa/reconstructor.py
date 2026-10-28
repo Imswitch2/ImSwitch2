@@ -27,6 +27,10 @@ from .signal_extractor import SignalExtractor
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
 
+# Frames are extracted in blocks of about this many bytes: a block of a
+# 464x464 uint16 camera is some 600 frames, one per cell of the recording.
+FAST_GAUSS_PLACEMENT_CHUNK_BYTES = 256 * 1024 * 1024
+
 
 class MonalisaReconstructor(StreamingReconstructor):
     """
@@ -70,10 +74,6 @@ class MonalisaReconstructor(StreamingReconstructor):
         'psf_fwhm_nm': 220,
         'bg_modelling': 'Constant',
         'bg_gaussian_size_nm': 500,
-        'fast_gauss_footprint_mode': 'Rectangular shells',
-        'fast_gauss_footprint_num_rects': 3,
-        'fast_gauss_gaussian_sigma_px': 2.0,
-        'fast_gauss_pinhole_radius_sigma': 1.5,
         'bleaching_correction': False,
         'auto_scan_orientation': True}
 
@@ -113,27 +113,6 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField(
                 'bg_gaussian_size_nm', 'float', 500, label='BG Gaussian size', suffix='nm',
                 group='Reconstruction options',
-            ),
-            ParamField(
-                'fast_gauss_footprint_mode', 'select', 'Rectangular shells',
-                label='Footprint mode',
-                help='Rectangular shells keeps the Mini_Recon footprint. Circular pinhole uses the Pinhole radius value.',
-                options=('Rectangular shells', 'Circular pinhole'), group='Fast Gauss options',
-            ),
-            ParamField(
-                'fast_gauss_footprint_num_rects', 'int', 3, label='Footprint rectangles',
-                help='Concentric rectangular shells sampled around each focus (used in Rectangular shells mode).',
-                min=1, max=99, group='Fast Gauss options',
-            ),
-            ParamField(
-                'fast_gauss_gaussian_sigma_px', 'float', 2.0, label='Gaussian sigma',
-                help='Gaussian sigma for the footprint fit, in pixels.', min=0.01, max=9999,
-                suffix='px', group='Fast Gauss options',
-            ),
-            ParamField(
-                'fast_gauss_pinhole_radius_sigma', 'float', 1.5, label='Pinhole radius',
-                help='Circular detection pinhole radius as a multiple of the Gaussian sigma (image-scanning-microscopy style). Used only in Circular pinhole mode; smaller trades signal for resolution, larger trades resolution for SNR.',
-                min=0.01, max=99, suffix='×σ', group='Fast Gauss options',
             ),
             ParamField('bleaching_correction', 'bool', False, label='Bleaching correction'),
             ParamField(
@@ -495,17 +474,25 @@ class MonalisaReconstructor(StreamingReconstructor):
         resolved=None,
     ) -> MonalisaProcessingResult:
         """
-        Run the live fast-Gauss MoNaLISA path on a complete offline stack.
+        Run the fast-Gauss MoNaLISA path on a complete offline stack.
 
-        The fast-Gauss implementation is a 2D X/Y reassignment path. It can
-        process multiple timepoints, but not Z stacks or scan orders where X/Y
-        are not the two scan axes.
+        A recording of contiguous X/Y stacks, one per timepoint, goes through
+        the live session, as it would have live. Whatever else the recorded
+        layout describes -- Z planes, an axis the scan does not step, a
+        serpentine or gated scan, conditions not interleaved per line -- is
+        reconstructed by :meth:`_fast_gauss_by_placement`: the same Gaussian
+        extraction, with every frame put where the layout records it.
         """
         # The recording outranks the dialog and the shape arithmetic: it either
-        # supplies the geometry or says the fast path cannot represent it.
+        # supplies the geometry or says the live path cannot represent it.
         recorded_geometry = self._fast_gauss_geometry_from_layout(
             resolved, data_attrs or {}, data.shape[0]
         )
+        if recorded_geometry is not None and 'placement' in recorded_geometry:
+            return self._fast_gauss_by_placement(
+                name, data, params, recorded_geometry['placement'], resolved,
+                recorded_geometry['reasons'],
+            )
         if recorded_geometry is not None:
             geometry = recorded_geometry
             frames_per_stack = geometry['frames_per_stack']
@@ -586,6 +573,194 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         self._logger.info(f'Fast Gauss reconstruction complete: shape {result.data.shape}')
         return result
+
+    def _fast_gauss_by_placement(
+        self, name, data, params, placement, resolved, reasons
+    ) -> MonalisaProcessingResult:
+        """Fast-Gauss extraction with every frame placed by the recorded layout.
+
+        The live session scatters contiguous X/Y stacks through a precomputed
+        index map and reads the scan's orientation off the data. This path
+        keeps its extraction -- the same pattern, footprint and Gaussian
+        least squares -- and assembles the image the way the classic path
+        does: ``coeffs_to_image_from_placement`` puts the foci of every frame
+        at the ``(t, z, y, x)`` the acquisition layout records, so Z planes
+        become the Z axis and an axis the scan does not step is one pixel
+        per lattice period. Directions come from the layout, applied by the
+        one helper in imcommon that interprets them, as for the classic path.
+        """
+        from .coeffs_to_image import coeffs_to_image_from_placement
+        from .gauss_processor import make_fast_gauss_extractor
+        from .live_session import expected_orientation_signs
+        from .scan_geometry import scan_params_from_layout
+
+        self._logger.info(
+            f'{name}: placing every frame by the acquisition layout '
+            f'({", ".join(reasons)}): {placement.rows}x{placement.cols} scan '
+            f'positions, {placement.slices} Z plane(s), {placement.n_time} '
+            f'timepoint(s), {placement.n_conditions} condition(s).'
+        )
+        session = self.make_session()
+        session_params = self._fast_gauss_session_params(params)
+        working = data
+        if params.get('bleaching_correction', False):
+            working = session._apply_bleaching_correction(data)
+        localization = MonalisaLiveSession._resolve_localization(working, session_params)
+        processor = make_fast_gauss_extractor(
+            localization.xp, localization.xo, localization.yp, localization.yo,
+            localization.nx_c, localization.ny_c,
+            placement.cols, placement.rows,
+            localization.num_rows, localization.num_cols,
+            gaussian_sigma_px=session._resolve_gaussian_sigma_px(params, working, localization),
+            fit_background=session._resolve_fit_background(params),
+            use_gpu=str(params.get('device', '')).lower() == 'gpu',
+        )
+        self._logger.info(
+            f'{name}: localized xp={localization.xp:.2f}, xo={localization.xo:.2f}, '
+            f'yp={localization.yp:.2f}, yo={localization.yo:.2f}, '
+            f'nx_c={localization.nx_c}, ny_c={localization.ny_c}'
+        )
+        num_frames = working.shape[0]
+        coeffs = np.empty(
+            (num_frames, localization.ny_c, localization.nx_c), dtype=np.float32
+        )
+        chunk = max(1, int(FAST_GAUSS_PLACEMENT_CHUNK_BYTES // max(working[0].nbytes, 1)))
+        for start in range(0, num_frames, chunk):
+            amplitudes = processor.process_chunk(working[start:start + chunk])
+            coeffs[start:start + chunk] = np.asarray(amplitudes).reshape(
+                -1, localization.ny_c, localization.nx_c
+            )
+        # The layout places every frame along the stage axes; whether each
+        # axis runs up or down the camera is read from the frames, as the
+        # live session reads it, so that the same recording comes out the
+        # same way whether it has one plane or many.
+        placement, flips = self._placement_orientation(coeffs, placement, name)
+        expected = expected_orientation_signs(resolved.layout) or {}
+        if any(flips.values()):
+            disagreeing = [axis for axis, flipped in flips.items() if flipped]
+            self._logger.warning(
+                f'{name}: the frames assemble smoother with the {" and ".join(disagreeing)} '
+                f'axis mirrored against the recorded layout (layout says {expected}); '
+                'using the mirrored placement. If the layout is right, check the '
+                'frames; if the detection is right, check isPositiveDirection in '
+                'the setup file.'
+            )
+        image = coeffs_to_image_from_placement(coeffs, placement)
+        data6 = image[np.newaxis, np.newaxis]        # (Dataset, Base, T, Z, Y, X)
+
+        layout = resolved.layout
+        pixel_size_nm = float(params.get('pixel_size_nm') or 0.0)
+
+        def axis_step_nm(kind: str, count: int, period_px: float) -> float:
+            loop = next((loop for loop in layout.event_loops if loop.kind == kind), None)
+            if count > 1 and loop is not None and loop.step:
+                return float(loop.step) * 1000.0       # the layout holds micrometres
+            # An axis the scan does not step: one output pixel per period.
+            return float(period_px * pixel_size_nm) if pixel_size_nm > 0 else 1.0
+
+        step_x_nm = axis_step_nm('scan_x', placement.cols, localization.xp)
+        step_y_nm = axis_step_nm('scan_y', placement.rows, localization.yp)
+        scan_params = scan_params_from_layout(resolved, self._axis_labels)
+        if scan_params is None:
+            scan_params = {
+                'dimensions': [
+                    self._axis_labels['r_l_text'], self._axis_labels['u_d_text'],
+                    self._axis_labels['b_f_text'], self._axis_labels['timepoints_text'],
+                ],
+                'directions': ['pos', 'pos', 'pos'],
+                'steps': [placement.cols, placement.rows, placement.slices,
+                          placement.timepoints],
+                'step_sizes': [step_x_nm, step_y_nm, 1.0, 1.0],
+                'n_linesteps': placement.n_conditions,
+                'unidirectional': True,
+            }
+        else:
+            scan_params = dict(scan_params)
+            step_sizes = list(scan_params['step_sizes'])
+            directions = list(scan_params['directions'])
+            for label, size, axis in (
+                (self._axis_labels['r_l_text'], step_x_nm, 'x'),
+                (self._axis_labels['u_d_text'], step_y_nm, 'y'),
+            ):
+                index = scan_params['dimensions'].index(label)
+                step_sizes[index] = str(size)
+                if flips.get(axis) and index < len(directions):
+                    # What was used to assemble the image, not what was recorded.
+                    directions[index] = (
+                        self._axis_labels['n_text']
+                        if directions[index] == self._axis_labels['p_text']
+                        else self._axis_labels['p_text']
+                    )
+            scan_params['step_sizes'] = step_sizes
+            scan_params['directions'] = directions
+        finite = data6[np.isfinite(data6)]
+        display_levels = None
+        if finite.size:
+            display_levels = (
+                float(np.percentile(finite, 1)), float(np.percentile(finite, 99.9))
+            )
+        result = MonalisaProcessingResult(
+            name=name,
+            data=data6,
+            scan_params=scan_params,
+            display_levels=display_levels,
+            output_pixel_size_nm=(step_y_nm, step_x_nm),
+            axis_label_map=self._axis_labels,
+            placement=placement,
+        )
+        self._logger.info(
+            f'Fast Gauss reconstruction by placement complete: shape {result.data.shape}'
+        )
+        return result
+
+    @staticmethod
+    def _placement_orientation(coeffs: np.ndarray, placement, name: str = ''):
+        """The placement, mirrored along the axes the frames say run the other way.
+
+        Scored on the plane with the most signal, by the contrast of the
+        cell borders along the scanned axes (the whole-image roughness the
+        live session uses cannot tell the mirrors of a one-axis scan apart).
+        Returns ``(placement, {'x': flipped, 'y': flipped})``.
+        """
+        from .coeffs_to_image import (
+            coeffs_to_image_from_placement,
+            flip_placement,
+            placement_seam_contrast,
+        )
+
+        slots = np.asarray(placement.slots, dtype=int)
+        if slots.size == 0:
+            return placement, {'x': False, 'y': False}
+        # The (t, z) plane whose frames vary the most: the one with signal.
+        plane_of = slots[:, 0] * placement.slices + slots[:, 1]
+        spread = np.zeros(placement.timepoints * placement.slices)
+        for plane in np.unique(plane_of):
+            members = coeffs[plane_of == plane]
+            spread[plane] = float(members.var(axis=0, dtype=np.float64).mean())
+        plane = int(np.argmax(spread))
+        members = plane_of == plane
+        one_plane = type(placement)(
+            slots=tuple((0, 0, int(y), int(x)) for _t, _z, y, x in slots[members]),
+            timepoints=1, slices=1, rows=placement.rows, cols=placement.cols,
+            condition_labels=(), n_conditions=1, n_time=1,
+        )
+        axes = {'x': placement.cols > 1, 'y': placement.rows > 1}
+        scores = {}
+        for flip_x in ((False, True) if axes['x'] else (False,)):
+            for flip_y in ((False, True) if axes['y'] else (False,)):
+                candidate = flip_placement(one_plane, flip_x, flip_y)
+                image = coeffs_to_image_from_placement(coeffs[members], candidate)[0, 0]
+                scores[(flip_x, flip_y)] = placement_seam_contrast(
+                    image, placement.rows, placement.cols
+                )
+        finite = {key: value for key, value in scores.items() if np.isfinite(value)}
+        if not finite:
+            return placement, {'x': False, 'y': False}
+        flip_x, flip_y = min(finite, key=finite.get)
+        return (
+            flip_placement(placement, flip_x, flip_y),
+            {'x': bool(flip_x), 'y': bool(flip_y)},
+        )
 
     @staticmethod
     def _fast_gauss_session_params(params: dict) -> dict:
@@ -742,24 +917,20 @@ class MonalisaReconstructor(StreamingReconstructor):
             unsupported.append('a reversed or serpentine fast axis')
         if layout.recorded_event_spans is not None:
             unsupported.append('a detector gated to part of the scan')
-        if unsupported:
-            if not resolved.is_authoritative:
-                # An inferred shape this path cannot represent is declined, so
-                # the older metadata ladder still gets its chance; only a
-                # declared one refuses the reconstruction outright.
-                return None
-            raise ValueError(
-                'Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and '
-                'cannot represent ' + ', '.join(unsupported) + '. Use the '
-                'MoNaLISA reconstruction method, which places every frame by '
-                'its recorded coordinate.'
-            )
-
+        if placement.cols == 1 or placement.rows == 1:
+            unsupported.append('a scan of one axis only')
         if len(placement.slots) != num_frames:
             raise ValueError(
                 f'The acquisition layout records {len(placement.slots)} frames '
                 f'but this source has {num_frames}.'
             )
+        if unsupported:
+            if not resolved.is_authoritative:
+                # An inferred shape the live path cannot represent is declined,
+                # so the older metadata ladder still gets its chance; a
+                # declared one is placed frame by frame instead.
+                return None
+            return {'placement': placement, 'reasons': unsupported}
         return self._fast_gauss_geometry_from_counts(
             attrs,
             placement.cols,

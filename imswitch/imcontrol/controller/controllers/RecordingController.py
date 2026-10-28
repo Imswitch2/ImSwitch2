@@ -3529,6 +3529,193 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setRecButtonChecked(False)
         return wasRecording
 
+    @APIExport()
+    def recordScanToMemory(self, detectorName: Union[List[str], str, int, None] = None,
+                           timeout: float = 600.0, keep: bool = False):
+        """ Runs the scan the Scan widget holds once and returns the frames
+        it triggers as a NumPy array ``(frames, rows, columns)``, without
+        writing a file: the recording goes to memory, is read back, and is
+        dropped. With several detectors the result is a dict that maps each
+        detector's name to its array.
+
+        ``detectorName`` is a detector's name, a list of names, ``-1`` for
+        the current detector, ``-2`` for all of them, or None for what the
+        Recording widget has selected. The call blocks until the scan and
+        the recording are over, at most ``timeout`` seconds; it raises
+        ``RuntimeError`` when the recording fails or another is running and
+        ``TimeoutError`` when it does not finish (the recording is stopped).
+        The Recording widget's settings are put back afterwards. With
+        ``keep=True`` the recording also stays listed in ImProcess, as a
+        recording to RAM does. """
+        import threading
+
+        import h5py
+
+        from imswitch.imcommon.framework import FrameworkUtils
+
+        if self.__dict__.get('_shutdownRequested', False):
+            raise RuntimeError('ImSwitch is shutting down')
+        if self.recording:
+            raise RuntimeError('A recording is already running; stop it first')
+
+        manager = self._master.recordingManager
+        available: Dict[str, Any] = {}
+        ended = threading.Event()
+        failures: List[str] = []
+
+        def onMemoryRecording(name, file, _filePath, _savedToDisk):
+            available[str(name)] = file
+
+        def onEnded():
+            ended.set()
+
+        def onFailed(message):
+            failures.append(str(message))
+            ended.set()
+
+        manager.sigMemoryRecordingAvailable.connect(onMemoryRecording)
+        self._commChannel.sigRecordingEnded.connect(onEnded)
+        self._commChannel.sigRecordingFailed.connect(onFailed)
+
+        token = f'scan_to_memory_{int(time.time() * 1000)}'
+        modeSetters = {
+            RecMode.SpecFrames: self.specFrames, RecMode.SpecTime: self.specTime,
+            RecMode.CameraLapse: self.specLapse, RecMode.ScanOnce: self.recScanOnce,
+            RecMode.ScanLapse: self.recScanLapse, RecMode.UntilStop: self.untilStop,
+        }
+
+        def start():
+            widget = self._widget
+            previous = {
+                'saveMode': widget.getRecSaveMode(),
+                'recMode': self.recMode,
+                'detectorMode': widget.getDetectorMode(),
+                'detectors': list(widget.getSelectedSpecificDetectors() or []),
+                'singleFile': widget.getMultiDetectorSingleFile(),
+                'filename': widget.getCustomFilename(),
+            }
+            if detectorName is not None:
+                self.setDetectorToRecord(detectorName)
+            widget.setRecSaveMode(SaveMode.RAM.value)
+            self.recScanOnce()
+            widget.setCustomFilename(token)
+            names = list(self.getDetectorNamesToCapture())
+            widget.setRecButtonChecked(True)
+            return previous, names
+
+        def restore(previous):
+            widget = self._widget
+            setter = modeSetters.get(previous['recMode'])
+            if setter is not None:
+                setter()
+            widget.setRecSaveMode(previous['saveMode'])
+            if previous['detectorMode'] == -3 and previous['detectors']:
+                widget.setDetectorMode(-3)
+                widget.setSelectedSpecificDetectors(previous['detectors'])
+            else:
+                widget.setDetectorMode(previous['detectorMode'])
+            widget.setMultiDetectorSingleFile(previous['singleFile'])
+            if previous['filename']:
+                widget.setCustomFilename(previous['filename'])
+            else:
+                widget.clearCustomFilename()
+
+        def discard():
+            recordings = self._moduleCommChannel.memoryRecordings
+            for name in list(available):
+                if name in recordings:
+                    del recordings[name]
+
+        previous = None
+        try:
+            previous, names = self._callOnControllerThread(start)
+            # A caller on a script thread receives these signals through
+            # that thread's event queue (as the script waiters do), so the
+            # wait pumps it; on the GUI thread the pump is a no-op.
+            deadline = time.monotonic() + float(timeout)
+            while not ended.is_set():
+                FrameworkUtils.processPendingEventsCurrThread()
+                if ended.wait(0.05):
+                    break
+                if time.monotonic() > deadline:
+                    self._callOnControllerThread(
+                        lambda: self._widget.setRecButtonChecked(False)
+                    )
+                    raise TimeoutError(
+                        f'The scan recording did not finish within {timeout} s'
+                    )
+            if failures:
+                raise RuntimeError(f'The scan recording failed: {failures[0]}')
+            # The files are announced just before recordingEnded, from the
+            # same thread; a short grace covers a queued delivery.
+            grace = time.monotonic() + 5.0
+            while not available and time.monotonic() < grace:
+                FrameworkUtils.processPendingEventsCurrThread()
+                time.sleep(0.05)
+            arrays: Dict[str, np.ndarray] = {}
+            for file in available.values():
+                try:
+                    file.seek(0)
+                except Exception:
+                    pass
+                with h5py.File(file, 'r') as handle:
+                    for name in names:
+                        if name in arrays:
+                            continue
+                        node = handle.get(f'{name}/data')
+                        if node is None:
+                            node = handle.get(name)
+                        if isinstance(node, h5py.Dataset):
+                            arrays[name] = np.array(node)
+            missing = [name for name in names if name not in arrays]
+            if missing:
+                raise RuntimeError(
+                    f'The recording holds no frames for {", ".join(missing)}: '
+                    'did the scan trigger the detector?'
+                )
+        finally:
+            for signal, slot in (
+                (manager.sigMemoryRecordingAvailable, onMemoryRecording),
+                (self._commChannel.sigRecordingEnded, onEnded),
+                (self._commChannel.sigRecordingFailed, onFailed),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            if previous is not None:
+                self._callOnControllerThread(lambda: restore(previous))
+            if not keep and available:
+                self._callOnControllerThread(discard)
+        return arrays[names[0]] if len(names) == 1 else arrays
+
+    def _callOnControllerThread(self, func, timeout: float = 30.0):
+        """Run ``func`` on this controller's (GUI) thread and return its value.
+
+        Synchronous on the GUI thread itself; from a script thread it is
+        queued and waited for, so widget state is only ever touched where
+        Qt allows it.
+        """
+        import threading
+
+        done = threading.Event()
+        box: Dict[str, Any] = {}
+
+        def run():
+            try:
+                box['value'] = func()
+            except BaseException as error:        # re-raised on the caller
+                box['error'] = error
+            finally:
+                done.set()
+
+        self._invokeOnControllerThreadIfNeeded(run)
+        if not done.wait(timeout):
+            raise TimeoutError('The GUI thread did not respond')
+        if 'error' in box:
+            raise box['error']
+        return box.get('value')
+
     @APIExport(runOnUIThread=True)
     def setRecModeSpecFrames(self, numFrames: int) -> None:
         """ Sets the recording mode to record a specific number of frames. """

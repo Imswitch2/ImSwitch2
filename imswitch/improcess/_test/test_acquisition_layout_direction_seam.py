@@ -20,7 +20,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 
 from imswitch.imcommon.model.acquisition_layout import (
     ACQUISITION_LAYOUT_SCHEMA,
@@ -284,7 +283,10 @@ def test_orientation_signs_round_trip_between_layout_and_detection():
     assert expected_orientation_signs(None) is None
 
 
-def test_a_genuine_retrace_is_still_a_reverse_traversal_the_fast_path_refuses():
+def test_a_genuine_retrace_is_placed_frame_by_frame_not_streamed():
+    """The live session streams contiguous forward rasters only. A declared
+    retrace used to be refused outright; it is now handed to the placement
+    path, which puts every frame where the layout says."""
     layout = _negative_y_layout(
         traversal=(TraversalRule('scan_y', 'reverse'), TraversalRule('scan_x', 'forward'))
     )
@@ -297,10 +299,12 @@ def test_a_genuine_retrace_is_still_a_reverse_traversal_the_fast_path_refuses():
         shape=(FRAMES, 8, 8),
         detector='Cam',
     )
-    with pytest.raises(ValueError, match='reversed or serpentine'):
-        MonalisaReconstructor()._fast_gauss_geometry_from_layout(
-            resolved, STAGE_ATTRS, FRAMES
-        )
+    geometry = MonalisaReconstructor()._fast_gauss_geometry_from_layout(
+        resolved, STAGE_ATTRS, FRAMES
+    )
+    assert 'placement' in geometry
+    assert geometry['reasons'] == ['a reversed or serpentine fast axis']
+    assert len(geometry['placement'].slots) == FRAMES
 
 
 class _ConnectableSignal:

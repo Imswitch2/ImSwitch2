@@ -82,6 +82,7 @@ back, delete your copy and restart ImSwitch.
 | 03 | `03_scan_timelapse.py` | `hamamatsu_mock_scan_setup.json` | repeat a scan at intervals |
 | 04 | `04_camera_and_apd.py` | `mixed_hamamatsu_apd_mock_scan_setup.json` | a camera and an APD in one scan |
 | 05 | `05_laser_power_series.py` | `galvo_apd_mock_scan_setup.json` | lasers; several scans in one recording |
+| 06 | `06_scan_into_memory.py` | `hamamatsu_mock_scan_setup.json` | a scan's frames as an array, nothing written |
 
 ## timetagger
 
@@ -119,7 +120,7 @@ loaded, so to try a tutorial on another setup you change those names, not
 the file. To make your own settings, set up a scan in the Scan widget and
 save it with `api.imcontrol.saveScanParamsToFile(path)`.
 `scanning/scan_helpers.py` holds the steps of scanning 01 as functions for
-02-04.
+02-04 and 06.
 
 ## measurement
 
