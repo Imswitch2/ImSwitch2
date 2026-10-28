@@ -87,7 +87,15 @@ def improcessIcon(action_id: str, owner=None) -> QtGui.QIcon:
     return _fallbackIcon(str(action_id), owner)
 
 
-def _qtawesomeIcon(icon_name: str, owner=None) -> QtGui.QIcon | None:
+def namedIcon(icon_name: str, color: str | None = None, owner=None) -> QtGui.QIcon:
+    """The qtawesome icon ``icon_name`` (``"mdi6.image-outline"``) in
+    ``color`` (default: the palette's button text), or Qt's generic file icon
+    when qtawesome or the name is missing."""
+    icon = _qtawesomeIcon(icon_name, owner, color=color)
+    return icon if icon is not None else _style(owner).standardIcon(QtWidgets.QStyle.SP_FileIcon)
+
+
+def _qtawesomeIcon(icon_name: str, owner=None, color: str | None = None) -> QtGui.QIcon | None:
     global _QTAWESOME_MISSING_WARNED
     try:
         import qtawesome as qta
@@ -101,7 +109,7 @@ def _qtawesomeIcon(icon_name: str, owner=None) -> QtGui.QIcon | None:
             _QTAWESOME_MISSING_WARNED = True
         return None
     try:
-        return qta.icon(icon_name, color=_paletteIconColor(owner))
+        return qta.icon(icon_name, color=color or _paletteIconColor(owner))
     except Exception as exc:
         if icon_name not in _QTAWESOME_ICON_WARNED:
             _iconsLogger().warning(
@@ -139,4 +147,4 @@ def _paletteIconColor(owner=None) -> str:
     return palette.color(QtGui.QPalette.ButtonText).name()
 
 
-__all__ = ["IMPROCESS_ICON_NAMES", "improcessIcon"]
+__all__ = ["IMPROCESS_ICON_NAMES", "improcessIcon", "namedIcon"]

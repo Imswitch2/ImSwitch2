@@ -19,7 +19,6 @@ from imswitch.improcess.analysis.colocalization import (
     ColocalizationRecord,
 )
 from imswitch.improcess.analysis.frc import FRCAnalysis
-from imswitch.improcess.analysis.psf_resolution import PSFFitRecord, PSFResolutionAnalysis
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis
 from imswitch.improcess.analysis.projections import ProjectionAnalysis
 from imswitch.improcess.model.array_result import ArrayProcessingResult
@@ -49,7 +48,9 @@ from imswitch.improcess.processors.multicolor_registration.result import (
     MulticolorRegistrationResult,
 )
 from imswitch.improcess.processors.projection.result import ProjectionResult
-from imswitch.improcess.processors.psf_resolution.result import PSFResolutionResult
+from imswitch.improcess.processors.psf_resolution.result import (
+    PSFMeasurementResult,
+)
 from imswitch.improcess.processors.segmentation.result import SegmentationResult
 from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessingResult
 from imswitch.improcess.reconstructors.snouty.result import SnoutyResult
@@ -165,10 +166,6 @@ def _factories(tmp_path):
         records=[ColocalizationRecord("Full image", None, 64, 0.5, 0.4, 0.6, 0.7, 0.0, 0.0, 1.0, 2.0)],
         scatter_a=np.arange(4.0), scatter_b=np.arange(4.0), metadata={"pairs": 1},
     )
-    psf_analysis = PSFResolutionAnalysis(
-        fits=[PSFFitRecord("PSF", (0, 8, 0, 8), 4.0, 4.0, 1.2, 1.1, 2.8, 2.6, 100.0, 3.0, 0.1, 64)],
-        pixel_size=0.1, unit="um", metadata={},
-    )
     seg_analysis = SegmentationAnalysis(
         labels=np.array([[1, 1], [2, 2]], dtype=np.int32), mask=np.ones((2, 2), bool),
         threshold=0.5, regions=[], processed_image=np.zeros((2, 2)), metadata={},
@@ -194,7 +191,7 @@ def _factories(tmp_path):
         "projection": lambda: ProjectionResult("proj", projection, params={"axis": "Z"}),
         "frc": lambda: FRCResult("frc", frc_analysis, {"pixel_size": 1.0}),
         "colocalization": lambda: ColocalizationResult("coloc", coloc_analysis, {"threshold": 0.0}),
-        "psf": lambda: PSFResolutionResult("psf", psf_analysis, {"pixel_size": 0.1}),
+        "psf-measurement": _psf_measurement,
         "segmentation": lambda: SegmentationResult("seg", seg_analysis),
         "denoise": lambda: DenoisedResult("den", _rng().random((4, 4)).astype(np.float32), ["Y", "X"],
                                           "n2v", "unet", 64, True),
@@ -210,9 +207,35 @@ def _factories(tmp_path):
     }
 
 
+def _psf_bead_outputs():
+    """Real psf-resolution outputs on one synthetic bead (cheap: whole image)."""
+    from imswitch.improcess.processors.psf_resolution import PSFResolutionProcessor
+
+    yy, xx = np.mgrid[:16, :16]
+    image = 5.0 + 80.0 * np.exp(-((yy - 7.6) ** 2 + (xx - 8.2) ** 2) / (2 * 1.8**2))
+    source = ArrayProcessingResult("beads", image, ["Y", "X"], axis_scales=[0.1, 0.1], scale_unit="um")
+    output = PSFResolutionProcessor().apply(source, {"source": "full_image", "bead_diameter_nm": 40.0})
+    return dict(zip(output.keys, output.results))
+
+
+def _psf_measurement():
+    """A real measurement, with an aberration fit attached so every part is written."""
+    from imswitch.improcess.analysis.psf_aberrations import AberrationFit
+
+    fit = AberrationFit(
+        coeffs_nm={5: 3.0, 11: -12.0}, coeffs_err_nm={5: 0.2, 11: 0.4}, rms_nm=12.4, strehl=0.98,
+        pairs={}, shift_zyx_nm=(0.0, 0.0, 0.0), r2=0.97, model=np.zeros((3, 4, 4)),
+        data=np.zeros((3, 4, 4)), wavelength_nm=520.0, n_beads=12,
+    )
+    psf = _psf_bead_outputs()["psf"]
+    return PSFMeasurementResult(psf.name, psf.run, psf.summary, source_name=psf.source_name,
+                                averaged=psf.averaged, aberrations=fit, params=psf.params)
+
+
 _ALL = [
     "array", "labels", "roi-mask", "points-table", "localization", "view-only", "composite", "rgb",
-    "multicolor-apply", "projection", "frc", "colocalization", "psf", "segmentation", "denoise",
+    "multicolor-apply", "projection", "frc", "colocalization", "psf-measurement",
+    "segmentation", "denoise",
     "drift", "multicolor-registration", "monalisa", "snouty", "snouty-projections", "tiling",
     "widefield-starss",
 ]
@@ -227,7 +250,8 @@ def _cases():
         "points-table": PointsTableResult, "localization": LocalizationResult,
         "view-only": ViewOnlyResult, "composite": CompositeResult, "rgb": RGBResult,
         "multicolor-apply": MulticolorApplyResult, "projection": ProjectionResult, "frc": FRCResult,
-        "colocalization": ColocalizationResult, "psf": PSFResolutionResult,
+        "colocalization": ColocalizationResult,
+        "psf-measurement": PSFMeasurementResult,
         "segmentation": SegmentationResult, "denoise": DenoisedResult, "drift": DriftCorrectedResult,
         "multicolor-registration": MulticolorRegistrationResult, "monalisa": MonalisaProcessingResult,
         "snouty": SnoutyResult, "snouty-projections": SnoutyProjectionsResult,
