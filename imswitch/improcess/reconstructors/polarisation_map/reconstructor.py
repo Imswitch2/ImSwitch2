@@ -145,6 +145,7 @@ class _PolarisationParamsWidget(QtWidgets.QWidget):
 class PolarisationMapReconstructor(Reconstructor):
     name = 'Polarisation map'
     id = 'polarisation-map'
+    output_kind = "table"
     file_extensions = ['h5', 'hdf5']
     description = ('Poincaré-sphere coverage of a waveplate scan, and the settings '
                    'that reach circular and linear states')

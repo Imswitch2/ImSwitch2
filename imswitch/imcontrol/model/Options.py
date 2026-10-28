@@ -57,6 +57,10 @@ class MemoryOptions:
     #: for a typical workstation, not tied to the acquisition queues: it bounds
     #: a transient computation, not a backlog.
     processingWorkingSetMB: Any = 1024
+    #: Results the ImProcess workflow editor keeps between interactive runs,
+    #: so a re-run starts from them. MiB, a positive whole number. Least
+    #: recently used results go first; evicting one only costs a re-run.
+    workflowCacheMB: Any = 4096
 
 
 @dataclass_json(undefined=Undefined.INCLUDE)
