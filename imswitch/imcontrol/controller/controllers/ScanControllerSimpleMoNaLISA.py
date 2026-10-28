@@ -1679,7 +1679,7 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         # While an acquisition owns the hardware, Stop ends it now, as it does
         # in every panel (plan scan-stop-now, Lenny 2026-10-18).
         if self._onSimplePage() and self._isBusy():
-            self.abortScan()
+            self._onPanelStopClicked()
             return
         if self._onSimplePage():
             if not self._stopScreening():

@@ -507,7 +507,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._widget.sigRunScanClicked.connect(self.runScan)
         stopClicked = getattr(self._widget, 'sigStopClicked', None)
         if stopClicked is not None:
-            stopClicked.connect(self.abortScan)
+            stopClicked.connect(self._onPanelStopClicked)
         self._widget.sigSeqTimeParChanged.connect(self.updateScanTTLAttrs)
         self._widget.sigStageParChanged.connect(self.updatePixels)
         self._widget.sigStageParChanged.connect(self.updateScanStageAttrs)
@@ -1162,6 +1162,19 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # part, MoNaLISA axial follow-up -- or a request still arming has no
         # NI-DAQ completion left to end it, so terminalize it here.
         self.scanFailed()
+
+    def _onPanelStopClicked(self):
+        """The panel's Stop: the scan ends now (plan scan-stop-now).
+
+        Between two repeat frames nothing runs: the pending re-arm sees the
+        stop and ends the run as done, stopped. Aborting there failed the run
+        instead (an error logged, waiting requests told it failed) for what is
+        an ordinary stop -- the Simple panel's Stop does the same (#83).
+        """
+        if getattr(self, '_repeatPending', False):
+            self._scanStopRequested = True
+            return
+        self.abortScan()
 
     def runWasStopped(self) -> bool:
         """Whether this controller's current or last run was stopped on

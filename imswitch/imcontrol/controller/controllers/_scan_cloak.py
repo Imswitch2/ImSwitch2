@@ -319,16 +319,14 @@ class ScanCloakController:
         scan-stop-now, Lenny 2026-10-18; it used to finish the frame).
         Unticking Live still lets the frame finish.
 
-        Between two Live frames, unticking Repeat is the whole stop: the
-        pending re-arm sees it and ends the run as done. Aborting there
-        failed the run instead (an error logged, waiting requests told it
-        failed) for what is an ordinary stop.
+        Between two Live frames the pending re-arm ends the run as done,
+        stopped; aborting there failed it (#83). Every panel's Stop shares
+        that rule (_onPanelStopClicked).
         """
         self._widget.setRepeatEnabled(False)
         if self._isBusy():
             self._view.showMessage('Stopped.')
-            if not getattr(self, '_repeatPending', False):
-                self.abortScan()
+            self._onPanelStopClicked()
 
     def scanDone(self):
         if self._onSimplePage():
