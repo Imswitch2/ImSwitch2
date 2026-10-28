@@ -206,6 +206,23 @@ def test_the_overview_runs_live_until_stop_and_ends_once(rig):
     assert frames and all(frame_geometry_of(f) is not None for f in frames)
 
 
+def test_slow_live_frames_are_shown_but_never_shrink_the_overview(rig):
+    """A rig's re-arm between frames can take most of a second. The panel
+    used to fit it into the frame budget by re-planning the overview, which
+    changed the pixels between runs and collapsed every size to the
+    smallest overview."""
+    overview = rig.scan._simple()['overview']
+    for _ in range(3):
+        rig.scan._recordFramePeriod()
+    rig.scan.framePeriodsMeasured([2.0, 2.0, 2.0])
+
+    assert rig.scan._simple()['overview'] == overview
+    assert '0.5' in rig.widget.measuredLabel.text()
+    rig.widget.overviewSizeSlider.setValue(rig.widget.overviewSizeSlider.value() - 150)
+    QtTest.QTest.qWait(300)                      # the size replan is debounced
+    assert rig.scan._simple()['overview'].pixels > overview.pixels * 0.9
+
+
 def test_a_live_overview_draws_each_frame_over_the_last(rig):
     """Every Live frame lands where the last one did: the APD keeps one
     buffer, so the image is overwritten line by line instead of starting
