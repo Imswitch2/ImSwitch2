@@ -61,7 +61,9 @@ that bounds memory.
 ## What is exposed
 
 Three limits, each named for what it bounds, each defaulting to today's
-literal. No pooled total, no module shares, no percentages.
+literal. No pooled total, no module shares, no percentages. (A fourth,
+`workflowCacheMB`, was added later for the workflow editor's cache; see the
+end of the table below.)
 
 ```
 writerQueueMB          = 512   # backlog the writer may hold before the
@@ -71,6 +73,8 @@ perDetectorQueueMB     = 256   # backlog any one (detector, consumer) queue may
                                # incomplete
 processingWorkingSetMB = 1024  # working set ImProcess may spend on automatic
                                # work: contrast sampling, the mean preview
+workflowCacheMB        = 4096  # results the workflow editor keeps between
+                               # interactive runs (added with editor 2.0)
 ```
 
 | Setting | Replaces | Today's literal |
@@ -78,6 +82,7 @@ processingWorkingSetMB = 1024  # working set ImProcess may spend on automatic
 | `writerQueueMB` | `WRITER_QUEUE_MAX_BYTES` | 512 MiB |
 | `perDetectorQueueMB` | `MAX_QUEUED_CONSUMER_BYTES` | 256 MiB, per queue |
 | `processingWorkingSetMB` | `_SAMPLE_WORKING_SET_BYTES`, and bounds `getMeanData` | 256 MiB, preview unbounded; now 1 GiB (see *Decisions*) |
+| `workflowCacheMB` | `DEFAULT_CACHE_BYTES` in `improcess/model/workfloweditor/session.py` | new with the workflow editor 2.0: 4 GiB. Automatic work, not results: least recently used entries go first and cost a re-run; the selected step's and pinned results are exempt, so it is not a hard cap (`improcess-workflow-editor-2.md` §4.5) |
 
 The defaults are fixed literals, not fractions of physical RAM: every machine
 starts from the same numbers, a bug report quotes values that mean the same

@@ -28,6 +28,7 @@ class DriftCorrectProcessor(Processor):
     id = "drift-correct"
     category = "Restoration"
     kinds = ("image", "composite")
+    output_kind = "image"
     
     @classmethod
     def default_params(cls) -> dict:

@@ -115,6 +115,7 @@ class PSFResolutionProcessor(Processor):
 
     name = "PSF / Bead Resolution"
     id = "psf-resolution"
+    output_kind = "table"
     category = "Measurement"
     params_version = 2
     #: The ROI Manager panel passes its ROIs under this key.

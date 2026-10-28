@@ -35,6 +35,7 @@ class StackCombineProcessor(Processor):
 
     name = "Stack/Combine"
     id = "stack-combine"
+    output_kind = "image"
     category = "Dimensions and channels"
     min_inputs = 2
     max_inputs = None

@@ -87,6 +87,7 @@ class ViewOnlyReconstructor(StreamingReconstructor):
 
     name = "View only"
     id = "view-only"
+    output_kind = "image"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     description = "Display raw frames without any reconstruction"
     is_pass_through = True

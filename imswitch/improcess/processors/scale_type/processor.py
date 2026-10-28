@@ -40,6 +40,7 @@ class ResizeProcessor(Processor):
 
     name = "Scale/Resize"
     id = "resize"
+    output_kind = "image"
     category = "Transform"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.
@@ -128,6 +129,7 @@ class ConvertTypeProcessor(Processor):
 
     name = "Convert type"
     id = "convert-type"
+    output_kind = "image"
     category = "Transform"
 
     @classmethod
