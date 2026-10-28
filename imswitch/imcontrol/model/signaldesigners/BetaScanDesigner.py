@@ -3,7 +3,11 @@ import numpy as np
 from .basesignaldesigners import (
     ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
 )
-from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
+from ..scan_parameters import (
+    axis_pixel_positions, dwell_request_if_changed, pixels_for_length_step,
+    realized_dwell_s, samples_for_duration,
+)
+from ..scan_program.motion import smooth_ramp
 from imswitch.imcommon.model import initLogger
 
 #: Fast-axis ramp and settle inside each pixel dwell, in seconds. These were
@@ -77,8 +81,14 @@ class BetaScanDesigner(ScanDesigner):
         fast, middle, slow = positions[:3]
         linesteps = max(1, int(scanParameters.get('n_linesteps', 1)))
         lines = middle * slow * linesteps
-        return (fast * lines * float(scanParameters['sequence_time'])
-                + lines * float(scanParameters.get('return_time', 0) or 0))
+        dwell = float(scanParameters['sequence_time'])
+        back = float(scanParameters.get('return_time', 0) or 0)
+        rate = getattr(getattr(setupInfo, 'scan', None), 'sampleRate', None)
+        if rate:
+            # what plays: whole samples, as make_signal counts them
+            dwell = realized_dwell_s(dwell, rate)
+            back = samples_for_duration(back, rate) / float(rate)
+        return fast * lines * dwell + lines * back
 
     def checkSignalComp(self, scanParameters, setupInfo, scanInfo):
         """ Check analog scanning signals so that they are inside the range of
@@ -245,7 +255,13 @@ class BetaScanDesigner(ScanDesigner):
         sampleRate = setupInfo.scan.sampleRate
         moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))
         settleTime = float(parameterDict.get('settle_time', DEFAULT_SETTLE_TIME_S))
-        dwell = float(parameterDict['sequence_time'])
+        # The dwell as it plays: a whole number of samples (the one rule every
+        # designer shares; this designer always rounded up). The request is
+        # kept for the contract.
+        dwell_requested_s = float(parameterDict['sequence_time'])
+        sequenceSamples = samples_for_duration(dwell_requested_s, sampleRate)
+        dwell = sequenceSamples / float(sampleRate)
+        parameterDict = dict(parameterDict, sequence_time=dwell)
         if dwell <= moveTime + settleTime:
             raise ValueError(
                 f'{self.__class__.__name__}: a {dwell * 1e3:g} ms dwell is not '
@@ -261,14 +277,11 @@ class BetaScanDesigner(ScanDesigner):
                 f'stationary: the move and settle take {(moveTime + settleTime) * 1e3:g} ms, '
                 f'so a detector exposing for the whole dwell integrates the move.'
             )
-        sequenceSamples = parameterDict['sequence_time'] * sampleRate
-        returnSamples = parameterDict['return_time'] * sampleRate
-        if not sequenceSamples.is_integer():
+        if dwell_request_if_changed(dwell_requested_s, sampleRate) is not None:
             self._logger.warning('Non-integer number of sequence samples, rounding up')
-        sequenceSamples = int(np.ceil(sequenceSamples))
-        if not returnSamples.is_integer():
+        if dwell_request_if_changed(parameterDict['return_time'], sampleRate) is not None:
             self._logger.warning('Non-integer number of return samples, rounding up')
-        returnSamples = int(np.ceil(returnSamples))
+        returnSamples = samples_for_duration(parameterDict['return_time'], sampleRate)
 
         # Make fast axis signal
         rampSamples = fast_axis_positions * sequenceSamples
@@ -281,8 +294,8 @@ class BetaScanDesigner(ScanDesigner):
         rampValues = axis_pixel_positions(
             fast_axis_positions, fast_axis_step_size, start=fast_axis_start)
         self._logger.debug(rampValues)
-        smooth = int(np.ceil(moveTime * sampleRate))
-        settling = int(np.ceil(settleTime * sampleRate))
+        smooth = samples_for_duration(moveTime, sampleRate)
+        settling = samples_for_duration(settleTime, sampleRate)
         for s in range(fast_axis_positions):
             start = s * sequenceSamples
             end = s * sequenceSamples + sequenceSamples
@@ -395,7 +408,8 @@ class BetaScanDesigner(ScanDesigner):
             scan_samples_d2_period=lineSamples,
             n_pixels_fast=fast_axis_positions,
             samples_per_pixel=sequenceSamples,
-            dwell_time=parameterDict['sequence_time'],
+            dwell_time=dwell,
+            dwell_requested_s=dwell_request_if_changed(dwell_requested_s, sampleRate),
             scan_time_step=1.0 / sampleRate,
             n_linesteps=n_linesteps,
             positions=positions,
@@ -416,14 +430,8 @@ class BetaScanDesigner(ScanDesigner):
         return sig_dict, positions, scanInfoDict
 
     def __smoothRamp(self, start, end, samples):
-        start = float(start)
-        end = float(end)
-        curve_half = 0.6
-        n = int(np.floor(curve_half * samples))
-        x = np.linspace(0, np.pi / 2, num=n, endpoint=True)
-        signal = start + (end - start) * np.sin(x)
-        signal = np.append(signal, end * np.ones(int(np.ceil((1 - curve_half) * samples))))
-        return signal
+        # One definition, shared with the scan-program interpreter.
+        return smooth_ramp(start, end, samples)
 
     def __plot_curves(self, plot, signals):
         """ Plot all scan curves, for debugging. """

@@ -21,7 +21,13 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
+from ._read_ahead import ReadAhead, raster_samples_consumed, read_ahead_samples
+from imswitch.imcontrol.model.scan_parameters import lag_samples_for
 from ._mock_sample import MockSample
+from ._visit_order import VisitOrder
+from ._trajectory_measure import (
+    TrajectoryDetectorMixin, TrajectoryMeasurement, is_trajectory, run_trajectory,
+)
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -83,7 +89,7 @@ def _requireTimerClock(detectorName, terminal):
     return terminal
 
 
-class APDManager(DetectorManager):
+class APDManager(TrajectoryDetectorMixin, DetectorManager):
     """ DetectorManager that deals with an avalanche photodiode connected to a
     counter input on a Nidaq card.
 
@@ -243,6 +249,13 @@ class APDManager(DetectorManager):
         self._abandonRaw()
         if not self._scanParticipating:
             return
+        # A trajectory is measured window by window into a gridded rate image
+        # (plan §6); its image is float, NaN where no window landed.
+        self._trajectoryMode = is_trajectory(scanInfoDict)
+        self._trajectoryState = None
+        if self._trajectoryMode and self._ttlmultiplying:
+            raise ValueError(f'{self.name}: TTL multiplying cannot be combined with a '
+                             'trajectory, which is measured window by window.')
 
         # The scan-scoped participant snapshot is authoritative.  Do not gate
         # on ``acquisition``: it is a coarse hardware-state flag and older
@@ -268,8 +281,14 @@ class APDManager(DetectorManager):
                 if item >= generation - 8
             }
         self._liveThrottle.reset()
-        self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
+        # Where each visit belongs, for interleaved or serpentine axes.
+        self._visitOrder = VisitOrder.from_scan_info(scanInfoDict)
+        workerClass = TrajectoryScanWorker if self._trajectoryMode else ScanWorker
+        self._scanWorker = workerClass(self, scanInfoDict, signalDict)
         self._scanWorker.scanGeneration = generation
+        if self._trajectoryMode:
+            self._scanWorker.trajectoryImage.connect(self._onTrajectoryImage)
+            self._trackTrajectory(generation, self._scanWorker._trajectory)
         self._scanTeardownOperation = None
         self._scanThread = Thread()
         self._scanWorker.moveToThread(self._scanThread)
@@ -753,6 +772,12 @@ class APDManager(DetectorManager):
         else:
             y = y_expanded
             s = None
+        outer = tuple(int(v) for v in pos[:-1])
+        # A scan that visits an axis out of order says where each visit
+        # belongs; the line was read in visit order.
+        visitOrder = getattr(self, '_visitOrder', None)
+        if visitOrder is not None:
+            pixels, y, outer = visitOrder.place(pixels, y, outer, line=y_expanded)
 
         # ---- S == 1: could be 2D (1, Ny, Nx) OR 3D (1, Nz, Ny, Nx) (or higher) ----
         # <= 2, not == 2: a single-line scan's (1, N) buffer squeezes to rank
@@ -786,7 +811,7 @@ class APDManager(DetectorManager):
         if np.squeeze(self._image).ndim >= 3:
             # (Nz, Ny, Nx) for Z stacks (and potentially more dims in front of Ny,Nx)
             # pos[:-1] contains all outer indices (e.g. z), last is y
-            outer = tuple(int(v) for v in pos[:-1])  # e.g. (z,) or (t,z,...) depending on scan
+            # outer: all outer indices (e.g. (z,) or (t, z, ...)), placed above
             # Build index into raw buffer:
             # raw layout is (1, ...outer..., y, x)
             # where y is always the second-to-last axis
@@ -819,7 +844,8 @@ class APDManager(DetectorManager):
         # Use uint16 for the common photon-counting case; the TTL-multiplying
         # path inserts NaN as a "no-data" marker, so fall back to float32 there
         # (still ImageJ-compatible, half the memory of float64).
-        image_dtype = np.float32 if self._ttlmultiplying else np.uint16
+        # A trajectory's gridded rate is float too, NaN where unvisited.
+        image_dtype = np.float32 if (self._ttlmultiplying or self._trajectoryMode) else np.uint16
 
         # A scan carrying a geometry gets fresh storage when its pixels land
         # elsewhere: frames already published for the previous scan share the
@@ -909,6 +935,8 @@ class APDManager(DetectorManager):
             return
         if generation in self.__dict__.get('_rawFailedGenerations', ()):
             return
+        # A trajectory's raw frame is finished from its measurement first.
+        self._finishTrajectory(generation)
         self._rawGeneration = generation
         self._rawReady = True
         self._rawDelivered = False
@@ -951,9 +979,13 @@ class APDManager(DetectorManager):
             # carry -- without it a (C, Z, Y, X) volume would be delivered as C
             # separate frames.
             raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
+            auxiliary = self._rawFrameAuxiliary(self.__dict__.get('_rawGeneration'))
+        else:
+            auxiliary = None
 
         return ChunkPayload(
-            display=display, raw=raw, display_geometry=displayGeometry
+            display=display, raw=raw, display_geometry=displayGeometry,
+            raw_auxiliary=auxiliary,
         )
 
     def flushBuffers(self):
@@ -1071,10 +1103,20 @@ class APDManager(DetectorManager):
         # pixel_sizes: list of low dim to high dim
         self.__pixel_sizes = pixel_sizes
 
+    def _publishTrajectoryImage(self):
+        if self._liveThrottle.due():
+            self.sigImageUpdated.emit(
+                display_frame(self, self._image, current_frame_geometry(self)),
+                True,
+                self.scale,
+            )
+
     @property
     def dtype(self):
         """ Override: APD's recorded dtype mirrors initiateImage buffer choice. """
-        return np.dtype(np.float32) if self._ttlmultiplying else np.dtype(np.uint16)
+        if self._ttlmultiplying or self._trajectoryMode:
+            return np.dtype(np.float32)
+        return np.dtype(np.uint16)
 
     def crop(self, hpos, vpos, hsize, vsize):
         pass
@@ -1175,19 +1217,27 @@ class ScanWorker(Worker):
             scan_axes.append("y")
         self._linestep = max(1, int(scanInfoDict.get("n_linesteps", 1)))
 
-        # Y is the slow scan axis
-        y_idx = scan_axes.index("y") if "y" in scan_axes else 1
-        self._y_idx = y_idx
+        # The line steps repeat each line: they expand the dimension right
+        # outside the fast one, img_dims[1], whatever it is called -- the
+        # recursion reads by position. The designers name their axes by
+        # position (x, y, z), an Expert program physically: a fast-Y raster
+        # is ('y', 'x'), and expanding the axis named y there read half its
+        # lines (review 2026-10-17).
+        self._line_axis = 1
 
-        # Loop dims: expand Y by linestep (Ny -> Ny*S), keep other dims unchanged
+        # Loop dims: expand the line axis by linestep (N -> N*S), keep the others
         self._img_dims = scan_dims  # recursion uses physical scan axes only (x,y,z,...)
         self._loop_dims = scan_dims.copy()
-        if len(self._loop_dims) > y_idx:
-            self._loop_dims[y_idx] = int(self._loop_dims[y_idx] * self._linestep)
+        if len(self._loop_dims) > self._line_axis:
+            self._loop_dims[self._line_axis] = int(self._loop_dims[self._line_axis] * self._linestep)
 
         # Output dims for manager allocation: keep linestep as its own axis (for later stack/sum/max)
         # We append linestep as the LAST axis in output_image_dims (manager can reorder if desired)
         self._output_image_dims = tuple(scan_dims + ([self._linestep] if self._linestep > 1 else []))
+        # The frame's dimensions as the manager's buffer holds them (reversed,
+        # line steps outermost), for the view's Sum checkboxes.
+        self._manager.displayAxisNames = tuple(reversed(
+            list(scan_axes) + (['line steps'] if self._linestep > 1 else [])))
 
         # det samples per scan steps in different dims
         self._samples_d_scanstep = [round(samples) * self._frac_scan_det_rate for samples in
@@ -1208,10 +1258,8 @@ class ScanWorker(Worker):
         # Galvo response lag, declared in microseconds; converted to detection
         # samples at the timer rate (identical at 1 MHz, which is why it used
         # to pass as a sample count).
-        self._phase_delay = int(round(
-            float(scanInfoDict.get('phase_delay', 0) or 0)
-            * self._manager._detection_samplerate / 1e6
-        ))
+        self._phase_delay = lag_samples_for(scanInfoDict.get('phase_delay', 0),
+                                            self._manager._detection_samplerate)
         self._smooth_axes = scanInfoDict.get('smooth_axes', [False, False, False])
 
         # samples to throw due to smooth between d>2 step transitioning
@@ -1246,7 +1294,7 @@ class ScanWorker(Worker):
         if self._linestep <= 1:
             return
 
-        expandedLines = int(self._loop_dims[self._y_idx])
+        expandedLines = int(self._loop_dims[self._line_axis])
         exact2dPlan = None
         exact2dMargin = None
         if len(self._loop_dims) == 2:
@@ -1307,23 +1355,66 @@ class ScanWorker(Worker):
             ),
         )
 
+    def _readLimit(self):
+        """The last sample a read may reach: what this raster plan consumes
+        (``raster_samples_consumed``), never past the task's own count. A
+        worker of another plan (a trajectory) reads to the task's count."""
+        total = getattr(self, '_samples_total', None)
+        planned = self._plannedSamples()
+        if planned is None:
+            return total
+        return planned if total is None else min(int(total), int(planned))
+
+    def _plannedSamples(self):
+        try:
+            return raster_samples_consumed(
+                phase_delay=self._phase_delay, throw_startzero=self._throw_startzero,
+                scan_pads_initpos=self._scan_pads_initpos,
+                throw_init_smooth=self._throw_init_smooth, loop_dims=self._loop_dims,
+                samples_d_scanstep=self._samples_d_scanstep,
+                samples_d2_period=self._samples_d2_period)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+
+    def _reader(self):
+        """The task's samples, fetched in chunks of one live-update interval
+        (``_read_ahead``); made on first use, once the sample plan is known."""
+        reader = self.__dict__.get('_readAhead')
+        if reader is None:
+            throttle = getattr(self._manager, '_liveThrottle', None)
+            chunk = read_ahead_samples(getattr(throttle, 'interval_s', 0.0),
+                                       self._manager._detection_samplerate)
+            reader = ReadAhead(self._fetchSamples, self._readLimit(), chunk)
+            self.__dict__['_readAhead'] = reader
+            self.__dict__['_fetchedLast'] = self._last_value
+        return reader
+
+    def _fetchSamples(self, count, kind):
+        """One driver read (or simulated one) of the next ``count`` samples."""
+        reader = self.__dict__['_readAhead']
+        self._pending_read = {"kind": kind, "start": int(reader.fetched), "count": int(count)}
+        if self._manager._simulation_mode:
+            # the simulated counter continues where the last fetch ended,
+            # not where the worker has consumed to
+            data = self.randomInput(count, start=reader.fetched,
+                                    base=self.__dict__.get('_fetchedLast', 0))
+        else:
+            data = self._manager._nidaqManager.readInputTask(
+                self._name, count,
+                generation=self._inputTaskGeneration,
+            )
+        data = np.asarray(data)
+        if data.size:
+            self.__dict__['_fetchedLast'] = data[-1]
+        self._pending_read = None
+        return data
+
     def throwdata(self, datalen):
         """ Throw away data with length datalen, save the last value,
         and add length of data to total samples_read length.
         """
         if datalen > 0:
-            self._pending_read = {
-                "kind": "throw",
-                "start": int(self._samples_read),
-                "count": int(datalen),
-            }
-            if self._manager._simulation_mode:
-                throwdata = self.randomInput(datalen)
-            else:
-                throwdata = self._manager._nidaqManager.readInputTask(
-                    self._name, datalen,
-                    generation=self._inputTaskGeneration,
-                )
+            throwdata = self._reader().take(datalen, 'throw')
             if self._manager._debug_mode:
                 self.__plot_curves(plot=True, xvals=range(int((self._samples_read) / 10),
                                                           int((self._samples_read + datalen) / 10)),
@@ -1336,25 +1427,13 @@ class ScanWorker(Worker):
     def readdata(self, datalen):
         """ Read data with length datalen and add length of data to total samples_read length.
         """
-        self._pending_read = {
-            "kind": "line",
-            "start": int(self._samples_read),
-            "count": int(datalen),
-        }
-        if self._manager._simulation_mode:
-            data = self.randomInput(datalen)
-        else:
-            data = self._manager._nidaqManager.readInputTask(
-                self._name, datalen,
-                generation=self._inputTaskGeneration,
-            )
+        data = self._reader().take(datalen, 'line')
         if self._manager._debug_mode:
             self.__plot_curves(plot=True, xvals=range(int((self._samples_read) / 10),
                                                       int((self._samples_read + datalen) / 10)),
                                signal=self._ploty * np.ones(int((datalen) / 10)),
                                style='k-')
         self._samples_read += datalen
-        self._pending_read = None
         return data
 
     def samples_to_pixels(self, line_samples):
@@ -1366,7 +1445,11 @@ class ScanWorker(Worker):
         if n == 0:
             return np.zeros((0,), dtype=self._manager.dtype)
         if n != len(line_samples):
-            # optional: logger warning
+            # A line that is not a whole number of pixels: the grids disagree
+            # (plan scan-timing, F1). Said once per line, never silent.
+            self.__logger.error(
+                f'{self._name}: a line of {len(line_samples)} samples is not a whole number '
+                f'of {frac}-sample pixels; {len(line_samples) - n} samples dropped.')
             line_samples = line_samples[:n]
         pixels = np.asarray(line_samples).reshape(-1, frac).sum(axis=1)
         if self._manager._simulation_mode and not self._manager._ttlmultiplying:
@@ -1418,10 +1501,14 @@ class ScanWorker(Worker):
             # An exception escaping a Qt worker slot can terminate the process.
             # Convert it into the same generation-tagged local completion path
             # used by a normal scan instead.
-            self.__logger.exception(
-                "[LineStepDiag][APD:%s] worker_failed generation=%s "
+            stopped = getattr(self._manager._nidaqManager, 'runStopped', False) is True
+            # A stopped scan (stopScan closed the input task under the read):
+            # the frame is dropped below, nothing failed -- no traceback.
+            (self.__logger.info if stopped else self.__logger.exception)(
+                "[LineStepDiag][APD:%s] worker_%s generation=%s "
                 "samples_read=%s/%s pos=%s pending_read=%s",
                 self._name,
+                'stopped' if stopped else 'failed',
                 self.scanGeneration,
                 self._samples_read,
                 self._samples_total,
@@ -1547,7 +1634,10 @@ class ScanWorker(Worker):
             )
             self._inputTaskClosed = True
 
-    def randomInput(self, datalen):
+    def randomInput(self, datalen, start=None, base=None):
+        """``datalen`` simulated cumulative counts, from sample ``start``
+        (default: what the worker has consumed) on top of count ``base``
+        (default: the last consumed value)."""
         datalen = int(datalen)
         if datalen <= 0:
             return np.empty((0,), dtype=np.int64)
@@ -1556,14 +1646,16 @@ class ScanWorker(Worker):
         mean_per_sample = max(0.0, self._manager._mock_photon_count_mean / frac)
         max_per_sample = max(1, int(np.ceil(self._manager._mock_photon_count_max / frac)))
         if self._mock_positions is not None:
-            mean_per_sample = mean_per_sample * self._mock_brightness(datalen)
+            mean_per_sample = mean_per_sample * self._mock_brightness(datalen, start)
         increments = self._rng.poisson(mean_per_sample, size=datalen).astype(np.int64)
         increments = np.clip(increments, 0, max_per_sample)
-        return np.cumsum(increments, dtype=np.int64) + int(self._last_value)
+        base = self._last_value if base is None else base
+        return np.cumsum(increments, dtype=np.int64) + int(base)
 
-    def _mock_brightness(self, datalen):
-        """The mock sample under the beam for the next ``datalen`` samples."""
-        start = int(self._samples_read)
+    def _mock_brightness(self, datalen, start=None):
+        """The mock sample under the beam for ``datalen`` samples from
+        ``start`` (default: what the worker has consumed)."""
+        start = int(self._samples_read if start is None else start)
         scan_index = np.arange(start, start + datalen) // self._frac_scan_det_rate
         coords = []
         for positions in self._mock_positions:
@@ -1574,6 +1666,34 @@ class ScanWorker(Worker):
         if len(coords) == 1:
             coords.append(np.zeros(datalen))
         return self._manager._mock_sample.brightness(coords[0], coords[1])
+
+class TrajectoryScanWorker(ScanWorker):
+    """Reads a trajectory window by window (plan §6, M4): the counts in each
+    window over its integration time, binned onto the grid as a count rate."""
+
+    trajectoryImage = Signal(object, object, str, object, int, object)
+
+    def __init__(self, manager, scanInfoDict, signalDict):
+        super().__init__(manager, scanInfoDict, signalDict)
+        self._trajectory = TrajectoryMeasurement(scanInfoDict, self._frac_scan_det_rate, 'counts')
+
+    def _runAcquisition(self):
+        run_trajectory(self, self._windowCounts, self._publishTrajectory)
+
+    def _plannedSamples(self):
+        return None                    # windows, not the raster plan: the task's count
+
+    def _windowCounts(self, data, offsets, lengths):
+        # The counter is cumulative: counts per sample, then per window.
+        counts = np.concatenate(([data[0] - self._last_value], np.diff(data))).astype(float)
+        self._last_value = data[-1]
+        return np.add.reduceat(counts, offsets)
+
+    def _publishTrajectory(self, measurement):
+        accumulator = measurement.accumulator
+        self.trajectoryImage.emit(accumulator.image(), accumulator.coverage(), accumulator.unit,
+                                  measurement.provenance, self.scanGeneration, measurement)
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

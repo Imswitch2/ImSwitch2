@@ -1,0 +1,9 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "StepBoardLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example"
+    }
+  }
+}

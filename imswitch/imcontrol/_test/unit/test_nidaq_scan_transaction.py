@@ -85,6 +85,9 @@ class _Task:
         self.closeCalls = 0
         self.writes = []
         self.events = events
+        # what a driver reports for a task configured at the scan clock
+        # (NidaqManager verifies every task against it before arming)
+        self.timing = SimpleNamespace(samp_clk_max_rate=2.0e6, samp_clk_rate=100000.0)
 
     def write(self, values, auto_start=False):
         self.writes.append((np.asarray(values), auto_start))

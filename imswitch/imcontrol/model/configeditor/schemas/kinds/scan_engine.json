@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a scan_engine entry in a setup file, as imswitch.imcontrol.model.SetupInfo.ScanEngineInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "managerName": {
+      "description": "The scan engine's manager: a registered ``scan_engine`` id or alias.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:ScanEngineInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Properties to be read by the engine (its board's capabilities).",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:ScanEngineInfo.managerProperties: Dict[str, Any]"
+      ]
+    },
+    "triggerInput": {
+      "default": null,
+      "description": "The line, driven by the engine the scan panel runs on, that this engine's trigger input is wired to. It then follows that engine step by step in a program that uses its devices (a pulse at every step).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:ScanEngineInfo.triggerInput: Optional[str]"
+      ]
+    }
+  },
+  "required": [
+    "managerName"
+  ],
+  "title": "scan_engine device entry (ScanEngineInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ScanEngineInfo"
+  ],
+  "x-imswitch-info-class": "ScanEngineInfo"
+}

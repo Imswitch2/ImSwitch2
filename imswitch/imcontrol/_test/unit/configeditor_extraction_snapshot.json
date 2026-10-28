@@ -343,6 +343,15 @@
       "unresolved": 0
     },
     {
+      "constrained": 0,
+      "keys": 0,
+      "name": "NidaqScanEngine",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 1,
       "keys": 3,
       "name": "OxxiusCombinerLaserManager",
@@ -407,8 +416,17 @@
     },
     {
       "constrained": 0,
-      "keys": 1,
+      "keys": 2,
       "name": "PulseGeneratorLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "PulseGeneratorScanEngine",
       "refs": 0,
       "required": 0,
       "uncertain": 0,
@@ -425,7 +443,7 @@
     },
     {
       "constrained": 0,
-      "keys": 0,
+      "keys": 1,
       "name": "PulseStreamerManager",
       "refs": 0,
       "required": 0,
@@ -487,6 +505,15 @@
       "unresolved": 0
     },
     {
+      "constrained": 1,
+      "keys": 7,
+      "name": "SimulatedStepEngine",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 0,
       "keys": 2,
       "name": "SmarACTPositionerManager",
@@ -505,13 +532,40 @@
       "unresolved": 0
     },
     {
-      "constrained": 10,
-      "keys": 15,
+      "constrained": 0,
+      "keys": 1,
+      "name": "StepBoardLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 3,
+      "name": "StepBoardPositionerManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 4,
+      "name": "StepProtocolScanEngine",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 9,
+      "keys": 21,
       "name": "SwabianTimeTaggerManager",
       "refs": 0,
-      "required": 3,
+      "required": 0,
       "uncertain": 0,
-      "unresolved": 3
+      "unresolved": 0
     },
     {
       "constrained": 1,
@@ -524,7 +578,7 @@
     },
     {
       "constrained": 0,
-      "keys": 0,
+      "keys": 7,
       "name": "TeensyPulseManager",
       "refs": 0,
       "required": 0,
@@ -597,23 +651,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 56,
-    "docs_agree": 164,
-    "docs_documented": 164,
-    "keys": 244,
-    "managers": 66,
-    "none_default_only": 39,
+    "constrained": 57,
+    "docs_agree": 196,
+    "docs_documented": 196,
+    "keys": 276,
+    "managers": 72,
+    "none_default_only": 58,
     "none_only": 16,
-    "optional": 178,
-    "reads_any": 60,
+    "optional": 212,
+    "reads_any": 67,
     "refs": 14,
-    "required": 66,
-    "typed_by_code": 121,
-    "typed_with_docs": 188,
-    "typed_with_examples": 158,
+    "required": 64,
+    "typed_by_code": 126,
+    "typed_with_docs": 220,
+    "typed_with_examples": 167,
     "uncertain": 0,
-    "unresolved_reads": 3,
-    "with_keys": 60,
+    "unresolved_reads": 0,
+    "with_keys": 67,
     "writes": 0
   }
 }

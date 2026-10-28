@@ -63,8 +63,18 @@ class SuperScanManager(ABC):
             raise IncompatibilityError('Incompatible TTL parameters')
 
     def getScanSignalsDict(self, scanParameters):
-        """ Generates scan signals. """
+        """ Generates scan signals.
+
+        Raises ScanDesignRefusedError, carrying the reason, when the designer
+        refuses the scan before building it (too long, a pixel dwell under
+        one sample). Every design path goes through here -- the run, and the
+        recording reading the scan geometry -- so all refuse the same way. """
         self._checkScanDefined()
+        refusal = self._scanDesigner.signalLengthRefusal(
+            scanParameters, self._setupInfo
+        )
+        if refusal:
+            raise ScanDesignRefusedError(refusal)
         parameterDict = copy.deepcopy(self._setupInfo.scan.scanDesignerParams)
         parameterDict.update(scanParameters)
         return self._scanDesigner.make_signal(parameterDict, self._setupInfo)
@@ -75,11 +85,6 @@ class SuperScanManager(ABC):
         Raises ScanDesignRefusedError, carrying the reason, when the designer
         refuses the scan: too long (``scan.maxScanTimeMin`` and similar
         limits) or voltages outside a scanner's range. """
-        refusal = self._scanDesigner.signalLengthRefusal(
-            scanParameters, self._setupInfo
-        )
-        if refusal:
-            raise ScanDesignRefusedError(refusal)
         scanSignalsDict, positions, scanInfoDict = self.getScanSignalsDict(scanParameters)
         if hasattr(self._scanDesigner, 'signalCompatibilityRefusal'):
             refusal = self._scanDesigner.signalCompatibilityRefusal(

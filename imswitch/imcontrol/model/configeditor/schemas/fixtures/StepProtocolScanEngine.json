@@ -1,0 +1,12 @@
+{
+  "category": "scanEngines",
+  "device": {
+    "managerName": "StepProtocolScanEngine",
+    "managerProperties": {
+      "baudrate": 1,
+      "port": "example",
+      "replyTimeoutS": 1.5,
+      "simulatedBoard": {}
+    }
+  }
+}

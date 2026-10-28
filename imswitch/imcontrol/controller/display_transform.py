@@ -59,6 +59,21 @@ def display_transform_from_properties(
     )
 
 
+def sum_axes_for_display(im, scale, axes):
+    """``(image, scale)`` with the leading dimensions ``axes`` (indices into
+    the image's axes, all before the last two) summed away, in float so
+    counts never saturate; the scale loses those entries when it has one per
+    axis. Display only: the frame itself is not touched."""
+    im = np.asarray(im)
+    axes = tuple(sorted({int(a) for a in axes if 0 <= int(a) < max(0, im.ndim - 2)}))
+    if not axes:
+        return im, scale
+    reduced = im.sum(axis=axes, dtype=np.float64)
+    if scale is not None and len(scale) == im.ndim:
+        scale = tuple(s for i, s in enumerate(scale) if i not in axes)
+    return reduced, scale
+
+
 def apply_display_transform(
     image: np.ndarray,
     scale: Sequence[float] | None,

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "channels": {
+      "description": "The generator's channels it owns, by index.",
+      "x-imswitch-kind": "array",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:array"
+      ]
+    },
+    "pulseGenerator": {
+      "description": "The ``pulseGenerators`` entry it drives (:doc:`pulse_generators`).",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    }
+  },
+  "title": "PulseGeneratorScanEngine managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PulseGeneratorScanEngine"
+  ]
+}

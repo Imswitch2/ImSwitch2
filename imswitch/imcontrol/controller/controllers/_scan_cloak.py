@@ -315,24 +315,18 @@ class ScanCloakController:
             self._widget.setRepeatEnabled(bool(live))
 
     def _onStopClicked(self):
-        """Stop: no further frame. A running frame completes (NI-DAQ cannot
-        be interrupted mid-iteration; decided 2026-09-25).
+        """Stop: the scan ends now and its unfinished frame is dropped (plan
+        scan-stop-now, Lenny 2026-10-18; it used to finish the frame).
+        Unticking Live still lets the frame finish.
 
-        Between two Live frames, unticking Repeat is the whole stop: the
-        pending re-arm sees it and ends the run as done. Aborting there
-        failed the run instead (an error logged, waiting requests told it
-        failed) for what is an ordinary stop.
+        Between two Live frames the pending re-arm ends the run as done,
+        stopped; aborting there failed it (#83). Every panel's Stop shares
+        that rule (_onPanelStopClicked).
         """
         self._widget.setRepeatEnabled(False)
         if self._isBusy():
-            remaining = self._remainingFrameS()
-            self._view.showMessage(
-                'Stopping after this frame'
-                + (f' (about {remaining:.0f} s)' if remaining and remaining >= 1 else '')
-                + '.'
-            )
-            if not getattr(self, '_repeatPending', False):
-                self.abortScan()
+            self._view.showMessage('Stopped.')
+            self._onPanelStopClicked()
 
     def scanDone(self):
         if self._onSimplePage():
@@ -354,25 +348,13 @@ class ScanCloakController:
     # ------------------------------------------------------------------
 
     def _resetFrameClock(self):
-        self.__dict__['_frameClock'] = {
-            'lastFrameEnd': None, 'periods': [], 'frameStart': time.monotonic(),
-        }
-
-    def _remainingFrameS(self):
-        clock = self.__dict__.get('_frameClock') or {}
-        estimate = self.cloakFrameEstimateS()
-        started = clock.get('frameStart')
-        if not estimate or started is None:
-            return None
-        return max(0.0, estimate - (time.monotonic() - started))
+        self.__dict__['_frameClock'] = {'lastFrameEnd': None, 'periods': []}
 
     def _recordFramePeriod(self):
-        clock = self.__dict__.setdefault(
-            '_frameClock', {'lastFrameEnd': None, 'periods': [], 'frameStart': None})
+        clock = self.__dict__.setdefault('_frameClock', {'lastFrameEnd': None, 'periods': []})
         now = time.monotonic()
         last = clock['lastFrameEnd']
         clock['lastFrameEnd'] = now
-        clock['frameStart'] = now
         if last is None:
             return
         clock['periods'] = (clock['periods'] + [now - last])[-3:]
@@ -481,10 +463,6 @@ class ScanCloakController:
     def cloakWantsLive(self) -> bool:
         """Whether Start runs until Stop."""
         return self._view.liveEnabled()
-
-    def cloakFrameEstimateS(self):
-        """The estimated time of one scan, if known."""
-        return None
 
     def framePeriodsMeasured(self, periods):
         """The last few measured periods between scans of a live run."""

@@ -531,14 +531,6 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         # separate camera-trigger + Live-illumination workflow below.
         return False
 
-    def cloakFrameEstimateS(self):
-        if not self.cloakOwnsBackend():
-            return None
-        try:
-            return self.acquisitionPlan().estimate_s(self.cloakLimits())
-        except Exception:
-            return None
-
     def _setUnboundProfileState(self):
         state = self._monalisa()
         state['plan'] = None
@@ -1681,8 +1673,14 @@ class ScanControllerSimpleMoNaLISA(ScanCloakController, ScanControllerAdvanced):
         )
 
     def _onStopClicked(self):
-        # The top-row Stop belongs only to Live screening. It deliberately
-        # keeps the useful Live -> Stop -> Scan camera-trigger preparation.
+        # In Simple, Stop ends screening and leaves the acquisition camera ready
+        # for a frame-triggered scan. This supports the direct workflow
+        # Live -> Stop -> Recording/Scan timelapse without another camera click.
+        # While an acquisition owns the hardware, Stop ends it now, as it does
+        # in every panel (plan scan-stop-now, Lenny 2026-10-18).
+        if self._onSimplePage() and self._isBusy():
+            self._onPanelStopClicked()
+            return
         if self._onSimplePage():
             if not self._stopScreening():
                 return

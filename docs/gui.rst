@@ -232,6 +232,24 @@ excluded for the rest of the session — the stop is only retried at shutdown,
 so recovering it means restarting ImSwitch2.
 
 
+Summing over line steps, z or time in the view
+-----------------------------------------------
+
+A scan with line steps, a z stack or a time series reaches the viewer as a
+stack with a slider. While a live frame has such a dimension, a box for it
+appears under the levels tool on the left, named as the detector names the
+dimension: **Sum line steps**, **Sum z**, **Sum time**. Ticked, every live
+layer with that dimension shows the sum over it, levelled anew; unticked, the
+slider is back. A 2-D scan shows no boxes. The panel can be hidden from its
+title bar, which unticks every sum; it cannot be closed.
+It changes what is shown only: the frame the detector delivers and the
+recording keep every dimension. The sum is taken in floating point, so
+counts never wrap, and **Auto levels** runs on the summed image, so a
+summed stack is not clipped to one step's range. The choice is kept with
+the panel's state, so a line-step rig opens summed if that is how it was
+left.
+
+
 Viewer tools
 ------------
 
@@ -305,37 +323,101 @@ the plotted curves themselves, both as CSV.
    :align: center
    :width: 500px
 
-FLIM lifetime histogram
------------------------
+Lifetime (FLIM / STED)
+----------------------
 
-Shows, for a FLIM detector, the distribution of the lifetimes fitted per
-pixel, or the photon-arrival decay summed over the image.  It is meant for the
-Swabian Time Tagger (``SwabianTimeTaggerManager``, see
-:doc:`devices/detectors`), whose frames hold one lifetime per pixel in
-nanoseconds; pixels below the manager's ``min_counts_per_pixel`` are left out.
+One panel for a time-resolved detector such as the Swabian Time Tagger
+(``SwabianTimeTaggerManager``, see :doc:`devices/detectors` and
+:doc:`timetagger/index`): the fitted lifetimes of a FLIM scan, the
+tau-STED view, and the card's live signals. ``Lifetime`` in
+``availableWidgets`` loads it (*Lifetime (FLIM / STED)*, in the right dock
+next to Scan); ``FLIMHist``, the panel's old key, is renamed to ``Lifetime``
+when an older setup file loads, with a log line asking for the edit.
 
-``FLIMHist`` in ``availableWidgets`` loads the panel (*FLIM Lifetime
-Histogram*).  It follows the detector selected in the Detector Settings panel.
+* **Detector** and **Mode** -- the time-resolved detector the panel follows
+  and the view: **FLIM**, **Tau STED** or **Signals**.
+* **Decay** (always shown) -- the photon-arrival histogram summed over the
+  valid pixels of the last ready frame, in forward time whatever the
+  card's direction, with the IRF peak (red), the background level (dotted)
+  and **log**; the line under it names the direction, the peak, the
+  global lifetime, the photons and the window.
+* **Fit and display** (FLIM and Tau STED) -- the detector's ``fit_method``,
+  ``min_counts_per_pixel``, ``laser_rep_rate_mhz``, ``binwidth_ps``,
+  ``n_bins``, ``t0_ps`` and ``background_rate_hz``, written through as
+  you edit them (a refused write shows in the footer and the field reverts).
+  **Measure rep rate** runs the laser-sync measurement of tutorial 04 and
+  writes the result; **Find t0 from decay** moves ``t0_ps`` by where the
+  last decay peaks. **Colour range** bounds the lifetime colours, and
+  **Show** picks the viewer layer: the lifetime image, the intensity image,
+  an intensity-weighted lifetime overlay (hue = lifetime, brightness =
+  photons) or none. The layer is one stable napari layer per detector
+  (``FLIM › lifetime``), updated in place with every frame.
+* **FLIM** -- the histogram of the per-pixel lifetimes (bins; **Pool scans**
+  pools the final lifetimes of every scan since ticked) with the mean marked,
+  the number of valid pixels, and the decay's phasor ``(g, s)`` at the laser
+  frequency.
+* **Tau STED** -- lifetime against intensity per pixel, the median lifetime,
+  and **Pile-up map layer**: photons per excitation pulse per pixel, from the
+  configured rep rate (above 10 % the histogram is biased).
+* **Gated STED** -- a table of time gates (name, from, to, and whether the
+  bounds are measured from the IRF **peak** or **absolute** on the axis),
+  drawn as draggable coloured regions on the decay; **+** / **−**;
+  **presets** from ``tutorial/timetagger/gate_presets`` (the files tutorial
+  12 loads); **Gate layers in viewer** puts each gate image of the last
+  frame in its own layer (``FLIM › gate:late``) and **Ratio layer** the
+  last gate over the first; **Measure STED pulse** marks where the STED
+  photodiode's pulse sits on the decay (needs the ``sted_pulse`` role).
+  Gate edits apply on the next Run.
+* **Signals** -- what every role of the card counts, sampled every second,
+  its trigger level (editable; refused with a message while a scan holds the
+  card), the TCSPC direction, the filter state and the overflow count;
+  **Trigger sweep** sweeps a role's level and prints the plateau, **Scope
+  snapshot** lists one line's worth of clock edges, **Pre-flight** runs
+  tutorial 10's checklist in colour. All three take seconds and run on a
+  worker thread.
+* **Status strip** -- the rates, the worst pile-up of the last frame, the
+  overflows since the panel opened, and ``[mock]`` on the simulated card;
+  orange when there is something to look at.
+* **Run once**, **Live**, **Stop** -- run the Scan widget's current scan
+  with the detector's products configured for this run only (the same
+  workflow path the scripts use, so the files are identical), repeatedly
+  in Live; **accumulate** sums that many scans into one result (intensities
+  and decays add, the lifetime image is the intensity-weighted mean);
+  **Stop** aborts the scan. A script's product session is never touched:
+  a run that overlaps one is refused.
+* **name** and **Save** -- write the last result (HDF5 and TIFFs, as a
+  workflow would) into the Recording widget's folder, with the gates and
+  fit of the acquisition that produced it, not the table's current state.
+  A frame the card never closed, or one with dropped tags, is marked
+  ``FRAME INVALID`` in the footer and ``frame_valid = False`` in the file.
 
-* **Live update** — redraw with every incoming frame.  Unticked, the panel
-  ignores frames.
-* **Mode:** — **Lifetime dist.** is a histogram of the per-pixel lifetimes,
-  with the mean marked by a red line.  **Decay** plots the photon-arrival
-  histogram summed over all valid pixels, with the red line at the global
-  lifetime fitted with the manager's ``fit_method``.
-* **Bins:**, **Min (ns):** and **Max (ns):** — the binning of the lifetime
-  histogram.  They take effect with the next frame and do not apply to the
-  decay.
-* **Accumulate** — in lifetime mode, pool the final image of every scan
-  completed since the box was ticked instead of showing the current one.  The
-  histogram is then redrawn when a scan ends; unticking empties the pool.
-
-The label on the right gives the number of valid pixels and their mean
-lifetime, or, in decay mode, the global lifetime and the photon count.
-
-.. image:: ./images/auto/FLIMHistWidget.png
+.. image:: ./images/auto/LifetimeWidget.png
    :align: center
    :width: 600px
+
+The FLIM view: the decay with the IRF peak, the lifetime histogram and the
+phasor readout.
+
+.. image:: ./images/auto/LifetimeWidget-gated.png
+   :align: center
+   :width: 600px
+
+The Gated STED view: the gate table, the regions on the decay, the preset
+and the STED-pulse marker.
+
+.. image:: ./images/auto/LifetimeWidget-tau.png
+   :align: center
+   :width: 600px
+
+The Tau STED view: lifetime against intensity per pixel and the pile-up map
+toggle.
+
+.. image:: ./images/auto/LifetimeWidget-signals.png
+   :align: center
+   :width: 600px
+
+The Signals view: live rates and trigger levels per role, and the pre-flight
+checklist.
 
 
 Hardware control
@@ -744,9 +826,13 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Four scan widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
-``Advanced`` — selected by ``scan.scanWidgetType``. An optional ``scan.cloak``
-selects a compatible simplified frontend; see :doc:`setupinfo-reference`.
+Five scan widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
+``Advanced`` and ``Expert`` — selected by ``scan.scanWidgetType``. An optional
+``scan.cloak`` selects a compatible simplified frontend; see
+:doc:`setupinfo-reference`. ``Expert`` edits a whole scan program (dimensions,
+positioners, what happens within one step, pauses and triggers, recording) and
+runs it on the scan engine its devices are on, with a **Simple** view that lists
+its values; see :doc:`expert-scanning`.
 ``SimplePointScan`` is a
 beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
 its header switches between the two, on the same scan.
@@ -797,7 +883,8 @@ the top Live role row lets ON/OFF/Readout roles participate independently.
 Those checkboxes change only laser enable state; power stays editable in the
 Laser widget. **Live**, **Stop** and **Acquire** stay together in the top action
 row. Live keeps the existing camera acquisition running but switches the Readout
-camera to internal trigger, Stop switches off only the screening lasers, and
+camera to internal trigger, Stop switches off only the screening lasers (while
+Acquire runs, Stop ends the acquisition at once, as in every scan panel), and
 Acquire uses external frame trigger plus the normal scan powers. The Live action
 is disabled for coupled laser-power setups. **Setup…** opens persistent setup
 editing, including detector-derived FOV/readout policies and slider ranges.
@@ -820,7 +907,15 @@ The dimension selectors on the right set which positioner is the first (pixel),
 second (line) and third (slice) scan axis; a positioner not chosen for any
 dimension is moved to its **Center** before the scan starts.  **Run Scan**
 starts one scan and is greyed out while it runs; with **Repeat** ticked the scan
-starts again each time it ends, until **Repeat** is unticked.  **Save Scan** and
+starts again each time it ends, until **Repeat** is unticked.  **Stop** (beside
+**Run Scan**, enabled while a scan runs) ends it at once: every laser line goes
+to its off level, a laser's analog power to its off, and the scanners return to
+where the scan started, no faster than their positioners' ``vel_max`` and
+``acc_max`` allow (a positioner that declares neither stays where the stop
+found it, and the log says so).  The frame in progress is dropped; a recording
+keeps the frames completed before it and its file says it stopped early
+(``recording:completion_outcome``).  Unticking **Repeat** instead lets the scan
+in progress finish.  **Save Scan** and
 **Load Scan** write and read the panel's settings as a JSON file, by default in
 the ``imcontrol_scans`` folder of the user directory.
 
@@ -929,19 +1024,30 @@ each pixel's dwell time:
   but do not apply them to a stage or galvo waveform; do not rely on this
   control for hardware movement.
 
-**Dwell time (ms)** is the time spent per pixel; the widget shows the resulting
-**Dead time** so you can see how much of each pixel is not being used.
-**Delay [sampl.] D2** is the galvo's response lag, by which the detector
-readout is delayed, and **D3** the settling time before each slice step of a 3-D scan.  Both
-are entered in microseconds, whatever the D2 label says, and start from
-``phase_delay`` / ``d3step_delay`` in ``scan.scanDesignerParams`` of the setup
-file.  **Plot** previews the generated waveforms, with **include TTL** to
+**Dwell time (ms)** is the time spent per pixel; its label names the scan
+clock (*10 µs clock* at ``scan.sampleRate`` 100 kHz, *1 µs* at 1 MHz), since a
+dwell is a whole number of its samples -- one between two runs as the next one
+up, and the timing note says so. The widget shows the resulting **Dead time**
+so you can see how much of each pixel is not being used.
+**Phase delay D2 (µs)** is the galvo's response lag: the detectors read, and the
+laser and camera lines play, that much after the command, so a gate follows
+the beam (the dark first or last pixel of fast scans was the gate closing on
+command time). It changes with the scan speed, so it stays a field, and starts from
+``phase_delay`` in ``scan.scanDesignerParams`` of the setup file. There is no
+D3 field: the pause before every slice of a 3-D scan is what the slice
+positioner declares it needs to settle, ``settleTimeS`` in its
+``managerProperties``, and the timing note says it (*Every slice starts after
+a 2000 µs pause: Z declares settleTimeS 0.002 s*, or that no slice positioner
+declares one).  **Plot** previews the generated waveforms, with **include TTL** to
 overlay the device gating.
 
 With point detectors, a line-step scan produces one frame per scan holding all
-steps, saved as ``(T, C, Y, X)`` with one channel per step.  The PMT's live
-view shows the steps summed into one image, but its recordings keep them as
-separate channels, as the APD's do — see :doc:`devices/detectors`.
+steps, saved as ``(T, C, Y, X)`` with one channel per step.  Outside a
+recording the PMT's live view shows the steps as a stack, as the APD's does
+(the **Sum line steps** box sums them); while it records, it shows its own
+sum of the steps, so the box comes and goes with the recording. Its
+recordings keep the steps as separate channels, as the APD's do — see
+:doc:`devices/detectors`.
 
 .. image:: ./images/auto/ScanWidgetAdvanced.png
    :align: center
@@ -1360,6 +1466,8 @@ The controls work as in EtSTED, with these differences:
    :align: center
    :width: 600px
 
+.. _etsnouty-widget:
+
 EtSnouty widget
 ---------------
 
@@ -1395,6 +1503,15 @@ does not load the pipeline itself.
   saves every analysed and raw frame as PNG in ``recordings/logs_et/frames``.
 * The value beside **Fast laser, power(mW)** is never applied; set the power in
   the Laser widget.
+* **Slow scan** chooses what an event starts. **TriggerScope pLSR routine**,
+  the default, is the scan described above. A scan panel instead --
+  ``Scan``, for the Expert panel (:doc:`expert-scanning`) -- runs that
+  panel's program once per event, on whatever engine runs it, through the
+  same request any workflow makes. The run carries the event that started it
+  as the shared attribute ``ScanEvent:triggeredBy`` (JSON: the pipeline, the
+  fast detector, the event's position in its pixels, when it was detected),
+  so a recording of that run says why it was taken; the attribute is blank
+  again when the run ends.
 
 .. image:: ./images/auto/EtSnoutyWidget.png
    :align: center

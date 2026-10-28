@@ -270,20 +270,34 @@ class TimeResolvedDetectorFacade:
         finally:
             self._detectorsManager.release(handle)
 
-    def configure(self, config: TimeResolvedScanConfig) -> None:
-        self._detector.configureTimeResolvedProducts(config)
+    def configure(self, config: TimeResolvedScanConfig,
+                  owner: str | None = None) -> str | None:
+        """Open a product session; returns its token (see the contract)."""
+        if owner is None:
+            return self._detector.configureTimeResolvedProducts(config)
+        return self._detector.configureTimeResolvedProducts(config, owner)
 
     def wait_for_final(
         self,
         timeout_s: float | None = None,
+        owner: str | None = None,
     ) -> TimeResolvedScanProducts:
-        return self._detector.waitForFinalTimeResolvedProducts(timeout_s)
+        if owner is None:
+            return self._detector.waitForFinalTimeResolvedProducts(timeout_s)
+        return self._detector.waitForFinalTimeResolvedProducts(timeout_s, owner)
 
     def get_last(self, copy: bool = True) -> TimeResolvedScanProducts | None:
         return self._detector.getLastTimeResolvedProducts(copy=copy)
 
-    def clear(self) -> None:
-        self._detector.clearTimeResolvedProducts()
+    def clear(self, owner: str | None = None) -> None:
+        if owner is None:
+            self._detector.clearTimeResolvedProducts()
+        else:
+            self._detector.clearTimeResolvedProducts(owner)
+
+    def session_owner(self) -> str | None:
+        probe = getattr(self._detector, "timeResolvedSessionOwner", None)
+        return probe() if callable(probe) else None
 
     def capabilities(self) -> dict:
         return self._detector.timeResolvedCapabilities()
@@ -1349,6 +1363,9 @@ class MicroscopeFacade:
     rotator_qwp: Optional[RotatorFacade] = None
     time_resolved: Optional[TimeResolvedDetectorFacade] = None
     scan: Optional[ScanWorkflowFacade] = None
+    time_tagger: Optional["time_tagger_facade.TimeTaggerFacade"] = None  # noqa: F821
+    """ The setup's Swabian Time Tagger (the ``timeTagger`` block), for
+    calibration and diagnostics; ``None`` when the setup has none. """
 
 
 def build_facade_from_master(
@@ -1406,6 +1423,20 @@ def build_facade_from_master(
 
     if scan_workflow is not None:
         facade.scan = ScanWorkflowFacade(scan_workflow, scan_done_signal)
+
+    timeTagger = getattr(master, "timeTaggerManager", None)
+    if timeTagger is not None:
+        from imswitch.imcontrol.model.managers.TimeTaggerManager import (
+            TimeTaggerManager,
+        )
+        from imswitch.imcontrol.model.workflows.time_tagger_facade import (
+            TimeTaggerFacade,
+        )
+        # A stand-in master (tests) may carry anything under the name.
+        if isinstance(timeTagger, TimeTaggerManager):
+            facade.time_tagger = TimeTaggerFacade(
+                timeTagger, detectorsManager=getattr(master, "detectorsManager", None)
+            )
 
     # Trigger sub-facade: prefer WFS pass-through when a Teensy port was
     # given (Option A in docs/design/plans/wfs-workflows-port.md). Otherwise

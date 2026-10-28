@@ -25,9 +25,96 @@ Dict formats:
 
 from __future__ import annotations
 
+import sys
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 import numpy as np
+
+
+#: How a requested duration becomes a whole number of samples, in every
+#: designer and in the Advanced controller: the ``step`` rule of the
+#: ``advanced-compatible-v1`` timing policy (ceil: a dwell is never
+#: shortened). A test holds the two together.
+DWELL_ROUNDING = 'ceil'
+
+#: A product that lands this close to a whole number is that whole number:
+#: ``2e-05 * 100000`` is not exactly 2 in floating point, and a ceil of
+#: it would be 3 samples. Relative to the product, two ulps.
+GRID_RELATIVE_ERROR = 2 * sys.float_info.epsilon
+
+
+#: A product of seconds and rate within this many samples of a whole or a
+#: half is taken as it: times are typed as decimals (0.015 ms), and the
+#: float that carries one (1.4999999999999999e-05) must not land its
+#: product on the wrong side of 1.5.
+SAMPLE_PRODUCT_RESOLUTION = Decimal('1e-9')
+
+
+def samples_for_duration(seconds, rate_hz, rounding=DWELL_ROUNDING) -> int:
+    """The whole number of samples a duration takes on a ``rate_hz`` grid,
+    under ``rounding``: 'ceil' (never shorter), 'nearest-even'
+    (``round``), or 'exact' (a duration off the grid raises ValueError
+    naming its two neighbours). The ONE arithmetic the galvo and Beta
+    designers, the TTL designer, the Advanced controller and the scan
+    program's timing policies share (plan scan-timing, rule 3). The product
+    is taken as the decimals were written (``repr``), to a nanosample, so
+    ``2e-05 * 100000`` is 2 and ``35e-6 * 100000`` is 3.5, not their float
+    neighbours."""
+    product = (Decimal(repr(float(seconds))) * Decimal(repr(float(rate_hz)))) \
+        .quantize(SAMPLE_PRODUCT_RESOLUTION)
+    if rounding == 'ceil':
+        return int(product.to_integral_value(rounding=ROUND_CEILING))
+    if rounding == 'nearest-even':
+        return int(product.to_integral_value(rounding=ROUND_HALF_EVEN))
+    if rounding == 'exact':
+        whole = product.to_integral_value(rounding=ROUND_HALF_EVEN)
+        if whole == product:
+            return int(whole)
+        low = int(product.to_integral_value(rounding=ROUND_FLOOR))
+        raise ValueError(f'{float(seconds):g} s is not on the {1 / float(rate_hz):g} s grid: '
+                         f'{low / float(rate_hz):g} or {(low + 1) / float(rate_hz):g} s')
+    raise ValueError(f'Unknown rounding {rounding!r}')
+
+
+def realized_dwell_s(dwell_s, rate_hz, rounding=DWELL_ROUNDING) -> float:
+    """The dwell as it plays: a whole number of samples on the grid."""
+    return samples_for_duration(dwell_s, rate_hz, rounding) / float(rate_hz)
+
+
+def dwell_request_if_changed(dwell_s, rate_hz, rounding=DWELL_ROUNDING):
+    """The requested dwell when realizing it changed it, else ``None``: what
+    a contract records beside ``dwell_time``. A request that is the realized
+    dwell to within the grid tolerance (``1e-5`` typed as ``10 * 1e-6``) is
+    not a change."""
+    realized = realized_dwell_s(dwell_s, rate_hz, rounding)
+    if abs(float(dwell_s) - realized) <= GRID_RELATIVE_ERROR * max(abs(realized), abs(float(dwell_s))):
+        return None
+    return float(dwell_s)
+
+
+def lag_samples_for(phase_delay_us, rate_hz) -> int:
+    """The phase delay -- the galvo's response lag, in µs -- as whole
+    samples of a clock at ``rate_hz``, nearest (half to even). The one
+    rounding the digital lines' delay (on the scan clock) and the point
+    detectors' delay (on their timer) share."""
+    lag_us = float(phase_delay_us or 0)
+    if lag_us <= 0:
+        return 0
+    return samples_for_duration(lag_us * 1e-6, rate_hz, 'nearest-even')
+
+
+def lag_report(phase_delay_us, scan_rate_hz, timer_rate_hz) -> dict:
+    """What a phase delay realizes (plan scan timing, S5): the lag asked for,
+    the delay the digital lines play (whole scan-clock samples), the delay
+    the point detectors read with (whole timer samples), and the residual
+    between the two -- at most half a scan-clock sample, where the gate and
+    the detector windows do not coincide. Seconds throughout."""
+    requested = max(0.0, float(phase_delay_us or 0)) * 1e-6
+    gate = lag_samples_for(phase_delay_us, scan_rate_hz) / float(scan_rate_hz)
+    detector = lag_samples_for(phase_delay_us, timer_rate_hz) / float(timer_rate_hz)
+    return {'requested_s': requested, 'gate_delay_s': gate, 'detector_delay_s': detector,
+            'residual_s': detector - gate}
 
 
 def pixels_for_length_step(length, step) -> int:
@@ -158,6 +245,17 @@ class AdvancedScanParameterSerializer:
                 analogParameterDict["axis_centerpos"].append(center)
                 analogParameterDict["axis_startpos"].append([center])
 
+        # Per-axis visit order (plan M2), aligned with target_device; only
+        # written when an axis is not forward, so a forward scan's dict (and
+        # its saved file) is unchanged.
+        orders = [
+            widget.getScanAxisOrder(name)
+            if name in positionersScan and hasattr(widget, "getScanAxisOrder") else "forward"
+            for name in analogParameterDict["target_device"]
+        ]
+        if any(order != "forward" for order in orders):
+            analogParameterDict["axis_order"] = orders
+
         seq_time = widget.getSeqTimePar()
         analogParameterDict["sequence_time"] = seq_time
         # Only a widget without the field falls back to zero. A blank or
@@ -167,10 +265,11 @@ class AdvancedScanParameterSerializer:
             analogParameterDict["phase_delay"] = widget.getPhaseDelayPar()
         except AttributeError:
             analogParameterDict["phase_delay"] = 0
-        try:
+        # The pause before a slice: only the old PointScan panel still has a
+        # field for it; elsewhere it is the slice positioner's declared
+        # settleTimeS, read by the designer, and no key is written.
+        if hasattr(widget, "getd3StepDelayPar"):
             analogParameterDict["d3step_delay"] = widget.getd3StepDelayPar()
-        except AttributeError:
-            analogParameterDict["d3step_delay"] = 0
 
         return analogParameterDict, positionersScan
 
@@ -395,6 +494,11 @@ class AdvancedScanParameterSerializer:
                 widget.setScanCenterPos(positionerName, analogParameterDict["axis_centerpos"][i])
             except Exception:
                 pass
+            if hasattr(widget, "setScanAxisOrder"):
+                # A scan saved without orders is forward on every axis.
+                orders = analogParameterDict.get("axis_order") or []
+                widget.setScanAxisOrder(
+                    positionerName, orders[i] if i < len(orders) else "forward")
 
         # timing
         if "sequence_time" in digitalParameterDict:
@@ -529,7 +633,9 @@ class AdvancedScanParameterSerializer:
             pass
 
 
-__all__ = ["AdvancedScanParameterSerializer"]
+__all__ = ["AdvancedScanParameterSerializer", "DWELL_ROUNDING", "GRID_RELATIVE_ERROR",
+           "dwell_request_if_changed", "lag_report", "lag_samples_for",
+           "pixels_for_length_step", "realized_dwell_s", "samples_for_duration"]
 
 
 def seed_scan_delays_from_setup(widget, setupInfo) -> None:

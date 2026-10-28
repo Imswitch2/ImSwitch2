@@ -94,6 +94,14 @@ class EtSnoutyWidget(Widget):
         self.setBusyFalseButton = guitools.BetterPushButton('Unlock softlock')
         self.endlessScanCheck = QtWidgets.QCheckBox('Endless')
 
+        self.slowScanPar_label = QtWidgets.QLabel('Slow scan')
+        self.slowScanPar_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.slowScanPar = QtWidgets.QComboBox()
+        self.slowScanPar.setToolTip(
+            'What a detected event starts: the TriggerScope pLSR routine, or one run of a '
+            'scan panel\'s program -- the Expert panel\'s, say. The event is recorded with '
+            'the run (ScanEvent:triggeredBy).')
+
         self.update_period_label = QtWidgets.QLabel('Update period (ms)')
         self.update_period_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom)
         self.update_period_edit = QtWidgets.QLineEdit(str(100))
@@ -137,8 +145,28 @@ class EtSnoutyWidget(Widget):
         self.grid.addWidget(self.fastImgLasersPar, currentRow, 3)
         self.grid.addWidget(self.fastImgLasersPower_edit, currentRow, 4)
 
+        currentRow += 1
+        self.grid.addWidget(self.slowScanPar_label, currentRow, 2)
+        self.grid.addWidget(self.slowScanPar, currentRow, 3)
+
         self.savePipelineParamsBtn.clicked.connect(self.sigSavePipelineClicked)
         self.loadPipelineParamsBtn.clicked.connect(self.sigLoadPipelineClicked)
+
+    def setSlowScanSources(self, labels):
+        """The slow scans an event can start, keeping the current choice
+        when it is still one of them."""
+        current = self.slowScanPar.currentText()
+        self.slowScanPar.blockSignals(True)
+        try:
+            self.slowScanPar.clear()
+            self.slowScanPar.addItems(list(labels))
+            if current in labels:
+                self.slowScanPar.setCurrentText(current)
+        finally:
+            self.slowScanPar.blockSignals(False)
+
+    def getSlowScanSource(self) -> str:
+        return self.slowScanPar.currentText()
 
     def initParamFields(self, parameters: dict):
         """Initialize widget parameter fields for the loaded pipeline."""

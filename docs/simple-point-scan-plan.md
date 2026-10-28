@@ -3,6 +3,11 @@
 *Work-in-progress plan. The user documentation will be a Sphinx `.rst` page
 written in P4.*
 
+> **Superseded 2026-10-18 (Lenny):** "no mid-iteration Stop" no longer holds.
+> Stop ends a scan at once on every panel and the unfinished frame is dropped;
+> unticking Live still lets the frame finish. See
+> `docs/design/plans/scan-stop-now.md`.
+
 - **Status:** planned 2026-09-25; P0 done 2026-09-25 (speed rule, estimator,
   tests). Review 1 (2026-09-25) found that the plan overstated what Advanced
   gives for free; its six findings are verified and answered in §6, a design

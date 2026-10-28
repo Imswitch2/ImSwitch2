@@ -387,15 +387,18 @@ def test_every_nidaq_scan_entry_point_is_routed_through_the_coordinator():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[4]
+    # The NI-DAQ scan engine's run_signals is the one remaining runScan call;
+    # it is only ever the coordinator's starter, so calling it directly is the
+    # new way to skip the lifecycle and is flagged too.
     pattern = re.compile(r'(?<!def )runScan\(signal|nidaqManager\.runScan\(|'
-                         r'nidaq_manager\.runScan\(')
+                         r'nidaq_manager\.runScan\(|\.run_signals\(')
 
     offenders = []
     for path in (root / 'imswitch').rglob('*.py'):
         if '_test' in path.parts:
             continue
-        if path.name in ('NidaqManager.py', '_scan_execution.py'):
-            continue  # defines runScan / is the coordinator
+        if path.name in ('NidaqManager.py', '_scan_execution.py', 'NidaqScanEngine.py'):
+            continue  # defines runScan / is the coordinator / is the engine's starter
         for number, line in enumerate(
                 path.read_text(encoding='utf-8', errors='ignore').splitlines(), 1):
             stripped = line.lstrip()

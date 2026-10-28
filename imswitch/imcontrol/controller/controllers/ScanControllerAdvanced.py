@@ -6,6 +6,9 @@ import traceback
 from typing import Dict, Any
 
 import numpy as np
+
+from imswitch.imcontrol.model.managers.NidaqManager import TIMER_COUNTER_RATE_HZ
+from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import lag_note, slice_pause_note
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import (
@@ -13,10 +16,18 @@ from imswitch.imcontrol.model import (
     LaserScanState,
     getWidgetStatePersistence,
 )
+from imswitch.imcontrol.model.scan_program.engine import device_digital_line
 from imswitch.imcontrol.model.scan_parameters import (
+    lag_report,
+    samples_for_duration,
     seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
     pixels_for_length_step,
+)
+from imswitch.imcontrol.model.scan_program import PolicyError, resolve_policy
+from imswitch.imcontrol.model.scan_program.advanced import (
+    AdvancedConversionError, axis_order_refusal, program_scan_signals, scan_timing_policy,
+    schedule_summary, timing_note, uses_program_features,
 )
 from ..basecontrollers import SuperScanController
 
@@ -100,7 +111,6 @@ class ScanControllerAdvanced(SuperScanController):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        seed_scan_delays_from_setup(self._widget, self._setupInfo)
 
         # The last full scan design and the parameters that produced it, so a
         # recording's layout query, the run that follows it and repeated scan
@@ -119,6 +129,13 @@ class ScanControllerAdvanced(SuperScanController):
             "ms"
         )
 
+        # Grey out TTL devices the scan engine cannot drive (plan §3.3); the
+        # run refuses them in _make_full_scan.
+        self._widget.setTTLAvailability(*self._ttlAvailability())
+        # Visit orders other than forward are built for stepped scans (M2).
+        if hasattr(self._widget, 'setAxisOrderAvailability'):
+            self._widget.setAxisOrderAvailability(*self._axisOrderAvailability())
+
         # Tell the widget which TTL devices support per-linestep analog power (AO channel present)
         try:
             power_capable = []
@@ -130,6 +147,15 @@ class ScanControllerAdvanced(SuperScanController):
         except Exception:
             self._logger.debug("Could not detect power-capable devices:\n%s", traceback.format_exc())
 
+        # The setup's first dwell and delays, and the clock the dwell counts
+        # on. Only now: setting a field emits the change signals the base
+        # class wired to the shared-attribute updates, which read the whole
+        # panel through the serializer and the controls built above (seeded
+        # earlier, every setup with a dwell_ms logged an AttributeError).
+        seed_scan_delays_from_setup(self._widget, self._setupInfo)
+        if hasattr(self._widget, 'setScanClock'):
+            self._widget.setScanClock(self._setupInfo.scan.sampleRate)
+
         # ---- initial state ----
         self.updatePixels()
         self.updateScanStageAttrs()
@@ -140,6 +166,8 @@ class ScanControllerAdvanced(SuperScanController):
             sig = getattr(self._widget, sig_name, None)
             if sig is not None:
                 sig.connect(self.plotSignalGraph)
+                # The dwell and the line program decide the timing note.
+                sig.connect(self._refreshTimingNote)
         if hasattr(self._widget, 'sigStageParChanged'):
             self._widget.sigStageParChanged.connect(self.updatePixels)
         if hasattr(self._widget, "sigPlotScanClicked"):
@@ -161,7 +189,7 @@ class ScanControllerAdvanced(SuperScanController):
         self._progressTimer = QtCore.QTimer(self)
         self._progressTimer.setInterval(SCAN_PROGRESS_INTERVAL_MS)
         self._progressTimer.timeout.connect(self._updateScanProgress)
-        self._master.nidaqManager.sigScanStarted.connect(
+        self._scanEngine.sigScanStarted.connect(
             self._onScanIterationStarted
         )
 
@@ -182,6 +210,38 @@ class ScanControllerAdvanced(SuperScanController):
             raise RuntimeError("setupInfo.scan is not defined; cannot scan")
         return SignalDesignerFactory(self._setupInfo.scan.TTLCycleDesigner)
 
+    #: What the panel says when the scan engine drives no TTL device at all.
+    ANALOG_ONLY_NOTE = ('This scanner has no digital lines: the scan does not switch lasers. '
+                        'Set them in the Laser panel.')
+
+    def _ttlAvailability(self):
+        """``({device: reason}, note)`` for the TTL devices the scan engine
+        does not drive, and the analog-only note when it drives none."""
+        engine = self._engineForScans()
+        # The Advanced scan plays on the leading engine alone: a line a
+        # follower owns is not driven by it (review 2026-10-16).
+        player = getattr(engine, 'leader', None) or engine
+        unavailable = {}
+        for name, info in self.TTLDevices.items():
+            line = device_digital_line(info)
+            if line is not None and not player.owns(line):
+                unavailable[name] = (f'{name} is wired to {line}, which the scan engine '
+                                     f'{player.name!r} does not drive.')
+        drivable = [name for name in self.TTLDevices if name not in unavailable]
+        return unavailable, (self.ANALOG_ONLY_NOTE if not drivable else '')
+
+    def _refuseUndrivenTTL(self, TTLParameters):
+        """Refuse a scan that fires a TTL device the engine does not drive.
+        Today such a line was dropped silently: the laser never fired."""
+        devices = getattr(self, 'TTLDevices', None) or {}
+        if not any(name in devices for name in TTLParameters.get('target_device', ())):
+            return
+        unavailable, _ = self._ttlAvailability()
+        named = [name for name in TTLParameters.get('target_device', ()) if name in unavailable]
+        if named:
+            raise ScanDesignRefusedError(' '.join(unavailable[name] for name in named)
+                                         + ' Remove it from the scan, or wire it to this engine.')
+
     def _make_full_scan(self, scanParameters, TTLParameters):
         """
         Constructs the full scan from scan parameters using the set parameters in the ScanWidgetAdvanced
@@ -191,6 +251,7 @@ class ScanControllerAdvanced(SuperScanController):
         Raises ScanDesignRefusedError, with the reason, when the scan designer
         refuses the scan (too long, voltages outside a scanner's range).
         """
+        self._refuseUndrivenTTL(TTLParameters)
         scan_des = self._get_scan_designer()
         ttl_des = self._get_ttl_designer()
 
@@ -204,6 +265,16 @@ class ScanControllerAdvanced(SuperScanController):
                 raise ScanDesignRefusedError(refusal)
 
         scanSignalsDict, positions, scanInfoDict = scan_des.make_signal(stage_param, self._setupInfo)
+        try:
+            programmed = uses_program_features(stage_param, stage_param)
+        except AdvancedConversionError as error:
+            raise ScanDesignRefusedError(str(error)) from error
+        if programmed:
+            # An interleaved order or an intra-pixel move: the analog
+            # waveforms come from the scan-program interpreter (plan M2).
+            scanSignalsDict, scanInfoDict = program_scan_signals(
+                stage_param, self._setupInfo, scanSignalsDict, scanInfoDict,
+                digital=self._ttl_parameters_without_positioners(TTLParameters))
 
         # Voltage compliance, like PointScan's makeFullScan: refuse waveforms
         # outside a scanner's configured minVolt/maxVolt. Without this the
@@ -264,6 +335,71 @@ class ScanControllerAdvanced(SuperScanController):
         self._lastTTLParameters = copy.deepcopy(TTLParameters)
 
         return signalDict, scanInfoDict
+
+    def _axisOrderAvailability(self):
+        refusal = axis_order_refusal(self._setupInfo)
+        return not refusal, refusal
+
+    # ------------------------------------------------------------------
+    # Timing policy (plan §2.6): saved with the scan, shown on the panel
+    # ------------------------------------------------------------------
+
+    def getComponentState(self) -> dict:
+        state = super().getComponentState()
+        # Additive: a file without it is a legacy Advanced scan, which runs
+        # under advanced-compatible-v1.
+        state['timingPolicy'] = scan_timing_policy(self._stage_parameters(
+            state['analogParameterDict'], state['digitalParameterDict']))
+        return state
+
+    def applyComponentState(self, state, *, applyMode):
+        if isinstance(state, dict) and 'timingPolicy' in state:
+            try:
+                resolve_policy(state['timingPolicy'])
+            except PolicyError as error:
+                return [f'{error} Scan state was not applied.']
+        return super().applyComponentState(state, applyMode=applyMode)
+
+    def _refreshTimingNote(self):
+        if getattr(self, 'settingParameters', False):
+            return
+        self.getParameters()
+        self._updateTimingNote()
+
+    def _updateTimingNote(self):
+        if not hasattr(self._widget, 'setTimingNote'):
+            return
+        try:
+            note = timing_note(
+                self._stage_parameters(self._analogParameterDict, self._digitalParameterDict),
+                self._setupInfo.scan.sampleRate,
+                self._ttl_parameters_without_positioners(self._digitalParameterDict),
+                self._setupInfo)
+        except Exception as error:
+            note = f'Timing: {error}'
+        if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'GalvoScanDesigner':
+            try:
+                settle = slice_pause_note(self._analogParameterDict, self._setupInfo)
+            except Exception:
+                settle = ''
+            try:
+                lag = lag_note(self._analogParameterDict.get('phase_delay', 0),
+                               self._setupInfo.scan.sampleRate, self._detectorTimerRateHz())
+            except Exception:
+                lag = ''
+            for extra in (settle, lag):
+                if extra:
+                    note = f'{note} {extra}'.strip()
+        self._widget.setTimingNote(note)
+
+    def _detectorTimerRateHz(self):
+        """The rate the point detectors sample on: the NI-DAQ manager's
+        timer, else the setup's nidaq.detectionRateHz, else its default."""
+        try:
+            return float(self._master.nidaqManager.timerRateHz)
+        except (AttributeError, TypeError, ValueError):
+            rate = getattr(getattr(self._setupInfo, 'nidaq', None), 'detectionRateHz', None)
+            return float(rate) if rate else TIMER_COUNTER_RATE_HZ
 
     def _log_linestep_scan_diagnostics(
         self,
@@ -646,15 +782,8 @@ class ScanControllerAdvanced(SuperScanController):
         signals = self._get_ttl_designer().make_single_pixel_signal(
             forced, self._setupInfo
         )
-        samplesPerPixel = max(
-            1,
-            int(
-                round(
-                    float(parameters["sequence_time"])
-                    * float(self._setupInfo.scan.sampleRate)
-                )
-            ),
-        )
+        samplesPerPixel = max(1, samples_for_duration(
+            float(parameters["sequence_time"]), float(self._setupInfo.scan.sampleRate)))
         counts = {}
         for detector in requested:
             signal = signals.get(detector)
@@ -904,7 +1033,40 @@ class ScanControllerAdvanced(SuperScanController):
     def _buildScanSignals(self):
         self.getParameters()
         with self._positionSnapshotForScanDesign():
-            return self._cachedFullScan()
+            built = self._cachedFullScan()
+            self._publishScheduleSummary()
+            return built
+
+    def _publishScheduleSummary(self):
+        """The file says what ran (§7.9): every distinct time the scan
+        realizes differently, from the sample the timing note reads; blank for
+        a swept scan, which the program path does not describe. Published as
+        the run is armed -- not by a design for a plot or an estimate. What
+        it fails on is said, and the run is not held for its metadata."""
+        try:
+            summary = schedule_summary(
+                self._stage_parameters(self._analogParameterDict, self._digitalParameterDict),
+                self._ttl_parameters_without_positioners(self._digitalParameterDict),
+                self._setupInfo, self._setupInfo.scan.sampleRate)
+            self.setSharedAttr('ScanStage', 'scan_schedule',
+                               summary if summary is not None else '')
+        except Exception:
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                logger.warning('The scan\'s realized timing is not recorded', exc_info=True)
+        # How the galvo's lag plays (scan timing plan, rule 7): the delay of
+        # the digital lines in whole scan-clock samples, the detectors' in
+        # whole timer samples, and the residual between them. Beside the
+        # schedule, so the file has it under the same conditions.
+        try:
+            if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'GalvoScanDesigner':
+                self.setSharedAttr('ScanStage', 'lag', lag_report(
+                    self._analogParameterDict.get('phase_delay', 0),
+                    self._setupInfo.scan.sampleRate, self._detectorTimerRateHz()))
+        except Exception:
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                logger.warning('How the phase delay plays is not recorded', exc_info=True)
 
     def _cachedFullScan(self):
         """Full scan design for the current parameters, built at most once.
@@ -1011,6 +1173,7 @@ class ScanControllerAdvanced(SuperScanController):
                     self._widget.setScanPixels(positionerName, pixels)
         except Exception:
             self._logger.debug("updatePixels failed:\n%s", traceback.format_exc())
+        self._updateTimingNote()
 
     # ---------------------------------------------------------------------
     # TTL preview plotting

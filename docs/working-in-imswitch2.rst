@@ -113,8 +113,9 @@ ImControl adds its own menus, each holding one kind of thing:
   a saved HDF5 file or Zarr store back into the widgets, and *Save Widget
   States…* / *Load Widget States…* (see below).
 * **Hardware** — which microscope this is: *Pick hardware setup…*
-  (:doc:`imcontrol-setups`) and *Edit hardware configuration…* (the config
-  editor, :doc:`imcontrol-setups`).
+  (:doc:`imcontrol-setups`), *Edit hardware configuration…* (the config
+  editor, :doc:`imcontrol-setups`) and *What this setup can scan…*, every
+  scan engine of the setup and what it can do (:doc:`devices/scan_engines`).
 * **View** — *Reset panel layout*, which puts every panel back where the
   hardware setup places it, at the sizes its contents ask for.
 * **Shortcuts** — *Configure Shortcuts…* and the current bindings.

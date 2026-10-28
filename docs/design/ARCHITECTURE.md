@@ -329,7 +329,7 @@ Large arrays (images) are passed via POSIX shared memory through `SerNDArray` to
 | `LaserWidget` | Laser power control and presets |
 | `PositionerWidget` | XYZ stage control |
 | `RecordingWidget` | Data acquisition to HDF5/TIFF/Zarr |
-| `FLIMHistWidget` | FLIM histogram display (Swabian Time Tagger) |
+| `LifetimeWidget` | Lifetime (FLIM / STED) panel for a time-resolved detector (Swabian Time Tagger) |
 | `TilingWidget` | Multi-position tiled acquisition |
 | `ViewerToolsWidget` | Napari tool mode selection (pan, ROI, line) |
 | `LineProfileWidget` | Line profile analysis |
@@ -494,13 +494,15 @@ Multi-position tiled acquisition manager:
 - Stitched-overview cell detection with passive GUI marker overlay
 - Explicit automated cell-target iteration for API/workflow callbacks
 
-### FLIMHistWidget / FLIMHistController
-**Location:** `imswitch/imcontrol/view/widgets/FLIMHistWidget.py`
+### LifetimeWidget / LifetimeController
+**Location:** `imswitch/imcontrol/view/widgets/LifetimeWidget.py`
 
-Swabian Time Tagger FLIM histogram display:
-- Real-time FLIM histogram plotting
-- Integration with Time Tagger hardware
-- Lifetime analysis tools
+The Lifetime (FLIM / STED) panel for a time-resolved detector (Lifetime
+2.0 plan): the aggregated decay, FLIM, Gated STED, Tau STED and Signals
+views, a worker-thread Run/Live path through the time-resolved workflow,
+viewer layers through `ImageWidget.upsertStaticLayer`, and the shared
+Time Tagger card's live signals. Replaced `FLIMHistWidget`; the old
+`FLIMHist` key is renamed at setup load.
 
 ### WidefieldStarss Hardware Ports (2026-05-23)
 

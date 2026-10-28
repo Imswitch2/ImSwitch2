@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from .scan_cloak import PlanNotRepresentable, ScanCloak
-from .scan_parameters import pixels_for_length_step
+from .scan_parameters import pixels_for_length_step, samples_for_duration
 from .signaldesigners.GalvoScanDesigner import (
     fast_axis_speed_limit,
     is_smooth_scan_axis,
@@ -93,7 +93,10 @@ class ScanLimits:
     config: Mapping[str, Any]
 
     @classmethod
-    def from_setup(cls, setupInfo) -> 'ScanLimits':
+    def from_setup(cls, setupInfo, drivable=None) -> 'ScanLimits':
+        """The panel's limits. ``drivable(line)`` says whether the scan engine
+        drives a digital line; a laser on a line it does not drive is not
+        offered, since the scan could not switch it."""
         axes = []
         for name, info in setupInfo.positioners.items():
             if not info.forScanning:
@@ -114,6 +117,8 @@ class ScanLimits:
                 speed_limit=fast_axis_speed_limit(name, props),
             ))
         ttl = setupInfo.getTTLDevices()
+        if drivable is not None:
+            ttl = {name: info for name, info in ttl.items() if drivable(info.getDigitalLine())}
         gates = []
         for name, info in (getattr(setupInfo, 'lasers', None) or {}).items():
             if name not in ttl:
@@ -242,7 +247,6 @@ class SimpleScanPlan:
     channel_power: Mapping[str, Tuple[float, ...]] = field(default_factory=dict)
     channel_power_enabled: Mapping[str, bool] = field(default_factory=dict)
     phase_delay_us: float = 0.0
-    d3step_delay_us: float = 0.0
     frames: int = 1
 
     def pixels(self, dim: str) -> int:
@@ -270,7 +274,6 @@ class SimpleScanPlan:
             'channel_power': {k: list(v) for k, v in self.channel_power.items()},
             'channel_power_enabled': dict(self.channel_power_enabled),
             'phase_delay_us': self.phase_delay_us,
-            'd3step_delay_us': self.d3step_delay_us,
             'frames': self.frames,
         }
 
@@ -294,7 +297,6 @@ class SimpleScanPlan:
                 k: bool(v) for k, v in (data.get('channel_power_enabled') or {}).items()
             },
             phase_delay_us=float(data.get('phase_delay_us', 0.0)),
-            d3step_delay_us=float(data.get('d3step_delay_us', 0.0)),
             frames=int(data.get('frames', 1)),
         )
 
@@ -329,7 +331,6 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
             add(name, 1.0, 1.0, plan.park.get(name, 0.0))
     analog['sequence_time'] = float(plan.dwell_s)
     analog['phase_delay'] = plan.phase_delay_us
-    analog['d3step_delay'] = plan.d3step_delay_us
 
     # No laser chosen yet is one line pass that fires nothing: what the
     # Advanced panel holds for it (its step count never drops below one),
@@ -446,7 +447,8 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
                 f'Line pass {step + 1} of this scan fires no laser, which the '
                 'point-scan panel cannot show; open it in the Advanced scan panel.'
             )
-        lanes.append(lane)
+        if lane:
+            lanes.append(lane)
 
     names = list(analog['target_device'])
     dims = [name for name in analog.get('scan_dim_target_device', []) if name and name != 'None']
@@ -490,7 +492,6 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
         channel_power=power,
         channel_power_enabled=enabled,
         phase_delay_us=float(analog.get('phase_delay', 0.0) or 0.0),
-        d3step_delay_us=float(analog.get('d3step_delay', 0.0) or 0.0),
     )
 
 
@@ -523,9 +524,12 @@ def power_refusal(plan: SimpleScanPlan, limits: ScanLimits) -> str:
 # ---------------------------------------------------------------------------
 
 def snap_dwell_s(dwell_s: float, sample_rate: float, *, minimum: float = 0.0) -> float:
-    """``dwell_s`` as a whole number of samples, never below ``minimum``."""
-    samples = max(1, round(float(dwell_s) * sample_rate))
-    floor = math.ceil(float(minimum) * sample_rate - 1e-9)
+    """``dwell_s`` as a whole number of samples -- the nearest, as a slider
+    snaps -- never below ``minimum`` (rounded up). The arithmetic the
+    designers share (``scan_parameters.samples_for_duration``), so the dwell
+    Simple sets is the dwell the scan plays."""
+    samples = max(1, samples_for_duration(dwell_s, sample_rate, 'nearest-even'))
+    floor = samples_for_duration(minimum, sample_rate, 'ceil') if minimum else 0
     return max(samples, floor, 1) / sample_rate
 
 
@@ -565,7 +569,6 @@ def normalize_plan(plan: 'SimpleScanPlan') -> 'SimpleScanPlan':
         regions=regions,
         park={name: quantize_um(value) for name, value in plan.park.items()},
         phase_delay_us=float(round(plan.phase_delay_us)),
-        d3step_delay_us=float(round(plan.d3step_delay_us)),
     )
     power, enabled = _canonical_power(
         plan.channel_power, plan.channel_power_enabled, len(plan.channels))

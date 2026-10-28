@@ -1351,6 +1351,98 @@ def test_late_recording_failure_does_not_abort_unowned_scan():
     assert events == ['cycle-ended']
 
 
+def _preSessionFailureController(manager):
+    import types
+
+    from imswitch.imcontrol.model import RecMode
+
+    published = []
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanOnce,
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=None,
+        _recordingGenerationBeforeOperation=4,
+        _recordingFailureHandled=False,
+        _recordingFailedCurrent=False,
+        _scanStartPublished=False,
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        stopRequested=False,
+        recording=True,
+        endedRecording=False,
+        doneScan=False,
+        _commChannel=types.SimpleNamespace(
+            sigRecordingFailed=types.SimpleNamespace(emit=published.append),
+        ),
+        _master=types.SimpleNamespace(recordingManager=manager),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recordingCycleEnded=lambda: published.append('cycle-ended'),
+    )
+    return ctrl, published
+
+
+def test_a_recording_refused_before_its_session_starts_still_fails_publicly():
+    """A scan-once recording whose scan the designer refuses fails while
+    reading the scan geometry, before the manager opens a session. With no
+    session there was nothing to report the failure into, so no
+    recordingEnded/recordingFailed reached scripts and a caller waiting for
+    one hung until its timeout."""
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    reported = []
+    manager = types.SimpleNamespace(
+        recordingGeneration=4,
+        reportRecordingFailure=lambda *args: reported.append(args),
+    )
+    ctrl, published = _preSessionFailureController(manager)
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'Pixel dwell time too short', abortManager=False
+    )
+    # The re-entry a legacy comm-channel connection makes is a no-op.
+    RecordingController._handleRecordingFailure(
+        ctrl, 'Pixel dwell time too short', abortManager=False
+    )
+
+    assert published == ['Pixel dwell time too short', 'cycle-ended']
+    assert reported == []
+    assert ctrl.recording is False
+
+
+def test_a_session_opened_and_failed_while_starting_reports_into_the_manager():
+    """When the manager did open a session before startRecording raised, it
+    owns the terminal (and publishes it at most once); the controller must not
+    publish a second one of its own."""
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model.managers.RecordingManager import FailureKind
+
+    reported = []
+    manager = types.SimpleNamespace(
+        recordingGeneration=5,
+        reportRecordingFailure=lambda *args: reported.append(args),
+    )
+    ctrl, published = _preSessionFailureController(manager)
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'worker thread did not start', abortManager=False
+    )
+
+    assert reported == [
+        ('worker thread did not start', 5, FailureKind.UNKNOWN)
+    ]
+    assert published == ['cycle-ended']
+
+
 def test_rejected_scan_request_aborts_recorder_without_broadcasting_scan_abort():
     import types
 

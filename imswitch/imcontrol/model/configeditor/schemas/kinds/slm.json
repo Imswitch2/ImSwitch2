@@ -108,6 +108,23 @@
         "dataclass:SLMsInfo.pixelSize: float"
       ]
     },
+    "preparation": {
+      "default": null,
+      "description": "Time from the request of the device's state (the line's edge, or the command) until it is ready (a shutter fully open, a laser emitting at its set level): ``\"notRequired\"``, ``{\"durationS\": seconds}`` or ``\"unknown\"``. Absent is not zero: see the scan-program plan, §2.4.",
+      "type": [
+        "string",
+        "object",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "object"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.preparation: Optional[Union[str, Dict[str, float]]]"
+      ]
+    },
     "serial_number": {
       "default": null,
       "description": "Unique n° of the SLM head you use. ``null``/omitted if not needed (e.g. simulated SLMs).",
@@ -128,6 +145,15 @@
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "dataclass:DeviceInfo.transient: bool"
+      ]
+    },
+    "ttlActiveLevel": {
+      "default": "high",
+      "description": "The electrical level of the ``digitalLine`` that means *on*: ``\"high\"`` (default) or ``\"low\"`` for an inverted input. Every path that drives the line -- a scan, manual control, stopping, failure cleanup -- maps the device's logical on/off through it.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.ttlActiveLevel: str"
       ]
     },
     "wavelength": {

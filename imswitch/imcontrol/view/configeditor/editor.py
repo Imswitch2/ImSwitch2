@@ -86,7 +86,7 @@ _FALLBACK_CATEGORY_REGISTRY = {
     "rs232devices": ("RS232 Devices", "rs232"),
     "slms": ("SLMs", "slms"),
     "flipMirrors": (None, "flipMirrors"),
-    "pulsegen": (None, "pulsegen"),
+    "pulseGenerators": (None, "pulsegen"),
     "stands": (None, "stands"),
 }
 _CATEGORY_REGISTRY = (
@@ -3429,7 +3429,13 @@ class PropertyEditor(QWidget):
         current = self._data.get(key) if isinstance(self._data.get(key), dict) else None
         dlg = SectionEditorDialog(key, schema, current, self._data, self)
         if dlg.exec_() == QDialog.Accepted:
-            self._data[key] = dlg.result_data
+            # The form's fields over the section as it was: a key the form
+            # does not show (a newer one, a comment) is kept, not dropped --
+            # applying the Scan form used to lose scan.engine (review
+            # 2026-10-16).
+            merged = dict(current or {})
+            merged.update(dlg.result_data)
+            self._data[key] = merged
             self._refresh_sections()
             self.sig_modified.emit()
 
@@ -3676,7 +3682,7 @@ def _load_widget_registry() -> dict:
         "LeicaStand": "Microscope",
         # Analysis
         "FFT": "Analysis",
-        "FLIMHist": "Analysis",
+        "Lifetime": "Analysis",
         "BeadRec": "Analysis",
         "AlignAverage": "Analysis",
         "AlignXY": "Analysis",
@@ -3719,7 +3725,7 @@ def _load_widget_registry() -> dict:
         ],
         "Analysis": [
             ("FFT",            "Live FFT tool"),
-            ("FLIMHist",       "FLIM lifetime histogram (needs a FLIM detector)"),
+            ("Lifetime",       "Lifetime: FLIM, tau-STED and the Time Tagger's signals (needs a FLIM detector)"),
             ("BeadRec",        "Bead reconstruction"),
             ("AlignAverage",   "Axial alignment tool"),
             ("AlignXY",        "Rotational alignment tool"),

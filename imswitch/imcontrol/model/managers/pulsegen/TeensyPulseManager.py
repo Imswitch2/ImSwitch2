@@ -3,6 +3,7 @@ ImSwitch v4 pulse-generator firmware (with v3 fallback)."""
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 from typing import List, Optional
 
@@ -19,7 +20,29 @@ from .PulseGeneratorManager import (
 # ``TeensyPulseInfo`` is defined in SetupInfo.py so it can sit alongside
 # the other setup-file dataclasses.  Re-exported here for callers who
 # only know about the manager.
-__all__ = ['TeensyPulseManager', 'TeensyPulseInfo']
+__all__ = ['TeensyPulseManager', 'TeensyPulseInfo', 'teensy_info']
+
+
+def teensy_info(name, props) -> TeensyPulseInfo:
+    """A ``pulseGenerators`` entry's ``managerProperties`` as the
+    ``teensyPulse`` section they mirror: the same keys and defaults, and a
+    key it does not have refused by name."""
+    known = [f.name for f in dataclasses.fields(TeensyPulseInfo)]
+    unknown = sorted(set(props) - set(known))
+    if unknown:
+        raise ValueError(f'{name}: TeensyPulseManager does not take managerProperties '
+                         f'{", ".join(unknown)}; it takes {", ".join(known)}.')
+    # Each key read by name, so that the config editor lists them.
+    default = TeensyPulseInfo()
+    return TeensyPulseInfo(
+        port=props.get('port', default.port),
+        baud=props.get('baud', default.baud),
+        pinMap=props.get('pinMap', default.pinMap),
+        useMockOnFailure=props.get('useMockOnFailure', default.useMockOnFailure),
+        mockNChannels=props.get('mockNChannels', default.mockNChannels),
+        mockMinPulseUs=props.get('mockMinPulseUs', default.mockMinPulseUs),
+        mockMaxSteps=props.get('mockMaxSteps', default.mockMaxSteps),
+    )
 
 
 class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
@@ -47,9 +70,23 @@ class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
     # the protocol version, so we report it constant across v3 and v4.
     _JITTER_NS = 1_000
 
-    def __init__(self, info: TeensyPulseInfo):
+    #: The v4 wire protocol sends step durations as whole microseconds
+    #: (``<dur_us>,<bitmask_hex>``, docs/design/ARCHITECTURE.md).
+    _TIMING_RESOLUTION_NS = 1_000
+
+    #: v4 firmware keeps ``n_reps`` in a ``uint32_t`` (``seqNReps`` in
+    #: WidefieldStarss teensy/arduino_code_teensy4p1_v4.txt); ``*IDN?`` does
+    #: not report it.
+    _V4_MAX_REPEATS = 2 ** 32 - 1
+
+    def __init__(self, info, name=None, **lowLevelManagers):
+        """``info``: the setup's ``teensyPulse`` section, or a
+        ``pulseGenerators`` entry whose ``managerProperties`` are that
+        section's keys."""
         super().__init__()
-        self.__logger = initLogger(self)
+        self.__logger = initLogger(self, instanceName=name)
+        if not isinstance(info, TeensyPulseInfo):
+            info = teensy_info(name, getattr(info, 'managerProperties', None) or {})
         self._info = info
 
         self._driver = self._open_driver(info)
@@ -138,6 +175,30 @@ class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
         return False
 
     @property
+    def max_sequence_steps(self) -> int:
+        # v3 firmware plays no uploaded sequences (upload_sequence refuses).
+        caps = self._driver.capabilities
+        return caps.max_steps if caps.is_v4 else 0
+
+    @property
+    def timing_resolution_ns(self) -> int:
+        return self._TIMING_RESOLUTION_NS
+
+    @property
+    def max_repeats(self) -> Optional[int]:
+        return self._V4_MAX_REPEATS if self._driver.capabilities.is_v4 else None
+
+    @property
+    def stop_drives_low(self) -> bool:
+        # The firmware's STOP handler calls allChannelsLow(); so does the mock.
+        return True
+
+    @property
+    def stop_granularity(self) -> str:
+        # STOP is checked between steps (and every 16 ms inside long ones).
+        return 'step-boundary'
+
+    @property
     def connected(self) -> bool:
         # Mock driver has the same is_open semantics as the real one,
         # so this single check covers both cases.  The semantic
@@ -214,7 +275,9 @@ class TeensyPulseManager(DeviceManagerStatusMixin, PulseGeneratorManager):
         # rep count.  Stash the steps and apply on run().
         self._programmed_steps = wire_steps
 
-    def run(self, n_reps: int = 1, blocking: bool = False) -> None:
+    def run(self, n_reps: int = 1, blocking: bool = False, trigger: str = 'none') -> None:
+        if trigger not in self.run_triggers:
+            raise ValueError(f'The Teensy takes no {trigger!r} trigger; it runs on START only.')
         if not hasattr(self, '_programmed_steps') or self._programmed_steps is None:
             raise PulseGeneratorError(
                 'no sequence programmed; call program_sequence first'

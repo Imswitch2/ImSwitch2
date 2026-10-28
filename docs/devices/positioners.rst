@@ -750,6 +750,11 @@ Beta scan designers also read ``minVolt`` / ``maxVolt`` of each scanned
 positioner and refuse a scan whose signal would leave that range
 (*Signal voltages outside scanner ranges*).
 
+``settleTimeS`` (seconds, optional) is read by the galvo scan designer, not
+by this manager: on a slice axis, every slice of a 3-D scan starts after it
+(the longest declaration wins; :doc:`../setupinfo-reference`). Absent, no
+slice pause.
+
 **PositionerInfo fields used**
 
 * ``axes`` — must have length 1 (otherwise ``RuntimeError``).
@@ -1157,3 +1162,68 @@ when resetOnClose is set to True."*
 **Source**
 
 `SmarACTPositionerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py>`_
+
+
+StepBoardPositionerManager
+==========================
+
+A positioner on a step board's DAC: a board that speaks the step-engine
+protocol (:doc:`step-engine-protocol`), such as the TriggerScope once its
+firmware is rewritten to it. In a scan the board's engine
+(``StepProtocolScanEngine``, :doc:`scan_engines`) drives it; by hand this
+manager sets it through the protocol's ``SET``, between runs.
+
+**Setup JSON**
+
+.. code-block:: json
+
+    "positioners": {
+        "Z": {
+            "managerName": "StepBoardPositionerManager",
+            "managerProperties": {"conversionFactor": 10.0, "minVolt": 0, "maxVolt": 10},
+            "analogChannel": "triggerscope/dac0",
+            "axes": ["Z"],
+            "forPositioning": true,
+            "forScanning": true
+        }
+    }
+
+**managerProperties**
+
+.. list-table::
+   :widths: 22 12 60
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``conversionFactor``
+     - float
+     - µm per volt. The engine converts a scan's positions with it too.
+   * - ``minVolt``
+     - float
+     - The lowest voltage a move may command (optional): a move below it
+       stops there.
+   * - ``maxVolt``
+     - float
+     - The highest voltage a move may command (optional).
+
+**PositionerInfo fields used**
+
+* ``axes`` -- must have length 1 (otherwise ``RuntimeError``).
+* ``analogChannel`` -- the board's ``<engine>/dac<i>``.
+
+**Axes**
+
+Single-axis only. The DAC holds what it was last set to and has no readback:
+the tracked position is the one commanded. A board that refuses (it runs a
+program, the value is outside its DAC) leaves it unchanged and logs why.
+
+**Low-level dependencies**
+
+* ``scanEngineNamed`` -- the setup's scan engines, looked up when the
+  positioner moves (the engines are built after the devices).
+
+**Source**
+
+`StepBoardPositionerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/StepBoardPositionerManager.py>`_

@@ -1,5 +1,7 @@
 import itertools
 
+import math
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -9,6 +11,9 @@ from .basesignaldesigners import (
     ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
 )
 from ..errors import ScanDesignRefusedError
+from ..scan_parameters import (
+    dwell_request_if_changed, lag_report, realized_dwell_s, samples_for_duration,
+)
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
@@ -42,6 +47,90 @@ def fast_axis_speed_limit(name, props):
     if vel_max is None or not is_smooth_scan_axis(name, props):
         return None
     return float(vel_max)
+
+
+#: The managerProperties key a positioner declares its settle time under:
+#: how long it must stand still after a step before the scan measures, in
+#: seconds. GalvoScanDesigner pauses every slice of a 3-D scan for it (plan
+#: scan timing, S5; the D3 field is gone).
+SETTLE_TIME_KEY = 'settleTimeS'
+
+
+def slice_pause_us(parameterDict, setupInfo, sliceDevices):
+    """``(pause_us, source)``: the pause before every slice of a 3-D scan --
+    and before a 2-D scan's first line -- in whole µs rounded up, and what
+    declared it: the longest of the slice axes' positioners' ``settleTimeS``,
+    the setup's legacy ``scan.scanDesignerParams.d3step_delay`` (µs) and a
+    per-scan ``d3step_delay`` (µs) a caller still passes (the old PointScan
+    panel, a script). The two D3 values count for every scan, as they did
+    before the field went: a 2-D scan has no slice axis but still started
+    after them (review 2026-10-16). ``(0, '')`` when nothing declares one."""
+    candidates = []
+    for name in sliceDevices:
+        info = (getattr(setupInfo, 'positioners', None) or {}).get(name)
+        props = getattr(info, 'managerProperties', None) or {}
+        value = props.get(SETTLE_TIME_KEY)
+        if value is not None:
+            candidates.append((int(math.ceil(float(value) * 1e6 - 1e-9)),
+                               f'{name} declares {SETTLE_TIME_KEY} {float(value):g} s'))
+    legacy = (getattr(getattr(setupInfo, 'scan', None), 'scanDesignerParams', None)
+              or {}).get('d3step_delay')
+    if legacy is not None:
+        candidates.append((int(math.ceil(float(legacy) - 1e-9)),
+                           f'the setup\'s scanDesignerParams.d3step_delay is {float(legacy):g} µs'
+                           + (f' (declare {SETTLE_TIME_KEY} on the slice positioner instead)'
+                              if sliceDevices else '')))
+    typed = parameterDict.get('d3step_delay')
+    if typed is not None:
+        candidates.append((int(math.ceil(float(typed) - 1e-9)),
+                           f'this scan\'s d3step_delay is {float(typed):g} µs'))
+    best = max(candidates, key=lambda c: c[0], default=(0, ''))
+    return (best[0], best[1]) if best[0] > 0 else (0, '')
+
+
+def slice_pause_note(parameterDict, setupInfo) -> str:
+    """What the timing note says about the pause before every slice of a
+    3-D scan (or before a 2-D scan's first line), and whether it is played:
+    only a smoothly swept fast axis starts after it, a stepped one does not.
+    ``''`` for a 2-D scan without one."""
+    positioners = setupInfo.positioners or {}
+    positionerNames = [name for name, info in positioners.items() if info.forScanning]
+    active = GalvoScanDesigner._active_axis_indices(
+        parameterDict['axis_length'], parameterDict['axis_step_size'], len(positionerNames))
+    devices = [parameterDict['target_device'][i] for i in active]
+    if not devices:
+        return ''
+    slices = devices[2:]
+    pause, source = slice_pause_us(parameterDict, setupInfo, slices)
+    fast = devices[0]
+    props = getattr(positioners.get(fast), 'managerProperties', None) or {}
+    if pause and not is_smooth_scan_axis(fast, props):
+        return (f'A {pause} µs pause is declared ({source}) but not played: the fast axis '
+                f'{fast} is stepped.')
+    if pause:
+        where = 'Every slice starts' if slices else 'The scan starts'
+        return f'{where} after a {pause} µs pause: {source}.'
+    if not slices:
+        return ''
+    return (f'Slices start without a settle pause: no slice positioner declares '
+            f'{SETTLE_TIME_KEY}.')
+
+
+def lag_note(phase_delay_us, scan_rate_hz, timer_rate_hz) -> str:
+    """What the timing note says when the phase delay cannot be played the
+    same on both sides: the digital lines are delayed in whole scan-clock
+    samples, the point detectors in whole timer samples, and the two differ
+    (``scan_parameters.lag_report``). ``''`` when they agree."""
+    report = lag_report(phase_delay_us, scan_rate_hz, timer_rate_hz)
+    if report['residual_s'] == 0:
+        return ''
+
+    def us(seconds):                       # the phase delay's own unit
+        return f'{seconds * 1e6:.6g} µs'
+    return (f"The {us(report['requested_s'])} phase delay plays as "
+            f"{us(report['gate_delay_s'])} on the digital lines (whole "
+            f"{us(1.0 / float(scan_rate_hz))} samples) and {us(report['detector_delay_s'])} "
+            f"on the detectors, {us(abs(report['residual_s']))} apart.")
 
 
 def scan_axes_missing_limits(positioners) -> list:
@@ -110,6 +199,18 @@ class GalvoScanDesigner(ScanDesigner):
     def signalLengthRefusal(self, scanParameters, setupInfo):
         """ Check that the signal would not be too large (to be stored in
         the RAM and to be generated and run inside a reasonable time). """
+        # The count make_signal plays (samples_for_duration, rounded up: a
+        # dwell under one sample plays as one, and the timing note says so).
+        # Only a dwell of no length gives a zero-sample pixel, which the
+        # ScanInfoContract would reject with no hint at the cause.
+        sampleRate = float(setupInfo.scan.sampleRate)
+        if samples_for_duration(max(0.0, float(scanParameters['sequence_time'])),
+                                sampleRate) < 1:
+            return (
+                f'Pixel dwell time {scanParameters["sequence_time"] * 1e6:g} µs '
+                f'is shorter than one sample at the scan sample rate '
+                f'({1e6 / sampleRate:g} µs at scan.sampleRate {sampleRate:g} Hz).'
+            )
         # TODO: Think about changing the way >d3 steps are generated and sent to the nidaq -
         # could run scans as simple d2 scans and repeat them, with steps on the axes that needs steps between.
         # Keep track of that in ScanController for example, alternatively directly in NidaqController.runScan?
@@ -165,7 +266,9 @@ class GalvoScanDesigner(ScanDesigner):
         name = scanParameters['target_device'][fast]
         props = setupInfo.positioners[name].managerProperties
         vel_max = fast_axis_speed_limit(name, props)
-        dwell_us = float(scanParameters['sequence_time']) * 1e6
+        # the dwell as it plays: the sweep is as fast as the realized dwell
+        dwell_us = realized_dwell_s(scanParameters['sequence_time'],
+                                    setupInfo.scan.sampleRate) * 1e6
         if vel_max is None or dwell_us <= 0:
             return ''
         step_um = abs(float(scanParameters['axis_step_size'][fast]))
@@ -224,7 +327,17 @@ class GalvoScanDesigner(ScanDesigner):
     def make_signal(self, parameterDict, setupInfo):
         # --- Per-call state (reset each invocation, accumulated by private methods) ---
         self.__timestep = 1e6 / setupInfo.scan.sampleRate  # time step [µs]
-        self.__paddingtime_d3step = int(parameterDict['d3step_delay'])  # inter-slice delay [µs]
+        # The dwell is a whole number of samples (plan scan-timing, rules 2
+        # and 3): realized ONCE here, and every count below -- the pixel, the
+        # line, the sweep, the speed check -- follows from it. The request is
+        # kept for the contract. (The pixel and the line used to be rounded
+        # separately, so at 15 µs the galvo swept 15 µs per pixel while the
+        # TTL designer gated 10 µs of each.)
+        dwell_requested_s = float(parameterDict['sequence_time'])
+        samples_per_pixel = samples_for_duration(dwell_requested_s, setupInfo.scan.sampleRate)
+        dwell_s = samples_per_pixel / float(setupInfo.scan.sampleRate)
+        parameterDict = dict(parameterDict, sequence_time=dwell_s)
+        self.__paddingtime_d3step = 0  # the pause before a slice [µs], set with the axes below
         self.__paddingtime_full = 100  # safety padding [µs]
         self._samples_initpos = []
         self._samples_finalpos = []
@@ -294,6 +407,10 @@ class GalvoScanDesigner(ScanDesigner):
         self.axis_centerpos = [parameterDict['axis_centerpos'][i] / convFactors[pos_idx[j]]
                                for j, i in enumerate(active)]
         self.axis_vel_max = [vel_max[pos_idx[j]] for j in range(len(active))]
+        # The pause before every slice: what the slice axes' positioners
+        # declare they need to settle (no panel field any more).
+        self.__paddingtime_d3step, slice_pause_source = slice_pause_us(
+            parameterDict, setupInfo, self.axis_devs_order[2:])
         self.axis_acc_max = [acc_max[pos_idx[j]] for j in range(len(active))]
         self.axis_jerk_max = [jerk_max[pos_idx[j]] for j in range(len(active))]
 
@@ -321,8 +438,7 @@ class GalvoScanDesigner(ScanDesigner):
         # get list of number of axis steps (round(len/step); see pixels_for_length_step)
         n_steps_dx = [pixels_for_length_step(self.axis_length[i], self.axis_step_size[i]) for i in range(axis_count_scan)]
         # get list of number of axis scan samples, for first two axes initially
-        n_scan_samples_dx = [int(round(parameterDict['sequence_time'] * 1e6 / self.__timestep))]
-        n_scan_samples_dx.append(int(round(n_steps_dx[0] * parameterDict['sequence_time'] * 1e6 / self.__timestep)))
+        n_scan_samples_dx = [samples_per_pixel, n_steps_dx[0] * samples_per_pixel]
         # Per ACTIVE axis, in signal order -- indexing the unfiltered
         # parameterDict here reported the wrong step sizes whenever a
         # configured axis collapsed to one step (see sig_dict below).
@@ -363,7 +479,13 @@ class GalvoScanDesigner(ScanDesigner):
         # d2 axis signal
         if axis_count_scan > 1:
             axis = 1
-            axis_reps = self.__get_axis_reps(pos[0], samples_d2_period, n_steps_dx[1], self.__smooth_axis[axis-1])
+            # One hold per LINE STEP (n_d2 rows x n_linesteps), not per row:
+            # only the very first block is the measured first period; every
+            # later block, row 0's remaining line steps included, is one
+            # period. Expanding per-row holds afterwards repeated the long
+            # first period into row 0's later line steps, so the first row
+            # stepped early -- inside its last line step's read window.
+            axis_reps = self.__get_axis_reps(pos[0], samples_d2_period, n_steps_dx[1] * n_linesteps, self.__smooth_axis[axis-1])
             pos_temp, pad_prev_axis = self.__generate_step_scan(axis, n_scan_samples_dx[axis], n_steps_dx[axis], self.__smooth_axis, v_max=self.axis_vel_max[axis], a_max=self.axis_acc_max[axis], axis_reps=axis_reps, n_linesteps=n_linesteps)
             if pad_prev_axis:
                 pos, _ = self.__zero_padding(pos, padlen_base=pad_prev_axis)
@@ -388,7 +510,13 @@ class GalvoScanDesigner(ScanDesigner):
         n_scan_samples_dx[-1] = n_scan_samples_dx[-1] + pad_max
 
         # pad all signals with zeros, for initial and final settling of galvos and safety start and end
-        axis_signals, pad_max = self.__zero_padding(pos, padlen_base=[int(round(self.__paddingtime_full / self.__timestep)),int(round(self.__paddingtime_full / self.__timestep))])
+        # The end padding is at least the phase delay: the digital lines are
+        # played that much later (NidaqManager.delayed_lines), and what they
+        # push past the end must be idle (review 2026-10-16).
+        pad_start = int(round(self.__paddingtime_full / self.__timestep))
+        pad_end = max(pad_start, int(math.ceil(
+            float(parameterDict.get('phase_delay', 0) or 0) / self.__timestep - 1e-9)))
+        axis_signals, pad_max = self.__zero_padding(pos, padlen_base=[pad_start, pad_end])
 
         # add all signals to a signal dictionary, keyed by the ACTIVE axes in
         # signal order. Indexing the unfiltered target_device list routed
@@ -413,7 +541,15 @@ class GalvoScanDesigner(ScanDesigner):
             scan_samples_d2_period=samples_d2_period_read,
             n_pixels_fast=n_steps_dx[0],
             samples_per_pixel=n_scan_samples_dx[0],
-            dwell_time=parameterDict['sequence_time'],
+            dwell_time=dwell_s,
+            dwell_requested_s=dwell_request_if_changed(dwell_requested_s,
+                                                       setupInfo.scan.sampleRate),
+            # what plays: the pause is in the settling of a smoothly swept
+            # fast axis, and a stepped one has none
+            slice_pause_us=self.__paddingtime_d3step if self.__smooth_axis[0] else 0,
+            slice_pause_source=(slice_pause_source if self.__smooth_axis[0] or not
+                                slice_pause_source else
+                                f'{slice_pause_source}; not played: the fast axis is stepped'),
             scan_time_step=round(self.__timestep * 1e-6, ndigits=10),
             n_linesteps=n_linesteps,
             scan_throw_startzero=int(round(self.__paddingtime_full / self.__timestep)),
@@ -497,8 +633,9 @@ class GalvoScanDesigner(ScanDesigner):
 
         Contract:
           - for dim==1 (Y): n_axis is the PHYSICAL number of Y positions (ny_phys)
-          - axis_reps is computed for ny_phys (NOT expanded)
-          - n_linesteps expands Y blocks internally
+          - axis_reps holds one entry per LINE STEP (ny_phys * n_linesteps),
+            so the first-period length applies to the first line step only
+          - n_linesteps expands the Y positions internally
         """
         if axis_reps is None:
             axis_reps = [0, 0]
@@ -533,32 +670,18 @@ class GalvoScanDesigner(ScanDesigner):
             self._samples_finalpos.append(len(pos_final))
 
             if dim == 1:
-                # axis_reps is provided for physical ny -> expand to match expanded positions
-                axis_reps = np.asarray(axis_reps, dtype=int)
-
-                if axis_reps.size != positions_phys.size:
-                    raise ValueError(
-                        f"axis_reps length ({axis_reps.size}) must match physical ny ({positions_phys.size})"
-                    )
-
-                if n_linesteps > 1:
-                    axis_reps_exp = np.repeat(axis_reps, n_linesteps)
-                else:
-                    axis_reps_exp = axis_reps
+                axis_reps_exp = self._line_step_reps(axis_reps, positions)
 
                 # IMPORTANT: apply the 'first-step' correction only once overall (first expanded block)
-                if smooth_axis[0] and self._samples_initpos[-1] == np.max(self._samples_initpos):
-                    if self._samples_initpos[:-1]:
-                        corr = int(np.max(self._samples_initpos[:-1]))
-                        axis_reps_exp[0] = int(axis_reps_exp[0] - corr)
+                if smooth_axis[0] and self._samples_initpos[:-1]:
+                    axis_reps_exp[0] = int(axis_reps_exp[0] - self._first_hold_correction())
 
                 pos_ret = np.repeat(positions, axis_reps_exp)
 
             else:
                 reps = np.ones(len(positions)) * len_axis
-                if True in smooth_axis[:dim] and self._samples_initpos[-1] == np.max(self._samples_initpos):
-                    if self._samples_initpos[:-1]:
-                        reps[0] = reps[0] - np.max(self._samples_initpos[:-1])
+                if True in smooth_axis[:dim] and self._samples_initpos[:-1]:
+                    reps[0] = reps[0] - self._first_hold_correction()
                 reps = [int(rep) for rep in reps]
                 pos_ret = np.repeat(positions, reps)
 
@@ -580,17 +703,41 @@ class GalvoScanDesigner(ScanDesigner):
             if 'mock' in self.axis_devs_order[dim].lower():
                 positions = positions - positions[0]
             if dim == 1:
-                axis_reps = np.asarray(axis_reps, dtype=int)
-                if axis_reps.size != positions_phys.size:
-                    raise ValueError(
-                        f"axis_reps length ({axis_reps.size}) must match physical ny ({positions_phys.size})"
-                    )
-                axis_reps_exp = np.repeat(axis_reps, n_linesteps) if n_linesteps > 1 else axis_reps
-                pos_ret = np.repeat(positions, axis_reps_exp)
+                pos_ret = np.repeat(positions, self._line_step_reps(axis_reps, positions))
             else:
                 pos_ret = np.repeat(positions, len_axis)
 
         return pos_ret, pad_prev_axis
+
+    @staticmethod
+    def _line_step_reps(axis_reps, positions):
+        """The per-line-step holds, checked against the expanded positions."""
+        reps = np.array(axis_reps, dtype=int)
+        if reps.size != len(positions):
+            raise ValueError(
+                f"axis_reps length ({reps.size}) must match the Y line steps ({len(positions)})"
+            )
+        return reps
+
+    def _first_hold_correction(self) -> int:
+        """Samples to take off this axis's first hold so its first step
+        lands where the lower axes' first period ends.
+
+        The first hold is measured on the lower axes' clock: it ends at their
+        first turnaround, counted from the start of their own positioning.
+        This axis starts holding only after ITS positioning, and the lower
+        axes are delayed (front-padded) only when this axis's positioning is
+        the longer one. So the hold must lose whichever positioning both
+        signals share: the lower axes' when this one is longer (they were
+        padded by the difference), this axis's own when the lower axes take
+        longer (nothing was padded). Taking off only the lower axes' length
+        in the second case made every step late by this axis's positioning;
+        far enough off-centre that pushed each step past the next read
+        window, and line k was imaged at row k-1.
+        """
+        own = int(self._samples_initpos[-1])
+        lower = int(np.max(self._samples_initpos[:-1]))
+        return min(own, lower)
 
     def __repeat_dlower(self, pos, n_steps_axis):
         """ Repeat the current positions, for all dimensions,

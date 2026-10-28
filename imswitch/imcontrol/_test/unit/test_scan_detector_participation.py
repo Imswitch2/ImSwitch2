@@ -523,13 +523,9 @@ def test_stale_point_worker_completion_cannot_teardown_new_generation(factory):
     assert 15 in manager._completedScanGenerations
 
 
-def test_timetagger_invalid_preparation_invalidates_old_flim_and_reports(
-        monkeypatch):
-    module = importlib.import_module(
-        "imswitch.imcontrol.model.managers.detectors."
-        "SwabianTimeTaggerManager"
-    )
-    monkeypatch.setattr(module, "_TIMETAGGER_AVAILABLE", True)
+def test_timetagger_invalid_preparation_invalidates_old_flim_and_reports():
+    # Scan-shape validation runs before the card is touched, so this needs
+    # neither the vendor library nor a card.
     manager = _make_timetagger()
     oldFlim = object()
     manager._flim = oldFlim

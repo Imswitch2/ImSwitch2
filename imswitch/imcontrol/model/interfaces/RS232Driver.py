@@ -116,6 +116,19 @@ class _SerialAdapter:
     def read(self) -> str:
         return self._ser.readline().decode(self._encoding).rstrip(self._read_term)
 
+    @property
+    def bytes_in_buffer(self) -> int:
+        """Bytes received and not yet read, under pyvisa's attribute name."""
+        return int(self._ser.in_waiting)
+
+    @property
+    def encoding(self) -> str:
+        return self._encoding
+
+    def read_bytes(self, count: int) -> bytes:
+        """``count`` raw bytes, under pyvisa's method name."""
+        return self._ser.read(count)
+
     def query(self, command: str) -> str:
         self.write(command)
         return self.read()
@@ -222,6 +235,27 @@ class RS232Driver:
         if self._resource is None:
             raise OSError('RS232 resource already closed')
         return self._resource.read()
+
+    def readWaiting(self) -> str:
+        """Every byte the port has received and not yet read, decoded, without
+        waiting; ``''`` when there is none.
+
+        A reader that polls an unprompted device (the TriggerScope's
+        ``SerialMonitor``) uses this instead of ``read()``: a read waits for
+        the configured termination, and under ``RS232Manager``'s I/O lock that
+        blocks every write to the device for the port's timeout whenever the
+        termination does not come -- on an idle port, or when the device ends
+        its lines with CR LF and the port is configured for CR, which leaves
+        an LF behind after every line. This takes what is there, no more, and
+        leaves the line splitting to the caller.
+        """
+        if self._resource is None:
+            raise OSError('RS232 resource already closed')
+        count = int(self._resource.bytes_in_buffer)
+        if count <= 0:
+            return ''
+        encoding = getattr(self._resource, 'encoding', 'ascii')
+        return self._resource.read_bytes(count).decode(encoding, errors='replace')
 
     @classmethod
     def getDefaults(cls, settings):

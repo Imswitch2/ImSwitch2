@@ -21,9 +21,13 @@ from imswitch.imcontrol.model.managers.mockscan import SimulatedScanPlan
 
 
 def _ensure_qcore_app():
+    """The application, created as a full QApplication when there is none:
+    a bare QCoreApplication would be reused by a widget test later in the
+    same worker, and QWidget aborts the process on one (review round 1)."""
     app = QtCore.QCoreApplication.instance()
     if app is None:
-        app = QtCore.QCoreApplication([])
+        from qtpy import QtWidgets
+        app = QtWidgets.QApplication([])
     return app
 
 
@@ -966,6 +970,7 @@ def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
         _log_linestep_scan_diagnostics = (
             ScanControllerAdvanced._log_linestep_scan_diagnostics
         )
+        _refuseUndrivenTTL = ScanControllerAdvanced._refuseUndrivenTTL
 
         def __init__(self):
             self._setupInfo = setup_info

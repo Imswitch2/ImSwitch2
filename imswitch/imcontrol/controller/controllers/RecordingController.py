@@ -784,9 +784,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     try:
                         # Stopping the scan without stopping its frame sink
                         # strands the writer at its original frame target.
-                        # Abort both sides and classify their terminals as the
-                        # expected result of this user stop.
-                        recordingManager.abortRecording(
+                        # Stop both sides and classify their terminals as the
+                        # expected result of this user stop. The writer ends,
+                        # keeping its complete frames (stopped_early): the
+                        # stopped scan's unfinished frame never reaches it
+                        # (plan scan-stop-now, Lenny 2026-10-18; it used to be
+                        # aborted, deleting the file).
+                        recordingManager.endRecording(
                             emitSignal=False,
                             wait=True,
                         )
@@ -855,6 +859,34 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     self._stopManagerRecordingInBackground()
                     return
             self._stopManagerRecordingInBackground()
+
+    def _endForStoppedScan(self):
+        """The scan this recording waits for was stopped on request (its
+        Stop, an API abort): end the recording as its own Stop does, keeping
+        the frames it completed -- the writer finalizes them as
+        ``stopped_early`` -- instead of failing it; a lapse does not go on
+        (plan scan-stop-now, Lenny 2026-10-18)."""
+        self.stopRequested = True
+        timer = self.__dict__.get('timer')
+        self.timer = None
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                self.__logger.error('Failed to stop the lapse timer', exc_info=True)
+        if bool(getattr(self._master.recordingManager, 'record', False)):
+            self._stopManagerRecordingInBackground()
+
+    def _scanSourceWasStopped(self, source) -> bool:
+        """Whether the scan source's run was stopped on request
+        (SuperScanController.runWasStopped); a source that cannot say was not."""
+        wasStopped = getattr(source, 'runWasStopped', None)
+        if not callable(wasStopped):
+            return False
+        try:
+            return wasStopped() is True
+        except Exception:
+            return False
 
     def _stopManagerRecordingInBackground(self):
         """ Ask the manager to end the recording without waiting for the
@@ -1773,6 +1805,18 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             and not self.doneScan
             and not self._recordingFailureHandled
         ):
+            if RecordingController._scanSourceWasStopped(self, source):
+                # Stopped on request, not failed: keep what it completed.
+                RecordingController._endForStoppedScan(self)
+                self.doneScan = True
+                if (
+                    self.endedRecording
+                    or not self.__dict__.get(
+                        '_usesDetailedRecordingSignals', False
+                    )
+                ):
+                    self.recordingCycleEnded()
+                return
             # A build/arm failure has no sigScanDone. Without this terminal
             # check, Recording stays armed until its frame-stall watchdog even
             # though the scan controller has already rejected the run.
@@ -2301,6 +2345,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         try:
             successful = getattr(completion, 'successful', None)
             message = str(getattr(completion, 'message', '') or '')
+            stopped = getattr(completion, 'stopped', False) is True
         except Exception as error:
             self._handleRecordingFailure(
                 f'Could not inspect exact scan completion result: {error}',
@@ -2335,6 +2380,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.recordingCycleEnded()
             return
 
+        if stopped and not (
+            self.stopRequested
+            or self.__dict__.get('_shutdownRequested', False)
+        ):
+            RecordingController._endForStoppedScan(self)
         if (
             self.stopRequested
             or self.__dict__.get('_shutdownRequested', False)
@@ -2423,8 +2473,21 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         reportFailure = getattr(
             recordingManager, 'reportRecordingFailure', None
         )
+        operationActive = self.__dict__.get('_recordingOperationActive', False)
+        if operationActive and not isinstance(generation, int):
+            # Refused before this operation had a manager session of its own
+            # (preflight, scan geometry, a scan the designer will not build).
+            # A session the manager opened and then failed while starting is
+            # still the one to report into; it publishes at most once.
+            started = getattr(recordingManager, 'recordingGeneration', None)
+            baseline = self.__dict__.get('_recordingGenerationBeforeOperation')
+            if (
+                isinstance(started, int) and isinstance(baseline, int)
+                and started > baseline
+            ):
+                generation = started
         if (
-            self.__dict__.get('_recordingOperationActive', False)
+            operationActive
             and isinstance(generation, int)
             and callable(reportFailure)
         ):
@@ -2435,6 +2498,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.__logger.error(
                     'Failed to publish recording-session failure',
                     exc_info=True,
+                )
+        elif operationActive:
+            # No manager session exists to carry the terminal, so publish it
+            # here: a caller waiting on recordingEnded/recordingFailed would
+            # otherwise wait forever for a recording that never started.
+            try:
+                self._commChannel.sigRecordingFailed.emit(str(message))
+            except Exception:
+                self.__logger.error(
+                    'Failed to publish recording failure', exc_info=True,
                 )
 
         try:

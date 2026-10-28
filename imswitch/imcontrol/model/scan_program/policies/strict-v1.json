@@ -1,0 +1,22 @@
+{
+  "schema": "imswitch.scan-timing-policy/1",
+  "id": "strict-v1",
+  "title": "Exact representability",
+  "rationale": "The default for every new scan program (docs/design/plans/scan-engines-and-expert-scan.md §2.6). A scan runs exactly as requested or not at all: every duration, edge, separation and repeat period must be a whole number of the engine's timing-grid steps. Nothing is rounded, so nothing in the experiment changes without the user choosing it; a value that is not representable is refused with its representable neighbours.",
+  "rounding": {
+    "step": "exact",
+    "return": "exact",
+    "move": "exact",
+    "settle": "exact",
+    "wait": "exact",
+    "preparation": "exact",
+    "event_edges": "exact"
+  },
+  "events": {
+    "clip_to_step": false,
+    "vanished": "refuse",
+    "relations": "preserve"
+  },
+  "scheduling": "sequential",
+  "tolerances": {}
+}

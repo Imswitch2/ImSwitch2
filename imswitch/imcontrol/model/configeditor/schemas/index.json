@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 56,
-    "docs_agree": 166,
-    "docs_documented": 166,
-    "keys": 246,
-    "managers": 66,
-    "none_default_only": 40,
+    "constrained": 57,
+    "docs_agree": 198,
+    "docs_documented": 198,
+    "keys": 278,
+    "managers": 72,
+    "none_default_only": 59,
     "none_only": 16,
-    "optional": 180,
-    "reads_any": 61,
+    "optional": 214,
+    "reads_any": 68,
     "refs": 15,
-    "required": 66,
-    "typed_by_code": 121,
-    "typed_with_docs": 190,
-    "typed_with_examples": 158,
+    "required": 64,
+    "typed_by_code": 126,
+    "typed_with_docs": 222,
+    "typed_with_examples": 167,
     "uncertain": 0,
-    "unresolved_reads": 3,
-    "with_keys": 61,
+    "unresolved_reads": 0,
+    "with_keys": 68,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -25,7 +25,7 @@
   "kinds": {
     "detector": {
       "class": "DetectorInfo",
-      "fields": 8,
+      "fields": 10,
       "required": 1
     },
     "flip_mirror": {
@@ -35,22 +35,27 @@
     },
     "instrument": {
       "class": "InstrumentInfo",
-      "fields": 6,
+      "fields": 8,
       "required": 1
     },
     "laser": {
       "class": "LaserInfo",
-      "fields": 14,
+      "fields": 16,
       "required": 4
     },
     "positioner": {
       "class": "PositionerInfo",
-      "fields": 16,
+      "fields": 18,
       "required": 2
+    },
+    "pulse_generator": {
+      "class": "PulseGeneratorInfo",
+      "fields": 2,
+      "required": 1
     },
     "rotator": {
       "class": "DeviceInfo",
-      "fields": 6,
+      "fields": 8,
       "required": 1
     },
     "rs232": {
@@ -58,9 +63,14 @@
       "fields": 2,
       "required": 2
     },
+    "scan_engine": {
+      "class": "ScanEngineInfo",
+      "fields": 3,
+      "required": 1
+    },
     "slm": {
       "class": "SLMsInfo",
-      "fields": 16,
+      "fields": 18,
       "required": 8
     },
     "stand": {
@@ -444,6 +454,15 @@
       "properties": 4,
       "required": 3
     },
+    "NidaqScanEngine": {
+      "category": "scanEngines",
+      "classes": [
+        "NidaqScanEngine"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
     "OxxiusCombinerLaserManager": {
       "category": "lasers",
       "classes": [
@@ -531,7 +550,16 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 1,
+      "properties": 2,
+      "required": 0
+    },
+    "PulseGeneratorScanEngine": {
+      "category": "scanEngines",
+      "classes": [
+        "PulseGeneratorScanEngine"
+      ],
+      "overridden": false,
+      "properties": 2,
       "required": 0
     },
     "PulseStreamerLaserManager": {
@@ -545,13 +573,13 @@
       "required": 0
     },
     "PulseStreamerManager": {
-      "category": "pulsegen",
+      "category": "pulseGenerators",
       "classes": [
         "PulseStreamerManager",
         "PulseGeneratorManager"
       ],
       "overridden": false,
-      "properties": 0,
+      "properties": 1,
       "required": 0
     },
     "PyMicroscopeLaserManager": {
@@ -602,6 +630,16 @@
       "properties": 13,
       "required": 0
     },
+    "SimulatedStepEngine": {
+      "category": "scanEngines",
+      "classes": [
+        "SimulatedStepEngine",
+        "StepEngineBase"
+      ],
+      "overridden": false,
+      "properties": 7,
+      "required": 0
+    },
     "SmarACTPositionerManager": {
       "category": "positioners",
       "classes": [
@@ -622,6 +660,36 @@
       "properties": 5,
       "required": 4
     },
+    "StepBoardLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "StepBoardLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "StepBoardPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "StepBoardPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 1
+    },
+    "StepProtocolScanEngine": {
+      "category": "scanEngines",
+      "classes": [
+        "StepProtocolScanEngine",
+        "StepEngineBase"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 0
+    },
     "SwabianTimeTaggerManager": {
       "category": "detectors",
       "classes": [
@@ -629,8 +697,8 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 15,
-      "required": 3
+      "properties": 21,
+      "required": 0
     },
     "TISManager": {
       "category": "detectors",
@@ -643,13 +711,13 @@
       "required": 2
     },
     "TeensyPulseManager": {
-      "category": "pulsegen",
+      "category": "pulseGenerators",
       "classes": [
         "TeensyPulseManager",
         "PulseGeneratorManager"
       ],
       "overridden": false,
-      "properties": 0,
+      "properties": 7,
       "required": 0
     },
     "ThorCamTSIManager": {

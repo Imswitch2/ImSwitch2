@@ -21,6 +21,12 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
+from ._read_ahead import ReadAhead, raster_samples_consumed, read_ahead_samples
+from imswitch.imcontrol.model.scan_parameters import lag_samples_for
+from ._visit_order import VisitOrder
+from ._trajectory_measure import (
+    TrajectoryDetectorMixin, TrajectoryMeasurement, is_trajectory, run_trajectory,
+)
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -72,7 +78,7 @@ def _timerRateOf(nidaqManager):
         return 1e6
 
 
-class PMTManager(DetectorManager):
+class PMTManager(TrajectoryDetectorMixin, DetectorManager):
     """PMT analog-input manager with linestep-aware buffering + frame-boundary UI updates."""
 
     def __init__(self, detectorInfo, name, nidaqManager, **_lowLevelManagers):
@@ -252,6 +258,14 @@ class PMTManager(DetectorManager):
     def setPixelSize(self, pixel_sizes: list):
         self.__pixel_sizes = list(pixel_sizes)
 
+    def _publishTrajectoryImage(self):
+        if self._liveThrottle.due():
+            self.sigImageUpdated.emit(
+                display_frame(self, self._image, current_frame_geometry(self)),
+                True,
+                self.scale,
+            )
+
     @property
     def dtype(self):
         """ Override: PMT analog voltage buffer is always float32. """
@@ -270,6 +284,13 @@ class PMTManager(DetectorManager):
         # scan's result.
         self._rawAborted = False
         self._abandonRaw()
+        # A trajectory is measured window by window into a gridded,
+        # time-weighted mean voltage (plan §6).
+        self._trajectoryMode = is_trajectory(scanInfoDict)
+        self._trajectoryState = None
+        if self._trajectoryMode and scanInfoDict.get('ttlmultiplying', self._ttlmultiplying):
+            raise ValueError(f'{self.name}: TTL multiplying cannot be combined with a '
+                             'trajectory, which is measured window by window.')
         if not self._scanParticipating:
             return
 
@@ -297,7 +318,13 @@ class PMTManager(DetectorManager):
                 if item >= generation - 8
             }
         self._liveThrottle.reset()
-        self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
+        # Where each visit belongs, for interleaved or serpentine axes.
+        self._visitOrder = VisitOrder.from_scan_info(scanInfoDict)
+        workerClass = TrajectoryScanWorker if self._trajectoryMode else ScanWorker
+        self._scanWorker = workerClass(self, scanInfoDict, signalDict)
+        if self._trajectoryMode:
+            self._scanWorker.trajectoryImage.connect(self._onTrajectoryImage)
+            self._trackTrajectory(generation, self._scanWorker._trajectory)
         self._scanWorker.scanGeneration = generation
         self._scanTeardownOperation = None
 
@@ -778,6 +805,12 @@ class PMTManager(DetectorManager):
         else:
             y = y_expanded
             s = None
+        outer = tuple(int(v) for v in pos[:-1])
+        # A scan that visits an axis out of order says where each visit
+        # belongs; the line was read in visit order.
+        visitOrder = getattr(self, '_visitOrder', None)
+        if visitOrder is not None:
+            pixels, y, outer = visitOrder.place(pixels, y, outer, line=y_expanded)
 
         # ---- S == 1: could be 2D (1, Ny, Nx) OR 3D (1, Nz, Ny, Nx) (or higher) ----
         # <= 2, not == 2: a single-line scan's (1, N) buffer squeezes to rank
@@ -810,7 +843,7 @@ class PMTManager(DetectorManager):
         if np.squeeze(self._image).ndim >= 3:
             # (Nz, Ny, Nx) for Z stacks (and potentially more dims in front of Ny,Nx)
             # pos[:-1] contains all outer indices (e.g. z), last is y
-            outer = tuple(int(v) for v in pos[:-1])  # e.g. (z,) or (t,z,...) depending on scan
+            # outer: all outer indices (e.g. (z,) or (t, z, ...)), placed above
             # Build index into raw buffer:
             # raw layout is (1, ...outer..., y, x)
             # where y is always the second-to-last axis
@@ -957,6 +990,8 @@ class PMTManager(DetectorManager):
             return
         if generation in self.__dict__.get('_rawFailedGenerations', ()):
             return
+        # A trajectory's raw frame is finished from its measurement first.
+        self._finishTrajectory(generation)
         self._rawGeneration = generation
         self._rawReady = True
         self._rawDelivered = False
@@ -987,9 +1022,13 @@ class PMTManager(DetectorManager):
             # Copy: `_image` is the live accumulation buffer. Leading axis: the
             # broker fans out on axis 0, which `_image` does not carry.
             raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
+            auxiliary = self._rawFrameAuxiliary(self.__dict__.get('_rawGeneration'))
+        else:
+            auxiliary = None
 
         return ChunkPayload(
-            display=display, raw=raw, display_geometry=displayGeometry
+            display=display, raw=raw, display_geometry=displayGeometry,
+            raw_auxiliary=auxiliary,
         )
 
     def flushBuffers(self):
@@ -1048,19 +1087,22 @@ class ScanWorker(Worker):
             scan_axes.append("y")
         self._linestep = max(1, int(scanInfoDict.get("n_linesteps", 1)))
 
-        # identify Y axis (default to 1)
-        y_idx = scan_axes.index("y") if "y" in scan_axes else 1
-
         # recursion dims (no linestep axis)
         self._img_dims = scan_dims
         self._loop_dims = scan_dims.copy()
 
-        # expand Y by linestep (Ny -> Ny*S)
-        if len(self._loop_dims) > y_idx:
-            self._loop_dims[y_idx] = int(self._loop_dims[y_idx] * self._linestep)
+        # The line steps repeat each line: they expand the dimension right
+        # outside the fast one (N -> N*S), img_dims[1], whatever it is called
+        # (an Expert fast-Y raster names its axes ('y', 'x'); see APDManager).
+        if len(self._loop_dims) > 1:
+            self._loop_dims[1] = int(self._loop_dims[1] * self._linestep)
 
         # output dims for manager allocation: append linestep at end if >1 (keeps stack possible)
         self._output_image_dims = tuple(scan_dims + ([self._linestep] if self._linestep > 1 else []))
+        # The frame's dimensions as the manager's buffer holds them (reversed,
+        # line steps outermost), for the view's Sum checkboxes.
+        self._manager.displayAxisNames = tuple(reversed(
+            list(scan_axes) + (['line steps'] if self._linestep > 1 else [])))
 
         # Nx for pixel binning (by convention img_dims starts with Nx,Ny,...)
         self._Nx = int(scan_dims[0]) if len(scan_dims) >= 1 else 1
@@ -1088,10 +1130,8 @@ class ScanWorker(Worker):
         self._throw_startacc = round(scanInfoDict["scan_throw_startacc"] * self._frac_scan_det_rate)
 
         # Galvo response lag in microseconds, as detection samples (see APD).
-        self._phase_delay = int(round(
-            float(scanInfoDict["phase_delay"] or 0)
-            * self._manager._detection_samplerate / 1e6
-        ))
+        self._phase_delay = lag_samples_for(scanInfoDict.get('phase_delay', 0),
+                                            self._manager._detection_samplerate)
         self._smooth_axes = scanInfoDict["smooth_axes"]
 
         pad_initpos = self._scan_pads_initpos[0] if len(self._scan_pads_initpos) > 0 else 0
@@ -1119,25 +1159,54 @@ class ScanWorker(Worker):
             pixel_sizes.append(pixel_sizes[0])
         self._manager.setPixelSize(pixel_sizes)
 
+    def _readLimit(self):
+        """The last sample a read may reach: what this raster plan consumes
+        (``raster_samples_consumed``), never past the task's own count. A
+        worker of another plan (a trajectory) reads to the task's count."""
+        total = getattr(self, '_samples_total', None)
+        planned = self._plannedSamples()
+        if planned is None:
+            return total
+        return planned if total is None else min(int(total), int(planned))
+
+    def _plannedSamples(self):
+        try:
+            return raster_samples_consumed(
+                phase_delay=self._phase_delay, throw_startzero=self._throw_startzero,
+                scan_pads_initpos=self._scan_pads_initpos,
+                throw_init_smooth=self._throw_init_smooth, loop_dims=self._loop_dims,
+                samples_d_scanstep=self._samples_d_scanstep,
+                samples_d2_period=self._samples_d2_period)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+
+    def _reader(self):
+        """The task's samples, fetched in chunks of one live-update interval
+        (``_read_ahead``); made on first use, once the sample plan is known."""
+        reader = self.__dict__.get('_readAhead')
+        if reader is None:
+            throttle = getattr(self._manager, '_liveThrottle', None)
+            chunk = read_ahead_samples(getattr(throttle, 'interval_s', 0.0),
+                                       self._manager._detection_samplerate)
+            reader = ReadAhead(self._fetchSamples, self._readLimit(), chunk)
+            self.__dict__['_readAhead'] = reader
+        return reader
+
+    def _fetchSamples(self, count, kind):
+        if self._manager._simulation_mode:
+            return self.randomInput(count)
+        return self._manager._nidaqManager.readInputTask(
+            self._name, count,
+            generation=self._inputTaskGeneration,
+        )
+
     def throwdata(self, datalen):
         if datalen > 0:
-            if self._manager._simulation_mode:
-                _ = self.randomInput(datalen)
-            else:
-                _ = self._manager._nidaqManager.readInputTask(
-                    self._name, datalen,
-                    generation=self._inputTaskGeneration,
-                )
+            self._reader().take(datalen, 'throw')
             self._samples_read += datalen
 
     def readdata(self, datalen):
-        if self._manager._simulation_mode:
-            data = self.randomInput(datalen)
-        else:
-            data = self._manager._nidaqManager.readInputTask(
-                self._name, datalen,
-                generation=self._inputTaskGeneration,
-            )
+        data = self._reader().take(datalen, 'line')
         self._samples_read += datalen
         return data
 
@@ -1156,7 +1225,12 @@ class ScanWorker(Worker):
             self._runAcquisition()
         except Exception:
             failed = True
-            self.__logger.exception('PMT scan worker crashed')
+            if getattr(self._manager._nidaqManager, 'runStopped', False) is True:
+                # the scan was stopped (stopScan closed the input task under
+                # the read): the frame is dropped, nothing failed
+                self.__logger.info('PMT scan worker ended with its stopped scan')
+            else:
+                self.__logger.exception('PMT scan worker crashed')
         finally:
             self.scanning = False
             if failed:
@@ -1290,3 +1364,29 @@ class ScanWorker(Worker):
             self._manager._mock_voltage_max,
         )
         return (signal + self._manager._offset_v).astype(np.float32, copy=False)
+
+
+class TrajectoryScanWorker(ScanWorker):
+    """Reads a trajectory window by window (plan §6, M4): each window's mean
+    voltage, binned onto the grid weighted by its integration time."""
+
+    trajectoryImage = Signal(object, object, str, object, int, object)
+
+    def __init__(self, manager, scanInfoDict, signalDict):
+        super().__init__(manager, scanInfoDict, signalDict)
+        self._trajectory = TrajectoryMeasurement(scanInfoDict, self._frac_scan_det_rate, 'mean')
+
+    def _runAcquisition(self):
+        run_trajectory(self, self._windowMeans, self._publishTrajectory)
+
+    def _plannedSamples(self):
+        return None                    # windows, not the raster plan: the task's count
+
+    def _windowMeans(self, data, offsets, lengths):
+        volts = np.asarray(data, dtype=float) - float(self._manager._offset_v)
+        return np.add.reduceat(volts, offsets) / lengths
+
+    def _publishTrajectory(self, measurement):
+        accumulator = measurement.accumulator
+        self.trajectoryImage.emit(accumulator.image(), accumulator.coverage(), accumulator.unit,
+                                  measurement.provenance, self.scanGeneration, measurement)

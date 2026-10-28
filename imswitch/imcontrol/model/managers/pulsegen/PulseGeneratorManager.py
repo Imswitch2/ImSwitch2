@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, FrozenSet, List, Optional
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 
@@ -99,6 +99,47 @@ class PulseGeneratorManager(SignalInterface, ABC):
     def supports_analog(self) -> bool:
         """True if ``setAnalog`` works."""
 
+    # ------------------------------------------------------------------
+    # Optional capabilities, for running scan programs
+    # (docs/design/plans/scan-engines-and-expert-scan.md §5.3). ``None``
+    # means the backend does not declare it: a scan that needs it is
+    # refused as unknown, never given a default.
+    # ------------------------------------------------------------------
+
+    @property
+    def max_sequence_steps(self) -> Optional[int]:
+        """Steps one programmed sequence can hold."""
+        return None
+
+    @property
+    def timing_resolution_ns(self) -> Optional[int]:
+        """The grid every step duration sits on, in ns: a duration that is
+        not a whole number of it cannot be played as asked."""
+        return None
+
+    @property
+    def max_repeats(self) -> Optional[int]:
+        """The largest ``n_reps`` :meth:`run` takes."""
+        return None
+
+    @property
+    def run_triggers(self) -> FrozenSet[str]:
+        """What :meth:`run` can wait for before it starts: ``'none'``, and
+        ``'start'`` (an external trigger) when the backend takes one."""
+        return frozenset({'none'})
+
+    @property
+    def stop_drives_low(self) -> Optional[bool]:
+        """Whether :meth:`stop` drives every channel LOW, whatever it was
+        set to: a line active when low is then switched on by a stop."""
+        return None
+
+    @property
+    def stop_granularity(self) -> Optional[str]:
+        """How soon :meth:`stop` takes effect: ``'step-boundary'`` (the step
+        running finishes) or ``'immediate'``."""
+        return None
+
     @property
     def connected(self) -> bool:
         """True if the backend is talking to real hardware.
@@ -161,6 +202,9 @@ class PulseGeneratorManager(SignalInterface, ABC):
             If True, return only after the sequence finishes (or raise
             on backend error).  If False, return immediately and emit
             :attr:`sigSequenceDone` from a worker thread when done.
+        trigger : str
+            ``'start'``: wait for the external trigger, then run. Only a
+            backend whose :attr:`run_triggers` offers it takes it.
 
         Backends whose underlying API is synchronous MUST spawn a worker
         thread to honour ``blocking=False`` — the caller must never

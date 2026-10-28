@@ -16,16 +16,16 @@ def test_authoritative_category_registry_exists():
     """All 9 categories from the registry must be present in DEVICE_CATS."""
     expected = {
         "detectors", "lasers", "positioners", "rotators",
-        "rs232devices", "slms", "flipMirrors", "pulsegen", "stands"
+        "rs232devices", "slms", "flipMirrors", "pulseGenerators", "stands"
     }
     assert expected <= set(editor.DEVICE_CATS), \
         f"Missing categories: {expected - set(editor.DEVICE_CATS)}"
 
 
 def test_missing_categories_present():
-    """flipMirrors, pulsegen, stands must be in DEVICE_CATS."""
+    """flipMirrors, pulseGenerators, stands must be in DEVICE_CATS."""
     assert "flipMirrors" in editor.DEVICE_CATS
-    assert "pulsegen" in editor.DEVICE_CATS
+    assert "pulseGenerators" in editor.DEVICE_CATS
     assert "stands" in editor.DEVICE_CATS
 
 

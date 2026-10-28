@@ -28,7 +28,14 @@ manually tuned offsets and magic numbers, especially for fast scans.
 - **Linestep `line_clock` count bug.** `__generate_all_clocks` tiles
   `line_clock` for physical `n_steps_dx[1]` (Ny), but an Advanced scan
   with `S>1` linesteps has `Ny*S` line periods → too few edges when
-  `S>1`.
+  `S>1`. *Lifetime 2.0 (P3) note:* the `SwabianTimeTaggerManager` now
+  refuses `S>1` scans with an error naming this item, and carries the
+  card-side half of the detector-sync fix: `lineClockDelayPs` (positive →
+  the pixel-marker pattern starts later, for an early clock; negative →
+  `setInputDelay` on the card, for a late one) plus `pixelPatternOffsetPs`
+  so the frame edge leads pixel 0; tutorial `timetagger/09` measures the
+  delay from the FLIM-vs-APD shift. Fixing the clock count here lifts the
+  `S>1` refusal.
 - **Inconsistent `phase_delay` default.** `APDManager` uses
   `scanInfoDict.get('phase_delay', 0)`; `PMTManager` uses a hard key.
 - **Fast-axis line-start artifacts.** `GalvoScanDesigner.__d2scan_poly` /
@@ -503,6 +510,9 @@ rotators, camera + APD + PMT detectors, one SLM.
 - ⬜ STED arm/disarm via SLM pattern switching.
 - ⬜ FLIM acquisition: τ from each fit method on a reference dye
   converges (M8 closed the FLIM gap; this re-tests on hardware).
+  Protocol and tooling ready: `docs/timetagger/validation.rst`,
+  tutorial `timetagger/10` with `EXTENDED = True`, sign-off log
+  `docs/setup-validation/etsted.md`; awaiting the rig session.
 - ⬜ Event-triggered loop: full arm → detect → STED → resume cycle on
   a real sample.
 - ⬜ Tiling: stitched overview + cell-target navigation.
@@ -673,7 +683,8 @@ Major UI / workflow modernization. Headline items:
 - FLIM support: `FLIMHistWidget` + `FLIMHistController`, optimized
   pipeline, `SwabianTimeTaggerManager` fixes, IRF peak detection,
   rep-rate-aware phasor, dist / decay mode toggle, diagnostic
-  rep-rate script.
+  rep-rate script. (Lifetime 2.0 later replaced the histogram widget
+  with the Lifetime panel; `FLIMHist` is renamed at setup load.)
 - Time-resolved detector workflows: a generic time-resolved detector
   contract (`model/timeresolved`) plus opt-in workflows
   (`model/workflows/time_resolved.py`) for binned photon-arrival cubes,

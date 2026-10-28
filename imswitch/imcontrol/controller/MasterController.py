@@ -2,7 +2,7 @@ from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
     DetectorsManager, FlipMirrorsManager, InstrumentsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
-    RotatorsManager, SLMsManager, ScanManagerAdvanced
+    RotatorsManager, SLMsManager, ScanManagerAdvanced, ScanManagerExpert
 )
 from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
 from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
@@ -57,11 +57,36 @@ class MasterController:
                 self.__setupInfo.teensyPulse
             )
 
+        # Any further generators by name, each through the registry (a
+        # plugin's too); a scan engine or laser names the one it drives.
+        from imswitch.imcontrol.model.managers.pulsegen.loader import build_pulse_generators
+        self.pulseGenerators = build_pulse_generators(
+            self.__setupInfo, lowLevelManagers={'nidaqManager': self.nidaqManager,
+                                                'rs232sManager': self.rs232sManager})
+
+        # Swabian Time Tagger: one card shared by every time-resolved
+        # detector and by scripts. Built only when the setup declares it;
+        # a SwabianTimeTaggerManager detector without the block builds a
+        # private one from its own properties (deprecated path).
+        self.timeTaggerManager = None
+        if getattr(self.__setupInfo, 'timeTagger', None) is not None:
+            from imswitch.imcontrol.model.managers.TimeTaggerManager import (
+                TimeTaggerManager,
+            )
+            self.timeTaggerManager = TimeTaggerManager(
+                self.__setupInfo.timeTagger, self.__setupInfo, self.nidaqManager
+            )
+
         lowLevelManagers = {
             'nidaqManager': self.nidaqManager,
             #'pulseStreamerManager' : self.pulseStreamerManager,
             'pulseGeneratorManager': self.pulseGeneratorManager,
-            'rs232sManager': self.rs232sManager
+            'pulseGenerators': self.pulseGenerators,
+            'rs232sManager': self.rs232sManager,
+            # A device on a step board is set by hand through its engine,
+            # which is built after the devices: looked up when it is used.
+            'scanEngineNamed': self._scanEngineNamed,
+            'timeTaggerManager': self.timeTaggerManager,
         }
 
         if self.__setupInfo.triggerScope:
@@ -106,6 +131,16 @@ class MasterController:
             self.standManager = StandManager(self.__setupInfo.microscopeStand,
                                              **lowLevelManagers)
 
+        # What runs a scan: the NI-DAQ and any scanEngines of the setup
+        # (docs/design/plans/scan-engines-and-expert-scan.md). A channel two
+        # engines claim fails the setup here, by name.
+        from imswitch.imcontrol.model.managers.scan_engines.loader import build_scan_engines
+        self.scanEngines = build_scan_engines(
+            self.__setupInfo, nidaqManager=self.nidaqManager,
+            lowLevelManagers=lowLevelManagers,
+        )
+        self.scanEngine = self.scanEngines.engine
+
         # Generate scanManager type according to setupInfo
         if self.__setupInfo.scan:
             # scanWidgetType is always the real scan backend.  A cloak only
@@ -123,11 +158,13 @@ class MasterController:
                 self.scanManager = ScanManagerMoNaLISA(self.__setupInfo)
             elif scanType == "Advanced":
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
+            elif scanType == "Expert":
+                self.scanManager = ScanManagerExpert(self.__setupInfo)
             elif scanType == "TriggerScope":
                 self.scanManager = ScanManagerTriggerScope(self.__setupInfo,
                                                            self.triggerScopeManager)
             else:
-                known = ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"]
+                known = ["Base", "PointScan", "MoNaLISA", "Advanced", "Expert", "TriggerScope"]
                 self.__logger.error(
                     'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the '
                     f'following: {known}.'
@@ -210,24 +247,35 @@ class MasterController:
         if not any(candidate is manager for candidate in completed):
             completed.append(manager)
 
+    def _scanEngineNamed(self, name):
+        """The setup's scan engine ``name`` (not the composite it may lead),
+        or ``None``."""
+        engines = getattr(self, 'scanEngines', None)
+        return None if engines is None else engines.engines.get(name)
+
     def closeEvent(self):
         # Finalize all manager attributes explicitly, not only MultiManager
         # instances. This ordering is also the retry scope: a manager object
         # that already finalized successfully is skipped, while False/raising
         # finalizers remain pending on the next close attempt.
+        # timeTaggerManager comes after detectorsManager: the FLIM detector
+        # must have stopped its worker and dropped its Flim before the card
+        # is freed.
         manager_attrs = [
             'detectorsManager', 'lasersManager', 'positionersManager',
             'rotatorsManager', 'flipMirrorsManager', 'instrumentsManager',
             'recordingManager',
-            'slmsManager', 'nidaqManager', 'rs232sManager',
-            'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
-            'scanManager',
+            'slmsManager', 'scanEngines', 'nidaqManager', 'rs232sManager',
+            'pulseGeneratorManager', 'pulseGenerators', 'triggerScopeManager', 'standManager',
+            'scanManager', 'timeTaggerManager',
         ]
         unsafeWhileActive = {
             'detectorsManager',
             'recordingManager',
+            'scanEngines',
             'nidaqManager',
             'scanManager',
+            'timeTaggerManager',
         }
         pendingUnsafeManagers = {
             attrName

@@ -14,6 +14,7 @@ from .ScanManagerPointScan import ScanManagerPointScan
 from .ScanManagerBase import ScanManagerBase
 from .ScanManagerMoNaLISA import ScanManagerMoNaLISA
 from .ScanManagerAdvanced import ScanManagerAdvanced
+from .ScanManagerExpert import ScanManagerExpert
 from .ScanManagerTriggerScope import ScanManagerTriggerScope
 from .StandManager import StandManager
 from .RotatorsManager import RotatorsManager
@@ -35,6 +36,7 @@ __all__ = [
     'ScanManagerBase',
     'ScanManagerMoNaLISA',
     'ScanManagerAdvanced',
+    'ScanManagerExpert',
     'ScanManagerTriggerScope',
     'StandManager',
     'RotatorsManager',
