@@ -150,6 +150,64 @@ def test_lock_current_orientation_enters_locked_mode(qapp, tmp_path):
     assert _combo_item_enabled(widget.orientationModeCombo, "Locked") is True
 
 
+def test_background_localization_busy_state_disables_duplicate_auto_actions(qapp):
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+
+    widget = MonalisaParamsWidget()
+    localization = PatternLocalization.manual_grid(
+        period_x=10.0,
+        period_y=10.0,
+        offset_x=0.0,
+        offset_y=0.0,
+        source="auto",
+    )
+    widget.set_auto_localization(localization, "ready")
+    assert widget.localizeButton.isEnabled() is True
+    assert widget.lockLocalizationButton.isEnabled() is True
+
+    widget.set_localization_job_state(True, "Auto: localizing…")
+
+    assert widget.localizeButton.isEnabled() is False
+    assert widget.lockLocalizationButton.isEnabled() is False
+    assert widget.localizationSettingsButton.isEnabled() is True
+    assert widget.previewStatusLabel.text() == "Auto: localizing…"
+
+    widget.set_localization_job_state(False)
+    assert widget.localizeButton.isEnabled() is True
+    assert widget.lockLocalizationButton.isEnabled() is True
+
+
+def test_embedded_localization_counts_as_current_auto_result(qapp):
+    from types import SimpleNamespace
+
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+
+    widget = MonalisaParamsWidget()
+    localization = PatternLocalization.manual_grid(
+        period_x=10.0,
+        period_y=12.0,
+        offset_x=1.0,
+        offset_y=2.0,
+        source="auto",
+    )
+    data_obj = SimpleNamespace(
+        name="reconstructed-data",
+        dataPath="/tmp/reconstructed-data.hdf5",
+        acquisition_layout=None,
+    )
+    widget.load_from_attrs(
+        {
+            "monalisa_calibration": {
+                "resolved_localization": localization.to_dict(),
+            }
+        },
+        data_obj,
+    )
+
+    assert widget.has_auto_localization_for_current_data() is True
+    assert "Embedded localization" in widget.previewStatusLabel.text()
+
+
 def _combo_item_enabled(combo, text):
     index = combo.findText(text)
     assert index >= 0
