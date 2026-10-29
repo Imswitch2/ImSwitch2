@@ -332,10 +332,11 @@ class MonalisaReconstructor(StreamingReconstructor):
         return np.asarray(frames)[chosen]
 
     def localize(self, data_obj, params: dict | None = None) -> tuple[PatternLocalization, str, dict]:
-        """Explicit Auto-localization action used by the parameter widget.
+        """Compute one Auto localization without mutating session state.
 
-        Loading/viewing data never calls this.  Reconstruction may still run
-        Auto localization when no explicit result has been prepared.
+        The GUI may call this explicitly or from a background Auto-localization
+        request.  The caller owns acceptance/commit so a stale worker cannot
+        overwrite calibration for a newer dataset or parameter state.
         """
         merged = unified_default_params()
         merged.update(dict(params or {}))
@@ -361,12 +362,6 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         localization = PatternLocalization.from_lattice(
             finding.lattice, source=source, dataset=getattr(data_obj, "name", "")
-        )
-        self.session_registry.set_current_localization(
-            detector_identity(data_obj), localization, source=source,
-            source_dataset=str(getattr(data_obj, "name", "") or ""),
-            source_path=str(getattr(data_obj, "dataPath", "") or ""),
-            diagnostics={"description": finding.describe()},
         )
         return localization, finding.describe(), {
             "spot_sigma_px": float(finding.spot.shared_sigma),

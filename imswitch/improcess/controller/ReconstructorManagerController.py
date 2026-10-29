@@ -1,4 +1,5 @@
 import copy
+import json
 
 from qtpy import QtCore
 
@@ -7,6 +8,12 @@ from .reconstruction_worker import (
     ReconstructionWorkerFailure,
     ReconstructionWorkerJob,
     ReconstructionWorkerOutcome,
+)
+from .localization_worker import (
+    LocalizationWorker,
+    LocalizationWorkerFailure,
+    LocalizationWorkerJob,
+    LocalizationWorkerOutcome,
 )
 from .basecontrollers import ImProcessWidgetController
 
@@ -27,6 +34,12 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = None
         self._reconstructionWorker = None
         self._reconstructionWorkerReconstructor = None
+        self._localizationThread = None
+        self._localizationWorker = None
+        self._localizationActiveJob = None
+        self._localizationPendingJob = None
+        self._localizationRequestCounter = 0
+        self._localizationExpectedRequestId = None
 
     def initActiveReconstructor(self):
         """Select, install, and publish the default reconstructor. Called once
@@ -195,6 +208,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
         """Select a compatible plugin and pass it a metadata-only inspection."""
         from imswitch.improcess.reconstructors.registry import get_registry
 
+        # Any in-flight localization belongs to the previous current source.
+        # It is allowed to finish in its worker thread, but its result is no
+        # longer eligible to mutate the UI/session state.
+        self._invalidate_localization_requests()
         active = self._main._activeReconstructor
         if active is None or not self._accepts_current_source(active):
             compatible = [
@@ -214,6 +231,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         self._publishReconstructorChoices()
         self._inspect_current_source()
+        self._defer_auto_localization(data_obj)
 
     def _inspect_current_source(self) -> None:
         reconstructor = self._main._activeReconstructor
@@ -413,6 +431,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # Switching reconstructors must not leave a stale detection-preview
         # overlay on the raw-data viewer: the new widget's box starts unchecked.
         if getattr(self, '_previewWidget', None) is not None:
+            self._invalidate_localization_requests()
             self._previewWidget = None
             try:
                 import numpy as np
@@ -549,6 +568,11 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
+        if reconstructor.id == "monalisa":
+            self._defer_auto_localization(
+                getattr(self._main, "_currentDataObj", None)
+            )
+
     @QtCore.Slot(str)
     def _set_monalisa_update_enabled(self, mode):
         try:
@@ -563,12 +587,17 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
     @QtCore.Slot(str)
     def _set_monalisa_relocalize_enabled(self, mode):
+        auto = str(mode) == "Auto"
         try:
-            self._widget.multiDataFrame.setRelocalizeEachDataItemEnabled(
-                str(mode) == "Auto"
-            )
+            self._widget.multiDataFrame.setRelocalizeEachDataItemEnabled(auto)
         except Exception:
             pass
+        if not auto:
+            self._invalidate_localization_requests()
+            return
+        self._defer_auto_localization(
+            getattr(self._main, "_currentDataObj", None)
+        )
 
     def _monalisa_relocalize_each_data_item(self) -> bool:
         try:
@@ -945,10 +974,14 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
     def closeEvent(self):
         self.cancelReconstruction()
+        self._invalidate_localization_requests()
         return self.shutdownComplete()
 
     def shutdownComplete(self):
-        return self._reconstructionThread is None
+        return (
+            self._reconstructionThread is None
+            and self._localizationThread is None
+        )
 
     def _publishPluginResult(self, result, displayName, reconstructor=None):
         self._commChannel.sigResultProduced.emit(result, displayName)
@@ -984,31 +1017,222 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
             self._setPreviewStatus("")
 
+    _LOCALIZATION_SIGNATURE_KEYS = (
+        "localization_mode",
+        "localization_refinement",
+        "localization_settings",
+        "spot_width_mode",
+        "spot_fwhm",
+        "spot_fwhm_unit",
+        "pixel_size_nm",
+        "scan_steps_fast",
+        "scan_steps_slow",
+        "scan_step_nm",
+    )
+
+    @classmethod
+    def _localization_signature(cls, params: dict) -> str:
+        payload = {
+            key: params.get(key)
+            for key in cls._LOCALIZATION_SIGNATURE_KEYS
+        }
+        return json.dumps(
+            payload, sort_keys=True, default=str, separators=(",", ":")
+        )
+
+    def _defer_auto_localization(self, data_obj) -> None:
+        if data_obj is None:
+            return
+        QtCore.QTimer.singleShot(
+            0, lambda source=data_obj: self._auto_localize_loaded_data(source)
+        )
+
+    def _auto_localize_loaded_data(self, data_obj) -> None:
+        """Start Auto localization only after source loading/metadata UI settles."""
+        if getattr(self._main, "_currentDataObj", None) is not data_obj:
+            return
+        reconstructor = self._main._activeReconstructor
+        widget = getattr(self, "_previewWidget", None)
+        if (
+            reconstructor is None
+            or reconstructor.id != "monalisa"
+            or widget is None
+        ):
+            return
+        try:
+            params = widget.get_values()
+        except Exception:
+            return
+        if str(params.get("localization_mode", "Auto")) != "Auto":
+            return
+        has_current = getattr(
+            widget, "has_auto_localization_for_current_data", None
+        )
+        if callable(has_current) and has_current():
+            return
+        self._queue_localization(data_obj, params=params, automatic=True)
+
     def _localizeCurrent(self):
-        """Explicit localization action for reconstructors that expose one."""
+        """Queue explicit localization without blocking the Qt/UI thread."""
         reconstructor = self._main._activeReconstructor
         data_obj = getattr(self._main, "_currentDataObj", None)
         widget = getattr(self, "_previewWidget", None)
         if reconstructor is None or data_obj is None or widget is None:
             return
-        localizer = getattr(reconstructor, "localize", None)
-        setter = getattr(widget, "set_auto_localization", None)
-        if not callable(localizer) or not callable(setter):
+        if reconstructor.id != "monalisa":
             return
-        self._setPreviewStatus("Localizing...")
         try:
-            localized = localizer(data_obj, widget.get_values())
-            localization, status = localized[:2]
-            details = localized[2] if len(localized) > 2 else {}
+            params = widget.get_values()
         except Exception as exc:
-            self._logger.error(f"Localization failed: {exc}")
             self._setPreviewStatus(f"Localization failed: {exc}")
             return
-        setter(localization, status)
+        if str(params.get("localization_mode", "Auto")) != "Auto":
+            return
+        self._queue_localization(data_obj, params=params, automatic=False)
+
+    def _queue_localization(self, data_obj, *, params: dict, automatic: bool) -> None:
+        reconstructor = self._main._activeReconstructor
+        if (
+            reconstructor is None
+            or reconstructor.id != "monalisa"
+            or not callable(getattr(reconstructor, "localize", None))
+        ):
+            return
+        params = dict(params)
+        # Never let a previously resolved Auto value turn the localization
+        # request into implicit reuse. The worker is explicitly computing one.
+        params["auto_localization"] = {}
+        signature = self._localization_signature(params)
+
+        for existing in (self._localizationActiveJob, self._localizationPendingJob):
+            if (
+                existing is not None
+                and existing.data_obj is data_obj
+                and existing.signature == signature
+            ):
+                return
+
+        self._localizationRequestCounter += 1
+        job = LocalizationWorkerJob(
+            request_id=self._localizationRequestCounter,
+            data_obj=data_obj,
+            params=params,
+            signature=signature,
+            automatic=bool(automatic),
+        )
+        self._localizationExpectedRequestId = job.request_id
+
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if self._localizationThread is not None:
+            # One expensive localization lane only: browsing through files
+            # replaces the pending request instead of spawning work for every
+            # intermediate dataset.
+            self._localizationPendingJob = job
+            if callable(state):
+                state(True, "Auto localization queued…" if automatic else "Localization queued…")
+            return
+        self._start_localization_job(job)
+
+    def _start_localization_job(self, job: LocalizationWorkerJob) -> None:
+        if not self._localization_job_is_current(job):
+            return
+        reconstructor = self._main._activeReconstructor
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(True, "Auto: localizing…" if job.automatic else "Localizing…")
+
+        thread = QtCore.QThread()
+        worker = LocalizationWorker(reconstructor, job)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_localization_finished)
+        worker.failed.connect(self._on_localization_failed)
+        for signal in (worker.finished, worker.failed):
+            signal.connect(worker.deleteLater)
+            signal.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(
+            lambda: self._clear_localization_worker_refs(thread)
+        )
+
+        self._localizationThread = thread
+        self._localizationWorker = worker
+        self._localizationActiveJob = job
+        thread.start()
+
+    def _localization_job_is_current(self, job: LocalizationWorkerJob) -> bool:
+        if self._localizationExpectedRequestId != job.request_id:
+            return False
+        if getattr(self._main, "_currentDataObj", None) is not job.data_obj:
+            return False
+        reconstructor = self._main._activeReconstructor
+        widget = getattr(self, "_previewWidget", None)
+        if reconstructor is None or reconstructor.id != "monalisa" or widget is None:
+            return False
+        try:
+            current = widget.get_values()
+        except Exception:
+            return False
+        if str(current.get("localization_mode", "Auto")) != "Auto":
+            return False
+        current = dict(current)
+        current["auto_localization"] = {}
+        return self._localization_signature(current) == job.signature
+
+    @QtCore.Slot(object)
+    def _on_localization_finished(self, outcome: LocalizationWorkerOutcome):
+        job = outcome.job
+        if not self._localization_job_is_current(job):
+            return
+        widget = getattr(self, "_previewWidget", None)
+        setter = getattr(widget, "set_auto_localization", None)
+        if not callable(setter):
+            return
+        setter(outcome.localization, outcome.status)
         set_spot = getattr(widget, "set_auto_spot_sigma_px", None)
-        if callable(set_spot) and isinstance(details, dict):
-            set_spot(details.get("spot_sigma_px"))
+        if callable(set_spot):
+            set_spot(outcome.details.get("spot_sigma_px"))
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(False)
+        self._localizationExpectedRequestId = None
         self._updatePreview()
+
+    @QtCore.Slot(object)
+    def _on_localization_failed(self, failure: LocalizationWorkerFailure):
+        if not self._localization_job_is_current(failure.job):
+            return
+        self._logger.error(
+            f"Localization failed: {failure.message}\n{failure.traceback}"
+        )
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(False, f"Localization failed: {failure.message}")
+        else:
+            self._setPreviewStatus(f"Localization failed: {failure.message}")
+        self._localizationExpectedRequestId = None
+
+    def _clear_localization_worker_refs(self, thread) -> None:
+        if self._localizationThread is not thread:
+            return
+        self._localizationThread = None
+        self._localizationWorker = None
+        self._localizationActiveJob = None
+        pending = self._localizationPendingJob
+        self._localizationPendingJob = None
+        if pending is not None and self._localization_job_is_current(pending):
+            self._start_localization_job(pending)
+
+    def _invalidate_localization_requests(self) -> None:
+        self._localizationExpectedRequestId = None
+        self._localizationPendingJob = None
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(False)
 
     def _setPreviewStatus(self, text):
         widget = getattr(self, '_previewWidget', None)

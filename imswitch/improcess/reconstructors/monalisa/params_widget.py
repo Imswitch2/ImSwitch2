@@ -170,6 +170,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._localization_refinement = str(values["localization_refinement"])
         self._localization_mode = str(values["localization_mode"])
         self._auto_localization = deepcopy(values["auto_localization"])
+        self._localization_busy = False
         self._spot_unit = str(values["spot_fwhm_unit"])
         self._applying_preset = False
         self._recorded_scan_summary = ""
@@ -346,7 +347,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         actionRow.addWidget(self.localizationSettingsButton)
         loc.addLayout(actionRow, 2, 0, 1, 6)
 
-        self.previewStatusLabel = QtWidgets.QLabel("Auto: press Localize")
+        self.previewStatusLabel = QtWidgets.QLabel("Auto: waiting for data")
         self.previewStatusLabel.setWordWrap(True)
         self.previewStatusLabel.setStyleSheet("color: palette(mid);")
         loc.addWidget(self.previewStatusLabel, 3, 0, 1, 6)
@@ -563,10 +564,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self.renameLocalizationButton, self.deleteLocalizationButton,
         ):
             widget.setVisible(locked)
-        self.localizeButton.setEnabled(localization_mode == LOCALIZATION_AUTO)
-        self.localizationSettingsButton.setEnabled(localization_mode == LOCALIZATION_AUTO)
+        auto = localization_mode == LOCALIZATION_AUTO
+        self.localizeButton.setEnabled(auto and not self._localization_busy)
+        self.localizationSettingsButton.setEnabled(auto)
         self.lockLocalizationButton.setEnabled(
-            self._lockable_localization() is not None and not locked
+            self._lockable_localization() is not None
+            and not locked
+            and not (auto and self._localization_busy)
         )
         selected = bool(self._selected_locked_localization_id)
         self.renameLocalizationButton.setEnabled(selected)
@@ -618,8 +622,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             self._localization_settings = dialog.settings()
             self.clear_auto_localization(
-                "Localization settings changed — press Localize to update"
+                "Localization settings changed — localizing…"
             )
+            if str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_AUTO:
+                self.sigLocalizeRequested.emit()
 
     def _open_scanning_advanced(self):
         dialog = ScanningAdvancedDialog(
@@ -707,7 +713,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._update_ui()
         self.sigDetectionParamsChanged.emit()
 
-    def clear_auto_localization(self, status: str = "Auto: press Localize") -> None:
+    def clear_auto_localization(self, status: str = "Auto localization pending…") -> None:
         self._auto_localization = {}
         self.setPreviewStatus(status)
         self._update_ui()
@@ -1267,6 +1273,22 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     def setPreviewStatus(self, text: str) -> None:
         self.previewStatusLabel.setText(str(text))
 
+    def set_localization_job_state(self, running: bool, status: str = "") -> None:
+        """Reflect background localization without changing reconstruction state."""
+        self._localization_busy = bool(running)
+        if status:
+            self.setPreviewStatus(status)
+        self._update_ui()
+
+    def has_auto_localization_for_current_data(self) -> bool:
+        """Whether Auto already has a resolved localization for this source."""
+        localization = PatternLocalization.from_dict(self._auto_localization)
+        if localization is None:
+            return False
+        current = str(getattr(self._current_data_obj, "name", "") or "")
+        source = str((self._auto_localization.get("provenance") or {}).get("dataset", "") or "")
+        return not source or not current or source == current
+
     # ----------------------------------------------------------- data source
     @staticmethod
     def _step_to_nm(step, unit) -> float | None:
@@ -1361,7 +1383,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             source = str((self._auto_localization.get("provenance") or {}).get("dataset", ""))
             current = str(getattr(data_obj, "name", "") or "")
             if source and current and source != current:
-                self.clear_auto_localization("Auto: press Localize")
+                self.clear_auto_localization("Auto localization pending…")
 
         pixel_nm = None
         for key in ("monalisa:camera_pixel_nm", "camera_pixel_nm"):
