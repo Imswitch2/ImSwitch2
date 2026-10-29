@@ -7,6 +7,12 @@ Unreleased
 
 **Fixes**
 
+- SimplePointScan: REC with the Recording set to "Scan once" records again
+  instead of failing with "Invalid acquisition layout"
+  (``SCAN_POSITION_COUNT_MISMATCH``). The recording counted the positions of
+  whatever scan dictionaries were left behind (for example by saving the
+  widget state) while its layout came from the scan it would run; both now
+  come from the current parameters.
 - Ending an NI-DAQ point scan no longer hangs for 2-4 s and quarantines an APD
   or PMT ("APD scan teardown did not finish within 2 s", the detector then
   missing from every later scan). The detector that closed the scan's last
