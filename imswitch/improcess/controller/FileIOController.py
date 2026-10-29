@@ -685,6 +685,8 @@ class FileIOController(ImProcessWidgetController):
         receipt = reconObj.save(
             Path(filePath), result_io.format_for_path(filePath), overwrite=True
         )
+        if hasattr(self._commChannel, "sigResultSaved"):
+            self._commChannel.sigResultSaved.emit(reconObj, receipt)
         files = getattr(receipt, "files", None)
         if files:
             self._logger.info(

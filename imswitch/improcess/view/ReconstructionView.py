@@ -311,6 +311,15 @@ class ReconstructionView(QtWidgets.QFrame):
                 return True
         return False
 
+    def selectData(self, reconObj) -> bool:
+        """Select the list entry holding ``reconObj`` by object identity."""
+        for i in range(self.reconList.count()):
+            item = self.reconList.item(i)
+            if item.data(1) is reconObj:
+                self.reconList.setCurrentItem(item)
+                return True
+        return False
+
     def getCurrentItemIndex(self):
         currentItem = self.reconList.currentItem()
         if currentItem is None:

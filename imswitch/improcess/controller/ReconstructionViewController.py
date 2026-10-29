@@ -128,6 +128,11 @@ class ReconstructionViewController(ImProcessWidgetController):
             return []
         return [(getattr(current, "name", "result"), current)]
 
+    def selectResult(self, result) -> bool:
+        """Select an already-loaded result without knowing list-widget details."""
+        selector = getattr(self._widget, "selectData", None)
+        return bool(selector(result)) if callable(selector) else False
+
     def getNapariViewer(self):
         """The embedded napari viewer, for code that adds layers of its own
         (napari endpoint sessions). ``None`` when the view has no viewer."""

@@ -179,10 +179,22 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: ImProcessMainController, ImageToolbarController,
         LiveReconstructionController, MemoryLiveController, MoNaLISAController,
-        NapariEndpointController, PythonConsoleController,
+        NapariEndpointController, ProcessingSessionController, PythonConsoleController,
         ReconstructorManagerController, ResultProcessorController,
         WorkflowController
-    Listeners: ImProcessMainController, ReconstructionViewController
+    Listeners: ImProcessMainController, ProcessingSessionController,
+        ReconstructionViewController
+    """
+
+    sigResultSaved = Signal(object, object)
+    """A reconstruction result was explicitly written to disk.
+
+    Payload: ``(result, SaveReceipt)``. The Session prototype listens so a
+    manual save into the active Session result directory is reflected in the
+    catalog immediately instead of waiting for a refresh.
+
+    Emitters: FileIOController
+    Listeners: ProcessingSessionController
     """
 
     sigResultReplaced = Signal(object, object, str)
@@ -268,8 +280,8 @@ class CommunicationChannel(SignalInterface):
     removed, or ctrl-clicked into the selection.
 
     Emitters: ReconstructionViewController
-    Listeners: ImProcessMainController, PythonConsoleController,
-        ResultProcessorController
+    Listeners: ImProcessMainController, ProcessingSessionController,
+        PythonConsoleController, ResultProcessorController
     """
 
     sigSmlmRenderSettingsChanged = Signal(object, object, object)

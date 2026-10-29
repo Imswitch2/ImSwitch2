@@ -19,6 +19,7 @@ from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
 from .DirectoryWatcherFrame import DirectoryWatcherFrame
+from .ProcessingSessionFrame import ProcessingSessionFrame
 from .FolderPreferencesDialog import FolderPreferencesDialog
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
@@ -119,6 +120,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showReconstructionPanel: bool = True,
         showActionsPanel: bool = True,
         showFileWatcherPanel: bool = True,
+        showSessionPanel: bool = True,
         showMultiDataPanel: bool = True,
         showCurrentDataPanel: bool = True,
         showResultsPanel: bool = True,
@@ -336,6 +338,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
         self.directoryWatcherFrame = DirectoryWatcherFrame()
+        self.processingSessionFrame = ProcessingSessionFrame()
 
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
@@ -515,6 +518,16 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.docks['Directory watcher'] = self.directoryWatcherDock
         if not showFileWatcherPanel:
             self.directoryWatcherDock.hide()
+
+        # Session is intentionally independent of Directory watcher in this
+        # first prototype. It catalogs existing raw/saved data and can be used
+        # even when the active reconstructor has no streaming support.
+        self.processingSessionDock = Dock('Session', size=(2, 4))
+        self.processingSessionDock.addWidget(self.processingSessionFrame)
+        self.dockArea.addDock(self.processingSessionDock, 'bottom', self.directoryWatcherDock)
+        self.docks['Session'] = self.processingSessionDock
+        if not showSessionPanel:
+            self.processingSessionDock.hide()
 
         self.multiDataDock = Dock('Multidata management', size=(2, 3))
         self.multiDataDock.addWidget(self.multiDataFrame)

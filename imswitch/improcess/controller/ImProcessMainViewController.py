@@ -8,6 +8,7 @@ from .SmlmRenderController import SmlmRenderController
 from .ScanParamsController import ScanParamsController
 from .WidefieldStarssBatchController import WidefieldStarssBatchController
 from .FileIOController import FileIOController
+from .ProcessingSessionController import ProcessingSessionController
 from .ReconstructorManagerController import ReconstructorManagerController
 from .MoNaLISAController import MoNaLISAController
 from .basecontrollers import ImProcessWidgetController
@@ -34,6 +35,13 @@ class ImProcessMainViewController(ImProcessWidgetController):
         )
         self.fileIOController = self._factory.createController(
             FileIOController, self._widget, mainController=self
+        )
+        self.processingSessionController = self._factory.createController(
+            ProcessingSessionController,
+            self._widget.processingSessionFrame,
+            mainController=self,
+            fileIOController=self.fileIOController,
+            reconstructionController=self.reconstructionController,
         )
         self.graphController = None
         if self._widget.graphWidget is not None:
