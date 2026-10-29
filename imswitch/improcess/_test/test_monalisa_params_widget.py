@@ -61,3 +61,90 @@ def test_changing_a_mode_controlled_option_enters_custom(qapp):
     widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Robust"))
     widget.reassignmentCombo.setCurrentIndex(widget.reassignmentCombo.findText("Manual"))
     assert widget.get_values()["preset"] == PRESET_CUSTOM
+
+
+def _combo_item_enabled(combo, text):
+    index = combo.findText(text)
+    assert index >= 0
+    item = combo.model().item(index)
+    return item.isEnabled()
+
+
+def test_locked_sources_are_disabled_until_a_lock_exists(qapp, tmp_path):
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+
+    assert _combo_item_enabled(widget.localizationModeCombo, "Locked") is False
+    assert _combo_item_enabled(widget.orientationModeCombo, "Locked") is False
+    assert "No locked localization" in widget.localizationModeCombo.toolTip()
+    assert "No locked orientation" in widget.orientationModeCombo.toolTip()
+
+
+def test_lock_current_localization_selects_it_and_enters_locked_mode(qapp, tmp_path, monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+    from imswitch.improcess.reconstructors.monalisa.params import LOCALIZATION_LOCKED
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    localization = PatternLocalization.manual_grid(
+        period_x=10.0,
+        period_y=12.0,
+        offset_x=1.0,
+        offset_y=2.0,
+        source="auto",
+    )
+    widget.set_auto_localization(localization, "ready")
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("Good localization", True),
+    )
+
+    widget._lock_current_localization()
+
+    assert widget._combo_data(widget.localizationModeCombo) == LOCALIZATION_LOCKED
+    assert widget._selected_locked_localization_id
+    assert widget._combo_data(widget.lockedLocalizationCombo) == widget._selected_locked_localization_id
+    assert _combo_item_enabled(widget.localizationModeCombo, "Locked") is True
+
+
+def test_compact_scan_summary_shows_only_meaningful_effective_step_change(qapp):
+    widget = MonalisaParamsWidget()
+    widget._recorded_scan_axes = {
+        "y": {"count": 21, "step_nm": 35.0},
+    }
+    widget._recorded_scan_summary = "Recorded: Y 21, step 35 nm"
+    widget._scan_result_summary = {
+        "orientation": "-x-y",
+        "output_pixel_nm": (36.0, 36.0),
+        "coverage_holes": 0,
+        "coverage_overlaps": 0,
+        "coverage_cell_pixels": 21,
+    }
+
+    widget._refresh_orientation_display()
+
+    assert widget.orientationResultLabel.text() == "→ -x-y"
+    assert "Y scan" in widget.scanSummaryLabel.text()
+    assert "21 pos." in widget.scanSummaryLabel.text()
+    assert "35.0 → 36.0 nm" in widget.scanSummaryLabel.text()
+    assert widget.scanStatusLabel.text() == "✓ 21/21 • 0 holes • adjusted +2.9%"
+
+
+def test_lock_current_orientation_enters_locked_mode(qapp, tmp_path):
+    from imswitch.improcess.reconstructors.monalisa.params import ORIENTATION_LOCKED
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    registry.set_current_orientation("unknown", "-x-y", source="auto")
+    widget._refresh_registry_controls()
+
+    widget._lock_current_orientation()
+
+    assert widget._combo_data(widget.orientationModeCombo) == ORIENTATION_LOCKED
+    assert widget.orientationResultLabel.text() == "→ -x-y"
+    assert _combo_item_enabled(widget.orientationModeCombo, "Locked") is True

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import re
 
 from qtpy import QtCore, QtWidgets
 
@@ -172,6 +173,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._spot_unit = str(values["spot_fwhm_unit"])
         self._applying_preset = False
         self._recorded_scan_summary = ""
+        self._recorded_scan_axes: dict[str, dict[str, float | int | None]] = {}
+        self._scan_result_summary: dict[str, object] = {}
         self._scanned_lateral_axes = {"x", "y"}
         self._scan_overrides = {
             "scan_steps_fast": int(values["scan_steps_fast"]),
@@ -242,6 +245,18 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         value = combo.currentData()
         return combo.currentText() if value is None else value
 
+    @staticmethod
+    def _set_combo_item_enabled(combo, value, enabled: bool, tooltip: str = "") -> None:
+        """Enable/disable one semantic combo-box choice without removing it."""
+        for index in range(combo.count()):
+            if combo.itemData(index) == value or combo.itemText(index) == str(value):
+                model = combo.model()
+                item = model.item(index) if hasattr(model, "item") else None
+                if item is not None:
+                    item.setEnabled(bool(enabled))
+                    item.setToolTip(str(tooltip or ""))
+                return
+
     def _build_ui(self, values: dict) -> None:
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -255,7 +270,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot calibration, ISM and corrections. Custom exposes expert choices."
         )
         modeRow.addWidget(self.modeCombo, 1)
-        self.advancedButton = QtWidgets.QPushButton("Advanced reconstruction…")
+        self.advancedButton = QtWidgets.QPushButton("Advanced parameters…")
+        self.advancedButton.setToolTip(
+            "Open expert numerical controls for execution, placement and sharpening."
+        )
         modeRow.addWidget(self.advancedButton)
         root.addLayout(modeRow)
 
@@ -305,18 +323,27 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         loc.addWidget(self.manualLocalizationWidget, 1, 0, 1, 6)
 
         actionRow = QtWidgets.QHBoxLayout()
-        self.previewCheckbox = QtWidgets.QCheckBox("Show foci")
+        self.previewCheckbox = QtWidgets.QCheckBox("Show")
         self.previewCheckbox.setToolTip(
             "Overlay the localization currently used by reconstruction."
         )
-        self.localizationSettingsButton = QtWidgets.QPushButton("Settings…")
         self.localizeButton = QtWidgets.QPushButton("Localize")
-        self.lockLocalizationButton = QtWidgets.QPushButton("Lock…")
+        self.localizeButton.setToolTip(
+            "Run automatic localization on the current dataset."
+        )
+        self.lockLocalizationButton = QtWidgets.QPushButton("Lock current")
+        self.lockLocalizationButton.setToolTip(
+            "Save the currently resolved localization in this session and use it immediately."
+        )
+        self.localizationSettingsButton = QtWidgets.QPushButton("Settings…")
+        self.localizationSettingsButton.setToolTip(
+            "Configure automatic localization parameters."
+        )
         actionRow.addWidget(self.previewCheckbox)
-        actionRow.addStretch(1)
-        actionRow.addWidget(self.localizationSettingsButton)
         actionRow.addWidget(self.localizeButton)
         actionRow.addWidget(self.lockLocalizationButton)
+        actionRow.addStretch(1)
+        actionRow.addWidget(self.localizationSettingsButton)
         loc.addLayout(actionRow, 2, 0, 1, 6)
 
         self.previewStatusLabel = QtWidgets.QLabel("Auto: press Localize")
@@ -332,15 +359,35 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             values["orientation_mode"],
         )
         self.orientationCombo = self._combo(list(ORIENTATIONS), values["orientation"])
-        self.lockOrientationButton = QtWidgets.QPushButton("Lock")
+        self.orientationResultLabel = QtWidgets.QLabel("→ —")
+        self.orientationResultLabel.setStyleSheet("color: palette(mid);")
+        self.lockOrientationButton = QtWidgets.QPushButton("Lock current")
+        self.lockOrientationButton.setToolTip(
+            "Save the currently resolved orientation for this detector and use it immediately."
+        )
         self.clearOrientationButton = QtWidgets.QPushButton("Clear lock")
-        self.scanningAdvancedButton = QtWidgets.QPushButton("Advanced…")
+        self.scanningAdvancedButton = QtWidgets.QPushButton("Edit…")
+        self.scanningAdvancedButton.setToolTip(
+            "Review or override scan metadata used only for reconstruction."
+        )
         scan.addWidget(QtWidgets.QLabel("Orientation"), 0, 0)
         scan.addWidget(self.orientationModeCombo, 0, 1)
         scan.addWidget(self.orientationCombo, 0, 2)
+        scan.addWidget(self.orientationResultLabel, 0, 2)
         scan.addWidget(self.lockOrientationButton, 0, 3)
         scan.addWidget(self.clearOrientationButton, 0, 4)
-        scan.addWidget(self.scanningAdvancedButton, 0, 5)
+        scan.setColumnStretch(5, 1)
+
+        self.scanSummaryLabel = QtWidgets.QLabel("Scan metadata: —")
+        self.scanSummaryLabel.setWordWrap(True)
+        self.scanSummaryLabel.setTextFormat(QtCore.Qt.RichText)
+        scan.addWidget(self.scanSummaryLabel, 1, 0, 1, 5)
+        scan.addWidget(self.scanningAdvancedButton, 1, 5)
+
+        self.scanStatusLabel = QtWidgets.QLabel("")
+        self.scanStatusLabel.setStyleSheet("color: palette(mid);")
+        self.scanStatusLabel.setWordWrap(True)
+        scan.addWidget(self.scanStatusLabel, 2, 0, 1, 6)
         root.addWidget(self.scanningBox)
 
         # Spot model ---------------------------------------------------------
@@ -526,12 +573,17 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.deleteLocalizationButton.setEnabled(selected)
 
         orient_mode = str(self._combo_data(self.orientationModeCombo))
-        self.orientationCombo.setEnabled(orient_mode == ORIENTATION_MANUAL)
+        manual_orientation = orient_mode == ORIENTATION_MANUAL
+        self.orientationCombo.setVisible(manual_orientation)
+        self.orientationCombo.setEnabled(manual_orientation)
+        self.orientationResultLabel.setVisible(not manual_orientation)
         self.lockOrientationButton.setEnabled(self._lockable_orientation() is not None)
-        self.clearOrientationButton.setEnabled(
+        has_locked_orientation = (
             self._registry is not None
             and self._registry.locked_orientation(self._detector_id) is not None
         )
+        self.clearOrientationButton.setVisible(has_locked_orientation)
+        self.clearOrientationButton.setEnabled(has_locked_orientation)
 
         spot_auto = str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO
         self.fwhmSpin.setEnabled(not spot_auto)
@@ -592,6 +644,21 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     def _localization_mode_changed(self, *_):
         previous = self._localization_mode
         current = str(self._combo_data(self.localizationModeCombo))
+        if (
+            current == LOCALIZATION_LOCKED
+            and not self._selected_locked_localization_id
+            and self._registry is not None
+        ):
+            profiles = self._registry.localization_profiles(self._detector_id)
+            if profiles:
+                self._selected_locked_localization_id = profiles[0].id
+                old = self.lockedLocalizationCombo.blockSignals(True)
+                try:
+                    self._set_combo_data(
+                        self.lockedLocalizationCombo, self._selected_locked_localization_id
+                    )
+                finally:
+                    self.lockedLocalizationCombo.blockSignals(old)
         self._localization_mode = current
         if previous == LOCALIZATION_AUTO and current == LOCALIZATION_MANUAL:
             self._seed_manual_from_auto()
@@ -699,6 +766,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         )
         self._selected_locked_localization_id = profile.id
         self._refresh_registry_controls()
+        self._set_combo_data(self.localizationModeCombo, LOCALIZATION_LOCKED)
         self.setPreviewStatus(f"Locked localization as {profile.name}")
 
     def _locked_localization_changed(self, *_):
@@ -763,6 +831,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             source_dataset=str(getattr(self._current_data_obj, "name", "") or ""),
             source_path=str(getattr(self._current_data_obj, "dataPath", "") or ""),
         )
+        self._set_combo_data(self.orientationModeCombo, ORIENTATION_LOCKED)
         self.setPreviewStatus(f"Locked orientation {orientation.to_literal()} for {self._detector_id}")
 
     def _clear_locked_orientation(self):
@@ -772,19 +841,136 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     def _refresh_orientation_display(self) -> None:
         mode = str(self._combo_data(self.orientationModeCombo))
         value = None
-        if self._registry is not None:
+        if mode == ORIENTATION_MANUAL:
+            value = str(self._combo_data(self.orientationCombo))
+        elif self._registry is not None:
             if mode == ORIENTATION_LOCKED:
                 item = self._registry.locked_orientation(self._detector_id)
                 value = item.orientation.to_literal() if item is not None else None
             elif mode == ORIENTATION_AUTO:
                 item = self._registry.current_orientation(self._detector_id)
                 value = item.orientation.to_literal() if item is not None else None
+        if not value:
+            value = str(self._scan_result_summary.get("orientation") or "") or None
         if value:
             old = self.orientationCombo.blockSignals(True)
             try:
                 self._set_combo_data(self.orientationCombo, value)
             finally:
                 self.orientationCombo.blockSignals(old)
+        self.orientationResultLabel.setText(f"→ {value}" if value else "→ —")
+        self._update_scan_summary()
+
+    @staticmethod
+    def _format_nm(value: float | None) -> str:
+        if value is None:
+            return "—"
+        value = float(value)
+        return f"{value:.1f}" if abs(value) >= 1.0 else f"{value:.3g}"
+
+    def _effective_scan_step_nm(self, axis: str, orientation: str | None) -> float | None:
+        summary = self._scan_result_summary
+        if axis == "z":
+            value = summary.get("plane_step_nm")
+            return None if value is None else float(value)
+        pixel = summary.get("output_pixel_nm")
+        if not isinstance(pixel, tuple) or len(pixel) != 2 or not orientation:
+            return None
+        if orientation not in ORIENTATIONS:
+            return None
+        camera_axis = orientation[1] if axis == "x" else orientation[3]
+        y_nm, x_nm = pixel
+        value = x_nm if camera_axis == "x" else y_nm
+        return None if value is None else float(value)
+
+    def _update_scan_summary(self) -> None:
+        axes = self._recorded_scan_axes
+        if not axes:
+            self.scanSummaryLabel.setText("Scan metadata: —")
+            self.scanSummaryLabel.setToolTip(self._recorded_scan_summary)
+            self.scanStatusLabel.clear()
+            self.scanStatusLabel.setVisible(False)
+            return
+
+        orientation = str(self._scan_result_summary.get("orientation") or "") or None
+        if orientation is None:
+            mode = str(self._combo_data(self.orientationModeCombo))
+            if mode == ORIENTATION_MANUAL:
+                orientation = str(self._combo_data(self.orientationCombo))
+            elif self._registry is not None:
+                item = (
+                    self._registry.locked_orientation(self._detector_id)
+                    if mode == ORIENTATION_LOCKED
+                    else self._registry.current_orientation(self._detector_id)
+                )
+                orientation = item.orientation.to_literal() if item is not None else None
+
+        lines = []
+        deltas = []
+        for axis in "xyz":
+            info = axes.get(axis)
+            if not info or int(info.get("count") or 0) <= 1:
+                continue
+            count = int(info["count"])
+            recorded = info.get("step_nm")
+            recorded = None if recorded is None else float(recorded)
+            effective = self._effective_scan_step_nm(axis, orientation)
+            if recorded is not None and effective is not None and recorded > 0:
+                delta = 100.0 * (effective - recorded) / recorded
+                if abs(delta) >= 0.05:
+                    step = (
+                        f"{self._format_nm(recorded)} → {self._format_nm(effective)} nm"
+                    )
+                    deltas.append((axis.upper(), delta))
+                else:
+                    step = f"{self._format_nm(recorded)} nm"
+            elif recorded is not None:
+                step = f"{self._format_nm(recorded)} nm"
+            elif effective is not None:
+                step = f"{self._format_nm(effective)} nm"
+            else:
+                step = "step —"
+            lines.append(
+                f"<b>{axis.upper()} scan</b>&nbsp;&nbsp;{count} pos.&nbsp;&nbsp;{step}"
+            )
+
+        self.scanSummaryLabel.setText("<br>".join(lines) if lines else "Scan metadata: —")
+        self.scanSummaryLabel.setToolTip(self._recorded_scan_summary)
+
+        summary = self._scan_result_summary
+        holes = summary.get("coverage_holes")
+        overlaps = summary.get("coverage_overlaps")
+        total = summary.get("coverage_cell_pixels")
+        status = []
+        if holes is not None and overlaps is not None and total is not None:
+            acquired = 1
+            for axis in "xy":
+                acquired *= max(1, int((axes.get(axis) or {}).get("count") or 1))
+            exact = int(holes) == 0 and int(overlaps) == 0
+            if exact:
+                status.append(f"✓ {acquired}/{int(total)}")
+            else:
+                status.append(f"⚠ {max(0, int(total) - int(holes))}/{int(total)} covered")
+            status.append(f"{int(holes)} holes")
+            if int(overlaps) or not exact:
+                status.append(f"{int(overlaps)} overlaps")
+        if deltas:
+            if len(deltas) == 1:
+                status.append(f"adjusted {deltas[0][1]:+.1f}%")
+            else:
+                rounded = {round(delta, 1) for _axis, delta in deltas}
+                if len(rounded) == 1:
+                    status.append(f"adjusted {deltas[0][1]:+.1f}%")
+                else:
+                    status.append(
+                        "adjusted " + ", ".join(
+                            f"{axis} {delta:+.1f}%" for axis, delta in deltas
+                        )
+                    )
+        self.scanStatusLabel.setText(" • ".join(status))
+        self.scanStatusLabel.setVisible(bool(status))
+        tooltip = str(summary.get("diagnostic_tooltip") or "")
+        self.scanStatusLabel.setToolTip(tooltip)
 
     # ----------------------------------------------------------- spot / ISM
     def _spot_unit_changed(self, *_):
@@ -842,7 +1028,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if not isinstance(snapshot, dict):
             params = dict(getattr(selected, "params", {}) or {})
             snapshot = params.get("calibration_snapshot")
-        if not isinstance(snapshot, dict):
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        self._sync_scan_result(selected, snapshot)
+        if not snapshot:
             return
 
         if str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO:
@@ -877,7 +1065,99 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 except (TypeError, ValueError):
                     pass
 
+    def _sync_scan_result(self, result, snapshot: dict) -> None:
+        diagnostics = dict(getattr(result, "diagnostics", {}) or {})
+        orientation = str(
+            snapshot.get("resolved_orientation")
+            or diagnostics.get("resolved_orientation")
+            or diagnostics.get("orientation")
+            or ""
+        )
+
+        pixel = getattr(result, "output_pixel_size_nm", None)
+        if pixel is None:
+            output_pixel_nm = None
+        elif isinstance(pixel, (tuple, list)):
+            values = tuple(float(value) for value in pixel)
+            output_pixel_nm = values if len(values) == 2 else None
+        else:
+            value = float(pixel)
+            output_pixel_nm = (value, value)
+
+        holes = diagnostics.get("coverage_holes")
+        overlaps = diagnostics.get("coverage_overlaps")
+        cell_pixels = diagnostics.get("coverage_cell_pixels")
+        coverage_text = str(diagnostics.get("coverage of the cell") or "")
+        match = re.search(
+            r"(\d+) holes,\s*(\d+) overlaps of\s*(\d+) positions",
+            coverage_text,
+        )
+        if match is not None:
+            if holes is None:
+                holes = int(match.group(1))
+            if overlaps is None:
+                overlaps = int(match.group(2))
+            if cell_pixels is None:
+                cell_pixels = int(match.group(3))
+
+        self._scan_result_summary = {
+            "orientation": orientation,
+            "output_pixel_nm": output_pixel_nm,
+            "plane_step_nm": getattr(result, "plane_step_nm", None),
+            "coverage_holes": holes,
+            "coverage_overlaps": overlaps,
+            "coverage_cell_pixels": cell_pixels,
+            "diagnostic_tooltip": "\n".join(
+                text for text in (
+                    str(diagnostics.get("scan step") or ""),
+                    coverage_text,
+                ) if text
+            ),
+        }
+        self._refresh_orientation_display()
+
     # ------------------------------------------------------ session registry
+    def _sync_locked_mode_availability(self) -> None:
+        localization_profiles = (
+            self._registry.localization_profiles(self._detector_id)
+            if self._registry is not None else ()
+        )
+        has_localization = bool(localization_profiles)
+        localization_tip = (
+            "Use a localization saved for this detector."
+            if has_localization else
+            "No locked localization available. Localize a pattern and choose 'Lock current' first."
+        )
+        self._set_combo_item_enabled(
+            self.localizationModeCombo, LOCALIZATION_LOCKED, has_localization, localization_tip
+        )
+        self.localizationModeCombo.setToolTip(localization_tip if not has_localization else "")
+
+        has_orientation = (
+            self._registry is not None
+            and self._registry.locked_orientation(self._detector_id) is not None
+        )
+        orientation_tip = (
+            "Use the orientation locked for this detector."
+            if has_orientation else
+            "No locked orientation available. Resolve an orientation and choose 'Lock current' first."
+        )
+        self._set_combo_item_enabled(
+            self.orientationModeCombo, ORIENTATION_LOCKED, has_orientation, orientation_tip
+        )
+        self.orientationModeCombo.setToolTip(orientation_tip if not has_orientation else "")
+
+        if (
+            str(self._combo_data(self.localizationModeCombo)) == LOCALIZATION_LOCKED
+            and not has_localization
+        ):
+            self._set_combo_data(self.localizationModeCombo, LOCALIZATION_AUTO)
+        if (
+            str(self._combo_data(self.orientationModeCombo)) == ORIENTATION_LOCKED
+            and not has_orientation
+        ):
+            self._set_combo_data(self.orientationModeCombo, ORIENTATION_AUTO)
+
     def _registry_changed(self):
         self._refresh_registry_controls()
 
@@ -903,6 +1183,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             self._set_combo_data(self.lockedLocalizationCombo, current)
         finally:
             self.lockedLocalizationCombo.blockSignals(old)
+        self._sync_locked_mode_availability()
         self._refresh_orientation_display()
         self._update_ui()
 
@@ -988,7 +1269,22 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     # ----------------------------------------------------------- data source
     @staticmethod
-    def _source_scan_info(attrs: dict, data_obj) -> tuple[str, set[str]]:
+    def _step_to_nm(step, unit) -> float | None:
+        if step is None:
+            return None
+        try:
+            step = float(step)
+        except (TypeError, ValueError):
+            return None
+        if step <= 0:
+            return None
+        key = str(unit).lower() if unit is not None else None
+        factors = {None: 1000.0, "um": 1000.0, "µm": 1000.0, "nm": 1.0, "mm": 1e6, "m": 1e9}
+        factor = factors.get(key)
+        return None if factor is None else step * factor
+
+    @staticmethod
+    def _source_scan_info(attrs: dict, data_obj) -> tuple[str, set[str], dict]:
         resolved = getattr(data_obj, "acquisition_layout", None)
         layout = getattr(resolved, "layout", None)
         if layout is not None:
@@ -998,34 +1294,65 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             }
             lateral = {axis for axis in "xy" if f"scan_{axis}" in loops}
             parts = []
+            axes = {}
             for axis in "xyz":
                 loop = loops.get(f"scan_{axis}")
                 if loop is None:
                     continue
-                step = "" if loop.step is None else f", step {loop.step:g} {loop.unit or ''}".rstrip()
+                step_nm = MonalisaParamsWidget._step_to_nm(loop.step, loop.unit)
+                axes[axis] = {"count": int(loop.count), "step_nm": step_nm}
+                step = "" if step_nm is None else f", step {step_nm:g} nm"
                 parts.append(f"{axis.upper()} {int(loop.count)}{step}")
             if parts:
-                return "Recorded: " + ", ".join(parts), lateral or {"x", "y"}
+                return "Recorded: " + ", ".join(parts), lateral or {"x", "y"}, axes
+
         lateral = set()
+        axes = {}
         try:
             nx = int(float(attrs.get("ScanTTL:Nx", 0)))
             ny = int(float(attrs.get("ScanTTL:Ny", 0)))
-            if nx > 1:
-                lateral.add("x")
-            if ny > 1:
-                lateral.add("y")
-            if nx > 0 and ny > 0:
-                return f"Recorded: {nx} × {ny} scan", lateral or {"x", "y"}
         except (TypeError, ValueError):
-            pass
-        return "Recorded metadata: used by default", {"x", "y"}
+            nx = ny = 0
+
+        step_sizes = attrs.get("ScanStage:axis_step_size")
+        if hasattr(step_sizes, "tolist"):
+            step_sizes = step_sizes.tolist()
+        if not isinstance(step_sizes, (list, tuple)):
+            step_sizes = ()
+        step_unit = attrs.get("ScanStage:axis_step_size_unit", "um")
+        for index, (axis, count) in enumerate((("x", nx), ("y", ny))):
+            if count <= 1:
+                continue
+            lateral.add(axis)
+            step = step_sizes[index] if index < len(step_sizes) else None
+            axes[axis] = {
+                "count": count,
+                "step_nm": MonalisaParamsWidget._step_to_nm(step, step_unit),
+            }
+        if axes:
+            parts = []
+            for axis in "xy":
+                info = axes.get(axis)
+                if not info:
+                    continue
+                step = info.get("step_nm")
+                suffix = "" if step is None else f", step {float(step):g} nm"
+                parts.append(f"{axis.upper()} {int(info['count'])}{suffix}")
+            return "Recorded: " + ", ".join(parts), lateral or {"x", "y"}, axes
+        return "Recorded metadata: used by default", {"x", "y"}, {}
 
     def load_from_attrs(self, attrs: dict, data_obj=None) -> None:
         attrs = dict(attrs or {})
         old_detector = self._detector_id
         self._current_data_obj = data_obj
         self._detector_id = detector_identity(data_obj, attrs)
-        self._recorded_scan_summary, self._scanned_lateral_axes = self._source_scan_info(attrs, data_obj)
+        (
+            self._recorded_scan_summary,
+            self._scanned_lateral_axes,
+            self._recorded_scan_axes,
+        ) = self._source_scan_info(attrs, data_obj)
+        self._scan_result_summary = {}
+        self._update_scan_summary()
         if old_detector != self._detector_id:
             self._selected_locked_localization_id = ""
             self._refresh_registry_controls(clear_selection=True)
