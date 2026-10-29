@@ -429,7 +429,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
             pass
 
         # Switching reconstructors must not leave a stale detection-preview
-        # overlay on the raw-data viewer: the new widget's box starts unchecked.
+        # overlay on the raw-data viewer. The newly installed widget decides
+        # whether its preview should start visible.
         if getattr(self, '_previewWidget', None) is not None:
             self._invalidate_localization_requests()
             self._previewWidget = None
@@ -556,6 +557,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     )
                     self._previewFrameSignalConnected = True
                 self._previewWidget = widget
+                preview_checkbox = getattr(widget, "previewCheckbox", None)
+                if preview_checkbox is not None and preview_checkbox.isChecked():
+                    self._handlePreviewToggled(True)
                 if hasattr(widget, "sigLocalizationModeChanged"):
                     widget.sigLocalizationModeChanged.connect(
                         self._set_monalisa_relocalize_enabled

@@ -259,9 +259,23 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 return
 
     def _build_ui(self, values: dict) -> None:
-        root = QtWidgets.QVBoxLayout(self)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.scrollArea = QtWidgets.QScrollArea(self)
+        self.scrollArea.setWidgetResizable(True)
+        self.scrollArea.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        outer.addWidget(self.scrollArea)
+
+        self._scrollContent = QtWidgets.QWidget()
+        self.scrollArea.setWidget(self._scrollContent)
+        root = QtWidgets.QVBoxLayout(self._scrollContent)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(6)
+        self._contentLayout = root
 
         modeRow = QtWidgets.QHBoxLayout()
         modeRow.addWidget(QtWidgets.QLabel("Mode"))
@@ -324,7 +338,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         loc.addWidget(self.manualLocalizationWidget, 1, 0, 1, 6)
 
         actionRow = QtWidgets.QHBoxLayout()
+        actionRow.setSpacing(8)
         self.previewCheckbox = QtWidgets.QCheckBox("Show")
+        self.previewCheckbox.setChecked(True)
         self.previewCheckbox.setToolTip(
             "Overlay the localization currently used by reconstruction."
         )
@@ -343,12 +359,18 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         actionRow.addWidget(self.previewCheckbox)
         actionRow.addWidget(self.localizeButton)
         actionRow.addWidget(self.lockLocalizationButton)
-        actionRow.addStretch(1)
         actionRow.addWidget(self.localizationSettingsButton)
+        actionRow.addStretch()
         loc.addLayout(actionRow, 2, 0, 1, 6)
 
         self.previewStatusLabel = QtWidgets.QLabel("Auto: waiting for data")
         self.previewStatusLabel.setWordWrap(True)
+        self.previewStatusLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
+        )
+        self.previewStatusLabel.setMinimumHeight(
+            self.previewStatusLabel.fontMetrics().lineSpacing() + 4
+        )
         self.previewStatusLabel.setStyleSheet("color: palette(mid);")
         loc.addWidget(self.previewStatusLabel, 3, 0, 1, 6)
         root.addWidget(self.localizationBox)
@@ -360,7 +382,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             values["orientation_mode"],
         )
         self.orientationCombo = self._combo(list(ORIENTATIONS), values["orientation"])
-        self.orientationResultLabel = QtWidgets.QLabel("→ —")
+        self.orientationResultLabel = QtWidgets.QLabel("—")
         self.orientationResultLabel.setStyleSheet("color: palette(mid);")
         self.lockOrientationButton = QtWidgets.QPushButton("Lock current")
         self.lockOrientationButton.setToolTip(
@@ -388,6 +410,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.scanStatusLabel = QtWidgets.QLabel("")
         self.scanStatusLabel.setStyleSheet("color: palette(mid);")
         self.scanStatusLabel.setWordWrap(True)
+        self.scanStatusLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
+        )
+        self.scanStatusLabel.setMinimumHeight(
+            self.scanStatusLabel.fontMetrics().lineSpacing() + 4
+        )
         scan.addWidget(self.scanStatusLabel, 2, 0, 1, 6)
         root.addWidget(self.scanningBox)
 
@@ -464,6 +492,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._outputPixelSizeLabel.setStyleSheet("color: palette(mid);")
         root.addWidget(self._outputPixelSizeLabel)
         root.addStretch(1)
+        QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     def _connect_signals(self) -> None:
         self.modeCombo.currentIndexChanged.connect(self._mode_changed)
@@ -615,6 +644,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.shiftYSpin.setEnabled(manual_ism)
         self.shiftXLabel.setEnabled(True)
         self.shiftYLabel.setEnabled(True)
+        QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
+
+    def _refresh_scroll_minimum(self) -> None:
+        """Keep the full workflow reachable instead of vertically compressing labels."""
+        if not hasattr(self, "_scrollContent") or not hasattr(self, "_contentLayout"):
+            return
+        self._scrollContent.setMinimumHeight(self._contentLayout.minimumSize().height())
 
     # -------------------------------------------------------------- dialogs
     def _open_localization_settings(self):
@@ -864,7 +900,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 self._set_combo_data(self.orientationCombo, value)
             finally:
                 self.orientationCombo.blockSignals(old)
-        self.orientationResultLabel.setText(f"→ {value}" if value else "→ —")
+        self.orientationResultLabel.setText(value if value else "—")
         self._update_scan_summary()
 
     @staticmethod
@@ -977,6 +1013,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.scanStatusLabel.setVisible(bool(status))
         tooltip = str(summary.get("diagnostic_tooltip") or "")
         self.scanStatusLabel.setToolTip(tooltip)
+        QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     # ----------------------------------------------------------- spot / ISM
     def _spot_unit_changed(self, *_):
@@ -1272,6 +1309,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     def setPreviewStatus(self, text: str) -> None:
         self.previewStatusLabel.setText(str(text))
+        QtCore.QTimer.singleShot(0, self._refresh_scroll_minimum)
 
     def set_localization_job_state(self, running: bool, status: str = "") -> None:
         """Reflect background localization without changing reconstruction state."""
