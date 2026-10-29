@@ -329,6 +329,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "multicolor-apply",
     "multicolor-registration",
     "projection",
+    "psf-bead-select",
     "psf-resolution",
     "python",
     "resize",

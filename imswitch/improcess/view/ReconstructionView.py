@@ -5,9 +5,11 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
+from imswitch.improcess.model.content_summary import describe_result
 from imswitch.improcess.model.contrast import safe_display_levels
 from imswitch.improcess.model.lazy_array import is_dask_array
 from . import guitools
+from .ContentDelegate import ContentDelegate
 from .NapariStormDisplay import NapariStormDisplay
 
 
@@ -137,8 +139,11 @@ class ReconstructionView(QtWidgets.QFrame):
         self.chooseViewBox.setLayout(self.viewLayout)
         self.chooseViewGroup.buttonClicked.connect(self.sigViewChanged)
 
-        # List for storing sevral data sets
+        # List for storing sevral data sets. Each entry shows its name over
+        # an icon and a line saying what it holds (image, Z-stack, curve, ...).
         self.reconList = QtWidgets.QListWidget()
+        self.reconList.setItemDelegate(ContentDelegate(describe_result, self.reconList))
+        self.reconList.setUniformItemSizes(True)
         self.reconList.currentItemChanged.connect(self.sigItemSelected)
         # Selection can change without the current item moving (Ctrl+A,
         # Ctrl-click deselect), and multi-input toolbar actions gate on the
