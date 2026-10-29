@@ -6,7 +6,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy import QtWidgets  # noqa: E402
+from qtpy import QtCore, QtWidgets  # noqa: E402
 
 from imswitch.improcess.reconstructors.monalisa.params import (  # noqa: E402
     PRESET_CUSTOM,
@@ -25,6 +25,16 @@ def qapp():
 def test_compact_widget_defaults_match_the_backend_contract(qapp):
     widget = MonalisaParamsWidget()
     assert widget.get_values() == default_params()
+
+
+def test_preview_starts_visible_and_workflow_is_scrollable(qapp):
+    widget = MonalisaParamsWidget()
+    assert widget.previewCheckbox.isChecked() is True
+    assert widget.scrollArea.widgetResizable() is True
+    assert widget.scrollArea.verticalScrollBarPolicy() == QtCore.Qt.ScrollBarAsNeeded
+    assert widget.scrollArea.horizontalScrollBarPolicy() == QtCore.Qt.ScrollBarAlwaysOff
+    assert widget.previewStatusLabel.minimumHeight() > 0
+    assert widget.scanStatusLabel.minimumHeight() > 0
 
 
 def test_fast_mode_hides_optional_processing_sections(qapp):
@@ -127,7 +137,7 @@ def test_compact_scan_summary_shows_only_meaningful_effective_step_change(qapp):
 
     widget._refresh_orientation_display()
 
-    assert widget.orientationResultLabel.text() == "→ -x-y"
+    assert widget.orientationResultLabel.text() == "-x-y"
     assert "Y scan" in widget.scanSummaryLabel.text()
     assert "21 pos." in widget.scanSummaryLabel.text()
     assert "35.0 → 36.0 nm" in widget.scanSummaryLabel.text()
@@ -146,7 +156,7 @@ def test_lock_current_orientation_enters_locked_mode(qapp, tmp_path):
     widget._lock_current_orientation()
 
     assert widget._combo_data(widget.orientationModeCombo) == ORIENTATION_LOCKED
-    assert widget.orientationResultLabel.text() == "→ -x-y"
+    assert widget.orientationResultLabel.text() == "-x-y"
     assert _combo_item_enabled(widget.orientationModeCombo, "Locked") is True
 
 
