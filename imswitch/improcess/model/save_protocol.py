@@ -244,6 +244,12 @@ def artifact_record(plan: SavePlan, result) -> dict:
         "primary": plan.primary.name,
         "files": plan.relative_names(),
         "result_uid": str(getattr(result, "result_uid", "") or ""),
+        # Preserve the exact user-facing reconstruction-object name separately
+        # from the producing plugin label. Session may use a concise provenance
+        # summary (for example ``MoNaLISA - Fast``), while reopening the saved
+        # result should restore the same name it originally had in the
+        # Reconstruction objects list.
+        "result_name": str(getattr(result, "name", "") or ""),
     }
 
 

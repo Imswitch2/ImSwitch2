@@ -133,6 +133,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         selector = getattr(self._widget, "selectData", None)
         return bool(selector(result)) if callable(selector) else False
 
+    def removeResult(self, result) -> bool:
+        """Remove one loaded result by identity without exposing widget details."""
+        remover = getattr(self._widget, "removeData", None)
+        return bool(remover(result)) if callable(remover) else False
+
     def getNapariViewer(self):
         """The embedded napari viewer, for code that adds layers of its own
         (napari endpoint sessions). ``None`` when the view has no viewer."""

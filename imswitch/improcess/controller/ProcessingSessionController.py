@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from qtpy import QtCore
 
 from imswitch.improcess.controller.basecontrollers import ImProcessWidgetController
 from imswitch.improcess.model.processing_session import ProcessingSession
-from imswitch.improcess.model.provenance import output_node
+from imswitch.improcess.model.provenance import graph_of, output_node
 from imswitch.improcess.model.saved_result import load_saved_result
 
 
@@ -57,8 +58,14 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigDatasetSelectionChanged.connect(self.datasetSelected)
         self._widget.sigSavedSelectionChanged.connect(self.reconstructionSelected)
         self._widget.sigLoadRawRequested.connect(self.loadSelectedRaw)
-        self._widget.sigAddToReconstructionsRequested.connect(self.addSelectedToReconstructions)
-        self._widget.sigSetFinalRequested.connect(self.setSelectedFinal)
+        self._widget.sigReconstructionFinalToggleRequested.connect(
+            self.toggleReconstructionFinal
+        )
+        self._widget.sigReconstructionWorkspaceToggleRequested.connect(
+            self.toggleReconstructionWorkspace
+        )
+        self._widget.sigDiscardSelectedRequested.connect(self.discardSelected)
+        self._widget.sigDiscardCandidatesRequested.connect(self.discardCandidates)
         self._widget.sigAutoSaveChanged.connect(self._setAutoSave)
         self._widget.sigSaveFormatChanged.connect(self._setSaveFormat)
 
@@ -107,6 +114,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._selectedDatasetId = None
         self._selectedReconKey = None
         self._widget.setPaths(str(session.raw_root), str(session.results_root))
+        self._widget.setSetupExpanded(False)
         self._widget.setStatus(
             f"Session open · {len(session.datasets)} raw dataset(s) · {session.results_root}"
         )
@@ -178,12 +186,15 @@ class ProcessingSessionController(ImProcessWidgetController):
             result = loaded_by_saved.get(resolved)
             if result is not None and id(result) in loaded_ids:
                 represented_loaded.add(id(result))
-            marker = "●" if result is not None else "○"
-            bits = ["FINAL" if saved.final else "DRAFT"]
+            marker = "★" if saved.final else ("●" if result is not None else "○")
+            bits = ["FINAL" if saved.final else "CANDIDATE"]
             bits.append("In reconstructions" if result is not None else "Saved only")
             entries.append({
                 "key": f"saved:{resolved}",
+                "name": saved.name,
+                "tooltip": saved.tooltip or saved.name,
                 "label": f"{marker} {saved.name}    {' · '.join(bits)}",
+                "final": bool(saved.final),
                 "saved": saved,
                 "loaded": result,
             })
@@ -191,13 +202,53 @@ class ProcessingSessionController(ImProcessWidgetController):
         for display_name, result in loaded_for_dataset:
             if id(result) in represented_loaded:
                 continue
+            graph = graph_of(result)
+            session_name, _object_name, tooltip = ProcessingSession.reconstruction_presentation(
+                graph, fallback_name=str(display_name or getattr(result, "name", "reconstruction"))
+            )
             entries.append({
                 "key": self._loaded_key(result),
-                "label": f"● {display_name}    In reconstructions · Not saved",
+                "name": session_name,
+                "tooltip": tooltip or session_name,
+                "label": f"● {session_name}    CANDIDATE · In reconstructions · Not saved",
+                "final": False,
                 "saved": None,
                 "loaded": result,
             })
         return entries
+
+    @staticmethod
+    def _dataset_timestamp(dataset) -> float | None:
+        """Best lightweight acquisition timestamp for Session ordering.
+
+        For multi-file time lapses use the newest member so newly arriving
+        timepoints keep the logical acquisition near the top in Latest mode.
+        No pixel data is opened.
+        """
+        values = []
+        for ref in getattr(dataset, "source_refs", ()) or ():
+            try:
+                values.append(os.path.getmtime(ref.path))
+            except OSError:
+                continue
+        if not values:
+            try:
+                values.append(os.path.getmtime(dataset.primary_path))
+            except OSError:
+                pass
+        return max(values) if values else None
+
+    @staticmethod
+    def _dataset_search_text(dataset) -> str:
+        parts = [
+            str(getattr(dataset, "label", "") or ""),
+            str(getattr(dataset, "primary_path", "") or ""),
+            str(getattr(dataset, "primary_dataset", "") or ""),
+        ]
+        for ref in getattr(dataset, "source_refs", ()) or ():
+            parts.append(str(getattr(ref, "path", "") or ""))
+            parts.append(str(getattr(ref, "dataset", "") or ""))
+        return "\n".join(part for part in parts if part)
 
     def _render(self) -> None:
         session = self._session
@@ -207,18 +258,38 @@ class ProcessingSessionController(ImProcessWidgetController):
             return
         entries = []
         for dataset in session.datasets:
-            in_memory = len(self._loaded_reconstructions_for_dataset(dataset))
-            if dataset.status == "final":
+            recon_entries = self._reconstruction_entries(dataset)
+            candidate_count = sum(
+                1
+                for item in recon_entries
+                if item["saved"] is None or not item["saved"].final
+            )
+            kept_count = sum(
+                1
+                for item in recon_entries
+                if item["saved"] is not None and item["saved"].final
+            )
+            if candidate_count:
+                status = f"! REVIEW · {candidate_count} candidate"
+                if candidate_count != 1:
+                    status += "s"
+            elif kept_count:
                 status = "✓ FINAL"
-            elif dataset.status == "draft":
-                status = f"● DRAFT · {len(dataset.saved_reconstructions)} saved"
-            elif in_memory:
-                status = f"● RECONSTRUCTED · {in_memory} in reconstructions"
+                if kept_count > 1:
+                    status += f" · {kept_count} kept"
             else:
                 status = "— RAW"
             if dataset.kind == "time-lapse" and dataset.planned_timepoints:
                 status += f" · T={dataset.planned_timepoints}"
-            entries.append((dataset.id, dataset.label, status))
+            state = "review" if candidate_count else ("final" if kept_count else "raw")
+            entries.append({
+                "id": dataset.id,
+                "label": dataset.label,
+                "status": status,
+                "state": state,
+                "timestamp": self._dataset_timestamp(dataset),
+                "search": self._dataset_search_text(dataset),
+            })
         self._widget.setDatasets(entries)
         if self._selectedDatasetId and session.dataset_by_id(self._selectedDatasetId) is None:
             self._selectedDatasetId = None
@@ -228,21 +299,27 @@ class ProcessingSessionController(ImProcessWidgetController):
         session = self._session
         dataset = session.dataset_by_id(self._selectedDatasetId) if session else None
         if dataset is None:
-            self._widget.setSelectedDataset("No dataset selected", "")
+            self._widget.setSelectedDataset("", "")
             self._widget.setSavedReconstructions([])
             self._widget.setActionsEnabled(False, False, False)
             return
 
-        final = dataset.final_reconstruction
         entries = self._reconstruction_entries(dataset)
         loaded_count = sum(1 for item in entries if item["loaded"] is not None)
         saved_count = len(dataset.saved_reconstructions)
+        kept_count = sum(
+            1 for item in entries
+            if item["saved"] is not None and item["saved"].final
+        )
+        candidate_count = len(entries) - kept_count
+        total_count = len(entries)
         summary = (
-            f"{loaded_count} reconstruction(s) in list · {saved_count} saved\n"
-            f"Final: {final.name if final else 'none'}"
+            f"{total_count} reconstructed · {loaded_count} in list · "
+            f"{kept_count} kept · {candidate_count} candidate"
+            f"{'s' if candidate_count != 1 else ''}"
         )
         if dataset.kind == "time-lapse" and dataset.planned_timepoints:
-            summary += f"\nTime lapse: {dataset.planned_timepoints} planned timepoints"
+            summary += f" · T={dataset.planned_timepoints}"
         self._widget.setSelectedDataset(dataset.label, summary)
 
         selected = self._selectedReconKey
@@ -250,16 +327,24 @@ class ProcessingSessionController(ImProcessWidgetController):
             selected = None
             self._selectedReconKey = None
         self._widget.setSavedReconstructions(
-            [(item["key"], item["label"]) for item in entries], selected
+            [
+                {
+                    "key": item["key"],
+                    "name": item.get("name", item["label"]),
+                    "final": bool(item.get("final", False)),
+                    "loaded": item["loaded"] is not None,
+                    "saved": item["saved"] is not None,
+                    "tooltip": item.get("tooltip", item.get("name", "")),
+                }
+                for item in entries
+            ],
+            selected,
         )
-        selected_entry = self._selected_reconstruction_entry()
-        can_add = bool(selected_entry and selected_entry["saved"] is not None and selected_entry["loaded"] is None)
-        can_final = bool(
-            selected_entry
-            and selected_entry["saved"] is not None
-            and not selected_entry["saved"].final
+        can_discard = bool(self._widget.selectedReconstructionKeys())
+        can_discard_candidates = any(
+            item["saved"] is None or not item["saved"].final for item in entries
         )
-        self._widget.setActionsEnabled(True, can_add, can_final)
+        self._widget.setActionsEnabled(True, can_discard, can_discard_candidates)
 
     def datasetSelected(self, dataset_id) -> None:
         # Raw selection is deliberately local to Session.  It never changes
@@ -271,24 +356,34 @@ class ProcessingSessionController(ImProcessWidgetController):
     def reconstructionSelected(self, entry_key) -> None:
         self._selectedReconKey = str(entry_key) if entry_key else None
         entry = self._selected_reconstruction_entry()
-        can_add = bool(entry and entry["saved"] is not None and entry["loaded"] is None)
-        can_final = bool(entry and entry["saved"] is not None and not entry["saved"].final)
+        dataset = (
+            self._session.dataset_by_id(self._selectedDatasetId)
+            if self._session is not None and self._selectedDatasetId
+            else None
+        )
+        entries = self._reconstruction_entries(dataset) if dataset is not None else []
         self._widget.setActionsEnabled(
-            self._selectedDatasetId is not None, can_add, can_final
+            self._selectedDatasetId is not None,
+            bool(self._widget.selectedReconstructionKeys()),
+            any(item["saved"] is None or not item["saved"].final for item in entries),
         )
         if entry is not None and entry["loaded"] is not None and self._reconstruction is not None:
             self._reconstruction.selectResult(entry["loaded"])
 
-    def _selected_reconstruction_entry(self):
-        if self._session is None or not self._selectedDatasetId or not self._selectedReconKey:
+    def _reconstruction_entry_by_key(self, key):
+        if self._session is None or not self._selectedDatasetId or not key:
             return None
         dataset = self._session.dataset_by_id(self._selectedDatasetId)
         if dataset is None:
             return None
+        key = str(key)
         return next(
-            (item for item in self._reconstruction_entries(dataset) if item["key"] == self._selectedReconKey),
+            (item for item in self._reconstruction_entries(dataset) if item["key"] == key),
             None,
         )
+
+    def _selected_reconstruction_entry(self):
+        return self._reconstruction_entry_by_key(self._selectedReconKey)
 
     def _selected_saved(self):
         entry = self._selected_reconstruction_entry()
@@ -324,19 +419,199 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._logger.exception("Could not restore saved reconstruction")
             self._widget.setStatus(f"Could not add reconstruction: {exc}")
             return
-        self._commChannel.sigResultProduced.emit(result, saved.name)
+        self._commChannel.sigResultProduced.emit(
+            result, str(getattr(result, "name", "") or saved.display_name or saved.name)
+        )
         if self._reconstruction is not None:
             self._reconstruction.selectResult(result)
         self._widget.setStatus(f"Added {saved.name} to reconstructions")
         self._renderSelected()
 
-    def setSelectedFinal(self) -> None:
-        saved = self._selected_saved()
-        if saved is None or self._session is None or self._selectedDatasetId is None:
+    def toggleReconstructionWorkspace(self, entry_key) -> None:
+        entry = self._reconstruction_entry_by_key(entry_key)
+        if entry is None:
             return
-        if self._session.set_final(self._selectedDatasetId, saved.path):
-            self._widget.setStatus(f"Final reconstruction: {saved.name}")
+        self._selectedReconKey = str(entry_key)
+
+        if entry["loaded"] is not None:
+            # Remove is explicitly non-destructive. If this candidate only
+            # exists in memory, save it to the Session first so removing the
+            # ProcessingResult does not destroy the only copy.
+            loaded = entry["loaded"]
+            if entry["saved"] is None:
+                saved = self._ensure_selected_saved()
+                if saved is None:
+                    return
+            self._remove_loaded_result(loaded)
+            self._widget.setStatus("Closed reconstruction object; Session result preserved")
             self._render()
+            return
+
+        saved = entry["saved"]
+        if saved is None:
+            return
+        try:
+            result = load_saved_result(saved.path)
+        except Exception as exc:
+            self._logger.exception("Could not restore saved reconstruction")
+            self._widget.setStatus(f"Could not add reconstruction: {exc}")
+            return
+        self._commChannel.sigResultProduced.emit(
+            result, str(getattr(result, "name", "") or saved.display_name or saved.name)
+        )
+        if self._reconstruction is not None:
+            self._reconstruction.selectResult(result)
+        self._widget.setStatus(f"Added {saved.name} to reconstructions")
+        self._render()
+
+    def toggleReconstructionFinal(self, entry_key) -> None:
+        entry = self._reconstruction_entry_by_key(entry_key)
+        if entry is None or self._session is None or self._selectedDatasetId is None:
+            return
+        self._selectedReconKey = str(entry_key)
+        if entry["saved"] is not None and entry["saved"].final:
+            if self._session.set_final(self._selectedDatasetId, entry["saved"].path, False):
+                self._widget.setStatus(f"Marked {entry['saved'].name} as candidate")
+                self._render()
+            return
+
+        saved = self._ensure_selected_saved()
+        if saved is None:
+            return
+        if self._session.set_final(self._selectedDatasetId, saved.path, True):
+            self._widget.setStatus(f"Keeping {saved.name} as final")
+            self._render()
+
+    def _ensure_selected_saved(self):
+        """Return the selected saved record, saving an in-memory candidate if needed."""
+        entry = self._selected_reconstruction_entry()
+        if (
+            entry is None
+            or self._session is None
+            or self._selectedDatasetId is None
+        ):
+            return None
+        if entry["saved"] is not None:
+            return entry["saved"]
+        result = entry["loaded"]
+        dataset = self._session.dataset_by_id(self._selectedDatasetId)
+        if result is None or dataset is None:
+            return None
+        try:
+            receipt = self._save_result(
+                result, dataset, str(getattr(result, "name", "reconstruction"))
+            )
+        except Exception as exc:
+            self._logger.exception("Could not save reconstruction into Session")
+            self._widget.setStatus(f"Could not keep reconstruction: {exc}")
+            return None
+        result._session_saved_path = str(receipt.primary)
+        wanted = str(Path(receipt.primary).resolve())
+        self._session.refresh()
+        dataset = self._session.dataset_by_id(self._selectedDatasetId)
+        if dataset is None:
+            return None
+        saved = next(
+            (item for item in dataset.saved_reconstructions if _same_path(item.path, wanted)),
+            None,
+        )
+        if saved is not None:
+            self._selectedReconKey = f"saved:{wanted}"
+        return saved
+
+    @staticmethod
+    def _close_restored_backing(result) -> None:
+        backing = getattr(result, "_session_backing_data_obj", None)
+        closer = getattr(backing, "checkAndUnloadData", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+
+    def _remove_loaded_result(self, result) -> None:
+        if result is None or self._reconstruction is None:
+            return
+        remover = getattr(self._reconstruction, "removeResult", None)
+        if callable(remover):
+            remover(result)
+        self._close_restored_backing(result)
+
+    def discardSelected(self) -> None:
+        if self._session is None or self._selectedDatasetId is None:
+            return
+        dataset = self._session.dataset_by_id(self._selectedDatasetId)
+        if dataset is None:
+            return
+        keys = list(dict.fromkeys(self._widget.selectedReconstructionKeys()))
+        if not keys and self._selectedReconKey:
+            keys = [self._selectedReconKey]
+        entries = [self._reconstruction_entry_by_key(key) for key in keys]
+        entries = [entry for entry in entries if entry is not None]
+        if not entries:
+            return
+
+        discarded = 0
+        for entry in entries:
+            if entry["loaded"] is not None:
+                self._remove_loaded_result(entry["loaded"])
+            if entry["saved"] is not None:
+                try:
+                    self._session.trash_reconstruction(dataset.id, entry["saved"].path)
+                except Exception as exc:
+                    self._logger.exception("Could not move reconstruction to Session trash")
+                    self._widget.setStatus(
+                        f"Could not discard {entry['saved'].name}: {exc}"
+                    )
+                    self._session.refresh()
+                    self._render()
+                    return
+            discarded += 1
+
+        self._selectedReconKey = None
+        self._session.refresh()
+        self._widget.setStatus(
+            f"Discarded {discarded} reconstruction{'s' if discarded != 1 else ''} to Session trash"
+        )
+        self._render()
+
+    def discardCandidates(self) -> None:
+        if self._session is None or self._selectedDatasetId is None:
+            return
+        dataset = self._session.dataset_by_id(self._selectedDatasetId)
+        if dataset is None:
+            return
+        entries = [
+            entry
+            for entry in self._reconstruction_entries(dataset)
+            if entry["saved"] is None or not entry["saved"].final
+        ]
+        if not entries:
+            return
+
+        discarded = 0
+        for entry in entries:
+            if entry["loaded"] is not None:
+                self._remove_loaded_result(entry["loaded"])
+            if entry["saved"] is not None:
+                try:
+                    self._session.trash_reconstruction(dataset.id, entry["saved"].path)
+                except Exception as exc:
+                    self._logger.exception("Could not move reconstruction to Session trash")
+                    self._widget.setStatus(
+                        f"Could not discard {entry['saved'].name}: {exc}"
+                    )
+                    self._session.refresh()
+                    self._render()
+                    return
+            discarded += 1
+
+        self._selectedReconKey = None
+        self._session.refresh()
+        self._widget.setStatus(
+            f"Discarded {discarded} candidate{'s' if discarded != 1 else ''} to Session trash"
+        )
+        self._render()
 
     # ------------------------------------------------------------ result sync
 

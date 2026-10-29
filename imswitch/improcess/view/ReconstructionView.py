@@ -320,6 +320,16 @@ class ReconstructionView(QtWidgets.QFrame):
                 return True
         return False
 
+    def removeData(self, reconObj) -> bool:
+        """Remove one reconstruction by object identity."""
+        for i in range(self.reconList.count()):
+            item = self.reconList.item(i)
+            if item.data(1) is reconObj:
+                self.reconList.takeItem(i)
+                self.sigResultsRemoved.emit()
+                return True
+        return False
+
     def getCurrentItemIndex(self):
         currentItem = self.reconList.currentItem()
         if currentItem is None:

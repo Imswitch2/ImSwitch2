@@ -60,7 +60,14 @@ class _Recon:
     params_version = 1
 
 
-def _saved_reconstruction(raw_path: Path, results: Path, name="full") -> Path:
+class _MonalisaLikeRecon:
+    id = "monalisa"
+    name = "MoNaLISA"
+    version = "1"
+    params_version = 4
+
+
+def _saved_reconstruction(raw_path: Path, results: Path, name="full", *, recon=None, params=None) -> Path:
     raw = DataObj(raw_path.name, "Camera", path=str(raw_path))
     raw.checkAndOpenData()
     result = ArrayProcessingResult(
@@ -70,7 +77,7 @@ def _saved_reconstruction(raw_path: Path, results: Path, name="full") -> Path:
         axis_scales=[0.1, 0.1],
         scale_unit="um",
     )
-    record_reconstruction(result, _Recon(), {}, raw)
+    record_reconstruction(result, recon or _Recon(), dict(params or {}), raw)
     target = results / f"{name}.h5"
     result.save(target, "hdf5")
     return target
@@ -130,8 +137,9 @@ def test_saved_result_is_associated_by_provenance_and_final_persists(tmp_path):
 
     dataset = session.datasets[0]
     assert [Path(item.path) for item in dataset.saved_reconstructions] == [saved]
-    assert dataset.status == "draft"
-    assert session.set_final(dataset.id, saved)
+    # The common one-reconstruction-per-raw workflow resolves automatically.
+    assert dataset.status == "final"
+    assert dataset.final_reconstruction is not None
 
     reopened = ProcessingSession(raw_root, results)
     reopened.refresh()
@@ -154,6 +162,7 @@ def test_restore_saved_hdf5_result_is_lazy_and_keeps_provenance(tmp_path):
     assert restored.data.shape == (4, 5)
     assert not isinstance(restored.data, np.ndarray)
     assert restored.metadata.get(PROVENANCE_KEY) is not None
+    assert restored.name == "full"
     assert Path(restored._session_saved_path) == saved.resolve()
 
 
@@ -228,3 +237,89 @@ def test_session_autosave_stem_avoids_duplicating_long_raw_name():
     assert stem.endswith("_monalisa")
     assert len(stem) <= 55
     assert stem.count("13h03m56s") == 1
+
+
+def test_second_saved_result_enters_review_and_multiple_finals_are_allowed(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = tmp_path / "results"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+    first = _saved_reconstruction(raw_path, results, "full")
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+    dataset = session.datasets[0]
+    assert dataset.status == "final"
+    assert [item.name for item in dataset.final_reconstructions] == ["full"]
+
+    second = _saved_reconstruction(raw_path, results, "full_test")
+    session.refresh()
+    dataset = session.datasets[0]
+    assert dataset.status == "review"
+    assert [item.name for item in dataset.final_reconstructions] == ["full"]
+    assert [item.name for item in dataset.candidate_reconstructions] == ["full_test"]
+
+    assert session.set_final(dataset.id, second, True)
+    assert dataset.status == "final"
+    assert {item.name for item in dataset.final_reconstructions} == {"full", "full_test"}
+
+    reopened = ProcessingSession(raw_root, results)
+    reopened.refresh()
+    assert reopened.datasets[0].status == "final"
+    assert {item.name for item in reopened.datasets[0].final_reconstructions} == {
+        "full", "full_test"
+    }
+
+
+def test_trash_reconstruction_hides_it_from_session_but_preserves_file(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = tmp_path / "results"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+    first = _saved_reconstruction(raw_path, results, "full")
+    second = _saved_reconstruction(raw_path, results, "test")
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+    dataset = session.datasets[0]
+    assert dataset.status == "review"
+
+    trashed = session.trash_reconstruction(dataset.id, second)
+    assert trashed is not None
+    assert trashed.exists()
+    assert ".trash" in trashed.parts
+    assert not second.exists()
+
+    session.refresh()
+    dataset = session.datasets[0]
+    assert dataset.status == "final"
+    assert [Path(item.path) for item in dataset.saved_reconstructions] == [first]
+
+
+def test_session_reconstruction_name_uses_preset_and_tooltip_uses_provenance(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = tmp_path / "results"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+    _saved_reconstruction(
+        raw_path,
+        results,
+        "scan01_recon",
+        recon=_MonalisaLikeRecon(),
+        params={
+            "preset": "Fast",
+            "spot_fwhm": 210.0,
+            "spot_fwhm_unit": "nm",
+            "reassignment": "off",
+            "intensity_correction": False,
+            "cell_offsets": False,
+            "localization_mode": "Auto",
+        },
+    )
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+    saved = session.datasets[0].saved_reconstructions[0]
+
+    assert saved.name == "MoNaLISA - Fast"
+    assert saved.display_name == "scan01_recon"
+    assert "FWHM: 210 nm" in saved.tooltip
+    assert "Reassignment: off" in saved.tooltip
+    assert "Localization: Auto" in saved.tooltip

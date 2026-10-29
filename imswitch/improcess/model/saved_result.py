@@ -11,15 +11,19 @@ from imswitch.improcess.model.provenance_io import read_provenance
 
 
 def _display_name(path: Path, document) -> str:
-    graph = document.graph if isinstance(document.graph, dict) else None
-    node_id = (document.artifact or {}).get("node")
-    if not node_id and graph is not None:
-        node_id = (graph.get("output") or {}).get("node")
-    if node_id and graph is not None:
-        node = (graph.get("nodes") or {}).get(node_id) or {}
-        label = node.get("label")
-        if label:
-            return str(label)
+    """Name used when a saved result is restored into Reconstruction objects.
+
+    The artifact record is authoritative for files written by current ImProcess.
+    Older Session files did not store the original result name; for those, the
+    saved filename is a much better reconstruction-object label than the
+    provenance plugin label (``MoNaLISA``), which describes how it was made but
+    not which result object this is.
+    """
+    artifact = document.artifact or {}
+    original = artifact.get("result_name")
+    if original:
+        return str(original)
+
     name = path.name
     for suffix in (".ome.zarr", ".ome.tiff", ".ome.tif", ".hdf5", ".tiff", ".zarr", ".h5", ".tif"):
         if name.lower().endswith(suffix):
