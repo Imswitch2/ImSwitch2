@@ -94,6 +94,12 @@ class ReconstructionViewController(ImProcessWidgetController):
         # lets any panel enumerate them through the channel instead of
         # reaching for this controller.
         self._commChannel.setResultProvider(self)
+        # Keep object references so removal can release resources owned by a
+        # result (notably lazy Session-restored DataObj handles) even though the
+        # view's removal signal itself carries no payload.
+        self._knownResultObjects = {
+            id(result): result for _name, result in self.getAllResults()
+        }
 
         self._widget.sigItemSelected.connect(self.listItemChanged)
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
@@ -143,8 +149,35 @@ class ReconstructionViewController(ImProcessWidgetController):
         (napari endpoint sessions). ``None`` when the view has no viewer."""
         return getattr(self._widget, "napariViewer", None)
 
+    @staticmethod
+    def _releaseResultResources(result) -> None:
+        """Release file-backed resources owned by a result leaving the list."""
+        backing = getattr(result, "_session_backing_data_obj", None)
+        closer = getattr(backing, "checkAndUnloadData", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+        if backing is not None:
+            try:
+                result._session_backing_data_obj = None
+            except Exception:
+                pass
+
     def _resultsChanged(self) -> None:
-        """Announce that the loaded set or the selection moved."""
+        """Announce selection/membership changes and release removed resources."""
+        getter = getattr(self, "getAllResults", None)
+        try:
+            rows = getter() if callable(getter) else []
+        except Exception:
+            rows = []
+        current = {id(result): result for _name, result in rows}
+        known = self.__dict__.get("_knownResultObjects", {})
+        for key, result in tuple(known.items()):
+            if key not in current:
+                self._releaseResultResources(result)
+        self._knownResultObjects = current
         self._retainNapariStormDatasets()
         self._commChannel.sigResultsChanged.emit()
 

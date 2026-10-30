@@ -94,6 +94,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         )
         self._widget.sigCancelAddingRequested.connect(self.cancelAddingReconstructions)
         self._widget.sigCloseSessionReconstructionsRequested.connect(self.closeSessionReconstructions)
+        self._widget.sigCloseSessionRequested.connect(self.closeSession)
         self._widget.sigEmptyTrashRequested.connect(self.emptySessionTrash)
         self._widget.sigRevealRawFolderRequested.connect(self.revealRawFolder)
         self._widget.sigRevealResultsFolderRequested.connect(self.revealResultsFolder)
@@ -108,6 +109,62 @@ class ProcessingSessionController(ImProcessWidgetController):
     @property
     def session(self):
         return self._session
+
+    @staticmethod
+    def _session_origin_id(session) -> str | None:
+        if session is None:
+            return None
+        try:
+            return str(session.manifest_path.resolve())
+        except Exception:
+            return str(session.manifest_path)
+
+    def _tag_session_origin(self, result, session=None) -> None:
+        if result is None:
+            return
+        origin = self._session_origin_id(session or self._session)
+        if origin:
+            result._session_origin = origin
+
+    def _results_associated_with_session(self, session=None) -> list[object]:
+        session = session or self._session
+        if session is None:
+            return []
+        matches = []
+        seen = set()
+        for _name, result in self._commChannel.getAllResults():
+            if result is None or id(result) in seen or not self._is_direct_reconstruction(result):
+                continue
+            if session.dataset_for_result(result) is None:
+                continue
+            seen.add(id(result))
+            matches.append(result)
+        return matches
+
+    def _reset_add_queue(self) -> None:
+        self._addQueue = None
+        self._addTotal = 0
+        self._addProcessed = 0
+        self._addAdded = 0
+        self._addFailed = 0
+        self._addCancelled = False
+        self._addLastResult = None
+        self._widget.setAddingProgress(False)
+
+    def _deactivate_session(self, *, status: str | None = None) -> None:
+        self._reset_add_queue()
+        self._session = None
+        self._selectedDatasetId = None
+        self._selectedReconKey = None
+        self._currentDatasetId = None
+        self._loadingDatasetId = None
+        self._loadedResultSignature = self._loaded_result_signature()
+        self._widget.setSessionActive(False)
+        self._widget.setDatasets([])
+        self._widget.setSelectedDataset("", "")
+        self._widget.setSavedReconstructions([])
+        if status:
+            self._widget.setStatus(status)
 
     def _request_configuration(self) -> dict | None:
         session = self._session
@@ -155,18 +212,21 @@ class ProcessingSessionController(ImProcessWidgetController):
         if self.openSession(raw, results) and restore_mode == "all":
             self._start_add_reconstructions(list(self._session.datasets))
 
-    def openSession(self, raw_root, results_root) -> bool:
+    def _prepare_session(self, raw_root, results_root) -> ProcessingSession | None:
         raw = Path(raw_root).expanduser()
         if not raw.is_dir():
             self._widget.setStatus(f"Raw-data folder does not exist: {raw}")
-            return False
+            return None
         try:
             session = ProcessingSession(raw, results_root)
             session.refresh()
         except Exception as exc:
             self._logger.exception("Could not open processing session")
             self._widget.setStatus(f"Could not open session: {exc}")
-            return False
+            return None
+        return session
+
+    def _activate_session(self, session: ProcessingSession) -> None:
         self._session = session
         self._loadedResultSignature = self._loaded_result_signature()
         self._selectedDatasetId = None
@@ -179,6 +239,73 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._render()
         if self._followActiveReconstruction and self._reconstruction is not None:
             self._currentResultChanged(self._reconstruction.getActiveResult())
+
+    def openSession(self, raw_root, results_root) -> bool:
+        # Build/refresh the candidate before touching the active Session. A bad
+        # target path therefore cannot close a perfectly usable current Session.
+        candidate = self._prepare_session(raw_root, results_root)
+        if candidate is None:
+            return False
+
+        current = self._session
+        changing = bool(
+            current is not None
+            and (
+                not _same_path(current.raw_root, candidate.raw_root)
+                or not _same_path(current.results_root, candidate.results_root)
+            )
+        )
+        if changing and not self.closeSession(for_switch=True):
+            return False
+
+        self._activate_session(candidate)
+        return True
+
+    def closeSession(self, *, for_switch: bool = False) -> bool:
+        session = self._session
+        if session is None:
+            return True
+
+        associated = self._results_associated_with_session(session)
+        choice = "keep"
+        if associated:
+            choice = self._widget.requestSessionCloseChoice(
+                len(associated), switching=bool(for_switch)
+            )
+            if choice == "cancel":
+                return False
+            if choice == "close":
+                # Session "Close" is non-destructive just like the per-result
+                # Close action. Persist any reconstruction that only exists in
+                # memory before removing its right-panel object.
+                for result in associated:
+                    if getattr(result, "_session_saved_path", None):
+                        continue
+                    dataset = session.dataset_for_result(result)
+                    if dataset is None:
+                        continue
+                    try:
+                        receipt = self._save_result(
+                            result, dataset, str(getattr(result, "name", "reconstruction"))
+                        )
+                    except Exception as exc:
+                        self._logger.exception(
+                            "Could not preserve reconstruction before closing Session"
+                        )
+                        self._widget.setStatus(
+                            f"Could not close Session; preserving a reconstruction failed: {exc}"
+                        )
+                        return False
+                    result._session_saved_path = str(receipt.primary)
+                    self._tag_session_origin(result, session)
+                session.refresh()
+                for result in list(associated):
+                    self._remove_loaded_result(result)
+
+        name = session.raw_root.name
+        self._deactivate_session(
+            status=None if for_switch else f"Session closed · {name}"
+        )
         return True
 
     def refresh(self) -> None:
@@ -841,7 +968,9 @@ class ProcessingSessionController(ImProcessWidgetController):
 
         _dataset, saved = queue.pop(0)
         try:
-            result = load_saved_result(saved.path)
+            result = load_saved_result(
+                saved.path, session_origin=self._session_origin_id(self._session)
+            )
         except Exception:
             self._logger.exception("Could not restore saved Session reconstruction")
             self._addFailed += 1
@@ -945,7 +1074,9 @@ class ProcessingSessionController(ImProcessWidgetController):
             return
         resolved = str(Path(saved.path).resolve())
         try:
-            result = load_saved_result(saved.path)
+            result = load_saved_result(
+                saved.path, session_origin=self._session_origin_id(self._session)
+            )
         except Exception as exc:
             self._logger.exception("Could not restore saved reconstruction")
             self._widget.setStatus(f"Could not add reconstruction: {exc}")
@@ -982,7 +1113,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         if saved is None:
             return
         try:
-            result = load_saved_result(saved.path)
+            result = load_saved_result(
+                saved.path, session_origin=self._session_origin_id(self._session)
+            )
         except Exception as exc:
             self._logger.exception("Could not restore saved reconstruction")
             self._widget.setStatus(f"Could not add reconstruction: {exc}")
@@ -1019,6 +1152,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._widget.setStatus(f"Could not keep reconstruction: {exc}")
             return None
         result._session_saved_path = str(receipt.primary)
+        self._tag_session_origin(result)
         wanted = str(Path(receipt.primary).resolve())
         self._session.refresh()
         dataset = self._session.dataset_by_id(self._selectedDatasetId)
@@ -1032,23 +1166,15 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._selectedReconKey = f"saved:{wanted}"
         return saved
 
-    @staticmethod
-    def _close_restored_backing(result) -> None:
-        backing = getattr(result, "_session_backing_data_obj", None)
-        closer = getattr(backing, "checkAndUnloadData", None)
-        if callable(closer):
-            try:
-                closer()
-            except Exception:
-                pass
-
     def _remove_loaded_result(self, result) -> None:
         if result is None or self._reconstruction is None:
             return
         remover = getattr(self._reconstruction, "removeResult", None)
         if callable(remover):
+            # ReconstructionViewController owns result-list resource release, so
+            # Session and the generic Remove current/Remove all paths behave the
+            # same way for lazy Session-restored results.
             remover(result)
-        self._close_restored_backing(result)
 
     def discardReconstruction(self, entry_key) -> None:
         key = str(entry_key or "")
@@ -1142,6 +1268,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._widget.setStatus(f"Auto-save failed: {exc}")
             return
         result._session_saved_path = str(receipt.primary)
+        self._tag_session_origin(result)
         self._session.refresh()
         self._widget.setStatus(f"Auto-saved {receipt.primary.name}")
         self._render()
@@ -1199,6 +1326,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         if self._session.dataset_for_result(result) is None:
             return
         result._session_saved_path = str(primary)
+        self._tag_session_origin(result)
         self._session.refresh()
         self._render()
 

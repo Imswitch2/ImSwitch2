@@ -590,6 +590,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigFollowActiveReconstructionChanged = QtCore.Signal(bool)
     sigCancelAddingRequested = QtCore.Signal()
     sigCloseSessionReconstructionsRequested = QtCore.Signal()
+    sigCloseSessionRequested = QtCore.Signal()
     sigEmptyTrashRequested = QtCore.Signal()
     sigRevealRawFolderRequested = QtCore.Signal()
     sigRevealResultsFolderRequested = QtCore.Signal()
@@ -642,6 +643,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         )
         self.actionsMenu.addSeparator()
         self.closeReconstructionsAction = self.actionsMenu.addAction("Close session reconstructions")
+        self.closeSessionAction = self.actionsMenu.addAction("Close Session…")
         self.actionsMenu.addSeparator()
         self.emptyTrashAction = self.actionsMenu.addAction("Empty Session trash…")
         self.actionsMenu.addSeparator()
@@ -821,6 +823,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             self.sigFollowActiveReconstructionChanged
         )
         self.closeReconstructionsAction.triggered.connect(self.sigCloseSessionReconstructionsRequested)
+        self.closeSessionAction.triggered.connect(self.sigCloseSessionRequested)
         self.emptyTrashAction.triggered.connect(self.sigEmptyTrashRequested)
         self.revealRawFolderAction.triggered.connect(self.sigRevealRawFolderRequested)
         self.revealResultsFolderAction.triggered.connect(self.sigRevealResultsFolderRequested)
@@ -864,6 +867,39 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         return dialog.configuration()
+
+    def requestSessionCloseChoice(self, reconstruction_count: int, *, switching: bool = False) -> str:
+        count = max(0, int(reconstruction_count or 0))
+        if count <= 0:
+            return "keep"
+
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Switch Session" if switching else "Close Session")
+        box.setIcon(QtWidgets.QMessageBox.Question)
+        action = "switch Sessions" if switching else "close this Session"
+        noun = "object" if count == 1 else "objects"
+        box.setText(
+            f"{count} reconstruction {noun} from the current Session "
+            f"{'are' if count != 1 else 'is'} still open in the Reconstruction panel."
+        )
+        box.setInformativeText(
+            f"You can keep {'them' if count != 1 else 'it'} open as independent reconstruction "
+            f"{'objects' if count != 1 else 'object'} when you {action}, or close "
+            f"{'them' if count != 1 else 'it'} first."
+        )
+        keep_btn = box.addButton("Keep open", QtWidgets.QMessageBox.AcceptRole)
+        close_btn = box.addButton("Close them" if count != 1 else "Close it", QtWidgets.QMessageBox.ActionRole)
+        cancel_btn = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(keep_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is close_btn:
+            return "close"
+        if clicked is keep_btn:
+            return "keep"
+        if clicked is cancel_btn or clicked is None:
+            return "cancel"
+        return "cancel"
 
     def setSessionActive(self, active: bool, name: str = "") -> None:
         self._sessionActive = bool(active)

@@ -31,7 +31,9 @@ def _display_name(path: Path, document) -> str:
     return path.stem
 
 
-def load_saved_result(path: str | Path) -> ArrayProcessingResult:
+def load_saved_result(
+    path: str | Path, *, session_origin: str | None = None
+) -> ArrayProcessingResult:
     """Restore a saved image result as a lazy ``ProcessingResult``.
 
     This is intentionally separate from FileIO's raw-data loader.  A backing
@@ -100,6 +102,10 @@ def load_saved_result(path: str | Path) -> ArrayProcessingResult:
     result._session_saved_path = str(path)
     result._session_restored = True
     result._session_backing_data_obj = backing
+    if session_origin:
+        # Lifecycle/debug metadata only. Active-Session association is always
+        # resolved from provenance, never from this origin marker.
+        result._session_origin = str(session_origin)
     return result
 
 

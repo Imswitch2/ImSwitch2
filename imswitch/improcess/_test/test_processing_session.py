@@ -179,13 +179,14 @@ def test_restore_saved_hdf5_result_is_lazy_and_keeps_provenance(tmp_path):
     with h5py.File(saved, "a") as handle:
         handle.create_dataset("t_seconds", data=np.arange(3, dtype=float))
 
-    restored = load_saved_result(saved)
+    restored = load_saved_result(saved, session_origin="session-A")
 
     assert restored.data.shape == (4, 5)
     assert not isinstance(restored.data, np.ndarray)
     assert restored.metadata.get(PROVENANCE_KEY) is not None
     assert restored.name == "full"
     assert Path(restored._session_saved_path) == saved.resolve()
+    assert restored._session_origin == "session-A"
 
 
 def test_zarr_single_scan_and_saved_result(tmp_path):
