@@ -2,6 +2,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 
 from imswitch.improcess.analysis.frc import frc_two_image, single_image_frc, split_single_image
 from imswitch.improcess.model import PlotPayload, ProcessingResult
@@ -155,6 +156,74 @@ def test_two_image_frc_across_results_rejects_mismatched_sizes():
 
     assert ok is False
     assert "64x64" in reason and "32x32" in reason
+
+
+def _calibrated(name="cal", scales=(0.05, 0.05), unit="um"):
+    noisy = _spot_image() + np.random.default_rng(0).normal(0, 0.05, (64, 64))
+    return MinimalResult(name=name, data=noisy.astype(np.float32), axis_labels=["Y", "X"],
+                         axis_scales=list(scales), scale_unit=unit)
+
+
+def _single(result, **params):
+    return FRCProcessor().apply(result, {**FRCProcessor.default_params(), **params}).analysis
+
+
+def test_frc_takes_the_pixel_size_from_the_metadata():
+    calibrated = _single(_calibrated())
+    in_pixels = _single(_calibrated(), resolution_unit="px")
+
+    assert calibrated.pixel_size == pytest.approx(50.0)
+    assert calibrated.resolution_unit == "nm"
+    assert calibrated.metadata["pixel_size_from"] == "metadata"
+    assert np.isfinite(in_pixels.resolution)
+    assert calibrated.resolution == pytest.approx(in_pixels.resolution * 50.0)
+
+
+def test_frc_reports_micrometres_when_asked():
+    analysis = _single(_calibrated(), resolution_unit="um")
+
+    assert analysis.pixel_size == pytest.approx(0.05)
+    assert analysis.frequency_unit == "cycles/um"
+
+
+def test_a_set_pixel_size_wins_over_the_metadata():
+    analysis = _single(_calibrated(), pixel_size=20.0)
+
+    assert analysis.pixel_size == 20.0
+    assert analysis.metadata["pixel_size_from"] == "parameter"
+
+
+def test_uncalibrated_data_is_analysed_in_pixels_and_says_so():
+    analysis = _single(_calibrated(unit="px", scales=(1.0, 1.0)))
+
+    assert analysis.pixel_size == 1.0
+    assert analysis.resolution_unit == "px"
+    assert analysis.metadata["pixel_size_from"] == "none"
+
+
+def test_non_square_pixels_need_a_set_pixel_size():
+    anisotropic = _calibrated(scales=(0.1, 0.05))
+
+    with pytest.raises(ValueError, match="non-square"):
+        _single(anisotropic)
+    assert _single(anisotropic, pixel_size=50.0).pixel_size == 50.0
+
+
+def test_two_inputs_on_different_pixel_grids_are_refused():
+    first, second = _calibrated("a"), _calibrated("b", scales=(0.1, 0.1))
+
+    with pytest.raises(ValueError, match="one pixel grid"):
+        FRCProcessor().apply(first, {**FRCProcessor.default_params(), "mode": "two-image",
+                                     "results": [first, second]})
+
+
+def test_the_results_row_names_the_pixel_size_used():
+    result = FRCProcessor().apply(_calibrated(), FRCProcessor.default_params())
+
+    (row,) = result.table_records()
+    assert row["pixel_size"] == pytest.approx(50.0)
+    assert row["pixel_size_from"] == "metadata"
+    assert row["resolution_unit"] == "nm"
 
 
 def test_frc_result_saves_hdf5(tmp_path):
