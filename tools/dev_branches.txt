@@ -18,3 +18,4 @@ feat/config-editor-improcess       # ImProcess + System sections in Config Studi
                                    #   (section Apply: as-written + main's nested containers; scan.json
                                    #    scanDesigner/TTLCycleDesigner optional for the Expert panel)
 feat/micromanager-bridge           # pymmcore device bridge
+feat/improcess-workflow-editor-2   # after PR #81: save to Windows shares without hard links, schema 2 design
