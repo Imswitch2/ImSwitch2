@@ -503,16 +503,24 @@ class DataObj:
 
     def checkAndUnloadData(self):
         if self._dataSource is not None:
-            try:
-                self._dataSource.close()
-            except Exception:
-                self.__logger.error('Error closing data source')
+            closer = getattr(self._dataSource, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    self.__logger.exception("Error closing data source")
 
         if self._file is not None:
-            try:
-                self._file.close()
-            except Exception:
-                self.__logger.error('Error closing file')
+            # HDF5/TIFF handles own an explicit close method. Zarr groups/stores
+            # generally do not, and treating the absence of close() as an error
+            # produced a misleading log message every time Session metadata
+            # probing released a Zarr DataObj.
+            closer = getattr(self._file, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    self.__logger.exception("Error closing file")
 
         self._file = None
         self._data = None

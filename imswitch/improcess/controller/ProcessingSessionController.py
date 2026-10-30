@@ -63,6 +63,10 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._addFailed = 0
         self._addCancelled = False
         self._addLastResult = None
+        # sigResultsChanged also fires for selection-only changes. Track the
+        # actual loaded set so Session only rebuilds its catalog when membership
+        # changes; active-result navigation is handled by sigCurrentResultChanged.
+        self._loadedResultSignature = self._loaded_result_signature()
 
         self._widget.sigStartSessionRequested.connect(self.startSession)
         self._widget.sigSettingsRequested.connect(self.editSessionSettings)
@@ -164,6 +168,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._widget.setStatus(f"Could not open session: {exc}")
             return False
         self._session = session
+        self._loadedResultSignature = self._loaded_result_signature()
         self._selectedDatasetId = None
         self._selectedReconKey = None
         self._widget.setSessionActive(True, session.raw_root.name)
@@ -1093,7 +1098,17 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     # ------------------------------------------------------------ result sync
 
+    def _loaded_result_signature(self) -> tuple[int, ...]:
+        try:
+            return tuple(sorted(id(result) for _name, result in self._commChannel.getAllResults()))
+        except Exception:
+            return ()
+
     def _loadedResultsChanged(self) -> None:
+        signature = self._loaded_result_signature()
+        if signature == self._loadedResultSignature:
+            return
+        self._loadedResultSignature = signature
         if self._session is not None:
             self._render()
 

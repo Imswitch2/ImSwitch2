@@ -688,3 +688,15 @@ def test_a_plane_from_a_non_lazy_source_does_not_keep_the_series_alive(tmp_path,
     assert plane.base is None or plane.base.nbytes <= plane.nbytes
     whole = data_obj.data_handle[...]                  # a full read is not copied twice
     assert whole.shape == (20, 64, 64)
+
+
+def test_unload_ignores_container_without_close_method(caplog) -> None:
+    """Zarr-like containers are releasable without pretending close() failed."""
+    class ContainerWithoutClose:
+        pass
+
+    data_obj = DataObj("synthetic.zarr", "0", file=ContainerWithoutClose())
+    data_obj.checkAndUnloadData()
+
+    assert data_obj._file is None
+    assert not any("Error closing file" in record.getMessage() for record in caplog.records)

@@ -1178,13 +1178,20 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 item.setSelected(True)
             if dataset_id == current_id:
                 restore_current = item
-        self.datasetList.blockSignals(False)
+        # Restoring the current row after a catalog rebuild is presentation
+        # state, not a new user navigation intent. Keep signals blocked for that
+        # operation so it cannot select a reconstruction on the right.
         if restore_current is not None:
             self.datasetList.setCurrentItem(restore_current)
-        elif self.datasetList.topLevelItemCount() and self.datasetList.currentItem() is None:
-            self.datasetList.setCurrentItem(self.datasetList.topLevelItem(0))
-        elif not self.datasetList.topLevelItemCount():
-            self.sigDatasetSelectionChanged.emit(None)
+            self.datasetList.blockSignals(False)
+        else:
+            self.datasetList.blockSignals(False)
+            if self.datasetList.topLevelItemCount() and self.datasetList.currentItem() is None:
+                # Initial selection is intentional and should update controller
+                # context exactly like a user click.
+                self.datasetList.setCurrentItem(self.datasetList.topLevelItem(0))
+            elif not self.datasetList.topLevelItemCount():
+                self.sigDatasetSelectionChanged.emit(None)
 
     def setDatasets(self, entries: list[dict]) -> None:
         self._datasetEntries = [dict(entry) for entry in entries]
