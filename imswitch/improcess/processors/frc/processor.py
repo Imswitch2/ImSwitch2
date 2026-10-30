@@ -2,17 +2,29 @@
 
 from typing import Callable
 
+import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.analysis.frc import frc_two_image, single_image_frc
 from imswitch.improcess.model.result import ProcessingResult
-from imswitch.improcess.processors._axis_split import shape_for_result
+from imswitch.improcess.processors._axis_split import (
+    axis_labels_for_result,
+    axis_scales_for_result,
+    shape_for_result,
+)
 from imswitch.improcess.processors._extraction import extract_2d_plane, resolve_axis
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import FRCResult
+
+#: Length units a result's ``scale_unit`` may carry, in nanometres.
+_NM_PER_UNIT = {
+    "nm": 1.0, "nanometer": 1.0, "nanometers": 1.0,
+    "um": 1e3, "micrometer": 1e3, "micrometers": 1e3, "micron": 1e3, "microns": 1e3,
+    "mm": 1e6, "millimeter": 1e6, "millimeters": 1e6,
+}
 
 
 class FRCProcessor(Processor):
@@ -36,8 +48,8 @@ class FRCProcessor(Processor):
         'index_b': 1,
         'single_image_split': 'checkerboard',
         'window': 'hann',
-        'pixel_size': 1.0,
-        'resolution_unit': 'px'}
+        'pixel_size': 0.0,
+        'resolution_unit': 'nm'}
 
     @classmethod
     def param_spec(cls) -> tuple:
@@ -59,10 +71,13 @@ class FRCProcessor(Processor):
                 options=('checkerboard', 'odd-even'),
             ),
             ParamField('window', 'select', 'hann', label='Window', options=('hann', 'none')),
-            ParamField('pixel_size', 'float', 1.0, label='Pixel size', min=0, decimals=6),
             ParamField(
-                'resolution_unit', 'select', 'px', label='Resolution unit',
-                options=('px', 'nm', 'um'),
+                'pixel_size', 'float', 0.0, label='Pixel size', min=0, decimals=6,
+                help='In the resolution unit; 0 = from the metadata (pixels when the data has none)',
+            ),
+            ParamField(
+                'resolution_unit', 'select', 'nm', label='Resolution unit',
+                options=('nm', 'um', 'px'),
             ),
         )
 
@@ -136,13 +151,17 @@ class FRCProcessor(Processor):
 
         pixel_size_spin = QtWidgets.QDoubleSpinBox()
         pixel_size_spin.setDecimals(6)
-        pixel_size_spin.setRange(1e-9, 1e12)
-        pixel_size_spin.setValue(1.0)
+        pixel_size_spin.setRange(0.0, 1e12)
+        pixel_size_spin.setSpecialValueText("from metadata")
+        pixel_size_spin.setValue(0.0)
+        pixel_size_spin.setToolTip(
+            "In the resolution unit; 0 = from the metadata (pixels when the data has none)"
+        )
         layout.addRow("Pixel size:", pixel_size_spin)
 
         unit_combo = QtWidgets.QComboBox()
-        unit_combo.addItems(["px", "nm", "um"])
-        unit_combo.setCurrentText("px")
+        unit_combo.addItems(["nm", "um", "px"])
+        unit_combo.setCurrentText("nm")
         layout.addRow("Resolution unit:", unit_combo)
 
         def get_values():
@@ -162,13 +181,21 @@ class FRCProcessor(Processor):
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
         mode = params.get("mode", "single-image")
-        pixel_size = float(params.get("pixel_size", 1.0))
-        resolution_unit = params.get("resolution_unit", "px")
-        frequency_unit = f"cycles/{resolution_unit}"
         window = params.get("window", "hann")
+        other = self._second_input(result, params) if mode == "two-image" else None
+        pixel_size, resolution_unit, pixel_size_from = _pixel_size(
+            [result] if other is None else [result, other],
+            unit=str(params.get("resolution_unit", "nm") or "nm"),
+            override=float(params.get("pixel_size", 0.0) or 0.0),
+        )
+        if pixel_size_from == "none" and params.get("resolution_unit", "nm") != "px":
+            self._logger.warning(
+                "'%s' has no physical pixel size; FRC resolution is in pixels "
+                "(set Pixel size to calibrate it)", _name_of(result),
+            )
+        frequency_unit = f"cycles/{resolution_unit}"
 
         if mode == "two-image":
-            other = self._second_input(result, params)
             if other is not None:
                 # Two separate reconstructions: each contributes one plane, so
                 # there is no shared axis to compare along. Each input is
@@ -227,6 +254,7 @@ class FRCProcessor(Processor):
             analysis.resolution,
             analysis.resolution_unit,
         )
+        analysis.metadata["pixel_size_from"] = pixel_size_from
         return FRCResult(name=name, analysis=analysis, params=dict(params))
 
     @staticmethod
@@ -254,6 +282,56 @@ def _plane_of(result: ProcessingResult, requested_axis, index: int):
     except ValueError:
         return extract_2d_plane(result)
     return extract_2d_plane(result, compare_axis=axis_label, index=index)
+
+
+def _pixel_size(results, *, unit: str, override: float) -> tuple[float, str, str]:
+    """``(pixel size, unit, where it came from)`` for the FRC frequency axis.
+
+    A set ``Pixel size`` wins, in the chosen unit. Otherwise the inputs'
+    calibration is used, converted to that unit; data without one is
+    analysed in pixels, and the unit says so rather than mislabelling them.
+    Two calibrated inputs must agree: FRC rings assume one pixel grid.
+    """
+    if unit == "px":
+        return (override or 1.0), "px", "parameter" if override else "none"
+    if override > 0:
+        return override, unit, "parameter"
+    if unit not in _NM_PER_UNIT:
+        raise ValueError(f"Unsupported FRC resolution unit: {unit!r}")
+    calibrated = [(r, size) for r in results for size in [_calibrated_nm(r)] if size is not None]
+    if not calibrated:
+        return 1.0, "px", "none"
+    first_result, first = calibrated[0]
+    for other_result, size in calibrated[1:]:
+        if not np.isclose(size, first, rtol=1e-6):
+            raise ValueError(
+                f"FRC compares images on one pixel grid: '{_name_of(first_result)}' has "
+                f"{first:.6g} nm pixels but '{_name_of(other_result)}' has {size:.6g} nm"
+            )
+    return first / _NM_PER_UNIT[unit], unit, "metadata"
+
+
+def _calibrated_nm(result: ProcessingResult) -> float | None:
+    """The input's square Y/X pixel size in nm, or ``None`` when it has none."""
+    unit = str(getattr(result, "scale_unit", "px") or "px").strip().lower()
+    nm_per_unit = _NM_PER_UNIT.get(unit.replace("µ", "u").replace("μ", "u"))
+    if nm_per_unit is None:
+        return None
+    labels = axis_labels_for_result(result)
+    scales = axis_scales_for_result(result)
+    if "Y" in labels and "X" in labels:
+        dy, dx = scales[labels.index("Y")], scales[labels.index("X")]
+    else:
+        dy, dx = scales[-2], scales[-1]
+    dy, dx = float(dy) * nm_per_unit, float(dx) * nm_per_unit
+    if not (dy > 0 and dx > 0):
+        return None
+    if not np.isclose(dy, dx, rtol=1e-6):
+        raise ValueError(
+            f"'{_name_of(result)}' has non-square pixels ({dy:.6g} x {dx:.6g} nm) and "
+            f"FRC needs square ones; set Pixel size to analyse it anyway"
+        )
+    return dx
 
 
 def _name_of(result: ProcessingResult) -> str:
