@@ -114,7 +114,7 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(4)
+        self.setColumnCount(5)
         self.setHeaderHidden(True)
         self.setRootIsDecorated(False)
         self.setItemsExpandable(False)
@@ -131,13 +131,15 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
 
         header = self.header()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
-        header.resizeSection(1, 118)
-        header.resizeSection(2, 92)
-        header.resizeSection(3, 24)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
+        header.resizeSection(0, 24)
+        header.resizeSection(2, 118)
+        header.resizeSection(3, 92)
+        header.resizeSection(4, 24)
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
     def minimumSizeHint(self):
@@ -448,6 +450,7 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
         resume_layout.addWidget(QtWidgets.QLabel("On resume"))
         self.resumeReconCombo = QtWidgets.QComboBox()
         self.resumeReconCombo.addItem("Don't add reconstructions", "none")
+        self.resumeReconCombo.addItem("Add reconstructions from favorite datasets", "favorites")
         self.resumeReconCombo.addItem("Add all saved reconstructions", "all")
         resume_layout.addWidget(self.resumeReconCombo, 1)
         self.resumeOptions.setVisible(False)
@@ -503,22 +506,28 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
             self._updateState()
 
     @staticmethod
-    def _manifest_counts(manifest: Path) -> tuple[int, int]:
+    def _manifest_counts(manifest: Path) -> tuple[int, int, int, int]:
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return 0, 0
+            return 0, 0, 0, 0
         datasets = payload.get("datasets", []) if isinstance(payload, dict) else []
         dataset_count = 0
         saved_count = 0
+        favorite_count = 0
+        favorite_saved_count = 0
         for dataset in datasets if isinstance(datasets, list) else []:
             if not isinstance(dataset, dict):
                 continue
             dataset_count += 1
+            favorite = bool(dataset.get("favorite", False))
+            favorite_count += int(favorite)
             results = dataset.get("saved_reconstructions", [])
-            if isinstance(results, list):
-                saved_count += sum(1 for result in results if isinstance(result, dict))
-        return dataset_count, saved_count
+            count = sum(1 for result in results if isinstance(result, dict)) if isinstance(results, list) else 0
+            saved_count += count
+            if favorite:
+                favorite_saved_count += count
+        return dataset_count, saved_count, favorite_count, favorite_saved_count
 
     def _updateState(self) -> None:
         raw = Path(self.rawEdit.text()).expanduser() if self.rawEdit.text() else None
@@ -531,17 +540,27 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
         )
         if manifest is not None and manifest.exists():
             self.primaryBtn.setText("Resume session" if not active_same else "Apply")
-            dataset_count, saved_count = self._manifest_counts(manifest)
+            dataset_count, saved_count, favorite_count, favorite_saved_count = self._manifest_counts(manifest)
             dataset_word = "datasets" if dataset_count != 1 else "dataset"
             recon_word = "reconstructions" if saved_count != 1 else "reconstruction"
+            favorite_text = (
+                f" · {favorite_count} favorite{'s' if favorite_count != 1 else ''}"
+                if favorite_count else ""
+            )
             self.infoLabel.setText(
                 f"Existing Session found · {dataset_count} {dataset_word} · "
-                f"{saved_count} saved {recon_word}"
+                f"{saved_count} saved {recon_word}{favorite_text}"
             )
             self.resumeOptions.setVisible(not active_same and bool(saved_count))
             self.resumeReconCombo.setItemText(
-                1, f"Add all saved reconstructions ({saved_count})"
+                1, f"Add reconstructions from favorite datasets ({favorite_saved_count})"
             )
+            self.resumeReconCombo.setItemText(
+                2, f"Add all saved reconstructions ({saved_count})"
+            )
+            model_item = self.resumeReconCombo.model().item(1)
+            if model_item is not None:
+                model_item.setEnabled(bool(favorite_saved_count))
         elif active_same:
             self.primaryBtn.setText("Apply")
             self.infoLabel.setText("Update settings for the active Session.")
@@ -582,6 +601,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigRevealRawRequested = QtCore.Signal()
     sigCopyRawPathRequested = QtCore.Signal()
     sigDeleteRawRequested = QtCore.Signal()
+    sigFavoriteDatasetRequested = QtCore.Signal(object, bool)
+    sigSetSelectedFavoriteRequested = QtCore.Signal(bool)
     sigReconstructionWorkspaceToggleRequested = QtCore.Signal(object)
     sigDiscardReconstructionRequested = QtCore.Signal(object)
     sigDiscardSelectedRequested = QtCore.Signal()
@@ -591,6 +612,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigFollowActiveReconstructionChanged = QtCore.Signal(bool)
     sigCancelAddingRequested = QtCore.Signal()
     sigCloseSessionReconstructionsRequested = QtCore.Signal()
+    sigCloseNonFavoriteReconstructionsRequested = QtCore.Signal()
+    sigCleanupNonFavoritesRequested = QtCore.Signal()
     sigCloseSessionRequested = QtCore.Signal()
     sigEmptyTrashRequested = QtCore.Signal()
     sigRevealRawFolderRequested = QtCore.Signal()
@@ -644,6 +667,10 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         )
         self.actionsMenu.addSeparator()
         self.closeReconstructionsAction = self.actionsMenu.addAction("Close session reconstructions")
+        self.closeNonFavoriteReconstructionsAction = self.actionsMenu.addAction(
+            "Close reconstructions from non-favorites"
+        )
+        self.cleanupNonFavoritesAction = self.actionsMenu.addAction("Clean up non-favorites…")
         self.closeSessionAction = self.actionsMenu.addAction("Close Session…")
         self.actionsMenu.addSeparator()
         self.emptyTrashAction = self.actionsMenu.addAction("Empty Session trash…")
@@ -723,6 +750,17 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         dataset_controls.addWidget(self.datasetSearchEdit, 1)
         dataset_controls.addWidget(self.datasetOrderBtn)
 
+        self.dimensionFilterCombo = QtWidgets.QComboBox()
+        self.dimensionFilterCombo.addItem("All", "all")
+        self.dimensionFilterCombo.setToolTip("Filter by acquisition dimensions")
+        self.dimensionFilterCombo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.dimensionFilterCombo.setMinimumContentsLength(4)
+        self.dimensionFilterCombo.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+
         status_controls = QtWidgets.QHBoxLayout()
         status_controls.setContentsMargins(0, 0, 0, 0)
         status_controls.setSpacing(3)
@@ -761,10 +799,18 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         dataset_controls_widget.setLayout(dataset_controls)
         dataset_controls_widget.setMinimumWidth(0)
         dataset_controls_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        dimension_controls_widget = QtWidgets.QWidget()
+        dimension_layout = QtWidgets.QHBoxLayout(dimension_controls_widget)
+        dimension_layout.setContentsMargins(0, 0, 0, 0)
+        dimension_layout.addWidget(self.dimensionFilterCombo)
+        # Match the fixed acquisition-info column below; no additional header
+        # label is needed because placement makes the filter's meaning clear.
+        dimension_controls_widget.setFixedWidth(118)
         status_controls_widget = QtWidgets.QWidget()
         status_controls_widget.setLayout(status_controls)
         status_controls_widget.setFixedWidth(132)
         filter_row.addWidget(dataset_controls_widget, 1)
+        filter_row.addWidget(dimension_controls_widget)
         filter_row.addWidget(status_controls_widget)
         datasets_layout.addLayout(filter_row)
 
@@ -824,15 +870,21 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             self.sigFollowActiveReconstructionChanged
         )
         self.closeReconstructionsAction.triggered.connect(self.sigCloseSessionReconstructionsRequested)
+        self.closeNonFavoriteReconstructionsAction.triggered.connect(
+            self.sigCloseNonFavoriteReconstructionsRequested
+        )
+        self.cleanupNonFavoritesAction.triggered.connect(self.sigCleanupNonFavoritesRequested)
         self.closeSessionAction.triggered.connect(self.sigCloseSessionRequested)
         self.emptyTrashAction.triggered.connect(self.sigEmptyTrashRequested)
         self.revealRawFolderAction.triggered.connect(self.sigRevealRawFolderRequested)
         self.revealResultsFolderAction.triggered.connect(self.sigRevealResultsFolderRequested)
         self.datasetList.currentItemChanged.connect(self._dataset_changed)
+        self.datasetList.itemClicked.connect(self._dataset_clicked)
         self.datasetList.itemDoubleClicked.connect(self._dataset_double_clicked)
         self.datasetList.customContextMenuRequested.connect(self._dataset_context_menu)
         self.datasetSearchEdit.textChanged.connect(self._applyDatasetView)
         self.datasetOrderGroup.triggered.connect(self._datasetOrderChanged)
+        self.dimensionFilterCombo.currentIndexChanged.connect(self._applyDatasetView)
         self.datasetShowCombo.currentIndexChanged.connect(self._applyDatasetView)
         self.statusOrderGroup.triggered.connect(self._statusOrderChanged)
         self.savedList.currentItemChanged.connect(self._saved_changed)
@@ -902,6 +954,130 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             return "cancel"
         return "cancel"
 
+    def requestNonFavoriteCleanupChoice(
+        self, dataset_count: int, reconstruction_count: int
+    ) -> str:
+        dataset_count = max(0, int(dataset_count or 0))
+        reconstruction_count = max(0, int(reconstruction_count or 0))
+        if dataset_count <= 0:
+            return "cancel"
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Clean up non-favorites")
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setText(
+            f"Clean up {dataset_count} non-favorite dataset"
+            f"{'s' if dataset_count != 1 else ''}?"
+        )
+        box.setInformativeText(
+            f"{reconstruction_count} associated reconstruction"
+            f"{'s' if reconstruction_count != 1 else ''} can be moved to Session trash. "
+            "Favorite datasets will not be touched."
+        )
+        recons = box.addButton("Reconstructions only", QtWidgets.QMessageBox.ActionRole)
+        raw = box.addButton("Raw data + reconstructions", QtWidgets.QMessageBox.DestructiveRole)
+        cancel = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(recons)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is recons:
+            return "reconstructions"
+        if clicked is raw:
+            return "raw"
+        if clicked is cancel or clicked is None:
+            return "cancel"
+        return "cancel"
+
+    def requestRawCleanupConfirmation(
+        self, *, dataset_count: int, raw_file_count: int, skipped_count: int = 0
+    ) -> bool:
+        dataset_count = max(0, int(dataset_count or 0))
+        raw_file_count = max(0, int(raw_file_count or 0))
+        skipped_count = max(0, int(skipped_count or 0))
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Move non-favorite raw data to Trash?")
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setText(
+            f"Move raw acquisition data for {dataset_count} non-favorite dataset"
+            f"{'s' if dataset_count != 1 else ''} to the operating-system Trash?"
+        )
+        details = (
+            f"This affects {raw_file_count} physical raw file"
+            f"{'s' if raw_file_count != 1 else ''}. Saved reconstructions from non-favorites "
+            "will be moved to Session trash. Favorite datasets will not be touched."
+        )
+        if skipped_count:
+            details += (
+                f" {skipped_count} non-favorite dataset"
+                f"{'s' if skipped_count != 1 else ''} share raw files with kept datasets and "
+                "will be left on disk."
+            )
+        box.setInformativeText(details)
+        remove = box.addButton("Move non-favorites to Trash", QtWidgets.QMessageBox.DestructiveRole)
+        cancel = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is remove
+
+    def requestSessionFinishChoice(
+        self, *, favorite_count: int, nonfavorite_count: int
+    ) -> str:
+        favorite_count = max(0, int(favorite_count or 0))
+        nonfavorite_count = max(0, int(nonfavorite_count or 0))
+        if nonfavorite_count <= 0:
+            return "none"
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Close Session")
+        box.setIcon(QtWidgets.QMessageBox.Question)
+        box.setText(
+            f"{favorite_count} of {favorite_count + nonfavorite_count} dataset"
+            f"{'s' if favorite_count + nonfavorite_count != 1 else ''} "
+            f"{'are' if favorite_count != 1 else 'is'} marked as favorite."
+        )
+        box.setInformativeText(
+            "You can close without changing files, remove reconstructions from non-favorites, "
+            "or keep only favorite acquisitions. Raw-data cleanup always asks for a second confirmation."
+        )
+        plain = box.addButton("Close without cleaning up", QtWidgets.QMessageBox.AcceptRole)
+        recons = box.addButton(
+            "Clean up non-favorite reconstructions", QtWidgets.QMessageBox.ActionRole
+        )
+        raw = box.addButton("Keep favorite datasets only", QtWidgets.QMessageBox.DestructiveRole)
+        cancel = box.addButton(QtWidgets.QMessageBox.Cancel)
+
+        plain.setToolTip(
+            "Close the Session without moving or deleting raw data or saved reconstructions."
+        )
+        recons.setToolTip(
+            "Remove reconstruction objects from non-favorite datasets and move their saved "
+            "reconstructions to Session trash. Raw data is kept."
+        )
+        raw.setToolTip(
+            "Keep favorite datasets only. Non-favorite reconstructions are cleaned up and "
+            "their raw data can be moved to the operating-system Trash after confirmation."
+        )
+
+        # QMessageBox's standard button box may compress long custom labels. Keep each
+        # action at its natural text width and enlarge the dialog enough for one clear row.
+        choice_buttons = (plain, recons, raw)
+        for button in choice_buttons:
+            button.setMinimumWidth(button.sizeHint().width() + 16)
+        required_button_width = sum(button.minimumWidth() for button in choice_buttons)
+        required_button_width += cancel.sizeHint().width() + 64
+        box.setMinimumWidth(max(box.sizeHint().width(), required_button_width))
+
+        box.setDefaultButton(plain)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is plain:
+            return "none"
+        if clicked is recons:
+            return "reconstructions"
+        if clicked is raw:
+            return "raw"
+        if clicked is cancel or clicked is None:
+            return "cancel"
+        return "cancel"
+
     def setSessionActive(self, active: bool, name: str = "") -> None:
         self._sessionActive = bool(active)
         self.sessionTitleLabel.setText("SESSION:" if active else "SESSION")
@@ -913,6 +1089,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.datasetList.setEnabled(bool(active))
         self.datasetSearchEdit.setEnabled(bool(active))
         self.datasetOrderBtn.setEnabled(bool(active))
+        self.dimensionFilterCombo.setEnabled(bool(active))
         self.datasetShowCombo.setEnabled(bool(active))
         self.statusOrderBtn.setEnabled(bool(active))
 
@@ -937,8 +1114,18 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         value = current.data(0, QtCore.Qt.UserRole) if current is not None else None
         self.sigDatasetSelectionChanged.emit(value)
 
-    def _dataset_double_clicked(self, item, _column):
-        if item is None or bool(item.data(0, QtCore.Qt.UserRole + 2)):
+    def _dataset_clicked(self, item, column):
+        if item is None or int(column) != 0:
+            return
+        dataset_id = item.data(0, QtCore.Qt.UserRole)
+        entry = item.data(0, QtCore.Qt.UserRole + 1) or {}
+        if dataset_id:
+            self.sigFavoriteDatasetRequested.emit(
+                str(dataset_id), not bool(entry.get("favorite", False))
+            )
+
+    def _dataset_double_clicked(self, item, column):
+        if item is None or int(column) == 0 or bool(item.data(0, QtCore.Qt.UserRole + 2)):
             return
         if self.datasetList.currentItem() is not item:
             self.datasetList.setCurrentItem(item)
@@ -956,6 +1143,24 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         menu = QtWidgets.QMenu(self)
 
         selected_items = list(self.datasetList.selectedItems())
+        selected_entries = [item.data(0, QtCore.Qt.UserRole + 1) or {} for item in selected_items]
+        if any(not bool(entry.get("favorite", False)) for entry in selected_entries):
+            favorite = menu.addAction(
+                "Favorite selected" if len(selected_items) > 1 else "Favorite"
+            )
+            favorite.triggered.connect(
+                lambda _checked=False: self.sigSetSelectedFavoriteRequested.emit(True)
+            )
+        if any(bool(entry.get("favorite", False)) for entry in selected_entries):
+            unfavorite = menu.addAction(
+                "Remove favorite from selected" if len(selected_items) > 1 else "Remove favorite"
+            )
+            unfavorite.triggered.connect(
+                lambda _checked=False: self.sigSetSelectedFavoriteRequested.emit(False)
+            )
+        if selected_entries:
+            menu.addSeparator()
+
         saved_count = sum(
             int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("saved_count", 0))
             for item in selected_items
@@ -1131,43 +1336,79 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def _styleDatasetItem(self, item, state: str) -> None:
         state = str(state or "raw").lower()
         normal, muted, reconstructed, active = self._dataset_colors()
-        name_font = item.font(0)
-        status_font = item.font(2)
+        name_font = item.font(1)
+        status_font = item.font(3)
         name_font.setBold(False)
         status_font.setBold(True)
+        item.setForeground(0, normal)
         if state == "reconstructed":
-            item.setForeground(0, muted)
-            item.setForeground(2, reconstructed)
+            item.setForeground(1, muted)
+            item.setForeground(3, reconstructed)
         elif state in {"running", "queued", "loading"}:
             name_font.setBold(True)
-            item.setForeground(0, normal)
-            item.setForeground(2, active)
+            item.setForeground(1, normal)
+            item.setForeground(3, active)
         elif state == "failed":
             name_font.setBold(True)
-            item.setForeground(0, normal)
-            item.setForeground(2, normal)
+            item.setForeground(1, normal)
+            item.setForeground(3, normal)
         else:
-            item.setForeground(0, normal)
-            item.setForeground(2, normal)
-        item.setForeground(1, muted)
-        if item.text(3):
-            item.setForeground(3, active)
-            link_font = item.font(3)
+            item.setForeground(1, normal)
+            item.setForeground(3, normal)
+        item.setForeground(2, muted)
+        if item.text(4):
+            item.setForeground(4, active)
+            link_font = item.font(4)
             link_font.setBold(True)
-            item.setFont(3, link_font)
-        item.setFont(0, name_font)
-        item.setFont(2, status_font)
+            item.setFont(4, link_font)
+        item.setFont(1, name_font)
+        item.setFont(3, status_font)
+
+    @staticmethod
+    def _dimension_sort_key(tag: str):
+        tag = str(tag or "").upper()
+        timed = tag.endswith("T")
+        spatial = tag[:-1] if timed else tag
+        order = {
+            "X": 0, "Y": 1, "Z": 2,
+            "XY": 3, "XZ": 4, "YZ": 5,
+            "XYZ": 6, "": 99,
+        }
+        return (order.get(spatial, 98), 1 if timed else 0, tag)
+
+    def _refreshDimensionFilter(self) -> None:
+        current = str(self.dimensionFilterCombo.currentData() or "all")
+        dimension_labels = {
+            str(entry.get("dimension") or ""): str(
+                entry.get("dimension_label") or entry.get("dimension") or ""
+            )
+            for entry in self._datasetEntries
+            if str(entry.get("dimension") or "")
+        }
+        dimensions = sorted(dimension_labels, key=self._dimension_sort_key)
+        self.dimensionFilterCombo.blockSignals(True)
+        try:
+            self.dimensionFilterCombo.clear()
+            self.dimensionFilterCombo.addItem("All", "all")
+            for tag in dimensions:
+                self.dimensionFilterCombo.addItem(dimension_labels[tag], tag)
+            index = self.dimensionFilterCombo.findData(current)
+            self.dimensionFilterCombo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.dimensionFilterCombo.blockSignals(False)
 
     def _applyDatasetView(self, *_args) -> None:
         selected_ids = set(self.selectedDatasetIds())
         current_id = self.currentDatasetId()
         query = self.datasetSearchEdit.text().strip().casefold()
+        dimension = str(self.dimensionFilterCombo.currentData() or "all")
         show_mode = str(self.datasetShowCombo.currentData() or "all")
         order_mode = str(self._datasetOrderMode or "latest")
         status_order_mode = str(self._statusOrderMode or "none")
         entries = [
             dict(entry) for entry in self._datasetEntries
             if (not query or query in str(entry.get("search", "")).casefold())
+            and (dimension == "all" or str(entry.get("dimension") or "") == dimension)
             and self._dataset_state_visible(entry.get("state", "raw"), show_mode)
         ]
         if order_mode == "name_asc":
@@ -1189,7 +1430,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             label = str(entry.get("label", ""))
             if entry.get("current"):
                 label = f"▶ {label}"
+            favorite = bool(entry.get("favorite", False))
             item = QtWidgets.QTreeWidgetItem([
+                "★" if favorite else "☆",
                 label,
                 str(entry.get("info", "")),
                 str(entry.get("status", "")),
@@ -1198,17 +1441,19 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             item.setData(0, QtCore.Qt.UserRole, dataset_id)
             item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
             item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
-            item.setToolTip(0, str(entry.get("tooltip") or entry.get("search", label)))
-            item.setToolTip(1, str(entry.get("info_tooltip") or entry.get("info", "")))
-            item.setToolTip(2, str(entry.get("status", "")))
+            item.setToolTip(0, "Remove from favorites" if favorite else "Mark this acquisition as favorite")
+            item.setToolTip(1, str(entry.get("tooltip") or entry.get("search", label)))
+            item.setToolTip(2, str(entry.get("info_tooltip") or entry.get("info", "")))
+            item.setToolTip(3, str(entry.get("status", "")))
+            item.setTextAlignment(0, QtCore.Qt.AlignCenter)
             panel_count = int(entry.get("panel_count", 0) or 0)
             if panel_count:
                 item.setToolTip(
-                    3,
+                    4,
                     f"{panel_count} reconstruction object{'s' if panel_count != 1 else ''} "
                     "from this dataset are in the Reconstruction panel.",
                 )
-                item.setTextAlignment(3, QtCore.Qt.AlignCenter)
+                item.setTextAlignment(4, QtCore.Qt.AlignCenter)
             self._styleDatasetItem(item, entry.get("state", "raw"))
             self.datasetList.addTopLevelItem(item)
             if dataset_id in selected_ids:
@@ -1232,6 +1477,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
     def setDatasets(self, entries: list[dict]) -> None:
         self._datasetEntries = [dict(entry) for entry in entries]
+        self._refreshDimensionFilter()
         self._applyDatasetView()
 
     def setSelectedDataset(self, title: str, _summary: str) -> None:

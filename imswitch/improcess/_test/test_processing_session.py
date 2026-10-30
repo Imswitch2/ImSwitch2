@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 import h5py
 import numpy as np
@@ -9,7 +10,7 @@ import pytest
 
 from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.array_result import ArrayProcessingResult
-from imswitch.improcess.model.processing_session import ProcessingSession
+from imswitch.improcess.model.processing_session import ProcessingSession, SessionDataset
 from imswitch.improcess.model.provenance import PROVENANCE_KEY, record_reconstruction
 from imswitch.improcess.model.saved_result import load_saved_result, read_saved_result_metadata
 
@@ -165,7 +166,7 @@ def test_legacy_final_metadata_is_ignored_and_removed_on_refresh(tmp_path):
     assert reopened.datasets[0].status == "reconstructed"
     assert len(reopened.datasets[0].saved_reconstructions) == 1
     migrated = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
-    assert migrated["schema"] == 3
+    assert migrated["schema"] == 4
     assert "final" not in migrated["datasets"][0]["saved_reconstructions"][0]
 
 
@@ -416,6 +417,78 @@ def test_source_metadata_reports_decoded_size_without_materializing(tmp_path):
     assert decoded == 2 * 4 * 5 * np.dtype(np.uint16).itemsize
 
 
+def test_scan_labels_use_canonical_axis_tags():
+    def resolved(*kinds):
+        loops = [SimpleNamespace(kind=kind, count=2) for kind in kinds]
+        return SimpleNamespace(layout=SimpleNamespace(event_loops=loops))
+
+    assert ProcessingSession._scan_label_from_layout(resolved("scan_x", "scan_y")) == "XY"
+    assert ProcessingSession._scan_label_from_layout(resolved("scan_y", "scan_z")) == "YZ"
+    assert ProcessingSession._scan_label_from_layout(
+        resolved("scan_x", "scan_y", "scan_z")
+    ) == "XYZ"
+
+
+def test_dimension_tag_combines_spatial_axes_and_time():
+    common = dict(
+        id="dataset",
+        label="dataset",
+        primary_path="/tmp/data.h5",
+        primary_dataset="Camera",
+    )
+
+    assert SessionDataset(kind="scan", scan_label="XY", **common).dimension_tag == "XY"
+    assert (
+        SessionDataset(
+            kind="time-lapse", scan_label="XY", planned_timepoints=10, **common
+        ).dimension_tag
+        == "XYT"
+    )
+    # A nominal time-lapse with no actual temporal multiplicity stays spatial.
+    assert (
+        SessionDataset(
+            kind="time-lapse", scan_label="XY", planned_timepoints=1, **common
+        ).dimension_tag
+        == "XY"
+    )
+    # Old Session manifests used the presentation labels 2D / 3D. Keep those
+    # readable so deleted-data tombstones still participate in filtering.
+    assert SessionDataset(kind="scan", scan_label="2D", **common).dimension_tag == "XY"
+    assert (
+        SessionDataset(
+            kind="time-lapse", scan_label="3D", planned_timepoints=8, **common
+        ).dimension_tag
+        == "XYZT"
+    )
+
+
+def test_dimension_display_aliases_are_presentation_only():
+    common = dict(
+        id="dataset",
+        label="dataset",
+        primary_path="/tmp/data.h5",
+        primary_dataset="Camera",
+    )
+
+    xy = SessionDataset(kind="scan", scan_label="XY", **common)
+    xyt = SessionDataset(
+        kind="time-lapse", scan_label="XY", planned_timepoints=10, **common
+    )
+    xyz = SessionDataset(kind="scan", scan_label="XYZ", **common)
+    yzt = SessionDataset(
+        kind="time-lapse", scan_label="YZ", planned_timepoints=10, **common
+    )
+
+    assert xy.spatial_display_label == "2D"
+    assert xy.dimension_filter_label == "XY (2D)"
+    assert xyt.spatial_display_label == "2D"
+    assert xyt.dimension_filter_label == "XYT (2D)"
+    assert xyz.spatial_display_label == "3D"
+    assert xyz.dimension_filter_label == "XYZ (3D)"
+    assert yzt.spatial_display_label == "YZ"
+    assert yzt.dimension_filter_label == "YZT"
+
+
 def _recorded_result_for_source(path: Path, dataset_name: str | None, name: str):
     """Small provenance-bearing reconstruction result for Session matching tests."""
     source = DataObj(path.name, dataset_name, path=str(path))
@@ -567,3 +640,69 @@ def test_session_multidata_source_does_not_guess_ambiguous_dataset(tmp_path):
         handle.create_dataset("B", data=np.ones((2, 2), dtype=np.uint16))
 
     assert ProcessingSessionController._multidata_source(str(path), None) is None
+
+
+def test_dataset_favorite_persists_across_refresh_and_reopen(tmp_path):
+    raw = tmp_path / "raw"
+    _h5_image(raw / "good.h5")
+    _h5_image(raw / "other.h5")
+    results = tmp_path / "results"
+
+    session = ProcessingSession(raw, results)
+    session.refresh()
+    good = next(dataset for dataset in session.datasets if dataset.label == "good.h5")
+    session.set_favorite([good.id], True)
+
+    session.refresh()
+    assert session.dataset_by_id(good.id).favorite is True
+    assert sum(dataset.favorite for dataset in session.datasets) == 1
+
+    reopened = ProcessingSession(raw, results)
+    reopened.refresh()
+    assert reopened.dataset_by_id(good.id).favorite is True
+    payload = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
+    assert payload["schema"] == 4
+    manifest_good = next(entry for entry in payload["datasets"] if entry["id"] == good.id)
+    assert manifest_good["favorite"] is True
+
+
+def test_raw_cleanup_plan_skips_nonfavorite_dataset_sharing_container_with_kept_data(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    shared = raw / "shared.h5"
+    with h5py.File(shared, "w") as handle:
+        for name in ("A", "B"):
+            image = handle.create_dataset(name, data=np.ones((2, 4, 5), dtype=np.uint16))
+            image.attrs["axes"] = ["Z", "Y", "X"]
+
+    session = ProcessingSession(raw, tmp_path / "results")
+    session.refresh()
+    assert len(session.datasets) == 2
+    first, second = sorted(session.datasets, key=lambda dataset: dataset.primary_dataset)
+    session.set_favorite([first.id], True)
+
+    deletable, paths, skipped = session.raw_cleanup_plan([second.id])
+
+    assert deletable == []
+    assert paths == []
+    assert [dataset.id for dataset in skipped] == [second.id]
+
+
+def test_raw_cleanup_plan_allows_shared_container_when_all_owners_are_removed(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    shared = raw / "shared.h5"
+    with h5py.File(shared, "w") as handle:
+        for name in ("A", "B"):
+            image = handle.create_dataset(name, data=np.ones((2, 4, 5), dtype=np.uint16))
+            image.attrs["axes"] = ["Z", "Y", "X"]
+
+    session = ProcessingSession(raw, tmp_path / "results")
+    session.refresh()
+    ids = [dataset.id for dataset in session.datasets]
+
+    deletable, paths, skipped = session.raw_cleanup_plan(ids)
+
+    assert {dataset.id for dataset in deletable} == set(ids)
+    assert paths == [str(shared)]
+    assert skipped == []

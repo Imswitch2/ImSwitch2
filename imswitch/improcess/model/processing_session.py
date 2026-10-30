@@ -46,6 +46,33 @@ def _stable_id(*parts: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
+_SPATIAL_DISPLAY_ALIASES = {
+    "XY": "2D",
+    "XYZ": "3D",
+}
+
+
+def _canonical_spatial_tag(value: str | None) -> str:
+    """Normalize legacy Session scan labels to compact axis tags."""
+    text = str(value or "").strip().upper()
+    return {"2D": "XY", "3D": "XYZ"}.get(text, text)
+
+
+def _spatial_display_label(value: str | None) -> str:
+    """Human-facing spatial label while keeping axis tags canonical internally."""
+    spatial = _canonical_spatial_tag(value)
+    return _SPATIAL_DISPLAY_ALIASES.get(spatial, spatial)
+
+
+def _dimension_filter_label(tag: str | None) -> str:
+    """Compact filter text with familiar aliases shown only as annotations."""
+    canonical = str(tag or "").strip().upper()
+    timed = canonical.endswith("T")
+    spatial = canonical[:-1] if timed else canonical
+    alias = _SPATIAL_DISPLAY_ALIASES.get(spatial)
+    return f"{canonical} ({alias})" if canonical and alias else canonical
+
+
 def _is_supported_raw(path: Path) -> bool:
     name = path.name.lower()
     return any(name.endswith(suffix) for suffix in _RAW_SUFFIXES)
@@ -93,12 +120,41 @@ class SessionDataset:
     # A raw source may deliberately be removed while kept reconstructions stay
     # in the Session.  Such entries are restored from the manifest on refresh.
     raw_deleted: bool = False
+    # User curation state: this acquisition is worth keeping/revisiting.
+    favorite: bool = False
     saved_reconstructions: list[SavedReconstruction] = field(default_factory=list)
 
     @property
     def status(self) -> str:
         """Compact compatibility state: reconstructed or raw only."""
         return "reconstructed" if self.saved_reconstructions else "raw"
+
+    @property
+    def spatial_display_label(self) -> str:
+        """Concise human-facing spatial label (for example XY -> 2D)."""
+        return _spatial_display_label(self.scan_label)
+
+    @property
+    def dimension_tag(self) -> str:
+        """Canonical acquisition tag used by the Session filter.
+
+        The persisted ``scan_label`` remains purely spatial.  A temporal ``T``
+        suffix is added only when the acquisition actually contains more than
+        one planned timepoint.
+        """
+        spatial = _canonical_spatial_tag(self.scan_label)
+        try:
+            timed = int(self.planned_timepoints or 0) > 1
+        except (TypeError, ValueError):
+            timed = False
+        if timed:
+            return f"{spatial}T" if spatial else "T"
+        return spatial
+
+    @property
+    def dimension_filter_label(self) -> str:
+        """Human-facing filter text while preserving ``dimension_tag`` as data."""
+        return _dimension_filter_label(self.dimension_tag)
 
     def matches_source(self, path: str | None, dataset: str | None = None) -> bool:
         if not path:
@@ -125,7 +181,7 @@ class SessionDataset:
 class ProcessingSession:
     """Persistent catalog of raw acquisitions and saved reconstructions."""
 
-    schema = 3
+    schema = 4
 
     def __init__(self, raw_root: str | Path, results_root: str | Path):
         self.raw_root = Path(raw_root).expanduser().resolve()
@@ -143,8 +199,11 @@ class ProcessingSession:
     def refresh(self) -> None:
         """Rebuild the lightweight catalog without materialising image pixels."""
         payload = self._read_manifest_payload()
+        remembered_favorites = self._favorite_ids_from_payload(payload)
         remembered_deleted = self._deleted_datasets_from_payload(payload)
         self.datasets = self._discover_raw_datasets()
+        for dataset in self.datasets:
+            dataset.favorite = dataset.id in remembered_favorites
         discovered_ids = {dataset.id for dataset in self.datasets}
         self.datasets.extend(
             dataset for dataset in remembered_deleted if dataset.id not in discovered_ids
@@ -199,9 +258,9 @@ class ProcessingSession:
         kinds = {str(loop.kind) for loop in loops if int(getattr(loop, "count", 1) or 1) > 1}
         axes = {axis for axis in ("x", "y", "z") if f"scan_{axis}" in kinds}
         if axes == {"x", "y", "z"}:
-            return "3D"
+            return "XYZ"
         if axes == {"x", "y"}:
-            return "2D"
+            return "XY"
         if axes == {"y", "z"}:
             return "YZ"
         if axes == {"x", "z"}:
@@ -544,6 +603,18 @@ class ProcessingSession:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    @staticmethod
+    def _favorite_ids_from_payload(payload: dict) -> set[str]:
+        if not isinstance(payload, dict):
+            return set()
+        return {
+            str(entry.get("id"))
+            for entry in payload.get("datasets", [])
+            if isinstance(entry, dict)
+            and entry.get("id")
+            and bool(entry.get("favorite", False))
+        }
+
     def _deleted_datasets_from_payload(self, payload: dict) -> list[SessionDataset]:
         out: list[SessionDataset] = []
         for entry in payload.get("datasets", []) if isinstance(payload, dict) else []:
@@ -563,13 +634,73 @@ class ProcessingSession:
                     primary_dataset=entry.get("primary_dataset"),
                     source_refs=refs,
                     planned_timepoints=entry.get("planned_timepoints"),
-                    scan_label=str(entry.get("scan_label") or ""),
+                    scan_label=_canonical_spatial_tag(entry.get("scan_label")),
                     decoded_bytes=entry.get("decoded_bytes"),
                     raw_deleted=True,
+                    favorite=bool(entry.get("favorite", False)),
                 ))
             except (KeyError, TypeError, ValueError):
                 continue
         return out
+
+    def raw_cleanup_plan(
+        self, dataset_ids: Iterable[str]
+    ) -> tuple[list[SessionDataset], list[str], list[SessionDataset]]:
+        """Plan raw deletion without ever splitting a shared physical container.
+
+        A logical dataset is deletable only when every physical path it uses is
+        referenced exclusively by datasets in the requested deletion set. This
+        makes favorites safe when several acquisitions share one HDF5/Zarr path.
+        """
+        wanted = {str(item) for item in dataset_ids}
+        candidates = [dataset for dataset in self.datasets if dataset.id in wanted]
+        owners: dict[str, set[str]] = {}
+        original_paths: dict[str, str] = {}
+        for dataset in self.datasets:
+            if dataset.raw_deleted:
+                continue
+            for ref in dataset.source_refs:
+                if not ref.path:
+                    continue
+                normalized = _norm_path(ref.path)
+                owners.setdefault(normalized, set()).add(dataset.id)
+                original_paths.setdefault(normalized, str(ref.path))
+
+        deletable: list[SessionDataset] = []
+        skipped: list[SessionDataset] = []
+        raw_paths: set[str] = set()
+        for dataset in candidates:
+            if dataset.raw_deleted:
+                deletable.append(dataset)
+                continue
+            paths = {_norm_path(ref.path) for ref in dataset.source_refs if ref.path}
+            safe = bool(paths) and all(owners.get(path, set()) <= wanted for path in paths)
+            if not safe:
+                skipped.append(dataset)
+                continue
+            deletable.append(dataset)
+            raw_paths.update(paths)
+        return (
+            deletable,
+            [original_paths[path] for path in sorted(raw_paths)],
+            skipped,
+        )
+
+    def set_favorite(self, dataset_ids: Iterable[str], favorite: bool) -> None:
+        wanted = {str(item) for item in dataset_ids}
+        changed = False
+        for dataset in self.datasets:
+            if dataset.id in wanted and dataset.favorite != bool(favorite):
+                dataset.favorite = bool(favorite)
+                changed = True
+        if changed:
+            self.save_manifest()
+
+    def favorite_datasets(self) -> list[SessionDataset]:
+        return [dataset for dataset in self.datasets if dataset.favorite]
+
+    def nonfavorite_datasets(self) -> list[SessionDataset]:
+        return [dataset for dataset in self.datasets if not dataset.favorite]
 
     def mark_raw_deleted(self, dataset_ids: Iterable[str]) -> None:
         wanted = {str(item) for item in dataset_ids}

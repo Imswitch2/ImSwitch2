@@ -79,6 +79,8 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigRevealRawRequested.connect(self.revealSelectedRaw)
         self._widget.sigCopyRawPathRequested.connect(self.copySelectedRawPath)
         self._widget.sigDeleteRawRequested.connect(self.deleteSelectedRaw)
+        self._widget.sigFavoriteDatasetRequested.connect(self.setDatasetFavorite)
+        self._widget.sigSetSelectedFavoriteRequested.connect(self.setSelectedDatasetsFavorite)
         self._widget.sigReconstructionWorkspaceToggleRequested.connect(
             self.toggleReconstructionWorkspace
         )
@@ -96,6 +98,10 @@ class ProcessingSessionController(ImProcessWidgetController):
         )
         self._widget.sigCancelAddingRequested.connect(self.cancelAddingReconstructions)
         self._widget.sigCloseSessionReconstructionsRequested.connect(self.closeSessionReconstructions)
+        self._widget.sigCloseNonFavoriteReconstructionsRequested.connect(
+            self.closeNonFavoriteReconstructions
+        )
+        self._widget.sigCleanupNonFavoritesRequested.connect(self.cleanupNonFavorites)
         self._widget.sigCloseSessionRequested.connect(self.closeSession)
         self._widget.sigEmptyTrashRequested.connect(self.emptySessionTrash)
         self._widget.sigRevealRawFolderRequested.connect(self.revealRawFolder)
@@ -211,8 +217,14 @@ class ProcessingSessionController(ImProcessWidgetController):
         ):
             self._widget.setStatus("Session settings updated")
             return
-        if self.openSession(raw, results) and restore_mode == "all":
+        if not self.openSession(raw, results):
+            return
+        if restore_mode == "all":
             self._start_add_reconstructions(list(self._session.datasets))
+        elif restore_mode == "favorites":
+            self._start_add_reconstructions(
+                [dataset for dataset in self._session.datasets if dataset.favorite]
+            )
 
     def _prepare_session(self, raw_root, results_root) -> ProcessingSession | None:
         raw = Path(raw_root).expanduser()
@@ -267,6 +279,23 @@ class ProcessingSessionController(ImProcessWidgetController):
         session = self._session
         if session is None:
             return True
+
+        # Explicitly finishing a Session is the natural point to offer curation.
+        # Switching Sessions stays lightweight and never suggests destructive cleanup.
+        if not for_switch:
+            favorite_count = sum(1 for dataset in session.datasets if dataset.favorite)
+            nonfavorite_count = len(session.datasets) - favorite_count
+            finish = self._widget.requestSessionFinishChoice(
+                favorite_count=favorite_count, nonfavorite_count=nonfavorite_count
+            )
+            if finish == "cancel":
+                return False
+            if finish == "reconstructions":
+                if not self._cleanup_nonfavorite_datasets(include_raw=False, ask_raw=False):
+                    return False
+            elif finish == "raw":
+                if not self._cleanup_nonfavorite_datasets(include_raw=True, ask_raw=True):
+                    return False
 
         associated = self._results_associated_with_session(session)
         choice = "keep"
@@ -463,10 +492,12 @@ class ProcessingSessionController(ImProcessWidgetController):
     def _dataset_info(cls, dataset) -> tuple[str, str]:
         bits = []
         tooltip = []
-        scan_label = str(getattr(dataset, "scan_label", "") or "")
-        if scan_label:
-            bits.append(scan_label)
-            tooltip.append(f"Scan: {scan_label}")
+        dimension_tag = str(getattr(dataset, "dimension_tag", "") or "")
+        spatial_label = str(getattr(dataset, "spatial_display_label", "") or "")
+        if spatial_label:
+            bits.append(spatial_label)
+        if dimension_tag:
+            tooltip.append(f"Dimensions: {dimension_tag}")
         if dataset.kind == "time-lapse" and dataset.planned_timepoints:
             bits.append(f"T={dataset.planned_timepoints}")
             tooltip.append(f"Timepoints: {dataset.planned_timepoints}")
@@ -572,6 +603,10 @@ class ProcessingSessionController(ImProcessWidgetController):
                 "label": dataset.label,
                 "info": info,
                 "info_tooltip": info_tooltip,
+                "dimension": str(getattr(dataset, "dimension_tag", "") or ""),
+                "dimension_label": str(
+                    getattr(dataset, "dimension_filter_label", "") or ""
+                ),
                 "status": status,
                 "state": state,
                 "timestamp": self._dataset_timestamp(dataset),
@@ -579,6 +614,7 @@ class ProcessingSessionController(ImProcessWidgetController):
                 "tooltip": tooltip,
                 "current": dataset.id == self._currentDatasetId,
                 "raw_deleted": bool(getattr(dataset, "raw_deleted", False)),
+                "favorite": bool(getattr(dataset, "favorite", False)),
                 "saved_count": len(dataset.saved_reconstructions),
                 "panel_count": loaded_count,
                 "panel_link": bool(loaded_count),
@@ -856,6 +892,177 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._widget.copyText(dataset.primary_path)
             self._widget.setStatus("Raw-data path copied")
 
+    def setDatasetFavorite(self, dataset_id, favorite: bool) -> None:
+        if self._session is None or not dataset_id:
+            return
+        self._session.set_favorite([str(dataset_id)], bool(favorite))
+        self._render()
+
+    def setSelectedDatasetsFavorite(self, favorite: bool) -> None:
+        if self._session is None:
+            return
+        dataset_ids = self._selected_dataset_ids()
+        if not dataset_ids:
+            return
+        self._session.set_favorite(dataset_ids, bool(favorite))
+        self._widget.setStatus(
+            f"{'Favorited' if favorite else 'Removed favorite from'} "
+            f"{len(dataset_ids)} dataset{'s' if len(dataset_ids) != 1 else ''}"
+        )
+        self._render()
+
+    def _nonfavorite_datasets(self):
+        if self._session is None:
+            return []
+        return [dataset for dataset in self._session.datasets if not dataset.favorite]
+
+    def _reconstruction_count_for_datasets(self, datasets) -> int:
+        return sum(len(self._reconstruction_entries(dataset)) for dataset in datasets)
+
+    def _close_reconstructions_for_datasets(self, datasets) -> bool:
+        """Non-destructive Close: persist in-memory-only results before removing them."""
+        if self._session is None:
+            return True
+        results = []
+        seen = set()
+        for dataset in datasets:
+            for _name, result in self._loaded_reconstructions_for_dataset(dataset):
+                if id(result) in seen:
+                    continue
+                seen.add(id(result))
+                results.append((dataset, result))
+
+        # Preserve every unsaved result before closing any, so one failed save
+        # cannot leave the operation half destructive.
+        saved_any = False
+        for dataset, result in results:
+            if getattr(result, "_session_saved_path", None):
+                continue
+            try:
+                receipt = self._save_result(
+                    result, dataset, str(getattr(result, "name", "reconstruction"))
+                )
+            except Exception as exc:
+                self._logger.exception("Could not preserve reconstruction before closing")
+                self._widget.setStatus(f"Could not close reconstructions: {exc}")
+                return False
+            result._session_saved_path = str(receipt.primary)
+            self._tag_session_origin(result)
+            saved_any = True
+        if saved_any:
+            self._session.refresh()
+        for _dataset, result in results:
+            self._remove_loaded_result(result)
+        return True
+
+    def _raw_cleanup_plan(self, datasets):
+        if self._session is None:
+            return [], [], []
+        return self._session.raw_cleanup_plan(dataset.id for dataset in datasets)
+
+    def _discard_reconstructions_for_datasets(self, datasets) -> None:
+        """Destructive cleanup: remove loaded objects and trash saved artifacts."""
+        if self._session is None:
+            return
+        seen_results = set()
+        for dataset in list(datasets):
+            for entry in list(self._reconstruction_entries(dataset)):
+                result = entry.get("loaded")
+                if result is not None and id(result) not in seen_results:
+                    seen_results.add(id(result))
+                    self._remove_loaded_result(result)
+                saved = entry.get("saved")
+                if saved is not None:
+                    try:
+                        self._session.trash_reconstruction(dataset.id, saved.path)
+                    except Exception:
+                        self._logger.exception("Could not move non-favorite reconstruction to Session trash")
+        # A deleted-raw tombstone with no reconstruction left represents
+        # nothing after cleanup; remove it from the manifest as well.
+        empty_deleted = [
+            dataset.id for dataset in datasets
+            if dataset.raw_deleted and not dataset.saved_reconstructions
+        ]
+        if empty_deleted:
+            self._session.forget_datasets(empty_deleted)
+
+    def _cleanup_nonfavorite_datasets(self, *, include_raw: bool, ask_raw: bool) -> bool:
+        if self._session is None:
+            return True
+        datasets = self._nonfavorite_datasets()
+        if not datasets:
+            self._widget.setStatus("No non-favorite datasets to clean up")
+            return True
+
+        deletable, raw_paths, skipped = self._raw_cleanup_plan(datasets)
+        physical_deletable = [dataset for dataset in deletable if not dataset.raw_deleted]
+        if include_raw and ask_raw and raw_paths:
+            if not self._widget.requestRawCleanupConfirmation(
+                dataset_count=len(physical_deletable),
+                raw_file_count=len(raw_paths),
+                skipped_count=len(skipped),
+            ):
+                return False
+
+        # Cleanup intentionally does not preserve unsaved non-favorite results.
+        self._discard_reconstructions_for_datasets(datasets)
+
+        if include_raw:
+            # Re-resolve IDs after reconstruction cleanup may have removed raw-deleted
+            # tombstones from the manifest. Physical paths are from the safe plan above.
+            deletable_ids = [dataset.id for dataset in physical_deletable]
+            if raw_paths:
+                self._session.mark_raw_deleted(deletable_ids)
+                try:
+                    release = getattr(self._fileIO, "releasePaths", None)
+                    if callable(release):
+                        release(raw_paths)
+                    from send2trash import send2trash
+                    for path in raw_paths:
+                        source = Path(path)
+                        if source.exists():
+                            send2trash(str(source))
+                except Exception as exc:
+                    self._logger.exception("Could not clean up non-favorite raw data")
+                    self._widget.setStatus(f"Raw-data cleanup failed: {exc}")
+                    self._session.refresh()
+                    self._render()
+                    return False
+            forget_ids = [dataset.id for dataset in deletable]
+            if forget_ids:
+                self._session.forget_datasets(forget_ids)
+
+        self._session.refresh()
+        if include_raw:
+            message = "Cleaned up non-favorite reconstructions and raw data"
+            if skipped:
+                message += (
+                    f" · kept {len(skipped)} dataset{'s' if len(skipped) != 1 else ''} "
+                    "whose raw files are shared with kept data"
+                )
+        else:
+            message = "Moved non-favorite reconstructions to Session trash"
+        self._widget.setStatus(message)
+        self._selectedReconKey = None
+        self._render()
+        return True
+
+    def cleanupNonFavorites(self) -> None:
+        if self._session is None:
+            return
+        datasets = self._nonfavorite_datasets()
+        if not datasets:
+            self._widget.setStatus("No non-favorite datasets to clean up")
+            return
+        choice = self._widget.requestNonFavoriteCleanupChoice(
+            len(datasets), self._reconstruction_count_for_datasets(datasets)
+        )
+        if choice == "cancel":
+            return
+        self._cleanup_nonfavorite_datasets(
+            include_raw=(choice == "raw"), ask_raw=(choice == "raw")
+        )
+
     def _affected_datasets_for_raw_delete(self, dataset_ids: list[str]):
         if self._session is None:
             return [], []
@@ -1128,6 +1335,21 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._remove_loaded_result(result)
         self._widget.setStatus(
             f"Closed {len(results)} Session reconstruction{'s' if len(results) != 1 else ''}"
+        )
+        self._render()
+
+    def closeNonFavoriteReconstructions(self) -> None:
+        datasets = self._nonfavorite_datasets()
+        if not datasets:
+            self._widget.setStatus("No non-favorite datasets")
+            return
+        before = sum(
+            len(self._loaded_reconstructions_for_dataset(dataset)) for dataset in datasets
+        )
+        if not self._close_reconstructions_for_datasets(datasets):
+            return
+        self._widget.setStatus(
+            f"Closed {before} reconstruction{'s' if before != 1 else ''} from non-favorites"
         )
         self._render()
 
