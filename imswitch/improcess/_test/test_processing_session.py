@@ -379,3 +379,156 @@ def test_source_metadata_reports_decoded_size_without_materializing(tmp_path):
     _scan_label, decoded = ProcessingSession._source_metadata(raw_path, "Camera")
 
     assert decoded == 2 * 4 * 5 * np.dtype(np.uint16).itemsize
+
+
+def _recorded_result_for_source(path: Path, dataset_name: str | None, name: str):
+    """Small provenance-bearing reconstruction result for Session matching tests."""
+    source = DataObj(path.name, dataset_name, path=str(path))
+    source.checkAndOpenData()
+    try:
+        result = ArrayProcessingResult(
+            name,
+            np.ones((4, 5), dtype=np.float32),
+            ["Y", "X"],
+            axis_scales=[0.1, 0.1],
+            scale_unit="um",
+        )
+        record_reconstruction(result, _Recon(), {}, source)
+        return result
+    finally:
+        source.checkAndUnloadData()
+
+
+def _consolidated_result(results, name="multi"):
+    from imswitch.improcess.model.provenance import record_consolidation
+
+    merged = ArrayProcessingResult(
+        name,
+        np.ones((len(results), 4, 5), dtype=np.float32),
+        ["T", "Y", "X"],
+        axis_scales=[1.0, 0.1, 0.1],
+        scale_unit="um",
+    )
+    record_consolidation(merged, results, _Recon())
+    return merged
+
+
+def _consolidated_for_session_dataset(dataset):
+    pieces = []
+    for index, ref in enumerate(dataset.source_refs):
+        dataset_name = ref.dataset
+        if dataset_name is None:
+            names = list(DataObj.getDatasetNames(ref.path))
+            assert len(names) == 1
+            dataset_name = names[0]
+        pieces.append(
+            _recorded_result_for_source(Path(ref.path), dataset_name, f"t{index}")
+        )
+    return _consolidated_result(pieces)
+
+
+def test_multifile_timelapse_consolidation_resolves_to_one_session_dataset(tmp_path):
+    raw = tmp_path / "raw"
+    _multi_file_lapse(raw, 3)
+
+    session = ProcessingSession(raw, tmp_path / "results")
+    session.refresh()
+    dataset = session.datasets[0]
+    merged = _consolidated_for_session_dataset(dataset)
+
+    assert dataset.kind == "time-lapse"
+    assert session.dataset_for_result(merged).id == dataset.id
+
+
+def test_single_file_timelapse_consolidation_resolves_to_one_session_dataset(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    _single_file_lapse(raw / "lapse_Camera.h5", 3)
+
+    session = ProcessingSession(raw, tmp_path / "results")
+    session.refresh()
+    dataset = session.datasets[0]
+    merged = _consolidated_for_session_dataset(dataset)
+
+    assert dataset.kind == "time-lapse"
+    assert session.dataset_for_result(merged).id == dataset.id
+
+
+def test_consolidation_across_unrelated_session_datasets_is_not_session_owned(tmp_path):
+    raw = tmp_path / "raw"
+    first_path = _h5_image(raw / "scan_a.h5")
+    second_path = _h5_image(raw / "scan_b.h5")
+
+    session = ProcessingSession(raw, tmp_path / "results")
+    session.refresh()
+    merged = _consolidated_result([
+        _recorded_result_for_source(first_path, "Camera", "a"),
+        _recorded_result_for_source(second_path, "Camera", "b"),
+    ])
+
+    assert len(session.datasets) == 2
+    assert session.dataset_for_result(merged) is None
+
+
+def test_consolidation_with_source_outside_session_is_not_session_owned(tmp_path):
+    raw = tmp_path / "raw"
+    in_session = _h5_image(raw / "scan_a.h5")
+    outside = _h5_image(tmp_path / "outside" / "scan_external.h5")
+
+    session = ProcessingSession(raw, tmp_path / "results")
+    session.refresh()
+    merged = _consolidated_result([
+        _recorded_result_for_source(in_session, "Camera", "inside"),
+        _recorded_result_for_source(outside, "Camera", "outside"),
+    ])
+
+    assert len(session.datasets) == 1
+    assert session.dataset_for_result(merged) is None
+
+
+def test_saved_timelapse_consolidation_is_discovered_under_logical_lapse(tmp_path):
+    raw = tmp_path / "raw"
+    results = tmp_path / "results"
+    _multi_file_lapse(raw, 3)
+
+    session = ProcessingSession(raw, results)
+    session.refresh()
+    dataset = session.datasets[0]
+    merged = _consolidated_for_session_dataset(dataset)
+    saved = results / "lapse_multi.h5"
+    merged.save(saved, "hdf5")
+
+    session.refresh()
+    dataset = session.datasets[0]
+
+    assert [Path(item.path) for item in dataset.saved_reconstructions] == [saved]
+
+
+def test_session_controller_recognizes_consolidation_and_resolves_multidata_source(tmp_path):
+    from imswitch.improcess.controller.ProcessingSessionController import (
+        ProcessingSessionController,
+    )
+
+    path = _h5_image(tmp_path / "scan.h5")
+    first = _recorded_result_for_source(path, "Camera", "first")
+    second = _recorded_result_for_source(path, "Camera", "second")
+    merged = _consolidated_result([first, second])
+
+    assert ProcessingSessionController._is_session_reconstruction(merged)
+    assert ProcessingSessionController._multidata_source(str(path), None) == (
+        str(path),
+        "Camera",
+    )
+
+
+def test_session_multidata_source_does_not_guess_ambiguous_dataset(tmp_path):
+    from imswitch.improcess.controller.ProcessingSessionController import (
+        ProcessingSessionController,
+    )
+
+    path = tmp_path / "multi.h5"
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("A", data=np.ones((2, 2), dtype=np.uint16))
+        handle.create_dataset("B", data=np.ones((2, 2), dtype=np.uint16))
+
+    assert ProcessingSessionController._multidata_source(str(path), None) is None

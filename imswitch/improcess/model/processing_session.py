@@ -108,10 +108,12 @@ class SessionDataset:
         for ref in self.source_refs:
             if ref.normalized_path != wanted_path:
                 continue
-            # Time-lapse provenance currently identifies the anchor file but
-            # uses a synthetic dataset label ("time-lapse").  Path identity is
-            # enough there because source_refs contains every member file.
-            if self.kind == "time-lapse":
+            # A whole-lapse DataObj deliberately uses the synthetic dataset
+            # name ``time-lapse``.  In that one case the anchor path identifies
+            # the logical Session dataset.  Ordinary MultiData members keep
+            # their real dataset identity and must match it as well; otherwise
+            # two lapses stored in one HDF5 container can be confused.
+            if self.kind == "time-lapse" and wanted_dataset == "time-lapse":
                 return True
             if wanted_dataset is None or ref.dataset is None:
                 return True
@@ -359,13 +361,38 @@ class ProcessingSession:
             ))
 
     def _dataset_for_sources(self, sources: Iterable[dict]) -> SessionDataset | None:
+        """Resolve provenance sources to one logical Session dataset.
+
+        A consolidated reconstruction is Session-manageable only when *every*
+        provenance source resolves unambiguously to the same Session dataset.
+        This is what makes a logical time lapse safe: all of its physical
+        timepoint sources collapse to one ``SessionDataset``.  An arbitrary
+        MultiData consolidation spanning unrelated raw datasets deliberately
+        returns ``None`` instead of attaching the result to whichever source
+        happens to be visited first.
+        """
+        owner: SessionDataset | None = None
+        saw_source = False
         for source in sources:
+            if not isinstance(source, dict):
+                return None
+            saw_source = True
             path = source.get("path")
             dataset_name = source.get("dataset")
-            for dataset in self.datasets:
-                if dataset.matches_source(path, dataset_name):
-                    return dataset
-        return None
+            matches = [
+                dataset
+                for dataset in self.datasets
+                if dataset.matches_source(path, dataset_name)
+            ]
+            # Missing sources and ambiguous sources both fail closed.
+            if len(matches) != 1:
+                return None
+            match = matches[0]
+            if owner is None:
+                owner = match
+            elif owner.id != match.id:
+                return None
+        return owner if saw_source else None
 
     @staticmethod
     def _filename_display_name(path: Path) -> str:

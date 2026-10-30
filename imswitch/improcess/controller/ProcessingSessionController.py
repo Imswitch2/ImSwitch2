@@ -8,6 +8,7 @@ from pathlib import Path
 from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.improcess.controller.basecontrollers import ImProcessWidgetController
+from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.processing_session import ProcessingSession
 from imswitch.improcess.model.provenance import graph_of, output_node
 from imswitch.improcess.model.saved_result import load_saved_result
@@ -133,7 +134,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         matches = []
         seen = set()
         for _name, result in self._commChannel.getAllResults():
-            if result is None or id(result) in seen or not self._is_direct_reconstruction(result):
+            if result is None or id(result) in seen or not self._is_session_reconstruction(result):
                 continue
             if session.dataset_for_result(result) is None:
                 continue
@@ -334,17 +335,25 @@ class ProcessingSessionController(ImProcessWidgetController):
         return loaded
 
     @staticmethod
-    def _is_direct_reconstruction(result) -> bool:
+    def _is_session_reconstruction(result) -> bool:
+        """Whether a result is a reconstruction artifact Session may own.
+
+        A normal reconstruction is a ``reconstruct`` node.  Reconstructing
+        several MultiData members with consolidation produces a final
+        ``consolidate`` node whose ancestors are those reconstruction nodes;
+        it is also a reconstruction artifact for Session purposes.  Generic
+        downstream processing nodes remain excluded.
+        """
         node = output_node(result)
-        return isinstance(node, dict) and node.get("op") == "reconstruct"
+        return isinstance(node, dict) and node.get("op") in {"reconstruct", "consolidate"}
 
     def _loaded_reconstructions_for_dataset(self, dataset) -> list[tuple[str, object]]:
-        """Direct reconstruction objects currently present in the right-hand list."""
+        """Session reconstruction objects currently present in the right-hand list."""
         if self._session is None or dataset is None:
             return []
         matches = []
         for display_name, result in self._commChannel.getAllResults():
-            if not self._is_direct_reconstruction(result):
+            if not self._is_session_reconstruction(result):
                 continue
             owner = self._session.dataset_for_result(result)
             if owner is not None and owner.id == dataset.id:
@@ -706,6 +715,28 @@ class ProcessingSessionController(ImProcessWidgetController):
             ids = [self._selectedDatasetId]
         return list(dict.fromkeys(str(item) for item in ids if item))
 
+    @staticmethod
+    def _multidata_source(
+        path: str, dataset_name: str | None
+    ) -> tuple[str, str | None] | None:
+        """Return a concrete ordinary-image source for MultiData.
+
+        Multi-file lapse discovery can leave the dataset name unset for
+        sibling files when each file contains exactly one image dataset.  A
+        MultiData ``DataObj`` should still carry that real dataset name so its
+        provenance later matches the Session source precisely.  Never guess
+        when a container has several choices.
+        """
+        if dataset_name not in (None, ""):
+            return str(path), str(dataset_name)
+        try:
+            names = list(DataObj.getDatasetNames(str(path)))
+        except Exception:
+            return None
+        if len(names) != 1:
+            return None
+        return str(path), str(names[0])
+
     def loadSelectedAsMultiData(self) -> None:
         if self._session is None or self._fileIO is None:
             return
@@ -715,22 +746,37 @@ class ProcessingSessionController(ImProcessWidgetController):
         ]
         datasets = [d for d in datasets if d is not None and not d.raw_deleted]
         added = 0
-        skipped_lapses = 0
+        skipped = 0
         for dataset in datasets:
             if dataset.kind == "time-lapse":
-                skipped_lapses += 1
-                continue
-            self._fileIO.multiDataFrameController.makeAndAddDataObj(
-                Path(dataset.primary_path).name,
-                dataset.primary_dataset,
-                path=dataset.primary_path,
-            )
-            added += 1
+                sources = [
+                    (ref.path, ref.dataset)
+                    for ref in dataset.source_refs
+                ]
+            else:
+                sources = [(dataset.primary_path, dataset.primary_dataset)]
+
+            for source_path, source_dataset in sources:
+                resolved = self._multidata_source(source_path, source_dataset)
+                if resolved is None:
+                    skipped += 1
+                    self._logger.warning(
+                        "Could not add Session source to MultiData without "
+                        f"guessing a dataset: {source_path}::{source_dataset}"
+                    )
+                    continue
+                resolved_path, resolved_dataset = resolved
+                self._fileIO.multiDataFrameController.makeAndAddDataObj(
+                    Path(resolved_path).name,
+                    resolved_dataset,
+                    path=resolved_path,
+                )
+                added += 1
         if added:
             self._fileIO._widget.raiseMultiDataDock()
         message = f"Added {added} dataset{'s' if added != 1 else ''} to MultiData"
-        if skipped_lapses:
-            message += f" · skipped {skipped_lapses} time-lapse{'s' if skipped_lapses != 1 else ''}"
+        if skipped:
+            message += f" · skipped {skipped} ambiguous source{'s' if skipped != 1 else ''}"
         self._widget.setStatus(message)
 
     def _current_selected_dataset(self):
@@ -1246,7 +1292,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         if getattr(result, "_session_restored", False):
             QtCore.QTimer.singleShot(0, self._render)
             return
-        if not self._is_direct_reconstruction(result):
+        if not self._is_session_reconstruction(result):
             return
         dataset = self._session.dataset_for_result(result)
         if dataset is None:
