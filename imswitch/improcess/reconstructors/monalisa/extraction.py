@@ -437,7 +437,9 @@ class ExtractionOperator:
     def num_coefficients(self) -> int:
         return int(self._design.shape[1])
 
-    def _solve(self, frames: np.ndarray, chunk: int) -> tuple[np.ndarray, np.ndarray]:
+    def _solve(
+        self, frames: np.ndarray, chunk: int, *, with_noise: bool = True
+    ) -> tuple[np.ndarray, np.ndarray | None]:
         frames = np.asarray(frames)
         if frames.ndim == 2:
             frames = frames[None]
@@ -448,16 +450,22 @@ class ExtractionOperator:
             )
         flat = frames.reshape(frames.shape[0], -1)
         coefficients = np.empty((frames.shape[0], self.num_coefficients))
-        noise = np.empty(frames.shape[0])
+        noise = np.empty(frames.shape[0]) if with_noise else None
         dof = max(self._row_pixel.size - self.num_coefficients, 1)
         for start in range(0, frames.shape[0], chunk):
             data = flat[start:start + chunk][:, self._row_pixel].astype(float).T
             projected = self._projector @ data
             solution = self._solver.solve(projected)
             coefficients[start:start + chunk] = solution.T
-            weighted = data if self._row_weight is None else data * self._row_weight[:, None]
-            rss = np.sum(data * weighted, axis=0) - np.sum(projected * solution, axis=0)
-            noise[start:start + chunk] = np.sqrt(np.maximum(rss, 0.0) / dof)
+            if with_noise:
+                weighted = (
+                    data if self._row_weight is None
+                    else data * self._row_weight[:, None]
+                )
+                rss = np.sum(data * weighted, axis=0) - np.sum(
+                    projected * solution, axis=0
+                )
+                noise[start:start + chunk] = np.sqrt(np.maximum(rss, 0.0) / dof)
         return coefficients, noise
 
     def _per_focus(self, coefficients: np.ndarray, column: np.ndarray) -> np.ndarray:
@@ -479,6 +487,33 @@ class ExtractionOperator:
             haze=haze,
             noise_sigma=noise,
             coefficients=coefficients,
+        )
+
+    def _fast_result(self, coefficients: np.ndarray) -> ExtractionResult:
+        """The fitted planes Fast needs, without residual/noise diagnostics.
+
+        Mature Fast Gauss solved the same joint normal equations but copied
+        only the per-focus coefficient planes needed for reconstruction.  The
+        unified pipeline initially routed Fast through :meth:`apply`, which
+        also calculates residual noise and retains the complete coefficient
+        matrix.  This lightweight result restores the old execution contract
+        while keeping the exact same estimator.
+
+        ``coefficients`` is intentionally empty: Fast modes that need the raw
+        fitted state (reassignment/pinhole diagnostics) must use the full
+        extraction path instead.
+        """
+        background = haze = None
+        if self._background_column is not None:
+            background = self._per_focus(coefficients, self._background_column)
+        if self._haze_column is not None:
+            haze = self._per_focus(coefficients, self._haze_column)
+        return ExtractionResult(
+            amplitude=self._per_focus(coefficients, self._amplitude_column),
+            background=background,
+            haze=haze,
+            noise_sigma=np.full(coefficients.shape[0], np.nan),
+            coefficients=np.empty((coefficients.shape[0], 0), dtype=float),
         )
 
     def apply(self, frames: np.ndarray, chunk: int = 64) -> ExtractionResult:
@@ -507,6 +542,27 @@ class ExtractionOperator:
                 self._device_executor = DeviceExtractionExecutor(self)
             return self._device_executor.apply(frames)
         return self.apply(frames, chunk=chunk)
+
+    def apply_fast_device(
+        self, frames, device: str = "CPU", chunk: int = 64
+    ) -> ExtractionResult:
+        """Fast joint extraction without residual/noise work or retained state.
+
+        The mathematical solve is identical to :meth:`apply_device`.  Only
+        execution differs: residual/noise estimation is skipped and only the
+        per-focus amplitude/background/haze planes needed by Fast are copied
+        back from the GPU.  This is the execution model used by the mature
+        pre-merge Fast-Gauss path.
+        """
+        choice = str(device or "CPU").strip().lower()
+        if choice not in ("cpu", "gpu"):
+            raise ValueError(f"Unknown extraction device {device!r}")
+        if choice == "gpu" and CUPY_AVAILABLE:
+            if self._device_executor is None:
+                self._device_executor = DeviceExtractionExecutor(self)
+            return self._device_executor.apply_fast(frames)
+        coefficients, _ = self._solve(frames, int(chunk), with_noise=False)
+        return self._fast_result(coefficients)
 
     def footprint_values(
         self, frames: np.ndarray, extracted: ExtractionResult | None = None
@@ -659,6 +715,35 @@ class DeviceExtractionExecutor:
         device_columns = cp.asarray(np.where(have, columns, 0))
         amplitude = coefficients[:, device_columns]
         return cp.where(cp.asarray(have)[None, :], amplitude, 0.0).astype(cp.float32)
+
+    def _per_focus(self, coefficients, columns):
+        if columns is None:
+            return None
+        have = self.operator.valid & (columns >= 0)
+        device_columns = cp.asarray(np.where(have, columns, 0))
+        values = coefficients[:, device_columns]
+        return cp.where(cp.asarray(have)[None, :], values, cp.nan)
+
+    def apply_fast(self, frames) -> ExtractionResult:
+        """Fast host result: selected per-focus planes, no residual/noise.
+
+        The solve still contains all model coefficients on the device, as the
+        joint estimator requires, but the large generic result and residual
+        calculation are avoided.  Only reconstruction coefficient planes are
+        transferred back to the host.
+        """
+        coefficients, _ = self.solve(frames, with_noise=False)
+        amplitude = self._per_focus(coefficients, self.operator._amplitude_column)
+        background = self._per_focus(coefficients, self.operator._background_column)
+        haze = self._per_focus(coefficients, self.operator._haze_column)
+        count = int(coefficients.shape[0])
+        return ExtractionResult(
+            amplitude=cp.asnumpy(amplitude),
+            background=None if background is None else cp.asnumpy(background),
+            haze=None if haze is None else cp.asnumpy(haze),
+            noise_sigma=np.full(count, np.nan),
+            coefficients=np.empty((count, 0), dtype=float),
+        )
 
     def apply(self, frames) -> ExtractionResult:
         """Run on the GPU and copy the solved fit to a normal host result."""

@@ -48,6 +48,7 @@ from .placement import (
     DEFAULT_SMOOTHING,
     Coverage,
     OutputRaster,
+    PlacementPlan,
     PlacedImage,
     commensurability,
     coverage,
@@ -913,12 +914,39 @@ def _shift_factor_to_use(geometry: StackGeometry, scan_index: np.ndarray):
     return _masked_reassignment(choice, geometry, scan_index)
 
 
+def prepare_stack_placement(
+    geometry: StackGeometry, scan_index: np.ndarray
+) -> tuple[PlacementPlan, np.ndarray]:
+    """Prepare the invariant placement mapping of one in-plane scan.
+
+    Timepoints/Z planes of one recording normally traverse the same scan
+    positions.  The unified merger initially rebuilt this mapping for every
+    stack; mature Fast Gauss prepared the equivalent scatter map once.  Keep
+    the generic placement implementation, but make its reusable part explicit.
+    """
+    scan_index = np.asarray(scan_index, dtype=float).reshape(-1, 2)
+    gx, gy = _raster_coordinates(geometry, scan_index)
+    valid = geometry.operator.valid
+    gx, gy = gx[:, valid], gy[:, valid]
+    plan = prepare_placement(
+        gx, gy, geometry.raster.shape,
+        tolerance=geometry.params.commensurate_tolerance,
+        smoothing=geometry.params.smoothing,
+        mode=geometry.params.placement_mode,
+    )
+    focus = np.broadcast_to(np.flatnonzero(valid)[None, :], gx.shape)
+    owner = place_nearest(gx, gy, focus, geometry.raster.shape).image
+    owner = np.where(np.isfinite(owner), owner, -1).astype(np.int64)
+    return plan, owner
+
+
 def reconstruct_stack(
     frames: np.ndarray | None,
     geometry: StackGeometry,
     scan_index: np.ndarray,
     frame_gain: np.ndarray | None = None,
     extracted: ExtractionResult | None = None,
+    prepared_placement: tuple[PlacementPlan, np.ndarray] | None = None,
 ) -> StackReconstruction:
     """Reconstruct one stack: the frames of one scan of the cell.
 
@@ -952,9 +980,7 @@ def reconstruct_stack(
         raise ValueError(
             f"{num_frames} frames but {extracted.amplitude.shape[0]} extracted rows"
         )
-    gx, gy = _raster_coordinates(geometry, scan_index)
     valid = operator.valid
-    gx, gy = gx[:, valid], gy[:, valid]
 
     gain = np.ones(num_frames)
     if frame_gain is not None:
@@ -974,12 +1000,10 @@ def reconstruct_stack(
         if not np.all(np.isfinite(variance)):
             variance = None
 
-    placement_plan = prepare_placement(
-        gx, gy, geometry.raster.shape,
-        tolerance=geometry.params.commensurate_tolerance,
-        smoothing=geometry.params.smoothing,
-        mode=geometry.params.placement_mode,
-    )
+    if prepared_placement is None:
+        placement_plan, owner = prepare_stack_placement(geometry, scan_index)
+    else:
+        placement_plan, owner = prepared_placement
 
     def placed(values: np.ndarray | None, with_variance: bool) -> PlacedImage | None:
         if values is None:
@@ -988,11 +1012,10 @@ def reconstruct_stack(
             values[:, valid], variance=variance if with_variance else None
         )
 
-    focus = np.broadcast_to(np.flatnonzero(valid)[None, :], gx.shape)
-    owner = place_nearest(gx, gy, focus, geometry.raster.shape).image
-    owner = np.where(np.isfinite(owner), owner, -1).astype(np.int64)
     offsets, offset_share = None, None
     if geometry.params.cell_offsets == "seams":
+        gx, gy = _raster_coordinates(geometry, scan_index)
+        gx, gy = gx[:, valid], gy[:, valid]
         cells = place_nearest(gx, gy, amplitudes[:, valid], geometry.raster.shape)
         offsets, offset_share = fit_cell_offsets(
             cells.image, owner, operator.num_foci, return_share=True
@@ -1044,6 +1067,7 @@ def reconstruct_stack(
             amplitude.image, geometry.params.sharpen_sigma_px,
             geometry.params.sharpen_regularization,
         )
+    finite_noise = extracted.noise_sigma[np.isfinite(extracted.noise_sigma)]
     diagnostics = {
         "placement": amplitude.method,
         "shift_factor_used": alpha,
@@ -1051,7 +1075,9 @@ def reconstruct_stack(
         "cell_offset_share": offset_share,
         "max_placement_residual": amplitude.max_residual,
         "holes": int(np.sum(~np.isfinite(amplitude.image))),
-        "noise_sigma_mean": float(np.mean(extracted.noise_sigma)),
+        "noise_sigma_mean": (
+            float(np.mean(finite_noise)) if finite_noise.size else None
+        ),
     }
     return StackReconstruction(
         amplitude=amplitude,
@@ -1112,6 +1138,8 @@ def reconstruct_scan(
     scan_index: np.ndarray | None = None,
     gain_positions: tuple[np.ndarray, np.ndarray] | None = None,
     step_aspect: float | None = None,
+    extracted: ExtractionResult | None = None,
+    prepared_placement: tuple[PlacementPlan, np.ndarray] | None = None,
 ) -> StackReconstruction:
     """Reconstruct the frames of one raster scan, reading all it can from them.
 
@@ -1203,7 +1231,12 @@ def reconstruct_scan(
     # and general lattices.  The returned result is host-readable for the
     # compact calibration/correction steps, while the expensive sparse solve
     # uses the selected device.
-    extracted = operator.apply_device(frames, params.device)
+    if extracted is None:
+        extracted = operator.apply_device(frames, params.device)
+    elif extracted.amplitude.shape[0] != frames.shape[0]:
+        raise ValueError(
+            f"{frames.shape[0]} frames but {extracted.amplitude.shape[0]} extracted rows"
+        )
     amplitude = extracted.amplitude[:, valid]
     gain = None
     if params.frame_gain == "smooth":
@@ -1335,7 +1368,8 @@ def reconstruct_scan(
             diagnostics["shift_factor_spread"] = factor.spread
 
     result = reconstruct_stack(
-        frames, geometry, scan_index, frame_gain=gain, extracted=extracted
+        frames, geometry, scan_index, frame_gain=gain, extracted=extracted,
+        prepared_placement=prepared_placement,
     )
     geometry_diagnostics = dict(geometry.diagnostics)
     geometry_diagnostics.update(

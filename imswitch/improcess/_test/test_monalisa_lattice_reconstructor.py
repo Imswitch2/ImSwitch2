@@ -683,6 +683,72 @@ class TestRecordedScans:
             ratio = _interior(result.data[t, z]) / _interior(result.data[0, 0])
             assert np.median(ratio) == pytest.approx(factor, rel=0.02)
 
+    def test_fast_execution_matches_full_extraction_and_batches_recording(
+        self, monkeypatch
+    ):
+        """Unified Fast restores the mature Fast execution contract only.
+
+        The joint estimator and placed result stay identical; the recording
+        is extracted through the no-noise path once instead of once per T/Z
+        stack, and resolved Fast calibration must not scan every stack for a
+        representative modulation image.
+        """
+        from imswitch.improcess.reconstructors.monalisa.calibration import (
+            PatternLocalization,
+        )
+        from imswitch.improcess.reconstructors.monalisa.extraction import (
+            ExtractionOperator,
+        )
+        import imswitch.improcess.reconstructors.monalisa_lattice.reconstructor as module
+
+        scan = make_scan(steps=(11, 11), background=20.0)
+        frames = _planes(scan, (1.0, 1.1, 0.9, 1.2))
+        loops = [
+            _loop("time", 2), _loop("scan_z", 2, 0.1),
+            _loop("scan_y", 11, 0.07), _loop("scan_x", 11, 0.07),
+        ]
+        localization = PatternLocalization.manual_grid(11.0, 11.0, 4.2, 5.7)
+        common = _params(
+            **PLAIN,
+            background="constant",
+            variance_weighting=False,
+            sharpen=False,
+            spot_sigma_px=2.0,
+            localization_refinement="fast",
+            _pattern_localization=localization.to_dict(),
+        )
+
+        reference = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), {**common, "_fast_execution": False}
+        )
+
+        calls = []
+        original = ExtractionOperator.apply_fast_device
+
+        def counted(self, chunk, device="CPU", **kwargs):
+            calls.append(int(np.asarray(chunk).shape[0]))
+            return original(self, chunk, device, **kwargs)
+
+        monkeypatch.setattr(ExtractionOperator, "apply_fast_device", counted)
+        monkeypatch.setattr(
+            module,
+            "modulation_score",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("resolved Fast calibration must not rank T/Z stacks")
+            ),
+        )
+        fast = MonalisaLatticeReconstructor().process(
+            _recorded(frames, loops), {**common, "_fast_execution": True}
+        )
+
+        np.testing.assert_allclose(fast.data, reference.data, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(
+            fast.background, reference.background, rtol=1e-6, atol=1e-6
+        )
+        assert sum(calls) == frames.shape[0]
+        assert len(calls) == 1  # this synthetic recording is well below 256 MiB
+        assert fast.diagnostics["fast execution"] == "batched amplitude-only extraction"
+
     def test_the_pinhole_stack_follows_the_planes(self):
         wide = make_physical_scan(cells=10, sigma_e=1.2, sigma_d=1.5, seed=3)
         frames = _planes(wide, (1.0, 1.0))

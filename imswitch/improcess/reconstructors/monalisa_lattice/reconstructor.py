@@ -36,12 +36,13 @@ from ..monalisa.pipeline import (
     find_foci,
     needs_modulation_frame,
     prepare_geometry,
+    prepare_stack_placement,
     reconstruct_scan,
     reconstruct_stack,
 )
 from ..monalisa.extraction import ExtractionResult
 from ..monalisa.scan_frame import (
-    ORIENTATIONS, orient_recorded_index, orient_step_columns,
+    ORIENTATIONS, orient_recorded_index, orient_step_columns, raster_scan_index,
 )
 from .params_widget import AUTO, DEFAULT_PARAMS, MonalisaLatticeParamsWidget
 from .result import MonalisaLatticeResult
@@ -52,6 +53,10 @@ if TYPE_CHECKING:
 
 # A pinhole stack is some seventy images of the size of the reconstruction.
 PINHOLE_STACK_LIMIT_BYTES = 8 * 1024**3
+# Keep the mature Fast-Gauss batching policy: transfer roughly 256 MiB of
+# camera frames per extraction call rather than launching one GPU solve per
+# T/Z stack.
+FAST_EXTRACTION_CHUNK_BYTES = 256 * 1024**2
 
 
 @dataclass(frozen=True)
@@ -75,7 +80,7 @@ class _FastPlacementCache:
 
 
 def _fast_placement_eligible(params: dict) -> bool:
-    """Whether placement can be recomputed from retained coefficients alone."""
+    """Whether placement can be recomputed from retained extraction alone."""
     return (
         str(params.get("localization_refinement", "")).lower() == "fast"
         and not bool(params.get("frame_gain", False))
@@ -85,6 +90,125 @@ def _fast_placement_eligible(params: dict) -> bool:
         and not bool(params.get("sharpen", False))
         and not bool(params.get("variance_weighting", False))
     )
+
+
+def _fast_execution_enabled(params: dict, settings: PipelineParams) -> bool:
+    """Whether this job can use the low-overhead Fast execution contract.
+
+    The unified Fast preset keeps reassignment/variance/pinhole diagnostics
+    off.  Intensity and cell-offset corrections remain compatible because
+    both consume only the fitted amplitudes.  A caller has to opt in with the
+    internal ``_fast_execution`` flag so the standalone experimental lattice
+    reconstructor keeps its existing full-diagnostic behaviour.
+    """
+    return (
+        bool(params.get("_fast_execution", False))
+        and str(settings.reassignment) == "off"
+        and not bool(settings.variance_weighting)
+        and str(settings.pinhole_stack) == "off"
+        and settings.sharpen_sigma_px is None
+    )
+
+
+def _fast_calibration_is_resolved(
+    settings: PipelineParams, localization: PatternLocalization | None
+) -> bool:
+    """Whether Fast geometry needs only frame shape, not calibration images."""
+    return (
+        localization is not None
+        and settings.spot_sigma_px is not None
+        and str(settings.background) in ("constant", "none")
+    )
+
+
+def _extract_fast_recording(
+    frames: np.ndarray,
+    operator,
+    device: str,
+    report,
+    check_cancelled,
+) -> ExtractionResult:
+    """Extract one complete recording in large Fast-Gauss-style chunks."""
+    frames = np.asarray(frames)
+    if frames.ndim != 3 or frames.shape[0] == 0:
+        raise ValueError("Fast extraction expects a non-empty frame stack")
+    per_frame = max(int(frames[0].nbytes), 1)
+    chunk_frames = max(1, int(FAST_EXTRACTION_CHUNK_BYTES // per_frame))
+    total = int(frames.shape[0])
+    amplitude = background = haze = None
+    for start in range(0, total, chunk_frames):
+        check_cancelled()
+        stop = min(start + chunk_frames, total)
+        report(
+            "allocate", start, total,
+            f"Extracting Gaussian amplitudes {start + 1}-{stop} of {total}",
+        )
+        part = operator.apply_fast_device(frames[start:stop], device)
+        if amplitude is None:
+            amplitude = np.empty(
+                (total, part.amplitude.shape[1]), dtype=part.amplitude.dtype
+            )
+            if part.background is not None:
+                background = np.empty(
+                    (total, part.background.shape[1]), dtype=part.background.dtype
+                )
+            if part.haze is not None:
+                haze = np.empty((total, part.haze.shape[1]), dtype=part.haze.dtype)
+        elif (background is None) != (part.background is None):
+            raise ValueError("Inconsistent Fast extraction background")
+        elif (haze is None) != (part.haze is None):
+            raise ValueError("Inconsistent Fast extraction haze")
+        amplitude[start:stop] = part.amplitude
+        if background is not None:
+            background[start:stop] = part.background
+        if haze is not None:
+            haze[start:stop] = part.haze
+    report("allocate", total, total, "Gaussian extraction complete")
+    return ExtractionResult(
+        amplitude=amplitude,
+        background=background,
+        haze=haze,
+        noise_sigma=np.full(total, np.nan),
+        coefficients=np.empty((total, 0), dtype=float),
+    )
+
+
+def _fast_stack_order(extracted: ExtractionResult, scan: LayoutScan) -> list[int]:
+    """Put the in-plane stack with most extracted modulation first.
+
+    Mature Fast Gauss chose its orientation from the T/Z plane whose fitted
+    coefficients varied most over the scan.  That is much cheaper than the
+    merged pipeline's raw-frame modulation pass and keeps Auto orientation
+    away from an empty/defocused first plane.
+    """
+    if scan.num_stacks == 1:
+        return [0]
+    scores = []
+    for stack in range(scan.num_stacks):
+        values = np.asarray(extracted.amplitude[scan.frames_of(stack)], dtype=float)
+        variance = np.nanvar(values, axis=0)
+        finite = variance[np.isfinite(variance)]
+        scores.append(float(np.mean(finite)) if finite.size else -np.inf)
+    first = int(np.argmax(scores))
+    return [first] + [stack for stack in range(scan.num_stacks) if stack != first]
+
+
+def _fast_contiguous_stack_order(
+    extracted: ExtractionResult, num_stacks: int, frames_per_stack: int
+) -> list[int]:
+    """Equivalent Fast ordering for legacy contiguous raster stacks."""
+    if num_stacks <= 1:
+        return [0]
+    scores = []
+    for stack in range(num_stacks):
+        start = stack * frames_per_stack
+        stop = start + frames_per_stack
+        values = np.asarray(extracted.amplitude[start:stop], dtype=float)
+        variance = np.nanvar(values, axis=0)
+        finite = variance[np.isfinite(variance)]
+        scores.append(float(np.mean(finite)) if finite.size else -np.inf)
+    first = int(np.argmax(scores))
+    return [first] + [stack for stack in range(num_stacks) if stack != first]
 
 
 def _recorded_output_scale(scan: LayoutScan, geometry: StackGeometry, orientation: str, pixel_nm: float):
@@ -367,6 +491,11 @@ class MonalisaLatticeReconstructor(Reconstructor):
         supplied_localization = params.get("_pattern_localization")
         if isinstance(supplied_localization, dict):
             supplied_localization = PatternLocalization.from_dict(supplied_localization)
+        fast_execution = _fast_execution_enabled(params, settings)
+        fast_calibration_resolved = (
+            fast_execution
+            and _fast_calibration_is_resolved(settings, supplied_localization)
+        )
         reuse_localization = bool(params.get("reuse_localization", False))
         reference_source = None
         geometry = None
@@ -379,6 +508,35 @@ class MonalisaLatticeReconstructor(Reconstructor):
         shape = (scan.num_fast, scan.num_slow)
         per_stack = scan.frames_per_stack
 
+        # In the normal unified Fast workflow localization and FWHM have
+        # already been resolved by the asynchronous localization step.  Build
+        # the operator from those values before reconstruction so all T/Z
+        # frames can share one batched extraction, as pre-merge Fast did.
+        if geometry is None and fast_calibration_resolved:
+            initial_orientation = orientation or "+x+y"
+            first_index = raster_scan_index(
+                scan.num_fast, scan.num_slow, initial_orientation
+            )
+            geometry = prepare_geometry(
+                frames[0], step, first_index, settings,
+                localization=supplied_localization,
+                modulation_frame=None,
+            )
+
+        fast_extracted = None
+        if fast_execution and geometry is not None:
+            fast_extracted = _extract_fast_recording(
+                frames, geometry.operator, settings.device, report, check_cancelled
+            )
+
+        order = (
+            _fast_contiguous_stack_order(
+                fast_extracted, scan.num_stacks, per_stack
+            )
+            if fast_extracted is not None and fast_calibration_resolved
+            else list(range(scan.num_stacks))
+        )
+
         check_cancelled()
         report(
             "align", 0, 1,
@@ -386,20 +544,34 @@ class MonalisaLatticeReconstructor(Reconstructor):
             if reuse_localization else
             "Finding the lattice and the orientation of the scan",
         )
-        results = []
-        for index in range(scan.num_stacks):
+        results = {}
+        shared_placement = None
+        for number, index in enumerate(order):
             check_cancelled()
-            report("assemble", index, scan.num_stacks,
-                   f"Reconstructing scan {index + 1} of {scan.num_stacks}")
+            report("assemble", number, scan.num_stacks,
+                   f"Reconstructing scan {number + 1} of {scan.num_stacks}")
             stack = frames[index * per_stack:(index + 1) * per_stack]
+            extracted = (
+                fast_extracted.sliced(
+                    slice(index * per_stack, (index + 1) * per_stack)
+                )
+                if fast_extracted is not None else None
+            )
             result = reconstruct_scan(
                 stack, step, shape, settings,
                 orientation=orientation, geometry=geometry,
                 localization=supplied_localization if geometry is None else None,
+                extracted=extracted,
+                prepared_placement=shared_placement,
             )
-            if index == 0:
+            if number == 0:
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
+                if fast_execution:
+                    shared_placement = prepare_stack_placement(
+                        geometry,
+                        raster_scan_index(scan.num_fast, scan.num_slow, orientation),
+                    )
                 self._check_pinhole_stack(result, scan.num_stacks)
                 if (
                     not reuse_localization
@@ -408,10 +580,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
                     self._remember_geometry(
                         geometry, orientation, frames, data_obj.name
                     )
-            results.append(result)
+            results[int(index)] = result
         report("finalize", 0, 1, "Assembling the result")
 
-        first = results[0]
+        first = results[int(order[0])]
         step_px = np.asarray(geometry.step, dtype=float)
         pitch_px = float(np.sqrt(abs(np.linalg.det(step_px))))
         camera_pixel_nm = pixel_nm if pixel_nm > 0 else (
@@ -443,7 +615,7 @@ class MonalisaLatticeReconstructor(Reconstructor):
             self._logger.info(f"{data_obj.name}: {key}: {value}")
 
         def planes(pick):
-            images = [pick(result) for result in results]
+            images = [pick(results[index]) for index in range(scan.num_stacks)]
             if any(image is None for image in images):
                 return None
             return np.nan_to_num(np.stack(images)).astype(np.float32)
@@ -452,7 +624,10 @@ class MonalisaLatticeReconstructor(Reconstructor):
         offsets = None
         if first.pinholes is not None:
             pinholes = np.nan_to_num(
-                np.stack([result.pinholes.images for result in results])
+                np.stack([
+                    results[index].pinholes.images
+                    for index in range(scan.num_stacks)
+                ])
             )
             if scan.num_stacks == 1:
                 pinholes = pinholes[0]
@@ -521,6 +696,11 @@ class MonalisaLatticeReconstructor(Reconstructor):
         supplied_localization = params.get("_pattern_localization")
         if isinstance(supplied_localization, dict):
             supplied_localization = PatternLocalization.from_dict(supplied_localization)
+        fast_execution = _fast_execution_enabled(params, settings)
+        fast_calibration_resolved = (
+            fast_execution
+            and _fast_calibration_is_resolved(settings, supplied_localization)
+        )
         notes = {}
         if len(scan.scanned_axes) == 1:
             # Reassignment is still useful along the sampled lateral axis.
@@ -535,8 +715,12 @@ class MonalisaLatticeReconstructor(Reconstructor):
         reference_source = None
 
         check_cancelled()
-        order = self._stack_order(frames, scan)
-        if scan.num_stacks > 1:
+        order = (
+            list(range(scan.num_stacks))
+            if fast_calibration_resolved
+            else self._stack_order(frames, scan)
+        )
+        if scan.num_stacks > 1 and not fast_calibration_resolved:
             notes["calibration stack"] = (
                 f"{order[0] + 1}/{scan.num_stacks} (highest in-plane modulation)"
             )
@@ -557,11 +741,18 @@ class MonalisaLatticeReconstructor(Reconstructor):
             # reconstruction, so use that same representative scan here.
             calibration_indices = scan.frames_of(order[0])
             calibration_frames = frames[calibration_indices]
-            mean_frame = calibration_frames.mean(axis=0, dtype=np.float64)
-            modulation_frame = (
-                calibration_frames.var(axis=0, dtype=np.float64)
-                if needs_modulation_frame(settings) else None
-            )
+            if fast_calibration_resolved:
+                # Supplied localization + supplied FWHM + constant/no
+                # background needs only the detector shape.  Avoid a full
+                # stack mean/variance before the Fast solve.
+                mean_frame = calibration_frames[0]
+                modulation_frame = None
+            else:
+                mean_frame = calibration_frames.mean(axis=0, dtype=np.float64)
+                modulation_frame = (
+                    calibration_frames.var(axis=0, dtype=np.float64)
+                    if needs_modulation_frame(settings) else None
+                )
             geometry = prepare_geometry(
                 mean_frame, step, scan.index[calibration_indices], settings,
                 localization=supplied_localization,
@@ -569,24 +760,59 @@ class MonalisaLatticeReconstructor(Reconstructor):
             )
         shape = scan.in_plane_shape
 
+        fast_extracted = None
+        if fast_execution:
+            fast_extracted = _extract_fast_recording(
+                frames, geometry.operator, settings.device, report, check_cancelled
+            )
+            notes["fast execution"] = "batched amplitude-only extraction"
+            if fast_calibration_resolved:
+                order = _fast_stack_order(fast_extracted, scan)
+                if scan.num_stacks > 1:
+                    notes["orientation stack"] = (
+                        f"{order[0] + 1}/{scan.num_stacks} "
+                        "(highest extracted modulation; no raw-frame pre-pass)"
+                    )
+
         results = {}
+        shared_placement = None
+        shared_stage_index = None
         for number, stack in enumerate(order):
             check_cancelled()
             report("assemble", number, scan.num_stacks,
                    f"Reconstructing plane {number + 1} of {scan.num_stacks}")
             chosen = scan.frames_of(stack)
+            stage_index = np.asarray(scan.index[chosen], dtype=int)
+            prepared_placement = (
+                shared_placement
+                if shared_placement is not None
+                and shared_stage_index is not None
+                and np.array_equal(stage_index, shared_stage_index)
+                else None
+            )
             result = reconstruct_scan(
                 frames[chosen], step, shape, settings,
                 orientation=orientation, geometry=geometry,
-                scan_index=scan.index[chosen],
+                scan_index=stage_index,
                 gain_positions=scan.gain_positions(stack),
                 step_aspect=step_aspect,
+                extracted=(
+                    fast_extracted.sliced(chosen)
+                    if fast_extracted is not None else None
+                ),
+                prepared_placement=prepared_placement,
             )
             if number == 0:
                 # The first stack's raster, mapping and shift factor serve
                 # the rest: one recording, one geometry.
                 geometry = result.geometry
                 orientation = result.diagnostics["orientation"]
+                if fast_execution:
+                    camera_index = orient_recorded_index(stage_index, orientation)
+                    shared_placement = prepare_stack_placement(
+                        geometry, camera_index
+                    )
+                    shared_stage_index = stage_index.copy()
                 self._check_pinhole_stack(result, scan.num_stacks)
                 if (
                     not reuse_localization

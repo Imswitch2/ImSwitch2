@@ -25,7 +25,8 @@ from .params import (
     LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL,
-    PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE, PRESET_LEGACY, PRESETS,
+    PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
+    PRESET_FAST, PRESET_LEGACY, PRESETS,
     SPOT_AUTO, SPOT_MANUAL, default_params as unified_default_params,
 )
 from .pipeline import PipelineParams, find_localization, needs_modulation_frame
@@ -608,6 +609,11 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         lattice_params = {
             **MonalisaLatticeReconstructor.default_params(),
+            # Internal execution hint: preserve the unified mathematical
+            # pipeline, but let the compatibility wrapper use the dedicated
+            # low-overhead Fast execution strategy when the user selected
+            # Fast.  Robust/Custom keep the full diagnostic extraction path.
+            "_fast_execution": str(merged.get("preset", PRESET_FAST)) == PRESET_FAST,
             "scan_steps_fast": int(merged.get("scan_steps_fast", 0)),
             "scan_steps_slow": int(merged.get("scan_steps_slow", 0)),
             "scan_step_nm": float(merged.get("scan_step_nm", 0.0)),
