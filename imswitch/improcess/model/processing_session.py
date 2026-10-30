@@ -87,6 +87,13 @@ class SessionDataset:
     primary_dataset: str | None
     source_refs: list[SourceRef] = field(default_factory=list)
     planned_timepoints: int | None = None
+    # Lightweight source metadata used by the Session list.  These are derived
+    # from array headers/layout metadata and never require materialising pixels.
+    scan_label: str = ""
+    decoded_bytes: int | None = None
+    # A raw source may deliberately be removed while kept reconstructions stay
+    # in the Session.  Such entries are restored from the manifest on refresh.
+    raw_deleted: bool = False
     saved_reconstructions: list[SavedReconstruction] = field(default_factory=list)
 
     @property
@@ -137,7 +144,7 @@ class SessionDataset:
 class ProcessingSession:
     """Persistent catalog of raw acquisitions and saved reconstructions."""
 
-    schema = 1
+    schema = 2
 
     def __init__(self, raw_root: str | Path, results_root: str | Path):
         self.raw_root = Path(raw_root).expanduser().resolve()
@@ -154,8 +161,14 @@ class ProcessingSession:
 
     def refresh(self) -> None:
         """Rebuild the lightweight catalog without materialising image pixels."""
-        remembered_final = self._read_final_paths()
+        payload = self._read_manifest_payload()
+        remembered_final = self._final_paths_from_payload(payload)
+        remembered_deleted = self._deleted_datasets_from_payload(payload)
         self.datasets = self._discover_raw_datasets()
+        discovered_ids = {dataset.id for dataset in self.datasets}
+        self.datasets.extend(
+            dataset for dataset in remembered_deleted if dataset.id not in discovered_ids
+        )
         self._discover_saved_reconstructions(remembered_final)
         self.save_manifest()
 
@@ -163,11 +176,23 @@ class ProcessingSession:
         if not self.raw_root.exists():
             return []
         out: list[Path] = []
+
+        def excluded(path: Path) -> bool:
+            try:
+                path.resolve().relative_to(self.results_root)
+                return True
+            except (ValueError, OSError):
+                return False
+
         try:
             entries = sorted(self.raw_root.iterdir(), key=lambda p: p.name.lower())
         except OSError:
             return []
         for entry in entries:
+            # Results now default to <raw>/results.  Never rediscover saved
+            # HDF5/Zarr reconstructions as raw acquisitions.
+            if excluded(entry):
+                continue
             if _is_supported_raw(entry):
                 out.append(entry)
                 continue
@@ -177,11 +202,61 @@ class ProcessingSession:
             if entry.is_dir():
                 try:
                     for child in sorted(entry.iterdir(), key=lambda p: p.name.lower()):
+                        if excluded(child):
+                            continue
                         if _is_supported_raw(child):
                             out.append(child)
                 except OSError:
                     continue
         return out
+
+    @staticmethod
+    def _scan_label_from_layout(resolved) -> str:
+        try:
+            loops = tuple(resolved.layout.event_loops)
+        except Exception:
+            return ""
+        kinds = {str(loop.kind) for loop in loops if int(getattr(loop, "count", 1) or 1) > 1}
+        axes = {axis for axis in ("x", "y", "z") if f"scan_{axis}" in kinds}
+        if axes == {"x", "y", "z"}:
+            return "3D"
+        if axes == {"x", "y"}:
+            return "2D"
+        if axes == {"y", "z"}:
+            return "YZ"
+        if axes == {"x", "z"}:
+            return "XZ"
+        if axes == {"z"}:
+            return "Z"
+        if axes == {"y"}:
+            return "Y"
+        if axes == {"x"}:
+            return "X"
+        return ""
+
+    @classmethod
+    def _source_metadata(
+        cls, path: Path, dataset_name: str | None, *, timepoints: int | None = None
+    ) -> tuple[str, int | None]:
+        """Read compact scan semantics/decoded size without loading image pixels."""
+        data_obj = DataObj(path.name, dataset_name, path=str(path))
+        try:
+            data_obj.checkAndOpenData()
+            decoded = data_obj.decodedBytes()
+            if decoded is not None and timepoints and timepoints > 1:
+                decoded *= int(timepoints)
+            try:
+                scan_label = cls._scan_label_from_layout(data_obj.acquisition_layout)
+            except Exception:
+                scan_label = ""
+            return scan_label, decoded
+        except Exception:
+            return "", None
+        finally:
+            try:
+                data_obj.checkAndUnloadData()
+            except Exception:
+                pass
 
     def _discover_raw_datasets(self) -> list[SessionDataset]:
         datasets: list[SessionDataset] = []
@@ -221,6 +296,11 @@ class ProcessingSession:
                     label = str(lapse.name)
                     if lapse.anchor_detector and lapse.anchor_detector not in label:
                         label = f"{label} · {lapse.anchor_detector}"
+                    scan_label, decoded_bytes = self._source_metadata(
+                        Path(lapse.anchor.path),
+                        lapse.anchor.dataset,
+                        timepoints=int(lapse.planned_count),
+                    )
                     datasets.append(SessionDataset(
                         id=_stable_id(logical),
                         label=label,
@@ -229,6 +309,8 @@ class ProcessingSession:
                         primary_dataset=lapse.anchor.dataset,
                         source_refs=refs,
                         planned_timepoints=int(lapse.planned_count),
+                        scan_label=scan_label,
+                        decoded_bytes=decoded_bytes,
                     ))
                     continue
 
@@ -237,6 +319,7 @@ class ProcessingSession:
                     continue
                 seen_logical.add(logical)
                 label = path.name if len(names) == 1 else f"{path.name}::{dataset_name}"
+                scan_label, decoded_bytes = self._source_metadata(path, str(dataset_name))
                 datasets.append(SessionDataset(
                     id=_stable_id(logical),
                     label=label,
@@ -244,6 +327,8 @@ class ProcessingSession:
                     primary_path=str(path),
                     primary_dataset=str(dataset_name),
                     source_refs=[SourceRef(str(path), str(dataset_name))],
+                    scan_label=scan_label,
+                    decoded_bytes=decoded_bytes,
                 ))
 
         return datasets
@@ -479,13 +564,16 @@ class ProcessingSession:
     # manifest
     # ------------------------------------------------------------------
 
-    def _read_final_paths(self) -> set[str]:
+    def _read_manifest_payload(self) -> dict:
         if not self.manifest_path.exists():
-            return set()
+            return {}
         try:
             payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return set()
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _final_paths_from_payload(self, payload: dict) -> set[str]:
         paths: set[str] = set()
         for dataset in payload.get("datasets", []) if isinstance(payload, dict) else []:
             for result in dataset.get("saved_reconstructions", []) if isinstance(dataset, dict) else []:
@@ -495,6 +583,53 @@ class ProcessingSession:
                         path = self.results_root / path
                     paths.add(_norm_path(path))
         return paths
+
+    def _deleted_datasets_from_payload(self, payload: dict) -> list[SessionDataset]:
+        out: list[SessionDataset] = []
+        for entry in payload.get("datasets", []) if isinstance(payload, dict) else []:
+            if not isinstance(entry, dict) or not entry.get("raw_deleted"):
+                continue
+            try:
+                refs = [
+                    SourceRef(str(ref.get("path", "")), ref.get("dataset"))
+                    for ref in entry.get("source_refs", [])
+                    if isinstance(ref, dict) and ref.get("path")
+                ]
+                out.append(SessionDataset(
+                    id=str(entry["id"]),
+                    label=str(entry.get("label") or "deleted raw data"),
+                    kind=str(entry.get("kind") or "scan"),
+                    primary_path=str(entry.get("primary_path") or (refs[0].path if refs else "")),
+                    primary_dataset=entry.get("primary_dataset"),
+                    source_refs=refs,
+                    planned_timepoints=entry.get("planned_timepoints"),
+                    scan_label=str(entry.get("scan_label") or ""),
+                    decoded_bytes=entry.get("decoded_bytes"),
+                    raw_deleted=True,
+                ))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def mark_raw_deleted(self, dataset_ids: Iterable[str]) -> None:
+        wanted = {str(item) for item in dataset_ids}
+        for dataset in self.datasets:
+            if dataset.id in wanted:
+                dataset.raw_deleted = True
+        self.save_manifest()
+
+    def forget_datasets(self, dataset_ids: Iterable[str]) -> None:
+        wanted = {str(item) for item in dataset_ids}
+        self.datasets = [dataset for dataset in self.datasets if dataset.id not in wanted]
+        self.save_manifest()
+
+    @property
+    def trash_root(self) -> Path:
+        return self.results_root / ".trash"
+
+    def empty_trash(self) -> None:
+        if self.trash_root.exists():
+            shutil.rmtree(self.trash_root)
 
     def save_manifest(self) -> None:
         self.results_root.mkdir(parents=True, exist_ok=True)

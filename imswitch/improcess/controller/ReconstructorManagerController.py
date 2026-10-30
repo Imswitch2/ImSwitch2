@@ -212,6 +212,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # It is allowed to finish in its worker thread, but its result is no
         # longer eligible to mutate the UI/session state.
         self._invalidate_localization_requests()
+
+        if data_obj is None:
+            # Clearing a deleted current source must not make a None object look
+            # like a generic image source and silently switch reconstructors.
+            self._publishReconstructorChoices()
+            return
+
         active = self._main._activeReconstructor
         if active is None or not self._accepts_current_source(active):
             compatible = [

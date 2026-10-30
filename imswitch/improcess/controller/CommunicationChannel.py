@@ -52,7 +52,7 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: FileIOController, MultiDataFrameController
     Listeners: DataFrameController, ImProcessMainViewController,
-        MetadataController, MultiDataFrameController
+        MetadataController, MultiDataFrameController, ProcessingSessionController
     """
 
     sigScanParamsUpdated = Signal(object, bool)

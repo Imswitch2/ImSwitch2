@@ -128,6 +128,8 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._currentDataObj = dataObj
 
         self.reconstructorManager.currentDataChanged(dataObj)
+        if dataObj is None:
+            return
 
         # Load reconstructor parameters from dataset metadata (best-effort).
         if (

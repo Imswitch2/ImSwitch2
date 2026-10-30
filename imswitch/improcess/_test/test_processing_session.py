@@ -323,3 +323,45 @@ def test_session_reconstruction_name_uses_preset_and_tooltip_uses_provenance(tmp
     assert "FWHM: 210 nm" in saved.tooltip
     assert "Reassignment: off" in saved.tooltip
     assert "Localization: Auto" in saved.tooltip
+
+
+def test_results_subfolder_is_excluded_from_raw_discovery(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = raw_root / "results"
+    _h5_image(raw_root / "scan01.h5")
+    _h5_image(results / "looks_like_raw.h5")
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+
+    assert [dataset.label for dataset in session.datasets] == ["scan01.h5"]
+
+
+def test_deleted_raw_dataset_can_remain_as_session_tombstone(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = raw_root / "results"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+    saved = _saved_reconstruction(raw_path, results, "full")
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+    dataset_id = session.datasets[0].id
+    session.mark_raw_deleted([dataset_id])
+    raw_path.unlink()
+
+    session.refresh()
+
+    assert len(session.datasets) == 1
+    dataset = session.datasets[0]
+    assert dataset.id == dataset_id
+    assert dataset.raw_deleted is True
+    assert dataset.status == "final"
+    assert [Path(item.path) for item in dataset.saved_reconstructions] == [saved]
+
+
+def test_source_metadata_reports_decoded_size_without_materializing(tmp_path):
+    raw_path = _h5_image(tmp_path / "scan01.h5")
+
+    _scan_label, decoded = ProcessingSession._source_metadata(raw_path, "Camera")
+
+    assert decoded == 2 * 4 * 5 * np.dtype(np.uint16).itemsize

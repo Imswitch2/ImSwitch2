@@ -571,6 +571,46 @@ class FileIOController(ImProcessWidgetController):
             self._commChannel.sigCurrentDataChanged.emit(self._main._currentDataObj)
             self._widget.raiseCurrentDataDock()
 
+    def releasePaths(self, paths) -> None:
+        """Release current/MultiData handles for sources about to be deleted.
+
+        Session raw-data management uses this before moving HDF5/Zarr stores
+        to the OS recycle bin.  In particular this avoids Windows refusing a
+        move because h5py still owns an open file handle.
+        """
+        wanted = {
+            os.path.normcase(os.path.abspath(str(path)))
+            for path in paths
+            if path
+        }
+        if not wanted:
+            return
+
+        current = getattr(self._main, '_currentDataObj', None)
+        current_path = getattr(current, 'dataPath', None) if current is not None else None
+        if current_path and os.path.normcase(os.path.abspath(str(current_path))) in wanted:
+            try:
+                current.checkAndUnloadData()
+            except Exception:
+                self._logger.debug('Could not unload current data before deletion', exc_info=True)
+            self._main._currentDataObj = None
+            self._commChannel.sigCurrentDataChanged.emit(None)
+
+        multi = getattr(self, 'multiDataFrameController', None)
+        widget = getattr(multi, '_widget', None)
+        if widget is not None:
+            for data_obj in list(widget.getAllDataObjs()):
+                path = getattr(data_obj, 'dataPath', None)
+                if not path or os.path.normcase(os.path.abspath(str(path))) not in wanted:
+                    continue
+                try:
+                    data_obj.checkAndUnloadData()
+                except Exception:
+                    self._logger.debug('Could not unload MultiData source before deletion', exc_info=True)
+                widget.delDataByDataObj(data_obj)
+            if multi is not None:
+                multi.updateInfo()
+
     def dataFolderChanged(self, dataFolder):
         self._dataFolder = dataFolder
 

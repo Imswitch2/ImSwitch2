@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -109,11 +110,11 @@ class _CollapsibleSection(QtWidgets.QWidget):
 
 
 class _CompactDatasetTree(QtWidgets.QTreeWidget):
-    """Compact two-column raw-data list with a shrinkable filename column."""
+    """Compact raw-data table: filename, acquisition info, recon state, panel presence."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(2)
+        self.setColumnCount(4)
         self.setHeaderHidden(True)
         self.setRootIsDecorated(False)
         self.setItemsExpandable(False)
@@ -132,7 +133,12 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
-        header.resizeSection(1, 132)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
+        header.resizeSection(1, 118)
+        header.resizeSection(2, 92)
+        header.resizeSection(3, 24)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
@@ -282,158 +288,343 @@ class _ReconstructionReviewTree(QtWidgets.QTreeWidget):
         self.blockSignals(False)
 
 
-class ProcessingSessionFrame(QtWidgets.QFrame):
-    """Prototype Session UI kept deliberately separate from Directory watcher."""
+class _SessionConfigurationDialog(QtWidgets.QDialog):
+    """Configure a Session before starting/resuming it."""
 
-    sigOpenSession = QtCore.Signal()
+    def __init__(
+        self,
+        *,
+        raw_root: str = "",
+        results_root: str = "",
+        auto_save: bool = True,
+        save_format: str = "tiff",
+        active_raw_root: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Session configuration")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self._activeRawRoot = str(active_raw_root or "")
+
+        root = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QGridLayout()
+        form.setColumnStretch(1, 1)
+
+        self.rawEdit = QtWidgets.QLineEdit(str(raw_root or ""))
+        self.rawEdit.setReadOnly(True)
+        self.rawBrowse = QtWidgets.QPushButton("Browse…")
+        self.resultsEdit = QtWidgets.QLineEdit(str(results_root or ""))
+        self.resultsEdit.setReadOnly(True)
+        self.resultsBrowse = QtWidgets.QPushButton("Browse…")
+        form.addWidget(QtWidgets.QLabel("Raw data"), 0, 0)
+        form.addWidget(self.rawEdit, 0, 1)
+        form.addWidget(self.rawBrowse, 0, 2)
+        form.addWidget(QtWidgets.QLabel("Results"), 1, 0)
+        form.addWidget(self.resultsEdit, 1, 1)
+        form.addWidget(self.resultsBrowse, 1, 2)
+        root.addLayout(form)
+
+        options = QtWidgets.QHBoxLayout()
+        self.autoSaveCheck = QtWidgets.QCheckBox("Auto-save new reconstructions")
+        self.autoSaveCheck.setChecked(bool(auto_save))
+        self.formatCombo = QtWidgets.QComboBox()
+        self.formatCombo.addItem("OME-TIFF", "tiff")
+        self.formatCombo.addItem("HDF5", "hdf5")
+        self.formatCombo.addItem("OME-Zarr", "zarr")
+        wanted = self.formatCombo.findData(str(save_format or "tiff"))
+        self.formatCombo.setCurrentIndex(max(0, wanted))
+        options.addWidget(self.autoSaveCheck)
+        options.addStretch(1)
+        options.addWidget(QtWidgets.QLabel("Result format"))
+        options.addWidget(self.formatCombo)
+        root.addLayout(options)
+
+        self.infoLabel = QtWidgets.QLabel()
+        self.infoLabel.setWordWrap(True)
+        root.addWidget(self.infoLabel)
+
+        self.resumeOptions = QtWidgets.QWidget()
+        resume_layout = QtWidgets.QHBoxLayout(self.resumeOptions)
+        resume_layout.setContentsMargins(0, 0, 0, 0)
+        resume_layout.addWidget(QtWidgets.QLabel("On resume"))
+        self.resumeReconCombo = QtWidgets.QComboBox()
+        self.resumeReconCombo.addItem("Don't add reconstructions", "none")
+        self.resumeReconCombo.addItem("Add final reconstructions", "final")
+        self.resumeReconCombo.addItem("Add all saved reconstructions", "all")
+        resume_layout.addWidget(self.resumeReconCombo, 1)
+        self.resumeOptions.setVisible(False)
+        root.addWidget(self.resumeOptions)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Cancel)
+        self.primaryBtn = buttons.addButton("Start session", QtWidgets.QDialogButtonBox.AcceptRole)
+        self.primaryBtn.clicked.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        self.rawBrowse.clicked.connect(self._browseRaw)
+        self.resultsBrowse.clicked.connect(self._browseResults)
+        self._updateState()
+
+    @staticmethod
+    def _start_dir(text: str) -> str:
+        path = Path(str(text or "")).expanduser()
+        while str(path) and not path.is_dir():
+            parent = path.parent
+            if parent == path:
+                break
+            path = parent
+        return str(path if path.is_dir() else Path.home())
+
+    def _browseRaw(self) -> None:
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Choose raw-data folder", self._start_dir(self.rawEdit.text())
+        )
+        if not folder:
+            return
+        previous = self.rawEdit.text().strip()
+        self.rawEdit.setText(folder)
+        # Raw root defines Session identity: an actual raw-folder change resets
+        # the result root to the new Session-local default. Re-selecting the
+        # same folder while editing settings keeps a custom results location.
+        try:
+            changed = Path(previous).resolve() != Path(folder).resolve() if previous else True
+        except Exception:
+            changed = previous != folder
+        if changed:
+            self.resultsEdit.setText(str(Path(folder) / "results"))
+        self._updateState()
+
+    def _browseResults(self) -> None:
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Choose reconstruction-results folder",
+            self._start_dir(self.resultsEdit.text() or self.rawEdit.text()),
+        )
+        if folder:
+            self.resultsEdit.setText(folder)
+            self._updateState()
+
+    @staticmethod
+    def _manifest_counts(manifest: Path) -> tuple[int, int, int]:
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return 0, 0, 0
+        datasets = payload.get("datasets", []) if isinstance(payload, dict) else []
+        dataset_count = 0
+        final_count = 0
+        saved_count = 0
+        for dataset in datasets if isinstance(datasets, list) else []:
+            if not isinstance(dataset, dict):
+                continue
+            dataset_count += 1
+            results = dataset.get("saved_reconstructions", [])
+            for result in results if isinstance(results, list) else []:
+                if not isinstance(result, dict):
+                    continue
+                saved_count += 1
+                if bool(result.get("final")):
+                    final_count += 1
+        return dataset_count, final_count, saved_count
+
+    def _updateState(self) -> None:
+        raw = Path(self.rawEdit.text()).expanduser() if self.rawEdit.text() else None
+        results = Path(self.resultsEdit.text()).expanduser() if self.resultsEdit.text() else None
+        manifest = results / "session.improcess.json" if results else None
+        active_same = bool(
+            raw
+            and self._activeRawRoot
+            and str(raw.resolve()) == str(Path(self._activeRawRoot).expanduser().resolve())
+        )
+        if manifest is not None and manifest.exists():
+            self.primaryBtn.setText("Resume session" if not active_same else "Apply")
+            dataset_count, final_count, saved_count = self._manifest_counts(manifest)
+            candidate_count = max(0, saved_count - final_count)
+            dataset_word = "datasets" if dataset_count != 1 else "dataset"
+            final_word = "reconstructions" if final_count != 1 else "reconstruction"
+            details = (
+                f"Existing Session found · {dataset_count} {dataset_word} · "
+                f"{final_count} final {final_word}"
+            )
+            if candidate_count:
+                candidate_word = "candidates" if candidate_count != 1 else "candidate"
+                details += f" · {candidate_count} additional saved {candidate_word}"
+            self.infoLabel.setText(details)
+            self.resumeOptions.setVisible(not active_same and bool(saved_count))
+            final_text = (
+                f"Add final reconstructions ({final_count})"
+                if final_count
+                else "Add final reconstructions"
+            )
+            self.resumeReconCombo.setItemText(1, final_text)
+            final_item = self.resumeReconCombo.model().item(1)
+            if final_item is not None:
+                final_item.setEnabled(bool(final_count))
+            all_text = (
+                f"Add all saved reconstructions ({saved_count})"
+                if saved_count
+                else "Add all saved reconstructions"
+            )
+            self.resumeReconCombo.setItemText(2, all_text)
+            if not final_count and self.resumeReconCombo.currentData() == "final":
+                self.resumeReconCombo.setCurrentIndex(0)
+        elif active_same:
+            self.primaryBtn.setText("Apply")
+            self.infoLabel.setText("Update settings for the active Session.")
+            self.resumeOptions.setVisible(False)
+        else:
+            self.primaryBtn.setText("Start session")
+            self.infoLabel.setText("")
+            self.resumeOptions.setVisible(False)
+        self.primaryBtn.setEnabled(bool(raw and raw.is_dir() and results))
+
+    def configuration(self) -> dict:
+        return {
+            "raw_root": self.rawEdit.text().strip(),
+            "results_root": self.resultsEdit.text().strip(),
+            "auto_save": bool(self.autoSaveCheck.isChecked()),
+            "save_format": str(self.formatCombo.currentData() or "tiff"),
+            # ``configuration()`` is read after ``exec()`` returns.  At that
+            # point the dialog itself is hidden, so QWidget.isVisible() is
+            # false for every child even when the resume controls were active.
+            # Use the widget's explicit hidden state instead.
+            "restore_mode": str(self.resumeReconCombo.currentData() or "none")
+            if not self.resumeOptions.isHidden()
+            else "none",
+        }
+
+
+
+class ProcessingSessionFrame(QtWidgets.QFrame):
+    """Persistent Session UI, deliberately separate from Directory watcher."""
+
+    sigStartSessionRequested = QtCore.Signal()
+    sigSettingsRequested = QtCore.Signal()
     sigRefresh = QtCore.Signal()
     sigDatasetSelectionChanged = QtCore.Signal(object)
     sigSavedSelectionChanged = QtCore.Signal(object)
     sigLoadRawRequested = QtCore.Signal()
+    sigLoadSelectedAsMultiDataRequested = QtCore.Signal()
+    sigRevealRawRequested = QtCore.Signal()
+    sigCopyRawPathRequested = QtCore.Signal()
+    sigDeleteRawRequested = QtCore.Signal()
     sigReconstructionFinalToggleRequested = QtCore.Signal(object)
     sigReconstructionWorkspaceToggleRequested = QtCore.Signal(object)
     sigDiscardSelectedRequested = QtCore.Signal()
     sigDiscardCandidatesRequested = QtCore.Signal()
-    sigAutoSaveChanged = QtCore.Signal(bool)
-    sigSaveFormatChanged = QtCore.Signal(str)
+    sigAddSelectedReconstructionsRequested = QtCore.Signal(object)
+    sigCloseSelectedDatasetReconstructionsRequested = QtCore.Signal()
+    sigFollowActiveReconstructionChanged = QtCore.Signal(bool)
+    sigCancelAddingRequested = QtCore.Signal()
+    sigCloseSessionReconstructionsRequested = QtCore.Signal()
+    sigCleanUpSessionRequested = QtCore.Signal()
+    sigEmptyTrashRequested = QtCore.Signal()
+    sigRevealRawFolderRequested = QtCore.Signal()
+    sigRevealResultsFolderRequested = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setMinimumWidth(0)
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.Ignored,
-            QtWidgets.QSizePolicy.Expanding,
-        )
+        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
+        self._datasetEntries: list[dict] = []
+        self._sessionActive = False
 
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
-        # Keep the everyday Session chrome to one compact row. Setup is opened
-        # on demand from the gear button and collapses automatically once a
-        # Session is active.
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(4)
-        title = QtWidgets.QLabel("SESSION")
-        font = title.font()
+        self.sessionTitleLabel = QtWidgets.QLabel("SESSION")
+        font = self.sessionTitleLabel.font()
         font.setBold(True)
-        title.setFont(font)
-        self.sessionNameLabel = _ElidingLabel("No session")
-        self.setupBtn = QtWidgets.QToolButton()
-        self.setupBtn.setText("⚙")
-        self.setupBtn.setToolTip("Session setup")
-        self.setupBtn.setCheckable(True)
-        self.setupBtn.setChecked(True)
-        self.setupBtn.setAutoRaise(True)
+        self.sessionTitleLabel.setFont(font)
+        self.sessionNameLabel = _ElidingLabel("")
+        self.startSessionBtn = QtWidgets.QPushButton("Start session…")
         self.refreshBtn = QtWidgets.QToolButton()
         self.refreshBtn.setText("↻")
-        self.refreshBtn.setToolTip("Refresh session")
+        self.refreshBtn.setToolTip("Refresh Session")
         self.refreshBtn.setAutoRaise(True)
-        header.addWidget(title)
+        self.livePlaceholderBtn = QtWidgets.QToolButton()
+        self.livePlaceholderBtn.setText("LIVE")
+        self.livePlaceholderBtn.setToolTip("Live watcher integration will live here")
+        self.livePlaceholderBtn.setEnabled(False)
+        self.livePlaceholderBtn.setAutoRaise(True)
+        self.actionsBtn = QtWidgets.QToolButton()
+        self.actionsBtn.setText("Actions")
+        self.actionsBtn.setToolTip("Session actions")
+        self.actionsBtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.actionsBtn.setAutoRaise(True)
+        self.settingsBtn = QtWidgets.QToolButton()
+        self.settingsBtn.setText("⚙")
+        self.settingsBtn.setToolTip("Session settings")
+        self.settingsBtn.setAutoRaise(True)
+
+        self.actionsMenu = QtWidgets.QMenu(self.actionsBtn)
+        self.followActiveReconstructionAction = self.actionsMenu.addAction("Follow active reconstruction")
+        self.followActiveReconstructionAction.setCheckable(True)
+        self.followActiveReconstructionAction.setChecked(True)
+        self.followActiveReconstructionAction.setToolTip(
+            "Select the source Session dataset when the active reconstruction changes"
+        )
+        self.actionsMenu.addSeparator()
+        self.closeReconstructionsAction = self.actionsMenu.addAction("Close session reconstructions")
+        self.actionsMenu.addSeparator()
+        self.cleanupSessionAction = self.actionsMenu.addAction("Clean up session…")
+        self.emptyTrashAction = self.actionsMenu.addAction("Empty Session trash…")
+        self.actionsMenu.addSeparator()
+        self.revealRawFolderAction = self.actionsMenu.addAction("Reveal raw folder")
+        self.revealResultsFolderAction = self.actionsMenu.addAction("Reveal results folder")
+        self.actionsBtn.setMenu(self.actionsMenu)
+
+        header.addWidget(self.sessionTitleLabel)
         header.addWidget(self.sessionNameLabel, 1)
-        header.addWidget(self.setupBtn)
+        header.addWidget(self.startSessionBtn)
         header.addWidget(self.refreshBtn)
+        header.addWidget(self.livePlaceholderBtn)
+        header.addWidget(self.actionsBtn)
+        header.addWidget(self.settingsBtn)
         root.addLayout(header)
 
-        self.setupSection = _CollapsibleSection(
-            "Session setup", expanded=True
+        self.addingRow = QtWidgets.QWidget()
+        adding_layout = QtWidgets.QHBoxLayout(self.addingRow)
+        adding_layout.setContentsMargins(0, 0, 0, 0)
+        adding_layout.setSpacing(4)
+        self.addingLabel = QtWidgets.QLabel("Adding reconstructions…")
+        self.addingProgress = QtWidgets.QProgressBar()
+        self.addingProgress.setTextVisible(True)
+        self.addingProgress.setMinimumWidth(80)
+        self.addingProgress.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
-        # The persistent SESSION header replaces the section's own header.
-        self.setupSection.toggle.hide()
-        setup_layout = QtWidgets.QVBoxLayout()
-        setup_layout.setContentsMargins(0, 0, 0, 0)
-        setup_layout.setSpacing(4)
+        self.cancelAddingBtn = QtWidgets.QPushButton("Cancel")
+        self.cancelAddingBtn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        adding_layout.addWidget(self.addingLabel)
+        adding_layout.addWidget(self.addingProgress, 1)
+        adding_layout.addWidget(self.cancelAddingBtn)
+        self.addingRow.setVisible(False)
+        root.addWidget(self.addingRow)
 
-        path_grid = QtWidgets.QGridLayout()
-        path_grid.setContentsMargins(0, 0, 0, 0)
-        path_grid.setColumnStretch(1, 1)
-
-        self.rawRootEdit = QtWidgets.QLineEdit()
-        self.rawRootEdit.setPlaceholderText("Raw data folder")
-        self.rawRootEdit.setReadOnly(True)
-        self.rawRootEdit.setMinimumWidth(0)
-        self.rawRootEdit.setSizePolicy(
-            QtWidgets.QSizePolicy.Ignored,
-            QtWidgets.QSizePolicy.Fixed,
-        )
-        self.rawBrowseBtn = QtWidgets.QPushButton("Browse…")
-
-        self.resultsRootEdit = QtWidgets.QLineEdit()
-        self.resultsRootEdit.setPlaceholderText("Results folder (defaults to <raw>_recon)")
-        self.resultsRootEdit.setReadOnly(True)
-        self.resultsRootEdit.setMinimumWidth(0)
-        self.resultsRootEdit.setSizePolicy(
-            QtWidgets.QSizePolicy.Ignored,
-            QtWidgets.QSizePolicy.Fixed,
-        )
-        self.resultsBrowseBtn = QtWidgets.QPushButton("Browse…")
-
-        self.openBtn = QtWidgets.QPushButton("Open session")
-        path_grid.addWidget(QtWidgets.QLabel("Raw"), 0, 0)
-        path_grid.addWidget(self.rawRootEdit, 0, 1)
-        path_grid.addWidget(self.rawBrowseBtn, 0, 2)
-        path_grid.addWidget(QtWidgets.QLabel("Results"), 1, 0)
-        path_grid.addWidget(self.resultsRootEdit, 1, 1)
-        path_grid.addWidget(self.resultsBrowseBtn, 1, 2)
-        path_grid.addWidget(self.openBtn, 2, 1, 1, 2)
-        setup_layout.addLayout(path_grid)
-
-        save_row = QtWidgets.QHBoxLayout()
-        save_row.setContentsMargins(0, 0, 0, 0)
-        self.autoSaveCheck = QtWidgets.QCheckBox("Auto-save new reconstructions")
-        self.autoSaveCheck.setChecked(True)
-        self.saveFormatCombo = QtWidgets.QComboBox()
-        self.saveFormatCombo.addItem("OME-TIFF", "tiff")
-        self.saveFormatCombo.addItem("HDF5", "hdf5")
-        self.saveFormatCombo.addItem("OME-Zarr", "zarr")
-        self.saveFormatCombo.setMinimumContentsLength(6)
-        self.saveFormatCombo.setSizeAdjustPolicy(
-            QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon
-        )
-        save_row.addWidget(self.autoSaveCheck)
-        save_row.addStretch(1)
-        save_row.addWidget(QtWidgets.QLabel("Format"))
-        save_row.addWidget(self.saveFormatCombo)
-        setup_layout.addLayout(save_row)
-        self.setupSection.setContentLayout(setup_layout)
-        root.addWidget(self.setupSection)
-
-        # The raw dataset list is the main Session surface and receives nearly
-        # all spare vertical space in the compact state.  Search, ordering and
-        # workflow-status filtering intentionally share one compact row so the
-        # dock remains usable when narrow.
         datasets_box = QtWidgets.QGroupBox("Raw datasets")
         datasets_box.setMinimumWidth(0)
-        datasets_box.setSizePolicy(
-            QtWidgets.QSizePolicy.Ignored,
-            QtWidgets.QSizePolicy.Expanding,
-        )
+        datasets_box.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
         datasets_layout = QtWidgets.QVBoxLayout(datasets_box)
         datasets_layout.setSpacing(4)
 
-        # Compact per-column controls: dataset search/order on the left and
-        # status filter/order on the right.  They intentionally double as the
-        # table header so no extra vertical row is needed.
         filter_row = QtWidgets.QHBoxLayout()
         filter_row.setContentsMargins(0, 0, 0, 0)
         filter_row.setSpacing(4)
-
         dataset_controls = QtWidgets.QHBoxLayout()
         dataset_controls.setContentsMargins(0, 0, 0, 0)
         dataset_controls.setSpacing(3)
         self.datasetSearchEdit = QtWidgets.QLineEdit()
         self.datasetSearchEdit.setPlaceholderText("Filter datasets…")
         self.datasetSearchEdit.setClearButtonEnabled(True)
-        self.datasetSearchEdit.setToolTip(
-            "Filter datasets by name or source path"
-        )
+        self.datasetSearchEdit.setToolTip("Filter datasets by name or source path")
         self.datasetSearchEdit.setMinimumWidth(48)
-        self.datasetSearchEdit.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Fixed,
-        )
-
+        self.datasetSearchEdit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.datasetOrderBtn = QtWidgets.QToolButton()
         self.datasetOrderBtn.setText("↕")
         self.datasetOrderBtn.setAutoRaise(True)
@@ -464,20 +655,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         status_controls.setSpacing(3)
         self.datasetShowCombo = QtWidgets.QComboBox()
         self.datasetShowCombo.addItem("All", "all")
-        self.datasetShowCombo.addItem("Raw only", "raw")
+        self.datasetShowCombo.addItem("No recon", "raw")
         self.datasetShowCombo.addItem("Reconstructed", "reconstructed")
-        self.datasetShowCombo.addItem("Review only", "review")
-        self.datasetShowCombo.addItem("Final only", "final")
+        self.datasetShowCombo.addItem("To review", "review")
+        self.datasetShowCombo.addItem("Resolved", "final")
         self.datasetShowCombo.setToolTip("Filter by reconstruction status")
-        self.datasetShowCombo.setSizeAdjustPolicy(
-            QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon
-        )
         self.datasetShowCombo.setMinimumWidth(100)
-        self.datasetShowCombo.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Fixed,
-        )
-
+        self.datasetShowCombo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.statusOrderBtn = QtWidgets.QToolButton()
         self.statusOrderBtn.setText("↕")
         self.statusOrderBtn.setAutoRaise(True)
@@ -489,7 +673,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._statusOrderMode = "none"
         for label, mode in (
             ("No status grouping", "none"),
-            ("Raw first", "raw"),
+            ("No reconstruction first", "raw"),
             ("Reconstructed first", "reconstructed"),
         ):
             action = self.statusOrderMenu.addAction(label)
@@ -505,189 +689,255 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         dataset_controls_widget = QtWidgets.QWidget()
         dataset_controls_widget.setLayout(dataset_controls)
         dataset_controls_widget.setMinimumWidth(0)
-        dataset_controls_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
-        )
+        dataset_controls_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         status_controls_widget = QtWidgets.QWidget()
         status_controls_widget.setLayout(status_controls)
         status_controls_widget.setFixedWidth(132)
-
         filter_row.addWidget(dataset_controls_widget, 1)
         filter_row.addWidget(status_controls_widget)
         datasets_layout.addLayout(filter_row)
 
         self.datasetList = _CompactDatasetTree()
+        self.datasetList.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         datasets_layout.addWidget(self.datasetList)
         root.addWidget(datasets_box, 1)
-        self._datasetEntries = []
 
-        # Keep selected-dataset state to one line. The filename is already
-        # visible in the raw list; this row is reserved for reconstruction
-        # state plus the explicit raw-load action.
         selected_summary = QtWidgets.QHBoxLayout()
         selected_summary.setContentsMargins(0, 0, 0, 0)
         selected_summary.setSpacing(4)
         self.summaryLabel = _ElidingLabel("No dataset selected")
         self.loadRawBtn = QtWidgets.QPushButton("Load raw")
         self.loadRawBtn.setToolTip("Load the selected raw dataset")
-        # The action must always reserve its natural width.  The summary label
-        # is the shrinkable/elided part of this row, not the button.
-        self.loadRawBtn.setSizePolicy(
-            QtWidgets.QSizePolicy.Fixed,
-            QtWidgets.QSizePolicy.Fixed,
-        )
+        self.loadRawBtn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         selected_summary.addWidget(self.summaryLabel, 1)
         selected_summary.addWidget(self.loadRawBtn, 0)
         root.addLayout(selected_summary)
 
-        self.reviewSection = _CollapsibleSection(
-            "Review reconstructions (0)", expanded=False
-        )
+        self.reviewSection = _CollapsibleSection("Reconstructions (0)", expanded=False)
         review_layout = QtWidgets.QVBoxLayout()
         review_layout.setContentsMargins(0, 0, 0, 0)
         review_layout.setSpacing(4)
-
         self.savedList = _ReconstructionReviewTree()
         review_layout.addWidget(self.savedList)
-
         cleanup_row = QtWidgets.QHBoxLayout()
         cleanup_row.setContentsMargins(0, 0, 0, 0)
         cleanup_row.setSpacing(4)
         self.discardSelectedBtn = QtWidgets.QPushButton("Discard selected")
         self.discardCandidatesBtn = QtWidgets.QPushButton("Discard candidates")
-        self.discardSelectedBtn.setToolTip(
-            "Move the selected reconstruction(s) to Session trash"
-        )
-        self.discardCandidatesBtn.setToolTip(
-            "Discard every non-final reconstruction for the selected raw dataset"
-        )
+        self.discardSelectedBtn.setToolTip("Move the selected reconstruction(s) to Session trash")
+        self.discardCandidatesBtn.setToolTip("Discard every non-final reconstruction for the selected raw dataset")
         for button in (self.discardSelectedBtn, self.discardCandidatesBtn):
             button.setMinimumWidth(0)
-            button.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding,
-                QtWidgets.QSizePolicy.Fixed,
-            )
+            button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         cleanup_row.addWidget(self.discardSelectedBtn, 1)
         cleanup_row.addWidget(self.discardCandidatesBtn, 1)
         review_layout.addLayout(cleanup_row)
         self.reviewSection.setContentLayout(review_layout)
         root.addWidget(self.reviewSection)
 
-        self.statusLabel = _ElidingLabel("No session open")
+        self.statusLabel = _ElidingLabel("No session active")
         root.addWidget(self.statusLabel)
 
-        self.rawBrowseBtn.clicked.connect(self._browse_raw_folder)
-        self.resultsBrowseBtn.clicked.connect(self._browse_results_folder)
-        self.openBtn.clicked.connect(self.sigOpenSession)
+        self.startSessionBtn.clicked.connect(self.sigStartSessionRequested)
         self.refreshBtn.clicked.connect(self.sigRefresh)
-        self.setupBtn.toggled.connect(self.setSetupExpanded)
+        self.settingsBtn.clicked.connect(self.sigSettingsRequested)
+        self.cancelAddingBtn.clicked.connect(self.sigCancelAddingRequested)
+        self.followActiveReconstructionAction.toggled.connect(
+            self.sigFollowActiveReconstructionChanged
+        )
+        self.closeReconstructionsAction.triggered.connect(self.sigCloseSessionReconstructionsRequested)
+        self.cleanupSessionAction.triggered.connect(self.sigCleanUpSessionRequested)
+        self.emptyTrashAction.triggered.connect(self.sigEmptyTrashRequested)
+        self.revealRawFolderAction.triggered.connect(self.sigRevealRawFolderRequested)
+        self.revealResultsFolderAction.triggered.connect(self.sigRevealResultsFolderRequested)
         self.datasetList.currentItemChanged.connect(self._dataset_changed)
         self.datasetList.itemDoubleClicked.connect(self._dataset_double_clicked)
+        self.datasetList.customContextMenuRequested.connect(self._dataset_context_menu)
         self.datasetSearchEdit.textChanged.connect(self._applyDatasetView)
         self.datasetOrderGroup.triggered.connect(self._datasetOrderChanged)
         self.datasetShowCombo.currentIndexChanged.connect(self._applyDatasetView)
         self.statusOrderGroup.triggered.connect(self._statusOrderChanged)
         self.savedList.currentItemChanged.connect(self._saved_changed)
-        self.savedList.sigFinalToggleRequested.connect(
-            self.sigReconstructionFinalToggleRequested
-        )
-        self.savedList.sigWorkspaceToggleRequested.connect(
-            self.sigReconstructionWorkspaceToggleRequested
-        )
+        self.savedList.sigFinalToggleRequested.connect(self.sigReconstructionFinalToggleRequested)
+        self.savedList.sigWorkspaceToggleRequested.connect(self.sigReconstructionWorkspaceToggleRequested)
         self.savedList.itemSelectionChanged.connect(self._review_selection_changed)
         self.loadRawBtn.clicked.connect(self.sigLoadRawRequested)
         self.discardSelectedBtn.clicked.connect(self.sigDiscardSelectedRequested)
         self.discardCandidatesBtn.clicked.connect(self.sigDiscardCandidatesRequested)
-        self.autoSaveCheck.toggled.connect(self.sigAutoSaveChanged)
-        self.saveFormatCombo.currentIndexChanged.connect(
-            lambda _index: self.sigSaveFormatChanged.emit(
-                str(self.saveFormatCombo.currentData() or "tiff")
-            )
-        )
+
+        self.setSessionActive(False)
         self.setActionsEnabled(False, False, False)
         self.reviewSection.toggle.setEnabled(False)
 
-    @staticmethod
-    def _browse_start(path_text: str) -> str:
-        text = str(path_text or "").strip()
-        if not text:
-            return str(Path.home())
-        path = Path(text).expanduser()
-        while str(path) and not path.is_dir():
-            parent = path.parent
-            if parent == path:
-                break
-            path = parent
-        if path.is_dir():
-            return str(path)
-        return str(Path.home())
-
-    def _browse_raw_folder(self) -> None:
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            "Choose raw-data folder",
-            self._browse_start(self.rawRoot()),
+    def requestSessionConfiguration(
+        self,
+        *,
+        raw_root: str = "",
+        results_root: str = "",
+        auto_save: bool = True,
+        save_format: str = "tiff",
+        active_raw_root: str = "",
+    ) -> dict | None:
+        if raw_root and not results_root:
+            results_root = str(Path(raw_root) / "results")
+        dialog = _SessionConfigurationDialog(
+            raw_root=raw_root,
+            results_root=results_root,
+            auto_save=auto_save,
+            save_format=save_format,
+            active_raw_root=active_raw_root,
+            parent=self,
         )
-        if not folder:
-            return
-        self.rawRootEdit.setText(folder)
-        self.setSessionName(Path(folder).name)
-        if not self.resultsRoot():
-            raw = Path(folder)
-            self.resultsRootEdit.setText(str(raw.with_name(raw.name + "_recon")))
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        return dialog.configuration()
 
-    def _browse_results_folder(self) -> None:
-        start = self.resultsRoot() or self.rawRoot()
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            "Choose reconstruction-results folder",
-            self._browse_start(start),
-        )
-        if folder:
-            self.resultsRootEdit.setText(folder)
+    def setSessionActive(self, active: bool, name: str = "") -> None:
+        self._sessionActive = bool(active)
+        self.sessionTitleLabel.setText("SESSION:" if active else "SESSION")
+        self.sessionNameLabel.setText(str(name or ""))
+        self.sessionNameLabel.setVisible(bool(active))
+        self.startSessionBtn.setVisible(not active)
+        for widget in (self.refreshBtn, self.livePlaceholderBtn, self.actionsBtn, self.settingsBtn):
+            widget.setVisible(bool(active))
+        self.datasetList.setEnabled(bool(active))
+        self.datasetSearchEdit.setEnabled(bool(active))
+        self.datasetOrderBtn.setEnabled(bool(active))
+        self.datasetShowCombo.setEnabled(bool(active))
+        self.statusOrderBtn.setEnabled(bool(active))
+
+    def setAddingProgress(self, active: bool, current: int = 0, total: int = 0) -> None:
+        active = bool(active)
+        total = max(0, int(total or 0))
+        current = max(0, min(int(current or 0), total)) if total else 0
+        self.addingRow.setVisible(active)
+        for widget in (self.refreshBtn, self.actionsBtn, self.settingsBtn):
+            widget.setEnabled(bool(self._sessionActive and not active))
+        if active:
+            self.addingLabel.setText("Adding reconstructions…")
+            self.addingProgress.setRange(0, max(1, total))
+            self.addingProgress.setValue(current)
+            self.addingProgress.setFormat(f"{current} / {total}")
+            self.cancelAddingBtn.setEnabled(True)
+
+    def setStatus(self, text: str) -> None:
+        self.statusLabel.setText(str(text))
 
     def _dataset_changed(self, current, _previous):
         value = current.data(0, QtCore.Qt.UserRole) if current is not None else None
         self.sigDatasetSelectionChanged.emit(value)
 
     def _dataset_double_clicked(self, item, _column):
-        if item is None:
+        if item is None or bool(item.data(0, QtCore.Qt.UserRole + 2)):
             return
         if self.datasetList.currentItem() is not item:
             self.datasetList.setCurrentItem(item)
         self.sigLoadRawRequested.emit()
 
+    def _dataset_context_menu(self, point) -> None:
+        item = self.datasetList.itemAt(point)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.datasetList.clearSelection()
+            item.setSelected(True)
+            self.datasetList.setCurrentItem(item)
+        selected = self.selectedDatasetIds()
+        menu = QtWidgets.QMenu(self)
+
+        selected_items = list(self.datasetList.selectedItems())
+        saved_count = sum(
+            int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("saved_count", 0))
+            for item in selected_items
+        )
+        final_count = sum(
+            int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("final_count", 0))
+            for item in selected_items
+        )
+        panel_count = sum(
+            int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("panel_count", 0))
+            for item in selected_items
+        )
+        if saved_count:
+            add_menu = menu.addMenu("Add reconstructions")
+            finals = add_menu.addAction(
+                f"Final only ({final_count})" if final_count else "Final only"
+            )
+            finals.setEnabled(bool(final_count))
+            finals.triggered.connect(
+                lambda _checked=False: self.sigAddSelectedReconstructionsRequested.emit("final")
+            )
+            all_saved = add_menu.addAction(f"All saved ({saved_count})")
+            all_saved.triggered.connect(
+                lambda _checked=False: self.sigAddSelectedReconstructionsRequested.emit("all")
+            )
+            menu.addSeparator()
+
+        if panel_count:
+            close = menu.addAction(
+                f"Close reconstruction{'s' if panel_count != 1 else ''} ({panel_count})"
+            )
+            close.triggered.connect(self.sigCloseSelectedDatasetReconstructionsRequested)
+            menu.addSeparator()
+
+        if len(selected) > 1:
+            action = menu.addAction("Load selected as MultiData")
+            action.triggered.connect(self.sigLoadSelectedAsMultiDataRequested)
+            menu.addSeparator()
+        reveal = menu.addAction("Reveal in Explorer")
+        reveal.triggered.connect(self.sigRevealRawRequested)
+        copy = menu.addAction("Copy path")
+        copy.triggered.connect(self.sigCopyRawPathRequested)
+        menu.addSeparator()
+        delete = menu.addAction("Delete raw data…")
+        delete.triggered.connect(self.sigDeleteRawRequested)
+        delete.setEnabled(not all(bool(it.data(0, QtCore.Qt.UserRole + 2)) for it in self.datasetList.selectedItems()))
+        menu.exec(self.datasetList.viewport().mapToGlobal(point))
+
     def _saved_changed(self, current, _previous):
         value = current.data(0, QtCore.Qt.UserRole) if current is not None else None
         self.sigSavedSelectionChanged.emit(value)
 
-    def rawRoot(self) -> str:
-        return self.rawRootEdit.text().strip()
+    def selectedDatasetIds(self) -> list[str]:
+        ids = []
+        for item in self.datasetList.selectedItems():
+            value = item.data(0, QtCore.Qt.UserRole)
+            if value:
+                ids.append(str(value))
+        return list(dict.fromkeys(ids))
 
-    def resultsRoot(self) -> str:
-        return self.resultsRootEdit.text().strip()
+    def currentDatasetId(self) -> str | None:
+        item = self.datasetList.currentItem()
+        value = item.data(0, QtCore.Qt.UserRole) if item is not None else None
+        return str(value) if value else None
 
-    def setPaths(self, raw_root: str, results_root: str) -> None:
-        self.rawRootEdit.setText(raw_root)
-        self.resultsRootEdit.setText(results_root)
-        self.setSessionName(Path(raw_root).name if raw_root else "")
+    def selectDataset(self, dataset_id: str) -> bool:
+        """Select and reveal one visible Session dataset, like a user click."""
+        dataset_id = str(dataset_id or "")
+        for index in range(self.datasetList.topLevelItemCount()):
+            item = self.datasetList.topLevelItem(index)
+            if str(item.data(0, QtCore.Qt.UserRole) or "") != dataset_id:
+                continue
+            self.datasetList.clearSelection()
+            item.setSelected(True)
+            self.datasetList.setCurrentItem(item)
+            self.datasetList.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtCenter)
+            return True
+        return False
 
-    def setSessionName(self, name: str) -> None:
-        self.sessionNameLabel.setText(str(name or "No session"))
+    def setReviewExpanded(self, expanded: bool = True) -> None:
+        self.reviewSection.setExpanded(bool(expanded))
 
-    def setSetupExpanded(self, expanded: bool) -> None:
-        expanded = bool(expanded)
-        self.setupSection.setExpanded(expanded)
-        if self.setupBtn.isChecked() != expanded:
-            self.setupBtn.blockSignals(True)
-            self.setupBtn.setChecked(expanded)
-            self.setupBtn.blockSignals(False)
+    def setFollowActiveReconstruction(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self.followActiveReconstructionAction.isChecked() == enabled:
+            return
+        self.followActiveReconstructionAction.blockSignals(True)
+        self.followActiveReconstructionAction.setChecked(enabled)
+        self.followActiveReconstructionAction.blockSignals(False)
 
-    def setReviewExpanded(self, expanded: bool) -> None:
-        self.reviewSection.setExpanded(expanded)
-
-    def setStatus(self, text: str) -> None:
-        self.statusLabel.setText(str(text))
+    def copyText(self, text: str) -> None:
+        QtWidgets.QApplication.clipboard().setText(str(text or ""))
 
     @staticmethod
     def _dataset_state_visible(state: str, mode: str) -> bool:
@@ -700,25 +950,18 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         return state == mode
 
     def _datasetOrderChanged(self, action) -> None:
-        mode = str(action.data() or "latest")
-        self._datasetOrderMode = mode
-        self.datasetOrderBtn.setToolTip(
-            f"Dataset order: {action.text()}"
-        )
+        self._datasetOrderMode = str(action.data() or "latest")
+        self.datasetOrderBtn.setToolTip(f"Dataset order: {action.text()}")
         self._applyDatasetView()
 
     def _statusOrderChanged(self, action) -> None:
-        mode = str(action.data() or "none")
-        self._statusOrderMode = mode
-        self.statusOrderBtn.setToolTip(
-            f"Status order: {action.text()}"
-        )
+        self._statusOrderMode = str(action.data() or "none")
+        self.statusOrderBtn.setToolTip(f"Status order: {action.text()}")
         self._applyDatasetView()
 
     @staticmethod
     def _status_order_rank(state: str, mode: str) -> int:
         state = str(state or "raw").lower()
-        mode = str(mode or "none").lower()
         if mode == "raw":
             return 0 if state == "raw" else 1
         if mode == "reconstructed":
@@ -742,137 +985,117 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         state = str(state or "raw").lower()
         normal, muted, final, review, active = self._dataset_colors()
         name_font = item.font(0)
-        status_font = item.font(1)
+        status_font = item.font(2)
         name_font.setBold(False)
         status_font.setBold(True)
-
         if state == "final":
             item.setForeground(0, muted)
-            item.setForeground(1, final)
+            item.setForeground(2, final)
         elif state == "review":
             name_font.setBold(True)
             item.setForeground(0, normal)
-            item.setForeground(1, review)
-        elif state in {"running", "queued"}:
+            item.setForeground(2, review)
+        elif state in {"running", "queued", "loading"}:
             name_font.setBold(True)
             item.setForeground(0, normal)
-            item.setForeground(1, active)
+            item.setForeground(2, active)
         elif state == "failed":
             name_font.setBold(True)
             item.setForeground(0, normal)
-            item.setForeground(1, review)
-        else:  # RAW/new work should remain clearly visible during acquisition.
+            item.setForeground(2, review)
+        else:
             item.setForeground(0, normal)
-            item.setForeground(1, normal)
-
+            item.setForeground(2, normal)
+        item.setForeground(1, muted)
+        if item.text(3):
+            item.setForeground(3, active)
+            link_font = item.font(3)
+            link_font.setBold(True)
+            item.setFont(3, link_font)
         item.setFont(0, name_font)
-        item.setFont(1, status_font)
+        item.setFont(2, status_font)
 
     def _applyDatasetView(self, *_args) -> None:
-        current_id = None
-        current = self.datasetList.currentItem()
-        if current is not None:
-            current_id = current.data(0, QtCore.Qt.UserRole)
-
+        selected_ids = set(self.selectedDatasetIds())
+        current_id = self.currentDatasetId()
         query = self.datasetSearchEdit.text().strip().casefold()
         show_mode = str(self.datasetShowCombo.currentData() or "all")
         order_mode = str(self._datasetOrderMode or "latest")
         status_order_mode = str(self._statusOrderMode or "none")
         entries = [
-            dict(entry)
-            for entry in self._datasetEntries
-            if (
-                not query
-                or query in str(entry.get("search", "")).casefold()
-            )
+            dict(entry) for entry in self._datasetEntries
+            if (not query or query in str(entry.get("search", "")).casefold())
             and self._dataset_state_visible(entry.get("state", "raw"), show_mode)
         ]
-
         if order_mode == "name_asc":
-            entries.sort(key=lambda entry: str(entry.get("label", "")).casefold())
+            entries.sort(key=lambda e: str(e.get("label", "")).casefold())
         elif order_mode == "name_desc":
-            entries.sort(
-                key=lambda entry: str(entry.get("label", "")).casefold(),
-                reverse=True,
-            )
+            entries.sort(key=lambda e: str(e.get("label", "")).casefold(), reverse=True)
         elif order_mode == "oldest":
-            entries.sort(
-                key=lambda entry: (
-                    entry.get("timestamp") is None,
-                    float(entry.get("timestamp") or 0.0),
-                    str(entry.get("label", "")).casefold(),
-                )
-            )
-        else:  # latest first
-            entries.sort(
-                key=lambda entry: (
-                    entry.get("timestamp") is None,
-                    -float(entry.get("timestamp") or 0.0),
-                    str(entry.get("label", "")).casefold(),
-                )
-            )
-
-        # Stable second pass groups by status while preserving the chosen
-        # dataset ordering within each status group.
+            entries.sort(key=lambda e: (e.get("timestamp") is None, float(e.get("timestamp") or 0), str(e.get("label", "")).casefold()))
+        else:
+            entries.sort(key=lambda e: (e.get("timestamp") is None, -float(e.get("timestamp") or 0), str(e.get("label", "")).casefold()))
         if status_order_mode != "none":
-            entries.sort(
-                key=lambda entry: self._status_order_rank(
-                    entry.get("state", "raw"), status_order_mode
-                )
-            )
+            entries.sort(key=lambda e: self._status_order_rank(e.get("state", "raw"), status_order_mode))
 
         self.datasetList.blockSignals(True)
         self.datasetList.clear()
-        restore = None
+        restore_current = None
         for entry in entries:
             dataset_id = entry.get("id")
             label = str(entry.get("label", ""))
-            status = str(entry.get("status", ""))
-            item = QtWidgets.QTreeWidgetItem([label, status])
+            if entry.get("current"):
+                label = f"▶ {label}"
+            item = QtWidgets.QTreeWidgetItem([
+                label,
+                str(entry.get("info", "")),
+                str(entry.get("status", "")),
+                "●" if entry.get("panel_link") else "",
+            ])
             item.setData(0, QtCore.Qt.UserRole, dataset_id)
-            item.setToolTip(0, str(entry.get("search", label)))
-            item.setToolTip(1, status)
+            item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
+            item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
+            item.setToolTip(0, str(entry.get("tooltip") or entry.get("search", label)))
+            item.setToolTip(1, str(entry.get("info_tooltip") or entry.get("info", "")))
+            item.setToolTip(2, str(entry.get("status", "")))
+            panel_count = int(entry.get("panel_count", 0) or 0)
+            if panel_count:
+                item.setToolTip(
+                    3,
+                    f"{panel_count} reconstruction object{'s' if panel_count != 1 else ''} "
+                    "from this dataset are in the Reconstruction panel.",
+                )
+                item.setTextAlignment(3, QtCore.Qt.AlignCenter)
             self._styleDatasetItem(item, entry.get("state", "raw"))
             self.datasetList.addTopLevelItem(item)
+            if dataset_id in selected_ids:
+                item.setSelected(True)
             if dataset_id == current_id:
-                restore = item
+                restore_current = item
         self.datasetList.blockSignals(False)
-
-        if restore is not None:
-            self.datasetList.setCurrentItem(restore)
-        elif self.datasetList.topLevelItemCount():
+        if restore_current is not None:
+            self.datasetList.setCurrentItem(restore_current)
+        elif self.datasetList.topLevelItemCount() and self.datasetList.currentItem() is None:
             self.datasetList.setCurrentItem(self.datasetList.topLevelItem(0))
-        else:
+        elif not self.datasetList.topLevelItemCount():
             self.sigDatasetSelectionChanged.emit(None)
 
     def setDatasets(self, entries: list[dict]) -> None:
-        """Replace the lightweight dataset catalog displayed by Session."""
         self._datasetEntries = [dict(entry) for entry in entries]
         self._applyDatasetView()
 
     def setSelectedDataset(self, title: str, summary: str) -> None:
         title = str(title or "")
-        # The raw filename remains visible in the dataset list. Use the compact
-        # row for state only, while keeping the selected filename in a tooltip.
         compact = str(summary or "").replace("\n", " · ")
-        self.summaryLabel.setText(
-            f"Selected: {compact}" if title and compact else "No dataset selected"
-        )
-        if title:
-            self.summaryLabel.setToolTip(f"{title}\n{compact}" if compact else title)
-        else:
-            self.summaryLabel.setToolTip("No dataset selected")
+        self.summaryLabel.setText(f"Selected: {compact}" if title and compact else "No dataset selected")
+        self.summaryLabel.setToolTip(f"{title}\n{compact}" if title and compact else (title or "No dataset selected"))
         has_dataset = bool(title)
         self.reviewSection.toggle.setEnabled(has_dataset)
         if not has_dataset:
             self.reviewSection.setExpanded(False)
 
-    def setSavedReconstructions(
-        self,
-        entries: list[dict],
-        selected_path: str | None = None,
-    ) -> None:
-        self.reviewSection.setTitle(f"Review reconstructions ({len(entries)})")
+    def setSavedReconstructions(self, entries: list[dict], selected_path: str | None = None) -> None:
+        self.reviewSection.setTitle(f"Reconstructions ({len(entries)})")
         self.savedList.setEntries(entries, selected_path)
         if selected_path is None:
             self.sigSavedSelectionChanged.emit(None)
@@ -881,15 +1104,19 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def selectedReconstructionKeys(self) -> list[str]:
         return self.savedList.selectedKeys()
 
+    def clearReconstructionSelection(self) -> None:
+        """Clear review-list selection without feeding a navigation signal back."""
+        self.savedList.blockSignals(True)
+        try:
+            self.savedList.clearSelection()
+        finally:
+            self.savedList.blockSignals(False)
+        self._review_selection_changed()
+
     def _review_selection_changed(self) -> None:
         self.discardSelectedBtn.setEnabled(bool(self.savedList.selectedItems()))
 
-    def setActionsEnabled(
-        self,
-        load_raw: bool,
-        discard_selected: bool,
-        discard_candidates: bool,
-    ) -> None:
+    def setActionsEnabled(self, load_raw: bool, discard_selected: bool, discard_candidates: bool) -> None:
         self.loadRawBtn.setEnabled(bool(load_raw))
         self.discardSelectedBtn.setEnabled(bool(discard_selected))
         self.discardCandidatesBtn.setEnabled(bool(discard_candidates))

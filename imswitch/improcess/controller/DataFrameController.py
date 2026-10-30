@@ -181,8 +181,8 @@ class DataFrameController(ImProcessWidgetController):
             if callable(detection_setter):
                 detection_setter([], [])
             self._widget.setNumFrames(0)
-            self._widget.setDataName(self._dataObj.name)
-            self._widget.setDatasetName(self._dataObj.datasetName)
+            self._widget.setDataName(getattr(self._dataObj, "name", ""))
+            self._widget.setDatasetName(getattr(self._dataObj, "datasetName", ""))
             self._commChannel.sigDisplayedFrameChanged.emit()
             return
         data = self._currentDataArray()
