@@ -10,8 +10,9 @@ from .spot_settings import DEFAULT_SPOT_FWHM_NM
 
 PRESET_FAST = "Fast"
 PRESET_FULL = "Full"
+PRESET_LEGACY = "Legacy DLL"
 PRESET_CUSTOM = "Custom"
-PRESETS = (PRESET_FAST, PRESET_FULL, PRESET_CUSTOM)
+PRESETS = (PRESET_FAST, PRESET_FULL, PRESET_LEGACY, PRESET_CUSTOM)
 
 LOCALIZATION_AUTO = "Auto"
 LOCALIZATION_LOCKED = "Locked"
@@ -66,6 +67,9 @@ DEFAULT_PARAMS = {
     "spot_fwhm": DEFAULT_SPOT_FWHM_NM,
     "spot_fwhm_unit": "nm",
     "background": "constant",
+    "legacy_bleaching_correction": False,
+    "legacy_bg_modelling": "Constant",
+    "legacy_bg_gaussian_size_nm": 1000.0,
     "intensity_correction": False,
     "cell_offsets": False,
     "reassignment": "off",
@@ -112,6 +116,22 @@ PRESET_VALUES = {
         "variance_weighting": True,
         "sharpen": False,
     },
+    PRESET_LEGACY: {
+        # The classic SignalExtractor has its own background / bleaching
+        # controls, but still shares localization, FWHM and the compute-device
+        # setting with the unified widget.  Keep unsupported Gaussian stages
+        # inert when entering Legacy DLL mode.
+        "device": "CPU",
+        "localization_refinement": LOCALIZATION_REFINEMENT_FAST,
+        "spot_width_mode": SPOT_MANUAL,
+        "intensity_correction": False,
+        "cell_offsets": False,
+        "reassignment": "off",
+        "reassignment_asymmetric": False,
+        "placement_mode": PLACEMENT_AUTO,
+        "variance_weighting": False,
+        "sharpen": False,
+    },
 }
 
 PRESET_CONTROLLED_KEYS = frozenset(
@@ -152,6 +172,7 @@ __all__ = [
     "PRESET_CUSTOM",
     "PRESET_FAST",
     "PRESET_FULL",
+    "PRESET_LEGACY",
     "PRESET_VALUES",
     "PRESETS",
     "SPOT_AUTO",

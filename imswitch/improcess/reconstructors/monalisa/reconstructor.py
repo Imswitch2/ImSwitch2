@@ -25,7 +25,7 @@ from .params import (
     LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
     LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
     ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL,
-    PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE, PRESETS,
+    PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE, PRESET_LEGACY, PRESETS,
     SPOT_AUTO, SPOT_MANUAL, default_params as unified_default_params,
 )
 from .pipeline import PipelineParams, find_localization, needs_modulation_frame
@@ -78,7 +78,7 @@ class MonalisaReconstructor(StreamingReconstructor):
     # The fixed unified Gaussian parameter contract replaces the former
     # internal Fast/Legacy method selector. Old v1 dictionaries remain
     # accepted by process() during the migration window.
-    params_version = 4
+    params_version = 5
 
     @classmethod
     def default_params(cls) -> dict:
@@ -125,6 +125,12 @@ class MonalisaReconstructor(StreamingReconstructor):
             ParamField('spot_fwhm', 'float', defaults['spot_fwhm'], label='FWHM', min=0.001, group='Spot model'),
             ParamField('spot_fwhm_unit', 'select', defaults['spot_fwhm_unit'], label='FWHM unit', options=('nm', 'px'), group='Spot model'),
             ParamField('background', 'select', defaults['background'], label='Background', options=('constant', 'none', 'auto'), group='Spot model'),
+            ParamField('legacy_bleaching_correction', 'bool', defaults['legacy_bleaching_correction'],
+                       label='Bleaching correction', group='Legacy DLL'),
+            ParamField('legacy_bg_modelling', 'select', defaults['legacy_bg_modelling'],
+                       label='Background', options=('Constant', 'Gaussian', 'No background'), group='Legacy DLL'),
+            ParamField('legacy_bg_gaussian_size_nm', 'float', defaults['legacy_bg_gaussian_size_nm'],
+                       label='Gaussian background size', suffix='nm', min=0.001, group='Legacy DLL'),
             ParamField('intensity_correction', 'bool', defaults['intensity_correction'], label='Intensity correction', group='Corrections',
                        help='Correct smooth frame-to-frame intensity variations, e.g. bleaching or illumination drift'),
             ParamField('cell_offsets', 'bool', defaults['cell_offsets'], label='Cell offsets', group='Corrections'),
@@ -150,6 +156,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         self.session_registry = MonalisaSessionRegistry()
         self._pattern_finder = PatternFinder()
         self._signal_extractor = None  # Lazy-loaded on first use (Windows-only)
+        self._legacy_adapter = None
         self._axis_labels = {
             'r_l_text': 'Right-Left',
             'u_d_text': 'Up-Down',
@@ -463,6 +470,114 @@ class MonalisaReconstructor(StreamingReconstructor):
         updated.metadata = metadata
         return updated
 
+    def _legacy_reconstructor(self):
+        """Return the classic DLL adapter without loading the DLL until process()."""
+        if self._legacy_adapter is None:
+            from .legacy import LegacyMonalisaReconstructor
+
+            self._legacy_adapter = LegacyMonalisaReconstructor()
+        return self._legacy_adapter
+
+    @staticmethod
+    def _legacy_pattern_from_localization(localization: PatternLocalization) -> tuple[float, float, float, float]:
+        """Convert a rectangular localization to SignalExtractor's pattern tuple.
+
+        The classic DLL accepts only an axis-aligned rectangular grid.  Reject
+        staggered/general lattices explicitly rather than approximating them.
+        """
+        if len(localization.motif) != 1:
+            raise ValueError(
+                "Legacy DLL supports only a rectangular non-staggered localization; "
+                "the current localization has a multi-point motif."
+            )
+        try:
+            period_x, offset_x, period_y, offset_y = localization.lattice.to_grid_params(tol=0.02)
+        except ValueError as exc:
+            raise ValueError(
+                "Legacy DLL supports only an axis-aligned rectangular localization. "
+                "Use Fast/Robust/Custom for rotated or staggered patterns."
+            ) from exc
+        return (float(offset_y), float(offset_x), float(period_y), float(period_x))
+
+    def _process_legacy_dll(self, data_obj, params: dict, context=None):
+        """Run the classic SignalExtractor through the unified MoNaLISA UI."""
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+
+        localization = self._resolved_localization(merged)
+        localization_status = ""
+        if localization is None:
+            # Auto may not have completed yet. process() already runs on the
+            # reconstruction worker, so resolving it here is safe and keeps
+            # Auto semantically automatic.
+            localization, localization_status, _ = self.localize(data_obj, merged)
+        if localization is None:
+            raise ValueError("Legacy DLL requires a resolved localization")
+        pattern = self._legacy_pattern_from_localization(localization)
+
+        pixel_nm = float(merged.get("pixel_size_nm", 0.0) or 0.0)
+        if pixel_nm <= 0:
+            raise ValueError("Legacy DLL requires a positive camera pixel size")
+        fwhm = float(merged.get("spot_fwhm", 0.0) or 0.0)
+        if fwhm <= 0:
+            raise ValueError("Legacy DLL requires a positive PSF FWHM")
+        unit = str(merged.get("spot_fwhm_unit", "nm")).lower()
+        if unit == "px":
+            fwhm_nm = fwhm * pixel_nm
+        elif unit == "nm":
+            fwhm_nm = fwhm
+        else:
+            raise ValueError(f"Unsupported FWHM unit for Legacy DLL: {unit!r}")
+
+        scan_params = merged.get("scan_params")
+        if scan_params is None:
+            raise ValueError("Legacy DLL requires recorded scan parameters")
+
+        from .legacy import default_axis_label_map
+
+        legacy_params = {
+            "bleaching_correction": bool(merged.get("legacy_bleaching_correction", False)),
+            "psf_fwhm_nm": [float(fwhm_nm)],
+            "bg_modelling": str(merged.get("legacy_bg_modelling", "Constant")),
+            "bg_gaussian_size_nm": float(merged.get("legacy_bg_gaussian_size_nm", 1000.0)),
+            "pixel_size_nm": pixel_nm,
+            "device": str(merged.get("device", "CPU")),
+            "pattern": pattern,
+            "scan_params": copy.deepcopy(scan_params),
+            "axis_label_map": default_axis_label_map(),
+        }
+        result = self._legacy_reconstructor().process(data_obj, legacy_params, context=context)
+        result.name = f"{data_obj.name}_monalisa_legacy"
+
+        detector = detector_identity(data_obj)
+        if str(merged.get("localization_mode", LOCALIZATION_AUTO)) == LOCALIZATION_AUTO:
+            self.session_registry.set_current_localization(
+                detector, localization, source="auto",
+                source_dataset=str(getattr(data_obj, "name", "") or ""),
+                source_path=str(getattr(data_obj, "dataPath", "") or ""),
+                diagnostics={"status": localization_status or "Resolved for Legacy DLL"},
+            )
+
+        snapshot = {
+            "detector": detector,
+            "localization_source": str(merged.get("localization_mode", LOCALIZATION_AUTO)),
+            "resolved_localization": localization.to_dict(),
+            "preset": PRESET_LEGACY,
+            "legacy_dll": {
+                "device": legacy_params["device"],
+                "psf_fwhm_nm": float(fwhm_nm),
+                "bg_modelling": legacy_params["bg_modelling"],
+                "bg_gaussian_size_nm": legacy_params["bg_gaussian_size_nm"],
+                "bleaching_correction": legacy_params["bleaching_correction"],
+            },
+        }
+        result.params = dict(merged)
+        result.params["calibration_snapshot"] = copy.deepcopy(snapshot)
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        metadata["monalisa_calibration"] = copy.deepcopy(snapshot)
+        result.metadata = metadata
+        return result
+
     def _process_unified_gaussian(self, data_obj, params: dict, context=None):
         """Run the experimental/general lattice orchestration as the one Gaussian plugin.
 
@@ -684,6 +799,8 @@ class MonalisaReconstructor(StreamingReconstructor):
         # migration window so old Fast/Legacy saved settings still run until
         # Patch 4 translates them explicitly.
         if "reconstruction_method" not in params:
+            if str(params.get("preset", "")) == PRESET_LEGACY:
+                return self._process_legacy_dll(data_obj, params, context=context)
             return self._process_unified_gaussian(data_obj, params, context=context)
 
         # Extract scan parameters (required for the compatibility path)

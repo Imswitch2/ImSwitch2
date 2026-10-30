@@ -13,6 +13,7 @@ from imswitch.improcess.reconstructors.monalisa.params import (
     LOCALIZATION_REFINEMENT_FULL,
     PRESET_FAST,
     PRESET_FULL,
+    PRESET_LEGACY,
     apply_preset,
     default_params,
 )
@@ -43,6 +44,83 @@ def test_fast_and_full_presets_only_change_processing_options():
     assert fast["sharpen"] is full["sharpen"] is False
     assert "relocalize_each_data_item" not in fast
 
+
+
+def test_legacy_preset_keeps_general_gaussian_stages_inert():
+    base = default_params()
+    legacy = apply_preset(base, PRESET_LEGACY)
+    assert legacy["preset"] == PRESET_LEGACY
+    assert legacy["device"] == "CPU"
+    assert legacy["spot_width_mode"] == "Manual/default"
+    assert legacy["intensity_correction"] is False
+    assert legacy["cell_offsets"] is False
+    assert legacy["reassignment"] == "off"
+    assert legacy["variance_weighting"] is False
+
+
+def test_legacy_pattern_conversion_accepts_rectangular_and_rejects_staggered():
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+
+    rectangular = PatternLocalization.manual_grid(10.0, 12.0, 1.5, 2.5)
+    assert MonalisaReconstructor._legacy_pattern_from_localization(rectangular) == pytest.approx(
+        (2.5, 1.5, 12.0, 10.0)
+    )
+
+    staggered = PatternLocalization.manual_grid(10.0, 12.0, 1.5, 2.5, stagger_axis="x", stagger=0.5)
+    with pytest.raises(ValueError, match="axis-aligned rectangular"):
+        MonalisaReconstructor._legacy_pattern_from_localization(staggered)
+
+
+def test_legacy_mode_delegates_to_classic_adapter_without_loading_dll():
+    from types import SimpleNamespace
+
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+    from imswitch.improcess.reconstructors.monalisa.scan_params import default_scan_params
+
+    class FakeLegacyAdapter:
+        def __init__(self):
+            self.params = None
+
+        def process(self, data_obj, params, context=None):
+            self.params = dict(params)
+            return SimpleNamespace(name=data_obj.name, metadata={})
+
+    reconstructor = MonalisaReconstructor()
+    adapter = FakeLegacyAdapter()
+    reconstructor._legacy_adapter = adapter
+    params = apply_preset(default_params(), PRESET_LEGACY)
+    params.update(
+        localization_mode="Manual",
+        manual_period_x_px=10.0,
+        manual_period_y_px=12.0,
+        manual_offset_x_px=1.5,
+        manual_offset_y_px=2.5,
+        spot_fwhm=250.0,
+        spot_fwhm_unit="nm",
+        legacy_bleaching_correction=True,
+        legacy_bg_modelling="Gaussian",
+        legacy_bg_gaussian_size_nm=900.0,
+        scan_params=default_scan_params(),
+    )
+    source = SimpleNamespace(name="raw", attrs={}, dataPath="")
+
+    result = reconstructor.process(source, params)
+
+    assert adapter.params["pattern"] == pytest.approx((2.5, 1.5, 12.0, 10.0))
+    assert adapter.params["psf_fwhm_nm"] == pytest.approx([250.0])
+    assert adapter.params["bg_modelling"] == "Gaussian"
+    assert adapter.params["bg_gaussian_size_nm"] == pytest.approx(900.0)
+    assert adapter.params["bleaching_correction"] is True
+    assert result.params["preset"] == PRESET_LEGACY
+    assert result.metadata["monalisa_calibration"]["preset"] == PRESET_LEGACY
+
+
+def test_legacy_mode_is_rejected_by_current_live_session():
+    from imswitch.improcess.reconstructors.monalisa.live_session import MonalisaLiveSession
+
+    params = apply_preset(default_params(), PRESET_LEGACY)
+    with pytest.raises(ValueError, match="offline-only"):
+        MonalisaLiveSession._validate_unified_live_params(params)
 
 def test_period_prior_constrains_search_without_becoming_a_fixed_period():
     settings = LocalizationSettings(

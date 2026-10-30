@@ -11,6 +11,7 @@ from .gauss_processor import (
     measure_spot_sigma,
 )
 from .localizer import localization_from_pattern, localizer
+from .params import PRESET_LEGACY
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
 from .spot_settings import fwhm_to_sigma_px
@@ -603,6 +604,11 @@ class MonalisaLiveSession(StreamingSession):
         """
         if "preset" not in params:
             return
+        if str(params.get("preset", "")) == PRESET_LEGACY:
+            raise ValueError(
+                "Legacy DLL mode is offline-only; live MoNaLISA reconstruction uses "
+                "the Fast-compatible Gaussian path."
+            )
         unsupported = []
         if params.get("intensity_correction", False):
             unsupported.append("Intensity correction")
