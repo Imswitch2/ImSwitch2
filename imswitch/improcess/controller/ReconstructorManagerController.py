@@ -616,6 +616,25 @@ class ReconstructorManagerController(ImProcessWidgetController):
         except Exception:
             return False
 
+    def reuseMonalisaCalibration(
+        self, snapshot: dict, *, mode: str = "both", source_label: str = "reconstruction"
+    ) -> str | None:
+        """Import a reconstruction calibration into the active MoNaLISA registry/UI."""
+        active = getattr(self._main, "_activeReconstructor", None)
+        if active is None or active.id != "monalisa":
+            self._on_user_changed_reconstructor("monalisa")
+            active = getattr(self._main, "_activeReconstructor", None)
+        if active is None or active.id != "monalisa":
+            raise ValueError("Select the MoNaLISA reconstructor before reusing its calibration")
+
+        widget = getattr(self, "_previewWidget", None)
+        apply_snapshot = getattr(widget, "reuse_calibration_snapshot", None)
+        if not callable(apply_snapshot):
+            raise RuntimeError("The active MoNaLISA parameter widget cannot import calibration")
+        return apply_snapshot(
+            dict(snapshot or {}), mode=str(mode), source_label=str(source_label or "reconstruction")
+        )
+
     def updateReconstruction(self):
         """Refresh the active MoNaLISA result without repeating extraction."""
         reconstructor = self._main._activeReconstructor

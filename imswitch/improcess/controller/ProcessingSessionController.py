@@ -11,7 +11,7 @@ from imswitch.improcess.controller.basecontrollers import ImProcessWidgetControl
 from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.processing_session import ProcessingSession
 from imswitch.improcess.model.provenance import graph_of, output_node
-from imswitch.improcess.model.saved_result import load_saved_result
+from imswitch.improcess.model.saved_result import load_saved_result, read_saved_result_metadata
 
 
 _FORMAT_SUFFIX = {
@@ -84,6 +84,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         )
         self._widget.sigDiscardReconstructionRequested.connect(self.discardReconstruction)
         self._widget.sigDiscardSelectedRequested.connect(self.discardSelected)
+        self._widget.sigReuseCalibrationRequested.connect(self.reuseReconstructionCalibration)
         self._widget.sigAddSelectedReconstructionsRequested.connect(
             self.addSelectedDatasetReconstructions
         )
@@ -665,6 +666,59 @@ class ProcessingSessionController(ImProcessWidgetController):
         entry = self._selected_reconstruction_entry()
         if entry is not None and entry["loaded"] is not None and self._reconstruction is not None:
             self._reconstruction.selectResult(entry["loaded"])
+
+    def reuseReconstructionCalibration(self, entry_key, mode: str) -> None:
+        entry = self._reconstruction_entry_by_key(str(entry_key or ""))
+        if entry is None:
+            return
+        snapshot = None
+        result = entry.get("loaded")
+        if result is not None:
+            metadata = dict(getattr(result, "metadata", {}) or {})
+            snapshot = metadata.get("monalisa_calibration")
+            if not isinstance(snapshot, dict):
+                snapshot = dict(getattr(result, "params", {}) or {}).get("calibration_snapshot")
+        if not isinstance(snapshot, dict) and entry.get("saved") is not None:
+            try:
+                metadata = read_saved_result_metadata(entry["saved"].path)
+                snapshot = metadata.get("monalisa_calibration")
+            except Exception as exc:
+                self._logger.warning(f"Could not read saved reconstruction calibration: {exc}")
+
+        if not isinstance(snapshot, dict) or not snapshot:
+            QtWidgets.QMessageBox.information(
+                self._widget, "Reuse MoNaLISA calibration",
+                "This reconstruction does not contain a MoNaLISA calibration snapshot.",
+            )
+            return
+        if isinstance(snapshot.get("per_data_item"), list):
+            QtWidgets.QMessageBox.information(
+                self._widget, "Reuse MoNaLISA calibration",
+                "This consolidated reconstruction contains different calibration values "
+                "for its data items, so there is no single calibration to reuse.",
+            )
+            return
+
+        manager = getattr(self._main, "reconstructorManager", None)
+        reuse = getattr(manager, "reuseMonalisaCalibration", None)
+        if not callable(reuse):
+            QtWidgets.QMessageBox.warning(
+                self._widget, "Reuse MoNaLISA calibration",
+                "The MoNaLISA calibration controls are unavailable.",
+            )
+            return
+        try:
+            message = reuse(
+                snapshot, mode=str(mode), source_label=str(entry.get("name") or "reconstruction")
+            )
+        except Exception as exc:
+            self._logger.warning(f"Could not reuse MoNaLISA calibration: {exc}")
+            QtWidgets.QMessageBox.warning(
+                self._widget, "Reuse MoNaLISA calibration", str(exc)
+            )
+            return
+        if message:
+            self._widget.setStatus(str(message))
 
     def _reconstruction_entry_by_key(self, key):
         if self._session is None or not self._selectedDatasetId or not key:

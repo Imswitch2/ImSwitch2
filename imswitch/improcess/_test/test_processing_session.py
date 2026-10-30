@@ -11,7 +11,7 @@ from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.processing_session import ProcessingSession
 from imswitch.improcess.model.provenance import PROVENANCE_KEY, record_reconstruction
-from imswitch.improcess.model.saved_result import load_saved_result
+from imswitch.improcess.model.saved_result import load_saved_result, read_saved_result_metadata
 
 
 def _h5_image(path: Path, dataset="Camera", *, value=1, attrs=None):
@@ -167,6 +167,41 @@ def test_legacy_final_metadata_is_ignored_and_removed_on_refresh(tmp_path):
     migrated = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
     assert migrated["schema"] == 3
     assert "final" not in migrated["datasets"][0]["saved_reconstructions"][0]
+
+
+def test_saved_result_restores_monalisa_calibration_metadata(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = tmp_path / "results"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+    raw = DataObj(raw_path.name, "Camera", path=str(raw_path))
+    raw.checkAndOpenData()
+    result = ArrayProcessingResult(
+        "monalisa-result", np.ones((4, 5), dtype=np.float32), ["Y", "X"]
+    )
+    record_reconstruction(result, _MonalisaLikeRecon(), {"preset": "Fast"}, raw)
+    snapshot = {
+        "detector": "Camera",
+        "resolved_localization": {
+            "kind": "manual_grid",
+            "period_x": 10.0,
+            "period_y": 10.0,
+            "offset_x": 1.0,
+            "offset_y": 2.0,
+            "stagger_axis": None,
+            "stagger": 0.0,
+            "source": "auto",
+            "dataset": "Camera",
+            "provenance": {},
+        },
+        "resolved_orientation": "+x+y",
+    }
+    result.metadata["monalisa_calibration"] = snapshot
+    saved = results / "monalisa-result.h5"
+    result.save(saved, "hdf5")
+
+    assert read_saved_result_metadata(saved)["monalisa_calibration"] == snapshot
+    restored = load_saved_result(saved)
+    assert restored.metadata["monalisa_calibration"] == snapshot
 
 
 def test_restore_saved_hdf5_result_is_lazy_and_keeps_provenance(tmp_path):

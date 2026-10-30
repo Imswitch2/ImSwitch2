@@ -880,6 +880,118 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         if self._registry is not None:
             self._registry.clear_orientation(self._detector_id)
 
+    def reuse_calibration_snapshot(
+        self,
+        snapshot: dict,
+        *,
+        mode: str = "both",
+        source_label: str = "reconstruction",
+    ) -> str | None:
+        """Lock calibration resolved by a previous MoNaLISA reconstruction.
+
+        This is intentionally explicit: the snapshot is copied into the current
+        session registry and the corresponding controls enter Locked mode.  It
+        never reloads the source pixels or re-runs localization.
+        """
+        if self._registry is None:
+            raise RuntimeError("Session localization registry is unavailable")
+        if not isinstance(snapshot, dict) or not snapshot:
+            raise ValueError("This reconstruction has no MoNaLISA calibration snapshot")
+
+        mode = str(mode or "both").lower()
+        reuse_localization = mode in {"localization", "both"}
+        reuse_orientation = mode in {"orientation", "both"}
+        if not (reuse_localization or reuse_orientation):
+            raise ValueError(f"Unknown calibration reuse mode: {mode}")
+
+        source_detector = str(snapshot.get("detector") or "unknown")
+        current_detector = str(self._detector_id or "unknown")
+        if (
+            source_detector != "unknown"
+            and current_detector != "unknown"
+            and source_detector != current_detector
+        ):
+            raise ValueError(
+                f"Calibration belongs to detector {source_detector}, but the current "
+                f"data uses {current_detector}."
+            )
+        if current_detector == "unknown" and source_detector != "unknown":
+            raise ValueError(
+                f"Select data from detector {source_detector} before reusing this calibration."
+            )
+        detector = current_detector if current_detector != "unknown" else source_detector
+
+        localization = None
+        if reuse_localization:
+            localization = PatternLocalization.from_dict(snapshot.get("resolved_localization"))
+            if localization is None:
+                raise ValueError("This reconstruction has no resolved localization to reuse")
+
+        orientation = None
+        if reuse_orientation:
+            literal = str(snapshot.get("resolved_orientation") or "").strip()
+            if not literal:
+                raise ValueError("This reconstruction has no resolved scan orientation to reuse")
+            orientation = ScanOrientation.from_literal(literal)
+
+        profile_name = None
+        if localization is not None:
+            suggested = str(snapshot.get("locked_localization_name") or "").strip()
+            if not suggested:
+                suggested = f"From {source_label}" if source_label else "Reused localization"
+            profile_name, ok = QtWidgets.QInputDialog.getText(
+                self, "Lock localization from reconstruction", "Name", text=suggested
+            )
+            if not ok:
+                return None
+            profile_name = str(profile_name or "").strip()
+            if not profile_name:
+                raise ValueError("Locked localization needs a name")
+
+        profile = None
+        source = f"reconstruction:{source_label}" if source_label else "reconstruction"
+        if localization is not None:
+            profile = self._registry.lock_localization(
+                name=profile_name,
+                detector=detector,
+                localization=localization,
+                source=source,
+                diagnostics={
+                    "reused_from_reconstruction": str(source_label or ""),
+                    "calibration_snapshot": deepcopy(snapshot),
+                },
+            )
+            self._selected_locked_localization_id = profile.id
+
+        if orientation is not None:
+            self._registry.lock_orientation(
+                detector, orientation, source=source
+            )
+
+        self._refresh_registry_controls()
+        if profile is not None:
+            self._selected_locked_localization_id = profile.id
+            old = self.lockedLocalizationCombo.blockSignals(True)
+            try:
+                self._set_combo_data(self.lockedLocalizationCombo, profile.id)
+            finally:
+                self.lockedLocalizationCombo.blockSignals(old)
+            self._set_combo_data(self.localizationModeCombo, LOCALIZATION_LOCKED)
+        if orientation is not None:
+            self._set_combo_data(self.orientationModeCombo, ORIENTATION_LOCKED)
+            self._refresh_orientation_display()
+
+        self._update_ui()
+        self.sigDetectionParamsChanged.emit()
+        pieces = []
+        if profile is not None:
+            pieces.append(f"localization '{profile.name}'")
+        if orientation is not None:
+            pieces.append(f"orientation {orientation.to_literal()}")
+        message = "Locked " + " and ".join(pieces) + " from reconstruction"
+        self.setPreviewStatus(message)
+        return message
+
     def _refresh_orientation_display(self) -> None:
         mode = str(self._combo_data(self.orientationModeCombo))
         value = None

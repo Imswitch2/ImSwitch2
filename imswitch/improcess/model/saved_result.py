@@ -3,11 +3,86 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+
 
 from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.provenance import PROVENANCE_KEY
 from imswitch.improcess.model.provenance_io import read_provenance
+
+
+def _decode_annotation(value):
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def _tiff_description_payload(path: Path) -> dict:
+    """Return the JSON Description payload written by ImProcess TIFF saves."""
+    import tifffile
+    from xml.etree import ElementTree
+
+    with tifffile.TiffFile(str(path)) as handle:
+        ome = getattr(handle, "ome_metadata", None)
+        if ome:
+            try:
+                root = ElementTree.fromstring(ome)
+                for node in root.iter():
+                    if node.tag.rsplit("}", 1)[-1] != "Description" or not node.text:
+                        continue
+                    value = _decode_annotation(node.text)
+                    if isinstance(value, dict):
+                        return value
+            except ElementTree.ParseError:
+                pass
+        try:
+            value = _decode_annotation(handle.pages[0].description)
+        except Exception:
+            value = None
+        return value if isinstance(value, dict) else {}
+
+
+def read_saved_result_metadata(path: str | Path, backing=None) -> dict:
+    """Read persisted result annotations needed after restoring a saved result.
+
+    HDF5/Zarr expose ImProcess annotations as attributes; TIFF carries them in
+    the JSON Image/OME Description.  Values written as JSON text are decoded
+    back to their structured form.
+    """
+    path = Path(path).expanduser().resolve()
+    metadata = {}
+    owned_backing = None
+    if backing is None and not path.name.lower().endswith((".tif", ".tiff")):
+        datasets = list(DataObj.getDatasetNames(str(path)))
+        dataset_name = (
+            "data" if "data" in datasets else
+            "0" if "0" in datasets else
+            datasets[0] if len(datasets) == 1 else None
+        )
+        if dataset_name is not None:
+            owned_backing = DataObj(path.name, dataset_name, path=str(path))
+            owned_backing.checkAndOpenData()
+            backing = owned_backing
+    try:
+        attrs = getattr(backing, "attrs", None) if backing is not None else None
+        if isinstance(attrs, dict):
+            for key in ("monalisa_calibration",):
+                if key in attrs:
+                    metadata[key] = _decode_annotation(attrs[key])
+        if "monalisa_calibration" not in metadata and path.name.lower().endswith((".tif", ".tiff")):
+            payload = _tiff_description_payload(path)
+            if "monalisa_calibration" in payload:
+                metadata["monalisa_calibration"] = _decode_annotation(payload["monalisa_calibration"])
+        return metadata
+    finally:
+        if owned_backing is not None:
+            owned_backing.checkAndUnloadData()
 
 
 def _display_name(path: Path, document) -> str:
@@ -66,7 +141,7 @@ def load_saved_result(
     if data is None:
         raise ValueError(f"Could not open image data in {path.name}")
 
-    metadata = {}
+    metadata = read_saved_result_metadata(path, backing)
     if document.graph is not None:
         metadata[PROVENANCE_KEY] = document.graph
     result = ArrayProcessingResult(
@@ -109,4 +184,4 @@ def load_saved_result(
     return result
 
 
-__all__ = ["load_saved_result"]
+__all__ = ["load_saved_result", "read_saved_result_metadata"]

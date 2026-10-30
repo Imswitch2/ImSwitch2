@@ -585,6 +585,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigReconstructionWorkspaceToggleRequested = QtCore.Signal(object)
     sigDiscardReconstructionRequested = QtCore.Signal(object)
     sigDiscardSelectedRequested = QtCore.Signal()
+    sigReuseCalibrationRequested = QtCore.Signal(object, str)
     sigAddSelectedReconstructionsRequested = QtCore.Signal()
     sigCloseSelectedDatasetReconstructionsRequested = QtCore.Signal()
     sigFollowActiveReconstructionChanged = QtCore.Signal(bool)
@@ -1290,6 +1291,22 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         if count <= 0:
             return
         menu = QtWidgets.QMenu(self)
+        if count == 1:
+            keys = self.savedList.selectedKeys()
+            key = keys[0] if keys else None
+            if key:
+                reuse = menu.addMenu("Reuse MoNaLISA calibration")
+                for label, mode in (
+                    ("Lock localization…", "localization"),
+                    ("Lock scan orientation", "orientation"),
+                    ("Lock both…", "both"),
+                ):
+                    action = reuse.addAction(label)
+                    action.triggered.connect(
+                        lambda _checked=False, k=key, m=mode:
+                            self.sigReuseCalibrationRequested.emit(k, m)
+                    )
+                menu.addSeparator()
         label = "Discard reconstruction…" if count == 1 else f"Discard selected ({count})…"
         discard = menu.addAction(label)
         discard.triggered.connect(self.sigDiscardSelectedRequested)

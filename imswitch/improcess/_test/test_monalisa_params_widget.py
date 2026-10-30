@@ -361,3 +361,73 @@ def test_embedded_localization_counts_as_current_auto_result(qapp):
 
     assert widget.has_auto_localization_for_current_data() is True
     assert "Embedded localization" in widget.previewStatusLabel.text()
+
+
+def test_reuse_calibration_snapshot_locks_both_and_selects_locked_modes(qapp, tmp_path, monkeypatch):
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+    from imswitch.improcess.reconstructors.monalisa.params import (
+        LOCALIZATION_LOCKED,
+        ORIENTATION_LOCKED,
+    )
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    widget._detector_id = "Camera"
+    localization = PatternLocalization.manual_grid(
+        period_x=10.0,
+        period_y=12.0,
+        offset_x=1.0,
+        offset_y=2.0,
+        source="auto",
+    )
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("Known good", True),
+    )
+
+    message = widget.reuse_calibration_snapshot(
+        {
+            "detector": "Camera",
+            "resolved_localization": localization.to_dict(),
+            "resolved_orientation": "-x-y",
+        },
+        mode="both",
+        source_label="MoNaLISA - Fast",
+    )
+
+    profiles = registry.localization_profiles("Camera")
+    assert len(profiles) == 1
+    assert profiles[0].name == "Known good"
+    assert profiles[0].localization.to_dict() == localization.to_dict()
+    assert registry.locked_orientation("Camera").orientation.to_literal() == "-x-y"
+    assert widget._combo_data(widget.localizationModeCombo) == LOCALIZATION_LOCKED
+    assert widget._combo_data(widget.orientationModeCombo) == ORIENTATION_LOCKED
+    assert "Known good" in message
+
+
+def test_reuse_calibration_snapshot_rejects_detector_mismatch(qapp, tmp_path):
+    from imswitch.improcess.reconstructors.monalisa.calibration import PatternLocalization
+    from imswitch.improcess.reconstructors.monalisa.session_registry import MonalisaSessionRegistry
+
+    registry = MonalisaSessionRegistry(tmp_path)
+    widget = MonalisaParamsWidget(session_registry=registry)
+    widget._detector_id = "CameraB"
+    localization = PatternLocalization.manual_grid(
+        period_x=10.0,
+        period_y=10.0,
+        offset_x=0.0,
+        offset_y=0.0,
+        source="auto",
+    )
+
+    with pytest.raises(ValueError, match="CameraA"):
+        widget.reuse_calibration_snapshot(
+            {
+                "detector": "CameraA",
+                "resolved_localization": localization.to_dict(),
+                "resolved_orientation": "+x+y",
+            },
+            mode="orientation",
+        )
