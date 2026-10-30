@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import h5py
 import numpy as np
@@ -126,7 +127,7 @@ def test_discovers_single_file_timelapse_as_one_dataset(tmp_path):
     assert all(Path(ref.path) == path for ref in dataset.source_refs)
 
 
-def test_saved_result_is_associated_by_provenance_and_final_persists(tmp_path):
+def test_saved_result_is_associated_by_provenance_and_persists(tmp_path):
     raw_root = tmp_path / "raw"
     results = tmp_path / "results"
     raw_path = _h5_image(raw_root / "scan01.h5")
@@ -137,14 +138,35 @@ def test_saved_result_is_associated_by_provenance_and_final_persists(tmp_path):
 
     dataset = session.datasets[0]
     assert [Path(item.path) for item in dataset.saved_reconstructions] == [saved]
-    # The common one-reconstruction-per-raw workflow resolves automatically.
-    assert dataset.status == "final"
-    assert dataset.final_reconstruction is not None
+    assert dataset.status == "reconstructed"
 
     reopened = ProcessingSession(raw_root, results)
     reopened.refresh()
-    assert reopened.datasets[0].status == "final"
-    assert reopened.datasets[0].final_reconstruction is not None
+    assert reopened.datasets[0].status == "reconstructed"
+    assert [Path(item.path) for item in reopened.datasets[0].saved_reconstructions] == [saved]
+
+
+def test_legacy_final_metadata_is_ignored_and_removed_on_refresh(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = tmp_path / "results"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+    _saved_reconstruction(raw_path, results)
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+    payload = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+    payload["schema"] = 2
+    payload["datasets"][0]["saved_reconstructions"][0]["final"] = True
+    session.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reopened = ProcessingSession(raw_root, results)
+    reopened.refresh()
+
+    assert reopened.datasets[0].status == "reconstructed"
+    assert len(reopened.datasets[0].saved_reconstructions) == 1
+    migrated = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
+    assert migrated["schema"] == 3
+    assert "final" not in migrated["datasets"][0]["saved_reconstructions"][0]
 
 
 def test_restore_saved_hdf5_result_is_lazy_and_keeps_provenance(tmp_path):
@@ -239,36 +261,27 @@ def test_session_autosave_stem_avoids_duplicating_long_raw_name():
     assert stem.count("13h03m56s") == 1
 
 
-def test_second_saved_result_enters_review_and_multiple_finals_are_allowed(tmp_path):
+def test_multiple_saved_results_remain_simple_reconstruction_collection(tmp_path):
     raw_root = tmp_path / "raw"
     results = tmp_path / "results"
     raw_path = _h5_image(raw_root / "scan01.h5")
     first = _saved_reconstruction(raw_path, results, "full")
+    second = _saved_reconstruction(raw_path, results, "full_test")
 
     session = ProcessingSession(raw_root, results)
     session.refresh()
     dataset = session.datasets[0]
-    assert dataset.status == "final"
-    assert [item.name for item in dataset.final_reconstructions] == ["full"]
 
-    second = _saved_reconstruction(raw_path, results, "full_test")
-    session.refresh()
-    dataset = session.datasets[0]
-    assert dataset.status == "review"
-    assert [item.name for item in dataset.final_reconstructions] == ["full"]
-    assert [item.name for item in dataset.candidate_reconstructions] == ["full_test"]
-
-    assert session.set_final(dataset.id, second, True)
-    assert dataset.status == "final"
-    assert {item.name for item in dataset.final_reconstructions} == {"full", "full_test"}
+    assert dataset.status == "reconstructed"
+    assert {item.name for item in dataset.saved_reconstructions} == {"full", "full_test"}
+    assert {Path(item.path) for item in dataset.saved_reconstructions} == {first, second}
 
     reopened = ProcessingSession(raw_root, results)
     reopened.refresh()
-    assert reopened.datasets[0].status == "final"
-    assert {item.name for item in reopened.datasets[0].final_reconstructions} == {
+    assert reopened.datasets[0].status == "reconstructed"
+    assert {item.name for item in reopened.datasets[0].saved_reconstructions} == {
         "full", "full_test"
     }
-
 
 def test_trash_reconstruction_hides_it_from_session_but_preserves_file(tmp_path):
     raw_root = tmp_path / "raw"
@@ -280,7 +293,7 @@ def test_trash_reconstruction_hides_it_from_session_but_preserves_file(tmp_path)
     session = ProcessingSession(raw_root, results)
     session.refresh()
     dataset = session.datasets[0]
-    assert dataset.status == "review"
+    assert dataset.status == "reconstructed"
 
     trashed = session.trash_reconstruction(dataset.id, second)
     assert trashed is not None
@@ -290,7 +303,7 @@ def test_trash_reconstruction_hides_it_from_session_but_preserves_file(tmp_path)
 
     session.refresh()
     dataset = session.datasets[0]
-    assert dataset.status == "final"
+    assert dataset.status == "reconstructed"
     assert [Path(item.path) for item in dataset.saved_reconstructions] == [first]
 
 
@@ -355,7 +368,7 @@ def test_deleted_raw_dataset_can_remain_as_session_tombstone(tmp_path):
     dataset = session.datasets[0]
     assert dataset.id == dataset_id
     assert dataset.raw_deleted is True
-    assert dataset.status == "final"
+    assert dataset.status == "reconstructed"
     assert [Path(item.path) for item in dataset.saved_reconstructions] == [saved]
 
 

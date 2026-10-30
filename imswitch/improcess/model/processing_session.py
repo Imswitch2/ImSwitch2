@@ -71,7 +71,6 @@ class SavedReconstruction:
     path: str
     # Compact Session-facing description (for example ``MoNaLISA - Fast``).
     name: str
-    final: bool = False
     # Reconstruction-object display name to restore on the right-hand list.
     display_name: str = ""
     # Rich but lightweight provenance summary for the Session tooltip.
@@ -97,29 +96,9 @@ class SessionDataset:
     saved_reconstructions: list[SavedReconstruction] = field(default_factory=list)
 
     @property
-    def final_reconstructions(self) -> list[SavedReconstruction]:
-        """Saved reconstructions explicitly kept as final outputs."""
-        return [item for item in self.saved_reconstructions if item.final]
-
-    @property
-    def candidate_reconstructions(self) -> list[SavedReconstruction]:
-        """Saved reconstructions that still need a keep/discard decision."""
-        return [item for item in self.saved_reconstructions if not item.final]
-
-    @property
-    def final_reconstruction(self) -> SavedReconstruction | None:
-        """Compatibility helper returning the first kept result, if any."""
-        return next(iter(self.final_reconstructions), None)
-
-    @property
     def status(self) -> str:
-        # "FINAL" means the dataset is resolved: it may intentionally have
-        # several kept outputs.  Any undecided saved candidate makes it REVIEW.
-        if self.candidate_reconstructions:
-            return "review"
-        if self.final_reconstructions:
-            return "final"
-        return "raw"
+        """Compact compatibility state: reconstructed or raw only."""
+        return "reconstructed" if self.saved_reconstructions else "raw"
 
     def matches_source(self, path: str | None, dataset: str | None = None) -> bool:
         if not path:
@@ -144,7 +123,7 @@ class SessionDataset:
 class ProcessingSession:
     """Persistent catalog of raw acquisitions and saved reconstructions."""
 
-    schema = 2
+    schema = 3
 
     def __init__(self, raw_root: str | Path, results_root: str | Path):
         self.raw_root = Path(raw_root).expanduser().resolve()
@@ -162,14 +141,13 @@ class ProcessingSession:
     def refresh(self) -> None:
         """Rebuild the lightweight catalog without materialising image pixels."""
         payload = self._read_manifest_payload()
-        remembered_final = self._final_paths_from_payload(payload)
         remembered_deleted = self._deleted_datasets_from_payload(payload)
         self.datasets = self._discover_raw_datasets()
         discovered_ids = {dataset.id for dataset in self.datasets}
         self.datasets.extend(
             dataset for dataset in remembered_deleted if dataset.id not in discovered_ids
         )
-        self._discover_saved_reconstructions(remembered_final)
+        self._discover_saved_reconstructions()
         self.save_manifest()
 
     def _candidate_raw_sources(self) -> Iterable[Path]:
@@ -362,7 +340,7 @@ class ProcessingSession:
                 descriptions.append(source)
         return descriptions
 
-    def _discover_saved_reconstructions(self, remembered_final: set[str]) -> None:
+    def _discover_saved_reconstructions(self) -> None:
         for path in self._result_candidates():
             try:
                 document = read_provenance(path)
@@ -372,26 +350,13 @@ class ProcessingSession:
             dataset = self._dataset_for_sources(sources)
             if dataset is None:
                 continue
-            normalized = _norm_path(path)
             session_name, display_name, tooltip = self._result_presentation(path, document)
             dataset.saved_reconstructions.append(SavedReconstruction(
                 path=str(path.resolve()),
                 name=session_name,
-                final=normalized in remembered_final,
                 display_name=display_name,
                 tooltip=tooltip,
             ))
-
-        # Common case: one reconstruction per acquisition should need no
-        # curation step.  The first/only persistent reconstruction is therefore
-        # automatically kept.  As soon as another result appears it starts as a
-        # candidate while the existing final remains safely kept.
-        for dataset in self.datasets:
-            if (
-                len(dataset.saved_reconstructions) == 1
-                and not dataset.saved_reconstructions[0].final
-            ):
-                dataset.saved_reconstructions[0].final = True
 
     def _dataset_for_sources(self, sources: Iterable[dict]) -> SessionDataset | None:
         for source in sources:
@@ -503,27 +468,6 @@ class ProcessingSession:
         document = type("_Doc", (), {"graph": graph})()
         return self._dataset_for_sources(self._source_descriptions(document))
 
-    def set_final(
-        self,
-        dataset_id: str,
-        result_path: str | Path,
-        final: bool = True,
-    ) -> bool:
-        """Mark one saved result kept/final without changing other kept results."""
-        dataset = self.dataset_by_id(dataset_id)
-        if dataset is None:
-            return False
-        wanted = _norm_path(result_path)
-        for result in dataset.saved_reconstructions:
-            if _norm_path(result.path) != wanted:
-                continue
-            changed = result.final != bool(final)
-            result.final = bool(final)
-            if changed:
-                self.save_manifest()
-            return True
-        return False
-
     def trash_reconstruction(
         self, dataset_id: str, result_path: str | Path
     ) -> Path | None:
@@ -572,17 +516,6 @@ class ProcessingSession:
         except (OSError, ValueError, TypeError):
             return {}
         return payload if isinstance(payload, dict) else {}
-
-    def _final_paths_from_payload(self, payload: dict) -> set[str]:
-        paths: set[str] = set()
-        for dataset in payload.get("datasets", []) if isinstance(payload, dict) else []:
-            for result in dataset.get("saved_reconstructions", []) if isinstance(dataset, dict) else []:
-                if isinstance(result, dict) and result.get("final") and result.get("path"):
-                    path = Path(result["path"])
-                    if not path.is_absolute():
-                        path = self.results_root / path
-                    paths.add(_norm_path(path))
-        return paths
 
     def _deleted_datasets_from_payload(self, payload: dict) -> list[SessionDataset]:
         out: list[SessionDataset] = []

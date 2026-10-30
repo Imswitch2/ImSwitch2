@@ -153,11 +153,104 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
         return hint
 
 
-class _ReconstructionReviewTree(QtWidgets.QTreeWidget):
-    """Compact multi-select reconstruction review list with inline actions."""
+class _SessionSplitterHandle(QtWidgets.QSplitterHandle):
+    """Lightweight splitter boundary that also summarizes reconstruction state.
 
-    sigFinalToggleRequested = QtCore.Signal(object)
+    The handle keeps a normal-sized mouse target for dragging, but deliberately
+    paints no native splitter chrome.  Visually it is only a compact disclosure
+    label followed by a one-pixel separator line.
+    """
+
+    sigExpandedChanged = QtCore.Signal(bool)
+
+    def __init__(self, orientation, parent):
+        super().__init__(orientation, parent)
+        self.setCursor(QtCore.Qt.SplitVCursor)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        # The handle remains a normal-sized drag target, but contributes no
+        # visible panel/header background of its own.
+        self.setStyleSheet("background: transparent; border: none;")
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.toggle = QtWidgets.QToolButton(self)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(False)
+        self.toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.toggle.setAutoRaise(True)
+        self.toggle.setText("› Recon (0)")
+        self.toggle.setCursor(QtCore.Qt.ArrowCursor)
+        self.toggle.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.toggle.setStyleSheet(
+            "QToolButton { border: none; background: transparent; padding: 0 2px 0 0; }"
+            "QToolButton:hover { border: none; background: transparent; }"
+            "QToolButton:pressed { border: none; background: transparent; }"
+        )
+        self.toggle.toggled.connect(self._toggle_changed)
+        layout.addWidget(self.toggle)
+        layout.addStretch(1)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setHeight(self.fontMetrics().height() + 2)
+        return hint
+
+    def paintEvent(self, event) -> None:
+        # Do not call QSplitterHandle.paintEvent(): native styles otherwise draw
+        # a raised/sunken handle background that makes this boundary look bulky.
+        painter = QtGui.QPainter(self)
+        color = self.palette().color(QtGui.QPalette.Mid)
+        color.setAlpha(150)
+        painter.setPen(QtGui.QPen(color, 1))
+        y = self.rect().center().y()
+        start_x = self.toggle.geometry().right() + 5
+        if start_x < self.width():
+            painter.drawLine(start_x, y, self.width() - 1, y)
+
+    def _update_toggle_text(self) -> None:
+        marker = "⌄" if self.toggle.isChecked() else "›"
+        summary = str(self.toggle.property("summaryText") or "Recon (0)")
+        self.toggle.setText(f"{marker} {summary}")
+
+    def _toggle_changed(self, expanded: bool) -> None:
+        self._update_toggle_text()
+        self.sigExpandedChanged.emit(bool(expanded))
+
+    def setExpanded(self, expanded: bool) -> None:
+        expanded = bool(expanded)
+        if self.toggle.isChecked() != expanded:
+            self.toggle.blockSignals(True)
+            self.toggle.setChecked(expanded)
+            self.toggle.blockSignals(False)
+        self._update_toggle_text()
+
+    def setSummary(self, total: int, in_panel: int, *, tooltip: str = "") -> None:
+        total = max(0, int(total))
+        in_panel = max(0, int(in_panel))
+        text = f"Recon ({total})"
+        if total:
+            text += f" · {in_panel} in panel"
+        self.toggle.setProperty("summaryText", text)
+        self._update_toggle_text()
+        if tooltip:
+            self.toggle.setToolTip(str(tooltip))
+
+
+class _SessionSplitter(QtWidgets.QSplitter):
+    """Vertical splitter whose boundary doubles as the reconstruction header."""
+
+    def createHandle(self):
+        return _SessionSplitterHandle(self.orientation(), self)
+
+
+class _ReconstructionTree(QtWidgets.QTreeWidget):
+    """Compact multi-select reconstruction list with inline workspace actions."""
+
     sigWorkspaceToggleRequested = QtCore.Signal(object)
+    sigDiscardRequested = QtCore.Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -171,8 +264,7 @@ class _ReconstructionReviewTree(QtWidgets.QTreeWidget):
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.setMinimumWidth(0)
-        self.setMinimumHeight(68)
-        self.setMaximumHeight(155)
+        self._preferredHeight = 68
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Ignored,
             QtWidgets.QSizePolicy.Preferred,
@@ -183,21 +275,44 @@ class _ReconstructionReviewTree(QtWidgets.QTreeWidget):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
-        header.resizeSection(1, 28)
-        header.resizeSection(2, 82)
+        header.resizeSection(1, 48)
+        header.resizeSection(2, 62)
+
+    def _heightForRows(self, rows: int) -> int:
+        """Return a DPI-aware tree height for the requested number of rows."""
+        row_height = self.sizeHintForRow(0) if self.topLevelItemCount() else -1
+        if row_height <= 0:
+            row_height = max(
+                self.fontMetrics().height() + 8,
+                self.style().pixelMetric(QtWidgets.QStyle.PM_SmallIconSize) + 8,
+            )
+        return self.frameWidth() * 2 + max(1, int(rows)) * row_height + 2
+
+    def _updateAdaptiveHeight(self) -> None:
+        """Prefer 1--3 visible rows while allowing the splitter to grow further."""
+        # Item widgets (Add/Close/trash buttons) can affect the effective row
+        # height, so ask the view for its row metric after entries are populated.
+        self.doItemsLayout()
+        count = self.topLevelItemCount()
+        visible_rows = max(1, min(count, 3))
+        self._preferredHeight = self._heightForRows(visible_rows)
+        self.setMinimumHeight(self._heightForRows(1))
+        self.setMaximumHeight(16777215)
+        self.updateGeometry()
+
+    def preferredHeight(self) -> int:
+        return int(self._preferredHeight)
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
         hint.setWidth(0)
-        hint.setHeight(68)
+        hint.setHeight(self._heightForRows(1))
         return hint
 
     def sizeHint(self):
         hint = super().sizeHint()
         hint.setWidth(0)
-        # Roughly 3--4 candidates by default; longer lists scroll but can use
-        # a little more height when the Session dock itself has room.
-        hint.setHeight(102)
+        hint.setHeight(self._preferredHeight)
         return hint
 
     def selectedKeys(self) -> list[str]:
@@ -215,54 +330,24 @@ class _ReconstructionReviewTree(QtWidgets.QTreeWidget):
         restore_current = None
         palette = self.palette()
         normal = palette.color(QtGui.QPalette.Text)
-        try:
-            muted = palette.color(QtGui.QPalette.PlaceholderText)
-        except AttributeError:
-            muted = palette.color(QtGui.QPalette.Mid)
-        dark = palette.color(QtGui.QPalette.Base).lightness() < 128
-        final_color = QtGui.QColor("#72c98c" if dark else "#2e7d32")
-        candidate_color = QtGui.QColor("#ffb457" if dark else "#b56a00")
 
         for entry in entries:
             key = str(entry.get("key", ""))
             name = str(entry.get("name", "reconstruction"))
-            final = bool(entry.get("final", False))
             loaded = bool(entry.get("loaded", False))
             saved = bool(entry.get("saved", False))
 
             item = QtWidgets.QTreeWidgetItem([name, "", ""])
             item.setData(0, QtCore.Qt.UserRole, key)
             item.setToolTip(0, str(entry.get("tooltip") or name))
-            item.setForeground(0, final_color if final else candidate_color)
-            font = item.font(0)
-            font.setBold(final)
-            item.setFont(0, font)
+            item.setForeground(0, normal)
             self.addTopLevelItem(item)
 
-            star = QtWidgets.QToolButton()
-            star.setText("★" if final else "☆")
-            star.setAutoRaise(True)
-            star.setFixedWidth(26)
-            star.setToolTip(
-                "Final/kept reconstruction — click to make candidate"
-                if final
-                else "Candidate reconstruction — click to keep as final"
-            )
-            # Emit only the stable Session key.  Never capture the QTreeWidgetItem
-            # here: action signals can synchronously trigger a Session rerender,
-            # which clears the tree and deletes the underlying C++ item.
-            star.clicked.connect(
-                lambda _checked=False, k=key: self.sigFinalToggleRequested.emit(k)
-            )
-            self.setItemWidget(item, 1, star)
-
-            workspace = QtWidgets.QPushButton("Close" if loaded else "Add")
-            workspace.setMinimumWidth(0)
-            workspace.setMaximumWidth(78)
-            workspace.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding,
-                QtWidgets.QSizePolicy.Fixed,
-            )
+            workspace = QtWidgets.QToolButton()
+            workspace.setText("Close" if loaded else "Add")
+            workspace.setAutoRaise(True)
+            workspace.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+            workspace.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             if loaded:
                 workspace.setToolTip(
                     "Close this reconstruction object from the right-hand list; saved Session data is preserved"
@@ -275,7 +360,19 @@ class _ReconstructionReviewTree(QtWidgets.QTreeWidget):
             workspace.clicked.connect(
                 lambda _checked=False, k=key: self.sigWorkspaceToggleRequested.emit(k)
             )
-            self.setItemWidget(item, 2, workspace)
+            self.setItemWidget(item, 1, workspace)
+
+            discard = QtWidgets.QToolButton()
+            discard.setText("Discard")
+            discard.setAutoRaise(True)
+            discard.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+            discard.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            discard.setStyleSheet("QToolButton { padding: 0 3px; }")
+            discard.setToolTip("Move this reconstruction to Session trash")
+            discard.clicked.connect(
+                lambda _checked=False, k=key: self.sigDiscardRequested.emit(k)
+            )
+            self.setItemWidget(item, 2, discard)
 
             if key in selected_before:
                 item.setSelected(True)
@@ -286,6 +383,7 @@ class _ReconstructionReviewTree(QtWidgets.QTreeWidget):
             self.setCurrentItem(restore_current)
             restore_current.setSelected(True)
         self.blockSignals(False)
+        self._updateAdaptiveHeight()
 
 
 class _SessionConfigurationDialog(QtWidgets.QDialog):
@@ -350,7 +448,6 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
         resume_layout.addWidget(QtWidgets.QLabel("On resume"))
         self.resumeReconCombo = QtWidgets.QComboBox()
         self.resumeReconCombo.addItem("Don't add reconstructions", "none")
-        self.resumeReconCombo.addItem("Add final reconstructions", "final")
         self.resumeReconCombo.addItem("Add all saved reconstructions", "all")
         resume_layout.addWidget(self.resumeReconCombo, 1)
         self.resumeOptions.setVisible(False)
@@ -406,27 +503,22 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
             self._updateState()
 
     @staticmethod
-    def _manifest_counts(manifest: Path) -> tuple[int, int, int]:
+    def _manifest_counts(manifest: Path) -> tuple[int, int]:
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return 0, 0, 0
+            return 0, 0
         datasets = payload.get("datasets", []) if isinstance(payload, dict) else []
         dataset_count = 0
-        final_count = 0
         saved_count = 0
         for dataset in datasets if isinstance(datasets, list) else []:
             if not isinstance(dataset, dict):
                 continue
             dataset_count += 1
             results = dataset.get("saved_reconstructions", [])
-            for result in results if isinstance(results, list) else []:
-                if not isinstance(result, dict):
-                    continue
-                saved_count += 1
-                if bool(result.get("final")):
-                    final_count += 1
-        return dataset_count, final_count, saved_count
+            if isinstance(results, list):
+                saved_count += sum(1 for result in results if isinstance(result, dict))
+        return dataset_count, saved_count
 
     def _updateState(self) -> None:
         raw = Path(self.rawEdit.text()).expanduser() if self.rawEdit.text() else None
@@ -439,36 +531,17 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
         )
         if manifest is not None and manifest.exists():
             self.primaryBtn.setText("Resume session" if not active_same else "Apply")
-            dataset_count, final_count, saved_count = self._manifest_counts(manifest)
-            candidate_count = max(0, saved_count - final_count)
+            dataset_count, saved_count = self._manifest_counts(manifest)
             dataset_word = "datasets" if dataset_count != 1 else "dataset"
-            final_word = "reconstructions" if final_count != 1 else "reconstruction"
-            details = (
+            recon_word = "reconstructions" if saved_count != 1 else "reconstruction"
+            self.infoLabel.setText(
                 f"Existing Session found · {dataset_count} {dataset_word} · "
-                f"{final_count} final {final_word}"
+                f"{saved_count} saved {recon_word}"
             )
-            if candidate_count:
-                candidate_word = "candidates" if candidate_count != 1 else "candidate"
-                details += f" · {candidate_count} additional saved {candidate_word}"
-            self.infoLabel.setText(details)
             self.resumeOptions.setVisible(not active_same and bool(saved_count))
-            final_text = (
-                f"Add final reconstructions ({final_count})"
-                if final_count
-                else "Add final reconstructions"
+            self.resumeReconCombo.setItemText(
+                1, f"Add all saved reconstructions ({saved_count})"
             )
-            self.resumeReconCombo.setItemText(1, final_text)
-            final_item = self.resumeReconCombo.model().item(1)
-            if final_item is not None:
-                final_item.setEnabled(bool(final_count))
-            all_text = (
-                f"Add all saved reconstructions ({saved_count})"
-                if saved_count
-                else "Add all saved reconstructions"
-            )
-            self.resumeReconCombo.setItemText(2, all_text)
-            if not final_count and self.resumeReconCombo.currentData() == "final":
-                self.resumeReconCombo.setCurrentIndex(0)
         elif active_same:
             self.primaryBtn.setText("Apply")
             self.infoLabel.setText("Update settings for the active Session.")
@@ -509,16 +582,14 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigRevealRawRequested = QtCore.Signal()
     sigCopyRawPathRequested = QtCore.Signal()
     sigDeleteRawRequested = QtCore.Signal()
-    sigReconstructionFinalToggleRequested = QtCore.Signal(object)
     sigReconstructionWorkspaceToggleRequested = QtCore.Signal(object)
+    sigDiscardReconstructionRequested = QtCore.Signal(object)
     sigDiscardSelectedRequested = QtCore.Signal()
-    sigDiscardCandidatesRequested = QtCore.Signal()
-    sigAddSelectedReconstructionsRequested = QtCore.Signal(object)
+    sigAddSelectedReconstructionsRequested = QtCore.Signal()
     sigCloseSelectedDatasetReconstructionsRequested = QtCore.Signal()
     sigFollowActiveReconstructionChanged = QtCore.Signal(bool)
     sigCancelAddingRequested = QtCore.Signal()
     sigCloseSessionReconstructionsRequested = QtCore.Signal()
-    sigCleanUpSessionRequested = QtCore.Signal()
     sigEmptyTrashRequested = QtCore.Signal()
     sigRevealRawFolderRequested = QtCore.Signal()
     sigRevealResultsFolderRequested = QtCore.Signal()
@@ -572,7 +643,6 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.actionsMenu.addSeparator()
         self.closeReconstructionsAction = self.actionsMenu.addAction("Close session reconstructions")
         self.actionsMenu.addSeparator()
-        self.cleanupSessionAction = self.actionsMenu.addAction("Clean up session…")
         self.emptyTrashAction = self.actionsMenu.addAction("Empty Session trash…")
         self.actionsMenu.addSeparator()
         self.revealRawFolderAction = self.actionsMenu.addAction("Reveal raw folder")
@@ -657,8 +727,6 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.datasetShowCombo.addItem("All", "all")
         self.datasetShowCombo.addItem("No recon", "raw")
         self.datasetShowCombo.addItem("Reconstructed", "reconstructed")
-        self.datasetShowCombo.addItem("To review", "review")
-        self.datasetShowCombo.addItem("Resolved", "final")
         self.datasetShowCombo.setToolTip("Filter by reconstruction status")
         self.datasetShowCombo.setMinimumWidth(100)
         self.datasetShowCombo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
@@ -700,40 +768,47 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.datasetList = _CompactDatasetTree()
         self.datasetList.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         datasets_layout.addWidget(self.datasetList)
-        root.addWidget(datasets_box, 1)
 
-        selected_summary = QtWidgets.QHBoxLayout()
-        selected_summary.setContentsMargins(0, 0, 0, 0)
-        selected_summary.setSpacing(4)
-        self.summaryLabel = _ElidingLabel("No dataset selected")
-        self.loadRawBtn = QtWidgets.QPushButton("Load raw")
-        self.loadRawBtn.setToolTip("Load the selected raw dataset")
-        self.loadRawBtn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        selected_summary.addWidget(self.summaryLabel, 1)
-        selected_summary.addWidget(self.loadRawBtn, 0)
-        root.addLayout(selected_summary)
+        # The Session boundary itself carries the reconstruction summary.  This
+        # avoids a separate selected-data row and a separate reconstruction title.
+        top_pane = QtWidgets.QWidget()
+        top_pane.setMinimumWidth(0)
+        top_layout = QtWidgets.QVBoxLayout(top_pane)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
+        top_layout.addWidget(datasets_box, 1)
 
-        self.reviewSection = _CollapsibleSection("Reconstructions (0)", expanded=False)
-        review_layout = QtWidgets.QVBoxLayout()
-        review_layout.setContentsMargins(0, 0, 0, 0)
-        review_layout.setSpacing(4)
-        self.savedList = _ReconstructionReviewTree()
-        review_layout.addWidget(self.savedList)
-        cleanup_row = QtWidgets.QHBoxLayout()
-        cleanup_row.setContentsMargins(0, 0, 0, 0)
-        cleanup_row.setSpacing(4)
-        self.discardSelectedBtn = QtWidgets.QPushButton("Discard selected")
-        self.discardCandidatesBtn = QtWidgets.QPushButton("Discard candidates")
-        self.discardSelectedBtn.setToolTip("Move the selected reconstruction(s) to Session trash")
-        self.discardCandidatesBtn.setToolTip("Discard every non-final reconstruction for the selected raw dataset")
-        for button in (self.discardSelectedBtn, self.discardCandidatesBtn):
-            button.setMinimumWidth(0)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        cleanup_row.addWidget(self.discardSelectedBtn, 1)
-        cleanup_row.addWidget(self.discardCandidatesBtn, 1)
-        review_layout.addLayout(cleanup_row)
-        self.reviewSection.setContentLayout(review_layout)
-        root.addWidget(self.reviewSection)
+        self.reconPane = QtWidgets.QWidget()
+        self.reconPane.setMinimumWidth(0)
+        recon_layout = QtWidgets.QVBoxLayout(self.reconPane)
+        recon_layout.setContentsMargins(0, 0, 0, 0)
+        recon_layout.setSpacing(0)
+
+        self.savedList = _ReconstructionTree()
+        self.savedList.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.savedList.setVisible(False)
+        recon_layout.addWidget(self.savedList, 1)
+
+        self.sessionSplitter = _SessionSplitter(QtCore.Qt.Vertical)
+        self.sessionSplitter.setChildrenCollapsible(True)
+        self.sessionSplitter.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.sessionSplitter.setAutoFillBackground(False)
+        self.sessionSplitter.setStyleSheet(
+            "QSplitter { background: transparent; border: none; }"
+            "QSplitter::handle { background: transparent; border: none; }"
+        )
+        self.sessionSplitter.addWidget(top_pane)
+        self.sessionSplitter.addWidget(self.reconPane)
+        self.sessionSplitter.setStretchFactor(0, 1)
+        self.sessionSplitter.setStretchFactor(1, 0)
+        self.reconHandle = self.sessionSplitter.handle(1)
+        self.sessionSplitter.setHandleWidth(self.reconHandle.sizeHint().height())
+        root.addWidget(self.sessionSplitter, 1)
+
+        self._reconUserExpanded = False
+        self._reconLastExpandedHeight = 0
+        self._programmaticSplitterMove = False
+        self._selectedDatasetTitle = ""
 
         self.statusLabel = _ElidingLabel("No session active")
         root.addWidget(self.statusLabel)
@@ -746,7 +821,6 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             self.sigFollowActiveReconstructionChanged
         )
         self.closeReconstructionsAction.triggered.connect(self.sigCloseSessionReconstructionsRequested)
-        self.cleanupSessionAction.triggered.connect(self.sigCleanUpSessionRequested)
         self.emptyTrashAction.triggered.connect(self.sigEmptyTrashRequested)
         self.revealRawFolderAction.triggered.connect(self.sigRevealRawFolderRequested)
         self.revealResultsFolderAction.triggered.connect(self.sigRevealResultsFolderRequested)
@@ -758,16 +832,15 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.datasetShowCombo.currentIndexChanged.connect(self._applyDatasetView)
         self.statusOrderGroup.triggered.connect(self._statusOrderChanged)
         self.savedList.currentItemChanged.connect(self._saved_changed)
-        self.savedList.sigFinalToggleRequested.connect(self.sigReconstructionFinalToggleRequested)
         self.savedList.sigWorkspaceToggleRequested.connect(self.sigReconstructionWorkspaceToggleRequested)
-        self.savedList.itemSelectionChanged.connect(self._review_selection_changed)
-        self.loadRawBtn.clicked.connect(self.sigLoadRawRequested)
-        self.discardSelectedBtn.clicked.connect(self.sigDiscardSelectedRequested)
-        self.discardCandidatesBtn.clicked.connect(self.sigDiscardCandidatesRequested)
+        self.savedList.sigDiscardRequested.connect(self.sigDiscardReconstructionRequested)
+        self.savedList.customContextMenuRequested.connect(self._reconstruction_context_menu)
+        self.reconHandle.sigExpandedChanged.connect(self._recon_header_toggled)
+        self.sessionSplitter.splitterMoved.connect(self._recon_splitter_moved)
 
         self.setSessionActive(False)
-        self.setActionsEnabled(False, False, False)
-        self.reviewSection.toggle.setEnabled(False)
+        self.reconHandle.toggle.setEnabled(False)
+        QtCore.QTimer.singleShot(0, lambda: self._apply_recon_expanded(False, remember=False))
 
     def requestSessionConfiguration(
         self,
@@ -850,26 +923,16 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("saved_count", 0))
             for item in selected_items
         )
-        final_count = sum(
-            int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("final_count", 0))
-            for item in selected_items
-        )
         panel_count = sum(
             int((item.data(0, QtCore.Qt.UserRole + 1) or {}).get("panel_count", 0))
             for item in selected_items
         )
         if saved_count:
-            add_menu = menu.addMenu("Add reconstructions")
-            finals = add_menu.addAction(
-                f"Final only ({final_count})" if final_count else "Final only"
+            add_saved = menu.addAction(
+                f"Add reconstructions ({saved_count})"
             )
-            finals.setEnabled(bool(final_count))
-            finals.triggered.connect(
-                lambda _checked=False: self.sigAddSelectedReconstructionsRequested.emit("final")
-            )
-            all_saved = add_menu.addAction(f"All saved ({saved_count})")
-            all_saved.triggered.connect(
-                lambda _checked=False: self.sigAddSelectedReconstructionsRequested.emit("all")
+            add_saved.triggered.connect(
+                lambda _checked=False: self.sigAddSelectedReconstructionsRequested.emit()
             )
             menu.addSeparator()
 
@@ -925,8 +988,56 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             return True
         return False
 
-    def setReviewExpanded(self, expanded: bool = True) -> None:
-        self.reviewSection.setExpanded(bool(expanded))
+    def _preferred_recon_pane_height(self) -> int:
+        return int(self.savedList.preferredHeight())
+
+    def _set_splitter_recon_height(self, height: int) -> None:
+        sizes = list(self.sessionSplitter.sizes())
+        total = sum(sizes)
+        if total <= 0:
+            total = max(1, int(self.sessionSplitter.height()))
+        target = max(0, int(height))
+        top_min = max(1, int(self.sessionSplitter.widget(0).minimumSizeHint().height()))
+        if total > top_min:
+            target = min(target, max(0, total - top_min))
+        self._programmaticSplitterMove = True
+        try:
+            self.sessionSplitter.setSizes([max(1, total - target), target])
+        finally:
+            self._programmaticSplitterMove = False
+
+    def _apply_recon_expanded(self, expanded: bool, *, remember: bool) -> None:
+        # Expansion is a user preference, not a consequence of result count.
+        # Keep an empty Recon (0) pane open when the user left it open so the
+        # Session layout does not jump while navigating raw datasets.
+        expanded = bool(expanded)
+        if remember:
+            self._reconUserExpanded = expanded
+        self.reconHandle.setExpanded(expanded)
+
+        if expanded:
+            self.savedList.setVisible(True)
+            target = self._reconLastExpandedHeight or self._preferred_recon_pane_height()
+            QtCore.QTimer.singleShot(0, lambda h=target: self._set_splitter_recon_height(h))
+        else:
+            sizes = self.sessionSplitter.sizes()
+            if self.savedList.isVisible() and len(sizes) > 1 and int(sizes[1]) > 0:
+                self._reconLastExpandedHeight = int(sizes[1])
+            self.savedList.setVisible(False)
+            QtCore.QTimer.singleShot(0, lambda: self._set_splitter_recon_height(0))
+
+    def _recon_header_toggled(self, expanded: bool) -> None:
+        self._apply_recon_expanded(bool(expanded), remember=True)
+
+    def _recon_splitter_moved(self, _pos: int, _index: int) -> None:
+        if self._programmaticSplitterMove or not self.savedList.isVisible():
+            return
+        sizes = self.sessionSplitter.sizes()
+        if len(sizes) > 1 and sizes[1] > 0:
+            self._reconLastExpandedHeight = int(sizes[1])
+
+    def setReconstructionsExpanded(self, expanded: bool = True) -> None:
+        self._apply_recon_expanded(bool(expanded), remember=True)
 
     def setFollowActiveReconstruction(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -946,7 +1057,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         if mode == "all":
             return True
         if mode == "reconstructed":
-            return state in {"review", "final"}
+            return state == "reconstructed"
         return state == mode
 
     def _datasetOrderChanged(self, action) -> None:
@@ -965,7 +1076,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         if mode == "raw":
             return 0 if state == "raw" else 1
         if mode == "reconstructed":
-            return 0 if state in {"review", "final"} else 1
+            return 0 if state == "reconstructed" else 1
         return 0
 
     def _dataset_colors(self):
@@ -976,25 +1087,20 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         except AttributeError:
             muted = palette.color(QtGui.QPalette.Mid)
         dark = palette.color(QtGui.QPalette.Base).lightness() < 128
-        final = QtGui.QColor("#72c98c" if dark else "#2e7d32")
-        review = QtGui.QColor("#ffb457" if dark else "#b56a00")
+        reconstructed = QtGui.QColor("#72c98c" if dark else "#2e7d32")
         active = palette.color(QtGui.QPalette.Highlight)
-        return normal, muted, final, review, active
+        return normal, muted, reconstructed, active
 
     def _styleDatasetItem(self, item, state: str) -> None:
         state = str(state or "raw").lower()
-        normal, muted, final, review, active = self._dataset_colors()
+        normal, muted, reconstructed, active = self._dataset_colors()
         name_font = item.font(0)
         status_font = item.font(2)
         name_font.setBold(False)
         status_font.setBold(True)
-        if state == "final":
+        if state == "reconstructed":
             item.setForeground(0, muted)
-            item.setForeground(2, final)
-        elif state == "review":
-            name_font.setBold(True)
-            item.setForeground(0, normal)
-            item.setForeground(2, review)
+            item.setForeground(2, reconstructed)
         elif state in {"running", "queued", "loading"}:
             name_font.setBold(True)
             item.setForeground(0, normal)
@@ -1002,7 +1108,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         elif state == "failed":
             name_font.setBold(True)
             item.setForeground(0, normal)
-            item.setForeground(2, review)
+            item.setForeground(2, normal)
         else:
             item.setForeground(0, normal)
             item.setForeground(2, normal)
@@ -1084,42 +1190,66 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._datasetEntries = [dict(entry) for entry in entries]
         self._applyDatasetView()
 
-    def setSelectedDataset(self, title: str, summary: str) -> None:
-        title = str(title or "")
-        compact = str(summary or "").replace("\n", " · ")
-        self.summaryLabel.setText(f"Selected: {compact}" if title and compact else "No dataset selected")
-        self.summaryLabel.setToolTip(f"{title}\n{compact}" if title and compact else (title or "No dataset selected"))
-        has_dataset = bool(title)
-        self.reviewSection.toggle.setEnabled(has_dataset)
+    def setSelectedDataset(self, title: str, _summary: str) -> None:
+        self._selectedDatasetTitle = str(title or "")
+        has_dataset = bool(self._selectedDatasetTitle)
+        self.reconHandle.toggle.setEnabled(has_dataset)
+        self.reconHandle.setVisible(has_dataset)
+        self.reconPane.setVisible(has_dataset)
         if not has_dataset:
-            self.reviewSection.setExpanded(False)
+            self._apply_recon_expanded(False, remember=False)
 
     def setSavedReconstructions(self, entries: list[dict], selected_path: str | None = None) -> None:
-        self.reviewSection.setTitle(f"Reconstructions ({len(entries)})")
+        count = len(entries)
+        panel_count = sum(1 for entry in entries if bool(entry.get("loaded", False)))
         self.savedList.setEntries(entries, selected_path)
+        tooltip = self._selectedDatasetTitle
+        if count:
+            tooltip = (tooltip + "\n" if tooltip else "") + (
+                f"{count} reconstruction{'s' if count != 1 else ''} associated · "
+                f"{panel_count} in panel"
+            )
+        self.reconHandle.setSummary(count, panel_count, tooltip=tooltip)
+        has_dataset = bool(self._selectedDatasetTitle)
+        self.reconPane.setVisible(has_dataset)
+        self.reconHandle.setVisible(has_dataset)
+        self.reconHandle.toggle.setEnabled(has_dataset)
+        if has_dataset:
+            if self._reconUserExpanded:
+                self._apply_recon_expanded(True, remember=False)
+            elif not self.savedList.isVisible():
+                self._apply_recon_expanded(False, remember=False)
+        else:
+            self._apply_recon_expanded(False, remember=False)
         if selected_path is None:
             self.sigSavedSelectionChanged.emit(None)
-        self._review_selection_changed()
 
     def selectedReconstructionKeys(self) -> list[str]:
         return self.savedList.selectedKeys()
 
     def clearReconstructionSelection(self) -> None:
-        """Clear review-list selection without feeding a navigation signal back."""
+        """Clear reconstruction-list selection without feeding a navigation signal back."""
         self.savedList.blockSignals(True)
         try:
             self.savedList.clearSelection()
         finally:
             self.savedList.blockSignals(False)
-        self._review_selection_changed()
 
-    def _review_selection_changed(self) -> None:
-        self.discardSelectedBtn.setEnabled(bool(self.savedList.selectedItems()))
-
-    def setActionsEnabled(self, load_raw: bool, discard_selected: bool, discard_candidates: bool) -> None:
-        self.loadRawBtn.setEnabled(bool(load_raw))
-        self.discardSelectedBtn.setEnabled(bool(discard_selected))
-        self.discardCandidatesBtn.setEnabled(bool(discard_candidates))
-
+    def _reconstruction_context_menu(self, point) -> None:
+        item = self.savedList.itemAt(point)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.savedList.clearSelection()
+            item.setSelected(True)
+            self.savedList.setCurrentItem(item)
+        count = len(self.savedList.selectedItems())
+        if count <= 0:
+            return
+        menu = QtWidgets.QMenu(self)
+        label = "Discard reconstruction…" if count == 1 else f"Discard selected ({count})…"
+        discard = menu.addAction(label)
+        discard.triggered.connect(self.sigDiscardSelectedRequested)
+        menu.exec(self.savedList.viewport().mapToGlobal(point))
 
 __all__ = ["ProcessingSessionFrame"]
