@@ -588,11 +588,21 @@ class ReconstructorManagerController(ImProcessWidgetController):
     def _set_monalisa_update_enabled(self, mode):
         try:
             fast = str(mode) == "Fast"
-            self._widget.setUpdateReconstructionEnabled(
-                fast,
-                "Re-place the retained Fast extraction after changing scan orientation."
-                if fast else "Update reconstruction is currently available only in Fast mode.",
-            )
+            placement_only = fast
+            reason = "Update reconstruction is currently available only in Fast mode."
+            if fast:
+                widget = getattr(self, "_previewWidget", None)
+                values = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
+                corrected = bool(values.get("intensity_correction", False)) or bool(
+                    values.get("cell_offsets", False)
+                )
+                placement_only = not corrected
+                reason = (
+                    "Re-place the retained Fast extraction after changing scan orientation."
+                    if placement_only
+                    else "Fast corrections require a full reconstruction; placement-only update is unavailable."
+                )
+            self._widget.setUpdateReconstructionEnabled(placement_only, reason)
         except Exception:
             pass
 

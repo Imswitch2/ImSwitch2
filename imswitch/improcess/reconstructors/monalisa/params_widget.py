@@ -22,6 +22,7 @@ from .params import (
     PRESET_CUSTOM,
     PRESET_FAST,
     PRESET_FULL,
+    PRESET_LEGACY,
     SPOT_AUTO,
     SPOT_MANUAL,
     apply_preset,
@@ -155,6 +156,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
     _MODE_LABELS = (
         ("Fast", PRESET_FAST),
         ("Robust", PRESET_FULL),
+        ("Legacy DLL", PRESET_LEGACY),
         ("Custom", PRESET_CUSTOM),
     )
     _ISM_LABELS = (("Off", "off"), ("Auto", "auto"), ("Manual", "fixed"))
@@ -281,8 +283,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         modeRow.addWidget(QtWidgets.QLabel("Mode"))
         self.modeCombo = self._combo(self._MODE_LABELS, values["preset"])
         self.modeCombo.setToolTip(
-            "Fast keeps the minimal reconstruction path. Robust enables automatic "
-            "spot calibration, ISM and corrections. Custom exposes expert choices."
+            "Fast uses the low-overhead Gaussian path with optional corrections. "
+            "Robust enables automatic spot calibration, ISM and corrections. "
+            "Legacy DLL uses the classic SignalExtractor implementation. "
+            "Custom exposes expert Gaussian choices."
         )
         modeRow.addWidget(self.modeCombo, 1)
         self.advancedButton = QtWidgets.QPushButton("Advanced parameters…")
@@ -427,14 +431,59 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         spot.addWidget(self.spotModeCombo, 0, 1)
         self.fwhmSpin = self._double_spin(values["spot_fwhm"], 0.001, 100000, 3)
         self.fwhmUnitCombo = self._combo(["nm", "px"], values["spot_fwhm_unit"])
+        self.backgroundLabel = QtWidgets.QLabel("Background")
         self.backgroundCombo = self._combo(["constant", "none", "auto"], values["background"])
-        spot.addWidget(QtWidgets.QLabel("FWHM"), 1, 0)
+        self.fwhmLabel = QtWidgets.QLabel("FWHM")
+        spot.addWidget(self.fwhmLabel, 1, 0)
         spot.addWidget(self.fwhmSpin, 1, 1)
         spot.addWidget(self.fwhmUnitCombo, 1, 2)
-        spot.addWidget(QtWidgets.QLabel("Background"), 1, 3)
+        spot.addWidget(self.backgroundLabel, 1, 3)
         spot.addWidget(self.backgroundCombo, 1, 4)
         spot.setColumnStretch(5, 1)
         root.addWidget(self.spotBox)
+
+        # Classic DLL -------------------------------------------------------
+        self.legacyBox, legacy = self._section("Legacy DLL")
+        self.legacyBleachingCheck = QtWidgets.QCheckBox("Bleaching correction")
+        self.legacyBleachingCheck.setChecked(bool(values["legacy_bleaching_correction"]))
+        self.legacyBleachingCheck.setToolTip(
+            "Normalize each frame to the total intensity of the first frame before "
+            "the classic SignalExtractor reconstruction."
+        )
+        self.legacyBackgroundCombo = self._combo(
+            ["Constant", "Gaussian", "No background"], values["legacy_bg_modelling"]
+        )
+        self.legacyBackgroundCombo.setToolTip(
+            "Background basis used by the classic SignalExtractor DLL."
+        )
+        self.legacyGaussianSizeSpin = self._double_spin(
+            values["legacy_bg_gaussian_size_nm"], 0.001, 1e7, 1, " nm"
+        )
+        self.legacyGaussianSizeSpin.setToolTip(
+            "FWHM of the Gaussian background basis. Used only when Background is Gaussian."
+        )
+        self.legacyDeviceCombo = self._combo(["CPU", "GPU"], values["device"])
+        self.legacyDeviceCombo.setToolTip(
+            "Select the CPU or GPU implementation inside GPU_acc_recon.dll."
+        )
+        self.legacyPixelSizeSpin = self._double_spin(
+            values["pixel_size_nm"], 0.001, 1e7, 3, " nm"
+        )
+        self.legacyPixelSizeSpin.setToolTip(
+            "Camera pixel size used to convert the PSF FWHM to DLL pixel units."
+        )
+        legacy.addWidget(self.legacyBleachingCheck, 0, 0, 1, 2)
+        legacy.addWidget(QtWidgets.QLabel("Background"), 1, 0)
+        legacy.addWidget(self.legacyBackgroundCombo, 1, 1)
+        self.legacyGaussianSizeLabel = QtWidgets.QLabel("Gaussian size")
+        legacy.addWidget(self.legacyGaussianSizeLabel, 2, 0)
+        legacy.addWidget(self.legacyGaussianSizeSpin, 2, 1)
+        legacy.addWidget(QtWidgets.QLabel("Device"), 3, 0)
+        legacy.addWidget(self.legacyDeviceCombo, 3, 1)
+        legacy.addWidget(QtWidgets.QLabel("Camera pixel"), 4, 0)
+        legacy.addWidget(self.legacyPixelSizeSpin, 4, 1)
+        legacy.setColumnStretch(2, 1)
+        root.addWidget(self.legacyBox)
 
         # ISM ---------------------------------------------------------------
         self.ismBox, ism = self._section("ISM")
@@ -473,8 +522,14 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.correctionsBox, corrections = self._section("Corrections")
         self.intensityCheck = QtWidgets.QCheckBox("Intensity correction")
         self.intensityCheck.setChecked(bool(values["intensity_correction"]))
+        self.intensityCheck.setToolTip(
+            "Correct smooth frame-to-frame intensity changes using the already extracted amplitudes."
+        )
         self.cellOffsetsCheck = QtWidgets.QCheckBox("Cell offsets")
         self.cellOffsetsCheck.setChecked(bool(values["cell_offsets"]))
+        self.cellOffsetsCheck.setToolTip(
+            "Estimate and correct cell-to-cell offsets after extraction. This does not rerun Gaussian fitting."
+        )
         corrections.addWidget(self.intensityCheck, 0, 0)
         corrections.addWidget(self.cellOffsetsCheck, 0, 1)
         corrections.setColumnStretch(2, 1)
@@ -502,9 +557,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.spotModeCombo.currentIndexChanged.connect(self._controlled_changed)
         self.reassignmentCombo.currentIndexChanged.connect(self._controlled_changed)
         self.asymmetricCheck.toggled.connect(self._controlled_changed)
-        self.intensityCheck.toggled.connect(self._controlled_changed)
-        self.cellOffsetsCheck.toggled.connect(self._controlled_changed)
+        self.intensityCheck.toggled.connect(self._correction_changed)
+        self.cellOffsetsCheck.toggled.connect(self._correction_changed)
         self.sharpenCheck.toggled.connect(self._controlled_changed)
+        self.legacyBackgroundCombo.currentIndexChanged.connect(lambda *_: self._update_ui())
+        self.legacyDeviceCombo.currentIndexChanged.connect(self._legacy_device_changed)
+        self.legacyPixelSizeSpin.valueChanged.connect(self._legacy_pixel_size_changed)
 
         self.previewCheckbox.toggled.connect(self.sigPreviewToggled)
         self.localizeButton.clicked.connect(self.sigLocalizeRequested.emit)
@@ -546,6 +604,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             try:
                 self._apply_controlled_values(values)
                 self._localization_refinement = str(values["localization_refinement"])
+                if mode == PRESET_LEGACY:
+                    self.legacyPixelSizeSpin.setValue(
+                        float(self._advanced_values["pixel_size_nm"])
+                    )
             finally:
                 self._applying_preset = False
         self._update_ui()
@@ -553,6 +615,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
 
     def _apply_controlled_values(self, values: dict) -> None:
         self._advanced_values["device"] = str(values["device"])
+        if hasattr(self, "legacyDeviceCombo"):
+            self._set_combo_data(self.legacyDeviceCombo, values["device"])
         self._advanced_values["placement_mode"] = str(values["placement_mode"])
         self._advanced_values["variance_weighting"] = bool(values["variance_weighting"])
         self.intensityCheck.setChecked(bool(values["intensity_correction"]))
@@ -574,15 +638,56 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self._update_ui()
         self.sigModeChanged.emit(str(self._mode_value()))
 
+    def _correction_changed(self, *_):
+        """Fast corrections are optional without turning the mode into Custom."""
+        if self._applying_preset:
+            return
+        if self._mode_value() == PRESET_FAST:
+            self._update_ui()
+            self.sigModeChanged.emit(PRESET_FAST)
+            return
+        self._controlled_changed()
+
+    def _legacy_device_changed(self, *_):
+        if self._applying_preset:
+            return
+        self._advanced_values["device"] = str(self._combo_data(self.legacyDeviceCombo))
+
+    def _legacy_pixel_size_changed(self, value):
+        if self._applying_preset:
+            return
+        self._advanced_values["pixel_size_nm"] = float(value)
+
     def _update_ui(self) -> None:
         mode = self._mode_value()
         fast = mode == PRESET_FAST
-        self.advancedButton.setVisible(not fast)
-        self.ismBox.setVisible(not fast)
-        self.correctionsBox.setVisible(not fast)
-        self.outputBox.setVisible(not fast)
-        self.spotModeLabel.setVisible(not fast)
-        self.spotModeCombo.setVisible(not fast)
+        legacy = mode == PRESET_LEGACY
+        self.advancedButton.setVisible(not fast and not legacy)
+        self.ismBox.setVisible(not fast and not legacy)
+        self.correctionsBox.setVisible(not legacy)
+        self.outputBox.setVisible(not fast and not legacy)
+        self.legacyBox.setVisible(legacy)
+        self.spotModeLabel.setVisible(not fast and not legacy)
+        self.spotModeCombo.setVisible(not fast and not legacy)
+        self.backgroundLabel.setVisible(not legacy)
+        self.backgroundCombo.setVisible(not legacy)
+        self.fwhmUnitCombo.setEnabled(True)
+        gaussian_bg = str(self._combo_data(self.legacyBackgroundCombo)) == "Gaussian"
+        self.legacyGaussianSizeLabel.setEnabled(gaussian_bg)
+        self.legacyGaussianSizeSpin.setEnabled(gaussian_bg)
+
+        # The classic DLL consumes scan geometry from the recording/legacy scan
+        # parameters, not the unified orientation transform. Keep the compact
+        # scan summary visible, but do not imply that manual/locked orientation
+        # choices affect this engine.
+        self.orientationModeCombo.setEnabled(not legacy)
+        self.lockOrientationButton.setEnabled((not legacy) and self._lockable_orientation() is not None)
+        self.scanningAdvancedButton.setEnabled(not legacy)
+        self.scanningAdvancedButton.setToolTip(
+            "Legacy DLL uses recorded scan metadata; use the standalone classic "
+            "reconstructor for manual legacy scan-parameter recovery." if legacy else
+            "Inspect or override scan counts and step size used for reconstruction."
+        )
 
         localization_mode = str(self._combo_data(self.localizationModeCombo))
         manual = localization_mode == LOCALIZATION_MANUAL
@@ -606,17 +711,19 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.deleteLocalizationButton.setEnabled(selected)
 
         orient_mode = str(self._combo_data(self.orientationModeCombo))
-        manual_orientation = orient_mode == ORIENTATION_MANUAL
+        manual_orientation = (not legacy) and orient_mode == ORIENTATION_MANUAL
         self.orientationCombo.setVisible(manual_orientation)
         self.orientationCombo.setEnabled(manual_orientation)
         self.orientationResultLabel.setVisible(not manual_orientation)
-        self.lockOrientationButton.setEnabled(self._lockable_orientation() is not None)
+        self.lockOrientationButton.setEnabled(
+            (not legacy) and self._lockable_orientation() is not None
+        )
         has_locked_orientation = (
             self._registry is not None
             and self._registry.locked_orientation(self._detector_id) is not None
         )
-        self.clearOrientationButton.setVisible(has_locked_orientation)
-        self.clearOrientationButton.setEnabled(has_locked_orientation)
+        self.clearOrientationButton.setVisible(has_locked_orientation and not legacy)
+        self.clearOrientationButton.setEnabled(has_locked_orientation and not legacy)
 
         spot_auto = str(self._combo_data(self.spotModeCombo)) == SPOT_AUTO
         self.fwhmSpin.setEnabled(not spot_auto)
@@ -1391,6 +1498,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             "spot_fwhm": float(self.fwhmSpin.value()),
             "spot_fwhm_unit": str(self._combo_data(self.fwhmUnitCombo)),
             "background": str(self._combo_data(self.backgroundCombo)),
+            "legacy_bleaching_correction": bool(self.legacyBleachingCheck.isChecked()),
+            "legacy_bg_modelling": str(self._combo_data(self.legacyBackgroundCombo)),
+            "legacy_bg_gaussian_size_nm": float(self.legacyGaussianSizeSpin.value()),
             "intensity_correction": bool(self.intensityCheck.isChecked()),
             "cell_offsets": bool(self.cellOffsetsCheck.isChecked()),
             "reassignment": str(self._combo_data(self.reassignmentCombo)),

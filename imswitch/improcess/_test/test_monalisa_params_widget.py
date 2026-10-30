@@ -12,6 +12,7 @@ from imswitch.improcess.reconstructors.monalisa.params import (  # noqa: E402
     PRESET_CUSTOM,
     PRESET_FAST,
     PRESET_FULL,
+    PRESET_LEGACY,
     default_params,
 )
 from imswitch.improcess.reconstructors.monalisa.params_widget import MonalisaParamsWidget  # noqa: E402
@@ -37,16 +38,27 @@ def test_preview_starts_visible_and_workflow_is_scrollable(qapp):
     assert widget.scanStatusLabel.minimumHeight() > 0
 
 
-def test_fast_mode_hides_optional_processing_sections(qapp):
+def test_fast_mode_shows_cheap_corrections_but_hides_heavier_sections(qapp):
     widget = MonalisaParamsWidget()
     assert widget.get_values()["preset"] == PRESET_FAST
     assert widget.localizationBox.isHidden() is False
     assert widget.scanningBox.isHidden() is False
     assert widget.spotBox.isHidden() is False
     assert widget.ismBox.isHidden() is True
-    assert widget.correctionsBox.isHidden() is True
+    assert widget.correctionsBox.isHidden() is False
     assert widget.outputBox.isHidden() is True
+    assert widget.legacyBox.isHidden() is True
     assert widget.spotModeCombo.isHidden() is True
+
+
+def test_fast_corrections_do_not_turn_the_mode_into_custom(qapp):
+    widget = MonalisaParamsWidget()
+    widget.intensityCheck.setChecked(True)
+    widget.cellOffsetsCheck.setChecked(True)
+    values = widget.get_values()
+    assert values["preset"] == PRESET_FAST
+    assert values["intensity_correction"] is True
+    assert values["cell_offsets"] is True
 
 
 def test_robust_is_the_ui_name_for_the_existing_full_contract_value(qapp):
@@ -58,6 +70,21 @@ def test_robust_is_the_ui_name_for_the_existing_full_contract_value(qapp):
     assert values["spot_width_mode"] == "Auto"
     assert values["reassignment"] == "auto"
     assert widget.ismBox.isHidden() is False
+
+
+
+def test_legacy_dll_is_a_unified_mode_with_classic_controls(qapp):
+    widget = MonalisaParamsWidget()
+    widget.modeCombo.setCurrentIndex(widget.modeCombo.findText("Legacy DLL"))
+    values = widget.get_values()
+    assert values["preset"] == PRESET_LEGACY
+    assert widget.legacyBox.isHidden() is False
+    assert widget.correctionsBox.isHidden() is True
+    assert widget.ismBox.isHidden() is True
+    assert widget.outputBox.isHidden() is True
+    assert widget.orientationModeCombo.isEnabled() is False
+    assert widget.scanningAdvancedButton.isEnabled() is False
+    assert values["device"] == "CPU"
 
 
 def test_fast_fwhm_is_a_normal_edit_not_a_customization(qapp):
