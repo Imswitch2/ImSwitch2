@@ -23,7 +23,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from imswitch.improcess.workflows.sources import SourceSpec
+from imswitch.imcommon.model.kinds import RECORDING_KIND, RESULT_KINDS, UNKNOWN_KIND
+from imswitch.imcommon.model.workflow.output_spec import call_output_spec
+from imswitch.imcommon.model.workflow.sources import SourceSpec
 
 SCHEMA_VERSION = 1
 
@@ -425,8 +427,6 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
         processor = registry.get_processor(step.processor, raise_on_missing=False) if registry else None
         if processor is None:
             return True, "?"
-        from imswitch.improcess.processors.base import call_output_spec
-
         params = {**_defaults(processor), **step.params}
         spec = call_output_spec(processor, params)
         if port is None:
@@ -462,9 +462,6 @@ def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
     produce nothing and are left out. Never raises: a plugin whose
     ``output_spec`` fails counts as ``"unknown"``.
     """
-    from imswitch.improcess.model.result import RECORDING_KIND, UNKNOWN_KIND
-    from imswitch.improcess.processors.base import call_output_spec
-
     kinds: dict[str, str] = {}
     for step in workflow.steps:
         if isinstance(step, Save):
@@ -495,8 +492,6 @@ def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
     (a plugin that declares nothing) and a raw recording are never refused
     here, so a workflow that runs today is not refused on a guess.
     """
-    from imswitch.improcess.model.result import RESULT_KINDS
-
     accepted = tuple(getattr(processor, "kinds", ()) or ())
     issues = []
     for ref in step.inputs:
@@ -518,16 +513,16 @@ def _defaults(plugin) -> dict:
         return {}
 
 
-def _unknown_params(step, plugin) -> list[Issue]:
+def _unknown_params(step, plugin, contract_problem=None) -> list[Issue]:
     """Parameter keys the plugin does not declare (``param_keys``).
 
     Checked whenever the plugin declares a key set, including an empty one:
     a plugin with no parameters accepts none, and a typo must fail before
     the run rather than being ignored by ``params.get(...)``.
+    ``contract_problem(plugin)`` is the host's headless-contract check (see
+    :func:`validate`); without one, no contract is checked.
     """
-    from imswitch.improcess.model.plugin_contract import contract_problem
-
-    problem = contract_problem(plugin)
+    problem = contract_problem(plugin) if callable(contract_problem) else None
     if problem:
         # No declaration (or a widget that contradicts it) means the
         # headless defaults are not the effective ones: refuse, rather than
@@ -547,12 +542,25 @@ def _unknown_params(step, plugin) -> list[Issue]:
     return [Issue(step.id, f"unknown parameter(s) for {plugin_id!r}: {unknown} (accepted: {sorted(allowed) or 'none'})")]
 
 
-def validate(workflow: Workflow, registry=None) -> list[Issue]:
+def validate(workflow: Workflow, registry=None, *, contract_problem=None, normalize_format=None) -> list[Issue]:
     """Everything wrong with ``workflow`` that can be known before running.
 
     With a registry: plugin ids, arity and ports are checked too. Without,
     only structure (ids, references, order).
+
+    Two checks are the host's to define, and are taken from the registry
+    when it has them (duck-typed) or from the keyword arguments:
+    ``contract_problem(plugin) -> str | None`` says why a plugin cannot run
+    headless; ``normalize_format(fmt) -> str`` spells a Save's format
+    canonically and raises ``ValueError`` for one the host cannot write.
+    Without either, that check is skipped. ImProcess's ``PluginRegistry``
+    supplies both, and ``imswitch.improcess.workflows.steps.validate``
+    defaults them to ImProcess's even without a registry.
     """
+    if contract_problem is None:
+        contract_problem = getattr(registry, "contract_problem", None)
+    if normalize_format is None:
+        normalize_format = getattr(registry, "normalize_format", None)
     issues: list[Issue] = []
     by_id: dict[str, Any] = {}
     kinds = declared_kinds(workflow, registry) if registry else {}
@@ -583,7 +591,7 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                 if plugin is None:
                     issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
                 else:
-                    issues.extend(_unknown_params(step, plugin))
+                    issues.extend(_unknown_params(step, plugin, contract_problem))
         elif isinstance(step, Consolidate):
             if not step.inputs:
                 issues.append(Issue(step.id, "a consolidation needs at least one input"))
@@ -616,14 +624,12 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                         pass   # a single-input processor over several inputs runs once per input
                     elif count < low or (high is not None and count > high):
                         issues.append(Issue(step.id, f"{step.processor!r} takes {low}..{high if high is not None else '∞'} inputs, got {count}"))
-                    issues.extend(_unknown_params(step, processor))
+                    issues.extend(_unknown_params(step, processor, contract_problem))
                     issues.extend(_kind_issues(step, processor, kinds))
-        elif isinstance(step, Save):
-            from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
-
+        elif isinstance(step, Save) and callable(normalize_format):
             try:
                 normalize_format(step.fmt)
-            except UnsupportedSaveFormat as exc:
+            except ValueError as exc:
                 issues.append(Issue(step.id, str(exc)))
         by_id[step.id] = step
     return issues

@@ -16,10 +16,10 @@ from pathlib import Path
 
 from qtpy import QtCore, QtWidgets
 
-from imswitch.improcess.model.workfloweditor.catalog import PROCESSOR
-from imswitch.improcess.model.workfloweditor.nodes import code_name, kinds_of, save_file_name, title_of
-from imswitch.improcess.workflows.sources import SOURCE_KINDS
-from imswitch.improcess.workflows.steps import Consolidate, Process, Reconstruct, Save, Source
+from imswitch.imcommon.model.workfloweditor.catalog import PROCESSOR
+from imswitch.imcommon.model.workfloweditor.nodes import code_name, kinds_of, save_file_name, title_of
+from imswitch.imcommon.model.workflow.sources import SOURCE_KINDS
+from imswitch.imcommon.model.workflow.steps import Consolidate, Process, Reconstruct, Save, Source
 
 from .canvas import style as st
 from .outputpanel import OutputPanel
@@ -461,19 +461,20 @@ class Inspector(QtWidgets.QScrollArea):
 
     def _build_python(self, layout, step: Process) -> None:
         from imswitch.imcommon.view.guitools import PythonCodeEditor
-        from imswitch.improcess.processors.python_step.context import DEFAULT_CODE, DEFAULT_PORTS
 
         params = self._document.effective_params(step.id)
+        entry = self._document.entry_for(step)
+        defaults = entry.defaults() if entry is not None else {}
         layout.addWidget(_section("Code"))
         editor = PythonCodeEditor()
-        editor.setText(str(params.get("code", DEFAULT_CODE)))
+        editor.setText(str(params.get("code", defaults.get("code", ""))))
         editor.setMinimumHeight(220)
         self._code_dirty = False
         editor.textChanged.connect(self._code_typed)
         self._python = editor
         layout.addWidget(editor, 1)
         row = QtWidgets.QFormLayout()
-        ports_edit = QtWidgets.QLineEdit(str(params.get("ports", DEFAULT_PORTS)))
+        ports_edit = QtWidgets.QLineEdit(str(params.get("ports", defaults.get("ports", "out"))))
         ports_edit.setToolTip("Comma-separated names the code sets in `outputs`; each is an output of the box")
         sid = step.id
         ports_edit.editingFinished.connect(lambda: self._edit(
@@ -483,10 +484,11 @@ class Inspector(QtWidgets.QScrollArea):
         row.addRow("Output ports", self.ports_edit)
         layout.addLayout(row)
         buttons = QtWidgets.QHBoxLayout()
-        load = QtWidgets.QPushButton("Load snippet…")
-        load.setToolTip("Replace the code and ports with a saved snippet (ImSwitch ships a few recipes)")
-        load.clicked.connect(self._load_snippet)
-        buttons.addWidget(load)
+        if getattr(self._document.catalog, "snippets", None) is not None:
+            load = QtWidgets.QPushButton("Load snippet…")
+            load.setToolTip("Replace the code and ports with a saved snippet (ImSwitch ships a few recipes)")
+            load.clicked.connect(self._load_snippet)
+            buttons.addWidget(load)
         buttons.addStretch(1)
         layout.addLayout(buttons)
         layout.addWidget(_muted(python_names_text(step)))
@@ -548,9 +550,9 @@ class Inspector(QtWidgets.QScrollArea):
         self._edit("Edit the code", lambda: self._document.set_param(step_id, "code", text), merge=("code", step_id))
 
     def _load_snippet(self) -> None:
-        from imswitch.improcess.model import snippets
-
-        names = snippets.list_snippets()
+        """Pick one of the catalog's snippets (``list_snippets`` / ``load_snippet``)."""
+        snippets = getattr(self._document.catalog, "snippets", None) if self._document is not None else None
+        names = snippets.list_snippets() if snippets is not None else []
         if not names:
             self.sigMessage.emit("No snippets yet.")
             return
@@ -593,7 +595,7 @@ class Inspector(QtWidgets.QScrollArea):
             "Change the file name", lambda: self._document.set_save(sid, path_template=e.text()),
             structural=True))
         form.addRow("File name", template)
-        form.addRow(_muted(f"Writes {save_file_name(step)} in the output folder."))
+        form.addRow(_muted(f"Writes {save_file_name(step, catalog)} in the output folder."))
         placeholders = ", ".join("{%s}" % name for name in (catalog.path_placeholders if catalog else ()))
         form.addRow(_muted(f"Placeholders: {placeholders}."))
 
@@ -666,12 +668,8 @@ class Inspector(QtWidgets.QScrollArea):
         self._edit(f"Clear {key}", lambda: self._document.clear_param(step_id, key))
 
     def _browse_source(self) -> None:
-        try:
-            from imswitch.improcess.model.dataset_sources import SOURCE_SPECS, file_dialog_filter
-
-            name_filter = file_dialog_filter(SOURCE_SPECS)
-        except Exception:
-            name_filter = "All files (*)"
+        catalog = self._document.catalog if self._document is not None else None
+        name_filter = getattr(catalog, "source_file_filter", None) or "All files (*)"
         start = str(Path(self.path_edit.text()).parent) if self.path_edit.text() else ""
         path, _filter = QtWidgets.QFileDialog.getOpenFileName(self, "Recording", start, name_filter)
         if path:

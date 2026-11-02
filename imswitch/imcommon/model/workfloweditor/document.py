@@ -29,12 +29,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.model.workfloweditor.catalog import PROCESSOR, RECONSTRUCTOR, Catalog, PluginEntry
-from imswitch.improcess.model.workfloweditor.commands import DocumentHistory
-from imswitch.improcess.model.workfloweditor.graph import CycleError, ancestors, is_ordered, stable_order
-from imswitch.improcess.workflows.sources import SourceSpec
-from imswitch.improcess.workflows.steps import (
+from imswitch.imcommon.model.param_spec import ParamField
+from imswitch.imcommon.model.workfloweditor.catalog import PROCESSOR, RECONSTRUCTOR, Catalog, PluginEntry
+from imswitch.imcommon.model.workfloweditor.commands import DocumentHistory
+from imswitch.imcommon.model.workfloweditor.graph import CycleError, ancestors, is_ordered, stable_order
+from imswitch.imcommon.model.workflow.sources import SourceSpec
+from imswitch.imcommon.model.workflow.steps import (
     DEFAULT_PORT,
     DEFAULT_SAVE_TEMPLATE,
     SOURCE_PORT,
@@ -795,32 +795,9 @@ class WorkflowDocument:
         except CycleError as exc:                  # pragma: no cover - refused before
             raise DocumentError(str(exc)) from exc
 
-    # -- import -----------------------------------------------------------------
-
-    @classmethod
-    def from_result(cls, result, catalog: Catalog, *, name: str | None = None) -> "WorkflowDocument":
-        """The workflow that made ``result``, from its provenance, minimized.
-
-        Raises :class:`~imswitch.improcess.workflows.replay.ReplayError` when
-        the record cannot be run again, listing every reason.
-        """
-        from imswitch.improcess.model.provenance import graph_of
-        from imswitch.improcess.model.save_protocol import ProvenanceDocument
-        from imswitch.improcess.workflows.replay import workflow_from_provenance
-
-        graph = graph_of(result)
-        if graph is None:
-            raise WorkflowError(f"'{getattr(result, 'name', 'result')}' carries no provenance")
-        replay = workflow_from_provenance(ProvenanceDocument(graph=graph), registry=catalog.registry, name=name)
-        document = cls(replay.workflow, catalog=catalog)
-        document.minimize_params()
-        document.notes = [str(warning) for warning in replay.warnings]
-        document.dirty = True
-        return document
-
 
 def _same(a, b) -> bool:
-    from imswitch.improcess.model.param_spec import _same as same
+    from imswitch.imcommon.model.param_spec import _same as same
 
     return same(a, b)
 

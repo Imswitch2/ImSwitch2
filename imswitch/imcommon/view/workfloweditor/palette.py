@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from imswitch.improcess.model.workfloweditor.catalog import PROCESSOR, USER
+from imswitch.imcommon.model.workfloweditor.catalog import PROCESSOR, USER
 
 from .canvas import style as st
 from .canvas.view import STEP_MIME

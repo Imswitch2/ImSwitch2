@@ -23,14 +23,14 @@ from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from imswitch.improcess.model.workfloweditor import DocumentError, WorkflowDocument, build_catalog
-from imswitch.improcess.model.workfloweditor.folders import workflows_directory
-from imswitch.improcess.model.workfloweditor.graph import ancestors
-from imswitch.improcess.model.workfloweditor.nodes import kinds_of
-from imswitch.improcess.model.workfloweditor.preferences import EditorPreferences
-from imswitch.improcess.model.workfloweditor.previews import make_preview
-from imswitch.improcess.model.workfloweditor.session import RunSession
-from imswitch.improcess.workflows.steps import Reconstruct, Save, Source, WorkflowError
+from imswitch.imcommon.model.workfloweditor import Catalog, DocumentError, WorkflowDocument
+from imswitch.imcommon.model.workfloweditor.folders import workflows_directory
+from imswitch.imcommon.model.workfloweditor.graph import ancestors
+from imswitch.imcommon.model.workfloweditor.nodes import kinds_of
+from imswitch.imcommon.model.workfloweditor.preferences import EditorPreferences
+from imswitch.imcommon.model.workfloweditor.previews import make_preview
+from imswitch.imcommon.model.workfloweditor.session import RunSession
+from imswitch.imcommon.model.workflow.steps import Reconstruct, Save, Source, WorkflowError
 
 from .canvas import CanvasView, EdgeItem, NodeItem, QuickAddPopup, RunView, WorkflowScene
 from .canvas import style as st
@@ -88,12 +88,15 @@ class MainWindow(QtWidgets.QMainWindow):
     sig_run_on_results_requested = QtCore.Signal(object)
     sig_cancel_requested = QtCore.Signal()
 
-    def __init__(self, catalog=None, *, start_folder=None, preferences=None, parent=None):
+    def __init__(self, catalog=None, *, start_folder=None, preferences=None, parent=None,
+                 title: str = "ImProcess workflow editor"):
         super().__init__(parent)
-        self.setWindowTitle("ImProcess workflow editor")
+        #: The window's name, after the document's: the host's editor is called after the host.
+        self.title = str(title)
+        self.setWindowTitle(self.title)
         self.setStyleSheet(_STYLE)
         self.resize(1480, 860)
-        self.catalog = catalog if catalog is not None else build_catalog()
+        self.catalog = catalog if catalog is not None else Catalog.empty()
         self.preferences = preferences if preferences is not None else EditorPreferences()
         self._folder = Path(start_folder) if start_folder else Path(workflows_directory())
         self.document = WorkflowDocument(catalog=self.catalog)
@@ -391,12 +394,13 @@ class MainWindow(QtWidgets.QMainWindow):
         host = self.host
         recording = host.currentRecording() if callable(getattr(host, "currentRecording", None)) else None
         result = host.activeResultName() if callable(getattr(host, "activeResultName", None)) else None
-        try:
-            from imswitch.improcess.model.workfloweditor.recipes import installed_recipes
-
-            recipes = installed_recipes()
-        except Exception:  # noqa: BLE001 - the page still offers the rest
-            recipes = []
+        recipes = []
+        installed = getattr(self.catalog, "recipes", None)
+        if callable(installed):
+            try:
+                recipes = list(installed())
+            except Exception:  # noqa: BLE001 - the page still offers the rest
+                recipes = []
         try:
             folder_files = sorted(str(p) for p in self._folder.iterdir() if p.suffix.lower() in _SUFFIXES)
         except OSError:
@@ -459,7 +463,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def new_from_recording(self) -> bool:
         """A source bound to the open recording, shown as it is (View only)."""
-        from imswitch.improcess.workflows.steps import Workflow
+        from imswitch.imcommon.model.workflow.steps import Workflow
 
         recording = self.host.currentRecording() if callable(getattr(self.host, "currentRecording", None)) else None
         if not recording:
@@ -484,12 +488,11 @@ class MainWindow(QtWidgets.QMainWindow):
         return edit() is not None
 
     def new_from_recipe(self, recipe) -> bool:
-        from imswitch.improcess.model.workfloweditor.recipes import recipe_document
-
+        """A document for one of the catalog's recipes (``recipe.workflow()``)."""
         if recipe is None:
             return False
         try:
-            document = recipe_document(recipe, self.catalog)
+            document = WorkflowDocument(recipe.workflow(), catalog=self.catalog)
         except ValueError as exc:
             self.show_status(str(exc))
             return False
@@ -1037,7 +1040,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_title(self) -> None:
         name = self.document.path.name if self.document.path else self.document.name
         self._title.setText(self.document.name)
-        self.setWindowTitle(f"{'*' if self.document.dirty else ''}{name} — ImProcess workflow editor")
+        self.setWindowTitle(f"{'*' if self.document.dirty else ''}{name} — {self.title}")
 
     def issues(self):
         return self.document.issues()
@@ -1415,12 +1418,7 @@ class MainWindow(QtWidgets.QMainWindow):
         content.show()          # with everything in it: shown now, not by a queued event
 
     def _choose_binding(self, step_id: str) -> None:
-        try:
-            from imswitch.improcess.model.dataset_sources import SOURCE_SPECS, file_dialog_filter
-
-            name_filter = file_dialog_filter(SOURCE_SPECS)
-        except Exception:
-            name_filter = "All files (*)"
+        name_filter = getattr(self.catalog, "source_file_filter", None) or "All files (*)"
         path, _filter = QtWidgets.QFileDialog.getOpenFileName(self, "Run on which recording?", "", name_filter)
         if path:
             self.bind_source(step_id, path)
@@ -1534,7 +1532,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _snapshot(self):
         """A copy of the workflow: the run reads it on another thread while
         the operator may keep editing this one."""
-        from imswitch.improcess.workflows.steps import Workflow
+        from imswitch.imcommon.model.workflow.steps import Workflow
 
         return Workflow.from_dict(self.document.to_dict())
 
@@ -1575,8 +1573,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def show_status(self, message: str, timeout_ms: int = 8000) -> None:
         self.statusBar().showMessage(str(message), int(timeout_ms))
 
+    def rebuild_catalog(self):
+        """The catalog as it is now: what *Reload plugins* installs. Without a
+        host there is nothing to reload; a host's editor overrides this
+        (ImProcess builds a fresh one from a fresh registry)."""
+        return self.catalog
+
     def reload_plugins(self) -> None:
-        self.catalog = build_catalog()
+        self.catalog = self.rebuild_catalog()
         self.document.catalog = self.catalog
         self.session.registry = self.catalog.registry
         self.palette.set_catalog(self.catalog, self.preferences.recent_steps())

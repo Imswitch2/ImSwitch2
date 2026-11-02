@@ -1,10 +1,11 @@
 """What the workflow editor remembers between sessions. Qt-free.
 
-Kept under ``workflowEditor`` in ``improcess_options.json`` (the file
-:mod:`imswitch.improcess.model.folder_preferences` writes), so it describes
-this computer and this user, and every other key in the file survives a
-round trip: Graph or List, the steps and files used last, and the folder
-*Write files* writes to.
+Kept under ``workflowEditor`` in a JSON options file the host names
+(ImProcess: ``improcess_options.json``, the file its ``folder_preferences``
+writes; see ``imswitch.improcess.model.workfloweditor.preferences``), so it
+describes this computer and this user, and every other key in the file
+survives a round trip: Graph or List, the steps and files used last, and
+the folder *Write files* writes to. Without a file, nothing is remembered.
 """
 
 from __future__ import annotations
@@ -22,14 +23,13 @@ class EditorPreferences:
     """Read once, written on every change; never raises on a bad file."""
 
     def __init__(self, path=None):
-        if path is None:
-            from imswitch.improcess.model.folder_preferences import options_file_path
-
-            path = options_file_path()
-        self.path = str(path)
+        #: The options file, or None: settings for this process only.
+        self.path = str(path) if path is not None else None
         self._values = self._load()
 
     def _load(self) -> dict:
+        if self.path is None:
+            return {}
         try:
             with open(self.path, encoding="utf-8") as file:
                 content = json.load(file)
@@ -42,6 +42,8 @@ class EditorPreferences:
         return dict(values) if isinstance(values, dict) else {}
 
     def _save(self) -> None:
+        if self.path is None:
+            return
         try:
             with open(self.path, encoding="utf-8") as file:
                 content = json.load(file)

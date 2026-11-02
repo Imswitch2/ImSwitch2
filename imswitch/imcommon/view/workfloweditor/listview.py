@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from imswitch.improcess.model.workfloweditor.nodes import node_infos
+from imswitch.imcommon.model.workfloweditor.nodes import node_infos
 
 from .canvas import style as st
 from .canvas.items import _BADGE_COLOURS, _BADGE_GLYPHS, _elide
@@ -173,7 +173,7 @@ class CardItem(QtWidgets.QGraphicsItem):
 def lanes(document) -> dict[str, int]:
     """A lane per step for the gutter: a step continues its first input's lane
     unless an earlier step already continued it, then it opens the next one."""
-    from imswitch.improcess.model.workfloweditor.graph import refs_of
+    from imswitch.imcommon.model.workfloweditor.graph import refs_of
 
     lane_of: dict[str, int] = {}
     taken: dict[str, int] = {}
@@ -238,7 +238,7 @@ class StepListView(QtWidgets.QGraphicsView):
             scene.blockSignals(False)
 
     def _draw_lanes(self, document) -> None:
-        from imswitch.improcess.model.workfloweditor.graph import refs_of
+        from imswitch.imcommon.model.workfloweditor.graph import refs_of
 
         for step in document.steps:
             target = self.cards.get(step.id)

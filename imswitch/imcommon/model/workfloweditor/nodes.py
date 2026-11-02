@@ -6,7 +6,7 @@ reference and one output per port, each with the kind of result it carries.
 This module answers those questions from the document and the catalogue, so
 the canvas only draws and a test can check what it would draw.
 
-Kinds are the declared ones (:func:`~imswitch.improcess.workflows.steps.declared_kinds`):
+Kinds are the declared ones (:func:`~imswitch.imcommon.model.workflow.steps.declared_kinds`):
 a Source carries a ``recording``, a step what its plugin declares, ``any`` or
 ``unknown`` when that is all that can be known before a run.
 """
@@ -16,8 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from imswitch.improcess.model.result import ANY_KIND, RECORDING_KIND, RESULT_KINDS, UNKNOWN_KIND
-from imswitch.improcess.workflows.steps import (
+from imswitch.imcommon.model.kinds import ANY_KIND, RECORDING_KIND, RESULT_KINDS, UNKNOWN_KIND
+from imswitch.imcommon.model.workflow.steps import (
     DEFAULT_PORT,
     SOURCE_PORT,
     Consolidate,
@@ -123,15 +123,17 @@ def _fmt(value) -> str:
     return text if len(text) <= 40 else text[:39] + "…"
 
 
-def save_file_name(step: Save) -> str:
-    """The file a Save writes, as words: ``‹recording›_diamond.h5``."""
-    from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
+def save_file_name(step: Save, catalog=None) -> str:
+    """The file a Save writes, as words: ``‹recording›_diamond.h5``.
 
+    ``catalog.normalize_format`` spells the format the way the host writes
+    it; without a catalog the step's own spelling is used."""
     template = str(step.path_template or "")
     template = re.sub(r"^\{out_dir\}[\\/]", "", template)
+    normalize = getattr(catalog, "normalize_format", None)
     try:
-        fmt = normalize_format(step.fmt)
-    except UnsupportedSaveFormat:
+        fmt = normalize(step.fmt) if callable(normalize) else step.fmt
+    except ValueError:
         fmt = step.fmt
     extension = {"hdf5": ".h5", "tiff": ".tif", "zarr": ".zarr", "csv": ".csv"}.get(str(fmt), f".{fmt}")
     text = (template.replace("{source_stem}", "‹recording›").replace("{ext}", extension)
@@ -151,7 +153,7 @@ def _summary(document, step, entry) -> tuple[tuple[str, ...], tuple[str, ...]]:
             lines.append(f"dataset {spec.dataset}")
         return tuple(lines), ()
     if isinstance(step, Save):
-        return (f"→ {save_file_name(step)}",), ()
+        return (f"→ {save_file_name(step, document.catalog)}",), ()
     if isinstance(step, Consolidate):
         count = len(step.inputs)
         return (f"merges {count} reconstruction{'s' if count != 1 else ''}",), ()
@@ -349,7 +351,7 @@ def kind_fits(kind: str, entry) -> bool:
 def can_feed(document, producer_id: str, target_id: str, kinds=None) -> bool:
     """Whether a cable from ``producer_id`` into ``target_id`` makes sense:
     no loop, the right kind of step, and a kind the target takes."""
-    from imswitch.improcess.model.workfloweditor.graph import ancestors
+    from imswitch.imcommon.model.workfloweditor.graph import ancestors
 
     if producer_id == target_id or not document.has(producer_id) or not document.has(target_id):
         return False

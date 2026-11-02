@@ -1,7 +1,7 @@
 """The ImProcess workflow editor window.
 
 A non-modal window over a Qt-free document
-(:mod:`imswitch.improcess.model.workfloweditor`): the patcher canvas
+(:mod:`imswitch.imcommon.model.workfloweditor`): the patcher canvas
 (:mod:`.canvas`) or the card list (:mod:`.listview`) in the middle, the
 palette on the left, the inspector (:mod:`.inspector`, with the run output
 of :mod:`.outputpanel`) on the right, and the start page (:mod:`.startpage`).

@@ -21,9 +21,9 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from imswitch.improcess.model.workfloweditor.graph import layered_positions, place_missing
-from imswitch.improcess.model.workfloweditor.nodes import can_feed, kind_fits, kinds_of, node_infos
-from imswitch.improcess.workflows.steps import Save
+from imswitch.imcommon.model.workfloweditor.graph import layered_positions, place_missing
+from imswitch.imcommon.model.workfloweditor.nodes import can_feed, kind_fits, kinds_of, node_infos
+from imswitch.imcommon.model.workflow.steps import Save
 
 from . import style as st
 from .items import CableItem, EdgeItem, FrameItem, NodeItem, PortItem, RunView

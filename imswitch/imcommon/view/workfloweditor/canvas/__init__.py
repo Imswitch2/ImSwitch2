@@ -1,6 +1,6 @@
 """The patcher canvas: a step per box, a cable per reference.
 
-:class:`WorkflowScene` draws a :class:`~imswitch.improcess.model.workfloweditor.WorkflowDocument`
+:class:`WorkflowScene` draws a :class:`~imswitch.imcommon.model.workfloweditor.WorkflowDocument`
 and turns gestures into requests; :class:`CanvasView` is the widget around
 it (zoom, pan, overlays, palette drops); :class:`QuickAddPopup` the search
 that opens when a cable is dropped in empty space.

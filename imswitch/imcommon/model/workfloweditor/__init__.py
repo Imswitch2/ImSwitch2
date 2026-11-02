@@ -1,11 +1,15 @@
 """The workflow editor's model: what it can offer, and what it is editing.
 
-Qt-free. :mod:`catalog` describes every installed plugin the way the runner
-sees it; :mod:`document` holds the workflow being edited and the operations
-an editor needs on it, each answered with what is now wrong.
+Qt-free, and free of any host module: :mod:`catalog` describes every plugin
+the host's registry offers (the host builds it; ImProcess in
+``imswitch.improcess.model.workfloweditor.catalog.build_catalog``);
+:mod:`document` holds the workflow being edited and the operations an
+editor needs on it, each answered with what is now wrong; :mod:`session`
+plans and caches runs. Nothing here imports ``imswitch.improcess``: what
+the editor needs of a host comes through the catalog and its registry.
 """
 
-from .catalog import PROCESSOR, RECONSTRUCTOR, Catalog, PluginEntry, build_catalog
+from .catalog import PROCESSOR, RECONSTRUCTOR, Catalog, PluginEntry
 from .document import DocumentError, PortOption, WorkflowDocument
 
 __all__ = [
@@ -16,7 +20,6 @@ __all__ = [
     "PluginEntry",
     "PortOption",
     "WorkflowDocument",
-    "build_catalog",
 ]
 
 

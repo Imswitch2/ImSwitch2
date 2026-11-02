@@ -2,7 +2,7 @@
 
 Items only draw and report gestures to their scene
 (:class:`~.scene.WorkflowScene`); they never touch the document. What a box
-shows comes from a Qt-free :class:`~imswitch.improcess.model.workfloweditor.nodes.NodeInfo`
+shows comes from a Qt-free :class:`~imswitch.imcommon.model.workfloweditor.nodes.NodeInfo`
 and, after a run, a :class:`RunView` (status, thumbnail, timing, error).
 """
 

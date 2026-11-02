@@ -1,20 +1,22 @@
-"""Where workflow files live by default: ``~/ImSwitchConfig/improcess_workflows``.
+"""Where workflow files live by default: a folder under ``~/ImSwitchConfig``.
 
-A sibling of the drop-in plugins folder, so a user who has one has the
-other next to it. The editor's file list and its open/save dialogs start
-here; a workflow can of course be opened from anywhere.
+The host names the folder (ImProcess: ``improcess_workflows``, a sibling of
+its drop-in plugins folder, so a user who has one has the other next to it;
+see ``imswitch.improcess.model.workfloweditor.folders``). The editor's file
+list and its open/save dialogs start there; a workflow can of course be
+opened from anywhere.
 """
 
 import os
 
 from imswitch.imcommon.model import dirtools
 
-_WORKFLOWS_SUBDIR = "improcess_workflows"
+DEFAULT_SUBDIR = "workflows"
 
 
-def workflows_directory(*, create: bool = True) -> str:
+def workflows_directory(*, create: bool = True, subdir: str = DEFAULT_SUBDIR) -> str:
     """The default workflow folder, created on first use when ``create``."""
-    directory = os.path.join(dirtools.UserFileDirs.Root, _WORKFLOWS_SUBDIR)
+    directory = os.path.join(dirtools.UserFileDirs.Root, subdir)
     if create:
         try:
             os.makedirs(directory, exist_ok=True)
@@ -25,7 +27,7 @@ def workflows_directory(*, create: bool = True) -> str:
     return directory
 
 
-__all__ = ["workflows_directory"]
+__all__ = ["DEFAULT_SUBDIR", "workflows_directory"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

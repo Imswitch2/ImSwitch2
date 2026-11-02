@@ -1,19 +1,23 @@
 """What the workflow editor can offer: every installed plugin, described.
 
-Built from the same registry a run uses (:func:`bootstrap_registry`), so a
+Built by the host from the same registry a run uses (ImProcess:
+``imswitch.improcess.model.workfloweditor.catalog.build_catalog``), so a
 step the editor offers is one the runner will find, and read through the
 same declarations the runner validates against: ``default_params``,
-``param_keys``, ``output_spec``, the arity, and the headless contract
-(:func:`contract_problem`). The field specs come from ``param_spec()``
-(:mod:`imswitch.improcess.model.param_spec`). Nothing here imports Qt.
+``param_keys``, ``output_spec``, the arity, and the headless contract.
+The field specs come from ``param_spec()``
+(:mod:`imswitch.imcommon.model.param_spec`). Nothing here imports Qt, and
+nothing here imports the host: what the editor needs of it beyond the
+plugins (a file filter for recordings, recipes, a snippet store, how a save
+format is spelled) is carried by the :class:`Catalog`, each part optional.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
-from imswitch.improcess.model.param_spec import ParamField, fields_by_key, spec_for
+from imswitch.imcommon.model.param_spec import ParamField, fields_by_key, spec_for
 
 PROCESSOR = "processor"
 RECONSTRUCTOR = "reconstructor"
@@ -86,7 +90,7 @@ class PluginEntry:
             return None
         merged = {**self.defaults(), **dict(params or {})}
         try:
-            from imswitch.improcess.processors.base import call_output_spec
+            from imswitch.imcommon.model.workflow.output_spec import call_output_spec
 
             return call_output_spec(self.plugin, merged)
         except Exception:
@@ -95,13 +99,42 @@ class PluginEntry:
 
 @dataclass(frozen=True)
 class Catalog:
-    """Every plugin the editor may put in a step, plus the save vocabulary."""
+    """Every plugin the editor may put in a step, plus the save vocabulary.
+
+    ``registry`` is what a run uses and what ``validate()`` is handed; the
+    editor also asks it, duck-typed and only when present, for
+    ``normalize_format(fmt)``, ``contract_problem(plugin)``,
+    ``close_source(handle)`` and ``source_stem_of(path)`` (see
+    :mod:`imswitch.imcommon.model.workflow.steps` and :class:`.session.RunSession`).
+    """
 
     registry: Any
     processors: tuple[PluginEntry, ...]
     reconstructors: tuple[PluginEntry, ...]
     save_formats: tuple[str, ...]
     path_placeholders: tuple[str, ...]
+    #: What the host offers beyond its plugins. Each is optional; the editor
+    #: does without when it is None.
+    #: A file-dialog name filter for the recordings a Source can be bound to.
+    source_file_filter: str | None = None
+    #: ``recipes() -> list`` of ready-made workflows for the start page: objects
+    #: with ``name``, ``title``, ``summary`` and ``workflow() -> Workflow`` (which
+    #: may raise ``ValueError``). Called whenever the start page is shown.
+    recipes: Callable[[], list] | None = field(default=None, compare=False)
+    #: A snippet store for Python steps: ``list_snippets() -> [name]`` and
+    #: ``load_snippet(name) -> (code, ports)``. ImProcess passes its module.
+    snippets: Any = field(default=None, compare=False)
+
+    @classmethod
+    def empty(cls) -> "Catalog":
+        """A catalog with nothing in it (an editor with no host)."""
+        return cls(registry=None, processors=(), reconstructors=(), save_formats=(), path_placeholders=())
+
+    def normalize_format(self, fmt: str) -> str:
+        """``fmt`` as the registry spells it (``ValueError`` when it cannot
+        write it); ``fmt`` itself when the registry does not say."""
+        normalize = getattr(self.registry, "normalize_format", None)
+        return normalize(fmt) if callable(normalize) else str(fmt)
 
     def get(self, kind: str, plugin_id: str) -> PluginEntry | None:
         entries = self.processors if kind == PROCESSOR else self.reconstructors
@@ -135,81 +168,7 @@ class Catalog:
         return tuple(entry for entry in entries if entry.gui_only is None)
 
 
-def _description(plugin) -> str:
-    declared = getattr(plugin, "description", "")
-    if isinstance(declared, str) and declared.strip():
-        return declared.strip()
-    doc = (getattr(type(plugin), "__doc__", "") or "").strip()
-    return doc.splitlines()[0].strip() if doc else ""
-
-
-def _entry(plugin, kind: str, origin: str) -> PluginEntry:
-    from imswitch.improcess.model.plugin_contract import contract_problem
-
-    cls = type(plugin)
-    extra = getattr(cls, "extra_param_keys", ())
-    max_inputs = getattr(plugin, "max_inputs", 1) if kind == PROCESSOR else 1
-    return PluginEntry(
-        id=str(plugin.id),
-        kind=kind,
-        name=str(getattr(plugin, "name", plugin.id)),
-        category=str(getattr(plugin, "category", "Other") or "Other") if kind == PROCESSOR else "",
-        version=str(getattr(plugin, "version", "") or ""),
-        description=_description(plugin),
-        origin=origin,
-        fields=spec_for(cls),
-        extra_keys=tuple(str(key) for key in (extra or ())),
-        accepts_any_key=extra is None,
-        min_inputs=int(getattr(plugin, "min_inputs", 1) or 1) if kind == PROCESSOR else 1,
-        max_inputs=None if max_inputs is None else int(max_inputs),
-        accepted_kinds=tuple(getattr(plugin, "kinds", ()) or ()) if kind == PROCESSOR else (),
-        supports_consolidation=bool(getattr(plugin, "supports_consolidation", False)),
-        accepts_roi=bool(getattr(plugin, "accepts_roi", False)),
-        roi_modes=tuple(getattr(plugin, "roi_modes", ()) or ()),
-        gui_only=contract_problem(plugin),
-        plugin=plugin,
-    )
-
-
-def build_catalog(registry=None, *, user_plugins: bool = True) -> Catalog:
-    """Describe every plugin in ``registry``; a fresh full registry when None.
-
-    Built when the editor opens rather than at import, because drop-in
-    plugins can change between sessions and the registry stamps versions.
-    """
-    from imswitch.improcess.model.save_protocol import FORMAT_ALIASES
-    from imswitch.improcess.processors import available_processor_specs
-    from imswitch.improcess.reconstructors import builtin_reconstructor_ids
-    from imswitch.improcess.workflows.runner import PATH_PLACEHOLDERS
-
-    if registry is None:
-        from imswitch.improcess.workflows.runtime import bootstrap_registry
-
-        registry = bootstrap_registry(user_plugins=user_plugins)
-
-    builtin_processors = {pid for pid, _name, _cat in available_processor_specs(origin=BUILTIN)}
-    builtin_reconstructors = set(builtin_reconstructor_ids())
-    processors = tuple(sorted(
-        (_entry(plugin, PROCESSOR, BUILTIN if plugin.id in builtin_processors else USER)
-         for plugin in registry.processors()),
-        key=lambda entry: (entry.category, entry.name.lower(), entry.id),
-    ))
-    reconstructors = tuple(sorted(
-        (_entry(plugin, RECONSTRUCTOR, BUILTIN if plugin.id in builtin_reconstructors else USER)
-         for plugin in registry.reconstructors()),
-        key=lambda entry: (entry.name.lower(), entry.id),
-    ))
-    formats = tuple(sorted(set(FORMAT_ALIASES.values())))
-    return Catalog(
-        registry=registry,
-        processors=processors,
-        reconstructors=reconstructors,
-        save_formats=formats,
-        path_placeholders=tuple(PATH_PLACEHOLDERS),
-    )
-
-
-__all__ = ["BUILTIN", "PROCESSOR", "RECONSTRUCTOR", "USER", "Catalog", "PluginEntry", "build_catalog"]
+__all__ = ["BUILTIN", "PROCESSOR", "RECONSTRUCTOR", "USER", "Catalog", "PluginEntry"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

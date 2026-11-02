@@ -21,7 +21,7 @@ import numbers
 from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtCore, QtWidgets
 
-from imswitch.improcess.model.param_spec import ParamField
+from imswitch.imcommon.model.param_spec import ParamField
 
 _ADVANCED = "Advanced"
 _OTHER = "Other parameters"

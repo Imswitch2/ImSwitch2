@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import heapq
 
-from imswitch.improcess.workflows.steps import Save, Source
+from imswitch.imcommon.model.workflow.steps import Save, Source
 
 
 class CycleError(ValueError):

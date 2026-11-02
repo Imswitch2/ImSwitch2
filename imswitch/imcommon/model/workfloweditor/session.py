@@ -55,9 +55,9 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from imswitch.improcess.model.workfloweditor.graph import ancestors, descendants, refs_of
-from imswitch.improcess.model.workfloweditor.previews import make_preview, nbytes_in_memory
-from imswitch.improcess.workflows.steps import (
+from imswitch.imcommon.model.workfloweditor.graph import ancestors, descendants, refs_of
+from imswitch.imcommon.model.workfloweditor.previews import make_preview, nbytes_in_memory
+from imswitch.imcommon.model.workflow.steps import (
     Consolidate,
     Process,
     Reconstruct,
@@ -162,9 +162,16 @@ class RunSummary:
 class RunSession:
     """See the module docstring."""
 
-    def __init__(self, registry=None, *, budget: int | None = None):
+    def __init__(self, registry=None, *, budget: int | None = None, close_source=None, source_stem_of=None):
         self.registry = registry
         self._budget = budget
+        #: How the host releases a source handle a run opened, and what it
+        #: names a run's files after: given here, else asked of the registry
+        #: (duck-typed: ImProcess's ``PluginRegistry`` has both), else a
+        #: plain ``handle.close()`` and the path's stem.
+        self._close_source = close_source if close_source is not None else getattr(registry, "close_source", None)
+        self._source_stem_of = (source_stem_of if source_stem_of is not None
+                                else getattr(registry, "source_stem_of", None))
         self._cache: dict[str, Entry] = {}
         self._last_key: dict[str, str] = {}
         self._nonces: dict[str, str] = {}
@@ -426,15 +433,17 @@ class RunSession:
         """Name the run's files: after the result a step was started from, as
         *Run on selected results* does, else after the first recording whether
         or not the run opens it (a cached reconstruction does not)."""
-        from imswitch.improcess.workflows.runner import source_stem_of
-
         for result in self.result_bindings.values():
             return str(getattr(result, "name", "") or "") or None
         for step in document.steps:
             if isinstance(step, Source):
                 path = self._source_path(step, source_root)
-                return source_stem_of(path) if path else None
+                return self._stem_of(path) if path else None
         return None
+
+    def _stem_of(self, path) -> str:
+        stem_of = self._source_stem_of
+        return str(stem_of(path)) if callable(stem_of) else Path(str(path)).stem
 
     # -- a run -------------------------------------------------------------------------
 
@@ -695,12 +704,14 @@ class RunSession:
             del self._handle_refs[id(handle)]
             self._close(handle)
 
-    @staticmethod
-    def _close(handle) -> None:
-        from imswitch.improcess.workflows.sources import close_source
-
+    def _close(self, handle) -> None:
         try:
-            close_source(handle)
+            if callable(self._close_source):
+                self._close_source(handle)
+            else:
+                close = getattr(handle, "close", None)
+                if callable(close):
+                    close()
         except Exception:  # noqa: BLE001 - closing must not fail the editor
             pass
 
@@ -732,44 +743,6 @@ class RunSession:
         self._state_keys = {}
         self.closed = True
         return handover
-
-
-def execute(plan: RunPlan, registry, *, on_step=None, progress=None, cancel=None, preview_size: int = 192,
-            interrupts=None):
-    """Run ``plan`` on the calling thread; returns ``(report, error)``.
-
-    ``on_step(step_id, ports, seconds, cached, previews)`` is called as each
-    step finishes, with previews made here (a worker thread, in the editor).
-    ``interrupts(False)`` is called first: a step that finished is no longer
-    one a Stop may interrupt (the caller allows it again at the next step).
-    """
-    from imswitch.imcommon.model import OperationCancelled
-    from imswitch.improcess.workflows.runner import RunError, run
-
-    def done(step_id, ports, seconds, cached):
-        if interrupts is not None:
-            interrupts(False)
-        if on_step is None:
-            return
-        previews = {} if cached else {port: make_preview(result, preview_size) for port, result in ports.items()}
-        on_step(step_id, ports, seconds, cached, previews)
-
-    try:
-        report = run(
-            plan.workflow, registry=registry, bindings=plan.bindings, out_dir=plan.out_dir,
-            overwrite=plan.overwrite, write_saves=plan.write_saves, source_stem=plan.source_stem,
-            source_root=plan.source_root, progress=progress, cancel=cancel, on_step_done=done,
-            step_state=plan.step_state,
-        )
-    except RunError as exc:
-        return getattr(exc, "report", None), str(exc)
-    except OperationCancelled:
-        # Landed outside a step (the runner turns one inside a step into a
-        # RunError with its report): the run is over, cancelled.
-        return None, "cancelled"
-    except Exception as exc:  # noqa: BLE001 - reported in the editor
-        return None, str(exc)
-    return report, None
 
 
 def _digest(payload) -> str:
@@ -809,4 +782,4 @@ def _step_or_none(workflow, step_id):
 
 
 __all__ = ["CACHE_LIMIT", "DEFAULT_CACHE_BYTES", "Entry", "RunPlan", "RunSession", "RunSummary", "StepState",
-           "cache_budget", "execute"]
+           "cache_budget"]

@@ -122,7 +122,7 @@ class DocumentHistory:
         return self._document.snapshot()
 
     def _restore(self, snapshot: dict) -> None:
-        from imswitch.improcess.workflows.steps import Workflow
+        from imswitch.imcommon.model.workflow.steps import Workflow
 
         self._document.workflow = Workflow.from_dict(copy.deepcopy(snapshot))
         self._document._touch()

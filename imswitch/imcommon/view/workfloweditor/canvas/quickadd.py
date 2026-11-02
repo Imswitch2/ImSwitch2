@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from imswitch.improcess.model.workfloweditor.nodes import candidates, matches
+from imswitch.imcommon.model.workfloweditor.nodes import candidates, matches
 
 from . import style as st
 

@@ -1,6 +1,6 @@
 """Previews to pixmaps, on the GUI thread.
 
-The worker hands over plain data (:class:`~imswitch.improcess.model.workfloweditor.previews.Preview`);
+The worker hands over plain data (:class:`~imswitch.imcommon.model.workfloweditor.previews.Preview`);
 this turns it into what a box or the inspector draws: the image, a sparkline
 for a curve, the first rows for a table.
 """
