@@ -2,6 +2,17 @@
 Changelog
 *********
 
+Unreleased
+==========
+
+**New Features**
+
+- **Workflow controls and bypass (workflow schema 2).** A workflow file can now name the values worth changing: a ``controls`` list gives each a name and the step parameters it sets (``radius: [smooth.radius, sharp.radius]`` keeps two filters at one radius), and ``run … --set radius=3``, a manifest column ``radius`` (one value per file; an empty cell takes the ``--set`` or the file's value) or ``run(…, controls={"radius": 3.0})`` set it for a run without editing the file. The value stays in the steps, so a file without its controls computes the same thing, and the steps must agree. Values on the command line and in manifests are read by the parameter's own type, not as YAML (``001`` stays text in a text field, ``on`` is not a boolean, ``nan`` is no number; ``null`` and ``''`` say none and empty text), and a value that would change nothing — its only targets bypassed, or replaced by a bound result — is refused rather than ignored. A bad ``--set`` refuses the run before anything opens; a bad manifest cell fails only its row, naming the line and column. The batch summary gains a ``control:<name>`` column per control and a ``bypassed`` column, and a manifest column that matches nothing is now said once instead of silently ignored. ``bypass: true`` on a process or save step keeps it in the file but out of the run: its readers read its input, a bypassed Save writes nothing, and its plugin need not be installed. New ``controls WORKFLOW [--json]`` command, ``validate --set``, and ``prepare_run`` in Python, which turns such a file into the plain workflow that runs. A file is written as ``schema: 2`` only when it uses a control or a bypass, so other files stay readable by older versions; a schema-1 file carrying either key, and a ``bypass`` that is not ``true``/``false``, are refused. Results record the values they ran with as plain parameters, and replay still writes schema 1. See :ref:`workflows-controls`.
+
+**Behaviour Changes**
+
+- **Splits declare the ports they make.** ``stack-split`` and ``channel-split`` with an explicit ``axis`` now declare only that axis's ports (``axis: C`` → ``C0``, ``C1`` …), so a reference to ``split.C0`` from a split along Z is refused when the workflow is validated rather than when the split has run. ``axis: Auto`` declares any letter-and-number port, as before.
+
 v0.4.0 (2026-10-29)
 ===================
 

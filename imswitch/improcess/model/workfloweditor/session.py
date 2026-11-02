@@ -345,7 +345,11 @@ class RunSession:
                 bindings[step.id] = dict(entry.ports)
             elif isinstance(step, Source) and step.id in self.source_bindings:
                 bindings[step.id] = self.binding_spec(step)
-        workflow = Workflow.from_dict({**document.workflow.to_dict(), "steps": [s.to_dict() for s in sub]})
+        # A control's definition never reaches a run (its value is in the
+        # steps), so cutting the workflow cannot leave it a missing target.
+        payload = {**document.workflow.to_dict(), "steps": [s.to_dict() for s in sub]}
+        payload.pop("controls", None)
+        workflow = Workflow.from_dict(payload)
         self._run_id += 1
         return RunPlan(
             run_id=self._run_id, workflow=workflow, bindings=bindings, keys=dict(prints),

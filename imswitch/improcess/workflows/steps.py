@@ -11,6 +11,14 @@ split has one port per channel, a background subtraction can have
 order. Ports that depend on the data (``C0, C1, …``) are validated against
 the processor's declared pattern before the run and against the ports
 actually produced after it.
+
+Schema 2 adds two things a file may use (``docs/design/plans/
+improcess-workflow-schema-2.md``): **controls**, parameters a run may set by
+name (the value stays in the step), and **bypass** on a processing or Save
+step. A file is written at the lowest schema that holds it, and read
+strictly: a schema-1 file with either key is refused. Such a file (the
+*recipe*) is never run as it is: :func:`~imswitch.improcess.workflows.prepare.prepare_run`
+turns it into the plain workflow a run executes.
 """
 
 from __future__ import annotations
@@ -24,11 +32,17 @@ from typing import Any
 
 from imswitch.improcess.workflows.sources import SourceSpec
 
-SCHEMA_VERSION = 1
+#: The newest schema this ImSwitch reads and writes.
+SCHEMA_VERSION = 2
+#: What a file that names no schema is read as.
+DEFAULT_SCHEMA = 1
 
 _ID = r"[A-Za-z0-9_\-]+"
 _ID_PATTERN = re.compile(rf"^{_ID}$")
 _REF_PATTERN = re.compile(rf"^(?P<step>{_ID})(?:\.(?P<port>{_ID}))?$")
+_TARGET_PATTERN = re.compile(rf"^(?P<step>{_ID})\.(?P<param>{_ID})$")
+#: A control's name: what ``--set name=…`` and a manifest column use.
+CONTROL_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 SOURCE_PORT = "data"
 DEFAULT_PORT = "out"
@@ -56,6 +70,19 @@ def parse_ref(text) -> Ref:
     if not match:
         raise WorkflowError(f"bad step reference {text!r}; expected 'step' or 'step.port'")
     return Ref(match.group("step"), match.group("port"))
+
+
+def parse_target(text) -> tuple[str, str] | None:
+    """``(step, param)`` of a control target ``"step.param"``, or ``None``."""
+    match = _TARGET_PATTERN.match(str(text))
+    return (match.group("step"), match.group("param")) if match else None
+
+
+def _check_bypass(step_id: str, value) -> bool:
+    # Never truthiness: the string "false" must not become a bypass.
+    if not isinstance(value, bool):
+        raise WorkflowError(f"step {step_id!r}: bypass must be true or false, got {value!r}")
+    return value
 
 
 def _check_id(step_id) -> str:
@@ -143,6 +170,8 @@ class Process:
     params: dict = field(default_factory=dict)
     inputs: list[Ref] = field(default_factory=list)
     restriction: dict | None = None
+    #: Schema 2: taken out of the run, whatever read it reads its input.
+    bypass: bool = False
 
     kind = "process"
 
@@ -151,12 +180,15 @@ class Process:
         self.inputs = [parse_ref(r) for r in (self.inputs or [])]
         if self.restriction is not None and not isinstance(self.restriction, dict):
             raise WorkflowError(f"{self.id}: restriction must be an object")
+        self.bypass = _check_bypass(self.id, self.bypass)
 
     def to_dict(self) -> dict:
         payload = {"step": "process", "id": self.id, "processor": self.processor,
                    "params": dict(self.params), "inputs": [str(r) for r in self.inputs]}
         if self.restriction:
             payload["restriction"] = dict(self.restriction)
+        if self.bypass:
+            payload["bypass"] = True
         return payload
 
 
@@ -168,19 +200,77 @@ class Save:
     input: Ref
     fmt: str = "tiff"
     path_template: str = DEFAULT_SAVE_TEMPLATE
+    #: Schema 2: writes nothing.
+    bypass: bool = False
 
     kind = "save"
 
     def __post_init__(self):
         self.id = _check_id(self.id)
         self.input = parse_ref(self.input)
+        self.bypass = _check_bypass(self.id, self.bypass)
 
     def to_dict(self) -> dict:
-        return {"step": "save", "id": self.id, "input": str(self.input), "fmt": self.fmt,
-                "path_template": self.path_template}
+        payload = {"step": "save", "id": self.id, "input": str(self.input), "fmt": self.fmt,
+                   "path_template": self.path_template}
+        if self.bypass:
+            payload["bypass"] = True
+        return payload
 
 
 Step = Source | Reconstruct | Consolidate | Process | Save
+
+
+@dataclass
+class Control:
+    """A parameter a run may set by name (schema 2).
+
+    The value lives in the target steps' ``params``; a control only names it
+    (``name`` for ``--set name=…`` and manifest columns), says which
+    parameters it sets (``targets``, each ``"step.param"``), and how to show
+    it (``label``, ``help``). Whether the targets exist and fit together is
+    for :func:`validate` to say, so the editor can show it.
+    """
+
+    name: str
+    targets: list[str] = field(default_factory=list)
+    label: str = ""
+    help: str = ""
+
+    _KEYS = ("name", "targets", "label", "help")
+
+    def to_dict(self) -> dict:
+        payload = {"name": self.name, "targets": list(self.targets)}
+        if self.label:
+            payload["label"] = self.label
+        if self.help:
+            payload["help"] = self.help
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> "Control":
+        if not isinstance(payload, dict):
+            raise WorkflowError(f"a control must be an object, got {payload!r}")
+        unknown = sorted(str(key) for key in payload if key not in cls._KEYS)
+        if unknown:
+            raise WorkflowError(
+                f"control {payload.get('name')!r}: unknown key(s) {unknown} (a control has {list(cls._KEYS)})"
+            )
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            raise WorkflowError(f"a control needs a name, got {name!r}")
+        targets = payload.get("targets")
+        if not isinstance(targets, list) or not targets or not all(isinstance(t, str) for t in targets):
+            raise WorkflowError(f"control {name!r}: targets must be a non-empty list of 'step.param'")
+        texts = {}
+        for key in ("label", "help"):
+            value = payload.get(key, "")
+            if value is None:
+                value = ""
+            if not isinstance(value, str):
+                raise WorkflowError(f"control {name!r}: {key} must be text")
+            texts[key] = value
+        return cls(name=name, targets=list(targets), **texts)
 
 _STEP_TYPES = {"source": Source, "reconstruct": Reconstruct, "consolidate": Consolidate,
                "process": Process, "save": Save}
@@ -193,6 +283,11 @@ def step_from_dict(payload: dict) -> Step:
     if kind not in _STEP_TYPES:
         raise WorkflowError(f"unknown step kind {kind!r} (id {payload.get('id')!r})")
     data = {k: v for k, v in payload.items() if k not in ("step", "kind")}
+    if "bypass" in data and kind not in ("process", "save"):
+        raise WorkflowError(
+            f"step {data.get('id')!r}: only process and save steps can be bypassed; a {kind} step "
+            "has nothing to pass through"
+        )
     if kind == "source":
         source = SourceSpec.from_dict({k: v for k, v in data.items() if k != "id"})
         return Source(data.get("id"), source)
@@ -216,6 +311,8 @@ class Workflow:
     #: Free-form, carried through serialisation: replay records here which
     #: provenance node each step came from and what the recorded run was.
     metadata: dict = field(default_factory=dict)
+    #: Schema 2: parameters a run may set by name.
+    controls: list = field(default_factory=list)
 
     def __post_init__(self):
         seen = set()
@@ -233,14 +330,31 @@ class Workflow:
     def sources(self) -> list[Source]:
         return [s for s in self.steps if isinstance(s, Source)]
 
+    def control(self, name: str) -> Control:
+        for control in self.controls:
+            if control.name == name:
+                return control
+        raise KeyError(name)
+
+    @property
+    def required_schema(self) -> int:
+        """The lowest schema that holds this workflow: 2 when it has a
+        control or a bypassed step, else 1, so a file needs a newer ImSwitch
+        only when its content does."""
+        if self.controls or any(getattr(step, "bypass", False) for step in self.steps):
+            return 2
+        return 1
+
     # -- serialisation ------------------------------------------------------
 
     def to_dict(self) -> dict:
-        payload = {"name": self.name, "schema": self.schema}
+        payload = {"name": self.name, "schema": self.required_schema}
         if self.description:
             payload["description"] = self.description
         if self.metadata:
             payload["metadata"] = dict(self.metadata)
+        if self.controls:
+            payload["controls"] = [control.to_dict() for control in self.controls]
         payload["steps"] = [step.to_dict() for step in self.steps]
         return payload
 
@@ -248,13 +362,26 @@ class Workflow:
     def from_dict(cls, payload: Any) -> "Workflow":
         if not isinstance(payload, dict):
             raise WorkflowError("a workflow must be an object")
-        schema = int(payload.get("schema", SCHEMA_VERSION) or SCHEMA_VERSION)
-        if schema > SCHEMA_VERSION:
-            raise WorkflowError(f"workflow schema {schema} is newer than this ImSwitch understands")
-        steps = [step_from_dict(item) for item in (payload.get("steps") or [])]
+        schema = _read_schema(payload.get("schema"))
+        raw_steps = payload.get("steps") or []
+        if schema < 2:
+            # Read strictly: a hand edit must not make a file that an older
+            # ImSwitch would run differently (it would ignore a bypass).
+            if "controls" in payload:
+                raise WorkflowError("'controls' needs schema: 2")
+            for item in raw_steps:
+                if isinstance(item, dict) and "bypass" in item:
+                    raise WorkflowError(f"step {item.get('id')!r}: 'bypass' needs schema: 2")
+        raw_controls = payload.get("controls")
+        if raw_controls is None:
+            raw_controls = []
+        if not isinstance(raw_controls, list):
+            raise WorkflowError("'controls' must be a list")
+        controls = [Control.from_dict(item) for item in raw_controls]
+        steps = [step_from_dict(item) for item in raw_steps]
         return cls(name=str(payload.get("name") or "workflow"), steps=steps, schema=schema,
                    description=str(payload.get("description") or ""),
-                   metadata=dict(payload.get("metadata") or {}))
+                   metadata=dict(payload.get("metadata") or {}), controls=controls)
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False, default=str)
@@ -291,6 +418,20 @@ class Workflow:
         if path.suffix.lower() in (".yaml", ".yml"):
             return cls.from_yaml(text)
         return cls.from_json(text)
+
+
+def _read_schema(raw) -> int:
+    """The schema a file declares: omitted (or empty) is 1; otherwise a whole
+    number of at least 1, never a boolean (Python reads ``true`` as 1)."""
+    if raw is None:
+        return DEFAULT_SCHEMA
+    if isinstance(raw, str) and raw.strip().isdigit():
+        raw = int(raw.strip())
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise WorkflowError(f"schema must be a whole number of at least 1, got {raw!r}")
+    if raw > SCHEMA_VERSION:
+        raise WorkflowError(f"workflow schema {raw} is newer than this ImSwitch understands")
+    return raw
 
 
 @functools.lru_cache(maxsize=1)
@@ -458,8 +599,18 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
     """Everything wrong with ``workflow`` that can be known before running.
 
     With a registry: plugin ids, arity and ports are checked too. Without,
-    only structure (ids, references, order).
+    only structure (ids, references, order). A schema-2 recipe is checked as
+    a recipe (its controls and bypasses), then as the plain workflow it
+    prepares to (see :func:`~imswitch.improcess.workflows.prepare.check_recipe`).
     """
+    from imswitch.improcess.workflows.prepare import check_recipe
+
+    return check_recipe(workflow, registry)
+
+
+def validate_plain(workflow: Workflow, registry=None) -> list[Issue]:
+    """:func:`validate` for a workflow with no controls and no bypass: what
+    a prepared (execution) workflow is checked with."""
     issues: list[Issue] = []
     by_id: dict[str, Any] = {}
     kinds = declared_kinds(workflow, registry) if registry else {}
@@ -537,9 +688,12 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
 
 
 __all__ = [
+    "CONTROL_NAME_PATTERN",
     "DEFAULT_PORT",
     "DEFAULT_SAVE_TEMPLATE",
+    "DEFAULT_SCHEMA",
     "Consolidate",
+    "Control",
     "Issue",
     "Process",
     "Reconstruct",
@@ -552,8 +706,10 @@ __all__ = [
     "Workflow",
     "WorkflowError",
     "parse_ref",
+    "parse_target",
     "step_from_dict",
     "validate",
+    "validate_plain",
 ]
 
 
