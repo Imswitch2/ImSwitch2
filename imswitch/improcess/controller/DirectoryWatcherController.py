@@ -379,8 +379,8 @@ class StreamWorker(QtCore.QObject):
         self._logger = logger
         self._reconstructor_class = reconstructor_class  # for contract() only
         self._sleep_ms = sleep_ms
-        self._current: _EntryStream | None = None  # the entry being read
-        self._finishing = False  # finish_now(): no new frames
+        self._current_entry: _EntryStream | None = None  # the entry being read
+        self._winding_down = False  # finish_now(): read no new frames, finish the entry in hand
         self._pw_busy = False  # an item sent, not yet confirmed by the ProcessWorker
 
         # the timer is a child of the SW, and when the SW is moved to its
@@ -405,6 +405,18 @@ class StreamWorker(QtCore.QObject):
         self._lapse_siblings_read: set[str] = set()
 
     def start(self, entry: str, params: dict):
+        # Starts streaming one entry. The DWC calls it through sigStartStreaming,
+        # with the entry's path and a snapshot of the reconstructor parameters
+        # from the panel.
+        #
+        # An entry that is a later timepoint of a lapse already read is skipped.
+        # Otherwise the method describes the entry's raw data and asks the
+        # reconstructor class for a contract. An entry without raw data, or one
+        # the reconstructor refuses, is finished at once. For an accepted entry,
+        # it sets up the entry's stream and starts the timer; from then on the
+        # frames are read and sent by _read_more(). start() itself returns at
+        # once, so stop() and finish_now() can be handled while the entry is
+        # being streamed.
         name = os.path.basename(entry)
 
         if entry in self._lapse_siblings_read:
@@ -428,42 +440,55 @@ class StreamWorker(QtCore.QObject):
             return
 
         self._logger.info(f"{name}: {contract}")
-        # read now and then on every timeout, until the entry has finished;
-        # start() itself returns at once, so stop() and finish_now() are
-        # handled in between reads
-        self._current = _EntryStream(
-            entry=entry,
+        self._current_entry = _EntryStream(
+            path=entry,
             raw_data_info=raw_data_info,
             contract=contract,
-            pending=np.empty((0, *raw_data_info.frame_shape), raw_data_info.dtype),
+            pending_frames=np.empty((0, *raw_data_info.frame_shape), raw_data_info.dtype),
         )
         self._timer.start(self._sleep_ms)
         self._read_more()  # read now: the timer's first timeout only comes after sleep_ms
 
     def stop(self):
-        # safe from any thread: queued to this one, where it runs between reads
+        # Stops streaming for good, abandoning the current entry. It is safe to
+        # call from any thread: it only emits sigStop, which _on_stop() handles
+        # on this worker's thread, between reads.
         self.sigStop.emit()
 
     def finish_now(self):
-        # safe from any thread: queued to this one, where it runs between reads
+        # Starts a wind-down: no new frames are read, and the current entry is
+        # finished with the frames already read. It is safe to call from any
+        # thread: it only emits sigFinishNow, which _on_finish_now() handles on
+        # this worker's thread, between reads.
         self.sigFinishNow.emit()
 
     @QtCore.Slot()
     def _on_stop(self):
-        # the entry is abandoned, not finished: nothing more is sent
+        # Handles stop() on this worker's thread. It stops the timer and drops
+        # the current entry, so nothing more is read or sent for it. The entry
+        # is abandoned, not finished: sigEntryFinished is not sent.
         self._timer.stop()
-        self._current = None
+        self._current_entry = None
 
     @QtCore.Slot()
     def _on_finish_now(self):
-        # end the entry with the frames already read, as if the recording
-        # had finished there: what is in hand is still sent and processed
-        self._finishing = True
+        # Handles finish_now() on this worker's thread. From now on no new
+        # frames are read. What is already in hand is still sent and processed,
+        # as if the recording had ended there, and _send_next() then finishes
+        # the entry.
+        self._winding_down = True
         self._send_next()
 
     def _finish_entry(self, entry: str):
-        # looked up again, not reused: a live lapse has more timepoints by now.
-        # Only files next to the entry count: that is the root-level E5/E6 case
+        # Reports an entry as finished to the DWC with sigEntryFinished, so the
+        # next entry can be streamed. It is called for every entry the SW is
+        # done with: one that was refused, and one that has been read, sent
+        # and processed.
+        #
+        # Before that, it records the later timepoint files of an E5/E6 lapse
+        # in the root, so that their own entries are skipped when they arrive.
+        # The data groups are looked up again rather than reused, since a live
+        # lapse has more timepoints by now. Only files next to the entry count.
         root = os.path.dirname(entry)
         for dg_path, _ in self._get_data_groups(entry):
             if dg_path != entry and os.path.dirname(dg_path) == root:
@@ -474,6 +499,14 @@ class StreamWorker(QtCore.QObject):
     # --- describe ---------------------------------------------------------
 
     def _get_raw_data_info(self, entry: str) -> RawInfo | None:
+        # Describes the raw data of an entry as a RawInfo, or returns None if
+        # the entry holds no raw data the SW can stream.
+        #
+        # The description comes from the entry's first data group: its data
+        # array gives the frame shape and dtype, and its attributes and metadata
+        # give the recording mode and the frame counts. From those it works out
+        # T and S, as explained below. The contract with the reconstructor is
+        # based on this RawInfo.
         data_groups = self._get_data_groups(entry)
         if not data_groups:
             return None
@@ -563,9 +596,11 @@ class StreamWorker(QtCore.QObject):
 
     @staticmethod
     def _name(entry: str, mode: str | None) -> str:
-        # the entry's name, without ".zarr"; for a timepoint of a lapse not
-        # in a single file, without the timepoint: rec_Camera for
-        # rec_time0_Camera.zarr, rec_time1_Camera.zarr, ...
+        # Returns the name the entry's result is shown under: the entry's file
+        # name without ".zarr". For a timepoint of a lapse stored with a file
+        # per timepoint, the timepoint is left out too, so that every timepoint
+        # gives the lapse's name: rec_Camera for rec_time0_Camera.zarr,
+        # rec_time1_Camera.zarr, and so on.
         name = os.path.basename(entry)
         if name.lower().endswith(".zarr"):
             name = name[:-len(".zarr")]
@@ -575,12 +610,22 @@ class StreamWorker(QtCore.QObject):
         return name
 
     def _get_data_groups(self, entry: str) -> list[tuple[str, zarr.Group]] | list[None]:
+        # Returns the detector groups the entry's frames are read from, in
+        # recording order, each paired with the Zarr store it is in. A single
+        # recording gives one group. A lapse gives one per timepoint: a scanN
+        # group, or a store of its own.
+        #
+        # It opens every Zarr store of the entry and collects the groups that
+        # hold both data and metadata, directly or one level down (scanN/<det>).
+        # For an E5/E6 lapse in the root, it keeps only the stores whose metadata
+        # says they belong to the same lapse as the entry. With several
+        # detectors, only the one whose name sorts first is kept, for now.
         stores: list[str] = self._zarr_stores(entry)
         groups: list[tuple[str, zarr.Group]] | list[None] = []
         for store in stores:
             # a store still being created, or one whose metadata the
             # writer is replacing right now (Windows), is left for the next
-            # call; _fill keeps the timepoints in order regardless
+            # call; _read_block keeps the timepoints in order regardless
             try:
                 root = zarr.open_group(store, mode="r")
                 for _, child in root.groups():
@@ -619,6 +664,13 @@ class StreamWorker(QtCore.QObject):
 
     @staticmethod
     def _zarr_stores(entry: str) -> list[str]:
+        # Returns the paths of the Zarr stores that make up an entry:
+        # - for a folder, the Zarr stores inside it (folder/E1 ... folder/E6);
+        # - for a timepoint of an E5/E6 lapse in the root, the entry and the
+        #   stores next to it whose names differ only in the time or scan index,
+        #   <savename>_time<N>_<det>.zarr (or _scan<N>_);
+        # - for any other Zarr store, the entry itself (E1 to E4).
+        # A lone file that is not a Zarr store gives an empty list.
         if not entry.lower().endswith(".zarr"):
             if not os.path.isdir(entry):
                 return []  # a lone file that isn't a Zarr store
@@ -646,8 +698,10 @@ class StreamWorker(QtCore.QObject):
                 for n in names if siblings.match(n)]
 
     def _lapse(self, group: zarr.Group) -> tuple[str, int] | None:
-        # which lapse a timepoint belongs to, for one not in a single file;
-        # None for anything else
+        # Identifies the lapse a timepoint belongs to, as (mode, number of
+        # timepoints), for a lapse stored with a file per timepoint. Stores with
+        # the same identity are taken to be timepoints of the same lapse.
+        # Anything else, including a lapse stored in a single file, gives None.
         attrs = group["data"].attrs
         if attrs.get("recording:single_lapse_file", False):
             return None
@@ -665,132 +719,186 @@ class StreamWorker(QtCore.QObject):
     # --- stream -----------------------------------------------------------
 
     def on_process_done(self):
-        # pw.sigDone: the ProcessWorker has handled the last item it was
-        # sent, so the next one can go
+        # Handles pw.sigDone: the ProcessWorker has handled the last item it was
+        # sent, so the next one may go. It clears the busy flag and reads and
+        # sends right away, rather than waiting for the next timeout.
         self._pw_busy = False
         self._read_more()
 
     @QtCore.Slot()
     def _read_more(self):
-        # on the timer, and whenever the ProcessWorker is done: read, send
-        # the next item if the ProcessWorker is free, then read on, so the
-        # next chunk is in hand while the ProcessWorker works on this one
-        current = self._current
-        if current is None:
+        # Moves the current entry's stream forward. It is called on every
+        # timeout of the timer, and whenever the ProcessWorker is done.
+        #
+        # It first reads frames if the next item needs them, then sends that
+        # item if the ProcessWorker is free, and then reads again. The second
+        # read means the next chunk is already in hand while the ProcessWorker
+        # works on this one, so the ProcessWorker never waits for a read that
+        # could have been done earlier.
+        current_entry = self._current_entry
+        if current_entry is None:
             return
-        self._fill(current)
+        self._read_block(current_entry)
         self._send_next()
-        if self._current is current:
-            self._fill(current)
+        if self._current_entry is current_entry:
+            self._read_block(current_entry)
 
     def _send_next(self):
-        # one item at a time, each only once the ProcessWorker has confirmed
-        # the last: the contract with the init frames (at least one: a
-        # session begins on frames), then every whole chunk from frame 0,
-        # then the end of the stream. Once that is confirmed too, the entry
-        # has been processed.
-        current = self._current
-        if current is None or self._pw_busy:
+        # Sends the next item to the ProcessWorker, one item at a time. An
+        # item is only sent once the ProcessWorker has confirmed the previous
+        # one. The items come in this order: first the contract together
+        # with the init frames, then every whole chunk starting from frame 0,
+        # and last the end of the stream. There is always at least one init
+        # frame, since a session begins on frames. Once the ProcessWorker has
+        # confirmed the end of the stream, the entry has been processed and
+        # the next entry can start.
+        # Nothing to send, or the ProcessWorker is still busy with the
+        # previous item.
+        current_entry = self._current_entry
+        if current_entry is None or self._pw_busy:
             return
-        contract = current.contract
-        init_frames = max(contract.init_frames, 1)
-        n = contract.chunk_frames
-        no_more_frames = current.finished or self._finishing
-        if not current.announced:
-            if current.read >= init_frames:
+
+        entry_contract = current_entry.contract
+        init_frames = max(entry_contract.init_frames, 1)
+        chunk_frames = entry_contract.chunk_frames
+        no_more_frames = current_entry.completely_read or self._winding_down
+
+        # 1. The contract with the init frames. It is sent once enough
+        # frames have been read. A recording that ends before that is
+        # finished without anything having been sent.
+        if not current_entry.init_frames_sent:
+            if current_entry.read_frames >= init_frames:
                 self.sigContractEstablished.emit(
-                    current.raw_data_info, contract, current.pending[:init_frames]
+                    current_entry.raw_data_info,
+                    entry_contract,
+                    current_entry.pending_frames[:init_frames],
                 )
-                current.announced = True
+                current_entry.init_frames_sent = True
+                self._pw_busy = True
             elif no_more_frames:
-                if not self._finishing:
+                if not self._winding_down:
                     self._logger.info(
                         f"Recording finished with fewer than {init_frames} frames"
                     )
                 self._end_entry_stream()
-                return
-            else:
-                return  # waiting for frames
-        elif len(current.pending) >= n:
-            self.sigChunk.emit(current.sent, current.sent + n, current.pending[:n])
-            current.pending = current.pending[n:]
-            current.sent += n
-        elif not no_more_frames:
-            return  # waiting for frames
-        elif not current.stream_finished:
-            # only whole chunks are sent: a recording stopped mid-chunk
-            # leaves a tail that doesn't meet the contract
-            if len(current.pending):
+            return  # otherwise, wait for more frames
+
+        # 2. The next whole chunk, as soon as one is in hand.
+        if len(current_entry.pending_frames) >= chunk_frames:
+            chunk_start = current_entry.sent_frames
+            self.sigChunk.emit(
+                chunk_start,
+                chunk_start + chunk_frames,
+                current_entry.pending_frames[:chunk_frames],
+            )
+            current_entry.pending_frames = current_entry.pending_frames[chunk_frames:]
+            current_entry.sent_frames += chunk_frames
+            self._pw_busy = True
+            return
+        if not no_more_frames:
+            return  # wait for more frames
+
+        # 3. The end of the stream, once every whole chunk has been sent.
+        # Only whole chunks are sent, so the frames of a recording that
+        # stopped mid-chunk are dropped: they don't meet the contract.
+        if not current_entry.stream_finished:
+            if len(current_entry.pending_frames):
                 self._logger.info(
-                    f"Dropped the last {len(current.pending)} frames: "
-                    f"fewer than one chunk of {n}"
+                    f"Dropped the last {len(current_entry.pending_frames)} frames: "
+                    f"fewer than one chunk of {chunk_frames}"
                 )
             self.sigStreamFinished.emit()
-            current.stream_finished = True
-        else:
-            self._end_entry_stream()
+            current_entry.stream_finished = True
+            self._pw_busy = True
             return
-        self._pw_busy = True
+
+        # 4. The ProcessWorker has confirmed the end of the stream: the
+        # entry has been processed.
+        self._end_entry_stream()
 
     def _end_entry_stream(self):
-        # read, sent and processed: the next entry can come
+        # Ends the stream of the current entry, once it has been read, sent and
+        # processed, or once the recording turned out too short to send
+        # anything. It stops the timer, drops the entry and reports it finished,
+        # so the next entry can come.
         self._timer.stop()
-        current, self._current = self._current, None
-        self._finish_entry(current.entry)
+        current_entry = self._current_entry
+        self._current_entry = None
+        self._finish_entry(current_entry.path)
 
-    def _fill(self, current: "_EntryStream"):
-        # read on from where the last call stopped, but only once the next
-        # item can't be sent from what is in hand, and then a block of at
-        # least one timepoint: opening the stores costs far more than reading
-        # a frame, so a read per chunk would crawl when chunks are single
-        # frames. The SW never holds more than that block ahead of the
-        # ProcessWorker. Sets current.finished once the recording has been
-        # read to its end. Frames count only up to the first timepoint still
-        # being written, or missing, so they stay in order. On Windows a
-        # read can collide with the writer replacing a metadata file: that
-        # call reads nothing more, the next one retries.
-        if current.finished or self._finishing:
+    def _read_block(self, current_entry: "_EntryStream"):
+        # Reads the next block of frames of the current entry from disk into
+        # current_entry.pending_frames, from where the previous call stopped.
+        #
+        # It reads only when the frames in hand are not enough for the next
+        # item that _send_next() has to send (the init frames, or a chunk).
+        # It then reads a block of at least one timepoint, not just one
+        # chunk: opening the Zarr stores costs far more than reading a frame,
+        # so reading one chunk at a time would be very slow when chunks are
+        # single frames. This also bounds memory: the SW never holds more
+        # than one block ahead of the ProcessWorker.
+        #
+        # Frames are only read in recording order. Reading stops at the first
+        # timepoint that is still being written, or that hasn't appeared on
+        # disk yet, and continues on a later call. On Windows a read can
+        # collide with the writer replacing a metadata file; that call then
+        # reads nothing more, and a later call retries.
+        #
+        # Once the whole recording has been read, it sets
+        # current_entry.completely_read.
+        if current_entry.completely_read or self._winding_down:
             return
-        contract = current.contract
-        needed = contract.chunk_frames
-        if not current.announced:
-            needed = max(needed, contract.init_frames, 1)
-        if len(current.pending) >= needed:
+        entry_contract = current_entry.contract
+        needed_frames = entry_contract.chunk_frames
+        if not current_entry.init_frames_sent:
+            needed_frames = max(needed_frames, entry_contract.init_frames, 1)
+        if len(current_entry.pending_frames) >= needed_frames:
             return  # the next item is in hand
-        target = max(needed, math.prod(current.raw_data_info.S))
+        # S is the shape of one timepoint in frames, so its product is the
+        # number of frames in one timepoint (1 when S is ())
+        frames_per_timepoint = math.prod(current_entry.raw_data_info.S)
+        target_frames = max(needed_frames, frames_per_timepoint)
 
-        data_groups = self._get_data_groups(current.entry)  # reopened: Zarr reads its metadata on open
-        offset = 0
+        # reopened on every read: Zarr reads its metadata on open
+        data_groups = self._get_data_groups(current_entry.path)
+        frames_in_earlier_groups = 0
         try:
-            for index, (_, group) in enumerate(data_groups):
+            for group_index, (_, group) in enumerate(data_groups):
                 data = group["data"]
-                if int(data.attrs.get("recording:lapse_index", 0)) != index:
+                if int(data.attrs.get("recording:lapse_index", 0)) != group_index:
                     return  # a timepoint not readable yet
-                committed, done = self._progress(data)
-                new_from = max(current.read - offset, 0)
-                end = min(committed, new_from + target - len(current.pending))
-                if end > new_from:
-                    frames = _read_frames(data, new_from, end)
-                    current.pending = np.concatenate([current.pending, frames])
-                    current.read += len(frames)
-                offset += committed
-                if end < committed or not done:
-                    return  # more to read here, now or once written
+                committed_frames, writer_done = self._progress(data)
+                first_unread_frame = max(current_entry.read_frames - frames_in_earlier_groups, 0)
+                frames_wanted = target_frames - len(current_entry.pending_frames)
+                read_until = min(committed_frames, first_unread_frame + frames_wanted)
+                if read_until > first_unread_frame:
+                    frames = _read_frames(data, first_unread_frame, read_until)
+                    current_entry.pending_frames = np.concatenate(
+                        [current_entry.pending_frames, frames]
+                    )
+                    current_entry.read_frames += len(frames)
+                frames_in_earlier_groups += committed_frames
+                if read_until < committed_frames or not writer_done:
+                    return  # more to read in this group, now or once written
         except OSError:
             return
 
-        raw_data_info = current.raw_data_info
+        raw_data_info = current_entry.raw_data_info
         if raw_data_info.mode in self.LAPSES and raw_data_info.T:
-            current.finished = len(data_groups) >= raw_data_info.T
+            current_entry.completely_read = len(data_groups) >= raw_data_info.T
         else:
-            current.finished = True
+            current_entry.completely_read = True
 
     @staticmethod
     def _progress(data: zarr.Array) -> tuple[int, bool]:
-        # how many frames are safely on disk, and whether the writer is
-        # done. The writer keeps this barrier for live readers, since the
-        # shape alone can cover chunks not yet written; an array without
-        # it was written in one go.
+        # Returns how many frames of a data array are safely on disk, and
+        # whether the writer has finished it.
+        #
+        # While ImControl writes a recording, it keeps a barrier for live
+        # readers in the array's attributes: recording:frames_committed and
+        # writing. The barrier is needed because the array's shape can already
+        # cover chunks that are not written yet. An array without the barrier
+        # was written in one go, so all of it is there.
         if "recording:frames_committed" in data.attrs:
             committed = int(data.attrs["recording:frames_committed"])
             return committed, not data.attrs.get("writing", False)
@@ -802,14 +910,14 @@ class StreamWorker(QtCore.QObject):
 class _EntryStream:
     """What the StreamWorker keeps about the entry it is reading."""
 
-    entry: str
+    path: str  # the entry's path, as the ObserverWorker emitted it
     raw_data_info: RawInfo
     contract: Contract
-    pending: np.ndarray  # frames read but not yet sent in a chunk
-    read: int = 0  # frames read so far
-    sent: int = 0  # frames sent in chunks so far
-    announced: bool = False  # the init frames have been sent with the contract
-    finished: bool = False  # the recording has been read to its end
+    pending_frames: np.ndarray  # frames read but not yet sent in a chunk
+    read_frames: int = 0  # frames read so far
+    sent_frames: int = 0  # frames sent in chunks so far
+    init_frames_sent: bool = False  # sent to the ProcessWorker with the contract
+    completely_read: bool = False  # the recording has been read to its end
     stream_finished: bool = False  # sigStreamFinished has been sent
 
 
