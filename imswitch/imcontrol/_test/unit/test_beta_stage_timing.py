@@ -74,3 +74,32 @@ def test_the_scan_time_cap_is_honoured_by_the_stage_designer():
     capped = type(setupInfoBasic.scan)(**{**setupInfoBasic.scan.__dict__, 'maxScanTimeMin': 1})
     setup = type(setupInfoBasic)(**{**setupInfoBasic.__dict__, 'scan': capped})
     assert not designer.checkSignalLength(long, setup)
+
+
+def test_undeclared_stage_timing_is_warned_about_once(caplog):
+    """2 ms is the MoNaLISA stage's timing, not every stage's."""
+    designer = BetaScanDesigner()
+    with caplog.at_level(logging.WARNING):
+        designer.make_signal(_parameters(0.02), setupInfoBasic)
+        designer.make_signal(_parameters(0.02), setupInfoBasic)
+    undeclared = [r for r in caplog.records if 'does not declare move_time/settle_time' in r.getMessage()]
+    assert len(undeclared) == 1
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        BetaScanDesigner().make_signal(
+            _parameters(0.02, move_time=0.002, settle_time=0.002), setupInfoBasic
+        )
+    assert not any('does not declare' in r.getMessage() for r in caplog.records)
+
+
+def test_shipped_beta_setups_declare_their_stage_timing():
+    import json
+    from pathlib import Path
+    import imswitch
+    setups = Path(imswitch.__file__).parent / '_data' / 'user_defaults' / 'imcontrol_setups'
+    for path in setups.glob('*.json'):
+        scan = json.loads(path.read_text(encoding='utf-8')).get('scan') or {}
+        if scan.get('scanDesigner') != 'BetaScanDesigner':
+            continue
+        params = scan.get('scanDesignerParams') or {}
+        assert 'move_time' in params and 'settle_time' in params, path.name

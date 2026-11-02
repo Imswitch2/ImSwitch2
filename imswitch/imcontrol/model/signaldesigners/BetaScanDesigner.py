@@ -6,9 +6,11 @@ from .basesignaldesigners import (
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
-#: Fast-axis ramp and settle inside each pixel dwell, in seconds. These were
-#: literals inside the pixel loop; a stage that needs longer declares
-#: ``move_time``/``settle_time`` in ``scanDesignerParams``.
+#: Fast-axis ramp and settle inside each pixel dwell, in seconds, for a setup
+#: that does not declare ``move_time``/``settle_time`` in
+#: ``scanDesignerParams``. They are the values the MoNaLISA stage was tuned to
+#: (ImSwitch 1, 2024; upstream keeps 1 ms each), not a property of stages in
+#: general, so the designer says when it falls back to them.
 DEFAULT_MOVE_TIME_S = 0.002
 DEFAULT_SETTLE_TIME_S = 0.002
 
@@ -21,9 +23,10 @@ class BetaScanDesigner(ScanDesigner):
     - ``return_time`` -- time to wait between lines for the stage to return to
       the first position of the next line, in seconds.
     - ``move_time`` -- how long the fast axis takes to ramp from one pixel to
-      the next, in seconds (default 2 ms).
+      the next, in seconds. A property of the stage: declare it (2 ms, with
+      a warning, when absent).
     - ``settle_time`` -- how long it rests at the new pixel before the next
-      dwell starts, in seconds (default 2 ms).
+      dwell starts, in seconds. Declare it like ``move_time``.
     - ``position_anchor`` -- how ``Center`` is interpreted when a runtime
       position snapshot is available. ``"center"`` (default) centers the ROI
       on ``position_before_scan + Center``; ``"start"`` starts the ROI at
@@ -45,6 +48,7 @@ class BetaScanDesigner(ScanDesigner):
                                     'axis_startpos',
                                     'axis_centerpos',
                                     'return_time']
+        self._warnedUndeclaredTiming = False
 
     def checkSignalLength(self, scanParameters, setupInfo):
         return not self.signalLengthRefusal(scanParameters, setupInfo)
@@ -260,6 +264,17 @@ class BetaScanDesigner(ScanDesigner):
             slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
 
         sampleRate = setupInfo.scan.sampleRate
+        undeclared = [key for key in ('move_time', 'settle_time')
+                      if key not in parameterDict]
+        if undeclared and not self._warnedUndeclaredTiming:
+            # Once per designer: it is made at every parameter change.
+            self._warnedUndeclaredTiming = True
+            self._logger.warning(
+                f'scan.scanDesignerParams does not declare {"/".join(undeclared)}; '
+                f'using {DEFAULT_MOVE_TIME_S * 1e3:g} ms move and '
+                f'{DEFAULT_SETTLE_TIME_S * 1e3:g} ms settle, the MoNaLISA stage\'s '
+                f'values. Declare the times your stage needs in the setup file.'
+            )
         moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))
         settleTime = float(parameterDict.get('settle_time', DEFAULT_SETTLE_TIME_S))
         dwell = float(parameterDict['sequence_time'])

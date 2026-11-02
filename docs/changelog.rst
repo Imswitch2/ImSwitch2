@@ -13,6 +13,12 @@ Unreleased
   visible in Hardware Status; AO/DO writes fail closed and scans are refused
   before arming. ``nidaq.simulation=true`` remains the only way to enable the
   software scan simulator and synthetic acquisition paths.
+- The Beta stage designer's move and settle times are declared in every
+  shipped setup that uses it (``move_time``/``settle_time`` in
+  ``scan.scanDesignerParams``, 2 ms each, unchanged). The 2 ms are the values
+  the MoNaLISA stage was tuned to in ImSwitch 1 (upstream keeps 1 ms each), so
+  a setup that does not declare them now gets a warning naming the keys
+  instead of silently scanning with another rig's timing.
 
 **New Features**
 

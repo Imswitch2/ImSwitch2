@@ -143,6 +143,8 @@
         "scanDesigner": "BetaScanDesigner",
         "scanDesignerParams": {
             "return_time": 0.01,
+            "move_time": 0.002,
+            "settle_time": 0.002,
             "dwell_ms": 10
         },
         "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
