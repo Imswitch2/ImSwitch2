@@ -24,7 +24,13 @@ from .plotting import PlotPayload
 #: - ``"rgb"`` — autoscaled uint8 visualization/export product, not
 #:   quantitative intensities;
 #: - ``"composite"`` — multi-channel intensity stack with independently
-#:   scaled display channels.
+#:   scaled display channels;
+#: - ``"points"`` — ``(N, D)`` coordinates tagged with the frame of reference
+#:   they are measured in (``PointsResult``): what a detection step hands to a
+#:   transform or a hardware action in a smart pipeline;
+#: - ``"value"`` — one number with an optional unit (``ValueResult``);
+#: - ``"event"`` — a yes/no with a payload (``EventResult``): whether something
+#:   was detected, and what.
 RESULT_KINDS = (
     "image",
     "labels",
@@ -33,7 +39,13 @@ RESULT_KINDS = (
     "localization",
     "rgb",
     "composite",
+    "points",
+    "value",
+    "event",
 )
+POINTS_KIND = "points"
+VALUE_KIND = "value"
+EVENT_KIND = "event"
 
 
 #: What a workflow *port* may carry, beyond the result kinds: a Source's

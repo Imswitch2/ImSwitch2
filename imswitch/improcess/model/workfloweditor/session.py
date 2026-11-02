@@ -23,6 +23,14 @@ From that, everything else follows without bookkeeping of its own:
   nonce in its fingerprint each time it is recomputed, which outdates every
   cached result after it: a partial re-run never mixes two realisations.
 
+**Step state.** A step may keep a dict between runs (the Python step's
+``state``: a counter, the last position seen). The session owns one dict per
+step and hands the runner the mapping (``step_state``); the dict survives a
+re-run of the step, and is dropped when the step's effective parameters change
+(its nonce-free fingerprint -- its own parameters and what feeds it -- differs
+from the last run's), when the step is removed, and when the session closes.
+A re-run forced with *Re-run from here* keeps it.
+
 **Open files.** A cached result may read lazily from the source handle its
 run opened. The session takes the handles from every report
 (``detach_sources``) and gives each cache entry the handles of its own run
@@ -124,6 +132,12 @@ class RunPlan:
     #: The nonces the plan's fingerprints use; adopted by the session only
     #: when the plan is run (a plan made and dropped changes nothing).
     nonces: dict = field(default_factory=dict)
+    #: The session's per-step dicts (the same object), for the runner's
+    #: ``step_state``: a step's code sees its own under ``state``.
+    step_state: dict = field(default_factory=dict)
+    #: The nonce-free fingerprint of each step to run: when it differs from
+    #: the one the step last ran with, its state is dropped in ``begin``.
+    state_keys: dict = field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
@@ -171,6 +185,10 @@ class RunSession:
         #: until the run ends so that nothing done meanwhile closes them.
         self._plan_handles: list = []
         self.result_bindings: dict[str, object] = {}
+        #: step id -> the dict its runs share (see the module docstring).
+        self._step_state: dict[str, dict] = {}
+        #: step id -> the nonce-free fingerprint its state was last used under.
+        self._state_keys: dict[str, str] = {}
         self.summary: RunSummary | None = None
         self.closed = False
 
@@ -346,6 +364,11 @@ class RunSession:
             elif isinstance(step, Source) and step.id in self.source_bindings:
                 bindings[step.id] = self.binding_spec(step)
         workflow = Workflow.from_dict({**document.workflow.to_dict(), "steps": [s.to_dict() for s in sub]})
+        self._forget_removed_state(document)
+        # Nonce-free: a step's state must not be thrown away because a
+        # nondeterministic step before it was recomputed, only because what
+        # the step is asked to do changed.
+        stable = self.fingerprints(document, source_root, nonces={})
         self._run_id += 1
         return RunPlan(
             run_id=self._run_id, workflow=workflow, bindings=bindings, keys=dict(prints),
@@ -355,7 +378,25 @@ class RunSession:
             out_dir=Path(out_dir) if out_dir else Path(tempfile.gettempdir()) / "imswitch-workflow-preview",
             overwrite=bool(overwrite), write_saves=bool(write_saves),
             source_stem=self._stem(document, source_root), source_root=source_root, nonces=nonces,
+            step_state=self._step_state,
+            state_keys={step.id: stable[step.id] for step in sub
+                        if step.id in runs and self._keeps_state(step)},
         )
+
+    @staticmethod
+    def _keeps_state(step) -> bool:
+        """Whether ``step`` is one the runner hands a between-runs dict."""
+        return not isinstance(step, (Source, Save))
+
+    def _forget_removed_state(self, document) -> None:
+        for sid in list(self._step_state):
+            if not document.has(sid):
+                self._step_state.pop(sid, None)
+                self._state_keys.pop(sid, None)
+
+    def step_state(self, step_id: str) -> dict | None:
+        """The dict ``step_id``'s runs share, or ``None`` when it has not run with one."""
+        return self._step_state.get(step_id)
 
     @staticmethod
     def _bindable(step) -> bool:
@@ -409,6 +450,13 @@ class RunSession:
         for handle in self._plan_handles:
             self._retain(handle)
         self._created = []
+        for step_id, key in plan.state_keys.items():
+            if self._state_keys.get(step_id, key) != key:
+                self._step_state.pop(step_id, None)
+            self._state_keys[step_id] = key
+            # The runner may read the mapping rather than fill it: the dict
+            # exists before the run, under the object the plan carries.
+            plan.step_state.setdefault(step_id, {})
         self._running = None
         self._waiting = set(plan.to_run)
         self._cached_last = set()
@@ -561,7 +609,7 @@ class RunSession:
         """A step was renamed: its bindings and states follow it (fingerprints
         do not name steps, so its results do anyway)."""
         for table in (self.source_bindings, self.source_datasets, self.result_bindings, self._failed,
-                      self._last_key, self._would_write, self._wrote):
+                      self._last_key, self._would_write, self._wrote, self._step_state, self._state_keys):
             if old in table:
                 table[new] = table.pop(old)
         for group in (self._cached_last, self._waiting):
@@ -680,6 +728,8 @@ class RunSession:
                 self._close(slot[0])
         self._handle_refs = {}
         self._cache = {}
+        self._step_state = {}
+        self._state_keys = {}
         self.closed = True
         return handover
 
@@ -709,6 +759,7 @@ def execute(plan: RunPlan, registry, *, on_step=None, progress=None, cancel=None
             plan.workflow, registry=registry, bindings=plan.bindings, out_dir=plan.out_dir,
             overwrite=plan.overwrite, write_saves=plan.write_saves, source_stem=plan.source_stem,
             source_root=plan.source_root, progress=progress, cancel=cancel, on_step_done=done,
+            step_state=plan.step_state,
         )
     except RunError as exc:
         return getattr(exc, "report", None), str(exc)
