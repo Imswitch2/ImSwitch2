@@ -98,14 +98,37 @@ def test_lists_every_parameter_with_its_units_editability_and_options(settings):
     assert list(parameters) == list(detectorsManager.getDevice('Camera').parameters)
     assert parameters['exposure'] == {
         'value': 100, 'units': 'ms', 'editable': True, 'options': None,
+        'configOwned': False,
     }
     assert parameters['image_width'] == {
         'value': 800, 'units': 'arb.u.', 'editable': False, 'options': None,
+        'configOwned': False,
     }
     assert parameters['pixel_format'] == {
         'value': 'Mono12', 'units': None, 'editable': True,
-        'options': ['Mono8', 'Mono12'],
+        'options': ['Mono8', 'Mono12'], 'configOwned': False,
     }
+
+
+def test_the_listing_says_which_parameters_the_setup_file_owns(settings):
+    """A calibration the setup file declares (the camera pixel size) is
+    flagged, so a script copying settings can leave it to the setup."""
+    controller, _detectorsManager = settings
+    declaring = DetectorsManager(
+        {'Camera': DetectorInfo(
+            managerName='AVManager', forAcquisition=True,
+            managerProperties={'cameraListIndex': 'mock', 'cameraPixelSizeUm': 0.15,
+                               'avcam': {'exposure': 100, 'gain': 1}},
+        )},
+        updatePeriod=100,
+    )
+    try:
+        controller._master.detectorsManager = declaring
+        parameters = controller.getDetectorParameters('Camera')
+    finally:
+        declaring.finalize()
+    assert [n for n, p in parameters.items() if p['configOwned']] == ['Camera pixel size']
+    assert parameters['exposure']['configOwned'] is False
 
 
 def test_the_listing_is_a_copy_the_script_cannot_change_the_camera_through(settings):
