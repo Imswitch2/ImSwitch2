@@ -107,7 +107,12 @@ A reference is ``"step"`` (the step's only, or first, port) or
 ``"step.port"``. Step ids use letters, digits, ``_`` and ``-``. In a
 workflow file each step names its type with ``step:`` (``kind:`` is
 accepted as well). The five kinds above are the built-ins of a **step-type
-registry** (``imswitch.improcess.workflows.steps.register_step_type``):
+registry** (``register_step_type`` in ``imswitch.imcommon.model.workflow.steps``,
+where the schema lives since it is shared with the workflow editor and
+ImControl; ``imswitch.improcess.workflows.steps`` re-exports it, as
+``imswitch.improcess.model.workfloweditor`` and
+``imswitch.improcess.view.workfloweditor`` re-export the editor from
+``imswitch.imcommon.model.workfloweditor`` and ``imswitch.imcommon.view.workfloweditor``):
 another package may register a kind of its own, with the class that
 represents it and a callable the runner hands such a step to, and
 ``step_kinds()`` lists what is known. A file naming a kind nobody

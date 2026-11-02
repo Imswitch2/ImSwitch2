@@ -8,72 +8,12 @@ from typing import Callable
 
 from qtpy import QtWidgets
 
+from imswitch.imcommon.model.workflow.output_spec import (  # noqa: F401 - re-exported
+    OutputSpec,
+    _takes_input_specs,
+    call_output_spec,
+)
 from imswitch.improcess.model.result import UNKNOWN_KIND, ProcessingResult, result_kind
-
-
-@dataclass(frozen=True)
-class OutputSpec:
-    """Which output ports a processor run will produce.
-
-    ``ports`` names them when they are known before the run (``("out",)``,
-    ``("signal", "background")``); ``pattern`` is a regular expression for
-    ports that depend on the data (a channel split yields ``C0, C1, …`` for
-    as many channels as the input has). A workflow validated before running
-    accepts a reference to a port that matches either; after the run the
-    ports actually produced are checked against the spec.
-    """
-
-    ports: tuple[str, ...] | None = ("out",)
-    pattern: str | None = None
-    #: What every port carries (a ``PORT_KINDS`` value): declared, so an editor
-    #: can colour a port and a workflow can be checked before it runs.
-    #: ``"unknown"`` when the plugin does not say.
-    kind: str = UNKNOWN_KIND
-
-    def matches(self, port: str) -> bool:
-        if self.ports is not None and port in self.ports:
-            return True
-        if self.pattern is not None:
-            import re
-
-            return re.fullmatch(self.pattern, str(port)) is not None
-        return False
-
-    def describe(self) -> str:
-        parts = []
-        if self.ports:
-            parts.append(", ".join(self.ports))
-        if self.pattern:
-            parts.append(f"/{self.pattern}/")
-        return " or ".join(parts) or "(none)"
-
-
-@functools.lru_cache(maxsize=None)
-def _takes_input_specs(method) -> bool:
-    try:
-        parameters = inspect.signature(method).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.name == "input_specs" or parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters
-    )
-
-
-def call_output_spec(plugin, params: dict | None = None, input_specs=None):
-    """``plugin.output_spec(params, input_specs)``, or without ``input_specs``
-    for an override that does not take it.
-
-    The documented signature for a drop-in was ``output_spec(params)``; one
-    written to it must keep working wherever the framework now passes the
-    inputs' kinds -- in ``validate()`` an unexpected argument would raise and
-    take every caller with it.
-    """
-    method = getattr(plugin, "output_spec")
-    function = getattr(method, "__func__", method)
-    if input_specs is not None and _takes_input_specs(function):
-        return method(params, input_specs=input_specs)
-    return method(params)
 
 
 @dataclass(frozen=True)

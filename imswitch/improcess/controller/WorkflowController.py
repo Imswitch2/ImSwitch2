@@ -295,7 +295,7 @@ class WorkflowController(QtCore.QObject):
 
     def editWorkflowOfResult(self):
         """Open the steps that made the current result in the editor."""
-        from imswitch.improcess.model.workfloweditor import WorkflowDocument
+        from imswitch.improcess.model.workfloweditor.document import document_from_result
         from imswitch.improcess.workflows.replay import ReplayError
         from imswitch.improcess.workflows.steps import WorkflowError
 
@@ -305,7 +305,7 @@ class WorkflowController(QtCore.QObject):
             return None
         name = f"workflow-{_slug(getattr(result, 'name', 'result'))}"
         try:
-            document = WorkflowDocument.from_result(result, self._catalog(), name=name)
+            document = document_from_result(result, self._catalog(), name=name)
         except (ReplayError, WorkflowError) as exc:
             reasons = getattr(exc, "reasons", None)
             self._status(f"Cannot edit this result's workflow: {reasons[0] if reasons else exc}")

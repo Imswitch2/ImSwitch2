@@ -1,6 +1,6 @@
 # Smart Microscopy Pipeline Designer
 
-Status: **Accepted 2026-11-02** — all five open decisions in §9 taken as proposed; Phase 0 in progress on `feat/workflow-model-open`.
+Status: **Accepted 2026-11-02** — all five open decisions in §9 taken as proposed. Phase 0 implemented on `feat/workflow-model-open`, Phase E on `feat/workflow-editor-imcommon` (stacked); next: Phase 1 (document + engine, offline).
 Branch: none yet. Related: `improcess-workflow-editor-2.md`,
 `smart-microscopy-mode-switching.md`, `tiled-target-timelapse-smart-events.md`,
 `etsted-2-0.md`, `etmonalisa-2-0.md`, `scanner-calibration-widget.md`.
@@ -295,10 +295,10 @@ without a `scouting`/`idle` pair it arms only in Visualize.
 
 | Phase | Deliverable | Where | Done when |
 |---|---|---|---|
-| **0 — Open the workflow model** | step-type registry instead of `_STEP_TYPES`; kinds `points` / `value` / `event`; Python step emits them + `state`; `threshold`, `regionprops`, `pick` processors | ImProcess | an ImProcess workflow thresholds a recording and shows a points table; existing workflow files load unchanged |
+| **0 — Open the workflow model** (implemented 2026-11-02, `feat/workflow-model-open` 067889bc) | step-type registry instead of `_STEP_TYPES`; kinds `points` / `value` / `event`; Python step emits them + `state`; `threshold`, `regionprops`, `pick` processors | ImProcess | an ImProcess workflow thresholds a recording and shows a points table; existing workflow files load unchanged |
 | **1 — Document + engine, offline** | `SmartPipelineDocument`, `Engine` with mock ports, replay source, gates, event log, run modes; tests on a mock recording | imcommon / imcontrol model | a pipeline replays a recording and logs "would move to (x, y)" per detected event |
 | **2 — Live run in ImControl** | live source (lease + bounded queue + worker), `ActionCatalog` over the API, reservation/preflight/roles, `SmartPipeline` panel (Choose / Arm / Stop / mode / status / log) | imcontrol | on `example_mock.json`: threshold → centroid → `setPositioner` moves the mock stage; Stop and app close leave hardware idle |
-| **E — Editor to imcommon** | the split in §6; ImProcess re-exports; no behaviour change | imcommon / ImProcess | every ImProcess workflow-editor test passes unchanged against the new paths; `imswitch.improcess` is not imported by `imcommon` |
+| **E — Editor to imcommon** (implemented 2026-11-02, `feat/workflow-editor-imcommon`, stacked on Phase 0) | the split in §6; ImProcess re-exports; no behaviour change | imcommon / ImProcess | every ImProcess workflow-editor test passes unchanged against the new paths; `imswitch.improcess` is not imported by `imcommon` |
 | **3 — Designer** | editor opened from the panel with the pipeline catalog and host; overlay sink on the live view; recipes "threshold → move", "Et-style triggered scan" | shared / imcontrol | design, dry-run on a recording, arm live, without leaving the GUI |
 | **4 — Transform slot** | protocol, `identity`, `scale-flip`, Et polynomial wrapper, frame-tag validation, calibration files | imcommon / imcontrol | a pipeline with a camera→stage transform arms; one without is refused with the reason |
 | **5 — Et on the engine** | EtSTED recipe = source → Et-function adapter → polynomial → busy gate → `run-scan` with roles; behind a rollout flag like `smartMicroscopyModeSwitchingEnabled` | imcontrol | EtSTED's Validate mode produces the same event log as the legacy controller on the same recording; rig validation pending |

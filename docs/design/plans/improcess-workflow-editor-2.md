@@ -27,6 +27,28 @@ one click away and the choice remembered; interactive previews stay in the
 editor until *Show in viewer* (temporary) or *Pin* (permanent); auto-run is off
 by default; Phase 4 is decided after Phase 3 ships.
 
+**Moved to imcommon** (2026-11-02): the editor (`view/workfloweditor/`, with
+the canvas) and its Qt-free model (`model/workfloweditor/`: document, graph,
+nodes, commands, previews, session, catalog types, folders, preferences),
+together with the workflow schema they edit (`workflows/steps.py`, the pure
+part of `workflows/sources.py`, `call_output_spec`/`OutputSpec`, the kind
+vocabulary of `model/result.py` and `model/param_spec.py`), now live under
+`imswitch/imcommon/model/workflow/`, `imswitch/imcommon/model/workfloweditor/`
+and `imswitch/imcommon/view/workfloweditor/`. The reason is ImControl's
+smart-pipeline designer (`smart-microscopy-pipeline-designer.md`): it opens
+the same editor on its own catalog and host, so `imcommon` must not reach
+back into `improcess`. Nothing moved changes behaviour; every ImProcess path
+named in this document still imports (re-export shims), and what the editor
+needs of ImProcess is handed in rather than imported: the catalog carries the
+recordings file filter, the recipes and the snippet store
+(`build_catalog` stays in `improcess/model/workfloweditor/catalog.py`), the
+registry answers `contract_problem`, `normalize_format`, `close_source` and
+`source_stem_of` (`PluginRegistry` has them; `validate()` and `RunSession`
+ask, duck-typed), `execute()` and `document_from_result` (the former
+`WorkflowDocument.from_result`) stay in ImProcess, and the ImProcess window
+(`improcess/view/workfloweditor/editor.py`) is the imcommon one with
+ImProcess's catalog, folder and options file as defaults.
+
 ## Summary
 
 Today's editor has every capability a workflow needs, but it shows a workflow
