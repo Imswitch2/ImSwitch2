@@ -16,7 +16,7 @@ class DirectoryWatcherWidget(QtWidgets.QFrame):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.path = r"C:\Users\karl.hojlund\Documents\testalab\tl_data\live_testing"
+        self.path = ""
         self.folderEdit = QtWidgets.QLineEdit(self.path)
         self.browseFolderButton = guitools.BetterPushButton("Browse")
         self.monitorFolderCheck = QtWidgets.QCheckBox("Monitor")
