@@ -7,7 +7,8 @@ for the fonts a desktop has). Runs the editor through the real
 ``WorkflowController`` on the synthetic recordings of
 ``examples/improcess_workflows/_synthetic.py``, in ImSwitch's own style sheet,
 and writes one PNG per screen: start, graph, outdated, quick_add, list_error,
-curves. Replaces the spike that rendered the plan's mockups.
+curves, and for workflow schema 2 bypass, controls and run_dialog (only those
+with ``--schema-2``). Replaces the spike that rendered the plan's mockups.
 """
 
 from __future__ import annotations
@@ -102,12 +103,58 @@ class Rig:
         print("wrote", path)
 
 
+def schema2_shots(rig: Rig, out: Path) -> None:
+    """Controls and bypass: a bypassed filter, the Controls panel, the run dialog."""
+    from imswitch.improcess.model.workfloweditor import WorkflowDocument
+    from imswitch.improcess.view.WorkflowControlsDialog import WorkflowControlsDialog
+    from imswitch.improcess.workflows.prepare import describe_controls
+
+    editor = rig.editor
+    editor.document.dirty = False
+    document = WorkflowDocument(Workflow.load(EXAMPLES / "split_process_merge_diamond.yaml"), catalog=editor.catalog)
+    document.add_control("radius", "smooth.radius", label="Filter radius",
+                         help="Radius of both channel filters, in pixels")
+    document.add_target("radius", "sharp.radius")
+    document.add_control("method", "smooth.method", label="First channel's filter")
+    editor.load_document(document, confirm=False)
+    editor.set_mode("graph")
+    editor.bind_source("raw", rig.cells)
+    editor.run()
+    rig.wait()
+    editor.select_step("smooth")
+    editor.toggle_bypass()
+    editor.view.fit()
+    rig.shot(out / "bypass.png")
+
+    editor.scene.clearSelection()
+    editor.refresh()
+    editor.view.fit()
+    rig.shot(out / "controls.png")
+
+    described = describe_controls(document.workflow, rig.registry)
+    dialog = WorkflowControlsDialog(document.name, described, parent=editor)
+    dialog.resize(520, dialog.sizeHint().height())
+    dialog.show()
+    pump(0.4)
+    dialog.grab().save(str(out / "run_dialog.png"))
+    print("wrote", out / "run_dialog.png")
+    dialog.close()
+    editor.document.dirty = False
+
+
 def main(argv) -> int:
+    only_schema2 = "--schema-2" in argv
+    argv = [arg for arg in argv if arg != "--schema-2"]
     out = Path(argv[1] if len(argv) > 1 else REPO / "docs" / "images" / "workflow-editor")
     out.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="wfe-shots-"))
     rig = Rig(scratch)
     editor = rig.editor
+    if only_schema2:
+        schema2_shots(rig, out)
+        editor.close()
+        pump()
+        return 0
 
     # A result with a history, and the recording "open in ImProcess", for the start page.
     with run(Workflow.load(EXAMPLES / "split_process_merge_diamond.yaml"), registry=rig.registry,
@@ -171,6 +218,7 @@ def main(argv) -> int:
     rig.shot(out / "curves.png")
 
     editor.set_write_files(False)
+    schema2_shots(rig, out)
     editor.document.dirty = False
     editor.close()
     pump()

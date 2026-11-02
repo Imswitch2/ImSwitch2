@@ -447,6 +447,22 @@ value, so the run-wide value applies.
 
 In the last example ``a.h5`` runs with radius 2.5 and ``b.h5`` with 3.
 
+**In ImProcess**, **Workflows → Run workflow…**, **Run workflow on selected
+results…** and **Run workflow over files…** ask for a file's controls before
+running it (after the question about Python code, when it has some): one
+field per control, from its combined field, with its label and help, filled
+with the file's values. The values hold for that run, or for every file of a
+run over files, and are not written to the file; **Cancel** runs nothing. A
+control that has no effect in that run is listed greyed with the reason and
+sends no value: its steps are bypassed, or, on selected results, it sets the
+reconstruction the selected result replaces. The status line names the
+values the run used. A file without controls opens no dialog, and runs
+started from the editor do not ask (there a control's value is in its
+steps).
+
+.. image:: ./images/workflow-editor/run_dialog.png
+   :alt: The values dialog for a workflow with two controls, one greyed because its step is bypassed
+
 ``--set`` takes ``name=TEXT`` (everything after the first ``=``); a manifest
 cell is the same text, and both are read by the **target field's type**, not
 as YAML, so ``001`` stays text in a text field and ``on`` is no boolean:
@@ -706,6 +722,9 @@ shared with the graph (Ctrl+1). The editor remembers which you used last.
 Controls and bypass in the editor
 ---------------------------------
 
+.. image:: ./images/workflow-editor/bypass.png
+   :alt: The diamond with its first filter bypassed: the box is dimmed, and a dashed line shows the data passing through
+
 * **Bypass** (**B** on the canvas, the step's context menu, or *Edit →
   Bypass*) keeps a processing or save step in the file but out of the run
   (:ref:`workflows-controls`). Its box is dimmed, with a grey header and a
@@ -735,6 +754,9 @@ Controls and bypass in the editor
   parameters keep their value). A control whose parameters are all on
   bypassed steps says it has no effect while they are bypassed, and stays
   editable.
+
+  .. image:: ./images/workflow-editor/controls.png
+     :alt: The Controls panel: a radius shared by both filters, and a control with no effect while its step is bypassed
 * Runs in the editor take no control values: there a control's value is its
   parameters' value. A partial run (*Run to selected*) never trips over a
   control whose other parameters are outside it.

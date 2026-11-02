@@ -2,7 +2,10 @@
 
 Date: 2026-11-02 (draft 2, after review 1)
 
-Status: **Draft 2 for review.** Designs the first two items of Phase 4 of
+Status: **Implemented** (S1, S2 and S3, 2026-11-02, on
+`feat/improcess-workflow-editor-2`; draft 2 confirmed with decisions 7–12 as
+written). User documentation: `docs/improcess-workflows.rst`, "Controls and
+bypass" and "Controls and bypass in the editor". Designs the first two items of Phase 4 of
 [improcess-workflow-editor-2.md](improcess-workflow-editor-2.md), the ones
 that change what a workflow file means: **exposed controls** (a few
 parameters promoted to the workflow and set at run time) and **bypass** (a
