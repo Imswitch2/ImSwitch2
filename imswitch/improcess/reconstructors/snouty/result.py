@@ -118,17 +118,29 @@ class SnoutyResult(ProcessingResult):
         )
     
     def _save_hdf5(self, path: Path) -> None:
-        """Save as HDF5 with per-timepoint datasets (4D) or single volume (3D)."""
+        """Save as HDF5 with per-timepoint datasets (4D) or single volume (3D).
+
+        Each ``(Z, Y, X)`` dataset carries ``axes`` and the Fiji/ImSwitch
+        ``element_size_um``, so the volume reloads calibrated.
+        """
+        voxel_nm = self.params.get("sample_vx_size")
+        voxel_um = float(voxel_nm) / 1000.0 if voxel_nm else None
+
+        def write(f, name, volume):
+            dataset = f.create_dataset(name, data=volume, compression='gzip')
+            dataset.attrs["axes"] = "ZYX"
+            if voxel_um:  # unknown stays unknown rather than becoming 1 nm
+                dataset.attrs["element_size_um"] = [voxel_um, voxel_um, voxel_um]
+
         with h5py.File(str(path), 'w') as f:
             if self.data.ndim == 3:
                 # Single 3D volume
-                f.create_dataset('volume', data=self.data, compression='gzip')
+                write(f, 'volume', self.data)
             elif self.data.ndim == 4:
                 # One dataset per timepoint: t000, t001, ...
                 n_timepoints = self.data.shape[0]
                 for t in range(n_timepoints):
-                    dataset_name = f"t{t:03d}"
-                    f.create_dataset(dataset_name, data=self.data[t], compression='gzip')
+                    write(f, f"t{t:03d}", self.data[t])
             else:
                 raise ValueError(f"Cannot save {self.data.ndim}D data as HDF5")
             
