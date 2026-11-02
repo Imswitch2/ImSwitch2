@@ -234,8 +234,7 @@ can decide whether to wait for the end of the recording
 runnable on a mock setup.
 
 Reading and setting the microscope
-===========================
-
+==================================
 
 Every device the setup file declares can be read as well as set, so a
 script can act on what it finds. The names come first --
@@ -286,7 +285,7 @@ back, for a time lapse that must not image before it is::
 
 :doc:`api/api.imcontrol` lists every function a script can call, with
 its signature and the widget that provides it.
-=======
+
 Reserving devices and instruments
 =================================
 
