@@ -192,10 +192,17 @@ class MoNaLISAController(ImProcessWidgetController):
                 runs.append(run)
             else:
                 self._commChannel.sigResultProduced.emit(run.result, run.result.name)
+                finalized = getattr(self._commChannel, "sigResultFinalized", None)
+                if finalized is not None:
+                    finalized.emit(run.result, run.result.name)
 
         if consolidate and runs:
             result = run_consolidation(adapter, runs)
-            self._commChannel.sigResultProduced.emit(result, f'{result.name}_multi')
+            display_name = f'{result.name}_multi'
+            self._commChannel.sigResultProduced.emit(result, display_name)
+            finalized = getattr(self._commChannel, "sigResultFinalized", None)
+            if finalized is not None:
+                finalized.emit(result, display_name)
 
     def _buildMonalisaResult(self, name, coeffsList):
         """Assemble a MonalisaProcessingResult from one or more datasets' coeffs

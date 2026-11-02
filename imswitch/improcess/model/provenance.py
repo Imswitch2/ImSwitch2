@@ -305,6 +305,50 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def recipe_id_for(plugin, encoded_params: dict) -> str:
+    """Stable identity for one reconstruction recipe.
+
+    The fingerprint deliberately contains only the reconstructor contract and
+    the already-encoded effective parameters -- never source identity or result
+    state.  It is recorded now for future "missing current recipe" UX, but is
+    not used by Auto eligibility in this pass.
+    """
+    if plugin is None:
+        return ""
+    payload = {
+        "plugin_id": str(getattr(plugin, "id", "") or type(plugin).__name__),
+        "plugin_version": str(getattr(plugin, "version", "") or ""),
+        "params_version": int(getattr(plugin, "params_version", 1) or 1),
+        "params": encoded_params or {},
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def recipe_ids_from_graph(graph: dict | None) -> tuple[str, ...]:
+    """Distinct reconstruction recipe ids present in ``graph`` in node order."""
+    if not isinstance(graph, dict):
+        return ()
+    out = []
+    seen = set()
+    for node in (graph.get("nodes") or {}).values():
+        if not isinstance(node, dict) or node.get("op") != "reconstruct":
+            continue
+        recipe_id = str(node.get("recipe_id") or "")
+        if recipe_id and recipe_id not in seen:
+            seen.add(recipe_id)
+            out.append(recipe_id)
+    return tuple(out)
+
+
+def result_recipe_ids(result) -> tuple[str, ...]:
+    """Recipe fingerprints carried by a result's reconstruction provenance."""
+    return recipe_ids_from_graph(graph_of(result))
+
+
 def make_node(
     op: str,
     *,
@@ -372,6 +416,9 @@ def make_node(
         node["label"] = str(getattr(plugin, "name", "") or node["plugin_id"])
         node["plugin_version"] = str(getattr(plugin, "version", "") or "")
         node["params_version"] = int(getattr(plugin, "params_version", 1) or 1)
+        result_role = str(getattr(plugin, "result_role", "derived") or "derived")
+        if result_role != "derived":
+            node["result_role"] = result_role
     if params is not None or plugin is not None:
         node["params"] = encoded
     if reasons:
@@ -380,6 +427,8 @@ def make_node(
         node["source"] = dict(source)
     if extra:
         node.update({str(key): value for key, value in extra.items()})
+    if plugin is not None and op == "reconstruct":
+        node["recipe_id"] = recipe_id_for(plugin, encoded)
     if op == "opaque":
         node["replayable"] = False
         node.setdefault("reasons", ["origin not recorded"])
@@ -1084,6 +1133,9 @@ __all__ = [
     "record_import",
     "record_process",
     "record_reconstruction",
+    "recipe_id_for",
+    "recipe_ids_from_graph",
+    "result_recipe_ids",
     "set_graph",
     "source_node_for",
     "validate_graph",

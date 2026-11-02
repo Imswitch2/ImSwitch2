@@ -90,6 +90,7 @@ class ViewOnlyReconstructor(StreamingReconstructor):
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     description = "Display raw frames without any reconstruction"
     is_pass_through = True
+    result_role = "inspection"
 
     @classmethod
     def default_params(cls) -> dict:

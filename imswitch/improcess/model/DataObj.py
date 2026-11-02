@@ -15,6 +15,7 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     persist_layout_override,
     resolve_acquisition_layout,
 )
+from imswitch.improcess.model.hdf5_access import open_raw_hdf5
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     default_axis_labels,
@@ -658,7 +659,7 @@ class DataObj:
         source = resolve_dataset_source(path)
         path = str(source.path)
         if source.format_id == 'hdf5':
-            file = h5py.File(path, 'r')
+            file = open_raw_hdf5(path)
             datasetNames = dataset_names(file)
             if len(datasetNames) < 1:
                 raise RuntimeError('File does not contain any datasets')

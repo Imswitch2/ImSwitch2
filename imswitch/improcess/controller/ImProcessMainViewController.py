@@ -9,6 +9,7 @@ from .ScanParamsController import ScanParamsController
 from .WidefieldStarssBatchController import WidefieldStarssBatchController
 from .FileIOController import FileIOController
 from .ProcessingSessionController import ProcessingSessionController
+from .ProcessingQueueController import ProcessingQueueController
 from .ReconstructorManagerController import ReconstructorManagerController
 from .MoNaLISAController import MoNaLISAController
 from .basecontrollers import ImProcessWidgetController
@@ -43,6 +44,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
             fileIOController=self.fileIOController,
             reconstructionController=self.reconstructionController,
         )
+        set_session_controller = getattr(self.liveModeController, "setSessionController", None)
+        if callable(set_session_controller):
+            set_session_controller(self.processingSessionController)
         self.graphController = None
         if self._widget.graphWidget is not None:
             self.graphController = self._factory.createController(
@@ -71,6 +75,20 @@ class ImProcessMainViewController(ImProcessWidgetController):
         # Initialize the active reconstructor after all subsidiary controllers exist
         self._activeReconstructor = None
         self.reconstructorManager.initActiveReconstructor()
+
+        # Patch-2 processing lane.  It is backend-only for now: the existing
+        # Session/DirectoryWatcher widgets remain wired to their legacy actions
+        # until the integrated UX lands in Patch 4.
+        self.processingQueueController = self._factory.createController(
+            ProcessingQueueController,
+            self._widget,
+            mainController=self,
+            sessionController=self.processingSessionController,
+            reconstructorManager=self.reconstructorManager,
+        )
+        self.processingSessionController.setProcessingQueueController(
+            self.processingQueueController
+        )
 
         self._currentDataObj = None
 

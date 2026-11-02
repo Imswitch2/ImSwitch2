@@ -64,6 +64,8 @@ class DataFrame(QtWidgets.QFrame):
     sigShowMeanClicked = QtCore.Signal()
     sigAdjustDataClicked = QtCore.Signal()
     sigUnloadDataClicked = QtCore.Signal()
+    sigOpenDataClicked = QtCore.Signal()
+    sigProcessCurrentClicked = QtCore.Signal()
     sigFrameNumberChanged = QtCore.Signal(int)
     sigFrameSliderChanged = QtCore.Signal(int)
 
@@ -81,6 +83,14 @@ class DataFrame(QtWidgets.QFrame):
         self.imgVb.setAspectLocked(True)
         self.imgHist = pg.HistogramLUTItem(image=self.img)
         imageWidget.addItem(self.imgHist, row=0, col=1)
+
+        self.openDataBtn = BetterPushButton('Open data…')
+        self.openDataBtn.setToolTip('Open a data source as Current Data')
+        self.openDataBtn.clicked.connect(self.sigOpenDataClicked)
+
+        self.processCurrentBtn = BetterPushButton('Process current')
+        self.processCurrentBtn.setToolTip('Process the currently inspected data with the active reconstructor')
+        self.processCurrentBtn.clicked.connect(self.sigProcessCurrentClicked)
 
         self.showMeanBtn = BetterPushButton()
         self.showMeanBtn.setText('Show mean image')
@@ -136,17 +146,24 @@ class DataFrame(QtWidgets.QFrame):
         layout = QtWidgets.QGridLayout()
         self.setLayout(layout)
 
-        layout.addWidget(self.dataName, 0, 0, 1, 4)
-        layout.addWidget(self.datasetName, 0, 4, 1, 2)
-        layout.addWidget(self.showMeanBtn, 1, 0)
-        layout.addWidget(self.slider, 1, 1, 1, 3)
-        layout.addWidget(frameLabel, 1, 4)
-        layout.addWidget(self.frameNum, 1, 5)
-        layout.addWidget(self.adjustDataBtn, 2, 0)
-        layout.addWidget(self.unloadDataBtn, 2, 1)
-        layout.addWidget(numFramesLabel, 2, 4)
-        layout.addWidget(self.numFrames, 2, 5)
-        layout.addWidget(imageWidget, 3, 0, 1, -1)
+        actionRow = QtWidgets.QHBoxLayout()
+        actionRow.setContentsMargins(0, 0, 0, 0)
+        actionRow.setSpacing(4)
+        actionRow.addWidget(self.openDataBtn)
+        actionRow.addWidget(self.processCurrentBtn)
+        actionRow.addStretch(1)
+        layout.addLayout(actionRow, 0, 0, 1, 6)
+        layout.addWidget(self.dataName, 1, 0, 1, 4)
+        layout.addWidget(self.datasetName, 1, 4, 1, 2)
+        layout.addWidget(self.showMeanBtn, 2, 0)
+        layout.addWidget(self.slider, 2, 1, 1, 3)
+        layout.addWidget(frameLabel, 2, 4)
+        layout.addWidget(self.frameNum, 2, 5)
+        layout.addWidget(self.adjustDataBtn, 3, 0)
+        layout.addWidget(self.unloadDataBtn, 3, 1)
+        layout.addWidget(numFramesLabel, 3, 4)
+        layout.addWidget(self.numFrames, 3, 5)
+        layout.addWidget(imageWidget, 4, 0, 1, -1)
 
         self._showPattern = False
         self._showDetectionPreview = False
@@ -222,6 +239,12 @@ class DataFrame(QtWidgets.QFrame):
 
     def setDatasetName(self, value):
         self.datasetName.setText(f'Dataset: {value}')
+
+    def setProcessCurrentVisible(self, visible: bool) -> None:
+        self.processCurrentBtn.setVisible(bool(visible))
+
+    def setProcessCurrentEnabled(self, enabled: bool) -> None:
+        self.processCurrentBtn.setEnabled(bool(enabled))
 
     def setImageControlsEnabled(self, enabled):
         """Disable pixel-only actions while a metadata source is current."""

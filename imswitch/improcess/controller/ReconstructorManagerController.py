@@ -490,9 +490,18 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # meaningful for a reconstructor that can make a session. Declared
         # capability, like is_pass_through above -- not another id check.
         try:
-            self._widget.setDirectoryWatcherAvailable(
-                bool(getattr(reconstructor, 'supports_streaming', False))
-            )
+            streaming = bool(getattr(reconstructor, 'supports_streaming', False))
+            derived = str(getattr(reconstructor, 'result_role', 'derived')) != 'inspection'
+            auto_available = streaming and derived
+            self._widget.setDirectoryWatcherAvailable(streaming)
+            self._widget.processingSessionFrame.setProcessingAvailable(derived)
+            self._widget.setSessionAutoProcessingAvailable(auto_available)
+            # An unavailable Auto control must not leave a hidden policy armed.
+            # Re-enabling Auto is an explicit user action for the new reconstructor.
+            if not auto_available:
+                queue_controller = getattr(self._main, 'processingQueueController', None)
+                if queue_controller is not None and queue_controller.autoPolicy.enabled:
+                    queue_controller.setAutoEnabled(False)
         except Exception:
             # Logged, not swallowed silently: a failure here leaves the panel
             # offering a run the plugin cannot perform, which looks like the
@@ -691,6 +700,100 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         self.reconstruct([self._main._currentDataObj], consolidate=False)
 
+    def openInspection(self, plugin_id: str, data_obj) -> str:
+        """Publish one inspection result without changing the active plugin.
+
+        Session's ``Open in viewer`` is a navigation/inspection action, not a
+        processing choice.  It therefore resolves the inspection plugin
+        directly from the registry and runs it with its own defaults instead
+        of installing it in the Parameters panel.
+        """
+        from imswitch.improcess.reconstructors import (
+            available_reconstructor_specs,
+            register_reconstructor_by_id,
+        )
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        reconstructor = registry.get_reconstructor(plugin_id, raise_on_missing=False)
+        registered_for_viewer = False
+        if reconstructor is None:
+            try:
+                reconstructor = register_reconstructor_by_id(registry, plugin_id)
+            except Exception as exc:
+                viewer_name = (
+                    "Time Lapse" if plugin_id == "time-lapse" else "image"
+                )
+                raise RuntimeError(
+                    f"Could not load the {viewer_name} viewer; see the log for details"
+                ) from exc
+            registered_for_viewer = True
+
+        if (
+            str(getattr(reconstructor, "result_role", "derived") or "derived")
+            != "inspection"
+        ):
+            # ``openInspection`` is deliberately restricted to inspection
+            # plugins. If an unexpected id was auto-registered above, undo it
+            # rather than silently changing the runtime plugin set.
+            if registered_for_viewer:
+                registry.unregister_reconstructor(plugin_id)
+            raise ValueError(
+                f"Reconstructor {plugin_id!r} is not an inspection plugin"
+            )
+
+        if registered_for_viewer:
+            self._logger.info(
+                f"Auto-loaded inspection reconstructor {plugin_id!r} for viewer"
+            )
+            # Registration must not activate the plugin, but it should update
+            # the ordinary plugin UI so Tools -> Load reconstructor does not
+            # continue to advertise it as unloaded.
+            self._publishReconstructorChoices()
+            setter = getattr(self._widget, "setAvailableReconstructors", None)
+            if callable(setter):
+                try:
+                    loaded = {plugin.id for plugin in registry.reconstructors()}
+                    setter(
+                        [
+                            (known_id, name, description)
+                            for known_id, name, description
+                            in available_reconstructor_specs()
+                            if known_id not in loaded
+                        ]
+                    )
+                except Exception as exc:
+                    # Menu refresh is cosmetic; a working viewer must not fail
+                    # just because the optional plugin menu could not refresh.
+                    self._logger.debug(
+                        f"Could not refresh reconstructor load menu: {exc}"
+                    )
+
+        params = copy.deepcopy(reconstructor.default_params())
+        validator = getattr(reconstructor, "validate_source", None)
+        if callable(validator):
+            validator(data_obj)
+
+        if getattr(reconstructor, "execution_policy", "inline") == "worker":
+            started = self._start_worker_reconstruction(
+                reconstructor, [data_obj], False, params_override=params
+            )
+            if not started:
+                raise RuntimeError("The viewer could not be started")
+            return "started"
+
+        from imswitch.improcess.reconstructors.run import run_reconstruction
+
+        result = run_reconstruction(reconstructor, data_obj, params).result
+        # View-only results can point directly at a lazy source handle. Keep
+        # its DataObj alive for exactly as long as the result remains loaded;
+        # ReconstructionViewController already owns this resource contract.
+        result._session_backing_data_obj = data_obj
+        self._publishPluginResult(
+            result, getattr(result, "name", "viewer"), reconstructor=reconstructor
+        )
+        return "ready"
+
     def reconstructMulti(self, consolidate):
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
 
@@ -765,14 +868,30 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
         self._publishPluginResult(merged, f'{merged.name}_multi')
 
-    def _params_for_data_obj(self, reconstructor):
-        params = self._widget.getReconstructionParams()
+    def snapshotProcessingParams(self, reconstructor=None):
+        """Return an immutable-by-convention queue-time parameter snapshot.
+
+        Queued work must not silently change when the user edits the parameter
+        widget later.  The queue stores the returned dict and hands a fresh copy
+        to each processing unit.
+        """
+        reconstructor = reconstructor or self._main._activeReconstructor
+        if reconstructor is None:
+            return {}
+        params = copy.deepcopy(self._widget.getReconstructionParams())
         if reconstructor.id == "monalisa":
             params = dict(params)
             params['scan_params'] = copy.deepcopy(
                 self._main.monalisaController._scanParDict
             )
         return params
+
+    def _params_for_data_obj(self, reconstructor):
+        return self.snapshotProcessingParams(reconstructor)
+
+    def publishQueuedResult(self, result, displayName, reconstructor=None):
+        """Publish one queue-produced result through the normal ImProcess path."""
+        self._publishPluginResult(result, displayName, reconstructor=reconstructor)
 
     @staticmethod
     def _default_memory_budget_bytes() -> int:
@@ -785,21 +904,28 @@ class ReconstructorManagerController(ImProcessWidgetController):
             available = 2 * 1024 ** 3
         return max(256 * 1024 ** 2, int(available * 0.6))
 
-    def _start_worker_reconstruction(self, reconstructor, data_objs, consolidate):
+    def _start_worker_reconstruction(
+        self, reconstructor, data_objs, consolidate, *, params_override=None
+    ):
         if self._reconstructionThread is not None:
             self._logger.warning("A reconstruction job is already running")
             self._set_reconstruction_job_state(
                 True, status="A reconstruction is already running."
             )
-            return
+            return False
         if not data_objs:
-            return
+            return False
+
+        def params_for(data_obj):
+            if params_override is not None:
+                return copy.deepcopy(params_override)
+            return self._params_for_data_obj(reconstructor)
 
         budget = self._default_memory_budget_bytes()
         shared_auto_localizations = {}
         relocalize_each = False
         if reconstructor.id == "monalisa" and len(data_objs) > 1:
-            first_params = self._params_for_data_obj(reconstructor)
+            first_params = params_for(data_objs[0])
             if str(first_params.get("localization_mode", "Auto")) == "Auto":
                 relocalize_each = self._monalisa_relocalize_each_data_item()
                 if not relocalize_each:
@@ -837,7 +963,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                         except Exception as exc:
                             self._logger.error(f"MoNaLISA localization failed: {exc}")
                             self._setPreviewStatus(f"Localization failed: {exc}")
-                            return
+                            return False
                         shared_auto_localizations[detector] = localization.to_dict()
                         if first_item is current_data:
                             widget = getattr(self, "_previewWidget", None)
@@ -850,7 +976,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         jobs = []
         for data_obj in data_objs:
-            params = self._params_for_data_obj(reconstructor)
+            params = params_for(data_obj)
             if reconstructor.id == "monalisa" and len(data_objs) > 1:
                 if relocalize_each:
                     params = dict(params)
@@ -873,7 +999,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 self._set_reconstruction_job_state(
                     False, status=f"Preflight failed: {exc}"
                 )
-                return
+                return False
             confirmed = False
             if estimate is not None and estimate.required_bytes > budget:
                 confirmer = getattr(
@@ -891,7 +1017,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                         False,
                         status="Reconstruction not started: memory estimate declined.",
                     )
-                    return
+                    return False
             jobs.append(ReconstructionWorkerJob(
                 data_obj=data_obj,
                 params=dict(params),
@@ -920,10 +1046,21 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = thread
         self._reconstructionWorker = worker
         self._reconstructionWorkerReconstructor = reconstructor
+        inspection = (
+            str(getattr(reconstructor, "result_role", "derived") or "derived")
+            == "inspection"
+        )
         self._set_reconstruction_job_state(
-            True, progress=0.0, status=f"Starting {reconstructor.name}..."
+            True,
+            progress=0.0,
+            status=(
+                "Opening in viewer..."
+                if inspection
+                else f"Starting {reconstructor.name}..."
+            ),
         )
         thread.start()
+        return True
 
     def cancelReconstruction(self):
         worker = self._reconstructionWorker
@@ -977,8 +1114,14 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     sync()
                 except Exception as exc:
                     self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
+        inspection = (
+            str(getattr(reconstructor, "result_role", "derived") or "derived")
+            == "inspection"
+        )
         self._set_reconstruction_job_state(
-            False, progress=1.0, status="Reconstruction complete."
+            False,
+            progress=1.0,
+            status="Viewer ready." if inspection else "Reconstruction complete.",
         )
 
     @QtCore.Slot(object)
@@ -1024,11 +1167,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
         )
 
     def _publishPluginResult(self, result, displayName, reconstructor=None):
+        producer = reconstructor or self._main._activeReconstructor
         self._commChannel.sigResultProduced.emit(result, displayName)
+        if str(getattr(producer, "result_role", "derived") or "derived") != "inspection":
+            finalized = getattr(self._commChannel, "sigResultFinalized", None)
+            if finalized is not None:
+                finalized.emit(result, displayName)
         self._commChannel.sigCurrentResultChanged.emit(result)
         # NOTE: Special-case by ID retained because widefield-starss batch result
         # collection is plugin-specific and not part of the generic plugin API.
-        producer = reconstructor or self._main._activeReconstructor
         if producer is not None and producer.id == "widefield-starss":
             self._main.wfsBatchController.appendSingleResult(result)
         # Push reconstruction-derived metadata (e.g. MoNaLISA's computed

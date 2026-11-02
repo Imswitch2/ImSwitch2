@@ -4,6 +4,7 @@ import tifffile as tiff
 import zarr
 
 from imswitch.improcess.model import DataObj
+from imswitch.improcess.live.sources import Hdf5LiveSource
 from imswitch.improcess.reconstructors.view_only.reconstructor import ViewOnlyReconstructor
 # Reuse the production zarr helpers so these tests work on both zarr v2
 # (DirectoryStore / create_dataset) and zarr v3 (LocalStore / create_array).
@@ -29,6 +30,40 @@ def test_data_obj_reads_legacy_hdf5_dataset(tmp_path) -> None:
     assert data_obj.attrs["writing"] is False or data_obj.attrs["writing"] == np.bool_(False)
 
     data_obj.checkAndUnloadData()
+
+
+def test_data_obj_and_live_source_share_hdf5_read_policy(tmp_path) -> None:
+    """Working Set/Current Data and Auto may hold the same raw file together."""
+    path = tmp_path / "shared-raw.hdf5"
+    data = np.arange(6 * 3 * 4, dtype=np.uint16).reshape(6, 3, 4)
+
+    with h5py.File(path, "w", libver="latest") as file:
+        dataset = file.create_dataset("CAM", data=data, chunks=(2, 3, 4))
+        dataset.attrs["recording:frames_per_stack"] = 3
+        dataset.attrs["writing"] = False
+
+    # The observed failure was this order: DataObj keeps a Working Set handle
+    # alive, then Auto tries to open the same file as an SWMR live reader.
+    data_obj = DataObj(path.name, "CAM", path=str(path))
+    data_obj.checkAndOpenData()
+    assert data_obj._file.swmr_mode is True
+
+    live = Hdf5LiveSource(detector_name="CAM")
+    info = live.open(str(path))
+    assert info.frames_per_stack == 3
+    live.close()
+    data_obj.checkAndUnloadData()
+
+    # Keep the reverse order compatible too: all raw path-based readers use the
+    # same open policy rather than depending on which UI feature opened first.
+    live = Hdf5LiveSource(detector_name="CAM")
+    live.open(str(path))
+    data_obj = DataObj(path.name, "CAM", path=str(path))
+    data_obj.checkAndOpenData()
+    assert data_obj._file.swmr_mode is True
+    np.testing.assert_array_equal(data_obj.data_handle[0], data[0])
+    data_obj.checkAndUnloadData()
+    live.close()
 
 
 def test_data_obj_hdf5_lazy_handle_does_not_materialize(tmp_path) -> None:

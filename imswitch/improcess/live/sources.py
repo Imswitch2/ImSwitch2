@@ -20,6 +20,7 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
     resolve_acquisition_layout,
 )
+from imswitch.improcess.model.hdf5_access import open_raw_hdf5
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     dataset_names,
@@ -103,6 +104,46 @@ def _coerce_positive_int(value: Any) -> int | None:
     if not np.isfinite(number) or number <= 0:
         return None
     return max(1, int(number))
+
+
+def _time_partition_planned_count(resolved: ResolvedAcquisitionLayout | None) -> int | None:
+    """Return the enclosing logical T count declared by a time partition."""
+    layout = getattr(resolved, "layout", None)
+    if layout is None:
+        return None
+    counts = [
+        _coerce_positive_int(getattr(partition, "planned_count", None))
+        for partition in getattr(layout, "partitions", ())
+        if str(getattr(partition, "kind", "")).strip().lower() == "time"
+    ]
+    counts = [count for count in counts if count is not None]
+    return max(counts) if counts else None
+
+
+def _declared_timepoints(
+    attrs: dict[str, Any],
+    resolved: ResolvedAcquisitionLayout | None = None,
+) -> int | None:
+    """Best producer-declared logical timepoint count, without observations."""
+    values = [
+        _coerce_positive_int(_meta_lookup(attrs, "recording:num_timepoints")),
+        _coerce_positive_int(_meta_lookup(attrs, "Rec:LapseTime")),
+        _time_partition_planned_count(resolved),
+    ]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
+def _logical_timepoint_hint(
+    attrs: dict[str, Any],
+    resolved: ResolvedAcquisitionLayout | None = None,
+    *,
+    observed: int | None = None,
+) -> int | None:
+    """Logical T capacity hint, floored by partitions already observed."""
+    values = [_declared_timepoints(attrs, resolved), _coerce_positive_int(observed)]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
 
 
 def _optional_bool(value: Any) -> bool | None:
@@ -562,6 +603,7 @@ class ZarrLiveSource(LiveSource):
             attrs=dict(attrs),
             expected_frames=self._expected_frames,
             frames_per_stack=frames_per_stack,
+            planned_timepoints=_declared_timepoints(attrs, resolved),
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
             dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'ZARR',
@@ -850,6 +892,7 @@ class ZarrMultiFileLapseSource(LiveSource):
 
         num_tp = (
             self._num_timepoints
+            or _coerce_positive_int(info.planned_timepoints)
             or _coerce_positive_int(_meta_lookup(info.attrs, "recording:num_timepoints"))
             or _coerce_positive_int(_meta_lookup(info.attrs, "Rec:LapseTime"))
             or self._count_present_timepoints()
@@ -863,6 +906,7 @@ class ZarrMultiFileLapseSource(LiveSource):
             attrs=dict(info.attrs),
             expected_frames=expected_total,
             frames_per_stack=self._frames_per_stack,
+            planned_timepoints=self._num_timepoints,
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "ZARR",
@@ -1023,42 +1067,47 @@ class ZarrLapseSource(LiveSource):
         else:
             self._chunk_size = 1
         
-        # Extract frames_per_stack and num_timepoints
+        # One scan group is one partition. Keep its local stack geometry
+        # separate from the enclosing logical lapse extent.
         self._frames_per_stack = self._coerce_int(attrs.get('recording:frames_per_stack'))
         if self._frames_per_stack is None:
             self._frames_per_stack = self._current_array.shape[0]
-        
-        self._num_timepoints = self._coerce_int(attrs.get('recording:num_timepoints'))
-        self._refresh_state_from_attrs(attrs)
-        
-        # Calculate expected_frames
-        expected_frames = None
-        if self._num_timepoints is not None and self._frames_per_stack is not None:
-            expected_frames = self._num_timepoints * self._frames_per_stack
-        
+
         frame_shape = self._current_array.shape[-2:]
-        
         dataset_path = attrs.get('recording:dataset_path')
+        resolved = _resolve_stack_layout(
+            attrs,
+            shape=tuple(self._current_array.shape),
+            detector=(
+                attrs.get('recording:detector_name')
+                or attrs.get('detector_name')
+                or self._resolved_detector_name
+            ),
+            source_path=self._path,
+            dataset_path=dataset_path,
+        )
+        declared_timepoints = _declared_timepoints(attrs, resolved)
+        self._num_timepoints = declared_timepoints
+        planned_timepoints = _logical_timepoint_hint(
+            attrs, resolved, observed=len(self._scan_groups)
+        )
+        self._refresh_state_from_attrs(attrs)
+
+        expected_frames = None
+        if declared_timepoints is not None and self._frames_per_stack is not None:
+            expected_frames = declared_timepoints * self._frames_per_stack
+
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._current_array.dtype,
             attrs=dict(attrs),
             expected_frames=expected_frames,
             frames_per_stack=self._frames_per_stack,
+            planned_timepoints=planned_timepoints,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or self._resolved_detector_name,
             dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'ZARR',
-            acquisition_layout=_resolve_stack_layout(
-                attrs,
-                shape=tuple(self._current_array.shape),
-                detector=(
-                    attrs.get('recording:detector_name')
-                    or attrs.get('detector_name')
-                    or self._resolved_detector_name
-                ),
-                source_path=self._path,
-                dataset_path=dataset_path,
-            ),
+            acquisition_layout=resolved,
         )
 
     def poll(self) -> list[Chunk]:
@@ -1303,7 +1352,7 @@ class Hdf5LiveSource(LiveSource):
         else:
             path = Path(path_or_handle)
             self._path = str(path)
-            self._file = h5py.File(self._path, 'r', libver='latest', swmr=True)
+            self._file = open_raw_hdf5(self._path)
             self._owns_file = True
 
         attrs = self._read_root_attrs()
@@ -1359,6 +1408,7 @@ class Hdf5LiveSource(LiveSource):
             attrs=dict(all_attrs),
             expected_frames=self._expected_frames,
             frames_per_stack=frames_per_stack,
+            planned_timepoints=_declared_timepoints(all_attrs, resolved),
             detector_name=all_attrs.get('recording:detector_name') or detector_name,
             dataset_path=dataset_path,
             source_format=all_attrs.get('recording:source_format') or 'HDF5',
@@ -1636,6 +1686,7 @@ class Hdf5MultiFileLapseSource(LiveSource):
 
         num_tp = (
             self._num_timepoints
+            or _coerce_positive_int(info.planned_timepoints)
             or _coerce_positive_int(_meta_lookup(info.attrs, "recording:num_timepoints"))
             or _coerce_positive_int(_meta_lookup(info.attrs, "Rec:LapseTime"))
             or self._count_present_timepoints()
@@ -1649,6 +1700,7 @@ class Hdf5MultiFileLapseSource(LiveSource):
             attrs=dict(info.attrs),
             expected_frames=expected_total,
             frames_per_stack=self._frames_per_stack,
+            planned_timepoints=self._num_timepoints,
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "HDF5",
@@ -1766,7 +1818,7 @@ class Hdf5LapseSource(LiveSource):
         else:
             path = Path(path_or_handle)
             self._path = str(path)
-            self._file = h5py.File(self._path, 'r', libver='latest', swmr=True)
+            self._file = open_raw_hdf5(self._path)
             self._owns_file = True
         
         # Enumerate scan{N} groups
@@ -1797,42 +1849,47 @@ class Hdf5LapseSource(LiveSource):
         else:
             self._chunk_size = 1
         
-        # Extract frames_per_stack and num_timepoints
+        # One scan group is one partition. Keep its local stack geometry
+        # separate from the enclosing logical lapse extent.
         self._frames_per_stack = self._coerce_int(attrs.get('recording:frames_per_stack'))
         if self._frames_per_stack is None:
             self._frames_per_stack = self._current_dataset.shape[0]
-        
-        self._num_timepoints = self._coerce_int(attrs.get('recording:num_timepoints'))
-        self._refresh_state_from_attrs(attrs)
-        
-        # Calculate expected_frames
-        expected_frames = None
-        if self._num_timepoints is not None and self._frames_per_stack is not None:
-            expected_frames = self._num_timepoints * self._frames_per_stack
-        
+
         frame_shape = self._current_dataset.shape[-2:]
-        
         dataset_path = attrs.get('recording:dataset_path') or self._current_dataset_path
+        resolved = _resolve_stack_layout(
+            attrs,
+            shape=tuple(self._current_dataset.shape),
+            detector=(
+                attrs.get('recording:detector_name')
+                or attrs.get('detector_name')
+                or self._resolved_detector_name
+            ),
+            source_path=self._path,
+            dataset_path=dataset_path,
+        )
+        declared_timepoints = _declared_timepoints(attrs, resolved)
+        self._num_timepoints = declared_timepoints
+        planned_timepoints = _logical_timepoint_hint(
+            attrs, resolved, observed=len(self._scan_groups)
+        )
+        self._refresh_state_from_attrs(attrs)
+
+        expected_frames = None
+        if declared_timepoints is not None and self._frames_per_stack is not None:
+            expected_frames = declared_timepoints * self._frames_per_stack
+
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._current_dataset.dtype,
             attrs=dict(attrs),
             expected_frames=expected_frames,
             frames_per_stack=self._frames_per_stack,
+            planned_timepoints=planned_timepoints,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or self._resolved_detector_name,
             dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'HDF5',
-            acquisition_layout=_resolve_stack_layout(
-                attrs,
-                shape=tuple(self._current_dataset.shape),
-                detector=(
-                    attrs.get('recording:detector_name')
-                    or attrs.get('detector_name')
-                    or self._resolved_detector_name
-                ),
-                source_path=self._path,
-                dataset_path=dataset_path,
-            ),
+            acquisition_layout=resolved,
         )
 
     def poll(self) -> list[Chunk]:
@@ -2025,7 +2082,7 @@ class Hdf5LapseSource(LiveSource):
         # Close and re-open file to refresh SWMR
         if self._owns_file and self._file is not None:
             self._file.close()
-            self._file = h5py.File(self._path, 'r', libver='latest', swmr=True)
+            self._file = open_raw_hdf5(self._path)
         
         current_group = self._file[self._scan_groups[self._current_group_index]]
         det_group = current_group[self._resolved_detector_name]

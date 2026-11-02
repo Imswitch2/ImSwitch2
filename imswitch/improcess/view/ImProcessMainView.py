@@ -169,19 +169,19 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         quickLoadAction = QtWidgets.QAction(
             improcessIcon('quick-load-data', self),
-            'Quick load data…',
+            'Open data…',
             self,
         )
         quickLoadAction.triggered.connect(self.sigQuickLoadData)
-        quickLoadAction.setToolTip('Load data as current data')
-        quickLoadAction.setStatusTip('Load data as current data')
+        quickLoadAction.setToolTip('Open data as Current Data')
+        quickLoadAction.setStatusTip('Open data as Current Data')
         file.addAction(quickLoadAction)
         self._shortcutActions['file.quick-load'] = quickLoadAction
         self._addFileToolAction('quick-load-data', quickLoadAction)
 
         quickLoadVirtualAction = QtWidgets.QAction(
             improcessIcon('quick-load-virtual-data', self),
-            'Virtual load data…',
+            'Open virtual data…',
             self,
         )
         quickLoadVirtualAction.setToolTip('Open data as a lazy virtual stack')
@@ -339,6 +339,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.multiDataFrame = MultiDataFrame()
         self.directoryWatcherFrame = DirectoryWatcherFrame()
         self.processingSessionFrame = ProcessingSessionFrame()
+        self.dataFrame.sigOpenDataClicked.connect(self.sigQuickLoadData)
+        self.dataFrame.sigProcessCurrentClicked.connect(self.sigReconstuctCurrent)
+        self.multiDataFrame.sigProcessIndividualRequested.connect(
+            self.sigReconstructMultiIndividual
+        )
+        self.multiDataFrame.sigProcessConsolidatedRequested.connect(
+            self.sigReconstructMultiConsolidated
+        )
 
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
@@ -347,6 +355,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame.sigReconstructMultiConsolidated.connect(self.sigReconstructMultiConsolidated)
         btnFrame.sigReconstructMultiIndividual.connect(self.sigReconstructMultiIndividual)
         btnFrame.sigQuickLoadData.connect(self.sigQuickLoadData)
+        btnFrame.quickLoadDataBtn.hide()
         btnFrame.sigUpdate.connect(self.sigUpdate)
 
         self.reconstructionWidget = ReconstructionView(
@@ -492,15 +501,46 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         # state into a session whose setup JSON no longer asks for them.
         self._runtimeAnalysisToolIds: set[str] = set()
 
-        # --- Left column: parameters + buttons + data tabs ---
+        # --- Left column: workspace-first data workflow ---
+        # Keep the historic dock object names for saved-layout compatibility,
+        # while presenting the new user-facing hierarchy.
+        self.processingSessionDock = Dock('Session', size=(2, 5))
+        self.processingSessionDock.addWidget(self.processingSessionFrame)
+        self.dockArea.addDock(self.processingSessionDock, 'left')
+        self.docks['Session'] = self.processingSessionDock
+        if getattr(self.processingSessionDock, 'label', None) is not None:
+            self.processingSessionDock.label.setText('Session / Workspace')
+        if not showSessionPanel:
+            self.processingSessionDock.hide()
+
+        self.currentDataDock = Dock('Current data', size=(2, 3))
+        self.currentDataDock.addWidget(self.dataFrame)
+        self.dockArea.addDock(self.currentDataDock, 'bottom', self.processingSessionDock)
+        self.docks['Current data'] = self.currentDataDock
+        if not showCurrentDataPanel:
+            self.currentDataDock.hide()
+
+        self.multiDataDock = Dock('Multidata management', size=(2, 3))
+        self.multiDataDock.addWidget(self.multiDataFrame)
+        self.dockArea.addDock(self.multiDataDock, 'bottom', self.currentDataDock)
+        self.docks['Multidata management'] = self.multiDataDock
+        if getattr(self.multiDataDock, 'label', None) is not None:
+            self.multiDataDock.label.setText('Working set')
+        if not showMultiDataPanel:
+            self.multiDataDock.hide()
+
         parametersDock = Dock('Parameters', size=(2, 5))
         parametersDock.addWidget(parameterFrame)
-        self.dockArea.addDock(parametersDock, 'left')
+        self.dockArea.addDock(parametersDock, 'bottom', self.multiDataDock)
         self.docks['Parameters'] = parametersDock
         self.parameterDock = parametersDock
+        if getattr(parametersDock, 'label', None) is not None:
+            parametersDock.label.setText('Reconstructor')
         if not showParameterPanel:
             parametersDock.hide()
 
+        # Legacy/global controls stay available during UX validation, but are
+        # placed after the primary workspace panels.
         actionsDock = Dock('Actions', size=(2, 1))
         actionsDock.addWidget(btnFrame)
         self.dockArea.addDock(actionsDock, 'bottom', parametersDock)
@@ -508,9 +548,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if not showActionsPanel:
             actionsDock.hide()
 
-        # Kept, not just consumed: setDirectoryWatcherAvailable() has to be
-        # able to tell "hidden because this plugin cannot stream" from
-        # "hidden because the config switched the panel off".
         self._showFileWatcherPanel = bool(showFileWatcherPanel)
         self.directoryWatcherDock = Dock('Directory watcher', size=(2, 3))
         self.directoryWatcherDock.addWidget(self.directoryWatcherFrame)
@@ -518,30 +555,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.docks['Directory watcher'] = self.directoryWatcherDock
         if not showFileWatcherPanel:
             self.directoryWatcherDock.hide()
-
-        # Session is intentionally independent of Directory watcher in this
-        # first prototype. It catalogs existing raw/saved data and can be used
-        # even when the active reconstructor has no streaming support.
-        self.processingSessionDock = Dock('Session', size=(2, 4))
-        self.processingSessionDock.addWidget(self.processingSessionFrame)
-        self.dockArea.addDock(self.processingSessionDock, 'bottom', self.directoryWatcherDock)
-        self.docks['Session'] = self.processingSessionDock
-        if not showSessionPanel:
-            self.processingSessionDock.hide()
-
-        self.multiDataDock = Dock('Multidata management', size=(2, 3))
-        self.multiDataDock.addWidget(self.multiDataFrame)
-        self.dockArea.addDock(self.multiDataDock, 'above', self.directoryWatcherDock)
-        self.docks['Multidata management'] = self.multiDataDock
-        if not showMultiDataPanel:
-            self.multiDataDock.hide()
-
-        self.currentDataDock = Dock('Current data', size=(2, 3))
-        self.currentDataDock.addWidget(self.dataFrame)
-        self.dockArea.addDock(self.currentDataDock, 'above', self.multiDataDock)
-        self.docks['Current data'] = self.currentDataDock
-        if not showCurrentDataPanel:
-            self.currentDataDock.hide()
 
         # --- Center: reconstruction view ---
         reconstructionDock = Dock('Reconstruction', size=(6, 9))
@@ -612,8 +625,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         viewMenu = menuBar.addMenu('&View')
         self._viewMenu = viewMenu
         self._dockVisibilityActions: dict[str, QtWidgets.QAction] = {}
+        dock_menu_titles = {
+            'Session': 'Session / Workspace',
+            'Multidata management': 'Working set',
+            'Parameters': 'Reconstructor',
+        }
         for title, dock in self.docks.items():
-            self._addDockVisibilityAction(title, dock)
+            self._addDockVisibilityAction(
+                title, dock, display_title=dock_menu_titles.get(title)
+            )
         viewMenu.addSeparator()
         # Reconstruction-list pane lives inside the Reconstruction widget, not
         # in its own Dock — wire a dedicated toggle so users have a menu
@@ -1675,6 +1695,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         return reply == QtWidgets.QMessageBox.Yes
 
+    def setSessionAutoProcessingAvailable(self, available: bool) -> None:
+        tooltip = (
+            'Automatically process existing unprocessed Session data and new arrivals.'
+            if available else
+            'Auto-process is currently available only for streaming-capable reconstructors.'
+        )
+        self.processingSessionFrame.setAutoProcessingAvailable(available, tooltip)
+
     def setDirectoryWatcherAvailable(self, available: bool) -> None:
         """Show the Directory watcher only for reconstructors that stream.
 
@@ -1735,6 +1763,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             return
         if hasattr(btnFrame, 'reconCurrBtn'):
             btnFrame.reconCurrBtn.setVisible(bool(reconstruct_current))
+        if hasattr(self, 'dataFrame'):
+            self.dataFrame.setProcessCurrentVisible(bool(reconstruct_current))
         if hasattr(btnFrame, 'updateBtn'):
             btnFrame.updateBtn.setVisible(bool(update_reconstruction))
         if hasattr(btnFrame, 'reconMultiBtn'):
@@ -1759,6 +1789,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 )
                 consolidated.setToolTip(tooltip)
                 consolidated.setStatusTip(tooltip)
+        if hasattr(self, 'multiDataFrame'):
+            self.multiDataFrame.setProcessActionsVisible(
+                bool(reconstruct_multidata),
+                consolidate=multidata_consolidate,
+                labels=(
+                    ('Load set ▾', 'Load data items to viewer')
+                    if multidata_labels is not None else None
+                ),
+            )
 
     def setReconstructionJobState(
         self, running: bool, *, progress=None, status: str = ""
@@ -1768,6 +1807,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             btnFrame.setReconstructionJobState(
                 running, progress=progress, status=status
             )
+        if hasattr(self, 'dataFrame'):
+            self.dataFrame.setProcessCurrentEnabled(not bool(running))
+        if hasattr(self, 'multiDataFrame'):
+            self.multiDataFrame.processBtn.setEnabled(not bool(running))
 
     def confirmReconstructionMemory(self, estimate, budget: int) -> bool:
         def human_bytes(value):
@@ -1853,7 +1896,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         dock = self.docks.get('Parameters') if hasattr(self, 'docks') else None
         if dock is None:
             return
-        title = f'Parameters — {display}' if display else 'Parameters'
+        title = f'Reconstructor — {display}' if display else 'Reconstructor'
         try:
             dock.setTitle(title)
         except Exception:
@@ -1987,11 +2030,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             action.setChecked(not dock.isHidden())
             action.blockSignals(False)
 
-    def _addDockVisibilityAction(self, title: str, dock: Dock) -> None:
+    def _addDockVisibilityAction(
+        self, title: str, dock: Dock, *, display_title: str | None = None
+    ) -> None:
         actions = getattr(self, '_dockVisibilityActions', None)
         if actions is None or title in actions:
             return
-        action = QtWidgets.QAction(title, self, checkable=True)
+        action = QtWidgets.QAction(display_title or title, self, checkable=True)
         action.setChecked(not dock.isHidden())
         action.toggled.connect(
             lambda checked, d=dock: (d.show() if checked else d.hide())

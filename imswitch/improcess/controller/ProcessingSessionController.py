@@ -1,29 +1,27 @@
 from __future__ import annotations
 
-import hashlib
 import os
-import re
+from collections import deque
 from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.improcess.controller.basecontrollers import ImProcessWidgetController
+from imswitch.improcess.controller.session_save_worker import SessionSaveWorker
+from imswitch.improcess.live.discovery import DirectoryWatcher
 from imswitch.improcess.model.DataObj import DataObj
-from imswitch.improcess.model.processing_session import ProcessingSession
+from imswitch.improcess.model.lapse_source import (
+    TIME_LAPSE_SOURCE_KIND,
+    discover_time_lapse,
+)
+from imswitch.improcess.model.processing_session import (
+    ProcessingSession,
+    result_role_for_result,
+)
 from imswitch.improcess.model.provenance import graph_of, output_node
 from imswitch.improcess.model.saved_result import load_saved_result, read_saved_result_metadata
-
-
-_FORMAT_SUFFIX = {
-    "tiff": ".ome.tif",
-    "hdf5": ".h5",
-    "zarr": ".ome.zarr",
-}
-
-
-def _clean_name(value: str) -> str:
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "result")).strip("_.")
-    return text or "result"
+from imswitch.improcess.model.session_result_presentation import reconstruction_presentation
+from imswitch.improcess.model.session_result_store import FORMAT_SUFFIX, SessionResultStore
 
 
 def _same_path(a, b) -> bool:
@@ -34,7 +32,10 @@ def _same_path(a, b) -> bool:
 
 
 class ProcessingSessionController(ImProcessWidgetController):
-    """Prototype persistent Session, independent of Directory watcher."""
+    """Persistent Session UI/controller and owner of Session filesystem watching."""
+
+    sigCatalogChanged = QtCore.Signal()
+    sigDatasetsAdded = QtCore.Signal(object)
 
     def __init__(
         self,
@@ -57,6 +58,35 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._syncingFromActiveReconstruction = False
         self._autoSave = True
         self._saveFormat = "tiff"
+        self._resultStore: SessionResultStore | None = None
+        self._processingQueueController = None
+        # Loaded-result ownership is indexed once when Results-panel membership
+        # changes. Full Session renders can then use O(1) dataset lookups instead
+        # of rescanning every loaded result for every dataset.
+        self._loadedResultsByDatasetId: dict[str, list[tuple[str, object]]] = {}
+        self._loadedResultOwners: dict[int, str] = {}
+        self._loadedBySavedPath: dict[str, object] = {}
+        # Auto-save is serial but asynchronous. Large TIFF/HDF5/Zarr writes must
+        # never block the GUI thread.
+        self._saveRequests = deque()
+        self._saveThread = None
+        self._saveWorker = None
+        self._saveActiveRequest = None
+        # Session owns filesystem observation.  Live processing may temporarily
+        # subscribe to this watcher too, but toggling live processing must not
+        # stop Session catalog synchronization.
+        self._directoryWatcher: DirectoryWatcher | None = None
+        self._watchPendingPaths: set[str] = set()
+        # Root entries that exist but have not yet resolved to a logical Session
+        # dataset. Only these entries are retried on mtime/size changes. Once an
+        # entry is catalogued, normal acquisition growth belongs to LiveSource
+        # and must not reopen/rebuild the Session on every timepoint.
+        self._watchUnresolvedPaths: set[str] = set()
+        self._watchNeedsFullReconcile = False
+        self._watchReconcileTimer = QtCore.QTimer(self)
+        self._watchReconcileTimer.setSingleShot(True)
+        self._watchReconcileTimer.setInterval(150)
+        self._watchReconcileTimer.timeout.connect(self._flushWatcherReconcile)
         self._addQueue: list[tuple[object, object]] | None = None
         self._addTotal = 0
         self._addProcessed = 0
@@ -75,7 +105,13 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigDatasetSelectionChanged.connect(self.datasetSelected)
         self._widget.sigSavedSelectionChanged.connect(self.reconstructionSelected)
         self._widget.sigLoadRawRequested.connect(self.loadSelectedRaw)
+        self._widget.sigOpenViewerRequested.connect(self.openSelectedInViewer)
         self._widget.sigLoadSelectedAsMultiDataRequested.connect(self.loadSelectedAsMultiData)
+        self._widget.sigProcessSelectedRequested.connect(self.processSelectedDatasets)
+        self._widget.sigAutoProcessingChanged.connect(self.setAutoProcessingEnabled)
+        self._widget.sigPauseProcessingRequested.connect(self.pauseProcessingQueue)
+        self._widget.sigResumeProcessingRequested.connect(self.resumeProcessingQueue)
+        self._widget.sigSkipCurrentProcessingRequested.connect(self.skipCurrentProcessing)
         self._widget.sigRevealRawRequested.connect(self.revealSelectedRaw)
         self._widget.sigCopyRawPathRequested.connect(self.copySelectedRawPath)
         self._widget.sigDeleteRawRequested.connect(self.deleteSelectedRaw)
@@ -107,7 +143,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigRevealRawFolderRequested.connect(self.revealRawFolder)
         self._widget.sigRevealResultsFolderRequested.connect(self.revealResultsFolder)
 
-        self._commChannel.sigResultProduced.connect(self._resultProduced)
+        self._commChannel.sigResultFinalized.connect(self._resultFinalized)
         self._commChannel.sigResultsChanged.connect(self._loadedResultsChanged)
         if hasattr(self._commChannel, "sigResultSaved"):
             self._commChannel.sigResultSaved.connect(self._resultSaved)
@@ -117,6 +153,11 @@ class ProcessingSessionController(ImProcessWidgetController):
     @property
     def session(self):
         return self._session
+
+    @property
+    def directoryWatcher(self) -> DirectoryWatcher | None:
+        """Session-owned watcher, exposed for the legacy live controller bridge."""
+        return self._directoryWatcher
 
     @staticmethod
     def _session_origin_id(session) -> str | None:
@@ -133,6 +174,24 @@ class ProcessingSessionController(ImProcessWidgetController):
         origin = self._session_origin_id(session or self._session)
         if origin:
             result._session_origin = origin
+
+    def claimResultForDataset(self, result, dataset_id: str):
+        """Attach exact transient Session ownership to a queued result.
+
+        The processing queue knows which logical dataset created a result. That
+        relationship is stronger than trying to infer ownership again from raw
+        provenance paths (especially for partitioned time lapses). Provenance is
+        still recorded for durable reopen/replay; this claim drives the current
+        Session's result list and autosave lifecycle.
+        """
+        if self._session is None or result is None:
+            return None
+        dataset = self._session.dataset_by_id(str(dataset_id))
+        if dataset is None:
+            return None
+        result._session_dataset_id = str(dataset.id)
+        self._tag_session_origin(result, self._session)
+        return dataset
 
     def _results_associated_with_session(self, session=None) -> list[object]:
         session = session or self._session
@@ -160,13 +219,18 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.setAddingProgress(False)
 
     def _deactivate_session(self, *, status: str | None = None) -> None:
+        self._stopDirectoryWatcher()
         self._reset_add_queue()
         self._session = None
+        self._resultStore = None
         self._selectedDatasetId = None
         self._selectedReconKey = None
         self._currentDatasetId = None
         self._loadingDatasetId = None
         self._loadedResultSignature = self._loaded_result_signature()
+        self._loadedResultsByDatasetId = {}
+        self._loadedResultOwners = {}
+        self._loadedBySavedPath = {}
         self._widget.setSessionActive(False)
         self._widget.setDatasets([])
         self._widget.setSelectedDataset("", "")
@@ -207,7 +271,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         results = Path(results_text).expanduser() if results_text else raw / "results"
         self._autoSave = bool(config.get("auto_save", True))
         fmt = str(config.get("save_format") or "tiff")
-        self._saveFormat = fmt if fmt in _FORMAT_SUFFIX else "tiff"
+        self._saveFormat = fmt if fmt in FORMAT_SUFFIX else "tiff"
+        if self._resultStore is not None:
+            self._resultStore.save_format = self._saveFormat
 
         restore_mode = str(config.get("restore_mode") or "none")
         if (
@@ -242,7 +308,10 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     def _activate_session(self, session: ProcessingSession) -> None:
         self._session = session
+        self._resultStore = SessionResultStore(session, save_format=self._saveFormat)
+        self._startDirectoryWatcher(session)
         self._loadedResultSignature = self._loaded_result_signature()
+        self._rebuild_loaded_result_index()
         self._selectedDatasetId = None
         self._selectedReconKey = None
         self._widget.setSessionActive(True, session.raw_root.name)
@@ -251,8 +320,150 @@ class ProcessingSessionController(ImProcessWidgetController):
         )
         self._sync_current_dataset(getattr(self._main, "_currentDataObj", None))
         self._render()
+        self.sigCatalogChanged.emit()
         if self._followActiveReconstruction and self._reconstruction is not None:
             self._currentResultChanged(self._reconstruction.getActiveResult())
+
+    # ------------------------------------------------------ Session directory watch
+
+    def _startDirectoryWatcher(self, session: ProcessingSession) -> None:
+        self._stopDirectoryWatcher()
+        watcher = DirectoryWatcher(str(session.raw_root), parent=self)
+        # Prime discovery without emitting every pre-existing entry back through
+        # a Session that was just fully reconciled on open. Existing entries that
+        # did not resolve during that reconcile are kept as readiness candidates;
+        # their next cheap stat change retries discovery.
+        initial_entries = watcher.scan_once()
+        self._watchUnresolvedPaths = {
+            str(path)
+            for path in initial_entries
+            if not self._pathBelongsToResults(path)
+            and not self._sessionKnowsRootEntry(path)
+        }
+        watcher.sigEntryFound.connect(self._sessionPathFound)
+        watcher.sigEntryChanged.connect(self._sessionPathChanged)
+        watcher.sigEntryRemoved.connect(self._sessionPathRemoved)
+        self._directoryWatcher = watcher
+        watcher.start()
+
+    def _stopDirectoryWatcher(self) -> None:
+        watcher, self._directoryWatcher = self._directoryWatcher, None
+        if watcher is not None:
+            watcher.stop()
+            watcher.deleteLater()
+        self._watchPendingPaths.clear()
+        self._watchUnresolvedPaths.clear()
+        self._watchNeedsFullReconcile = False
+        self._watchReconcileTimer.stop()
+
+    def _pathBelongsToResults(self, path: str) -> bool:
+        session = self._session
+        if session is None:
+            return False
+        try:
+            Path(path).resolve().relative_to(session.results_root)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def _sessionKnowsRootEntry(self, path: str) -> bool:
+        """Whether ``path`` already owns any catalogued raw source.
+
+        This is deliberately a cheap path-membership check; it never opens raw
+        data. It lets Session distinguish "new entry still becoming readable"
+        from ordinary growth of a time lapse that LiveSource already owns.
+        """
+        session = self._session
+        if session is None:
+            return False
+        try:
+            root_entry = Path(path).resolve()
+        except OSError:
+            root_entry = Path(path).absolute()
+        for dataset in session.datasets:
+            refs = [getattr(dataset, "primary_path", None)]
+            refs.extend(getattr(ref, "path", None) for ref in dataset.source_refs)
+            for source in refs:
+                if not source:
+                    continue
+                try:
+                    Path(source).resolve().relative_to(root_entry)
+                    return True
+                except (ValueError, OSError):
+                    continue
+        return False
+
+    @QtCore.Slot(str)
+    def _sessionPathFound(self, path: str) -> None:
+        if self._session is None or self._pathBelongsToResults(path):
+            return
+        path = str(path)
+        self._watchUnresolvedPaths.add(path)
+        self._watchPendingPaths.add(path)
+        self._watchReconcileTimer.start()
+
+    @QtCore.Slot(str)
+    def _sessionPathChanged(self, path: str) -> None:
+        path = str(path)
+        if (
+            self._session is None
+            or self._pathBelongsToResults(path)
+            or path not in self._watchUnresolvedPaths
+        ):
+            return
+        # Only unresolved new entries use change notifications as a readiness
+        # retry. Known HDF5/Zarr datasets can change on every acquired TP;
+        # rediscovering them here was the main GUI-lag regression versus the
+        # original DirectoryWatcher path.
+        self._watchPendingPaths.add(path)
+        self._watchReconcileTimer.start()
+
+    @QtCore.Slot(str)
+    def _sessionPathRemoved(self, path: str) -> None:
+        if self._session is None or self._pathBelongsToResults(path):
+            return
+        self._watchUnresolvedPaths.discard(str(path))
+        # A removed physical member may belong to a logical lapse spanning
+        # siblings.  Let the complete reconciler settle that safely.
+        self._watchNeedsFullReconcile = True
+        self._watchReconcileTimer.start()
+
+    @QtCore.Slot()
+    def _flushWatcherReconcile(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        before_ids = {str(dataset.id) for dataset in session.datasets}
+        changed = False
+        pending = sorted(self._watchPendingPaths)
+        try:
+            if self._watchNeedsFullReconcile:
+                session.reconcile_all()
+                self._watchUnresolvedPaths.clear()
+                changed = True
+            else:
+                for path in pending:
+                    reconciled = session.reconcile_path(
+                        path, reconcile_saved_results=False
+                    )
+                    changed = reconciled or changed
+                    if reconciled:
+                        self._watchUnresolvedPaths.discard(path)
+        except Exception:
+            self._logger.exception("Could not reconcile Session filesystem update")
+            return
+        finally:
+            self._watchPendingPaths.clear()
+            self._watchNeedsFullReconcile = False
+        if changed:
+            added_ids = tuple(
+                str(dataset.id) for dataset in session.datasets
+                if str(dataset.id) not in before_ids
+            )
+            self._render()
+            self.sigCatalogChanged.emit()
+            if added_ids:
+                self.sigDatasetsAdded.emit(added_ids)
 
     def openSession(self, raw_root, results_root) -> bool:
         # Build/refresh the candidate before touching the active Session. A bad
@@ -279,6 +490,21 @@ class ProcessingSessionController(ImProcessWidgetController):
         session = self._session
         if session is None:
             return True
+
+        if self._saveThread is not None or self._saveRequests:
+            self._widget.setStatus(
+                "A Session result is still being saved; finish saving before closing."
+            )
+            return False
+
+        queue_controller = getattr(self, "_processingQueueController", None)
+        if queue_controller is not None:
+            can_close = getattr(queue_controller, "canCloseSession", None)
+            if callable(can_close) and not can_close():
+                self._widget.setStatus(
+                    "A Session processing job is still running; finish or skip it before closing."
+                )
+                return False
 
         # Explicitly finishing a Session is the natural point to offer curation.
         # Switching Sessions stays lightweight and never suggests destructive cleanup.
@@ -327,13 +553,21 @@ class ProcessingSessionController(ImProcessWidgetController):
                             f"Could not close Session; preserving a reconstruction failed: {exc}"
                         )
                         return False
-                    result._session_saved_path = str(receipt.primary)
-                    self._tag_session_origin(result, session)
-                session.refresh()
+                    self._registerSavedReceipt(
+                        session,
+                        dataset,
+                        result,
+                        receipt,
+                        str(getattr(result, "name", "reconstruction")),
+                    )
                 for result in list(associated):
                     self._remove_loaded_result(result)
 
         name = session.raw_root.name
+        if queue_controller is not None:
+            session_closed = getattr(queue_controller, "sessionClosed", None)
+            if callable(session_closed):
+                session_closed()
         self._deactivate_session(
             status=None if for_switch else f"Session closed · {name}"
         )
@@ -343,26 +577,112 @@ class ProcessingSessionController(ImProcessWidgetController):
         if self._session is None:
             self.startSession()
             return
+        before_ids = {str(dataset.id) for dataset in self._session.datasets}
         try:
-            self._session.refresh()
+            self._session.reconcile_all()
         except Exception as exc:
             self._logger.exception("Could not refresh processing session")
             self._widget.setStatus(f"Refresh failed: {exc}")
             return
+        added_ids = tuple(
+            str(dataset.id) for dataset in self._session.datasets
+            if str(dataset.id) not in before_ids
+        )
         self._render()
+        self.sigCatalogChanged.emit()
+        if added_ids:
+            self.sigDatasetsAdded.emit(added_ids)
 
     # ------------------------------------------------------------------ UI
 
-    def _loaded_by_saved_path(self) -> dict[str, object]:
-        loaded = {}
-        for _name, result in self._commChannel.getAllResults():
+    def _rebuild_loaded_result_index(self) -> set[str]:
+        """Rebuild loaded-result ownership once and return affected dataset ids."""
+        previous_owners = dict(self._loadedResultOwners)
+        by_dataset: dict[str, list[tuple[str, object]]] = {}
+        owners: dict[int, str] = {}
+        by_saved_path: dict[str, object] = {}
+        session = self._session
+        if session is not None:
+            for display_name, result in self._commChannel.getAllResults():
+                if not self._is_session_reconstruction(result):
+                    continue
+                owner = session.dataset_for_result(result)
+                if owner is None:
+                    continue
+                rid = id(result)
+                owners[rid] = str(owner.id)
+                by_dataset.setdefault(str(owner.id), []).append(
+                    (str(display_name or getattr(result, "name", "reconstruction")), result)
+                )
+                path = getattr(result, "_session_saved_path", None)
+                if path:
+                    try:
+                        by_saved_path[str(Path(path).resolve())] = result
+                    except Exception:
+                        by_saved_path[str(path)] = result
+        self._loadedResultsByDatasetId = by_dataset
+        self._loadedResultOwners = owners
+        self._loadedBySavedPath = by_saved_path
+        affected: set[str] = set()
+        for rid in set(previous_owners) | set(owners):
+            before = previous_owners.get(rid)
+            after = owners.get(rid)
+            if before == after:
+                continue
+            if before:
+                affected.add(before)
+            if after:
+                affected.add(after)
+        return affected
+
+    def _index_loaded_result(self, display_name: str, result) -> str | None:
+        if self._session is None or not self._is_session_reconstruction(result):
+            return None
+        owner = self._session.dataset_for_result(result)
+        if owner is None:
+            return None
+        dataset_id = str(owner.id)
+        rid = id(result)
+        existing_owner = self._loadedResultOwners.get(rid)
+        if existing_owner == dataset_id:
+            return dataset_id
+        if existing_owner is not None:
+            self._unindex_loaded_result(rid)
+        self._loadedResultOwners[rid] = dataset_id
+        self._loadedResultsByDatasetId.setdefault(dataset_id, []).append(
+            (str(display_name or getattr(result, "name", "reconstruction")), result)
+        )
+        path = getattr(result, "_session_saved_path", None)
+        if path:
+            try:
+                self._loadedBySavedPath[str(Path(path).resolve())] = result
+            except Exception:
+                self._loadedBySavedPath[str(path)] = result
+        return dataset_id
+
+    def _unindex_loaded_result(self, rid: int) -> str | None:
+        dataset_id = self._loadedResultOwners.pop(int(rid), None)
+        if dataset_id is None:
+            return None
+        items = self._loadedResultsByDatasetId.get(dataset_id, [])
+        removed_results = [result for _name, result in items if id(result) == int(rid)]
+        items = [item for item in items if id(item[1]) != int(rid)]
+        if items:
+            self._loadedResultsByDatasetId[dataset_id] = items
+        else:
+            self._loadedResultsByDatasetId.pop(dataset_id, None)
+        for result in removed_results:
             path = getattr(result, "_session_saved_path", None)
-            if path:
-                try:
-                    loaded[str(Path(path).resolve())] = result
-                except Exception:
-                    loaded[str(path)] = result
-        return loaded
+            if not path:
+                continue
+            try:
+                self._loadedBySavedPath.pop(str(Path(path).resolve()), None)
+            except Exception:
+                self._loadedBySavedPath.pop(str(path), None)
+        return dataset_id
+
+    def _loaded_by_saved_path(self) -> dict[str, object]:
+        return self._loadedBySavedPath
 
     @staticmethod
     def _is_session_reconstruction(result) -> bool:
@@ -374,6 +694,8 @@ class ProcessingSessionController(ImProcessWidgetController):
         it is also a reconstruction artifact for Session purposes.  Generic
         downstream processing nodes remain excluded.
         """
+        if result_role_for_result(result) == "inspection":
+            return False
         node = output_node(result)
         return isinstance(node, dict) and node.get("op") in {"reconstruct", "consolidate"}
 
@@ -381,14 +703,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         """Session reconstruction objects currently present in the right-hand list."""
         if self._session is None or dataset is None:
             return []
-        matches = []
-        for display_name, result in self._commChannel.getAllResults():
-            if not self._is_session_reconstruction(result):
-                continue
-            owner = self._session.dataset_for_result(result)
-            if owner is not None and owner.id == dataset.id:
-                matches.append((str(display_name or getattr(result, "name", "reconstruction")), result))
-        return matches
+        return list(self._loadedResultsByDatasetId.get(str(dataset.id), ()))
 
     @staticmethod
     def _loaded_key(result) -> str:
@@ -426,7 +741,7 @@ class ProcessingSessionController(ImProcessWidgetController):
             if id(result) in represented_loaded:
                 continue
             graph = graph_of(result)
-            session_name, _object_name, tooltip = ProcessingSession.reconstruction_presentation(
+            session_name, _object_name, tooltip = reconstruction_presentation(
                 graph, fallback_name=str(display_name or getattr(result, "name", "reconstruction"))
             )
             entries.append({
@@ -571,54 +886,86 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.clearReconstructionSelection()
         self._renderSelected()
 
+    def _dataset_entry(self, dataset, *, queue_state: str | None = None) -> dict:
+        recon_entries = self._reconstruction_entries(dataset)
+        total_count = len(recon_entries)
+        loaded_count = sum(1 for item in recon_entries if item["loaded"] is not None)
+        if self._loadingDatasetId == dataset.id:
+            status = "Loading…"
+            state = "loading"
+        elif queue_state == "running":
+            status = "▶ Processing"
+            state = "processing"
+        elif queue_state == "waiting":
+            status = "… Queued"
+            state = "queued"
+        elif total_count == 0:
+            status = "— No result"
+            state = "raw"
+        else:
+            status = f"✓ Result ({total_count})"
+            state = "reconstructed"
+        if getattr(dataset, "raw_deleted", False):
+            status += " · data deleted"
+        info, info_tooltip = self._dataset_info(dataset)
+        search = self._dataset_search_text(dataset)
+        tooltip = search
+        if info_tooltip:
+            tooltip += f"\n{info_tooltip}"
+        return {
+            "id": dataset.id,
+            "label": dataset.label,
+            "info": info,
+            "info_tooltip": info_tooltip,
+            "dimension": str(getattr(dataset, "dimension_tag", "") or ""),
+            "dimension_label": str(getattr(dataset, "dimension_filter_label", "") or ""),
+            "status": status,
+            "state": state,
+            "timestamp": self._dataset_timestamp(dataset),
+            "search": search,
+            "tooltip": tooltip,
+            "current": dataset.id == self._currentDatasetId,
+            "raw_deleted": bool(getattr(dataset, "raw_deleted", False)),
+            "favorite": bool(getattr(dataset, "favorite", False)),
+            "saved_count": len(dataset.saved_reconstructions),
+            "panel_count": loaded_count,
+            "panel_link": bool(loaded_count),
+        }
+
+    def _renderDataset(
+        self, dataset_id: str, *, render_selected: bool = False, queue_state: str | None = None
+    ) -> None:
+        session = self._session
+        if session is None:
+            return
+        dataset = session.dataset_by_id(str(dataset_id))
+        if dataset is None:
+            return
+        if queue_state is None:
+            queue_state = self._queue_states().get(str(dataset.id))
+        entry = self._dataset_entry(dataset, queue_state=queue_state)
+        updater = getattr(self._widget, "updateDataset", None)
+        if callable(updater):
+            updater(entry)
+        else:
+            self._render()
+            return
+        if render_selected:
+            self._renderSelected()
+
     def _render(self) -> None:
         session = self._session
         if session is None:
             self._widget.setDatasets([])
             self._renderSelected()
             return
-        entries = []
-        for dataset in session.datasets:
-            recon_entries = self._reconstruction_entries(dataset)
-            total_count = len(recon_entries)
-            loaded_count = sum(1 for item in recon_entries if item["loaded"] is not None)
-            if self._loadingDatasetId == dataset.id:
-                status = "Loading…"
-                state = "loading"
-            elif total_count == 0:
-                status = "— No recon"
-                state = "raw"
-            else:
-                status = f"✓ Recon ({total_count})"
-                state = "reconstructed"
-            if getattr(dataset, "raw_deleted", False):
-                status += " · data deleted"
-            info, info_tooltip = self._dataset_info(dataset)
-            search = self._dataset_search_text(dataset)
-            tooltip = search
-            if info_tooltip:
-                tooltip += f"\n{info_tooltip}"
-            entries.append({
-                "id": dataset.id,
-                "label": dataset.label,
-                "info": info,
-                "info_tooltip": info_tooltip,
-                "dimension": str(getattr(dataset, "dimension_tag", "") or ""),
-                "dimension_label": str(
-                    getattr(dataset, "dimension_filter_label", "") or ""
-                ),
-                "status": status,
-                "state": state,
-                "timestamp": self._dataset_timestamp(dataset),
-                "search": search,
-                "tooltip": tooltip,
-                "current": dataset.id == self._currentDatasetId,
-                "raw_deleted": bool(getattr(dataset, "raw_deleted", False)),
-                "favorite": bool(getattr(dataset, "favorite", False)),
-                "saved_count": len(dataset.saved_reconstructions),
-                "panel_count": loaded_count,
-                "panel_link": bool(loaded_count),
-            })
+        queue_states = self._queue_states()
+        entries = [
+            self._dataset_entry(
+                dataset, queue_state=queue_states.get(str(dataset.id))
+            )
+            for dataset in session.datasets
+        ]
         self._widget.setDatasets(entries)
         if self._selectedDatasetId and session.dataset_by_id(self._selectedDatasetId) is None:
             self._selectedDatasetId = None
@@ -636,7 +983,7 @@ class ProcessingSessionController(ImProcessWidgetController):
         loaded_count = sum(1 for item in entries if item["loaded"] is not None)
         saved_count = len(dataset.saved_reconstructions)
         total_count = len(entries)
-        summary = f"{total_count} recon · {loaded_count} in panel · {saved_count} saved"
+        summary = f"{total_count} results · {loaded_count} in panel · {saved_count} saved"
         self._widget.setSelectedDataset(dataset.label, summary)
 
         selected = self._selectedReconKey
@@ -777,6 +1124,88 @@ class ProcessingSessionController(ImProcessWidgetController):
 
     # --------------------------------------------------------------- actions
 
+    @staticmethod
+    def _viewer_plugin_id(dataset) -> str:
+        """Return the inspection plugin hidden behind ``Open in viewer``."""
+        return (
+            "time-lapse"
+            if getattr(dataset, "kind", "") == "time-lapse"
+            else "view-only"
+        )
+
+    def _viewer_data_obj(self, dataset):
+        """Build the lazy source consumed by the inspection plugin.
+
+        This deliberately does not make the source Current Data.  Inspection
+        must not change the user's selected processing reconstructor or route
+        through the processing queue.
+        """
+        if getattr(dataset, "kind", "") == "time-lapse":
+            index = discover_time_lapse(
+                dataset.primary_path, dataset.primary_dataset
+            )
+            return DataObj.fromMetadataSource(
+                index.name,
+                index.anchor.path,
+                TIME_LAPSE_SOURCE_KIND,
+                index,
+                originalPath=dataset.primary_path,
+            )
+
+        resolved = self._multidata_source(
+            dataset.primary_path, dataset.primary_dataset
+        )
+        if resolved is None:
+            raise ValueError(
+                "Could not determine one image dataset to open in the viewer"
+            )
+        source_path, source_dataset = resolved
+        data_obj = DataObj(
+            Path(source_path).name, source_dataset, path=source_path
+        )
+        # View-only can retain the lazy source directly instead of decoding the
+        # complete acquisition. ReconstructionViewController releases this
+        # backing object when the inspection result is closed.
+        data_obj.checkAndOpenData()
+        return data_obj
+
+    def openSelectedInViewer(self) -> None:
+        """Open the selected Session dataset as an inspection result.
+
+        Normal datasets use ``view-only``; logical time lapses use
+        ``time-lapse``.  The active reconstructor is intentionally untouched.
+        """
+        if self._session is None or self._main is None:
+            return
+        dataset = self._current_selected_dataset()
+        if dataset is None or getattr(dataset, "raw_deleted", False):
+            return
+
+        manager = getattr(self._main, "reconstructorManager", None)
+        opener = getattr(manager, "openInspection", None)
+        if not callable(opener):
+            self._logger.warning("Inspection viewer is unavailable")
+            return
+
+        plugin_id = self._viewer_plugin_id(dataset)
+        self._widget.setStatus(f"Opening {dataset.label} in viewer…")
+        try:
+            data_obj = self._viewer_data_obj(dataset)
+            outcome = opener(plugin_id, data_obj)
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not open {dataset.label} in viewer: {exc}", exc_info=True
+            )
+            detail = str(exc).strip()
+            self._widget.setStatus(
+                f"Could not open {dataset.label}: {detail}"
+                if detail
+                else f"Could not open {dataset.label} in viewer"
+            )
+            return
+        if outcome == "ready":
+            self._widget.setStatus(f"Opened {dataset.label} in viewer")
+
     def loadSelectedRaw(self) -> None:
         if self._session is None or self._fileIO is None:
             return
@@ -864,7 +1293,7 @@ class ProcessingSessionController(ImProcessWidgetController):
                 added += 1
         if added:
             self._fileIO._widget.raiseMultiDataDock()
-        message = f"Added {added} dataset{'s' if added != 1 else ''} to MultiData"
+        message = f"Added {added} dataset{'s' if added != 1 else ''} to Working Set"
         if skipped:
             message += f" · skipped {skipped} ambiguous source{'s' if skipped != 1 else ''}"
         self._widget.setStatus(message)
@@ -934,7 +1363,6 @@ class ProcessingSessionController(ImProcessWidgetController):
 
         # Preserve every unsaved result before closing any, so one failed save
         # cannot leave the operation half destructive.
-        saved_any = False
         for dataset, result in results:
             if getattr(result, "_session_saved_path", None):
                 continue
@@ -946,11 +1374,13 @@ class ProcessingSessionController(ImProcessWidgetController):
                 self._logger.exception("Could not preserve reconstruction before closing")
                 self._widget.setStatus(f"Could not close reconstructions: {exc}")
                 return False
-            result._session_saved_path = str(receipt.primary)
-            self._tag_session_origin(result)
-            saved_any = True
-        if saved_any:
-            self._session.refresh()
+            self._registerSavedReceipt(
+                self._session,
+                dataset,
+                result,
+                receipt,
+                str(getattr(result, "name", "reconstruction")),
+            )
         for _dataset, result in results:
             self._remove_loaded_result(result)
         return True
@@ -1145,12 +1575,17 @@ class ProcessingSessionController(ImProcessWidgetController):
                             dataset,
                             str(getattr(entry["loaded"], "name", "reconstruction")),
                         )
-                        entry["loaded"]._session_saved_path = str(receipt.primary)
+                        self._registerSavedReceipt(
+                            self._session,
+                            dataset,
+                            entry["loaded"],
+                            receipt,
+                            str(getattr(entry["loaded"], "name", "reconstruction")),
+                        )
                     except Exception as exc:
                         self._logger.exception("Could not preserve reconstruction before raw deletion")
                         self._widget.setStatus(f"Could not preserve reconstruction: {exc}")
                         return
-            self._session.refresh()
 
         affected_ids = [dataset.id for dataset in affected]
         # Persist the tombstone before touching disk. If an OS-trash operation
@@ -1473,16 +1908,13 @@ class ProcessingSessionController(ImProcessWidgetController):
             self._logger.exception("Could not save reconstruction into Session")
             self._widget.setStatus(f"Could not keep reconstruction: {exc}")
             return None
-        result._session_saved_path = str(receipt.primary)
-        self._tag_session_origin(result)
         wanted = str(Path(receipt.primary).resolve())
-        self._session.refresh()
-        dataset = self._session.dataset_by_id(self._selectedDatasetId)
-        if dataset is None:
-            return None
-        saved = next(
-            (item for item in dataset.saved_reconstructions if _same_path(item.path, wanted)),
-            None,
+        saved = self._registerSavedReceipt(
+            self._session,
+            dataset,
+            result,
+            receipt,
+            str(getattr(result, "name", "reconstruction")),
         )
         if saved is not None:
             self._selectedReconKey = f"saved:{wanted}"
@@ -1553,20 +1985,214 @@ class ProcessingSessionController(ImProcessWidgetController):
             return ()
 
     def _loadedResultsChanged(self) -> None:
-        signature = self._loaded_result_signature()
+        try:
+            current_items = list(self._commChannel.getAllResults())
+        except Exception:
+            current_items = []
+        signature = tuple(sorted(id(result) for _name, result in current_items))
         if signature == self._loadedResultSignature:
             return
+        previous_ids = set(self._loadedResultSignature)
+        current_by_id = {id(result): (display_name, result) for display_name, result in current_items}
+        current_ids = set(current_by_id)
         self._loadedResultSignature = signature
-        if self._session is not None:
-            self._render()
+        if self._session is None:
+            return
 
-    def _resultProduced(self, result, _display_name: str) -> None:
+        affected: set[str] = set()
+        for rid in previous_ids - current_ids:
+            owner = self._unindex_loaded_result(rid)
+            if owner:
+                affected.add(owner)
+        for rid in current_ids - previous_ids:
+            display_name, result = current_by_id[rid]
+            owner = self._index_loaded_result(display_name, result)
+            if owner:
+                affected.add(owner)
+        for dataset_id in affected:
+            self._renderDataset(
+                dataset_id, render_selected=(dataset_id == self._selectedDatasetId)
+            )
+
+    def processSelectedDatasets(self, position: str = "end") -> None:
+        ids = self._selected_dataset_ids()
+        if not ids:
+            return
+        added = self.queueDatasetsForProcessing(ids, position=str(position or "end"))
+        if added:
+            self._widget.setStatus(
+                f"Queued {added} dataset{'s' if added != 1 else ''} for processing"
+            )
+        else:
+            self._widget.setStatus("No selected datasets were added to the processing queue")
+
+    def _queue_states(self) -> dict[str, str]:
+        controller = self._processingQueueController or getattr(
+            self._main, "processingQueueController", None
+        )
+        getter = getattr(controller, "queueDatasetStates", None) if controller is not None else None
+        if callable(getter):
+            return getter()
+        return {}
+
+    @QtCore.Slot(object)
+    def _processingQueueChanged(self, snapshot) -> None:
+        self._widget.setProcessingQueue(snapshot)
+        if self._session is None:
+            return
+        changed_ids = tuple((snapshot or {}).get("changed_dataset_ids", ()) or ())
+        if not changed_ids:
+            return
+        queue_states = self._queue_states()
+        for dataset_id in changed_ids:
+            dataset_id = str(dataset_id)
+            self._renderDataset(
+                dataset_id,
+                render_selected=(dataset_id == self._selectedDatasetId),
+                queue_state=queue_states.get(dataset_id),
+            )
+
+    def isDatasetProcessed(self, dataset_id: str) -> bool:
+        """Whether Session already knows any derived result for ``dataset_id``."""
+        if self._session is None:
+            return False
+        dataset = self._session.dataset_by_id(str(dataset_id))
+        if dataset is None:
+            return False
+        if dataset.saved_reconstructions:
+            return True
+        return bool(self._loaded_reconstructions_for_dataset(dataset))
+
+    def setProcessingQueueController(self, controller) -> None:
+        old = getattr(self, "_processingQueueController", None)
+        if old is not None:
+            try:
+                old.sigQueueChanged.disconnect(self._processingQueueChanged)
+            except Exception:
+                pass
+        self._processingQueueController = controller
+        if controller is not None:
+            controller.sigQueueChanged.connect(self._processingQueueChanged)
+            self._widget.setProcessingQueue(controller.queueSnapshot())
+
+    def queueDatasetsForProcessing(self, dataset_ids, *, position: str = "end") -> int:
+        """Submit Session datasets to the shared lazy processing queue.
+
+        Kept as a controller-level bridge so the future Session widget does not
+        need to know where the queue controller lives on the main controller.
+        """
+        controller = self._processingQueueController or getattr(
+            self._main, "processingQueueController", None
+        )
+        if controller is None:
+            return 0
+        return controller.enqueueSessionDatasets(dataset_ids, position=position)
+
+    def setAutoProcessingEnabled(self, enabled: bool) -> None:
+        controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)
+        if controller is not None:
+            controller.setAutoEnabled(enabled)
+
+    def pauseProcessingQueue(self) -> None:
+        controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)
+        if controller is not None:
+            controller.pause()
+
+    def resumeProcessingQueue(self) -> None:
+        controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)
+        if controller is not None:
+            controller.resume()
+
+    def skipCurrentProcessing(self) -> None:
+        controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)
+        if controller is not None:
+            controller.skipCurrent()
+
+    def processingQueueSnapshot(self):
+        controller = self._processingQueueController or getattr(self._main, "processingQueueController", None)
+        return controller.queueSnapshot() if controller is not None else None
+
+    def _queueAutoSave(self, result, dataset, display_name: str = "") -> None:
+        if self._session is None or result is None or dataset is None:
+            return
+        if getattr(result, "_session_save_pending", False):
+            return
+        result._session_save_pending = True
+        self._saveRequests.append((
+            self._session,
+            dataset,
+            result,
+            str(display_name or ""),
+            str(self._saveFormat),
+        ))
+        self._startNextAutoSave()
+
+    def _startNextAutoSave(self) -> None:
+        if self._saveThread is not None or not self._saveRequests:
+            return
+        session, dataset, result, display_name, save_format = self._saveRequests.popleft()
+        dataset_id = str(dataset.id)
+        store = SessionResultStore(session, save_format=save_format)
+        thread = QtCore.QThread()
+        worker = SessionSaveWorker(store, result, dataset, display_name)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._autoSaveSucceeded)
+        worker.failed.connect(self._autoSaveFailed)
+        worker.succeeded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(lambda: self._autoSaveThreadFinished(thread))
+        thread.finished.connect(thread.deleteLater)
+        self._saveActiveRequest = (session, dataset_id, result, display_name)
+        self._saveThread = thread
+        self._saveWorker = worker
+        thread.start()
+
+    @QtCore.Slot(object, str, str, object)
+    def _autoSaveSucceeded(self, result, dataset_id: str, display_name: str, receipt) -> None:
+        result._session_save_pending = False
+        active = self._saveActiveRequest
+        session = active[0] if active is not None else None
+        if session is None:
+            return
+        dataset = session.dataset_by_id(dataset_id)
+        if dataset is None:
+            return
+        saved = self._registerSavedReceipt(
+            session, dataset, result, receipt, display_name
+        )
+        if self._session is session and saved is not None:
+            self._widget.setStatus(f"Auto-saved {Path(receipt.primary).name}")
+            self._renderDataset(
+                dataset_id, render_selected=(dataset_id == self._selectedDatasetId)
+            )
+            self.sigCatalogChanged.emit()
+
+    @QtCore.Slot(object, str, str, str)
+    def _autoSaveFailed(
+        self, result, dataset_id: str, _display_name: str, message: str
+    ) -> None:
+        result._session_save_pending = False
+        self._logger.error(f"Session auto-save failed: {message}")
+        if self._session is not None and self._session.dataset_by_id(dataset_id) is not None:
+            self._widget.setStatus(f"Auto-save failed: {message}")
+
+    def _autoSaveThreadFinished(self, thread) -> None:
+        if self._saveThread is not thread:
+            return
+        self._saveThread = None
+        self._saveWorker = None
+        self._saveActiveRequest = None
+        self._startNextAutoSave()
+
+    def _resultFinalized(self, result, _display_name: str) -> None:
         if self._session is None or result is None:
             return
-        # A restored saved result is already persistent.  Publishing it through
-        # the normal viewer signal must not cause a duplicate save.
+        # A restored saved result is already persistent. Re-finalizing it must
+        # never create a duplicate Session save.
         if getattr(result, "_session_restored", False):
-            QtCore.QTimer.singleShot(0, self._render)
             return
         if not self._is_session_reconstruction(result):
             return
@@ -1574,83 +2200,89 @@ class ProcessingSessionController(ImProcessWidgetController):
         if dataset is None:
             return
 
-        # Recognition and persistence are deliberately independent: even with
-        # auto-save disabled, Session must immediately show that this raw
-        # dataset has a reconstruction object in the right-hand list.  Defer
-        # one event-loop turn because ReconstructionViewController is another
-        # listener of the same signal and may not have inserted its item yet.
-        QtCore.QTimer.singleShot(0, self._render)
+        # Live viewer updates deliberately do not broadcast sigResultsChanged
+        # on every frame. Finalization is the one stable membership event: index
+        # the final object explicitly so Session shows it even with autosave off.
+        self._index_loaded_result(_display_name, result)
 
-        if not self._autoSave or getattr(result, "_session_saved_path", None):
-            return
-        try:
-            receipt = self._save_result(result, dataset, _display_name)
-        except Exception as exc:
-            self._logger.exception("Session auto-save failed")
-            self._widget.setStatus(f"Auto-save failed: {exc}")
-            return
-        result._session_saved_path = str(receipt.primary)
-        self._tag_session_origin(result)
-        self._session.refresh()
-        self._widget.setStatus(f"Auto-saved {receipt.primary.name}")
-        self._render()
+        # Viewer publication has already happened (or the live entry already
+        # exists). Update only this Session row on the next GUI turn.
+        dataset_id = str(dataset.id)
+        QtCore.QTimer.singleShot(
+            0,
+            lambda did=dataset_id: self._renderDataset(
+                did, render_selected=(did == self._selectedDatasetId)
+            ),
+        )
 
-    @staticmethod
-    def _short_component(value: str, limit: int) -> str:
-        value = _clean_name(value)
-        if len(value) <= limit:
-            return value
-        digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:6]
-        keep = max(1, limit - len(digest) - 1)
-        return f"{value[:keep].rstrip('._-')}-{digest}"
+        if (
+            not self._autoSave
+            or getattr(result, "_session_saved_path", None)
+            or getattr(result, "_session_save_pending", False)
+        ):
+            return
+        self._queueAutoSave(result, dataset, _display_name)
+
+    def _registerSavedReceipt(
+        self, session, dataset, result, receipt, display_name: str = ""
+    ):
+        primary = Path(receipt.primary).resolve()
+        result._session_saved_path = str(primary)
+        self._tag_session_origin(result, session)
+        if self._session is session:
+            self._loadedBySavedPath[str(primary)] = result
+        return session.register_saved_result(
+            dataset.id,
+            primary,
+            result=result,
+            display_name=str(display_name or getattr(result, "name", "reconstruction")),
+            save_manifest=True,
+        )
 
     @classmethod
     def _autosave_stem(cls, dataset, result, display_name: str = "") -> str:
-        source_path = Path(dataset.primary_path)
-        source_stem = _clean_name(source_path.stem)
-        label = str(display_name or getattr(result, "name", "reconstruction") or "reconstruction")
-
-        # Reconstructors commonly name a result ``<raw filename>_<algorithm>``.
-        # Do not concatenate that whole name with the raw stem again: besides
-        # being redundant it makes the staged-save path exceed Windows' common
-        # path-length limit because SaveProtocol repeats the filename in the
-        # staging-directory name.
-        lowered = label.lower()
-        for prefix in (source_path.name, source_path.stem):
-            if lowered.startswith(prefix.lower()):
-                label = label[len(prefix):].lstrip(" ._-:")
-                break
-        label = _clean_name(label or "recon")
-        source_part = cls._short_component(source_stem, 36)
-        result_part = cls._short_component(label, 18)
-        return f"{source_part}_{result_part}"
+        return SessionResultStore.autosave_stem(dataset, result, display_name)
 
     def _save_result(self, result, dataset, display_name: str = ""):
-        fmt = self._saveFormat if self._saveFormat in _FORMAT_SUFFIX else "tiff"
-        suffix = _FORMAT_SUFFIX[fmt]
-        stem = self._autosave_stem(dataset, result, display_name)
-        base = self._session.results_root / f"{stem}{suffix}"
-        candidate = base
-        index = 1
-        while candidate.exists():
-            candidate = base.with_name(f"{stem}_{index}{suffix}")
-            index += 1
-        return result.save(candidate, fmt, overwrite=False)
+        if self._session is None:
+            raise RuntimeError("No active Processing Session")
+        if self._resultStore is None or self._resultStore.session is not self._session:
+            self._resultStore = SessionResultStore(
+                self._session, save_format=self._saveFormat
+            )
+        self._resultStore.save_format = self._saveFormat
+        return self._resultStore.save(result, dataset, display_name)
 
     def _resultSaved(self, result, receipt) -> None:
         if self._session is None or result is None or receipt is None:
+            return
+        if result_role_for_result(result) == "inspection":
             return
         try:
             primary = Path(receipt.primary).resolve()
             primary.relative_to(self._session.results_root)
         except Exception:
             return
-        if self._session.dataset_for_result(result) is None:
+        dataset = self._session.dataset_for_result(result)
+        if dataset is None:
             return
-        result._session_saved_path = str(primary)
-        self._tag_session_origin(result)
-        self._session.refresh()
-        self._render()
+        saved = self._registerSavedReceipt(
+            self._session,
+            dataset,
+            result,
+            receipt,
+            str(getattr(result, "name", "reconstruction")),
+        )
+        if saved is not None:
+            self._renderDataset(
+                dataset.id, render_selected=(dataset.id == self._selectedDatasetId)
+            )
+
+    def closeEvent(self):
+        if self._saveThread is not None or self._saveRequests:
+            return False
+        self._stopDirectoryWatcher()
+        return True
 
 
 __all__ = ["ProcessingSessionController"]

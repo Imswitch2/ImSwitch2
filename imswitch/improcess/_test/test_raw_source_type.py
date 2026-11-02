@@ -216,6 +216,34 @@ def _hdf5_lapse_file(path, *, groups=5, frames=400):
     return str(path)
 
 
+def _hdf5_lapse_file_recorder_layout(path, *, groups=5, frames=400):
+    """Single-file lapse in the actual recorder layout: scanN/Cam/data."""
+    import h5py
+
+    with h5py.File(str(path), "w", libver="latest") as handle:
+        for i in range(groups):
+            detector = handle.create_group(f"scan{i}").create_group("Cam")
+            detector.create_dataset(
+                "data", data=np.zeros((frames, 8, 8), "uint16")
+            )
+            detector.create_dataset("frames_committed", data=np.asarray(frames))
+            detector.create_group("metadata")
+    return str(path)
+
+
+def _zarr_lapse_file_recorder_layout(path, *, groups=3, frames=1225):
+    """Single-file lapse in the actual recorder layout: scanN/Cam/data."""
+    import zarr
+
+    root = zarr.open_group(str(path), mode="w")
+    for i in range(groups):
+        detector = root.create_group(f"scan{i}").create_group("Cam")
+        detector.create_array("data", shape=(frames, 8, 8), dtype="uint16")
+        detector.create_array("frames_committed", data=np.asarray(frames))
+        detector.create_group("metadata")
+    return str(path)
+
+
 def test_probe_reads_a_multifile_lapse_seed(tmp_path):
     path = _zarr_single(tmp_path / "m_scan00.zarr", num_timepoints=10,
                         frames_per_stack=4, single_lapse_file=False,
@@ -254,6 +282,32 @@ def test_probe_reads_an_hdf5_lapse_file_with_no_metadata(tmp_path):
 
     assert (t.format_id, t.layout) == (FORMAT_HDF5, LAYOUT_SINGLE_LAPSE_FILE)
     assert (t.num_timepoints, t.frames_per_stack) == (5, 400)
+
+
+def test_probe_reads_hdf5_recorder_nested_detector_lapse(tmp_path):
+    """Regression: the real recorder nests frames under scanN/Cam/data.
+
+    The old classifier inspected only immediate scanN children, saw ``Cam`` as
+    a group, and fell back to one frame per timepoint. MoNaLISA then rejected
+    the otherwise-valid timelapse before Hdf5LapseSource could open it.
+    """
+    path = _hdf5_lapse_file_recorder_layout(tmp_path / "nested.hdf5")
+
+    t = probe_source_type(path)
+
+    assert (t.format_id, t.layout) == (FORMAT_HDF5, LAYOUT_SINGLE_LAPSE_FILE)
+    assert (t.num_timepoints, t.frames_per_stack) == (5, 400)
+    assert t.has_frame_stacks
+
+
+def test_probe_reads_zarr_recorder_nested_detector_lapse(tmp_path):
+    path = _zarr_lapse_file_recorder_layout(tmp_path / "nested.zarr")
+
+    t = probe_source_type(path)
+
+    assert (t.format_id, t.layout) == (FORMAT_ZARR, LAYOUT_SINGLE_LAPSE_FILE)
+    assert (t.num_timepoints, t.frames_per_stack) == (3, 1225)
+    assert t.has_frame_stacks
 
 
 def test_probe_uses_the_array_length_when_a_store_says_nothing(tmp_path):

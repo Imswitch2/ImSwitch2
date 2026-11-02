@@ -183,7 +183,7 @@ class _SessionSplitterHandle(QtWidgets.QSplitterHandle):
         self.toggle.setChecked(False)
         self.toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         self.toggle.setAutoRaise(True)
-        self.toggle.setText("› Recon (0)")
+        self.toggle.setText("› Results (0)")
         self.toggle.setCursor(QtCore.Qt.ArrowCursor)
         self.toggle.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.toggle.setStyleSheet(
@@ -214,7 +214,7 @@ class _SessionSplitterHandle(QtWidgets.QSplitterHandle):
 
     def _update_toggle_text(self) -> None:
         marker = "⌄" if self.toggle.isChecked() else "›"
-        summary = str(self.toggle.property("summaryText") or "Recon (0)")
+        summary = str(self.toggle.property("summaryText") or "Results (0)")
         self.toggle.setText(f"{marker} {summary}")
 
     def _toggle_changed(self, expanded: bool) -> None:
@@ -232,7 +232,7 @@ class _SessionSplitterHandle(QtWidgets.QSplitterHandle):
     def setSummary(self, total: int, in_panel: int, *, tooltip: str = "") -> None:
         total = max(0, int(total))
         in_panel = max(0, int(in_panel))
-        text = f"Recon ({total})"
+        text = f"Results ({total})"
         if total:
             text += f" · {in_panel} in panel"
         self.toggle.setProperty("summaryText", text)
@@ -352,12 +352,12 @@ class _ReconstructionTree(QtWidgets.QTreeWidget):
             workspace.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             if loaded:
                 workspace.setToolTip(
-                    "Close this reconstruction object from the right-hand list; saved Session data is preserved"
+                    "Close this result object from the right-hand list; saved Session data is preserved"
                 )
             elif saved:
-                workspace.setToolTip("Add this saved result to the Reconstruction objects list")
+                workspace.setToolTip("Add this saved result to the Results panel")
             else:
-                workspace.setToolTip("Reconstruction is not currently available")
+                workspace.setToolTip("Result is not currently available")
                 workspace.setEnabled(False)
             workspace.clicked.connect(
                 lambda _checked=False, k=key: self.sigWorkspaceToggleRequested.emit(k)
@@ -370,7 +370,7 @@ class _ReconstructionTree(QtWidgets.QTreeWidget):
             discard.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
             discard.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             discard.setStyleSheet("QToolButton { padding: 0 3px; }")
-            discard.setToolTip("Move this reconstruction to Session trash")
+            discard.setToolTip("Move this result to Session trash")
             discard.clicked.connect(
                 lambda _checked=False, k=key: self.sigDiscardRequested.emit(k)
             )
@@ -426,7 +426,7 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
         root.addLayout(form)
 
         options = QtWidgets.QHBoxLayout()
-        self.autoSaveCheck = QtWidgets.QCheckBox("Auto-save new reconstructions")
+        self.autoSaveCheck = QtWidgets.QCheckBox("Auto-save new results")
         self.autoSaveCheck.setChecked(bool(auto_save))
         self.formatCombo = QtWidgets.QComboBox()
         self.formatCombo.addItem("OME-TIFF", "tiff")
@@ -449,9 +449,9 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
         resume_layout.setContentsMargins(0, 0, 0, 0)
         resume_layout.addWidget(QtWidgets.QLabel("On resume"))
         self.resumeReconCombo = QtWidgets.QComboBox()
-        self.resumeReconCombo.addItem("Don't add reconstructions", "none")
-        self.resumeReconCombo.addItem("Add reconstructions from favorite datasets", "favorites")
-        self.resumeReconCombo.addItem("Add all saved reconstructions", "all")
+        self.resumeReconCombo.addItem("Don't add results", "none")
+        self.resumeReconCombo.addItem("Add results from favorite datasets", "favorites")
+        self.resumeReconCombo.addItem("Add all saved results", "all")
         resume_layout.addWidget(self.resumeReconCombo, 1)
         self.resumeOptions.setVisible(False)
         root.addWidget(self.resumeOptions)
@@ -498,7 +498,7 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
     def _browseResults(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self,
-            "Choose reconstruction-results folder",
+            "Choose results folder",
             self._start_dir(self.resultsEdit.text() or self.rawEdit.text()),
         )
         if folder:
@@ -542,7 +542,7 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
             self.primaryBtn.setText("Resume session" if not active_same else "Apply")
             dataset_count, saved_count, favorite_count, favorite_saved_count = self._manifest_counts(manifest)
             dataset_word = "datasets" if dataset_count != 1 else "dataset"
-            recon_word = "reconstructions" if saved_count != 1 else "reconstruction"
+            recon_word = "results" if saved_count != 1 else "result"
             favorite_text = (
                 f" · {favorite_count} favorite{'s' if favorite_count != 1 else ''}"
                 if favorite_count else ""
@@ -553,10 +553,10 @@ class _SessionConfigurationDialog(QtWidgets.QDialog):
             )
             self.resumeOptions.setVisible(not active_same and bool(saved_count))
             self.resumeReconCombo.setItemText(
-                1, f"Add reconstructions from favorite datasets ({favorite_saved_count})"
+                1, f"Add results from favorite datasets ({favorite_saved_count})"
             )
             self.resumeReconCombo.setItemText(
-                2, f"Add all saved reconstructions ({saved_count})"
+                2, f"Add all saved results ({saved_count})"
             )
             model_item = self.resumeReconCombo.model().item(1)
             if model_item is not None:
@@ -597,7 +597,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigDatasetSelectionChanged = QtCore.Signal(object)
     sigSavedSelectionChanged = QtCore.Signal(object)
     sigLoadRawRequested = QtCore.Signal()
+    sigOpenViewerRequested = QtCore.Signal()
     sigLoadSelectedAsMultiDataRequested = QtCore.Signal()
+    sigProcessSelectedRequested = QtCore.Signal(str)
+    sigAutoProcessingChanged = QtCore.Signal(bool)
+    sigPauseProcessingRequested = QtCore.Signal()
+    sigResumeProcessingRequested = QtCore.Signal()
+    sigSkipCurrentProcessingRequested = QtCore.Signal()
     sigRevealRawRequested = QtCore.Signal()
     sigCopyRawPathRequested = QtCore.Signal()
     sigDeleteRawRequested = QtCore.Signal()
@@ -625,6 +631,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
         self._datasetEntries: list[dict] = []
         self._sessionActive = False
+        self._processingAvailable = True
+        self._autoProcessingAvailable = False
+        self._lastQueueSnapshot: dict = {}
 
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -644,8 +653,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.refreshBtn.setToolTip("Refresh Session")
         self.refreshBtn.setAutoRaise(True)
         self.livePlaceholderBtn = QtWidgets.QToolButton()
-        self.livePlaceholderBtn.setText("LIVE")
-        self.livePlaceholderBtn.setToolTip("Live watcher integration will live here")
+        self.livePlaceholderBtn.setText("● Watching")
+        self.livePlaceholderBtn.setToolTip("DirectoryWatcher is monitoring the active Session folder")
         self.livePlaceholderBtn.setEnabled(False)
         self.livePlaceholderBtn.setAutoRaise(True)
         self.actionsBtn = QtWidgets.QToolButton()
@@ -666,9 +675,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             "Select the source Session dataset when the active reconstruction changes"
         )
         self.actionsMenu.addSeparator()
-        self.closeReconstructionsAction = self.actionsMenu.addAction("Close session reconstructions")
+        self.closeReconstructionsAction = self.actionsMenu.addAction("Close session results")
         self.closeNonFavoriteReconstructionsAction = self.actionsMenu.addAction(
-            "Close reconstructions from non-favorites"
+            "Close results from non-favorites"
         )
         self.cleanupNonFavoritesAction = self.actionsMenu.addAction("Clean up non-favorites…")
         self.closeSessionAction = self.actionsMenu.addAction("Close Session…")
@@ -692,7 +701,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         adding_layout = QtWidgets.QHBoxLayout(self.addingRow)
         adding_layout.setContentsMargins(0, 0, 0, 0)
         adding_layout.setSpacing(4)
-        self.addingLabel = QtWidgets.QLabel("Adding reconstructions…")
+        self.addingLabel = QtWidgets.QLabel("Adding results…")
         self.addingProgress = QtWidgets.QProgressBar()
         self.addingProgress.setTextVisible(True)
         self.addingProgress.setMinimumWidth(80)
@@ -766,9 +775,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         status_controls.setSpacing(3)
         self.datasetShowCombo = QtWidgets.QComboBox()
         self.datasetShowCombo.addItem("All", "all")
-        self.datasetShowCombo.addItem("No recon", "raw")
-        self.datasetShowCombo.addItem("Reconstructed", "reconstructed")
-        self.datasetShowCombo.setToolTip("Filter by reconstruction status")
+        self.datasetShowCombo.addItem("No result", "raw")
+        self.datasetShowCombo.addItem("Has results", "reconstructed")
+        self.datasetShowCombo.setToolTip("Filter by result status")
         self.datasetShowCombo.setMinimumWidth(100)
         self.datasetShowCombo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.statusOrderBtn = QtWidgets.QToolButton()
@@ -782,8 +791,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._statusOrderMode = "none"
         for label, mode in (
             ("No status grouping", "none"),
-            ("No reconstruction first", "raw"),
-            ("Reconstructed first", "reconstructed"),
+            ("No result first", "raw"),
+            ("Has results first", "reconstructed"),
         ):
             action = self.statusOrderMenu.addAction(label)
             action.setCheckable(True)
@@ -817,6 +826,28 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.datasetList = _CompactDatasetTree()
         self.datasetList.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         datasets_layout.addWidget(self.datasetList)
+
+
+        selection_row = QtWidgets.QHBoxLayout()
+        selection_row.setContentsMargins(0, 0, 0, 0)
+        selection_row.setSpacing(4)
+        self.selectionSummaryLabel = QtWidgets.QLabel("No dataset selected")
+        self.selectionSummaryLabel.setStyleSheet('color: palette(mid);')
+        self.processSelectedBtn = QtWidgets.QToolButton()
+        self.processSelectedBtn.setText("Process ▾")
+        self.processSelectedBtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.processSelectedBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.processSelectedMenu = QtWidgets.QMenu(self.processSelectedBtn)
+        self.processNextAction = self.processSelectedMenu.addAction("Process next")
+        self.processEndAction = self.processSelectedMenu.addAction("Add to end of queue")
+        self.processSelectedBtn.setMenu(self.processSelectedMenu)
+        self.addWorkingSetBtn = QtWidgets.QPushButton('+ Working set')
+        self.addWorkingSetBtn.setToolTip('Add the selected Session datasets to the persistent Working Set')
+        self.addWorkingSetBtn.clicked.connect(self.sigLoadSelectedAsMultiDataRequested)
+        selection_row.addWidget(self.selectionSummaryLabel, 1)
+        selection_row.addWidget(self.processSelectedBtn)
+        selection_row.addWidget(self.addWorkingSetBtn)
+        datasets_layout.addLayout(selection_row)
 
         # The Session boundary itself carries the reconstruction summary.  This
         # avoids a separate selected-data row and a separate reconstruction title.
@@ -859,6 +890,50 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self._programmaticSplitterMove = False
         self._selectedDatasetTitle = ""
 
+        processing_box = QtWidgets.QWidget()
+        processing_layout = QtWidgets.QVBoxLayout(processing_box)
+        processing_layout.setContentsMargins(0, 0, 0, 0)
+        processing_layout.setSpacing(3)
+
+        auto_row = QtWidgets.QHBoxLayout()
+        auto_row.setContentsMargins(0, 0, 0, 0)
+        self.autoProcessCheck = QtWidgets.QCheckBox("Auto-process")
+        self.autoProcessCheck.setToolTip(
+            "Queue existing unprocessed Session datasets and new arrivals automatically"
+        )
+        self.queueSummaryLabel = _ElidingLabel("Queue idle")
+        self.queueSummaryLabel.setStyleSheet('color: palette(mid);')
+        auto_row.addWidget(self.autoProcessCheck)
+        auto_row.addWidget(self.queueSummaryLabel, 1)
+        processing_layout.addLayout(auto_row)
+
+        queue_actions = QtWidgets.QHBoxLayout()
+        queue_actions.setContentsMargins(0, 0, 0, 0)
+        queue_actions.setSpacing(4)
+        self.pauseResumeBtn = QtWidgets.QPushButton("Pause")
+        self.skipCurrentBtn = QtWidgets.QPushButton("Skip current")
+        self.queueToggleBtn = QtWidgets.QToolButton()
+        self.queueToggleBtn.setText("Queue ▸")
+        self.queueToggleBtn.setCheckable(True)
+        self.queueToggleBtn.setAutoRaise(True)
+        queue_actions.addWidget(self.pauseResumeBtn)
+        queue_actions.addWidget(self.skipCurrentBtn)
+        queue_actions.addStretch(1)
+        queue_actions.addWidget(self.queueToggleBtn)
+        processing_layout.addLayout(queue_actions)
+
+        self.queueList = QtWidgets.QTreeWidget()
+        self.queueList.setColumnCount(3)
+        self.queueList.setHeaderLabels(["Dataset", "State", "Origin"])
+        self.queueList.setRootIsDecorated(False)
+        self.queueList.setUniformRowHeights(True)
+        self.queueList.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.queueList.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.queueList.setMaximumHeight(130)
+        self.queueList.setVisible(False)
+        processing_layout.addWidget(self.queueList)
+        root.addWidget(processing_box)
+
         self.statusLabel = _ElidingLabel("No session active")
         root.addWidget(self.statusLabel)
 
@@ -893,6 +968,17 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.savedList.customContextMenuRequested.connect(self._reconstruction_context_menu)
         self.reconHandle.sigExpandedChanged.connect(self._recon_header_toggled)
         self.sessionSplitter.splitterMoved.connect(self._recon_splitter_moved)
+        self.datasetList.itemSelectionChanged.connect(self._selection_changed)
+        self.processNextAction.triggered.connect(
+            lambda _checked=False: self.sigProcessSelectedRequested.emit("next")
+        )
+        self.processEndAction.triggered.connect(
+            lambda _checked=False: self.sigProcessSelectedRequested.emit("end")
+        )
+        self.autoProcessCheck.toggled.connect(self.sigAutoProcessingChanged)
+        self.pauseResumeBtn.clicked.connect(self._pause_resume_clicked)
+        self.skipCurrentBtn.clicked.connect(self.sigSkipCurrentProcessingRequested)
+        self.queueToggleBtn.toggled.connect(self._queue_toggled)
 
         self.setSessionActive(False)
         self.reconHandle.toggle.setEnabled(False)
@@ -932,11 +1018,11 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         action = "switch Sessions" if switching else "close this Session"
         noun = "object" if count == 1 else "objects"
         box.setText(
-            f"{count} reconstruction {noun} from the current Session "
+            f"{count} result {noun} from the current Session "
             f"{'are' if count != 1 else 'is'} still open in the Reconstruction panel."
         )
         box.setInformativeText(
-            f"You can keep {'them' if count != 1 else 'it'} open as independent reconstruction "
+            f"You can keep {'them' if count != 1 else 'it'} open as independent result "
             f"{'objects' if count != 1 else 'object'} when you {action}, or close "
             f"{'them' if count != 1 else 'it'} first."
         )
@@ -969,12 +1055,12 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             f"{'s' if dataset_count != 1 else ''}?"
         )
         box.setInformativeText(
-            f"{reconstruction_count} associated reconstruction"
+            f"{reconstruction_count} associated result"
             f"{'s' if reconstruction_count != 1 else ''} can be moved to Session trash. "
             "Favorite datasets will not be touched."
         )
-        recons = box.addButton("Reconstructions only", QtWidgets.QMessageBox.ActionRole)
-        raw = box.addButton("Raw data + reconstructions", QtWidgets.QMessageBox.DestructiveRole)
+        recons = box.addButton("Results only", QtWidgets.QMessageBox.ActionRole)
+        raw = box.addButton("Raw data + results", QtWidgets.QMessageBox.DestructiveRole)
         cancel = box.addButton(QtWidgets.QMessageBox.Cancel)
         box.setDefaultButton(recons)
         box.exec()
@@ -1002,7 +1088,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         )
         details = (
             f"This affects {raw_file_count} physical raw file"
-            f"{'s' if raw_file_count != 1 else ''}. Saved reconstructions from non-favorites "
+            f"{'s' if raw_file_count != 1 else ''}. Saved results from non-favorites "
             "will be moved to Session trash. Favorite datasets will not be touched."
         )
         if skipped_count:
@@ -1034,25 +1120,25 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             f"{'are' if favorite_count != 1 else 'is'} marked as favorite."
         )
         box.setInformativeText(
-            "You can close without changing files, remove reconstructions from non-favorites, "
+            "You can close without changing files, remove results from non-favorites, "
             "or keep only favorite acquisitions. Raw-data cleanup always asks for a second confirmation."
         )
         plain = box.addButton("Close without cleaning up", QtWidgets.QMessageBox.AcceptRole)
         recons = box.addButton(
-            "Clean up non-favorite reconstructions", QtWidgets.QMessageBox.ActionRole
+            "Clean up non-favorite results", QtWidgets.QMessageBox.ActionRole
         )
         raw = box.addButton("Keep favorite datasets only", QtWidgets.QMessageBox.DestructiveRole)
         cancel = box.addButton(QtWidgets.QMessageBox.Cancel)
 
         plain.setToolTip(
-            "Close the Session without moving or deleting raw data or saved reconstructions."
+            "Close the Session without moving or deleting raw data or saved results."
         )
         recons.setToolTip(
-            "Remove reconstruction objects from non-favorite datasets and move their saved "
-            "reconstructions to Session trash. Raw data is kept."
+            "Remove result objects from non-favorite datasets and move their saved "
+            "results to Session trash. Raw data is kept."
         )
         raw.setToolTip(
-            "Keep favorite datasets only. Non-favorite reconstructions are cleaned up and "
+            "Keep favorite datasets only. Non-favorite results are cleaned up and "
             "their raw data can be moved to the operating-system Trash after confirmation."
         )
 
@@ -1092,6 +1178,16 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.dimensionFilterCombo.setEnabled(bool(active))
         self.datasetShowCombo.setEnabled(bool(active))
         self.statusOrderBtn.setEnabled(bool(active))
+        has_selection = bool(self.selectedDatasetIds())
+        self.processSelectedBtn.setEnabled(
+            bool(active and self._processingAvailable and has_selection)
+        )
+        self.addWorkingSetBtn.setEnabled(bool(active and has_selection))
+        self.autoProcessCheck.setEnabled(bool(active and self._autoProcessingAvailable))
+        self._update_selection_summary()
+        if not active:
+            self.pauseResumeBtn.setEnabled(False)
+            self.skipCurrentBtn.setEnabled(False)
 
     def setAddingProgress(self, active: bool, current: int = 0, total: int = 0) -> None:
         active = bool(active)
@@ -1101,7 +1197,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         for widget in (self.refreshBtn, self.actionsBtn, self.settingsBtn):
             widget.setEnabled(bool(self._sessionActive and not active))
         if active:
-            self.addingLabel.setText("Adding reconstructions…")
+            self.addingLabel.setText("Adding results…")
             self.addingProgress.setRange(0, max(1, total))
             self.addingProgress.setValue(current)
             self.addingProgress.setFormat(f"{current} / {total}")
@@ -1144,6 +1240,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
         selected_items = list(self.datasetList.selectedItems())
         selected_entries = [item.data(0, QtCore.Qt.UserRole + 1) or {} for item in selected_items]
+        if (
+            len(selected_items) == 1
+            and not bool(selected_items[0].data(0, QtCore.Qt.UserRole + 2))
+        ):
+            open_viewer = menu.addAction("Open in viewer")
+            open_viewer.triggered.connect(self.sigOpenViewerRequested)
+            menu.addSeparator()
         if any(not bool(entry.get("favorite", False)) for entry in selected_entries):
             favorite = menu.addAction(
                 "Favorite selected" if len(selected_items) > 1 else "Favorite"
@@ -1171,7 +1274,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         )
         if saved_count:
             add_saved = menu.addAction(
-                f"Add reconstructions ({saved_count})"
+                f"Add results ({saved_count})"
             )
             add_saved.triggered.connect(
                 lambda _checked=False: self.sigAddSelectedReconstructionsRequested.emit()
@@ -1180,13 +1283,15 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
 
         if panel_count:
             close = menu.addAction(
-                f"Close reconstruction{'s' if panel_count != 1 else ''} ({panel_count})"
+                f"Close result{'s' if panel_count != 1 else ''} ({panel_count})"
             )
             close.triggered.connect(self.sigCloseSelectedDatasetReconstructionsRequested)
             menu.addSeparator()
 
-        if len(selected) > 1:
-            action = menu.addAction("Load selected as MultiData")
+        if selected:
+            action = menu.addAction(
+                "Add selected to Working Set" if len(selected) > 1 else "Add to Working Set"
+            )
             action.triggered.connect(self.sigLoadSelectedAsMultiDataRequested)
             menu.addSeparator()
         reveal = menu.addAction("Reveal in Explorer")
@@ -1202,6 +1307,112 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def _saved_changed(self, current, _previous):
         value = current.data(0, QtCore.Qt.UserRole) if current is not None else None
         self.sigSavedSelectionChanged.emit(value)
+
+    def _selection_changed(self) -> None:
+        self._update_selection_summary()
+
+    def _update_selection_summary(self) -> None:
+        count = len(self.selectedDatasetIds())
+        if count <= 0:
+            text = "No dataset selected"
+        elif count == 1:
+            text = "1 dataset selected"
+        else:
+            text = f"{count} datasets selected"
+        self.selectionSummaryLabel.setText(text)
+        self.processSelectedBtn.setText(
+            "Process ▾" if count <= 1 else f"Process {count} ▾"
+        )
+        self.processSelectedBtn.setEnabled(
+            bool(self._sessionActive and self._processingAvailable and count)
+        )
+        self.addWorkingSetBtn.setEnabled(bool(self._sessionActive and count))
+
+    def _pause_resume_clicked(self) -> None:
+        if bool(self.pauseResumeBtn.property("queuePaused")):
+            self.sigResumeProcessingRequested.emit()
+        else:
+            self.sigPauseProcessingRequested.emit()
+
+    def _queue_toggled(self, expanded: bool) -> None:
+        self.queueList.setVisible(bool(expanded))
+        self.queueToggleBtn.setText("Queue ⌄" if expanded else "Queue ▸")
+        if expanded:
+            self._populateQueueList(self._lastQueueSnapshot)
+
+    def setProcessingAvailable(self, available: bool) -> None:
+        available = bool(available)
+        self._processingAvailable = available
+        self.processSelectedBtn.setVisible(available)
+        self.processSelectedBtn.setEnabled(
+            bool(available and self._sessionActive and self.selectedDatasetIds())
+        )
+
+    def setAutoProcessingAvailable(self, available: bool, tooltip: str = "") -> None:
+        self._autoProcessingAvailable = bool(available)
+        self.autoProcessCheck.setEnabled(bool(available and self._sessionActive))
+        self.autoProcessCheck.setToolTip(str(tooltip or (
+            "Queue existing unprocessed Session datasets and new arrivals automatically"
+        )))
+
+    def _populateQueueList(self, snapshot: dict | None) -> None:
+        snapshot = dict(snapshot or {})
+        current = snapshot.get("current")
+        waiting = list(snapshot.get("waiting", ()) or ())
+        waiting_count = int(snapshot.get("waiting_count", len(waiting)) or 0)
+        self.queueList.clear()
+        jobs = ([current] if current is not None else []) + waiting
+        for job in jobs:
+            state = str(getattr(getattr(job, "state", None), "value", getattr(job, "state", "")))
+            origin = str(getattr(getattr(job, "origin", None), "value", getattr(job, "origin", "")))
+            item = QtWidgets.QTreeWidgetItem([
+                str(getattr(job, "label", "")), state.upper(), origin.upper()
+            ])
+            self.queueList.addTopLevelItem(item)
+        hidden = max(0, waiting_count - len(waiting))
+        if hidden:
+            self.queueList.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem([f"… {hidden} more", "", ""])
+            )
+        # Resizing columns is relatively expensive for long queues; only do it
+        # when the details are actually visible.
+        for column in range(3):
+            self.queueList.resizeColumnToContents(column)
+
+    def setProcessingQueue(self, snapshot: dict | None) -> None:
+        snapshot = dict(snapshot or {})
+        self._lastQueueSnapshot = snapshot
+        paused = bool(snapshot.get("paused", False))
+        auto_enabled = bool(snapshot.get("auto_enabled", False))
+        current = snapshot.get("current")
+        waiting = list(snapshot.get("waiting", ()) or ())
+        waiting_count = int(snapshot.get("waiting_count", len(waiting)) or 0)
+
+        self.autoProcessCheck.blockSignals(True)
+        self.autoProcessCheck.setChecked(auto_enabled)
+        self.autoProcessCheck.blockSignals(False)
+        self.pauseResumeBtn.setProperty("queuePaused", paused)
+        self.pauseResumeBtn.setText("Resume" if paused else "Pause")
+        self.pauseResumeBtn.setEnabled(
+            bool(self._sessionActive and (current or waiting_count or paused))
+        )
+        self.skipCurrentBtn.setEnabled(bool(self._sessionActive and current))
+
+        if current is not None:
+            label = str(getattr(current, "label", "processing"))
+            summary = f"▶ {label} · processing"
+            if waiting_count:
+                summary += f" · {waiting_count} waiting"
+        elif waiting_count:
+            summary = f"{waiting_count} waiting"
+            if paused:
+                summary += " · paused"
+        else:
+            summary = "Queue paused" if paused else "Queue idle"
+        self.queueSummaryLabel.setText(summary)
+
+        if not self.queueList.isHidden():
+            self._populateQueueList(snapshot)
 
     def selectedDatasetIds(self) -> list[str]:
         ids = []
@@ -1300,6 +1511,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             return True
         if mode == "reconstructed":
             return state == "reconstructed"
+        if mode == "raw":
+            return state != "reconstructed"
         return state == mode
 
     def _datasetOrderChanged(self, action) -> None:
@@ -1316,7 +1529,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     def _status_order_rank(state: str, mode: str) -> int:
         state = str(state or "raw").lower()
         if mode == "raw":
-            return 0 if state == "raw" else 1
+            return 0 if state != "reconstructed" else 1
         if mode == "reconstructed":
             return 0 if state == "reconstructed" else 1
         return 0
@@ -1344,7 +1557,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         if state == "reconstructed":
             item.setForeground(1, muted)
             item.setForeground(3, reconstructed)
-        elif state in {"running", "queued", "loading"}:
+        elif state in {"running", "processing", "queued", "loading"}:
             name_font.setBold(True)
             item.setForeground(1, normal)
             item.setForeground(3, active)
@@ -1356,11 +1569,14 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             item.setForeground(1, normal)
             item.setForeground(3, normal)
         item.setForeground(2, muted)
+        link_font = item.font(4)
         if item.text(4):
             item.setForeground(4, active)
-            link_font = item.font(4)
             link_font.setBold(True)
-            item.setFont(4, link_font)
+        else:
+            item.setForeground(4, muted)
+            link_font.setBold(False)
+        item.setFont(4, link_font)
         item.setFont(1, name_font)
         item.setFont(3, status_font)
 
@@ -1450,8 +1666,8 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             if panel_count:
                 item.setToolTip(
                     4,
-                    f"{panel_count} reconstruction object{'s' if panel_count != 1 else ''} "
-                    "from this dataset are in the Reconstruction panel.",
+                    f"{panel_count} result object{'s' if panel_count != 1 else ''} "
+                    "from this dataset are in the Results panel.",
                 )
                 item.setTextAlignment(4, QtCore.Qt.AlignCenter)
             self._styleDatasetItem(item, entry.get("state", "raw"))
@@ -1474,6 +1690,73 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 self.datasetList.setCurrentItem(self.datasetList.topLevelItem(0))
             elif not self.datasetList.topLevelItemCount():
                 self.sigDatasetSelectionChanged.emit(None)
+        self._update_selection_summary()
+
+    def _updateDatasetItem(self, item, entry: dict) -> None:
+        dataset_id = entry.get("id")
+        label = str(entry.get("label", ""))
+        if entry.get("current"):
+            label = f"▶ {label}"
+        favorite = bool(entry.get("favorite", False))
+        item.setText(0, "★" if favorite else "☆")
+        item.setText(1, label)
+        item.setText(2, str(entry.get("info", "")))
+        item.setText(3, str(entry.get("status", "")))
+        item.setText(4, "●" if entry.get("panel_link") else "")
+        item.setData(0, QtCore.Qt.UserRole, dataset_id)
+        item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
+        item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
+        item.setToolTip(0, "Remove from favorites" if favorite else "Mark this acquisition as favorite")
+        item.setToolTip(1, str(entry.get("tooltip") or entry.get("search", label)))
+        item.setToolTip(2, str(entry.get("info_tooltip") or entry.get("info", "")))
+        item.setToolTip(3, str(entry.get("status", "")))
+        item.setTextAlignment(0, QtCore.Qt.AlignCenter)
+        panel_count = int(entry.get("panel_count", 0) or 0)
+        if panel_count:
+            item.setToolTip(
+                4,
+                f"{panel_count} result object{'s' if panel_count != 1 else ''} "
+                "from this dataset are in the Results panel.",
+            )
+            item.setTextAlignment(4, QtCore.Qt.AlignCenter)
+        else:
+            item.setToolTip(4, "")
+        self._styleDatasetItem(item, entry.get("state", "raw"))
+
+    def updateDataset(self, entry: dict) -> None:
+        """Update one Session row without rebuilding the complete dataset tree."""
+        entry = dict(entry)
+        dataset_id = str(entry.get("id") or "")
+        if not dataset_id:
+            return
+        replaced = False
+        for index, existing in enumerate(self._datasetEntries):
+            if str(existing.get("id") or "") == dataset_id:
+                self._datasetEntries[index] = entry
+                replaced = True
+                break
+        if not replaced:
+            self._datasetEntries.append(entry)
+            self._refreshDimensionFilter()
+            self._applyDatasetView()
+            return
+
+        # State-filtering or state-ordering can change row membership/position,
+        # so those explicit views still rebuild. The normal Session view updates
+        # the affected QTreeWidgetItem in place.
+        if (
+            str(self.datasetShowCombo.currentData() or "all") != "all"
+            or str(self._statusOrderMode or "none") != "none"
+        ):
+            self._applyDatasetView()
+            return
+
+        for index in range(self.datasetList.topLevelItemCount()):
+            item = self.datasetList.topLevelItem(index)
+            if str(item.data(0, QtCore.Qt.UserRole) or "") == dataset_id:
+                self._updateDatasetItem(item, entry)
+                break
+        self._update_selection_summary()
 
     def setDatasets(self, entries: list[dict]) -> None:
         self._datasetEntries = [dict(entry) for entry in entries]
@@ -1496,7 +1779,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         tooltip = self._selectedDatasetTitle
         if count:
             tooltip = (tooltip + "\n" if tooltip else "") + (
-                f"{count} reconstruction{'s' if count != 1 else ''} associated · "
+                f"{count} result{'s' if count != 1 else ''} associated · "
                 f"{panel_count} in panel"
             )
         self.reconHandle.setSummary(count, panel_count, tooltip=tooltip)
@@ -1553,7 +1836,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                             self.sigReuseCalibrationRequested.emit(k, m)
                     )
                 menu.addSeparator()
-        label = "Discard reconstruction…" if count == 1 else f"Discard selected ({count})…"
+        label = "Discard result…" if count == 1 else f"Discard selected results ({count})…"
         discard = menu.addAction(label)
         discard.triggered.connect(self.sigDiscardSelectedRequested)
         menu.exec(self.savedList.viewport().mapToGlobal(point))

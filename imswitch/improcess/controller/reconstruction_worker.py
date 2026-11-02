@@ -43,15 +43,21 @@ class ReconstructionWorker(QtCore.QObject):
     """Run immutable reconstruction jobs away from the GUI thread."""
 
     progress = QtCore.Signal(object)
+    resultReady = QtCore.Signal(object, object)  # (result, ReconstructionRun)
     finished = QtCore.Signal(object)
     failed = QtCore.Signal(object)
     cancelled = QtCore.Signal(str)
 
-    def __init__(self, reconstructor, jobs, *, consolidate=False, parent=None):
+    def __init__(
+        self, reconstructor, jobs, *, consolidate=False, retain_results=True,
+        release_after_each=False, parent=None
+    ):
         super().__init__(parent)
         self._reconstructor = reconstructor
         self._jobs = tuple(jobs)
         self._consolidate = bool(consolidate)
+        self._retain_results = bool(retain_results) or self._consolidate
+        self._release_after_each = bool(release_after_each)
         self._token = CancellationToken()
 
     def request_cancel(self) -> None:
@@ -75,23 +81,34 @@ class ReconstructionWorker(QtCore.QObject):
         try:
             self._token.check()
             for index, job in enumerate(self._jobs):
-                validator = getattr(self._reconstructor, "validate_source", None)
-                if callable(validator):
-                    validator(job.data_obj)
-                context = ReconstructionContext(
-                    progress_callback=lambda update, i=index: self._forward_progress(
-                        i, update
-                    ),
-                    cancellation_token=self._token,
-                    memory_budget_bytes=job.memory_budget_bytes,
-                    confirmed_over_budget=job.confirmed_over_budget,
-                )
-                run = run_reconstruction(
-                    self._reconstructor, job.data_obj, dict(job.params), context=context
-                )
-                context.check_cancelled()
-                results.append(run.result)
-                runs.append(run)
+                try:
+                    validator = getattr(self._reconstructor, "validate_source", None)
+                    if callable(validator):
+                        validator(job.data_obj)
+                    context = ReconstructionContext(
+                        progress_callback=lambda update, i=index: self._forward_progress(
+                            i, update
+                        ),
+                        cancellation_token=self._token,
+                        memory_budget_bytes=job.memory_budget_bytes,
+                        confirmed_over_budget=job.confirmed_over_budget,
+                    )
+                    run = run_reconstruction(
+                        self._reconstructor, job.data_obj, dict(job.params), context=context
+                    )
+                    context.check_cancelled()
+                    self.resultReady.emit(run.result, run)
+                    if self._retain_results:
+                        results.append(run.result)
+                        runs.append(run)
+                finally:
+                    if self._release_after_each:
+                        releaser = getattr(job.data_obj, "checkAndUnloadData", None)
+                        if callable(releaser):
+                            try:
+                                releaser()
+                            except Exception:
+                                pass
 
             merged = None
             consolidation_error = None

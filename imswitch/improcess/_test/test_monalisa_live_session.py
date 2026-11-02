@@ -239,9 +239,12 @@ def test_live_session_prefers_the_recorded_layout_over_stage_extents(synthetic_s
     )
 
     session = MonalisaReconstructor().make_session()
-    session.begin(init_obj, params={"use_gpu": False})
+    plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert (session.nx_s, session.ny_s) == (5, 20)
+    # The recorded layout describes this partition only. Its local n_time=1
+    # must not collapse the enclosing lapse from the recorder metadata.
+    assert plan.out_shape[2] == 2
 
 
 def test_live_session_refuses_conditions_laid_out_per_image(synthetic_stack):
@@ -330,6 +333,77 @@ def test_live_session_uses_expected_frames_when_timepoints_are_missing(synthetic
     plan = session.begin(init_obj, params={"use_gpu": False})
 
     assert plan.out_shape[2] == 3
+
+
+def test_live_session_prefers_stack_info_logical_time_extent(synthetic_stack):
+    """The source's logical stream contract outranks partition-local metadata."""
+    stack, attrs, *_ = synthetic_stack
+    attrs = {"ImswitchData": dict(attrs["ImswitchData"])}
+    attrs["ImswitchData"]["Rec:LapseTime"] = 1
+    stack_info = StackInfo(
+        frame_shape=stack.shape[-2:],
+        dtype=stack.dtype,
+        attrs=attrs,
+        frames_per_stack=stack.shape[0],
+        planned_timepoints=4,
+    )
+    init_obj = StreamInit(
+        name="planned-lapse",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=stack_info,
+    )
+
+    session = MonalisaReconstructor().make_session()
+    plan = session.begin(init_obj, params={"use_gpu": False})
+
+    assert plan.out_shape[2] == 4
+
+
+def test_live_session_grows_short_timepoint_plan_without_dropping_data(synthetic_stack):
+    """A bad/unknown plan may cost one resize, but never a lost timepoint."""
+    stack, attrs, nx_s, ny_s, *_ = synthetic_stack
+    attrs = {"ImswitchData": dict(attrs["ImswitchData"])}
+    attrs["ImswitchData"]["Rec:LapseTime"] = 1
+    fps = nx_s * ny_s
+    stack_info = StackInfo(
+        frame_shape=stack.shape[-2:],
+        dtype=stack.dtype,
+        attrs=attrs,
+        frames_per_stack=fps,
+        planned_timepoints=1,
+    )
+    init_obj = StreamInit(
+        name="growing-lapse",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=stack_info,
+    )
+
+    session = MonalisaReconstructor().make_session()
+    plan = session.begin(init_obj, params={"use_gpu": False})
+    assert plan.out_shape[2] == 1
+
+    session.push(stack, fps, 2 * fps)
+
+    assert session.reconstructed.shape[2] >= 2
+    assert session.live_plane() is None  # shape change requests a full refresh
+    result = session.result()
+    assert result.data.shape[2] == 2
+    assert not np.all(result.data[0, 0, 1, 0] == 0)
+    plane = session.live_plane()
+    assert plane is not None and plane[0] == 1
+
+    # Growing geometrically may reserve more internal capacity than is logically
+    # present. The published Result must expose only observed timepoints.
+    session.push(stack, 2 * fps, 3 * fps)
+    assert session.reconstructed.shape[2] >= 3
+    assert session.live_plane() is None
+    result = session.result()
+    assert result.data.shape[2] == 3
+    assert not np.all(result.data[0, 0, 2, 0] == 0)
 
 
 def test_live_session_converts_scan_stage_micrometer_steps_to_result_scale(synthetic_stack):

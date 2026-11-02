@@ -1222,7 +1222,7 @@ class _GuiLayoutStateAdapter:
 
     def getStateSchemaVersion(self) -> int:
         """Return the GUI layout persistence schema version."""
-        return 2
+        return 3
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -1,8 +1,10 @@
 """Discovery layer for live reconstruction: root watcher + job queue.
 
 ``DirectoryWatcher`` polls a chosen root folder (``QTimer`` on the owning /
-GUI thread) and emits each newly-seen immediate sub-directory -- a "timelapse
-folder". The scan is a cheap ``os.scandir`` + set diff and opens no store.
+GUI thread) and reports immediate dataset/container entries that are new,
+changed or removed. The scan is a cheap ``os.scandir`` + stat diff and opens
+no store.  Session uses the richer change stream; the legacy live-processing
+path continues to consume only ``sigEntryFound``.
 
 ``JobQueue`` collects those folders and, on demand, resolves the first one that
 now holds a ``.zarr`` timepoint store into a :class:`DiscoveredJob` (seed =
@@ -50,9 +52,11 @@ _DIR_STORE_SUFFIX = (
 
 
 class DirectoryWatcher(QtCore.QObject):
-    """Emits ``sigEntryFound`` for each new immediate entry of a root folder."""
+    """Observe immediate dataset/container entries of one root folder."""
 
     sigEntryFound = QtCore.Signal(str)  # absolute path of a newly-seen entry
+    sigEntryChanged = QtCore.Signal(str)  # already-seen entry whose stat changed
+    sigEntryRemoved = QtCore.Signal(str)  # previously-seen entry no longer present
 
     def __init__(
         self,
@@ -71,6 +75,7 @@ class DirectoryWatcher(QtCore.QObject):
         self._root_path = root_path
         self._logger = initLogger(self, tryInheritParent=False)
         self._seen_entries: set[str] = set()
+        self._entry_signatures: dict[str, tuple[int, int, bool]] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(poll_interval_ms)
         self._timer.timeout.connect(self._tick)
@@ -96,6 +101,7 @@ class DirectoryWatcher(QtCore.QObject):
         Wired to the future hard-reset button.
         """
         self._seen_entries.clear()
+        self._entry_signatures.clear()
 
     @property
     def running(self) -> bool:
@@ -121,11 +127,31 @@ class DirectoryWatcher(QtCore.QObject):
         directly by tests. Returns ``[]`` (and logs a warning) if the root
         is unreadable.
         """
+        new_entries, _changed, _removed = self.scan_updates()
+        return new_entries
+
+    @staticmethod
+    def _signature(entry) -> tuple[int, int, bool]:
+        """Cheap signature used only to notice that a root entry changed.
+
+        Directory mtimes change when children are created/removed, which lets a
+        Session refresh a logical time lapse while later timepoint stores appear
+        inside the already-seen root entry.  Files use size + mtime so a growing
+        single-file recording is noticed as well.  Nothing is opened here.
+        """
+        stat = entry.stat(follow_symlinks=False)
+        return (int(stat.st_mtime_ns), int(stat.st_size), bool(entry.is_dir()))
+
+    def _snapshot(self) -> dict[str, tuple[int, int, bool]] | None:
+        """Current immediate watchable entries and their cheap signatures.
+
+        ``None`` means the root could not be read.  Keep that distinct from an
+        empty-but-readable directory so a transient filesystem error cannot be
+        mistaken for removal of every previously seen Session entry.
+        """
         try:
-            # "with" closes the directory handle on block exit, guarding against
-            # locking the root directory after the scan.
             with os.scandir(self._root_path) as root_dir:
-                current_entries = set()
+                current: dict[str, tuple[int, int, bool]] = {}
                 for entry in root_dir:
                     try:
                         name = entry.name.lower()
@@ -134,22 +160,62 @@ class DirectoryWatcher(QtCore.QObject):
                             and not name.endswith(_DIR_STORE_SUFFIX)
                         )
                         if entry.is_dir() or is_dataset_file:
-                            current_entries.add(os.path.abspath(entry.path))
+                            path = os.path.abspath(entry.path)
+                            current[path] = self._signature(entry)
                     except OSError:
                         continue
+                return current
         except OSError as e:
             self._logger.warning(f"Cannot scan {self._root_path}: {e}")
-            return []
+            return None
 
-        new_entries_sorted = sorted(current_entries - self._seen_entries)
-        self._seen_entries.update(new_entries_sorted)
-        return new_entries_sorted
+    def snapshot_entries(self) -> list[str]:
+        """Return all currently watchable immediate entries, without mutating state.
+
+        This is used when another consumer attaches to a Session-owned watcher
+        after it has already been running.  In particular the legacy Live UI can
+        seed its own queue without resetting the Session watcher's seen-set.
+        """
+        snapshot = self._snapshot()
+        return sorted(snapshot or {})
+
+    def scan_updates(self) -> tuple[list[str], list[str], list[str]]:
+        """Return ``(new, changed, removed)`` since the previous scan.
+
+        ``scan_once`` remains the compatibility API and returns only ``new``.
+        The richer update stream lets Session incrementally reconcile its catalog
+        while the existing live queue can continue listening only for new entries.
+        """
+        current = self._snapshot()
+        if current is None:
+            # Preserve the previous discovery state on a transient read error,
+            # matching the old ``scan_once`` behavior.
+            return [], [], []
+        current_paths = set(current)
+        previous_paths = set(self._seen_entries)
+
+        new_entries = sorted(current_paths - previous_paths)
+        changed_entries = sorted(
+            path
+            for path in current_paths & previous_paths
+            if self._entry_signatures.get(path) != current.get(path)
+        )
+        removed_entries = sorted(previous_paths - current_paths)
+
+        self._seen_entries = current_paths
+        self._entry_signatures = current
+        return new_entries, changed_entries, removed_entries
 
     @QtCore.Slot()
     def _tick(self) -> None:
         """Timer slot: run :meth:`scan_once`, emit ``sigEntryFound`` per hit."""
-        for path in self.scan_once():
+        new_entries, changed_entries, removed_entries = self.scan_updates()
+        for path in new_entries:
             self.sigEntryFound.emit(path)
+        for path in changed_entries:
+            self.sigEntryChanged.emit(path)
+        for path in removed_entries:
+            self.sigEntryRemoved.emit(path)
 
 
 @dataclass(frozen=True)
@@ -224,6 +290,18 @@ class JobQueue:
         if entry not in self._pending_jobs:
             self._pending_jobs.append(entry)
 
+    @classmethod
+    def resolve_entry(cls, job_path: str) -> DiscoveredJob | None:
+        """Resolve one watched root entry exactly as :meth:`next_ready` does.
+
+        Exposed so Session processing can reuse the DirectoryWatcher/JobQueue
+        start boundary instead of inventing a second seed-selection path.
+        """
+        seed_path = cls._resolve_seed(job_path)
+        if seed_path is None:
+            return None
+        return DiscoveredJob(seed_path, job_path)
+
     def next_ready(self) -> DiscoveredJob | None:
         """Return the first pending entry that is now startable, or ``None``.
 
@@ -242,11 +320,11 @@ class JobQueue:
         recording that has only just started.
         """
         for job_path in list(self._pending_jobs):
-            seed_path = self._resolve_seed(job_path)
-            if seed_path is None:
+            discovered = self.resolve_entry(job_path)
+            if discovered is None:
                 continue
             self._pending_jobs.remove(job_path)
-            return DiscoveredJob(seed_path, job_path)
+            return discovered
 
         return None
 

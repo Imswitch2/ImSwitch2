@@ -242,8 +242,8 @@ def test_controller_clean_stop():
     assert controller._running is False
 
 
-def test_controller_stop_quits_thread_event_loops():
-    """Stopping a run must quit Qt event-loop threads, not only interrupt them."""
+def test_controller_stop_quits_threads_without_dropping_live_qthread_refs():
+    """Teardown is non-blocking and owns QThreads until they really finish."""
     comm_channel = CommunicationChannel()
     controller = LiveReconstructionController(comm_channel)
     stream_thread = _FakeThread()
@@ -264,10 +264,22 @@ def test_controller_stop_quits_thread_event_loops():
     assert stream_worker.stopped is True
     assert stream_thread.request_interruption_called is True
     assert stream_thread.quit_called is True
-    assert stream_thread.wait_called_with == 2000
+    assert stream_thread.wait_called_with is None
     assert process_thread.request_interruption_called is True
     assert process_thread.quit_called is True
-    assert process_thread.wait_called_with == 2000
+    assert process_thread.wait_called_with is None
+
+    # The GUI call returns while the QThreads are still stopping. Their strong
+    # references and source/session resources remain owned until finished.
+    assert controller._running is True
+    assert controller._stream_thread is stream_thread
+    assert controller._process_thread is process_thread
+    assert source.closed is False
+
+    stream_thread.running = False
+    process_thread.running = False
+    controller._worker_thread_finished()
+
     assert source.closed is True
     assert controller._running is False
     assert controller._stream_thread is None
@@ -607,11 +619,11 @@ def test_graceful_stop_does_not_block_the_calling_thread():
 
 
 def test_immediate_stop_tears_down_without_draining():
-    """graceful=False is still available for when a new run cannot wait."""
+    """graceful=False skips drain but QThread teardown remains asynchronous."""
     controller, recon, _ = _start_slow_run()
 
     controller.stop(graceful=False)
 
-    assert controller._running is False
+    assert _spin_until(lambda: controller._running is False)
     assert controller._stream_thread is None
 

@@ -135,6 +135,67 @@ def test_tick_emits_signal_per_new_dir(tmp_path):
     assert got == [str(tmp_path / "measA"), str(tmp_path / "measB")]  # no repeats
 
 
+def test_tick_emits_changed_when_seen_directory_contents_change(tmp_path):
+    folder = tmp_path / "measA"
+    folder.mkdir()
+    w = DirectoryWatcher(str(tmp_path))
+    changed = []
+    w.sigEntryChanged.connect(changed.append)
+
+    w._tick()
+    (folder / "timepoint.h5").write_bytes(b"x")
+    current = folder.stat().st_mtime_ns
+    os.utime(folder, ns=(current + 1_000_000, current + 1_000_000))
+    w._tick()
+
+    assert changed == [str(folder)]
+
+
+def test_tick_emits_removed_and_recreated_entry_is_new_again(tmp_path):
+    folder = tmp_path / "measA"
+    folder.mkdir()
+    w = DirectoryWatcher(str(tmp_path))
+    removed = []
+    found = []
+    w.sigEntryRemoved.connect(removed.append)
+    w.sigEntryFound.connect(found.append)
+
+    w._tick()
+    folder.rmdir()
+    w._tick()
+    folder.mkdir()
+    w._tick()
+
+    assert removed == [str(folder)]
+    assert found == [str(folder), str(folder)]
+
+
+def test_snapshot_entries_does_not_change_seen_state(tmp_path):
+    _mk(tmp_path, "measA")
+    w = DirectoryWatcher(str(tmp_path))
+
+    assert w.snapshot_entries() == [str(tmp_path / "measA")]
+    assert w.scan_once() == [str(tmp_path / "measA")]
+
+
+def test_unreadable_root_does_not_turn_seen_entries_into_removals(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    _mk(root, "measA")
+    w = DirectoryWatcher(str(root))
+    removed = []
+    w.sigEntryRemoved.connect(removed.append)
+
+    w._tick()
+    for child in root.iterdir():
+        child.rmdir()
+    root.rmdir()
+    w._tick()
+
+    assert removed == []
+    assert str(root / "measA") in w._seen_entries
+
+
 def test_start_scans_immediately_and_activates_timer(tmp_path):
     _mk(tmp_path, "measA")
     w = DirectoryWatcher(str(tmp_path), poll_interval_ms=50)

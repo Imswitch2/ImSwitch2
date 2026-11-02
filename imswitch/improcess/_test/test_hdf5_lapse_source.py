@@ -6,6 +6,14 @@ import h5py
 import numpy as np
 import pytest
 
+from imswitch.imcommon.model.acquisition_layout import (
+    ACQUISITION_LAYOUT_SCHEMA,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    AcquisitionLoop,
+    AcquisitionPartition,
+    encode_acquisition_layout,
+)
 from imswitch.improcess.live import Hdf5LapseSource, Hdf5MultiFileLapseSource, make_live_source
 
 
@@ -42,6 +50,42 @@ def _write_hdf5_scan_group(file, scan_idx, detector_name, frames_per_stack, fram
     return dataset
 
 
+
+def test_hdf5_lapse_source_uses_time_partition_as_logical_extent(tmp_hdf5_path):
+    """Partition-local layout geometry must still expose the enclosing lapse T."""
+    frames_per_stack = 4
+    planned_timepoints = 7
+    frame_shape = (3, 5)
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(AcquisitionLoop("scan_x", "scan_x", frames_per_stack),),
+        partitions=(
+            AcquisitionPartition("time", index=0, planned_count=planned_timepoints),
+        ),
+        provenance="recorded",
+    )
+
+    with h5py.File(tmp_hdf5_path, "w", libver="latest") as f:
+        dataset = _write_hdf5_scan_group(
+            f, 0, "CAM", frames_per_stack, frame_shape,
+            num_timepoints=None, is_writing=False,
+        )
+        dataset.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+        dataset.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+        f.flush()
+        f.swmr_mode = True
+
+    source = Hdf5LapseSource(detector_name="CAM", chunk_size=2)
+    info = source.open(tmp_hdf5_path)
+
+    assert "recording:num_timepoints" not in info.attrs
+    assert info.planned_timepoints == planned_timepoints
+    assert info.expected_frames == planned_timepoints * frames_per_stack
+    source.close()
+
 def test_hdf5_lapse_source_three_timepoints(tmp_hdf5_path):
     """Test Hdf5LapseSource with 3 scan{N} groups, verifying global frame indices."""
     frames_per_stack = 4
@@ -70,6 +114,7 @@ def test_hdf5_lapse_source_three_timepoints(tmp_hdf5_path):
     assert info.dtype == np.uint16
     assert info.detector_name == 'CAM'
     assert info.frames_per_stack == frames_per_stack
+    assert info.planned_timepoints == num_timepoints
     assert info.expected_frames == num_timepoints * frames_per_stack  # 12 total frames
     assert info.source_format == 'HDF5'
     assert info.attrs['recording:num_timepoints'] == num_timepoints

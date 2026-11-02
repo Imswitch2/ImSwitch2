@@ -186,6 +186,22 @@ class CommunicationChannel(SignalInterface):
         ReconstructionViewController
     """
 
+    sigResultFinalized = Signal(object, str)
+    """A derived result reached its final processing state.
+
+    Payload: ``(result, displayName)``. This is deliberately independent of
+    viewer publication: ordinary reconstruction results are normally first
+    announced through :attr:`sigResultProduced`, while a streaming result has
+    already owned and updated one viewer entry through
+    :attr:`sigLiveResultUpdated`. Session persistence listens to this semantic
+    finalization signal so both paths use one result lifecycle without creating
+    duplicate viewer entries.
+
+    Emitters: LiveReconstructionController, MoNaLISAController,
+        ReconstructorManagerController
+    Listeners: ProcessingSessionController
+    """
+
     sigResultSaved = Signal(object, object)
     """A reconstruction result was explicitly written to disk.
 

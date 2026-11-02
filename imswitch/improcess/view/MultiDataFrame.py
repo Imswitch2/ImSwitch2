@@ -16,6 +16,8 @@ class MultiDataFrame(QtWidgets.QFrame):
     sigSaveAllDataClicked = QtCore.Signal()
     sigSetAsCurrentDataClicked = QtCore.Signal()
     sigSelectedItemChanged = QtCore.Signal()
+    sigProcessIndividualRequested = QtCore.Signal()
+    sigProcessConsolidatedRequested = QtCore.Signal()
 
     # Methods
     def __init__(self, *args, **kwargs):
@@ -32,7 +34,7 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.relocalizeEachDataItemCheck = QtWidgets.QCheckBox('Relocalize each data item')
         self.relocalizeEachDataItemCheck.setChecked(False)
         self.relocalizeEachDataItemCheck.setToolTip(
-            'MoNaLISA multidata only. Off reuses one Auto localization across all data items.'
+            'MoNaLISA Working Set only. Off reuses one Auto localization across all data items.'
         )
         self.relocalizeEachDataItemCheck.setVisible(False)
 
@@ -41,6 +43,20 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.addDataBtn.clicked.connect(self.sigAddDataClicked)
         self.setDataBtn = BetterPushButton('Set as current data')
         self.setDataBtn.clicked.connect(self.sigSetAsCurrentDataClicked)
+
+        self.processBtn = QtWidgets.QToolButton()
+        self.processBtn.setText('Process set ▾')
+        self.processBtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.processBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.processBtn.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
+        )
+        self.processMenu = QtWidgets.QMenu(self.processBtn)
+        self.processIndividualAction = self.processMenu.addAction('Process data items individually')
+        self.processIndividualAction.triggered.connect(self.sigProcessIndividualRequested)
+        self.processConsolidatedAction = self.processMenu.addAction('Consolidate into a single result')
+        self.processConsolidatedAction.triggered.connect(self.sigProcessConsolidatedRequested)
+        self.processBtn.setMenu(self.processMenu)
 
         # Paired actions collapse into one QToolButton each, with a popup
         # menu offering 'Selected' and 'All' variants. Keep the original
@@ -80,13 +96,14 @@ class MultiDataFrame(QtWidgets.QFrame):
 
         layout.addWidget(self.dataLoadedStatus, 0, 1)
         layout.addWidget(self.relocalizeEachDataItemCheck, 1, 1)
-        layout.addWidget(self.addDataBtn, 2, 1)
-        layout.addWidget(self.setDataBtn, 3, 1)
-        layout.addWidget(loadBtn, 4, 1)
-        layout.addWidget(saveBtn, 5, 1)
-        layout.addWidget(unloadBtn, 6, 1)
-        layout.addWidget(removeBtn, 7, 1)
-        layout.setRowStretch(8, 1)
+        layout.addWidget(self.processBtn, 2, 1)
+        layout.addWidget(self.addDataBtn, 3, 1)
+        layout.addWidget(self.setDataBtn, 4, 1)
+        layout.addWidget(loadBtn, 5, 1)
+        layout.addWidget(saveBtn, 6, 1)
+        layout.addWidget(unloadBtn, 7, 1)
+        layout.addWidget(removeBtn, 8, 1)
+        layout.setRowStretch(9, 1)
         layout.setColumnStretch(0, 1)
 
     def _makeMenuButton(self, title, label_a, signal_a, label_b, signal_b):
@@ -114,6 +131,28 @@ class MultiDataFrame(QtWidgets.QFrame):
         button.addAction(action_b)
 
         return button, action_a, action_b
+
+
+    def setProcessActionsVisible(
+        self,
+        visible: bool,
+        *,
+        consolidate: str = 'enabled',
+        labels: tuple[str, str] | None = None,
+    ) -> None:
+        self.processBtn.setVisible(bool(visible))
+        button_text, individual_text = (
+            labels if labels is not None
+            else ('Process set ▾', 'Process data items individually')
+        )
+        self.processBtn.setText(button_text)
+        self.processIndividualAction.setText(individual_text)
+        self.processConsolidatedAction.setVisible(consolidate != 'hidden')
+        self.processConsolidatedAction.setEnabled(consolidate == 'enabled')
+        self.processConsolidatedAction.setToolTip(
+            '' if consolidate == 'enabled'
+            else 'The active reconstructor does not support consolidated processing.'
+        )
 
     def setRelocalizeEachDataItemVisible(self, visible):
         self.relocalizeEachDataItemCheck.setVisible(bool(visible))

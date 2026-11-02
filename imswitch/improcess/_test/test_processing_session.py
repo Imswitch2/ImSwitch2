@@ -69,6 +69,14 @@ class _MonalisaLikeRecon:
     params_version = 4
 
 
+class _InspectionRecon:
+    id = "inspection-test"
+    name = "Inspection test"
+    version = "1"
+    params_version = 1
+    result_role = "inspection"
+
+
 def _saved_reconstruction(raw_path: Path, results: Path, name="full", *, recon=None, params=None) -> Path:
     raw = DataObj(raw_path.name, "Camera", path=str(raw_path))
     raw.checkAndOpenData()
@@ -147,6 +155,69 @@ def test_saved_result_is_associated_by_provenance_and_persists(tmp_path):
     assert [Path(item.path) for item in reopened.datasets[0].saved_reconstructions] == [saved]
 
 
+def test_inspection_result_is_not_a_session_processed_result(tmp_path):
+    raw_root = tmp_path / "raw"
+    results = tmp_path / "results"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+    _saved_reconstruction(raw_path, results, recon=_InspectionRecon())
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+
+    assert len(session.datasets) == 1
+    assert session.datasets[0].status == "raw"
+    assert session.datasets[0].saved_reconstructions == []
+
+
+def test_session_sources_have_relative_identity(tmp_path):
+    raw_root = tmp_path / "raw"
+    raw_path = _h5_image(raw_root / "scan01.h5")
+
+    session = ProcessingSession(raw_root, tmp_path / "results")
+    session.refresh()
+
+    dataset = session.datasets[0]
+    assert dataset.source_key == "scan|scan01.h5|Camera"
+    assert dataset.source_refs[0].relative_path == "scan01.h5"
+    assert Path(dataset.source_refs[0].path) == raw_path
+
+
+def test_favorite_can_restore_from_relative_source_identity(tmp_path):
+    raw_root = tmp_path / "raw"
+    _h5_image(raw_root / "scan01.h5")
+    results = tmp_path / "results"
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+    dataset = session.datasets[0]
+    session.set_favorite([dataset.id], True)
+
+    payload = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+    payload["datasets"][0]["id"] = "legacy-or-moved-id"
+    session.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reopened = ProcessingSession(raw_root, results)
+    reopened.refresh()
+    assert reopened.datasets[0].favorite is True
+
+
+def test_reconcile_path_adds_new_dataset_without_losing_curation(tmp_path):
+    raw_root = tmp_path / "raw"
+    first_path = _h5_image(raw_root / "first.h5")
+    session = ProcessingSession(raw_root, tmp_path / "results")
+    session.refresh()
+    first = session.datasets[0]
+    session.set_favorite([first.id], True)
+
+    second_path = _h5_image(raw_root / "second.h5")
+    assert session.reconcile_path(second_path) is True
+
+    assert {dataset.label for dataset in session.datasets} == {"first.h5", "second.h5"}
+    refreshed_first = next(dataset for dataset in session.datasets if dataset.label == "first.h5")
+    assert refreshed_first.favorite is True
+    assert Path(refreshed_first.primary_path) == first_path
+
+
 def test_legacy_final_metadata_is_ignored_and_removed_on_refresh(tmp_path):
     raw_root = tmp_path / "raw"
     results = tmp_path / "results"
@@ -166,7 +237,7 @@ def test_legacy_final_metadata_is_ignored_and_removed_on_refresh(tmp_path):
     assert reopened.datasets[0].status == "reconstructed"
     assert len(reopened.datasets[0].saved_reconstructions) == 1
     migrated = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
-    assert migrated["schema"] == 4
+    assert migrated["schema"] == 5
     assert "final" not in migrated["datasets"][0]["saved_reconstructions"][0]
 
 
@@ -661,7 +732,7 @@ def test_dataset_favorite_persists_across_refresh_and_reopen(tmp_path):
     reopened.refresh()
     assert reopened.dataset_by_id(good.id).favorite is True
     payload = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
-    assert payload["schema"] == 4
+    assert payload["schema"] == 5
     manifest_good = next(entry for entry in payload["datasets"] if entry["id"] == good.id)
     assert manifest_good["favorite"] is True
 
@@ -706,3 +777,113 @@ def test_raw_cleanup_plan_allows_shared_container_when_all_owners_are_removed(tm
     assert {dataset.id for dataset in deletable} == set(ids)
     assert paths == [str(shared)]
     assert skipped == []
+
+
+def test_saved_result_preserves_reconstruction_recipe_identity(tmp_path):
+    from imswitch.improcess.model.provenance import result_recipe_ids
+
+    raw = tmp_path / "raw"
+    results = tmp_path / "results"
+    path = _h5_image(raw / "scan.h5")
+    saved = _saved_reconstruction(
+        path, results, "recipe", recon=_Recon(), params={"gain": 3}
+    )
+
+    restored = load_saved_result(saved)
+    recipe_ids = result_recipe_ids(restored)
+
+    assert len(recipe_ids) == 1
+    assert recipe_ids[0].startswith("sha256:")
+
+    session = ProcessingSession(raw, results)
+    session.refresh()
+    assert session.datasets[0].saved_reconstructions[0].recipe_ids == recipe_ids
+
+
+def test_register_saved_result_does_not_rescan_existing_result_directory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from imswitch.improcess.model import processing_session as session_module
+    from imswitch.improcess.model.provenance import PROVENANCE_KEY
+
+    raw = tmp_path / "raw"
+    results = tmp_path / "results"
+    path = _h5_image(raw / "scan.h5")
+    session = ProcessingSession(raw, results)
+    session.refresh()
+    dataset = session.datasets[0]
+
+    result = SimpleNamespace(
+        name="reconstruction",
+        metadata={
+            PROVENANCE_KEY: {
+                "nodes": {
+                    "recon": {
+                        "op": "reconstruct",
+                        "label": "Test reconstructor",
+                        "params": {},
+                        "recipe_id": "sha256:test",
+                    }
+                },
+                "output": {"node": "recon"},
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        session_module,
+        "read_provenance",
+        lambda _path: (_ for _ in ()).throw(AssertionError("unexpected result rescan")),
+    )
+
+    saved = session.register_saved_result(
+        dataset.id,
+        results / "scan_recon.ome.tif",
+        result=result,
+        display_name="reconstruction",
+        save_manifest=False,
+    )
+
+    assert saved is not None
+    assert saved.recipe_ids == ("sha256:test",)
+    assert dataset.saved_reconstructions == [saved]
+
+
+def test_reconcile_path_can_skip_historical_result_rescan_on_watcher_hot_path(tmp_path, monkeypatch):
+    raw = tmp_path / "raw"
+    results = tmp_path / "results"
+    raw.mkdir()
+    session = ProcessingSession(raw, results)
+    session.refresh()
+    path = _h5_image(raw / "new_scan.h5")
+
+    monkeypatch.setattr(
+        session,
+        "reconcile_results",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("watcher hot path must not rescan historical results")
+        ),
+    )
+
+    assert session.reconcile_path(path, reconcile_saved_results=False)
+    assert len(session.datasets) == 1
+
+
+def test_explicit_queue_claim_resolves_partitioned_lapse_when_detector_provenance_does_not(tmp_path):
+    """Runtime queue ownership outranks ambiguous partition-local provenance."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    path = raw / "lapse_Camera.h5"
+    _single_file_lapse(path, 3)
+
+    session = ProcessingSession(raw, tmp_path / "results")
+    session.refresh()
+    dataset = session.datasets[0]
+
+    # This mirrors the former live provenance: the file path was right, but
+    # ``CAM`` names the detector rather than the logical scanN/CAM time lapse.
+    result = _recorded_result_for_source(path, "CAM", "lapse")
+    assert session.dataset_for_result(result) is None
+
+    result._session_dataset_id = dataset.id
+    result._session_origin = str(session.manifest_path.resolve())
+    assert session.dataset_for_result(result).id == dataset.id

@@ -71,15 +71,19 @@ def _controller(reconstructor=None):
     c._main_controller = SimpleNamespace(
         _activeReconstructor=reconstructor or object(), _widget=None
     )
+    c._session_controller = None
     c._live_rec_ctr = _FakeLive()
     c._job_queue = JobQueue()
     c._directory_watcher = None
+    c._owns_directory_watcher = True
+    c._watcher_signal_connected = False
     c._tick_timer = None
     c._currently_processing = False
     c._watched_folder = None
     c._current_job_name = None
     c._current_save_stem = None
     c._job_name_counts = collections.Counter()
+    c._live_seen_entries = set()
     c._widget = _FakeWidget()
     c._commChannel = MagicMock()
     # _start_live() wires this in the real controller; the stub is built with
@@ -87,6 +91,26 @@ def _controller(reconstructor=None):
     # not the bound method: c has no initialised QObject to receive on.
     c._live_rec_ctr.sigFinished.connect(lambda: c._on_job_finished())
     return c
+
+
+def test_matching_session_directory_watcher_is_shared_and_not_stopped(tmp_path):
+    from imswitch.improcess.live.discovery import DirectoryWatcher
+
+    watcher = DirectoryWatcher(str(tmp_path), poll_interval_ms=50)
+    watcher.start()
+    c = _controller()
+    c._session_controller = SimpleNamespace(
+        session=SimpleNamespace(raw_root=tmp_path),
+        directoryWatcher=watcher,
+    )
+
+    assert c._session_watcher_for(str(tmp_path)) is watcher
+
+    c._directory_watcher = watcher
+    c._owns_directory_watcher = False
+    c._stop_live()
+    assert watcher.running is True
+    watcher.stop()
 
 
 def _store(folder, name="rec_scan0.zarr", *, num_timepoints=3, frames=4):
@@ -203,7 +227,7 @@ def test_seed_is_the_lowest_indexed_store_via_multifile_source(tmp_path):
 
     c = _controller()
     with patch(
-        "imswitch.improcess.controller.LiveModeController.make_live_source"
+        "imswitch.improcess.live.job.make_live_source"
     ) as mock_factory:
         c._on_entry_found(str(folder))
 
@@ -236,7 +260,7 @@ def test_a_single_dataset_job_is_started_too(tmp_path):
 
     c = _controller()
     with patch(
-        "imswitch.improcess.controller.LiveModeController.make_live_source"
+        "imswitch.improcess.live.job.make_live_source"
     ) as mock_factory:
         c._on_entry_found(seed)
 
@@ -565,3 +589,24 @@ if __name__ == "__main__":
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_matching_session_owns_live_persistence_instead_of_legacy_recon_folder(tmp_path):
+    """A Session result is finalized through SessionResultStore, not saved twice."""
+    from imswitch.improcess.live.discovery import DirectoryWatcher
+
+    root = tmp_path / "root"
+    root.mkdir()
+    watcher = DirectoryWatcher(str(root), poll_interval_ms=50)
+    c = _controller()
+    c._watched_folder = str(root)
+    c._widget.saveCheck.setChecked(True)
+    c._session_controller = SimpleNamespace(
+        session=SimpleNamespace(raw_root=root),
+        directoryWatcher=watcher,
+    )
+
+    c._request_save("timelapse_00", "timelapse_00_recon")
+
+    assert _save_requests(c) == []
+    assert not (tmp_path / "root_recon").exists()

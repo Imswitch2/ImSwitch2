@@ -6,6 +6,14 @@ import numpy as np
 import pytest
 import zarr
 
+from imswitch.imcommon.model.acquisition_layout import (
+    ACQUISITION_LAYOUT_SCHEMA,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    AcquisitionLoop,
+    AcquisitionPartition,
+    encode_acquisition_layout,
+)
 from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
 from imswitch.improcess.live import ZarrLapseSource, make_live_source
 
@@ -15,6 +23,43 @@ def tmp_zarr_path(tmp_path):
     """Fixture providing a temporary Zarr path."""
     return tmp_path / "test_lapse.zarr"
 
+
+
+def test_zarr_lapse_source_uses_time_partition_as_logical_extent(tmp_zarr_path):
+    frames_per_stack = 4
+    planned_timepoints = 7
+    frame_shape = (3, 5)
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(AcquisitionLoop("scan_x", "scan_x", frames_per_stack),),
+        partitions=(
+            AcquisitionPartition("time", index=0, planned_count=planned_timepoints),
+        ),
+        provenance="recorded",
+    )
+
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    scan = root.create_group("scan0")
+    detector = scan.create_group("CAM")
+    data = np.zeros((frames_per_stack, *frame_shape), dtype=np.uint16)
+    array = ZarrStorer._create_array(detector, "data", data=data, chunks=(2, *frame_shape))
+    array.attrs["detector_name"] = "CAM"
+    array.attrs["writing"] = False
+    array.attrs["recording:frames_per_stack"] = frames_per_stack
+    array.attrs["recording:dataset_path"] = "/scan0/CAM/data"
+    array.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+    array.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+
+    source = ZarrLapseSource(detector_name="CAM", chunk_size=2)
+    info = source.open(tmp_zarr_path)
+
+    assert "recording:num_timepoints" not in info.attrs
+    assert info.planned_timepoints == planned_timepoints
+    assert info.expected_frames == planned_timepoints * frames_per_stack
+    source.close()
 
 def test_zarr_lapse_source_three_timepoints(tmp_zarr_path):
     """Test ZarrLapseSource with 3 scan{N} groups, verifying global frame indices."""
@@ -63,6 +108,7 @@ def test_zarr_lapse_source_three_timepoints(tmp_zarr_path):
     assert info.dtype == np.uint16
     assert info.detector_name == 'CAM'
     assert info.frames_per_stack == frames_per_stack
+    assert info.planned_timepoints == num_timepoints
     assert info.expected_frames == num_timepoints * frames_per_stack  # 12 total frames
     assert info.source_format == 'ZARR'
     assert info.attrs['recording:num_timepoints'] == num_timepoints

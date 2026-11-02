@@ -68,6 +68,7 @@ from imswitch.imcommon.model.acquisition_metadata import (
     WRITER_STATE_WRITING,
     RecordingLifecycle,
 )
+from imswitch.improcess.model.hdf5_access import open_raw_hdf5
 from imswitch.improcess.model.dataset_sources import (
     SOURCE_SPECS,
     resolve_dataset_source,
@@ -345,7 +346,7 @@ def _positioned_kind(attrs: Mapping[str, Any]) -> str | None:
 def _open_container(path: Path):
     source = resolve_dataset_source(path, allowed_specs=SOURCE_SPECS)
     if source.format_id == "hdf5":
-        return h5py.File(str(source.path), "r")
+        return open_raw_hdf5(source.path)
     if source.format_id == "tiff":
         return tiff.TiffFile(str(source.path))
     if source.format_id == "zarr":

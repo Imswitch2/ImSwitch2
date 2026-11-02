@@ -190,6 +190,17 @@ class Reconstructor(ABC):
     are ceremonial in their case.
     """
 
+    result_role: str = "derived"
+    """Semantic role of results produced by this reconstructor.
+
+    ``"derived"`` is the normal processing result: it is eligible for Session
+    persistence and contributes to the Session's processed/raw state.
+    ``"inspection"`` is a view over the raw source rather than a new derived
+    artifact.  Inspection reconstructors may still use the normal ProcessingResult
+    plumbing for display/export, but Session must not auto-save them or treat them
+    as proof that the raw acquisition has been processed.
+    """
+
     default_save_subdir: str = "rec"
     """Subdirectory name a save path should use for reconstructed outputs.
 
@@ -618,13 +629,22 @@ class ReconstructionContext:
 
 @dataclass(frozen=True)
 class StackInfo:
-    """Metadata for one logical live stack."""
+    """Metadata for one logical live stack/recording.
+
+    ``frames_per_stack`` describes one reconstruction unit (one timepoint).
+    ``planned_timepoints`` is the source's best known logical-T allocation hint,
+    never a hard cap: a streaming session must still accept later valid points.
+    Keeping them separate is important for partitioned recordings where the
+    acquisition layout attached to ``scan0`` correctly contains one local time
+    iteration while the enclosing lapse contains many time partitions.
+    """
 
     frame_shape: tuple[int, ...]
     dtype: np.dtype
     attrs: dict[str, Any] = field(default_factory=dict)
     frames_per_stack: int | None = None
     expected_frames: int | None = None
+    planned_timepoints: int | None = None
     detector_name: str | None = None
     dataset_path: str | None = None
     source_format: str | None = None

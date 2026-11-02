@@ -1135,6 +1135,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 stack_info = StackInfo(
                     frame_shape=tuple(int(v) for v in data.shape[-2:]),
                     dtype=np.dtype(data.dtype),
+                    planned_timepoints=int(geometry['num_timepoints']),
                     acquisition_layout=resolved,
                 )
             init_obj = StreamInit(

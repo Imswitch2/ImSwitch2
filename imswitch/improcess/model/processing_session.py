@@ -83,10 +83,40 @@ def _is_supported_result(path: Path) -> bool:
     return any(name.endswith(suffix) for suffix in _RESULT_SUFFIXES)
 
 
+def _result_role_from_graph(graph: dict | None) -> str:
+    """Semantic result role recorded in provenance, with migration fallback.
+
+    New provenance records ``result_role`` on the producing plugin node.  Old
+    View-only / Time-lapse artifacts predate that field, so recognize those two
+    historical inspection plugin ids explicitly when reopening old Sessions.
+    """
+    if not isinstance(graph, dict):
+        return "derived"
+    output = graph.get("output") or {}
+    node = (graph.get("nodes") or {}).get(output.get("node")) or {}
+    role = str(node.get("result_role") or "").strip().lower()
+    if role:
+        return role
+    if str(node.get("plugin_id") or "") in {"view-only", "time-lapse"}:
+        return "inspection"
+    return "derived"
+
+
+def result_role_for_result(result) -> str:
+    """Return the Session semantic role of an in-memory result."""
+    from imswitch.improcess.model.provenance import graph_of
+
+    role = str(getattr(result, "_improcess_result_role", "") or "").strip().lower()
+    if role:
+        return role
+    return _result_role_from_graph(graph_of(result))
+
+
 @dataclass(frozen=True)
 class SourceRef:
     path: str
     dataset: str | None = None
+    relative_path: str | None = None
 
     @property
     def normalized_path(self) -> str:
@@ -102,6 +132,10 @@ class SavedReconstruction:
     display_name: str = ""
     # Rich but lightweight provenance summary for the Session tooltip.
     tooltip: str = ""
+    # Reconstruction recipe fingerprints discovered from provenance. Kept
+    # metadata-only in this pass; future Auto UX may explicitly compare these
+    # against the current recipe without reopening result pixels.
+    recipe_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -111,6 +145,10 @@ class SessionDataset:
     kind: str  # "scan" | "time-lapse"
     primary_path: str
     primary_dataset: str | None
+    # Stable Session-relative logical identity, separate from the legacy ``id``.
+    # This is intentionally introduced before the tree/subtree UX so later
+    # watcher/queue code does not need to use absolute paths as identity.
+    source_key: str = ""
     source_refs: list[SourceRef] = field(default_factory=list)
     planned_timepoints: int | None = None
     # Lightweight source metadata used by the Session list.  These are derived
@@ -181,7 +219,7 @@ class SessionDataset:
 class ProcessingSession:
     """Persistent catalog of raw acquisitions and saved reconstructions."""
 
-    schema = 4
+    schema = 5
 
     def __init__(self, raw_root: str | Path, results_root: str | Path):
         self.raw_root = Path(raw_root).expanduser().resolve()
@@ -197,13 +235,26 @@ class ProcessingSession:
     # ------------------------------------------------------------------
 
     def refresh(self) -> None:
-        """Rebuild the lightweight catalog without materialising image pixels."""
+        """Compatibility wrapper for :meth:`reconcile_all`."""
+        self.reconcile_all()
+
+    def reconcile_all(self) -> None:
+        """Reconcile the complete lightweight catalog with disk.
+
+        This remains the correctness fallback used on Session open/manual refresh.
+        Incremental watcher updates use :meth:`reconcile_path`, but both paths feed
+        the same discovery and result-association logic.
+        """
         payload = self._read_manifest_payload()
         remembered_favorites = self._favorite_ids_from_payload(payload)
+        remembered_favorite_keys = self._favorite_source_keys_from_payload(payload)
         remembered_deleted = self._deleted_datasets_from_payload(payload)
         self.datasets = self._discover_raw_datasets()
         for dataset in self.datasets:
-            dataset.favorite = dataset.id in remembered_favorites
+            dataset.favorite = (
+                dataset.id in remembered_favorites
+                or bool(dataset.source_key and dataset.source_key in remembered_favorite_keys)
+            )
         discovered_ids = {dataset.id for dataset in self.datasets}
         self.datasets.extend(
             dataset for dataset in remembered_deleted if dataset.id not in discovered_ids
@@ -211,42 +262,61 @@ class ProcessingSession:
         self._discover_saved_reconstructions()
         self.save_manifest()
 
+    def _relative_source_path(self, path: str | Path) -> str:
+        """Session-relative path when possible, otherwise a normalized absolute one."""
+        candidate = Path(path).expanduser()
+        try:
+            relative = candidate.resolve().relative_to(self.raw_root)
+        except (ValueError, OSError):
+            return _norm_path(candidate)
+        text = relative.as_posix()
+        return text or "."
+
+    def _source_ref(self, path: str | Path, dataset: str | None) -> SourceRef:
+        return SourceRef(
+            str(path),
+            dataset,
+            relative_path=self._relative_source_path(path),
+        )
+
+    def _entry_is_results(self, path: str | Path) -> bool:
+        try:
+            Path(path).resolve().relative_to(self.results_root)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def _candidate_raw_sources_for_entry(self, entry: Path) -> list[Path]:
+        """Supported raw stores represented by one immediate Session-root entry."""
+        if self._entry_is_results(entry):
+            return []
+        if _is_supported_raw(entry):
+            return [entry]
+        if not entry.is_dir():
+            return []
+        out: list[Path] = []
+        try:
+            children = sorted(entry.iterdir(), key=lambda p: p.name.lower())
+        except OSError:
+            return []
+        for child in children:
+            if self._entry_is_results(child):
+                continue
+            if _is_supported_raw(child):
+                out.append(child)
+        return out
+
     def _candidate_raw_sources(self) -> Iterable[Path]:
         if not self.raw_root.exists():
             return []
         out: list[Path] = []
-
-        def excluded(path: Path) -> bool:
-            try:
-                path.resolve().relative_to(self.results_root)
-                return True
-            except (ValueError, OSError):
-                return False
 
         try:
             entries = sorted(self.raw_root.iterdir(), key=lambda p: p.name.lower())
         except OSError:
             return []
         for entry in entries:
-            # Results now default to <raw>/results.  Never rediscover saved
-            # HDF5/Zarr reconstructions as raw acquisitions.
-            if excluded(entry):
-                continue
-            if _is_supported_raw(entry):
-                out.append(entry)
-                continue
-            # Existing live acquisition convention: root/<job>/<store>.
-            # One level is enough for the prototype and avoids accidentally
-            # crawling large experiment trees.
-            if entry.is_dir():
-                try:
-                    for child in sorted(entry.iterdir(), key=lambda p: p.name.lower()):
-                        if excluded(child):
-                            continue
-                        if _is_supported_raw(child):
-                            out.append(child)
-                except OSError:
-                    continue
+            out.extend(self._candidate_raw_sources_for_entry(entry))
         return out
 
     @staticmethod
@@ -297,10 +367,12 @@ class ProcessingSession:
             except Exception:
                 pass
 
-    def _discover_raw_datasets(self) -> list[SessionDataset]:
+    def _discover_raw_datasets(
+        self, candidates: Iterable[Path] | None = None
+    ) -> list[SessionDataset]:
         datasets: list[SessionDataset] = []
         seen_logical: set[str] = set()
-        candidates = list(self._candidate_raw_sources())
+        candidates = list(self._candidate_raw_sources() if candidates is None else candidates)
 
         for path in candidates:
             try:
@@ -319,6 +391,13 @@ class ProcessingSession:
 
                 if lapse is not None:
                     channel = lapse.channel(lapse.anchor_detector)
+                    relative_root = self._relative_source_path(lapse.root)
+                    source_key = "|".join((
+                        "lapse",
+                        relative_root,
+                        str(lapse.name),
+                        str(lapse.anchor_detector),
+                    ))
                     logical = "|".join((
                         "lapse",
                         _norm_path(lapse.root),
@@ -329,7 +408,7 @@ class ProcessingSession:
                         continue
                     seen_logical.add(logical)
                     refs = [
-                        SourceRef(str(item.path), item.dataset)
+                        self._source_ref(item.path, item.dataset)
                         for item in channel.candidates
                     ]
                     label = str(lapse.name)
@@ -346,6 +425,7 @@ class ProcessingSession:
                         kind="time-lapse",
                         primary_path=str(lapse.anchor.path),
                         primary_dataset=lapse.anchor.dataset,
+                        source_key=source_key,
                         source_refs=refs,
                         planned_timepoints=int(lapse.planned_count),
                         scan_label=scan_label,
@@ -353,6 +433,8 @@ class ProcessingSession:
                     ))
                     continue
 
+                relative_path = self._relative_source_path(path)
+                source_key = f"scan|{relative_path}|{dataset_name}"
                 logical = f"scan|{_norm_path(path)}|{dataset_name}"
                 if logical in seen_logical:
                     continue
@@ -365,12 +447,86 @@ class ProcessingSession:
                     kind="scan",
                     primary_path=str(path),
                     primary_dataset=str(dataset_name),
-                    source_refs=[SourceRef(str(path), str(dataset_name))],
+                    source_key=source_key,
+                    source_refs=[self._source_ref(path, str(dataset_name))],
                     scan_label=scan_label,
                     decoded_bytes=decoded_bytes,
                 ))
 
         return datasets
+
+    @staticmethod
+    def _path_contains(parent: Path, child: str | Path) -> bool:
+        try:
+            Path(child).resolve().relative_to(parent.resolve())
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def _dataset_touches_entry(self, dataset: SessionDataset, entry: Path) -> bool:
+        if self._path_contains(entry, dataset.primary_path):
+            return True
+        return any(self._path_contains(entry, ref.path) for ref in dataset.source_refs)
+
+    def reconcile_path(
+        self, path: str | Path, *, reconcile_saved_results: bool = True
+    ) -> bool:
+        """Incrementally reconcile one immediate Session-root entry.
+
+        The watcher deals in physical root entries; this method resolves that hint
+        back into logical datasets (including a whole time lapse).  If an entry is
+        temporarily unreadable while being written, the existing catalog is left
+        untouched and a later watcher change/manual refresh can retry safely.
+
+        Returns ``True`` when the catalog was updated.
+        """
+        entry = Path(path).expanduser()
+        try:
+            entry.resolve().relative_to(self.raw_root)
+        except (ValueError, OSError):
+            return False
+        if self._entry_is_results(entry):
+            return False
+        if not entry.exists():
+            # Removal can affect a logical time lapse spanning sibling stores;
+            # use the complete correctness path rather than guessing locally.
+            self.reconcile_all()
+            return True
+
+        candidates = self._candidate_raw_sources_for_entry(entry)
+        discovered = self._discover_raw_datasets(candidates)
+        if not discovered:
+            return False
+
+        existing_by_key = {
+            dataset.source_key: dataset
+            for dataset in self.datasets
+            if dataset.source_key
+        }
+        discovered_keys = {dataset.source_key for dataset in discovered if dataset.source_key}
+        for dataset in discovered:
+            previous = existing_by_key.get(dataset.source_key)
+            if previous is not None:
+                dataset.favorite = previous.favorite
+
+        retained = [
+            dataset
+            for dataset in self.datasets
+            if dataset.source_key not in discovered_keys
+            and not self._dataset_touches_entry(dataset, entry)
+        ]
+        self.datasets = retained + discovered
+        self.datasets.sort(key=lambda item: (item.label.lower(), item.id))
+
+        if reconcile_saved_results:
+            self.reconcile_results(save_manifest=True)
+        else:
+            # Hot watcher path: a newly discovered raw dataset normally has no
+            # pre-existing result to attach. Avoid rereading every historical
+            # result merely because one new acquisition appeared. Explicit
+            # refresh/open still performs the complete correctness reconciliation.
+            self.save_manifest()
+        return True
 
     def _result_candidates(self) -> Iterable[Path]:
         if not self.results_root.exists():
@@ -407,17 +563,98 @@ class ProcessingSession:
                 document = read_provenance(path)
             except (ProvenanceReadError, OSError, ValueError):
                 continue
+            if _result_role_from_graph(getattr(document, "graph", None)) == "inspection":
+                continue
             sources = self._source_descriptions(document)
             dataset = self._dataset_for_sources(sources)
             if dataset is None:
                 continue
             session_name, display_name, tooltip = self._result_presentation(path, document)
+            from imswitch.improcess.model.provenance import recipe_ids_from_graph
+
             dataset.saved_reconstructions.append(SavedReconstruction(
                 path=str(path.resolve()),
                 name=session_name,
                 display_name=display_name,
                 tooltip=tooltip,
+                recipe_ids=recipe_ids_from_graph(getattr(document, "graph", None)),
             ))
+
+    def reconcile_results(self, *, save_manifest: bool = True) -> None:
+        """Rebuild only saved-result associations, leaving raw discovery alone."""
+        for dataset in self.datasets:
+            dataset.saved_reconstructions = []
+        self._discover_saved_reconstructions()
+        if save_manifest:
+            self.save_manifest()
+
+    def register_saved_result(
+        self,
+        dataset_id: str,
+        result_path: str | Path,
+        *,
+        result=None,
+        display_name: str = "",
+        save_manifest: bool = True,
+    ) -> SavedReconstruction | None:
+        """Register one known saved result without rescanning ``results_root``.
+
+        Session-owned saves already know both the logical dataset and the result
+        that was written. Re-reading every previous result's provenance after
+        each save made a long Auto run progressively slower. Full
+        :meth:`reconcile_results` remains the explicit/open-session correctness
+        path for externally-created files.
+        """
+        dataset = self.dataset_by_id(str(dataset_id))
+        if dataset is None:
+            return None
+        path = Path(result_path).resolve()
+        wanted = _norm_path(path)
+        existing = next(
+            (item for item in dataset.saved_reconstructions if _norm_path(item.path) == wanted),
+            None,
+        )
+        if existing is not None:
+            return existing
+
+        from imswitch.improcess.model.provenance import graph_of
+
+        graph = graph_of(result) if result is not None else None
+        if isinstance(graph, dict):
+            from imswitch.improcess.model.provenance import recipe_ids_from_graph
+            from imswitch.improcess.model.session_result_presentation import (
+                filename_display_name,
+                reconstruction_presentation,
+            )
+
+            fallback = str(display_name or getattr(result, "name", "") or filename_display_name(path))
+            session_name, object_name, tooltip = reconstruction_presentation(
+                graph, fallback_name=fallback
+            )
+            recipe_ids = recipe_ids_from_graph(graph)
+        else:
+            try:
+                document = read_provenance(path)
+            except (ProvenanceReadError, OSError, ValueError):
+                return None
+            if _result_role_from_graph(getattr(document, "graph", None)) == "inspection":
+                return None
+            session_name, object_name, tooltip = self._result_presentation(path, document)
+            from imswitch.improcess.model.provenance import recipe_ids_from_graph
+
+            recipe_ids = recipe_ids_from_graph(getattr(document, "graph", None))
+
+        saved = SavedReconstruction(
+            path=str(path),
+            name=session_name,
+            display_name=object_name,
+            tooltip=tooltip,
+            recipe_ids=recipe_ids,
+        )
+        dataset.saved_reconstructions.append(saved)
+        if save_manifest:
+            self.save_manifest()
+        return saved
 
     def _dataset_for_sources(self, sources: Iterable[dict]) -> SessionDataset | None:
         """Resolve provenance sources to one logical Session dataset.
@@ -453,90 +690,24 @@ class ProcessingSession:
                 return None
         return owner if saw_source else None
 
-    @staticmethod
-    def _filename_display_name(path: Path) -> str:
-        name = path.name
-        for suffix in (".ome.zarr", ".ome.tiff", ".ome.tif", ".hdf5", ".tiff", ".zarr", ".h5", ".tif"):
-            if name.lower().endswith(suffix):
-                return name[: -len(suffix)]
-        return path.stem
-
     @classmethod
     def reconstruction_presentation(
         cls, graph: dict | None, *, artifact: dict | None = None, fallback_name: str = ""
     ) -> tuple[str, str, str]:
-        """Return ``(session_label, object_name, tooltip)`` from provenance.
-
-        Session deliberately has a different naming need from the Reconstruction
-        objects list.  The Session wants a concise description of *how* a result
-        was made (``MoNaLISA - Fast``), while reopening a result should restore
-        the original result-object name.  Keep those concepts separate.
-        """
-        artifact = dict(artifact or {})
-        graph = graph if isinstance(graph, dict) else None
-        node = {}
-        if graph is not None:
-            node_id = artifact.get("node") or (graph.get("output") or {}).get("node")
-            if node_id:
-                node = (graph.get("nodes") or {}).get(node_id) or {}
-
-        plugin_label = str(node.get("label") or "").strip()
-        params = node.get("params") if isinstance(node.get("params"), dict) else {}
-        preset = str(params.get("preset") or "").strip()
-        # Only promote the plugin label into the compact Session name when it
-        # adds useful differentiation (currently a preset/mode). Otherwise keep
-        # the result/file name so generic reconstructors do not all collapse to
-        # the same repeated plugin label.
-        session_label = str(fallback_name or plugin_label or "reconstruction")
-        if plugin_label and preset:
-            session_label = f"{plugin_label} - {preset}"
-
-        object_name = str(artifact.get("result_name") or fallback_name or session_label)
-
-        lines = [session_label]
-        if plugin_label:
-            lines.append(f"Reconstructor: {plugin_label}")
-        if preset:
-            lines.append(f"Mode: {preset}")
-
-        # These keys are already part of MoNaLISA's provenance parameter
-        # contract.  Reading them here is intentionally presentation-only: the
-        # Session does not need to know or recreate the reconstructor itself.
-        fwhm = params.get("spot_fwhm")
-        fwhm_unit = str(params.get("spot_fwhm_unit") or "").strip()
-        if isinstance(fwhm, (int, float)):
-            lines.append(f"FWHM: {fwhm:g}{(' ' + fwhm_unit) if fwhm_unit else ''}")
-        reassignment = params.get("reassignment")
-        if reassignment is not None:
-            text = str(reassignment)
-            if text.lower() == "fixed" and isinstance(params.get("shift_factor"), (int, float)):
-                text += f" ({params['shift_factor']:g})"
-            lines.append(f"Reassignment: {text}")
-        for key, label in (
-            ("intensity_correction", "Intensity correction"),
-            ("cell_offsets", "Cell offsets"),
-            ("sharpen", "Sharpening"),
-        ):
-            if key in params:
-                lines.append(f"{label}: {'On' if bool(params.get(key)) else 'Off'}")
-        for key, label in (
-            ("localization_mode", "Localization"),
-            ("orientation_mode", "Orientation"),
-            ("placement_mode", "Placement"),
-        ):
-            value = params.get(key)
-            if value not in (None, ""):
-                lines.append(f"{label}: {value}")
-
-        return session_label, object_name, "\n".join(lines)
-
-    @classmethod
-    def _result_presentation(cls, path: Path, document) -> tuple[str, str, str]:
-        artifact = getattr(document, "artifact", None) or {}
-        fallback = cls._filename_display_name(path)
-        return cls.reconstruction_presentation(
-            getattr(document, "graph", None), artifact=artifact, fallback_name=fallback
+        """Compatibility wrapper; presentation lives outside the Session catalog."""
+        from imswitch.improcess.model.session_result_presentation import (
+            reconstruction_presentation,
         )
+
+        return reconstruction_presentation(
+            graph, artifact=artifact, fallback_name=fallback_name
+        )
+
+    @staticmethod
+    def _result_presentation(path: Path, document) -> tuple[str, str, str]:
+        from imswitch.improcess.model.session_result_presentation import result_presentation
+
+        return result_presentation(path, document)
 
     # ------------------------------------------------------------------
     # lookup / mutation
@@ -545,7 +716,34 @@ class ProcessingSession:
     def dataset_by_id(self, dataset_id: str | None) -> SessionDataset | None:
         return next((item for item in self.datasets if item.id == dataset_id), None)
 
+    def dataset_by_source_key(self, source_key: str | None) -> SessionDataset | None:
+        if not source_key:
+            return None
+        return next((item for item in self.datasets if item.source_key == source_key), None)
+
     def dataset_for_result(self, result) -> SessionDataset | None:
+        """Return the logical Session dataset that owns ``result``.
+
+        Queue-driven processing already knows ownership before reconstruction
+        starts, so prefer that explicit transient claim. Provenance remains the
+        durable fallback used for restored/external results after reopening a
+        Session. Keeping these two paths separate avoids reverse-engineering a
+        runtime relationship that the queue already knows exactly.
+        """
+        explicit_id = getattr(result, "_session_dataset_id", None)
+        if explicit_id not in (None, ""):
+            explicit_origin = getattr(result, "_session_origin", None)
+            if explicit_origin not in (None, ""):
+                try:
+                    own_origin = str(self.manifest_path.resolve())
+                except Exception:
+                    own_origin = str(self.manifest_path)
+                if str(explicit_origin) != own_origin:
+                    return None
+            dataset = self.dataset_by_id(str(explicit_id))
+            if dataset is not None:
+                return dataset
+
         from imswitch.improcess.model.provenance import graph_of
 
         graph = graph_of(result)
@@ -615,6 +813,18 @@ class ProcessingSession:
             and bool(entry.get("favorite", False))
         }
 
+    @staticmethod
+    def _favorite_source_keys_from_payload(payload: dict) -> set[str]:
+        if not isinstance(payload, dict):
+            return set()
+        return {
+            str(entry.get("source_key"))
+            for entry in payload.get("datasets", [])
+            if isinstance(entry, dict)
+            and entry.get("source_key")
+            and bool(entry.get("favorite", False))
+        }
+
     def _deleted_datasets_from_payload(self, payload: dict) -> list[SessionDataset]:
         out: list[SessionDataset] = []
         for entry in payload.get("datasets", []) if isinstance(payload, dict) else []:
@@ -622,16 +832,32 @@ class ProcessingSession:
                 continue
             try:
                 refs = [
-                    SourceRef(str(ref.get("path", "")), ref.get("dataset"))
+                    SourceRef(
+                        str(ref.get("path", "")),
+                        ref.get("dataset"),
+                        relative_path=(
+                            str(ref.get("relative_path"))
+                            if ref.get("relative_path") not in (None, "")
+                            else self._relative_source_path(str(ref.get("path", "")))
+                        ),
+                    )
                     for ref in entry.get("source_refs", [])
                     if isinstance(ref, dict) and ref.get("path")
                 ]
+                source_key = str(entry.get("source_key") or "")
+                if not source_key and refs:
+                    if str(entry.get("kind") or "scan") == "scan":
+                        source_key = (
+                            f"scan|{refs[0].relative_path or self._relative_source_path(refs[0].path)}|"
+                            f"{entry.get('primary_dataset') or refs[0].dataset or ''}"
+                        )
                 out.append(SessionDataset(
                     id=str(entry["id"]),
                     label=str(entry.get("label") or "deleted raw data"),
                     kind=str(entry.get("kind") or "scan"),
                     primary_path=str(entry.get("primary_path") or (refs[0].path if refs else "")),
                     primary_dataset=entry.get("primary_dataset"),
+                    source_key=source_key,
                     source_refs=refs,
                     planned_timepoints=entry.get("planned_timepoints"),
                     scan_label=_canonical_spatial_tag(entry.get("scan_label")),
@@ -750,4 +976,5 @@ __all__ = [
     "SessionDataset",
     "SourceRef",
     "SESSION_FILENAME",
+    "result_role_for_result",
 ]
