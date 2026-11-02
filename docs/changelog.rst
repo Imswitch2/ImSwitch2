@@ -2,6 +2,23 @@
 Changelog
 *********
 
+Unreleased
+==========
+
+**Behaviour Changes**
+
+- **FRC reports its resolution in the image's own unit.** The ``frc``
+  processor's *Pixel size* now defaults to 0 (*From image*) and *Resolution
+  unit* to ``auto``: a calibrated image (a 65 nm Y/X pixel, say) gives its
+  resolution in nm or µm without any setting, and an uncalibrated one stays in
+  px as before. A unit chosen by hand converts the calibration to it (µm to
+  nm); an explicit pixel size wins over the calibration. Inputs that are not
+  square-pixelled, or two inputs calibrated differently, are refused with the
+  way out (set *Pixel size*); a physical unit for an uncalibrated image needs a
+  pixel size. The parameters are ``params_version`` 2: a recorded run of the
+  old form replays with the 1 px it meant, but a workflow file that left both
+  keys out now measures a calibrated image in its own unit.
+
 v0.4.0 (2026-10-29)
 ===================
 
