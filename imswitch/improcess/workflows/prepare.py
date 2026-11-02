@@ -575,7 +575,9 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
     by_id = {step.id: step for step in recipe.steps}
     # 1-2. the recipe's bypasses, taken out
     upstream = bypass_upstream(recipe)
-    issues.extend(bypass_issues(recipe))
+    # Problems of the recipe's bypasses and controls; a partial run keeps
+    # only those of steps it runs (or of no step), below.
+    recipe_issues: list[Issue] = list(bypass_issues(recipe))
     bypassed_all = [step.id for step in recipe.steps if getattr(step, "bypass", False)]
     bound_ids = set(bound or ()) | _result_bound(bindings)
     for sid in dict.fromkeys([*(bindings or {}), *sorted(bound or ())]):
@@ -614,7 +616,10 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
         return ""
 
     states, control_issues = control_states(recipe, registry, reason_for)
-    issues.extend(control_issues)
+    recipe_issues.extend(control_issues)
+    if subset:
+        recipe_issues = [issue for issue in recipe_issues if issue.step in present or issue.step not in by_id]
+    issues[:0] = recipe_issues
     notes = []
     for state in states.values():
         if state.targets and not state.active and all(t.reason == BYPASSED for t in state.targets):

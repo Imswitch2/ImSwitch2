@@ -297,6 +297,8 @@ class WorkflowDocument:
         placeholders = set(self.catalog.path_placeholders) if self.catalog is not None else None
         saves_seen: dict[tuple, Save] = {}
         for step in self.steps:
+            if getattr(step, "bypass", False):
+                continue        # it never runs: its parameters and file are not checked (plan 5.3)
             if isinstance(step, (Reconstruct, Process)):
                 entry = self.entry_for(step)
                 if entry is None:
@@ -429,7 +431,7 @@ class WorkflowDocument:
         if isinstance(nodes, dict) and step_id in nodes:
             nodes[new_id] = nodes.pop(step_id)
         for control in self.workflow.controls:
-            control.targets = [f"{new_id}.{t.split('.', 1)[1]}" if t.split(".", 1)[0] == step_id else t
+            control.targets = [f"{new_id}.{parse_target(t)[1]}" if (parse_target(t) or ("",))[0] == step_id else t
                                for t in control.targets]
         self._touch()
 

@@ -125,6 +125,11 @@ def test_the_schema_is_read_strictly(schema, ok):
         assert Workflow.from_dict(payload).schema == ok
 
 
+def test_an_empty_schema_reads_as_omitted():
+    payload = {**_diamond().to_dict(), "schema": ""}
+    assert Workflow.from_dict(payload).to_dict()["schema"] == 1
+
+
 def test_an_unversioned_file_is_schema_1_and_may_not_use_the_new_keys():
     with pytest.raises(WorkflowError, match="'controls' needs schema: 2"):
         Workflow.from_dict({"name": "w", "controls": [], "steps": []})
@@ -344,6 +349,21 @@ def test_bypassed_steps_are_taken_out_and_their_readers_rewired(registry):
         "raw", "rec", "split", "sharp", "merge"]
 
 
+def test_a_partial_run_is_not_blocked_by_problems_outside_it(registry):
+    # A control target and a bypass on 'smooth' that the rules refuse: a run
+    # of 'sharp' does not include smooth, so neither stops it; the whole run does.
+    recipe = _diamond(controls=[RADIUS], bypass=("smooth",))
+    recipe.step("smooth").processor = "projection"                    # no 'radius' any more
+    recipe.step("smooth").params = {}
+    recipe.step("smooth").inputs.append(recipe.step("smooth").inputs[0].__class__("split", "C1"))
+    prepared = prepare_run(recipe, registry=registry, subset=["sharp"])
+    assert [s.id for s in prepared.workflow.steps] == ["raw", "rec", "split", "sharp"]
+    with pytest.raises(WorkflowError) as whole:
+        prepare_run(recipe, registry=registry)
+    assert "cannot be bypassed: it reads 2 inputs" in str(whole.value)
+    assert "'projection' has no parameter 'radius'" in str(whole.value)
+
+
 def test_a_value_that_cannot_be_checked_is_refused_not_dropped():
     # Without a registry no field is known: the value must not be silently
     # left out of the run.
@@ -451,15 +471,17 @@ def test_the_gui_publishes_each_result_once(registry, recording, tmp_path):
         names = [name for name, _r in published]
         assert "diamond:smooth.out" not in names
         assert len({id(result) for _n, result in published}) == len(published)
-    # An input bound from the list is not republished through the bypass.
+    # A result bound from the list that a bypassed step passes on is not
+    # republished through it: 'smooth' is bypassed and reads the bound split.C0.
     with run(_diamond(source=recording), registry=registry, out_dir=tmp_path / "pre") as first:
-        listed = first.result("rec")
+        listed = {port: first.result(f"split.{port}") for port in first.ports_of("split")}
         published.clear()
         recipe = _diamond(bypass=("smooth",))
-        with run(recipe, registry=registry, out_dir=tmp_path / "b", bindings={"rec": listed}) as report:
+        with run(recipe, registry=registry, out_dir=tmp_path / "b", bindings={"split": listed}) as report:
+            assert report.bound == ["split.C0", "split.C1"] and report.bypassed == ["smooth"]
             WorkflowController._publish(host, report)
-            assert all(result is not listed for _n, result in published)
-            assert len({id(result) for _n, result in published}) == len(published)
+            assert all(result is not bound for _n, result in published for bound in listed.values())
+            assert [name for name, _r in published] == ["diamond:sharp.out", "diamond:merge.out"]
 
 
 # -- batch and command line -------------------------------------------------------------------

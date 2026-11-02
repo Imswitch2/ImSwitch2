@@ -423,7 +423,7 @@ class Workflow:
 def _read_schema(raw) -> int:
     """The schema a file declares: omitted (or empty) is 1; otherwise a whole
     number of at least 1, never a boolean (Python reads ``true`` as 1)."""
-    if raw is None:
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
         return DEFAULT_SCHEMA
     if isinstance(raw, str) and raw.strip().isdigit():
         raw = int(raw.strip())

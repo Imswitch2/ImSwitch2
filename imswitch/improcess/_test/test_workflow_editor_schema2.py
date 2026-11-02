@@ -211,6 +211,25 @@ def test_switching_a_bypass_off_adopts_the_controls_value(catalog):
     assert document.history.undo() and document.step("smooth").bypass and document.step("smooth").params["radius"] == 9.0
 
 
+def test_the_editors_own_checks_skip_bypassed_steps(catalog):
+    # A bypassed step never runs: its parameters are not checked, and a
+    # bypassed Save writes no file to collide with another's (plan 5.3).
+    document = _diamond(catalog, bypass=("smooth",))
+    document.step("smooth").params["radius"] = -5.0
+    document.workflow.steps.append(Save("copy", input="merge", fmt="hdf5",
+                                        path_template="{out_dir}/{source_stem}_diamond{ext}", bypass=True))
+    assert document.issues() == []
+    document.set_bypass("copy", False)
+    assert [i.message for i in document.issues()] == ["writes the same file as save 'out'"]
+
+
+def test_renaming_a_step_keeps_a_malformed_target_for_validation(catalog):
+    document = _diamond(catalog, controls=[Control("r", ["smooth"])])
+    document.rename_step("smooth", "soft")
+    assert document.control("r").targets == ["smooth"]
+    assert any("bad target 'smooth'" in issue.message for issue in document.issues())
+
+
 def test_the_first_save_with_schema_2_says_so_once(catalog, tmp_path):
     document = _diamond(catalog)
     path = document.save(tmp_path / "d.yaml")
