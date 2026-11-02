@@ -34,6 +34,9 @@ KIND_COLOURS = {
     "table": "#c792ea",
     "localization": "#ff7a90",
     "rgb": "#f6e05e",
+    "points": "#ff9f5a",
+    "value": "#9ad0f5",
+    "event": "#f28cb1",
     "any": "#d9dee4",
     "unknown": "#6c7c8c",
 }
@@ -46,6 +49,9 @@ KIND_WORDS = {
     "table": "table",
     "localization": "localizations",
     "rgb": "RGB",
+    "points": "points",
+    "value": "value",
+    "event": "event",
     "any": "decided when run",
     "unknown": "not declared",
 }

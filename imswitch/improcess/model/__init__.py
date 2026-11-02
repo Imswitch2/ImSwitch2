@@ -18,6 +18,8 @@ from .result import (
     ViewMode,
     result_kind,
 )
+from .points_result import PointsResult
+from .value_result import EventResult, ValueResult
 from .plotting import PlotPayload, PlotSeries
 from .virtual_image import VirtualImageSource
 # PatternFinder and SignalExtractor moved to reconstructors/monalisa/.

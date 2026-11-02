@@ -18,12 +18,19 @@ from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorO
 from imswitch.improcess.processors.python_step.context import (
     DEFAULT_CODE,
     DEFAULT_PORTS,
+    parse_port_kinds,
     parse_ports,
     run_script,
 )
 
 #: How much of what the code printed is kept on each output's metadata.
 STDOUT_LIMIT = 4000
+
+#: The params key the runner hands a step's between-runs dict under. Not a
+#: parameter: it is not in ``default_params`` (so ``param_keys`` refuses it in
+#: a workflow file and the widget never emits it), and provenance skips every
+#: ``_``-prefixed key.
+STATE_PARAM = "_state"
 
 _CODE_HELP = (
     "Python run over the input. Names: np, data (the first input's array, read-only: "
@@ -33,11 +40,17 @@ _CODE_HELP = (
     "axis('Z') (an axis index by label), results (the input results, results[1] the "
     "second's), "
     "make_result(array, axes=[...]) and make_labels(array) for an output whose "
-    "dimensions differ from the input's. Set outputs = {port: array} with one "
+    "dimensions differ from the input's; make_points(coords, frame, **properties), "
+    "make_value(x, unit) and make_event(fired, **payload) for coordinates, one number "
+    "and a yes/no (a plain int/float on a port is a value, a bool an event); "
+    "state, a dict kept between runs of this step. Set outputs = {port: array} with one "
     "entry for each output port, or out = array for a single port. print() "
     "output is shown below the editor."
 )
-_PORTS_HELP = "Comma-separated names the code must set in `outputs`"
+_PORTS_HELP = (
+    "Comma-separated names the code must set in `outputs`; a port may declare "
+    "what it carries, name:kind (spots:points, score:value, hit:event)"
+)
 
 
 class PythonStepProcessor(Processor):
@@ -75,12 +88,19 @@ class PythonStepProcessor(Processor):
         """The ports named in ``ports``; ``validate`` checks references to them.
 
         Unparseable names declare none, so a reference to any port fails the
-        workflow's own validation, and ``apply`` raises the real error.
+        workflow's own validation, and ``apply`` raises the real error. The
+        spec has one kind for all its ports: when every port declares the
+        same one (``score:value``) it is promised here, otherwise the kind
+        stays ``any`` and the run checks each port against what it declared.
         """
+        text = (params or {}).get("ports", DEFAULT_PORTS)
         try:
-            return OutputSpec(ports=parse_ports((params or {}).get("ports", DEFAULT_PORTS)), kind=self.output_kind)
+            names, kinds = parse_ports(text), parse_port_kinds(text)
         except ValueError:
             return OutputSpec(ports=(), pattern=None, kind=self.output_kind)
+        declared = set(kinds.values())
+        kind = declared.pop() if len(declared) == 1 and set(kinds) == set(names) else self.output_kind
+        return OutputSpec(ports=names, kind=kind)
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
@@ -225,7 +245,14 @@ class PythonStepProcessor(Processor):
     def apply(self, result: ProcessingResult, params: dict) -> ProcessorOutput:
         inputs = list(params.get("results") or [result])
         ports = parse_ports(params.get("ports", DEFAULT_PORTS))
-        results, printed = run_script(params.get("code", DEFAULT_CODE), inputs, ports)
+        # The runner passes the step's dict when the run keeps one per step
+        # (an interactive session); a headless or batch run starts afresh.
+        state = params.get(STATE_PARAM)
+        results, printed = run_script(
+            params.get("code", DEFAULT_CODE), inputs, ports,
+            state=state if isinstance(state, dict) else None,
+            port_kinds=parse_port_kinds(params.get("ports", DEFAULT_PORTS)),
+        )
         if printed:
             for produced in results:
                 produced.metadata.setdefault("python_step", {})["stdout"] = printed[:STDOUT_LIMIT]

@@ -473,6 +473,9 @@ math                    Processor      Constant arithmetic and unary transforms 
 image-calculator        Processor      Pixel-wise arithmetic between two compatible results
 segmentation            Processor      Threshold + connected-component labels and ROI export
 label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
+threshold               Processor      Otsu or absolute threshold to connected-component labels, per plane
+regionprops             Processor      Centroid, area and intensity of every labelled region as ``points``
+pick                    Processor      One point out of many: largest, brightest, first or nearest
 psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
@@ -525,7 +528,9 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
 ``label-morphology`` accepts only ``labels``, ``image-calculator`` accepts
 ``image`` and ``labels``, ``python`` (the :ref:`Python step
 <improcess-python-step>`) accepts ``image``, ``labels`` and ``composite``, and
-``table-to-localizations`` accepts only ``table``.
+``table-to-localizations`` accepts only ``table``. ``threshold`` accepts
+``image``, ``regionprops`` accepts ``labels`` (and an optional ``image`` as
+its second input), and ``pick`` accepts only ``points``.
 
 .. list-table::
    :header-rows: 1
@@ -662,6 +667,28 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - A 2D ``labels``-kind result.
      - Relabelled ``LabelsResult`` after fill holes, erosion, dilation,
        opening, closing or watershed splitting.
+   * - ``threshold``
+     - Segmentation
+     - A ``Y, X`` or ``T, Y, X`` image-like result; each plane is thresholded
+       on its own (Otsu or ``value``), 8-connected components below
+       ``min_area`` are dropped.
+     - ``LabelsResult`` with labels ``1..N`` per plane; the input's
+       ``frame_index`` metadata is carried.
+   * - ``regionprops``
+     - Measurement
+     - A ``labels`` result (2D or ``T, Y, X``), optionally the intensity image
+       of the same shape as a second input.
+     - ``PointsResult`` (kind ``points``): the ``(y, x)`` centroid of every
+       region with ``label``, ``area`` and, with an image, ``mean_intensity``
+       / ``max_intensity`` columns (``t`` on a stack); tagged with the
+       ``frame`` parameter, e.g. ``detector:Camera``, and the source frame
+       index.
+   * - ``pick``
+     - Measurement
+     - A ``points`` result.
+     - The same kind of result with at most one row: the ``largest`` (area),
+       ``brightest`` (mean then max intensity), ``first`` or ``nearest`` to
+       ``x, y``; zero rows in when nothing was found, zero out.
    * - ``psf-resolution``
      - Measurement
      - Any rank >= 2 image-like result.  Extra axes collapse to index ``0``.

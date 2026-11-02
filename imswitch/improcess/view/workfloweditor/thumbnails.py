@@ -31,7 +31,7 @@ def preview_pixmap(preview, size=(st.THUMB_W, st.THUMB_H)) -> QtGui.QPixmap | No
         return QtGui.QPixmap.fromImage(image)
     if preview.curve is not None and len(preview.curve) >= 2:
         return curve_pixmap(preview.curve, (width, height))
-    if preview.kind in ("table", "localization") and (preview.rows or preview.row_count):
+    if preview.kind in ("table", "localization", "points", "value", "event") and (preview.rows or preview.row_count):
         return table_pixmap(preview, (width, height))
     return None
 

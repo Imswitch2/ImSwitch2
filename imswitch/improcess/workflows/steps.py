@@ -20,6 +20,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from imswitch.improcess.workflows.sources import SourceSpec
@@ -86,6 +87,11 @@ class Source:
 
     def to_dict(self) -> dict:
         return {"step": "source", "id": self.id, **self.source.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Source":
+        source = SourceSpec.from_dict({k: v for k, v in data.items() if k != "id"})
+        return cls(data.get("id"), source)
 
 
 @dataclass
@@ -182,25 +188,104 @@ class Save:
 
 Step = Source | Reconstruct | Consolidate | Process | Save
 
-_STEP_TYPES = {"source": Source, "reconstruct": Reconstruct, "consolidate": Consolidate,
-               "process": Process, "save": Save}
+
+# --------------------------------------------------------------------------
+# step-type registry
+# --------------------------------------------------------------------------
+#
+# The kinds a workflow file may name (``step: process``) are an open set: a
+# package that adds a kind registers its class here, and ``step_from_dict``,
+# the runner and the editor find it by its ``kind``. The five built-ins are
+# registered at import, so a file written before this registry existed loads
+# exactly as it did.
+
+_STEP_REGISTRY: dict[str, type] = {}
+_STEP_RUNNERS: dict[str, Any] = {}
+_BUILTIN_KINDS: tuple[str, ...] = ()
+
+#: Read-only view of the registered kinds (kind -> class), kept for callers
+#: that read the former closed dict.
+_STEP_TYPES = MappingProxyType(_STEP_REGISTRY)
 
 
-def step_from_dict(payload: dict) -> Step:
+def register_step_type(kind: str, cls, *, run=None):
+    """Make ``kind`` a step kind a workflow may contain; returns ``cls``.
+
+    ``cls`` is built from a step's dict by ``cls.from_dict(data)`` when it
+    has one, else ``cls(**data)`` (``data`` is the step's mapping without its
+    ``step``/``kind`` key). It must have an ``id`` and, for the editor's sake,
+    inputs as ``inputs`` (a list of refs) if it consumes anything. The class
+    is told its ``kind`` if it does not name one; one that names another is
+    refused. ``run``, for a kind the runner does not know, is
+    ``run(step, *, report, registry, logger) -> {port: result}``: what the
+    step produced, which the runner records as ``"<id>.<port>"``.
+    """
+    kind = str(kind or "").lower()
+    if not _ID_PATTERN.match(kind):
+        raise WorkflowError(f"bad step kind {kind!r}; use letters, digits, '_' and '-'")
+    if not isinstance(cls, type):
+        raise TypeError(f"a step type must be a class, got {cls!r}")
+    declared = getattr(cls, "kind", None)
+    if declared is None:
+        cls.kind = kind
+    elif str(declared) != kind:
+        raise WorkflowError(f"{cls.__name__} says its kind is {declared!r}, not {kind!r}")
+    _STEP_REGISTRY[kind] = cls
+    if run is not None:
+        _STEP_RUNNERS[kind] = run
+    else:
+        _STEP_RUNNERS.pop(kind, None)
+    return cls
+
+
+def unregister_step_type(kind: str) -> None:
+    """Forget a registered kind; the built-ins cannot be forgotten."""
+    kind = str(kind or "").lower()
+    if kind in _BUILTIN_KINDS:
+        raise WorkflowError(f"{kind!r} is a built-in step kind")
+    _STEP_REGISTRY.pop(kind, None)
+    _STEP_RUNNERS.pop(kind, None)
+
+
+def step_type(kind: str) -> type:
+    """The class registered for ``kind``; :class:`WorkflowError` if none is."""
+    try:
+        return _STEP_REGISTRY[str(kind or "").lower()]
+    except KeyError:
+        raise WorkflowError(f"unknown step kind {kind!r} (known: {', '.join(step_kinds())})") from None
+
+
+def step_kinds() -> tuple[str, ...]:
+    """Every registered kind, built-ins first, in registration order."""
+    return tuple(_STEP_REGISTRY)
+
+
+def step_runner(kind: str):
+    """The ``run`` callable registered with ``kind``, or ``None``."""
+    return _STEP_RUNNERS.get(str(kind or "").lower())
+
+
+def step_from_dict(payload: dict):
     if not isinstance(payload, dict):
         raise WorkflowError(f"a step must be an object, got {type(payload).__name__}")
     kind = str(payload.get("step") or payload.get("kind") or "").lower()
-    if kind not in _STEP_TYPES:
+    if kind not in _STEP_REGISTRY:
         raise WorkflowError(f"unknown step kind {kind!r} (id {payload.get('id')!r})")
     data = {k: v for k, v in payload.items() if k not in ("step", "kind")}
-    if kind == "source":
-        source = SourceSpec.from_dict({k: v for k, v in data.items() if k != "id"})
-        return Source(data.get("id"), source)
-    cls = _STEP_TYPES[kind]
+    cls = _STEP_REGISTRY[kind]
+    builder = getattr(cls, "from_dict", None)
     try:
+        if callable(builder):
+            return builder(data)
         return cls(**data)
     except TypeError as exc:
         raise WorkflowError(f"step {data.get('id')!r}: {exc}") from exc
+
+
+for _cls in (Source, Reconstruct, Consolidate, Process, Save):
+    register_step_type(_cls.kind, _cls)
+_BUILTIN_KINDS = step_kinds()
+del _cls
 
 
 # --------------------------------------------------------------------------
@@ -357,7 +442,15 @@ def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
             if match and spec.matches(match.group(1)) and 0 < int(match.group(2)) < len(step.inputs):
                 return True, spec.describe()
         return False, spec.describe()
-    return False, "(no ports)"
+    ports = getattr(step, "ports", None)
+    if ports is None:
+        # A registered kind that does not declare its ports: nothing to check
+        # against, so any reference to it stands (the run says otherwise).
+        return True, "?"
+    ports = tuple(str(p) for p in ports)
+    if not ports:
+        return False, "(no ports)"
+    return (port in ports or (port is None and len(ports) >= 1)), ", ".join(ports)
 
 
 def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
@@ -467,7 +560,7 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
         if isinstance(step, Source):
             by_id[step.id] = step
             continue
-        refs = [step.input] if isinstance(step, Save) else list(step.inputs)
+        refs = [step.input] if isinstance(step, Save) else list(getattr(step, "inputs", None) or [])
         for ref in refs:
             target = by_id.get(ref.step)
             if target is None:
@@ -552,7 +645,12 @@ __all__ = [
     "Workflow",
     "WorkflowError",
     "parse_ref",
+    "register_step_type",
     "step_from_dict",
+    "step_kinds",
+    "step_runner",
+    "step_type",
+    "unregister_step_type",
     "validate",
 ]
 

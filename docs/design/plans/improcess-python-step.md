@@ -403,3 +403,40 @@ production, as for FRC). Decisions:
   its Push to table did nothing; `ensureRuntimeAnalysisWidget` now wires it like the
   other result-pushing panels. Both are small, pre-existing, and not specific to the
   Python step; the curve is what made them visible.
+
+## 11. Numbers, points and events out; state between runs (2026-11-02)
+
+A smart pipeline is made of small things a script computes -- a focus score, "was
+something detected", where -- and until now the step refused a scalar and had no way
+to say what a table of coordinates meant. With the result kinds `points`, `value`
+and `event` (`model/points_result.py`, `model/value_result.py`) the step can now
+emit them:
+
+- The namespace gained `make_points(coordinates, frame="unknown", frame_index=None,
+  **properties)` → `PointsResult`, `make_value(x, unit="")` → `ValueResult` and
+  `make_event(fired, **payload)` → `EventResult`. A port set to one of these results
+  is passed through as it is, named after the port (`"<input> (<port>)"`) unless the
+  code gave `name=`, with the step's `operation`/`port` metadata added. A plain Python
+  `int`/`float` on a port is a value result, a `bool` an event. A numpy scalar or 0-d
+  array still gets the old "is a single number" error (now also pointing at
+  `make_value`), and an unwrapped 1-D array is still a curve. A result of any other
+  kind set on a port (`out = results[0]`) is refused: the code outputs arrays or what
+  `make_*` made, never an input.
+- `# ports:` (and the step's *Output ports* field, which is the same text) may declare
+  a kind per port: `# ports: spots:points, score:value`. `parse_ports` still returns
+  the names; `parse_port_kinds` the `{port: kind}`. `output_spec` has one kind for all
+  ports (`OutputSpec.kind`), so it promises the kind only when every port declares the
+  same one, else stays `any`; the run checks each port's result against its declared
+  kind either way. `model/snippets.py` needed no parser change: the header text is
+  passed through verbatim.
+- `state`: a dict the code sees, the same object across runs of the same step when
+  the run was given a `step_state` mapping (`run(step_state=...)`, handed to the
+  processor as `params["_state"]`; absent in a headless or batch run, where the code
+  starts from `{}`). `_state` is not a parameter: not in `default_params`, so
+  `param_keys` refuses it in a workflow file; provenance skips `_`-prefixed keys.
+  `RunSession` owns the per-step dicts and gives them to the runner through the plan
+  (`RunPlan.step_state`, `execute()`); a step's dict is dropped when its nonce-free
+  fingerprint (its own parameters and what feeds it, without the re-run nonces)
+  differs from the one it last ran with, when the step is no longer in the document,
+  and when the session closes. It follows a rename and survives *Re-run from here*.
+

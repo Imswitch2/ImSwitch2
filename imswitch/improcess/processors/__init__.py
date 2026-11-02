@@ -23,11 +23,14 @@ from .make_rgb import MakeRGBProcessor
 from .math_ops import MathProcessor
 from .multicolor_apply import MulticolorApplyProcessor
 from .multicolor_registration import MulticolorRegistrationProcessor
+from .pick import PickProcessor
 from .projection import ProjectionProcessor
 from .python_step import PythonStepProcessor
 from .psf_resolution import PSFResolutionProcessor
+from .regionprops import RegionPropsProcessor
 from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
+from .threshold import ThresholdProcessor
 from .transform import TransformProcessor
 from .smlm_drift import SmlmDriftProcessor
 from .smlm_drift_comet import SmlmCometDriftProcessor
@@ -56,12 +59,15 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
     'deconvolve-rl': RichardsonLucyProcessor,
+    'pick': PickProcessor,
     'projection': ProjectionProcessor,
     'python': PythonStepProcessor,
     'psf-resolution': PSFResolutionProcessor,
+    'regionprops': RegionPropsProcessor,
     'resize': ResizeProcessor,
     'segmentation': SegmentationProcessor,
     'subtract-background': SubtractBackgroundProcessor,
+    'threshold': ThresholdProcessor,
     'transform': TransformProcessor,
     'smlm-drift': SmlmDriftProcessor,
     'smlm-drift-comet': SmlmCometDriftProcessor,
@@ -246,12 +252,15 @@ __all__ = [
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",
     "RichardsonLucyProcessor",
+    "PickProcessor",
     "ProjectionProcessor",
     "PythonStepProcessor",
     "PSFResolutionProcessor",
+    "RegionPropsProcessor",
     "ResizeProcessor",
     "SegmentationProcessor",
     "SubtractBackgroundProcessor",
+    "ThresholdProcessor",
     "TransformProcessor",
     "SmlmDriftProcessor",
     "SmlmFilterProcessor",

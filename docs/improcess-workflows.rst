@@ -106,7 +106,13 @@ Steps and references
 A reference is ``"step"`` (the step's only, or first, port) or
 ``"step.port"``. Step ids use letters, digits, ``_`` and ``-``. In a
 workflow file each step names its type with ``step:`` (``kind:`` is
-accepted as well).
+accepted as well). The five kinds above are the built-ins of a **step-type
+registry** (``imswitch.improcess.workflows.steps.register_step_type``):
+another package may register a kind of its own, with the class that
+represents it and a callable the runner hands such a step to, and
+``step_kinds()`` lists what is known. A file naming a kind nobody
+registered is refused when it is loaded, with the known kinds in the
+message.
 
 Parameters and defaults
 -----------------------
@@ -149,7 +155,9 @@ A processor declares its output ports through ``output_spec(params)``:
 
 Every port also has a **kind**, declared by the plugin (``output_kind``): a
 Source's port carries the recording; the others carry ``image``, ``labels``,
-``table``, ``curve``, ``localization``, ``rgb`` or ``composite`` results, or
+``table``, ``curve``, ``localization``, ``rgb`` or ``composite`` results,
+``points`` (coordinates tagged with the frame of reference they are measured
+in), ``value`` (one number) or ``event`` (a yes/no with a payload), or
 ``any`` when it depends on the run (the Python step).  ``validate`` refuses a
 step whose input has a *declared* kind the processor does not accept (FRC's
 curve into a filter); a port of kind ``any`` or ``unknown`` (a plugin that

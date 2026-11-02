@@ -15,6 +15,7 @@ drift unless told to allow it.
 
 from __future__ import annotations
 
+import copy
 import re
 import time
 from collections.abc import Mapping
@@ -44,10 +45,16 @@ from imswitch.improcess.workflows.steps import (
     Source,
     Workflow,
     WorkflowError,
+    step_runner,
     validate,
 )
 
 MODES = ("run", "replay")
+
+#: The params key under which a Process step's processor is handed the
+#: step's state dict when the run keeps one (``run(step_state=...)``). Never
+#: part of the step's own params, never recorded.
+STATE_PARAM = "_state"
 
 _SUFFIX = {"tiff": ".ome.tif", "hdf5": ".h5", "zarr": ".ome.zarr", "csv": ".csv",
            "picasso": ".hdf5", "imagej": ".tif", "json": ".json"}
@@ -229,6 +236,7 @@ def run(
     on_step_done: Callable[[str, dict, float, bool], None] | None = None,
     write_saves: bool = True,
     source_stem: str | None = None,
+    step_state: dict[str, dict] | None = None,
 ) -> RunReport:
     """Execute ``workflow`` and return its :class:`RunReport`.
 
@@ -260,6 +268,13 @@ def run(
     (``{source_stem}``); without it the stem comes from the first source the
     run opens, else from the first bound result's name. A failure is described
     as data in ``report.failure``.
+
+    ``step_state`` keeps state per step across runs: when given, a Process
+    step's processor finds ``step_state.setdefault(step.id, {})`` -- the very
+    dict, not a copy -- under ``params["_state"]`` (:data:`STATE_PARAM`), so
+    what it stores there is what it finds on the next run. The key is handed
+    to ``apply`` only: the step's params, the provenance the results carry
+    and the report never contain it. Without ``step_state`` no such key exists.
     """
     if mode not in MODES:
         raise WorkflowError(f"unknown mode {mode!r}; expected one of {MODES}")
@@ -426,8 +441,9 @@ def run(
                 # input, and each run's ports are suffixed with *that input's*
                 # index (signal, background, signal1, background1, ...).
                 groups = [[item] for item in inputs] if fan_out else [inputs]
+                runnable = plugin if step_state is None else _with_state(plugin, step_state.setdefault(step.id, {}))
                 for input_index, group in enumerate(groups):
-                    results, failures = run_processor(plugin, group, params, logger)
+                    results, failures = run_processor(runnable, group, params, logger)
                     if failures:
                         who, why = failures[0]
                         message = f"{step.processor!r} failed on {getattr(who, 'name', who)!r}: {why}"
@@ -465,8 +481,20 @@ def run(
                     continue
                 receipt = result.save(path, step.fmt, overwrite=overwrite)
                 report.receipts.append(receipt)
-            else:  # pragma: no cover - the step types are closed
-                raise WorkflowError(f"unknown step type {type(step).__name__}")
+            else:
+                kind = str(getattr(step, "kind", "") or "")
+                custom = step_runner(kind)
+                if custom is None:
+                    raise WorkflowError(
+                        f"unknown step kind {kind or type(step).__name__!r} (step {step.id!r}): "
+                        "nothing registered to run it"
+                    )
+                produced = custom(step, report=report, registry=registry, logger=logger)
+                for port, result in dict(produced or {}).items():
+                    key = f"{step.id}.{port}"
+                    if key in report.results:
+                        raise RunError(f"{step.id}: produced port {port!r} twice")
+                    report.results[key] = result
         except (Exception, OperationCancelled) as exc:
             # A cancellation raised *inside* a step (a processor that called
             # checkpoint(), or the worker interrupting one) is reported like the
@@ -493,6 +521,35 @@ def run(
     if progress is not None:
         progress(total, total, "done")
     return report
+
+
+_STATEFUL_CLASSES: dict[type, type] = {}
+
+
+def _with_state(plugin, state: dict):
+    """``plugin`` as one stateful Process step sees it.
+
+    Its ``apply`` is handed ``state`` under :data:`STATE_PARAM` beside the
+    params; everything else -- id, contract, codec, declared ports -- is the
+    plugin's own, so the provenance is recorded as it would be without state.
+    Done as a view rather than by putting the key into the params because the
+    run path records the params it passes to ``apply``, and the state must
+    not be written down: it is live, mutable and not a parameter of the step.
+    """
+    cls = type(plugin)
+    stateful = _STATEFUL_CLASSES.get(cls)
+    if stateful is None:
+        def apply(self, result, params):
+            return super(stateful, self).apply(result, {**(params or {}), STATE_PARAM: self._workflow_step_state})
+
+        stateful = type(cls.__name__, (cls,), {
+            "apply": apply, "__module__": cls.__module__, "__qualname__": cls.__qualname__, "__doc__": cls.__doc__,
+        })
+        _STATEFUL_CLASSES[cls] = stateful
+    view = copy.copy(plugin)
+    view.__class__ = stateful
+    view._workflow_step_state = state
+    return view
 
 
 def _is_result(value) -> bool:
@@ -565,8 +622,8 @@ def _log():
     return initLogger("ImProcessWorkflows", tryInheritParent=False)
 
 
-__all__ = ["MODES", "RunError", "RunReport", "failure_details", "is_result_binding", "render_save_path", "run",
-           "source_stem_of", "steps_replaced_by_bindings"]
+__all__ = ["MODES", "STATE_PARAM", "RunError", "RunReport", "failure_details", "is_result_binding",
+           "render_save_path", "run", "source_stem_of", "steps_replaced_by_bindings"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
