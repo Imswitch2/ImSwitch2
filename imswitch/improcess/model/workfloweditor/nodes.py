@@ -82,6 +82,12 @@ class NodeInfo:
     inputs: tuple[InputSlot, ...]
     outputs: tuple[OutputSlot, ...]
     issues: tuple[str, ...] = field(default=())
+    #: Kept in the file, left out of the run (schema 2).
+    bypassed: bool = False
+    #: For a bypassed step: what it passes through (``split.C0``), "" for a Save.
+    passes: str = ""
+    #: ``(key, control)`` for the parameters a control owns.
+    exposed: tuple[tuple[str, str], ...] = field(default=())
 
     @property
     def kind(self) -> str:
@@ -100,6 +106,9 @@ def step_kind(step) -> str:
 
 
 def kinds_of(document) -> dict[str, str]:
+    """The kind each step makes; a bypassed step makes what it passes through."""
+    from imswitch.improcess.workflows.prepare import bypass_upstream
+
     registry = document.catalog.registry if document.catalog is not None else None
     if registry is None:
         found = {}
@@ -108,8 +117,11 @@ def kinds_of(document) -> dict[str, str]:
                 found[step.id] = RECORDING_KIND
             elif not isinstance(step, Save):
                 found[step.id] = UNKNOWN_KIND
-        return found
-    return declared_kinds(document.workflow, registry)
+    else:
+        found = dict(declared_kinds(document.workflow, registry))
+    for step_id, through in bypass_upstream(document.workflow).items():
+        found[step_id] = found.get(through.step, UNKNOWN_KIND)
+    return found
 
 
 def _fmt(value) -> str:
@@ -163,7 +175,9 @@ def _summary(document, step, entry) -> tuple[tuple[str, ...], tuple[str, ...]]:
     labels = {}
     if entry is not None:
         labels = {f.key: (f.label or f.key) for f in entry.fields}
-    lines = tuple(f"{labels.get(key, key)}  {_fmt(value)}" for key, value in params.items())
+    exposed = document.exposed(step.id) if hasattr(document, "exposed") else {}
+    lines = tuple(f"{labels.get(key, key)}  {_fmt(value)}" + (f"  ⇄ {exposed[key]}" if key in exposed else "")
+                  for key, value in params.items())
     if isinstance(step, Process) and step.restriction:
         lines += (f"within {len(step.restriction.get('rois') or [])} ROI(s)",)
     return (lines[:4] if lines else ("defaults",)), ()
@@ -304,7 +318,10 @@ def _inputs(document, step, kinds) -> tuple[InputSlot, ...]:
 
 def node_infos(document, issues=None) -> dict[str, NodeInfo]:
     """One :class:`NodeInfo` per step, in file order."""
+    from imswitch.improcess.workflows.prepare import bypass_upstream, resolve_ref
+
     kinds = kinds_of(document)
+    upstream = bypass_upstream(document.workflow)
     by_step: dict[str, list[str]] = {}
     for issue in issues if issues is not None else document.issues():
         by_step.setdefault(issue.step, []).append(issue.message)
@@ -312,6 +329,13 @@ def node_infos(document, issues=None) -> dict[str, NodeInfo]:
     for step in document.steps:
         entry = document.entry_for(step)
         summary, code = _summary(document, step, entry)
+        bypassed = bool(getattr(step, "bypass", False))
+        passes = ""
+        if bypassed and step.id in upstream:
+            passes = str(upstream[step.id])
+        elif bypassed and isinstance(step, Save):
+            passes = str(resolve_ref(step.input, upstream))
+        exposed = tuple(document.exposed(step.id).items()) if hasattr(document, "exposed") else ()
         infos[step.id] = NodeInfo(
             id=step.id,
             step_kind=step_kind(step),
@@ -324,6 +348,9 @@ def node_infos(document, issues=None) -> dict[str, NodeInfo]:
             inputs=_inputs(document, step, kinds),
             outputs=_outputs(document, step, kinds.get(step.id, UNKNOWN_KIND)),
             issues=tuple(by_step.get(step.id, ())),
+            bypassed=bypassed,
+            passes=passes,
+            exposed=exposed,
         )
     return infos
 

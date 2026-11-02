@@ -701,6 +701,46 @@ lists what stops it; clicking an issue selects its step.
 feeds whom drawn in the gutter; selection, the inspector and undo are
 shared with the graph (Ctrl+1). The editor remembers which you used last.
 
+.. _workflows-editor-controls:
+
+Controls and bypass in the editor
+---------------------------------
+
+* **Bypass** (**B** on the canvas, the step's context menu, or *Edit →
+  Bypass*) keeps a processing or save step in the file but out of the run
+  (:ref:`workflows-controls`). Its box is dimmed, with a grey header and a
+  *BYPASSED* strip, and a dashed line from its input to its output shows the
+  path the data takes; its output is what it passes on, as the step before it
+  made it. List mode greys its card. The inspector says what reads through it
+  ("*merge* reads *split.C0* through this step unchanged"), with **Stop
+  bypassing**. **B** again, or the button, switches it back on. The action is
+  greyed, with the reason as its tooltip, for a step that cannot be bypassed
+  (one with several inputs, or one read by a port such as a split's ``C0``).
+  Bypassing a step outdates what follows it; switching it back on finds the
+  earlier results again while the cache holds them.
+* **Expose as control…** in a parameter's context menu (right-click its row
+  in the inspector) asks for the control's name, by default the parameter's,
+  or offers to add the parameter to an existing control that can take it; the
+  parameter then takes that control's value. An exposed row is marked
+  ``⇄ name``, and the step's box shows the same mark on its parameter line.
+  Editing an exposed parameter sets the control, so every parameter it sets
+  changes together; its row's reset is the control's, and *Reset all to
+  defaults* leaves it alone.
+* **The Controls panel**: with nothing selected (click the canvas
+  background), the inspector shows the workflow's name, description and
+  controls. Each control has its field, the parameters it sets (click one to
+  select its step), **Reset** (to the default its parameters share; greyed
+  with the reason when they have different defaults), **Rename…**,
+  **Label…** (what the run dialog shows) and **Stop exposing** (the
+  parameters keep their value). A control whose parameters are all on
+  bypassed steps says it has no effect while they are bypassed, and stays
+  editable.
+* Runs in the editor take no control values: there a control's value is its
+  parameters' value. A partial run (*Run to selected*) never trips over a
+  control whose other parameters are outside it.
+* The first save that makes a file schema 2 says so in the status bar: the
+  file now opens only in this version of ImSwitch or later.
+
 .. _workflows-editor-runs:
 
 Running in the editor

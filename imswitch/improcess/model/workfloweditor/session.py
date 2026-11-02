@@ -21,7 +21,13 @@ From that, everything else follows without bookkeeping of its own:
   made during the run cannot make an old result look fresh;
 - a step declared ``deterministic = False`` (the Python step) gets a new
   nonce in its fingerprint each time it is recomputed, which outdates every
-  cached result after it: a partial re-run never mixes two realisations.
+  cached result after it: a partial re-run never mixes two realisations;
+- a reference to a **bypassed** step is fingerprinted as what that step
+  passes through (the function the run's preparation uses), so bypassing a
+  step outdates what follows it and switching the bypass off finds the old
+  results again; a run is planned through
+  :func:`~imswitch.improcess.workflows.prepare.prepare_run`, which takes
+  bypassed steps out and control definitions off.
 
 **Open files.** A cached result may read lazily from the source handle its
 run opened. The session takes the handles from every report
@@ -47,12 +53,14 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from imswitch.improcess.model.workfloweditor.graph import ancestors, descendants, refs_of
+from imswitch.improcess.model.workfloweditor.graph import descendants, refs_of
 from imswitch.improcess.model.workfloweditor.previews import make_preview, nbytes_in_memory
+from imswitch.improcess.workflows.prepare import bypass_upstream, prepare_run, resolve_ref
 from imswitch.improcess.workflows.steps import (
     Consolidate,
     Process,
     Reconstruct,
+    Ref,
     Save,
     Source,
     Workflow,
@@ -96,8 +104,10 @@ class Entry:
 class StepState:
     """What a box says about a step."""
 
-    status: str = ""                # "" | done | outdated | running | waiting | failed | would-write
+    status: str = ""                # "" | done | outdated | running | waiting | failed | would-write | bypassed
     entry: Entry | None = None
+    #: For a bypassed step: the reference it passes through (its output is that one's).
+    passes: str = ""
     error: dict | None = None
     would_write: Path | None = None
     wrote: tuple = ()
@@ -225,18 +235,32 @@ class RunSession:
     def fingerprints(self, document, source_root=None, nonces=None) -> dict[str, str]:
         """Every step's fingerprint, with the nonces assigned so far (or ``nonces``)."""
         nonces = self._nonces if nonces is None else nonces
+        upstream = bypass_upstream(document.workflow)
         prints: dict[str, str] = {}
         for step in document.steps:
-            prints[step.id] = self._fingerprint(document, step, prints, source_root, nonces)
+            prints[step.id] = self._fingerprint(document, step, prints, source_root, nonces, upstream)
         return prints
 
-    def _base(self, document, step, prints, source_root) -> dict:
+    @staticmethod
+    def _bypassed(step, upstream) -> bool:
+        """Taken out of the run: a bypassed Save, or a bypassed processing
+        step the rules allow (a refused one stays in, and its run says why)."""
+        return (isinstance(step, Save) and step.bypass) or step.id in upstream
+
+    def _base(self, document, step, prints, source_root, upstream=None) -> dict:
+        if upstream is None:
+            upstream = bypass_upstream(document.workflow)
         if isinstance(step, Source):
             return self._source_print(step, source_root)
+        if self._bypassed(step, upstream):
+            through = resolve_ref(step.input, upstream) if isinstance(step, Save) else upstream[step.id]
+            return {"kind": "bypassed", "through": [prints.get(through.step, f"missing:{through.step}"),
+                                                    through.port or ""]}
         if step.id in self.result_bindings:
             result = self.result_bindings[step.id]
             return {"kind": "bound", "uid": str(getattr(result, "result_uid", "") or id(result))}
-        inputs = [[prints.get(ref.step, f"missing:{ref.step}"), ref.port or ""] for ref in refs_of(step)]
+        refs = [resolve_ref(ref, upstream) for ref in refs_of(step)]
+        inputs = [[prints.get(ref.step, f"missing:{ref.step}"), ref.port or ""] for ref in refs]
         if isinstance(step, Save):
             return {"kind": "save", "fmt": step.fmt, "template": step.path_template, "inputs": inputs}
         entry = document.entry_for(step)
@@ -247,22 +271,42 @@ class RunSession:
             "restriction": getattr(step, "restriction", None), "inputs": inputs,
         }
 
-    def _fingerprint(self, document, step, prints, source_root, nonces) -> str:
-        base = _digest(self._base(document, step, prints, source_root))
-        if isinstance(step, (Source, Save)) or step.id in self.result_bindings or self.deterministic(step):
+    def _fingerprint(self, document, step, prints, source_root, nonces, upstream=None) -> str:
+        upstream = bypass_upstream(document.workflow) if upstream is None else upstream
+        base = _digest(self._base(document, step, prints, source_root, upstream))
+        if (isinstance(step, (Source, Save)) or step.id in self.result_bindings or self._bypassed(step, upstream)
+                or self.deterministic(step)):
             return base
         return _digest({"base": base, "nonce": nonces.get(base, "unrun")})
 
     def _base_key(self, document, step, prints, source_root) -> str:
         return _digest(self._base(document, step, prints, source_root))
 
+    def passes_through(self, document, step_id: str) -> Ref | None:
+        """For a bypassed step, the reference whose result it passes on."""
+        upstream = bypass_upstream(document.workflow)
+        step = document.step(step_id) if document.has(step_id) else None
+        if step is None or not self._bypassed(step, upstream):
+            return None
+        return resolve_ref(step.input, upstream) if isinstance(step, Save) else upstream[step_id]
+
     # -- states ------------------------------------------------------------------------
 
     def states(self, document, source_root=None, *, write_saves: bool = False) -> dict[str, StepState]:
         prints = self.fingerprints(document, source_root)
+        upstream = bypass_upstream(document.workflow)
         found: dict[str, StepState] = {}
         for step in document.steps:
             key = prints[step.id]
+            if self._bypassed(step, upstream):
+                # Not run: it shows what it passes through, as that step has it.
+                through = self.passes_through(document, step.id)
+                state = StepState(status="bypassed", passes=str(through) if through is not None else "")
+                if isinstance(step, Process) and through is not None:
+                    producer = found.get(through.step)
+                    state.entry = producer.entry if producer is not None else None
+                found[step.id] = state
+                continue
             state = StepState(cached=step.id in self._cached_last)
             if isinstance(step, Source):
                 state.bound = self.source_bindings.get(step.id, "")
@@ -299,7 +343,11 @@ class RunSession:
         return [sid for sid, state in self.states(document, source_root).items() if state.status == "outdated"]
 
     def entry_for(self, document, step_id: str, source_root=None) -> Entry | None:
-        """The entry a box shows: its current one, else its last (outdated) one."""
+        """The entry a box shows: its current one, else its last (outdated) one
+        (a bypassed step's is the one of the step it passes through)."""
+        through = self.passes_through(document, step_id)
+        if through is not None:
+            step_id = through.step
         prints = self.fingerprints(document, source_root)
         key = prints.get(step_id)
         entry = self._cache.get(key) if key else None
@@ -309,16 +357,31 @@ class RunSession:
 
     def plan(self, document, targets=None, *, write_saves: bool = False, out_dir=None, overwrite: bool = False,
              source_root=None) -> RunPlan:
-        """What to run so that ``targets`` (default: every step) are done."""
-        steps = list(document.steps)
+        """What to run so that ``targets`` (default: every step) are done.
+
+        The run is prepared as every run is (``prepare_run``): bypassed steps
+        are taken out and their readers rewired, ``targets`` and their
+        ancestors are cut out of what is left (a bypassed target asks for what
+        it passes through), and control definitions are dropped, so a control
+        whose other targets are outside this run cannot make it invalid.
+        Raises :class:`~imswitch.improcess.workflows.steps.WorkflowError`
+        when the workflow cannot be prepared.
+        """
+        recipe = document.workflow
+        upstream = bypass_upstream(recipe)
+        prepared = prepare_run(recipe, registry=self.registry, subset=list(targets) if targets else None,
+                               bindings=dict(self.result_bindings))
+        sub = list(prepared.workflow.steps)
+        present = {step.id for step in sub}
         if targets:
-            wanted = set(targets)
+            mapped = []
             for target in targets:
-                wanted |= ancestors(steps, target)
+                step = document.step(target) if document.has(target) else None
+                ref = step.input if isinstance(step, Save) and step.bypass else Ref(target)
+                mapped.append(resolve_ref(ref, upstream).step)
+            targets = [t for t in dict.fromkeys(mapped) if t in present]
         else:
-            wanted = {step.id for step in steps}
-            targets = [step.id for step in steps if not descendants(steps, step.id)]
-        sub = [step for step in steps if step.id in wanted]
+            targets = [step.id for step in sub if not descendants(sub, step.id)]
         renewed: set[str] = set()
         nonces = dict(self._nonces)
         while True:
@@ -345,11 +408,7 @@ class RunSession:
                 bindings[step.id] = dict(entry.ports)
             elif isinstance(step, Source) and step.id in self.source_bindings:
                 bindings[step.id] = self.binding_spec(step)
-        # A control's definition never reaches a run (its value is in the
-        # steps), so cutting the workflow cannot leave it a missing target.
-        payload = {**document.workflow.to_dict(), "steps": [s.to_dict() for s in sub]}
-        payload.pop("controls", None)
-        workflow = Workflow.from_dict(payload)
+        workflow = prepared.workflow
         self._run_id += 1
         return RunPlan(
             run_id=self._run_id, workflow=workflow, bindings=bindings, keys=dict(prints),
@@ -578,6 +637,7 @@ class RunSession:
     def pin(self, document, step_id: str, port: str | None = None, source_root=None):
         """The result to publish for ``step_id`` (its first port, or ``port``),
         marked so the cache never drops it; ``None`` when it is not held."""
+        step_id, port = self._resolved(document, step_id, port)
         entry = self._cache.get(self.fingerprints(document, source_root).get(step_id, ""))
         if entry is None or not entry.held or not entry.ports:
             return None
@@ -585,7 +645,15 @@ class RunSession:
         entry.pinned.add(port)
         return entry.ports[port]
 
+    def _resolved(self, document, step_id: str, port: str | None):
+        """A bypassed step's result is the one it passes through."""
+        through = self.passes_through(document, step_id)
+        if through is None:
+            return step_id, port
+        return through.step, through.port or None
+
     def result(self, document, step_id: str, port: str | None = None, source_root=None):
+        step_id, port = self._resolved(document, step_id, port)
         entry = self._cache.get(self.fingerprints(document, source_root).get(step_id, ""))
         if entry is None or not entry.held or not entry.ports:
             return None
