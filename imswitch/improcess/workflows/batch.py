@@ -185,7 +185,12 @@ def _check_batch(workflow: Workflow, rows: list, controls, registry) -> None:
         shapes.add(frozenset(sid for sid, value in bindings.items() if is_result_binding(value)))
     probe_registry = registry() if callable(registry) else registry
     for bound in shapes or {frozenset()}:
-        prepared = prepare_run(workflow, registry=probe_registry, values=controls, bound=bound)
+        try:
+            prepared = prepare_run(workflow, registry=probe_registry, values=controls, bound=bound)
+        except ControlValueError:
+            raise
+        except WorkflowError:
+            return      # an invalid recipe fails each row, as it always has
         for item in rows:
             if not isinstance(item, ManifestRow):
                 continue

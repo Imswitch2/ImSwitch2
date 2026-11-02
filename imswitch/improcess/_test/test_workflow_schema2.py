@@ -336,9 +336,20 @@ def test_bypassed_steps_are_taken_out_and_their_readers_rewired(registry):
     assert prepared.bypassed == ("smooth", "smooth2", "out")
     assert [str(ref) for ref in prepared.workflow.step("merge").inputs] == ["split.C0", "sharp"]
     assert [step.id for step in prepared.workflow.steps] == ["raw", "rec", "split", "sharp", "merge"]
-    # Requesting a bypassed step runs what it passes through.
+    # Requesting a bypassed step runs what it passes through; a bypassed
+    # Save, what it would have saved.
     assert [s.id for s in prepare_run(recipe, registry=registry, subset=["smooth"]).workflow.steps] == [
         "raw", "rec", "split"]
+    assert [s.id for s in prepare_run(recipe, registry=registry, subset=["out"]).workflow.steps] == [
+        "raw", "rec", "split", "sharp", "merge"]
+
+
+def test_a_value_that_cannot_be_checked_is_refused_not_dropped():
+    # Without a registry no field is known: the value must not be silently
+    # left out of the run.
+    with pytest.raises(ControlValueError, match="cannot be set: no installed plugin declares the field of "
+                                                "smooth.radius, sharp.radius"):
+        prepare_run(_diamond(controls=[RADIUS]), values={"radius": 3.0})
 
 
 def test_a_binding_cannot_name_a_bypassed_step(registry, recording):
@@ -485,6 +496,24 @@ def test_a_bad_cell_fails_its_row_only(registry, tmp_path):
                      overwrite=True)
     assert [row.ok for row in batch.rows] == [False, True]
     assert batch.rows[0].error == "line 2, column radius: 'abc' is not a number (nan and inf are not accepted)"
+
+
+def test_summary_values_read_back_as_what_they_are():
+    from imswitch.improcess.workflows.prepare import convert_text, format_value
+
+    text = _spec("text")
+    for value in ["", "null", "'quoted'", " padded ", "it's", "plain"]:
+        assert convert_text(format_value(value), text) == value
+    assert format_value(None) == "null" and format_value(True) == "true" and format_value(2.5) == "2.5"
+
+
+def test_an_invalid_recipe_with_controls_fails_each_row_as_before(registry, tmp_path):
+    first = str(write_synthetic_recording(tmp_path / "a.h5", frames=2, axes="CYX"))
+    recipe = _diamond(controls=[RADIUS])
+    recipe.step("merge").inputs[0] = recipe.step("merge").inputs[0].__class__("nowhere")
+    batch = run_over(recipe, [{"raw": first}, {"raw": first}], registry=registry, out_dir=tmp_path / "out")
+    assert [row.ok for row in batch.rows] == [False, False]
+    assert "workflow is invalid" in batch.rows[0].error
 
 
 def test_an_inactive_control_set_for_the_batch_refuses_it(registry, tmp_path):

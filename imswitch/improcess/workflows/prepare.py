@@ -578,7 +578,7 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
     issues.extend(bypass_issues(recipe))
     bypassed_all = [step.id for step in recipe.steps if getattr(step, "bypass", False)]
     bound_ids = set(bound or ()) | _result_bound(bindings)
-    for sid in list(bindings or {}) + sorted(bound or ()):
+    for sid in dict.fromkeys([*(bindings or {}), *sorted(bound or ())]):
         if sid in bypassed_all:
             stand_in = upstream.get(sid)
             hint = f"; bind {stand_in.step!r}, which it passes through" if stand_in is not None else ""
@@ -586,10 +586,13 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
     steps, rewired, bypassed = _rewrite(recipe, upstream)
     # 3. the subset
     if subset:
+        # Asking for a bypassed step asks for what it passes through (a
+        # bypassed Save, for what it would have saved).
+        saves = {step.id: step.input for step in recipe.steps if isinstance(step, Save) and step.bypass}
         wanted = []
         for sid in subset:
-            ref = resolve_ref(Ref(sid), upstream)
-            wanted.append(ref.step)
+            ref = saves.get(sid, Ref(sid))
+            wanted.append(resolve_ref(ref, upstream).step)
         steps = _cut(steps, wanted)
     execution = Workflow(name=recipe.name, steps=steps, description=recipe.description,
                          metadata=dict(recipe.metadata))
@@ -633,7 +636,14 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
                 name, f"has no active target in this run, so a value would change nothing: {why}")
             continue
         if state.spec is None:
-            continue            # its targets do not combine: already an issue
+            if not state.fields:
+                # No installed plugin declares the targets' fields, so the
+                # value cannot be checked (or typed): refuse it rather than
+                # run without it.
+                value_error = value_error or ControlValueError(
+                    name, "cannot be set: no installed plugin declares the field of "
+                          + ", ".join(t.target for t in state.targets if t.active))
+            continue            # else its targets do not combine: already an issue
         try:
             applied[name] = control_value(given, state)
         except ValueError as exc:
@@ -743,11 +753,16 @@ def describe_controls(recipe: Workflow, registry=None, *, bound: Iterable[str] |
 
 
 def format_value(value) -> str:
-    """A canonical value as text a manifest or ``--set`` would accept back."""
+    """A canonical value as text a manifest or ``--set`` would accept back
+    (text that would read as something else -- empty, ``null``, already
+    quoted -- is quoted)."""
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, str) and (value in ("", "null") or (len(value) >= 2 and value[0] == value[-1] == "'")
+                                   or value != value.strip()):
+        return "'" + value.replace("'", "''") + "'"
     return str(value)
 
 
