@@ -36,7 +36,10 @@ class DirectoryWatcherWidget(QtWidgets.QFrame):
         if path:
             self.folderEdit.setText(path)
 
-    def _setPath(self, text: str) -> None:
+    def showError(self, message: str):
+        guitools.showWarning(self, "Directory watcher", message)
+
+    def _setPath(self, text: str):
         self.path = text.strip()
 
 

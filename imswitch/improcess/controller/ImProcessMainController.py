@@ -462,6 +462,34 @@ class ImProcessMainController(MainController):
         self._refresh_runtime_processor_choices()
 
     def _reload_user_plugins(self) -> None:
+        """The 'Reload plugins' handler: reload now, unless a directory watch
+        is running.
+
+        A running watch would have its reconstructor swapped underneath it,
+        so the user is asked first. No leaves everything as it is. Yes winds
+        the watch down -- the timelapse being processed is finished with the
+        frames already read, its result kept -- and reloads once it has
+        stopped. Asked before anything is reloaded, processors included.
+        """
+        watcher = getattr(
+            getattr(self, 'mainViewController', None), 'directoryWatcherController', None
+        )
+        running = getattr(watcher, 'isLiveReconstructionRunning', None)
+        if not (callable(running) and running()):
+            self._reload_user_plugins_now()
+            return
+
+        confirm = getattr(self.__mainView, 'confirmDirectoryWatcherInterruption', None)
+        message = (
+            'Directory watching is running. Reloading plugins will stop it: '
+            'the timelapse currently being processed is finished with the '
+            'frames already read, and no new ones are started. Continue?'
+        )
+        if not (callable(confirm) and confirm(message)):
+            return
+        watcher.stopAfterCurrent(self._reload_user_plugins_now)
+
+    def _reload_user_plugins_now(self) -> None:
         """Re-scan the drop-in plugins folder; refresh the tool list and the
         reconstructor picker.
 

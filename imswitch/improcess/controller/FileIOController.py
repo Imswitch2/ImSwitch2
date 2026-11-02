@@ -101,7 +101,8 @@ class FileIOController(ImProcessWidgetController):
 
         # Multi-dataset controllers are only used by _loadFromPath
         self.multiDataFrameController = self._factory.createController(
-            MultiDataFrameController, self._widget.multiDataFrame
+            MultiDataFrameController, self._widget.multiDataFrame,
+            mainView=self._widget,
         )
         self.pickDatasetsController = self._factory.createController(
             PickDatasetsController, self._widget.pickDatasetsDialog
@@ -111,12 +112,16 @@ class FileIOController(ImProcessWidgetController):
             self._commChannel.sigDataFolderChanged.emit(self._dataFolder)
 
     def quickLoadData(self):
+        if not self._widget.confirmLoadingDuringWatch():
+            return
         dataPath = self._requestLoadPath()
         if dataPath:
             self._logger.debug(f'Loading data at: {dataPath}')
             self._loadFromPath(dataPath, prefer_as_current=True)
 
     def quickLoadVirtualData(self):
+        if not self._widget.confirmLoadingDuringWatch():
+            return
         dataPath = self._requestLoadPath(caption_prefix='Open virtual')
         if dataPath:
             self._logger.debug(f'Opening virtual data at: {dataPath}')
@@ -199,6 +204,8 @@ class FileIOController(ImProcessWidgetController):
         single path is promoted to the current DataObj so the auto-route in
         ``currentDataChanged`` puts it straight onto the napari viewer.
         """
+        if not self._widget.confirmLoadingDuringWatch():
+            return
         prefer_as_current = (
             len(paths) == 1
             and self._main._activeReconstructor is not None

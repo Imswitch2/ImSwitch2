@@ -14,8 +14,10 @@ from .basecontrollers import ImProcessWidgetController
 
 
 class MultiDataFrameController(ImProcessWidgetController):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, mainView=None, **kwargs):
         super().__init__(*args, **kwargs)
+        # asks before data is loaded under a running directory watch
+        self._mainView = mainView
 
         self._loadingData = False
         self._dataFolder = None
@@ -172,7 +174,15 @@ class MultiDataFrameController(ImProcessWidgetController):
         normalized = str(source.path)
         return normalized, os.path.basename(normalized) or normalized
 
+    def _mayLoad(self) -> bool:
+        # the user's own loads only: a memory recording opened by its policy
+        # does not ask
+        confirm = getattr(self._mainView, 'confirmLoadingDuringWatch', None)
+        return confirm() if callable(confirm) else True
+
     def addDataClicked(self):
+        if not self._mayLoad():
+            return
         paths = self._widget.requestFilePathsFromUser(self._dataFolder)
         for path in paths:
             path, name = self._normalizedPathAndName(path)
@@ -181,11 +191,15 @@ class MultiDataFrameController(ImProcessWidgetController):
                 self.makeAndAddDataObj(name, datasetName, path=path)
 
     def loadCurrData(self):
+        if not self._mayLoad():
+            return
         for dataObj in self._widget.getSelectedDataObjs():
             dataObj.checkAndLoadData()
         self.updateInfo()
 
     def loadAllData(self):
+        if not self._mayLoad():
+            return
         for dataObj in self._widget.getAllDataObjs():
             dataObj.checkAndLoadData()
         self.updateInfo()
@@ -246,6 +260,8 @@ class MultiDataFrameController(ImProcessWidgetController):
         self._moduleCommChannel.memoryRecordings.saveToDisk(dataObj.name)
 
     def setAsCurrentData(self):
+        if not self._mayLoad():
+            return
         try:
             self._loadingData = True
             selectedDataObj = self._widget.getSelectedDataObj()

@@ -225,6 +225,10 @@ class _FakeDWW(QtCore.QObject):
         super().__init__()
         self.path = str(path)
         self.monitorFolderCheck = _Check()
+        self.errors = []
+
+    def showError(self, message):
+        self.errors.append(message)  # recorded, not a dialog
 
 
 def _dwc(path):

@@ -1605,24 +1605,46 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if live is not None and live.isChecked():
             live.setChecked(False)
 
-    def confirmDirectoryWatcherInterruption(self) -> bool:
+    def confirmDirectoryWatcherInterruption(self, message: str | None = None) -> bool:
         """Ask before an action that would end a running watch; True = go on.
 
         Returns ``True`` immediately when nothing is running, so callers can
         guard unconditionally -- the same shape as ``confirm_bulk_publish``.
+        ``message`` says what the action will do to the watch; the default
+        is the reconstructor change's.
         """
         if not self.isDirectoryWatcherRunning():
             return True
         reply = QtWidgets.QMessageBox.question(
             self,
             'Stop directory watching?',
-            'Directory watching is running. Changing the reconstructor '
-            'will stop it, and the timelapse currently being processed '
-            'will not be finished. Continue?',
+            message or (
+                'Directory watching is running. Changing the reconstructor '
+                'will stop it, and the timelapse currently being processed '
+                'will not be finished. Continue?'
+            ),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         )
         return reply == QtWidgets.QMessageBox.Yes
+
+    def confirmLoadingDuringWatch(self) -> bool:
+        """Ask before loading data while a watch is running; True = go on.
+
+        Loading data can change the active reconstructor under the watch, so
+        a watch is never left running through a load: on Yes it is stopped
+        first. Returns ``True`` at once when nothing is running.
+        """
+        if not self.isDirectoryWatcherRunning():
+            return True
+        if not self.confirmDirectoryWatcherInterruption(
+            'Directory watching is running. Loading data will stop it first, '
+            'and the timelapse currently being processed will not be '
+            'finished. Continue?'
+        ):
+            return False
+        self.stopDirectoryWatcher()
+        return True
 
     def setDirectoryWatcherAvailable(self, available: bool) -> None:
         """Show the Directory watcher only for reconstructors that stream.

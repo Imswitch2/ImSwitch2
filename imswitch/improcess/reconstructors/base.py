@@ -696,13 +696,27 @@ class StreamingReconstructor(Reconstructor):
 
     supports_streaming: bool = True
 
-    def contract(self, info: RawInfo, params: dict) -> Contract:
+    def __init_subclass__(cls, **kwargs):
+        # contract() is called on the class, not an instance: an override
+        # without @classmethod would only fail once a watch is running
+        super().__init_subclass__(**kwargs)
+        own = cls.__dict__.get("contract")
+        if own is not None and not isinstance(own, classmethod):
+            raise TypeError(f"{cls.__name__}.contract() must be a @classmethod")
+
+    @classmethod
+    def contract(cls, info: RawInfo, params: dict) -> Contract:
         """Agree to reconstruct an entry, or raise :class:`Incompatible`.
 
         ``params`` are the user's values; a value of None means "not set".
         Resolve every parameter you can from them and ``info`` (no pixels
         are read yet), and leave the rest to :meth:`complete`. The default
         accepts anything, needs no init, and takes frames one by one.
+
+        A classmethod, so it works from its arguments alone: during a
+        directory watch it runs on the stream thread, which has the class,
+        while the process thread has the instance. Settings it needs come
+        in through ``params``.
         """
         return Contract(init_frames=0, chunk_frames=1, params=dict(params))
 
