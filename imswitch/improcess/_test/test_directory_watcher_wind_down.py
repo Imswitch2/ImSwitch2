@@ -77,6 +77,8 @@ class _Check:
 
 class _FakeDWW(QtCore.QObject):
     sigMonitorChanged = QtCore.Signal(bool)
+    sigSkipEntryClicked = QtCore.Signal()
+    sigResetClicked = QtCore.Signal()
 
     def __init__(self, path):
         super().__init__()

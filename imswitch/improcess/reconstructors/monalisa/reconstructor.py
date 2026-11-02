@@ -1,6 +1,7 @@
 """MoNaLISA SIM reconstructor plugin."""
 
 import copy
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,7 +12,13 @@ from imswitch.imcommon.model.acquisition_layout import UnconsumedLoopError
 from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
-from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
+from imswitch.improcess.reconstructors.base import (
+    Contract,
+    Incompatible,
+    RawInfo,
+    StreamInit,
+    StreamingReconstructor,
+)
 from .coeffs_to_image import (
     linestep_conditions_interleave_per_line,
     placement_from_layout,
@@ -55,6 +62,21 @@ class MonalisaReconstructor(StreamingReconstructor):
     description = "Point-scanning SIM reconstruction with pattern-based signal extraction"
     supports_streaming = True
     supports_consolidation = True
+
+    @classmethod
+    def contract(cls, info: RawInfo, params: dict) -> Contract:
+        """Agree to reconstruct an entry whose timepoints are scan stacks.
+
+        The session begins on one whole timepoint, its first scan stack:
+        locating the illumination grid and detecting the scan orientation
+        both need a complete nx*ny scan, and begin() falls back to the
+        default orientation on anything less. After that the frames are
+        pushed one by one; push() handles any chunk. An entry with one frame
+        per timepoint (S is ()) holds no scan stacks, so it is refused.
+        """
+        if not info.S:
+            raise Incompatible("MoNaLISA needs scan stacks, but each timepoint is a single frame")
+        return Contract(init_frames=math.prod(info.S), chunk_frames=1, params=dict(params))
 
     @classmethod
     def default_params(cls) -> dict:

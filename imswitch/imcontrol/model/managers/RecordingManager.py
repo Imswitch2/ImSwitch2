@@ -1,3 +1,4 @@
+import asyncio
 import enum
 import json
 import math
@@ -551,6 +552,30 @@ class Storer(abc.ABC):
         return grouped
 
 
+if hasattr(zarr.storage, 'LocalStore'):
+    class _RetryingLocalStore(zarr.storage.LocalStore):
+        """A LocalStore that retries a write when Windows refuses the rename.
+
+        zarr writes each key to a temporary file and renames it over the old
+        file. On Windows the rename fails with PermissionError while another
+        process has the old file open, for example ImProcess reading a
+        recording live. The reader holds the file only briefly, so the write
+        is retried instead of aborting the recording.
+        """
+
+        _WRITE_ATTEMPTS = 50
+        _RETRY_DELAY_S = 0.01
+
+        async def set(self, key, value):
+            for attempt in range(self._WRITE_ATTEMPTS):
+                try:
+                    return await super().set(key, value)
+                except PermissionError:
+                    if attempt == self._WRITE_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(self._RETRY_DELAY_S)
+
+
 class ZarrStorer(Storer):
     """Storer for Zarr format with the same structured layout as HDF5."""
 
@@ -558,7 +583,7 @@ class ZarrStorer(Storer):
     def _make_store(path: str) -> Any:
         if hasattr(zarr.storage, 'DirectoryStore'):
             return zarr.storage.DirectoryStore(path)
-        return zarr.storage.LocalStore(path)
+        return _RetryingLocalStore(path)
 
     @staticmethod
     def _close_store(store) -> None:

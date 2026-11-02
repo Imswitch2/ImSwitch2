@@ -2,9 +2,10 @@
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 import time
+import h5py
 import zarr
 import numpy as np
 from qtpy import QtCore
@@ -52,6 +53,11 @@ class DirectoryWatcherController(ImProcessWidgetController):
         # entries found while the StreamWorker is busy wait here: FIFO
         self._entry_queue: list[str] = []
         self._stream_worker_busy = False
+        # The entries handed to the StreamWorker, kept across stops and starts
+        # of monitoring, so that an entry is reconstructed only once. Only
+        # Reset, or restarting ImSwitch, forgets them. An entry still queued
+        # when monitoring stops isn't in it, so it is found again next time.
+        self._seen_entries: set[str] = set()
         # set while winding down (stopAfterCurrent): run once monitoring stops
         self._on_stopped = None
         # workers that ran past STOP_TIMEOUT_S, with their threads: kept
@@ -59,6 +65,31 @@ class DirectoryWatcherController(ImProcessWidgetController):
         # while it runs
         self._stragglers: list[tuple[QtCore.QObject, QtCore.QThread]] = []
         self._widget.sigMonitorChanged.connect(self._on_monitor_changed)
+        self._widget.sigSkipEntryClicked.connect(self.skipEntry)
+        self._widget.sigResetClicked.connect(self.reset)
+
+    def skipEntry(self):
+        """Stop reading the entry being streamed and move on to the next one.
+
+        The StreamWorker finishes the entry with the frames it has already
+        read, so they are still processed and shown, and the next entry in
+        the queue follows as usual. Without an entry being streamed, it does
+        nothing.
+        """
+        if self._stream_worker is None or not self._stream_worker_busy:
+            return
+        self._logger.info("Skipping the current entry")
+        self._stream_worker.finish_now()
+
+    def reset(self):
+        """Stop monitoring, as unticking Monitor does, and forget the entries
+        already seen, so that the next watch reconstructs every entry in the
+        root again.
+        """
+        self._widget.monitorFolderCheck.setChecked(False)
+        self._stop_monitoring()  # if unchecking didn't (unchecked already)
+        self._logger.info("Forgetting the entries seen")
+        self._seen_entries.clear()
 
     def closeEvent(self):
         # ImProcess is closing: stop the watch as unticking Monitor does, and
@@ -140,6 +171,7 @@ class DirectoryWatcherController(ImProcessWidgetController):
         self._observer_worker = ObserverWorker(
             initLogger("DirectoryWatcherController", instanceName="ObserverWorker"),
             root,
+            seen=set(self._seen_entries),  # a copy: the OW lives on another thread
         )
         # the StreamWorker gets the class, for contract(), and the
         # ProcessWorker the instance: no instance shared across threads
@@ -262,6 +294,7 @@ class DirectoryWatcherController(ImProcessWidgetController):
             return
         self._stream_worker_busy = True
         entry = self._entry_queue.pop(0)
+        self._seen_entries.add(entry)
         params = self._get_reconstructor_params()
         self._stream_worker.sigStartStreaming.emit(entry, params)
 
@@ -283,13 +316,16 @@ class ObserverWorker(QtCore.QObject):
         self,
         logger: LoggerAdapter,
         root: str,
-        sleep_ms: int = 1000
+        sleep_ms: int = 1000,
+        seen: set[str] | None = None,
     ):
         super().__init__()
         self._logger = logger
         self._root = os.path.abspath(root)
         self._sleep_ms = sleep_ms
-        self._seen: set[str] = set()
+        # the entries emitted so far, starting with those the DWC has already
+        # seen in earlier watches, which are never emitted again
+        self._seen: set[str] = seen if seen is not None else set()
         # the timer is a child of the OW, and when the OW is moved to its
         # thread (ow_thread) via moveToThread() in the DWC, the timer moves
         # to the thread as well
@@ -355,7 +391,11 @@ class StreamWorker(QtCore.QObject):
     each later timepoint as an entry of its own, and the DWC still passes it
     to the SW, but the SW skips it: its frames were already read with the lapse.
 
-    Zarr only, for now.
+    Every form can also be an HDF5 file (.hdf5 or .h5) instead of a Zarr
+    store, with the same groups inside. A Zarr store is streamed while it is
+    being written. An HDF5 file is only read once ImControl has closed it:
+    reading one that is still open for writing can break the recording on
+    Windows, so the SW waits until the writer is done with it.
     """
 
     sigStartStreaming = QtCore.Signal(str, object)                  # (entry, params)
@@ -369,6 +409,12 @@ class StreamWorker(QtCore.QObject):
 
     LAPSES = ("CameraLapse", "ScanLapse")
 
+    # How far the SW reads ahead of the ProcessWorker in one read, at most
+    # (but always at least the next item and one timepoint). The stores are
+    # opened at most once per sleep_ms (see _read_block), so each read takes
+    # as much as it can.
+    READ_AHEAD_BYTES = 256 * 2**20
+
     def __init__(
         self,
         logger: LoggerAdapter,
@@ -380,7 +426,6 @@ class StreamWorker(QtCore.QObject):
         self._reconstructor_class = reconstructor_class  # for contract() only
         self._sleep_ms = sleep_ms
         self._current_entry: _EntryStream | None = None  # the entry being read
-        self._winding_down = False  # finish_now(): read no new frames, finish the entry in hand
         self._pw_busy = False  # an item sent, not yet confirmed by the ProcessWorker
 
         # the timer is a child of the SW, and when the SW is moved to its
@@ -399,10 +444,25 @@ class StreamWorker(QtCore.QObject):
         # file per timepoint (E5, E6) directly in the root. There, every
         # timepoint file is an entry of its own, but the SW streams the whole
         # lapse from the first one, reading the later timepoint files as they
-        # appear. The set stores the paths of those later files, so that when
+        # appear. The set stores the paths of the lapse's files, so that when
         # their own entries arrive they are skipped instead of streamed again.
-        # For every other form it stays empty.
+        # A timepoint file that only appears after the lapse was finished
+        # early (Skip entry) is skipped too, since its name matches files in
+        # the set. For every other form it stays empty.
         self._lapse_siblings_read: set[str] = set()
+
+        # The HDF5 files opened since the last _close_hdf5_files(). They are
+        # closed again as soon as a step is done with them, since ImControl
+        # reopens a file it has written (to finish it, or to add the next
+        # timepoint of a lapse) and must not find it held open.
+        self._open_hdf5_files: list[h5py.File] = []
+        # The stores the last _get_data_groups() could not open, though they
+        # are on disk: an HDF5 file ImControl still has open for writing, or a
+        # Zarr store being created or having its metadata replaced.
+        self._unopened_stores: list[str] = []
+        # An entry (path, params) whose HDF5 file couldn't be read yet when it
+        # arrived. start() tries it again on every timeout until it can.
+        self._waiting_entry: tuple[str, dict] | None = None
 
     def start(self, entry: str, params: dict):
         # Starts streaming one entry. The DWC calls it through sigStartStreaming,
@@ -417,16 +477,35 @@ class StreamWorker(QtCore.QObject):
         # frames are read and sent by _read_more(). start() itself returns at
         # once, so stop() and finish_now() can be handled while the entry is
         # being streamed.
+        #
+        # An HDF5 file can't be opened while ImControl is still writing it, so
+        # an HDF5 entry found during its recording can't be described yet. The
+        # entry then waits: start() is called again for it on every timeout,
+        # until the file has been closed and can be read.
         name = os.path.basename(entry)
 
-        if entry in self._lapse_siblings_read:
+        if any(store in self._lapse_siblings_read for store in self._stores(entry)):
             self._logger.debug(f"{name}: a timepoint of a lapse already read")
             self.sigEntryFinished.emit()
             return
 
-        self._logger.info(f"Streaming {name}")
+        retrying = self._waiting_entry is not None
+        self._waiting_entry = None
+        if not retrying:
+            self._logger.info(f"Streaming {name}")
 
         raw_data_info = self._get_raw_data_info(entry)
+        self._close_hdf5_files()
+        unopened_hdf5_files = [
+            store for store in self._unopened_stores if _store_extension(store) != ".zarr"
+        ]
+        if raw_data_info is None and unopened_hdf5_files:
+            if not retrying:
+                self._logger.info(f"{name}: waiting until ImControl has finished writing it")
+            self._waiting_entry = (entry, params)
+            self._timer.start(self._sleep_ms)
+            return
+
         if raw_data_info is None:
             self._logger.info(f"{name}: no raw data found")
             self._finish_entry(entry)
@@ -456,10 +535,11 @@ class StreamWorker(QtCore.QObject):
         self.sigStop.emit()
 
     def finish_now(self):
-        # Starts a wind-down: no new frames are read, and the current entry is
-        # finished with the frames already read. It is safe to call from any
-        # thread: it only emits sigFinishNow, which _on_finish_now() handles on
-        # this worker's thread, between reads.
+        # Finishes the current entry early: no new frames are read for it, and
+        # it is finished with the frames already read. The DWC calls it for
+        # Skip entry and for a wind-down. It is safe to call from any thread:
+        # it only emits sigFinishNow, which _on_finish_now() handles on this
+        # worker's thread, between reads.
         self.sigFinishNow.emit()
 
     @QtCore.Slot()
@@ -469,14 +549,25 @@ class StreamWorker(QtCore.QObject):
         # is abandoned, not finished: sigEntryFinished is not sent.
         self._timer.stop()
         self._current_entry = None
+        self._waiting_entry = None
 
     @QtCore.Slot()
     def _on_finish_now(self):
         # Handles finish_now() on this worker's thread. From now on no new
-        # frames are read. What is already in hand is still sent and processed,
-        # as if the recording had ended there, and _send_next() then finishes
-        # the entry.
-        self._winding_down = True
+        # frames are read for the current entry. What is already in hand is
+        # still sent and processed, as if the recording had ended there, and
+        # _send_next() then finishes the entry. An entry still waiting for its
+        # HDF5 file has nothing in hand, so it is finished at once. Without a
+        # current entry there is nothing to finish.
+        if self._waiting_entry is not None:
+            entry, _ = self._waiting_entry
+            self._waiting_entry = None
+            self._timer.stop()
+            self._finish_entry(entry)
+            return
+        if self._current_entry is None:
+            return
+        self._current_entry.reading_stopped = True
         self._send_next()
 
     def _finish_entry(self, entry: str):
@@ -485,16 +576,50 @@ class StreamWorker(QtCore.QObject):
         # done with: one that was refused, and one that has been read, sent
         # and processed.
         #
-        # Before that, it records the later timepoint files of an E5/E6 lapse
-        # in the root, so that their own entries are skipped when they arrive.
-        # The data groups are looked up again rather than reused, since a live
-        # lapse has more timepoints by now. Only files next to the entry count.
+        # Before that, it records the timepoint files of an E5/E6 lapse in the
+        # root, the entry's own included, so that the later timepoints' own
+        # entries are skipped when they arrive. The data groups are looked up
+        # again rather than reused, since a live lapse has more timepoints by
+        # now. Only files next to the entry count.
         root = os.path.dirname(entry)
-        for dg_path, _ in self._get_data_groups(entry):
-            if dg_path != entry and os.path.dirname(dg_path) == root:
-                self._lapse_siblings_read.add(dg_path)
+        lapse_files = [
+            dg_path for dg_path, _ in self._get_data_groups(entry)
+            if dg_path != entry and os.path.dirname(dg_path) == root
+        ]
+        if lapse_files or _LAPSE_NAME.search(os.path.basename(entry)):
+            self._lapse_siblings_read.update(lapse_files + [entry])
+        self._close_hdf5_files()
 
         self.sigEntryFinished.emit()
+
+    def _open_store(self, path: str) -> zarr.Group | h5py.File:
+        # Opens a Zarr store or an HDF5 file for reading, and returns its
+        # root group. Opening can fail, for example for a store still being
+        # created; the caller then tries again on a later read.
+        #
+        # An HDF5 file is always opened without HDF5's file locking. A reader
+        # that takes the lock makes ImControl's writer fail in the middle of a
+        # recording on Windows ("Permission denied"). Without the lock, the
+        # open fails for as long as the writer has the file open, so the SW
+        # only ever reads HDF5 files the writer has closed. The file is kept
+        # in self._open_hdf5_files, to be closed by _close_hdf5_files().
+        if path.lower().endswith(".zarr"):
+            return zarr.open_group(path, mode="r")
+        hdf5_file = h5py.File(path, "r", locking=False)
+        self._open_hdf5_files.append(hdf5_file)
+        return hdf5_file
+
+    def _close_hdf5_files(self):
+        # Closes every HDF5 file opened since the last call. The steps that
+        # open stores (describing an entry, reading a block, finishing an
+        # entry) call it when they are done, so that the writer can reopen a
+        # file it has written without finding it held open.
+        for hdf5_file in self._open_hdf5_files:
+            try:
+                hdf5_file.close()
+            except Exception:
+                pass
+        self._open_hdf5_files.clear()
 
     # --- describe ---------------------------------------------------------
 
@@ -597,50 +722,66 @@ class StreamWorker(QtCore.QObject):
     @staticmethod
     def _name(entry: str, mode: str | None) -> str:
         # Returns the name the entry's result is shown under: the entry's file
-        # name without ".zarr". For a timepoint of a lapse stored with a file
-        # per timepoint, the timepoint is left out too, so that every timepoint
-        # gives the lapse's name: rec_Camera for rec_time0_Camera.zarr,
-        # rec_time1_Camera.zarr, and so on.
+        # name without its extension (.zarr, .hdf5 or .h5). For a timepoint of
+        # a lapse stored with a file per timepoint, the timepoint is left out
+        # too, so that every timepoint gives the lapse's name: rec_Camera for
+        # rec_time0_Camera.zarr, rec_time1_Camera.zarr, and so on.
         name = os.path.basename(entry)
-        if name.lower().endswith(".zarr"):
-            name = name[:-len(".zarr")]
+        extension = _store_extension(name)
+        if extension:
+            name = name[:-len(extension)]
             matches = list(_LAPSE_NAME.finditer(name))
             if mode in StreamWorker.LAPSES and matches:
                 name = name[:matches[-1].start()] + name[matches[-1].end() - 1:]
         return name
 
-    def _get_data_groups(self, entry: str) -> list[tuple[str, zarr.Group]] | list[None]:
+    def _get_data_groups(
+        self, entry: str, skip_stores: set[str] = frozenset()
+    ) -> list[tuple[str, zarr.Group | h5py.Group]]:
         # Returns the detector groups the entry's frames are read from, in
-        # recording order, each paired with the Zarr store it is in. A single
-        # recording gives one group. A lapse gives one per timepoint: a scanN
-        # group, or a store of its own.
+        # recording order, each paired with the store (Zarr store or HDF5
+        # file) it is in. A single recording gives one group. A lapse gives
+        # one per timepoint: a scanN group, or a store of its own.
         #
-        # It opens every Zarr store of the entry and collects the groups that
-        # hold both data and metadata, directly or one level down (scanN/<det>).
-        # For an E5/E6 lapse in the root, it keeps only the stores whose metadata
-        # says they belong to the same lapse as the entry. With several
-        # detectors, only the one whose name sorts first is kept, for now.
-        stores: list[str] = self._zarr_stores(entry)
-        groups: list[tuple[str, zarr.Group]] | list[None] = []
+        # It opens every store of the entry and collects the groups that hold
+        # both data and metadata, directly or one level down (scanN/<det>).
+        # For an E5/E6 lapse in the root, it keeps only the stores whose
+        # metadata says they belong to the same lapse as the entry. With
+        # several detectors, only the one whose name sorts first is kept, for
+        # now. HDF5 files it opens stay open until _close_hdf5_files().
+        #
+        # The stores in skip_stores are left out: _read_block passes the ones
+        # it has already read to their end. The entry's own store is still
+        # opened, since it tells which lapse the other stores must belong to.
+        stores: list[str] = self._stores(entry)
+        groups: list[tuple[str, zarr.Group | h5py.Group]] = []
+        self._unopened_stores = []
         for store in stores:
-            # a store still being created, or one whose metadata the
-            # writer is replacing right now (Windows), is left for the next
-            # call; _read_block keeps the timepoints in order regardless
+            if store in skip_stores and store != entry:
+                continue
+            # a store still being created, a Zarr store whose metadata the
+            # writer is replacing right now (Windows), or an HDF5 file still
+            # open for writing, is left for the next call; _read_block keeps
+            # the timepoints in order regardless
             try:
-                root = zarr.open_group(store, mode="r")
-                for _, child in root.groups():
+                root = self._open_store(store)
+                for child in _child_groups(root):
                     if "data" in child and "metadata" in child:
                         groups.append((store, child))
                     else:  # scanN/<det>
-                        groups += [(store, det) for _, det in child.groups()
+                        groups += [(store, det) for det in _child_groups(child)
                                    if "data" in det and "metadata" in det]
             except Exception:
+                # a store that exists but can't be opened may be readable
+                # later; one that is gone never will be
+                if os.path.exists(store):
+                    self._unopened_stores.append(store)
                 continue
 
         if not groups:
             return []
 
-        if len(stores) > 1 and entry.lower().endswith(".zarr"):
+        if len(stores) > 1 and _store_extension(entry):
             # the files next to a lapse timepoint that share its name: keep
             # those whose metadata says they belong to the same lapse
             own = [self._lapse(group) for store, group in groups if store == entry]
@@ -649,33 +790,39 @@ class StreamWorker(QtCore.QObject):
                 if store == entry or (own and own[0] and self._lapse(group) == own[0])
             ]
 
+        groups = [(store, group) for store, group in groups if store not in skip_stores]
+        if not groups:
+            return []
+
         # several detectors: keep only the one whose name sorts first, for now
-        detector = min(group.basename for _, group in groups)
-        groups = [(store, group) for store, group in groups if group.basename == detector]
+        detector = min(_group_name(group) for _, group in groups)
+        groups = [(store, group) for store, group in groups if _group_name(group) == detector]
 
         # in recording order: a lapse's timepoints by their recorded index
         # (a single recording has none, and counts as 0)
         def lapse_index(store_and_group):
             _, group = store_and_group
-            return int(group["data"].attrs.get("recording:lapse_index", 0))
+            return _lapse_index(group)
         groups.sort(key=lapse_index)
 
         return groups
 
     @staticmethod
-    def _zarr_stores(entry: str) -> list[str]:
-        # Returns the paths of the Zarr stores that make up an entry:
-        # - for a folder, the Zarr stores inside it (folder/E1 ... folder/E6);
+    def _stores(entry: str) -> list[str]:
+        # Returns the paths of the stores that make up an entry. A store is a
+        # Zarr store (.zarr) or an HDF5 file (.hdf5 or .h5):
+        # - for a folder, the stores inside it (folder/E1 ... folder/E6);
         # - for a timepoint of an E5/E6 lapse in the root, the entry and the
         #   stores next to it whose names differ only in the time or scan index,
-        #   <savename>_time<N>_<det>.zarr (or _scan<N>_);
-        # - for any other Zarr store, the entry itself (E1 to E4).
-        # A lone file that is not a Zarr store gives an empty list.
-        if not entry.lower().endswith(".zarr"):
+        #   <savename>_time<N>_<det>.zarr (or _scan<N>_, or .hdf5);
+        # - for any other store, the entry itself (E1 to E4).
+        # Anything else, such as a lone file that is not a store, gives an
+        # empty list.
+        if not _store_extension(entry):
             if not os.path.isdir(entry):
-                return []  # a lone file that isn't a Zarr store
+                return []  # a lone file that isn't a store
             return [os.path.join(entry, n) for n in os.listdir(entry)
-                    if n.lower().endswith(".zarr")]
+                    if _store_extension(n)]
 
         folder_name, file_name = os.path.split(entry)
         matches = list(_LAPSE_NAME.finditer(file_name))
@@ -697,7 +844,7 @@ class StreamWorker(QtCore.QObject):
         return [entry if n == file_name else os.path.join(folder_name, n)
                 for n in names if siblings.match(n)]
 
-    def _lapse(self, group: zarr.Group) -> tuple[str, int] | None:
+    def _lapse(self, group: zarr.Group | h5py.Group) -> tuple[str, int] | None:
         # Identifies the lapse a timepoint belongs to, as (mode, number of
         # timepoints), for a lapse stored with a file per timepoint. Stores with
         # the same identity are taken to be timepoints of the same lapse.
@@ -735,6 +882,9 @@ class StreamWorker(QtCore.QObject):
         # read means the next chunk is already in hand while the ProcessWorker
         # works on this one, so the ProcessWorker never waits for a read that
         # could have been done earlier.
+        if self._waiting_entry is not None:
+            self.start(*self._waiting_entry)  # its HDF5 file may be readable now
+            return
         current_entry = self._current_entry
         if current_entry is None:
             return
@@ -761,7 +911,7 @@ class StreamWorker(QtCore.QObject):
         entry_contract = current_entry.contract
         init_frames = max(entry_contract.init_frames, 1)
         chunk_frames = entry_contract.chunk_frames
-        no_more_frames = current_entry.completely_read or self._winding_down
+        no_more_frames = current_entry.completely_read or current_entry.reading_stopped
 
         # 1. The contract with the init frames. It is sent once enough
         # frames have been read. A recording that ends before that is
@@ -776,7 +926,7 @@ class StreamWorker(QtCore.QObject):
                 current_entry.init_frames_sent = True
                 self._pw_busy = True
             elif no_more_frames:
-                if not self._winding_down:
+                if not current_entry.reading_stopped:
                     self._logger.info(
                         f"Recording finished with fewer than {init_frames} frames"
                     )
@@ -833,7 +983,7 @@ class StreamWorker(QtCore.QObject):
         # It reads only when the frames in hand are not enough for the next
         # item that _send_next() has to send (the init frames, or a chunk).
         # It then reads a block of at least one timepoint, not just one
-        # chunk: opening the Zarr stores costs far more than reading a frame,
+        # chunk: opening the stores costs far more than reading a frame,
         # so reading one chunk at a time would be very slow when chunks are
         # single frames. This also bounds memory: the SW never holds more
         # than one block ahead of the ProcessWorker.
@@ -846,7 +996,7 @@ class StreamWorker(QtCore.QObject):
         #
         # Once the whole recording has been read, it sets
         # current_entry.completely_read.
-        if current_entry.completely_read or self._winding_down:
+        if current_entry.completely_read or current_entry.reading_stopped:
             return
         entry_contract = current_entry.contract
         needed_frames = entry_contract.chunk_frames
@@ -854,20 +1004,76 @@ class StreamWorker(QtCore.QObject):
             needed_frames = max(needed_frames, entry_contract.init_frames, 1)
         if len(current_entry.pending_frames) >= needed_frames:
             return  # the next item is in hand
+
+        # The stores are opened at most once per sleep_ms (with some slack
+        # for the timer). Every open reads the recording's metadata files,
+        # and on Windows ImControl's Zarr writer fails when it replaces one
+        # of them while it is being read; it has no retry. Fewer opens make
+        # that rarer, though they can't rule it out.
+        now = time.monotonic()
+        if now - current_entry.last_open_time < 0.9 * self._sleep_ms / 1000:
+            return
+        current_entry.last_open_time = now
+
         # S is the shape of one timepoint in frames, so its product is the
         # number of frames in one timepoint (1 when S is ())
-        frames_per_timepoint = math.prod(current_entry.raw_data_info.S)
-        target_frames = max(needed_frames, frames_per_timepoint)
+        raw_data_info = current_entry.raw_data_info
+        frames_per_timepoint = math.prod(raw_data_info.S)
+        frame_bytes = math.prod(raw_data_info.frame_shape) * np.dtype(raw_data_info.dtype).itemsize
+        frames_in_read_ahead = max(self.READ_AHEAD_BYTES // frame_bytes, 1)
+        target_frames = max(needed_frames, frames_per_timepoint, frames_in_read_ahead)
 
-        # reopened on every read: Zarr reads its metadata on open
-        data_groups = self._get_data_groups(current_entry.path)
-        frames_in_earlier_groups = 0
+        # Reopened on every read, since Zarr reads its metadata on open, but
+        # not the stores already read to their end: those are only counted.
+        is_lapse = raw_data_info.mode in self.LAPSES
+        data_groups = self._get_data_groups(
+            current_entry.path, skip_stores=current_entry.stores_read
+        )
+        timepoint = current_entry.timepoints_in_stores_read  # the next one to read
+        frames_in_earlier_groups = current_entry.frames_in_stores_read
+        previous_store = None
         try:
-            for group_index, (_, group) in enumerate(data_groups):
+            if not data_groups:
+                # nothing could be opened this time (a store being replaced,
+                # or an HDF5 file reopened by its writer), or the next
+                # timepoint hasn't appeared yet; a later call retries
+                return
+            lapse_indices = [_lapse_index(group) for _, group in data_groups]
+            for (store, group), lapse_index in zip(data_groups, lapse_indices):
+                if previous_store is not None and store != previous_store:
+                    # every group of the previous store has been read to its
+                    # end, so later reads can skip that store
+                    current_entry.stores_read.add(previous_store)
+                    current_entry.timepoints_in_stores_read = timepoint
+                    current_entry.frames_in_stores_read = frames_in_earlier_groups
+                previous_store = store
+                if lapse_index < timepoint:
+                    continue  # a timepoint already read
+
+                # Timepoints missing from a lapse: a later timepoint is on
+                # disk, so ImControl has moved on without them. They are
+                # filled with blank frames, so that the timepoints after them
+                # keep their place and the stream doesn't stall. Not while a
+                # store couldn't be opened, though: it may hold them.
+                if lapse_index > timepoint:
+                    if self._unopened_stores:
+                        return
+                    frames_in_earlier_groups += (lapse_index - timepoint) * frames_per_timepoint
+                    missing = (
+                        f"timepoint {timepoint} is missing" if lapse_index - timepoint == 1
+                        else f"timepoints {timepoint} to {lapse_index - 1} are missing"
+                    )
+                    self._fill_with_blank_frames(current_entry, frames_in_earlier_groups, missing)
+                    timepoint = lapse_index
+
                 data = group["data"]
-                if int(data.attrs.get("recording:lapse_index", 0)) != group_index:
-                    return  # a timepoint not readable yet
                 committed_frames, writer_done = self._progress(data)
+                if is_lapse:
+                    committed_frames = min(committed_frames, frames_per_timepoint)
+                # A timepoint is over once its writer is done with it, or, in
+                # a lapse, once a later timepoint is on disk, even if its
+                # writer never said so.
+                timepoint_over = writer_done or lapse_index < lapse_indices[-1]
                 first_unread_frame = max(current_entry.read_frames - frames_in_earlier_groups, 0)
                 frames_wanted = target_frames - len(current_entry.pending_frames)
                 read_until = min(committed_frames, first_unread_frame + frames_wanted)
@@ -877,28 +1083,71 @@ class StreamWorker(QtCore.QObject):
                         [current_entry.pending_frames, frames]
                     )
                     current_entry.read_frames += len(frames)
-                frames_in_earlier_groups += committed_frames
-                if read_until < committed_frames or not writer_done:
+                if read_until < committed_frames or not timepoint_over:
                     return  # more to read in this group, now or once written
+
+                # Every timepoint of a lapse holds the same number of frames:
+                # one that ended short is filled up with blank frames, for
+                # the same reason as a missing one.
+                if is_lapse:
+                    frames_in_earlier_groups += frames_per_timepoint
+                    self._fill_with_blank_frames(
+                        current_entry, frames_in_earlier_groups,
+                        f"timepoint {timepoint} holds only {committed_frames} "
+                        f"of {frames_per_timepoint} frames",
+                    )
+                else:
+                    frames_in_earlier_groups += committed_frames
+                timepoint += 1
         except OSError:
             return
+        finally:
+            self._close_hdf5_files()
 
-        raw_data_info = current_entry.raw_data_info
-        if raw_data_info.mode in self.LAPSES and raw_data_info.T:
-            current_entry.completely_read = len(data_groups) >= raw_data_info.T
+        if is_lapse and raw_data_info.T:
+            current_entry.completely_read = timepoint >= raw_data_info.T
         else:
             current_entry.completely_read = True
 
+    def _fill_with_blank_frames(self, current_entry: "_EntryStream", until_frame: int, reason: str):
+        # Adds blank (all zero) frames to the current entry's pending frames,
+        # as many as it takes for the frames read so far to reach until_frame.
+        # It stands in for frames that will never be on disk: a timepoint of a
+        # lapse that is missing, or that ended short. Since it counts from the
+        # frames already read, calling it again for the same frames adds none.
+        blank_frames = until_frame - current_entry.read_frames
+        if blank_frames <= 0:
+            return
+        raw_data_info = current_entry.raw_data_info
+        self._logger.warning(
+            f"{raw_data_info.name}: {reason}; filled in with {blank_frames} blank frames"
+        )
+        blank = np.zeros((blank_frames, *raw_data_info.frame_shape), raw_data_info.dtype)
+        current_entry.pending_frames = np.concatenate([current_entry.pending_frames, blank])
+        current_entry.read_frames += blank_frames
+
     @staticmethod
-    def _progress(data: zarr.Array) -> tuple[int, bool]:
+    def _progress(data: zarr.Array | h5py.Dataset) -> tuple[int, bool]:
         # Returns how many frames of a data array are safely on disk, and
         # whether the writer has finished it.
         #
         # While ImControl writes a recording, it keeps a barrier for live
-        # readers in the array's attributes: recording:frames_committed and
-        # writing. The barrier is needed because the array's shape can already
-        # cover chunks that are not written yet. An array without the barrier
-        # was written in one go, so all of it is there.
+        # readers. The barrier is needed because the array's shape can already
+        # cover chunks that are not written yet. In a Zarr store the barrier is
+        # in the array's attributes: recording:frames_committed and writing.
+        # In an HDF5 file it is in two small datasets next to the data,
+        # frames_committed and stream_complete, since attributes can't change
+        # while the file is written; the writing attribute is only rewritten
+        # after the file has been closed, so stream_complete says more. An
+        # array without the barrier was written in one go, so all of it is
+        # there.
+        if isinstance(data, h5py.Dataset):
+            detector_group = data.parent
+            if "frames_committed" in detector_group and "stream_complete" in detector_group:
+                committed = int(detector_group["frames_committed"][0])
+                return committed, bool(detector_group["stream_complete"][0])
+            return math.prod(data.shape[:-2]), True
+
         if "recording:frames_committed" in data.attrs:
             committed = int(data.attrs["recording:frames_committed"])
             return committed, not data.attrs.get("writing", False)
@@ -918,7 +1167,14 @@ class _EntryStream:
     sent_frames: int = 0  # frames sent in chunks so far
     init_frames_sent: bool = False  # sent to the ProcessWorker with the contract
     completely_read: bool = False  # the recording has been read to its end
+    reading_stopped: bool = False  # finish_now(): no new frames are read
     stream_finished: bool = False  # sigStreamFinished has been sent
+    last_open_time: float = 0.0  # when _read_block last opened the stores
+    # the stores read to their end, which later reads skip, and how many
+    # timepoints and frames they hold
+    stores_read: set[str] = field(default_factory=set)
+    timepoints_in_stores_read: int = 0
+    frames_in_stores_read: int = 0
 
 
 def _read_frames(data, start: int, end: int) -> np.ndarray:
@@ -932,6 +1188,34 @@ def _read_frames(data, start: int, end: int) -> np.ndarray:
 
 
 _LAPSE_NAME = re.compile(r"_(?:time|scan)(\d+)_", re.IGNORECASE)
+
+_STORE_EXTENSIONS = (".zarr", ".hdf5", ".h5")
+
+
+def _store_extension(path: str) -> str | None:
+    # The extension that makes a path a store (.zarr, .hdf5 or .h5), or None
+    # for anything else
+    lowered = path.lower()
+    return next((ext for ext in _STORE_EXTENSIONS if lowered.endswith(ext)), None)
+
+
+def _child_groups(group: zarr.Group | h5py.Group) -> list:
+    # The groups directly inside a Zarr or HDF5 group; the two libraries list
+    # them differently
+    if isinstance(group, h5py.Group):
+        return [child for child in group.values() if isinstance(child, h5py.Group)]
+    return [child for _, child in group.groups()]
+
+
+def _group_name(group: zarr.Group | h5py.Group) -> str:
+    # The last part of a Zarr or HDF5 group's path: the detector's name for a
+    # detector group
+    return group.name.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _lapse_index(group) -> int:
+    # the timepoint a data group holds in its lapse; 0 for a single recording
+    return int(group["data"].attrs.get("recording:lapse_index", 0))
 
 
 def _positive_int(value) -> int | None:
@@ -1084,6 +1368,13 @@ class ProcessWorker(QtCore.QObject):
         # the RawInfo, in its shape
         info = self._raw_data_info
         attrs = {**info.attrs, **info.metadata}
+        if info.T:
+            # The recorder's recording:num_timepoints counts lapse timepoints,
+            # so it is 1 for a recording that isn't a lapse, even a time
+            # series of many frames. Sessions take it as the number of
+            # timepoints to make room for, so it is replaced by the T the
+            # StreamWorker worked out, which counts every kind of timepoint.
+            attrs["recording:num_timepoints"] = info.T
         per_timepoint = math.prod(info.S)
         return StreamInit(
             name=info.name,
@@ -1094,9 +1385,10 @@ class ProcessWorker(QtCore.QObject):
                 frame_shape=info.frame_shape,
                 dtype=info.dtype,
                 attrs=attrs,
-                frames_per_stack=per_timepoint if info.S else None,
+                # 1 when S is (): every frame is a timepoint of its own
+                frames_per_stack=per_timepoint,
                 expected_frames=info.T * per_timepoint if info.T else None,
-                source_format="zarr",
+                source_format=str(info.attrs.get("recording:source_format", "zarr")).lower(),
             ),
         )
 

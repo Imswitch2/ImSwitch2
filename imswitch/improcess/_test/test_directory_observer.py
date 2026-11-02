@@ -220,6 +220,8 @@ class _FakeDWW(QtCore.QObject):
     """The slice of the DWW the DWC drives."""
 
     sigMonitorChanged = QtCore.Signal(bool)
+    sigSkipEntryClicked = QtCore.Signal()
+    sigResetClicked = QtCore.Signal()
 
     def __init__(self, path):
         super().__init__()

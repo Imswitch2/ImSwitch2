@@ -10,6 +10,8 @@ class DirectoryWatcherWidget(QtWidgets.QFrame):
     """Pick a root folder and start monitoring it."""
 
     sigMonitorChanged = QtCore.Signal(bool)  # (enabled)
+    sigSkipEntryClicked = QtCore.Signal()
+    sigResetClicked = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -18,14 +20,31 @@ class DirectoryWatcherWidget(QtWidgets.QFrame):
         self.folderEdit = QtWidgets.QLineEdit(self.path)
         self.browseFolderButton = guitools.BetterPushButton("Browse")
         self.monitorFolderCheck = QtWidgets.QCheckBox("Monitor")
+        self.skipEntryButton = guitools.BetterPushButton("Skip entry")
+        self.skipEntryButton.setToolTip(
+            "Stop reading the entry being reconstructed and move on to the next "
+            "one. The frames already read are still reconstructed and shown."
+        )
+        self.skipEntryButton.setEnabled(False)  # only while monitoring
+        self.resetButton = guitools.BetterPushButton("Reset")
+        self.resetButton.setToolTip(
+            "Stop monitoring and forget the entries already seen, so that the "
+            "next time Monitor is ticked, every entry in the folder is "
+            "reconstructed again."
+        )
 
         layout = QtWidgets.QGridLayout()
         self.setLayout(layout)
         layout.addWidget(self.browseFolderButton, 0, 0)
         layout.addWidget(self.folderEdit, 0, 1)
         layout.addWidget(self.monitorFolderCheck, 1, 0)
+        layout.addWidget(self.skipEntryButton, 2, 0)
+        layout.addWidget(self.resetButton, 2, 1)
 
         self.monitorFolderCheck.toggled.connect(self.sigMonitorChanged)
+        self.monitorFolderCheck.toggled.connect(self.skipEntryButton.setEnabled)
+        self.skipEntryButton.clicked.connect(self.sigSkipEntryClicked)
+        self.resetButton.clicked.connect(self.sigResetClicked)
         self.browseFolderButton.clicked.connect(self.browse)
         # The box is the single source of self.path: typing and Browse both
         # end up here, so neither can leave the other stale.
