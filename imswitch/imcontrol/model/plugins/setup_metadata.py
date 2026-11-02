@@ -32,6 +32,7 @@ _SETUP_KINDS: tuple[SetupKindMetadata, ...] = (
     SetupKindMetadata("rs232", "rs232devices", "rs232devices", "rs232", True),
     SetupKindMetadata("slm", "slms", "slms", "slms", True),
     SetupKindMetadata("flip_mirror", "flipMirrors", "flipMirrors", "flipMirrors", True),
+    SetupKindMetadata("instrument", "instruments", "instruments", "instruments", True),
     SetupKindMetadata("stand", "stands", "microscopeStand", "stands", True),
     # Pulse generators still use a bespoke loader.  They are catalogued for
     # existing core setups, but third-party manifests must not promise support.

@@ -13,6 +13,13 @@ from imswitch.imcontrol.model.timeresolved import (
     copy_time_resolved_products,
 )
 from .._scan_execution import PARTICIPANTS_KEY
+from ._frame_publication import (
+    begin_frame_storage,
+    commit_frame_storage,
+    display_frame,
+    read_with_frame_geometry,
+    remember_scan_geometry,
+)
 from .DetectorManager import (
     ChunkPayload, DetectorManager, DetectorNumberParameter, DetectorListParameter,
     scanPixelSizesToZYX, _EMPTY_CHUNK)
@@ -73,6 +80,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._logger.error(
                 'TimeTagger Python library not found. Install it from the Swabian Instruments '
                 'software package. SwabianTimeTaggerManager will not function.'
+            )
+            self._setConnectionError(
+                ImportError("TimeTagger Python library not found"),
+                summary="TimeTagger dependency unavailable",
             )
 
 
@@ -370,6 +381,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._scanThread = None
 
     def initiateScan(self, scanInfoDict, signalDict):
+        geometry = remember_scan_geometry(self, scanInfoDict)
         participants = scanInfoDict.get(PARTICIPANTS_KEY)
         self._scanParticipating = (
             participants is None or self.name in participants
@@ -412,7 +424,13 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._rawReady = False
         self._rawDelivered = True
         self._image_raw = None
+        # Fresh display storage every scan (as before); a scan carrying a
+        # geometry publishes it with its frames (see _frame_publication). In
+        # accumulate mode the display mixes earlier scans' lifetimes into this
+        # scan's frame; the geometry is this scan's.
+        begin_frame_storage(self)
         self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
+        commit_frame_storage(self, geometry)
         self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
         with self._tr_lock:
             self._tr_final_event.clear()
@@ -451,8 +469,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             if self._tt is None:
                 self._tt = createTimeTagger()
                 self._isMock = False
+                self._setConnected("TimeTagger initialized")
         except Exception as error:
             self._isMock = True
+            self._setConnectionError(
+                error, summary="TimeTagger initialization failed"
+            )
             with self._flim_lock:
                 self._flim = None
             raise RuntimeError('createTimeTagger() failed') from error
@@ -1028,7 +1050,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         empty until the final frame has landed, then yields it exactly once,
         the shape APD and PMT already implement.
         """
-        display = self.getChunk()
+        display, displayGeometry = read_with_frame_geometry(
+            self, self.getChunk
+        )
         raw = _EMPTY_CHUNK
         if (self._rawReady and not self._rawDelivered
                 and self._image_raw is not None):
@@ -1036,7 +1060,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._rawReady = False
             raw = self._image_raw
             self._image_raw = None
-        return ChunkPayload(display=display, raw=raw)
+        return ChunkPayload(
+            display=display, raw=raw, display_geometry=displayGeometry
+        )
 
     def _warnIfWindowTruncatesTheDecay(self):
         window_ps = self._n_bins * self._binwidth_ps
@@ -1074,7 +1100,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         pass
 
     def getLatestFrame(self):
-        return self._image_display
+        frame, geometry = read_with_frame_geometry(
+            self, lambda: self._image_display
+        )
+        return display_frame(self, frame, geometry)
 
     def getChunk(self):
         if not getattr(self, '_newFrameReady', False):

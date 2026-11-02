@@ -17,8 +17,9 @@ Setup
                 scan.
   Your own microscope: as 01_run_a_scan.py, plus the Recording widget.
 
-Next: that was the last tutorial. The workflows folder has complete
-      acquisitions for real microscopes.
+Next: ../measurement/01_polarisation_map.py -- instruments and measurement
+      runs. The workflows folder has complete acquisitions for real
+      microscopes.
 """
 import os
 import tempfile

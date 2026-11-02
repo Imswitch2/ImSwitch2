@@ -84,3 +84,21 @@ def test_no_hardware_profile_builds_core_managers():
         positioners_manager.finalize()
         lasers_manager.finalize()
         rotators_manager.finalize()
+
+
+def test_no_hardware_profile_has_transient_mock_instruments():
+    from imswitch.imcontrol.model.devices import DeviceRuntimeMode
+    from imswitch.imcontrol.model.managers.InstrumentsManager import InstrumentsManager
+
+    setup_info = _load_no_hardware_setup()
+    rotators = RotatorsManager(setup_info.rotators)          # the mock PAX's waveplates
+    instruments = InstrumentsManager(setup_info.instruments, rotatorsManager=rotators)
+    try:
+        assert set(instruments.getAllDeviceNames()) == {"Mock power meter", "Mock PAX"}
+        for _name, instrument in instruments:
+            assert instrument.runtimeMode is DeviceRuntimeMode.ABSENT   # not touched at startup
+            assert instrument.getDeviceLifecycle().connect().success
+            assert instrument.connected
+    finally:
+        instruments.finalize()
+        rotators.finalize()

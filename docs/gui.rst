@@ -350,17 +350,29 @@ focus-lock widget, and SLM widget.  Which widgets appear is controlled by the
 Laser widget
 ------------
 
-There are two typical use modes: **offline** (driven only by the
-buttons and sliders in the widget) and **triggered** by an acquisition
-card controlled by the scanning widget.  In the latter case, set the powers
-here and tick the laser in the scan widget's TTL list: when the scan starts it
-hands every ticked laser's gate to the scan and locks its on/off button for
-the run.  The power stays editable during the scan.
+The laser widget separates **LIVE** and **SCAN** power contexts.  LIVE is the
+normal interactive illumination state: power edits are written to hardware
+immediately and the ON/OFF control determines physical emission.  SCAN stores
+the direct acquisition power to use when a scan owns that laser; editing a
+SCAN value does not itself write acquisition power to hardware or emit light.
 
-**Presets** store the current power of every laser under a name in the setup
-file: **Save as…** creates one, **Load selected** applies it, **Save to
-selected** overwrites it, and **More…** clears the selection or deletes the
-selected preset.
+LIVE and SCAN have separate preset namespaces. Selecting a preset loads it
+immediately in the visible context; **More…** contains update, save-as,
+save-to, rename, delete and clear-selection actions.
+
+Which lasers participate in an acquisition still comes from the scan
+configuration.  While a scan is running the entire LaserWidget is read-only.
+Scan-owned Live paths are suppressed before handoff, use their configured
+SCAN power (or Advanced Scan AO power), and finish OFF with their LIVE
+setpoints restored. Non-participating LIVE lasers are left untouched.
+
+If a scan-owned laser was LIVE-ON before handoff and teardown safely restored
+its LIVE setpoint, a temporary **Resume Live** action appears in the header.
+It is available from either LIVE or SCAN view. Clicking it explicitly restores
+the remembered LIVE ON states through the normal Live enable path and returns
+the widget to LIVE view. Starting another scan or manually changing a LIVE
+ON/OFF state clears the pending Resume action; power, preset and context edits
+do not.
 
 .. image:: ./images/auto/LaserWidget.png
    :align: center
@@ -733,9 +745,72 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
-``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
-:doc:`setupinfo-reference`.
+Four scan widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
+``Advanced`` — selected by ``scan.scanWidgetType``. An optional ``scan.cloak``
+selects a compatible simplified frontend; see :doc:`setupinfo-reference`.
+``SimplePointScan`` is a
+beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
+its header switches between the two, on the same scan.
+
+- **Overview** scans live at about one frame per second, and shows the
+  measured frame rate. Its **Size** slider sets the field (default 60 µm,
+  up to what the scanners reach); pixels and dwell follow it, and nothing
+  else changes them. The measured rate also counts the re-arm between
+  frames, which the one second leaves out, so on a rig it reads lower.
+- **Acquisition** scans a chosen region, with sliders for pixel size
+  (overview to Nyquist) and dwell, and an estimate of the scan time.
+- While a scan runs, a progress bar under the scan time shows the elapsed
+  and expected time, and the frame number in Live, as in the Advanced panel.
+- Each mode shows only its own controls: the overview's size and channel in
+  Overview, the region numbers and sampling sliders in Acquisition.
+- **Draw in viewer** draws the region as a rectangle on the live image (on
+  the ``Scan region`` layer). Moving or resizing it changes the region;
+  editing the numbers moves it. Drawing needs an image the scanners made,
+  so start the overview first. **Accept as ROI** keeps the region and takes
+  the rectangle and its layer off the viewer; going back to Overview does
+  the same.
+- Live overview frames overwrite the previous frame line by line, as a
+  repeated Advanced scan does; the image starts blank only when the field
+  changes.
+- **Lasers and channels:** drag a laser from the palette onto a channel,
+  onto *Drop a laser here for a new channel*, or between channels; the ×
+  or a drag back to the palette removes it. Lasers in one channel fire
+  together; each channel is its own line pass, and a laser can be in
+  several channels.
+
+``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware; its
+simulated APDs image a synthetic sample, so the region drawn on the overview
+is visibly the region acquired.
+
+``SimpleMoNaLISA`` is the profile-driven MoNaLISA cloak over Advanced. Its
+profile selector chooses an ordered illumination recipe while the mode selector
+enables a subset of that recipe (for example RESOLFT versus Confocal). Sequence
+steps have ON/OFF/READOUT/CUSTOM roles, but roles may repeat and a step may
+drive several TTL devices synchronously. A mode may also enable only selected
+devices inside one enabled step, which supports alignment pulses where several
+lasers share one timing window. The ``…`` menu beside Profile creates,
+duplicates, edits, renames and deletes profiles in the active setup. Profile
+editing changes setup configuration, whereas normal duration/geometry edits
+change only the current acquisition. Advanced edits that no longer match the
+explicitly selected profile/mode return Simple to **Advanced / custom** rather
+than silently selecting another profile. With separated Live/Scan laser powers,
+the top Live role row lets ON/OFF/Readout roles participate independently.
+Those checkboxes change only laser enable state; power stays editable in the
+Laser widget. **Live**, **Stop** and **Acquire** stay together in the top action
+row. Live keeps the existing camera acquisition running but switches the Readout
+camera to internal trigger, Stop switches off only the screening lasers, and
+Acquire uses external frame trigger plus the normal scan powers. The Live action
+is disabled for coupled laser-power setups. **Setup…** opens persistent setup
+editing, including detector-derived FOV/readout policies and slider ranges.
+Camera-derived FOV/readout track the current detector ROI/timings; camera
+readout is shown read-only in Simple and Auto/Manual editing stays in Setup.
+uLens period is either fixed by
+setup or owned by the selected profile (never by a mode), while a profile may
+independently choose one-uLens or manual lateral scan extent. The sequence view
+is role-first and wavelength-coloured for ON/OFF/READOUT steps. CUSTOM steps
+show their active non-detector device names directly, one badge per device,
+while a separate red acquisition marker appears automatically on any step that
+drives a detector.
 
 Controls shared by the variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -6,6 +6,7 @@ import threading
 from typing import Dict, List
 
 from imswitch.imcommon.model import dirtools, initLogger
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
 
 
 _POSITION_PERSISTENCE_FILENAME = 'positioner_positions.json'
@@ -13,13 +14,24 @@ _POSITION_PERSISTENCE_SCHEMA_VERSION = 1
 _POSITION_PERSISTENCE_LOCK = threading.RLock()
 
 
-class PositionerManager(ABC):
+
+class PositionerManager(DeviceManagerStatusMixin, ABC):
     """ Abstract base class for managers that control positioners. Each type of
     positioner corresponds to a manager derived from this class. """
 
     requiresReference: bool = False
     referenceWaitAfterS: float = 0.3
     persistsLastPosition: bool = False
+
+    #: Mutating commands admitted through the resource registry
+    #: (``imcontrol/model/resources.py``): refused while another owner
+    #: reserves this device; ``owner=<token>`` passes a reservation.
+    _GUARDED_METHODS = ('move', 'setPosition')
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from imswitch.imcontrol.model.resources import guard_methods, positioner_key
+        guard_methods(cls, _resource_key_for(positioner_key), cls._GUARDED_METHODS)
 
     @abstractmethod
     def __init__(self, positionerInfo, name: str, initialPosition: Dict[str, float]):
@@ -348,6 +360,16 @@ class PositionerManager(ABC):
                     f'Axis {ax} not available for reference. Available axis:{self.axes}'
                 )
             self.__referencedAxes[ax] = bool(referenced)
+
+
+def _resource_key_for(key_of_name):
+    def key(manager):
+        try:
+            name = manager.name
+        except Exception:
+            name = f'{type(manager).__name__}@{id(manager):x}'
+        return key_of_name(name)
+    return key
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

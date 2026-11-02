@@ -1,0 +1,24 @@
+{
+  "category": "lasers",
+  "display": "Laser settings",
+  "summary": "Settings that apply to the laser category as a whole rather than to one laser device.",
+  "fields": [
+    {
+      "key": "powerMode",
+      "label": "Power mode",
+      "type": "select",
+      "default": "coupled",
+      "opts": [
+        "coupled",
+        "separated"
+      ],
+      "grp": "Basic",
+      "show_in_header": true,
+      "tip": "Coupled uses the current Live power during scans (legacy behavior). Separated keeps independent Live and Scan power settings.",
+      "option_labels": {
+        "coupled": "Coupled",
+        "separated": "Separated (Live / Scan)"
+      }
+    }
+  ]
+}

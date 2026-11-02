@@ -8,7 +8,8 @@
       "isRackSystem": true,
       "scale": "example",
       "snr": "example",
-      "unitsPerUm": 1.5
+      "unitsPerUm": 1.5,
+      "useMockOnFailure": true
     }
   }
 }

@@ -78,6 +78,7 @@ Each detector takes:
 * ``managerName`` (required): Manager class (e.g., ``"HamamatsuManager"``, ``"AVManager"``)
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/detectors`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``forAcquisition``: ``true`` if used for live imaging (default ``false``)
 * ``forFocusLock``: ``true`` if used for focus lock (default ``false``)
 
@@ -121,6 +122,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/lasers`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``valueRangeStep`` (default ``1.0``): step of the power control in the
   **Laser** panel
 * ``freqRangeMin`` / ``freqRangeMax`` / ``freqRangeInit`` (default ``0``):
@@ -207,6 +209,7 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/positioners`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
+* ``transient`` / ``connectOnStartup``: a device plugged in only when needed. ``transient: true`` leaves it absent at startup (not an error, no mock) until connected from **Hardware → Hardware status** or a script; ``connectOnStartup: true`` still tries at startup, a failure leaving it absent with the error shown. Default ``false`` for both.
 * ``resetOnClose`` (default ``false``): set it to ``true`` to have this
   positioner moved to ``0`` on every axis when ImSwitch2 closes with the
   **Positioner** panel loaded.  Otherwise a stage stays where it is on exit.
@@ -329,10 +332,16 @@ Required if you want to use the ``Scan`` widget.
 
 Key fields:
 
-* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``,
-  ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.  ``"TriggerScope"``
-  runs scans on the TriggerScope board (see `triggerScope`_) from the
-  ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
+* ``scanWidgetType``: Real scan backend/widget — one of ``"Base"``,
+  ``"PointScan"``, ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.
+  ``"TriggerScope"`` runs scans on the TriggerScope board (see `triggerScope`_)
+  from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
+* ``cloak``: Optional simplified frontend over that backend. ``"SimplePointScan"``
+  and ``"SimpleMoNaLISA"`` are registered for ``"Advanced"``. PointScan has
+  overview and acquisition scan modes; SimpleMoNaLISA keeps one acquisition scan
+  plan and adds a non-scan Live screening workflow.
+  Old setups that used ``scanWidgetType: "SimplePointScan"`` are still accepted
+  while they migrate.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer.
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and
@@ -351,6 +360,83 @@ Key fields:
   above 10 million spatial positions.
 * ``lineClockLine``: NI-DAQ port line for line clock output (integer or ``"Dev1/port0/line{N}"`` string; ``null`` if not used)
 * ``frameStartClockLine`` / ``frameEndClockLine``: Frame clock outputs (same format as ``lineClockLine``)
+* ``simplePointScan``: Optional options for the ``SimplePointScan`` panel; every key is optional:
+
+  * ``objectiveNA``: sets the pixel slider's finest end to the confocal Nyquist pixel, shortest selected wavelength / (8 · NA);
+  * ``nyquistPixelSizeUm``: sets that end directly; STED setups need this;
+  * ``overviewAxes``: the two positioners the overview scans (default: the first two scanning positioners);
+  * ``overviewFieldUm``: the overview's size (both axes) until the panel's **Size** slider changes it (default 60 µm; a point detector has no field of view of its own, so this is a choice). It is kept within what the scanners reach;
+  * ``overviewMinFieldUm``: the smallest size the slider offers (default 2 µm); the largest is what the scanners reach;
+  * ``overviewMinPixels`` / ``overviewMaxPixels``: the overview's pixel-count range (default 64 / 512);
+  * ``overviewFrameTimeS``: the overview's frame-time target (default 1 s);
+  * ``minSamplesPerPixel``: the shortest dwell in samples (default 2);
+  * ``maxDwellMs``: the dwell slider's longest value (default 10 ms).
+
+  Other scan panels ignore the ``simplePointScan`` block.
+
+* ``simpleMoNaLISA``: Setup facts and profile definitions for the
+  ``SimpleMoNaLISA`` cloak. FOV has an explicit source: ``fovSource`` is
+  ``"detector"`` (default) or ``"manual"``; detector mode derives FOV from the
+  active profile camera ROI while ``fovUm`` remains the persisted fallback.
+
+  Camera readout timing is inherited rather than continuously automatic.
+  ``defaultCameraReadoutTimeMs`` is the setup default and a profile may define
+  ``cameraReadoutTimeMs`` to override it. The active camera's reported Readout
+  time is diagnostic only: the Simple panel compares the effective profile
+  timing against ``detector readout + cameraReadoutSafetyMarginMs`` (default
+  0.1 ms). Differences smaller than ``cameraReadoutToleranceMs`` (default
+  0.1 ms) are ignored; a safe value is only flagged as slower than needed when
+  it exceeds the recommendation by more than
+  ``cameraReadoutUnoptimizedThresholdMs`` (default 0.3 ms). **Auto** explicitly
+  writes the current safe recommendation into the active profile; it is not a
+  persistent automatic mode. Older ``cameraReadoutTimeMs`` setup values are
+  accepted as compatibility fallbacks for ``defaultCameraReadoutTimeMs``.
+  **Setup…** edits these defaults/margins and saves them into the active setup
+  file. Inter-pulse delay is likewise setup-only and is not exposed as a run
+  control.
+  ``readoutPulseTimeMs`` is also setup-owned: it sets the duration of every
+  semantic ``READOUT`` illumination step, is clamped to a minimum of 1 ms, and
+  is edited from **Setup…** rather than from the profile or run controls.
+
+  ``ulensPeriodPolicy`` is ``"fixed"`` or ``"per_profile"``. Fixed setups use
+  the setup-level ``ulensPeriodUm``. Per-profile setups require each usable
+  profile to define ``ulensPeriodUm``. Modes never redefine the period. Lateral
+  scan extent is a separate profile property: ``scanExtentSource: "ulens"``
+  keeps the normal one-period acquisition, while ``"manual"`` uses
+  ``scanExtentUm`` as the profile default and permits the live scan length to be
+  edited (for example for alignment acquisitions).
+
+  ``sliderRanges`` optionally configures the visual slider endpoints without
+  restricting exact spin-box entry. Supported keys are ``pixelSizeNm``,
+  ``lateralScanLengthUm``, ``zStepNm``, ``zScanLengthUm`` and
+  ``stepDurationMs``. They are editable from **Setup…**.
+
+  ``profiles`` is a map of named MoNaLISA profiles and ``defaultProfile`` selects
+  the startup one. Each profile contains an ordered ``steps`` list. Every step
+  has a required ``role`` (``on``, ``off``, ``readout`` or ``custom``), one or
+  more synchronized ``ttlDevices``, ``defaultDurationMs`` and
+  ``durationEditable``. For ``readout`` steps the setup-level
+  ``readoutPulseTimeMs`` overrides the profile duration fields. Roles may repeat.
+  ``modes`` select subsets of those steps
+  while keeping profile order; optional ``enabledDevices`` can select only some
+  devices inside an enabled step. There is no implicit/legacy profile mapping:
+  if ``profiles`` is omitted or empty, SimpleMoNaLISA remains restricted until
+  the user creates a profile.
+
+  Profiles can be created, duplicated, edited, renamed and deleted live and are
+  persisted into the active setup. Normal run edits (pixel size, manual scan
+  length, Z range/step and editable sequence durations) remain transient
+  acquisition state. Advanced edits are parsed only against the selected
+  profile/mode; incompatible edits return Simple to ``Advanced / custom`` rather
+  than silently choosing another profile.
+
+  With ``laserPowerMode: "separated"``, Live screening uses role checkboxes to
+  enable profile laser paths at their existing Live powers. **Live** keeps the
+  existing camera acquisition running but switches the Readout camera to
+  internal trigger, **Stop** darkens only Simple-owned screening lasers, and
+  **Acquire** uses external frame trigger plus normal Scan powers before
+  restoring the preceding trigger state. Coupled power mode disables this Live
+  action.
 
 The widget type and the two designers have to match, because each panel
 hands its designers a fixed set of parameters.  The shipped setups use:
@@ -358,8 +444,10 @@ hands its designers a fixed set of parameters.  The shipped setups use:
 * ``"Base"`` and ``"MoNaLISA"``: ``BetaScanDesigner`` + ``BetaTTLCycleDesigner``
 * ``"PointScan"``: ``GalvoScanDesigner`` + ``PointScanTTLCycleDesigner``
   (``example_sted.json``)
-* ``"Advanced"``: ``GalvoScanDesigner`` + ``AdvancedScanTTLCycleDesigner``
-  (``galvo_apd_mock_scan_setup.json``)
+* ``"Advanced"``: normally ``GalvoScanDesigner`` +
+  ``AdvancedScanTTLCycleDesigner`` (``galvo_apd_mock_scan_setup.json``); the
+  ``SimpleMoNaLISA`` cloak uses the same Advanced frontend/backend with
+  ``BetaScanDesigner`` + ``AdvancedScanTTLCycleDesigner``.
 
 **Example** (Base scan, from ``example_no_hardware.json``):
 
@@ -439,7 +527,13 @@ Key fields:
 
 * ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
 * ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
-* ``simulation``: Allow NI-DAQ commands without physical hardware (``true`` / ``false``)
+* ``simulation``: Select software NI-DAQ/scan simulation (``true`` / ``false``).
+  With ``true``, ImSwitch deliberately runs the software scan simulator instead
+  of opening NI-DAQmx tasks. With ``false``, ImSwitch expects real NI-DAQ
+  hardware. If the ``nidaqmx`` backend is unavailable, Hardware Control still
+  starts in a degraded state, but NI-DAQ writes and scans are refused; it does
+  **not** silently switch to simulated acquisition. Install the hardware extra
+  (``pip install "imswitch2[hardware]"``) to restore real NI-DAQ operation.
 
 **Example** (simulation mode, no physical DAQ):
 
@@ -1133,9 +1227,15 @@ Key fields (per ROI):
 laserPresets
 ------------
 
-Optional laser power preset system.
+Optional Live/Scan laser power preset system.  All presets share one name
+space under ``laserPresets``; each entry has one of two shapes:
 
-* ``laserPresets`` (dict): Map of preset names to ``{laserName: LaserPresetInfo}`` nested dicts
+* **Historical** ``{laserName: LaserPresetInfo}`` -- context-unspecified.
+  Files written before Live/Scan contexts load unchanged and are saved back
+  unchanged.
+* **Contextual** ``{"context": "live" | "scan", "powers": {laserName:
+  LaserPresetInfo}}``.  Scan presets store acquisition power only; loading one
+  does not itself emit light or change Live ON/OFF state.
 
 **LaserPresetInfo fields** (per laser, per preset):
 
@@ -1146,25 +1246,44 @@ Optional laser power preset system.
 .. code-block:: json
 
    "laserPresets": {
-       "HighPower": {
-           "Laser405": {
-               "value": 200.0
-           },
-           "Laser488": {
-               "value": 150.0
-           }
+       "Screening": {
+           "Laser405": {"value": 200.0},
+           "Laser488": {"value": 150.0}
        },
-       "LowPower": {
-           "Laser405": {
-               "value": 50.0
-           },
-           "Laser488": {
-               "value": 30.0
+       "Acquisition": {
+           "context": "scan",
+           "powers": {
+               "Laser405": {"value": 50.0},
+               "Laser488": {"value": 30.0}
            }
        }
    }
 
 **See also**: :class:`LaserPresetInfo`
+
+
+deviceCategorySettings
+----------------------
+
+Optional settings that apply to a whole device category rather than to one
+device, keyed by category name (``lasers``, ``positioners``, ...).  The config
+editor edits them with the **Settings** button in each category header.
+
+* ``lasers.powerMode`` (``"coupled"`` | ``"separated"``, default
+  ``"coupled"``): ``coupled`` uses the current Live power during scans;
+  ``separated`` keeps independent Live and Scan power settings.
+
+Any other key is kept as written: the editor's **Add property** button adds
+freeform keys (JSON values), and the Custom tab lists, edits and removes them.
+ImSwitch itself reads only the keys documented here.
+
+**Example**:
+
+.. code-block:: json
+
+   "deviceCategorySettings": {
+       "lasers": {"powerMode": "separated"}
+   }
 
 
 slm (singular)

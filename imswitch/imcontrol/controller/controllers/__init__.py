@@ -26,6 +26,7 @@ _CONTROLLER_MODULES = {
     "FlipMirrorController": "FlipMirrorController",
     "FocusLockController": "FocusLockController",
     "ImageController": "ImageController",
+    "HardwareStatusController": "HardwareStatusController",
     "LaserController": "LaserController",
     "LightSheetMulticolorController": "LightSheetMulticolorController",
     "LeicaStandController": "LeicaStandController",
@@ -39,6 +40,8 @@ _CONTROLLER_MODULES = {
     "ScanControllerBase": "ScanControllerBase",
     "ScanControllerMoNaLISA": "ScanControllerMoNaLISA",
     "ScanControllerPointScan": "ScanControllerPointScan",
+    "ScanControllerSimplePointScan": "ScanControllerSimplePointScan",
+    "ScanControllerSimpleMoNaLISA": "ScanControllerSimpleMoNaLISA",
     "SettingsController": "SettingsController",
     "SetupStatusController": "SetupStatusController",
     "SetupModesController": "SetupModesController",
@@ -57,6 +60,8 @@ _CONTROLLER_MODULES = {
     "WatcherController": "WatcherController",
     "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",
+    "ReservationController": "ReservationController",
+    "InstrumentsController": "InstrumentsController",
 }
 
 

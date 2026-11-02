@@ -22,6 +22,11 @@ class SQUIDStageManager(PositionerManager):
             )
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
+            self._setConnectionError(
+                e,
+                summary="SQUID RS232 backend unavailable; mock fallback active",
+                mock_active=True,
+            )
 
     def move(self, value, axis):
         if axis == 'X':

@@ -28,7 +28,7 @@ def main(argv=None) -> int:
         from split_process_merge_diamond import build_workflow
 
         root = Path(tempfile.mkdtemp(prefix="improcess_replay_"))
-        recording = write_synthetic_recording(root / "cells.h5", frames=2)
+        recording = write_synthetic_recording(root / "cells.h5", frames=2, axes="CYX")
         with run(build_workflow(recording), registry=registry, out_dir=root / "first") as report:
             result_file = report.receipts[0].primary
             original = np.asarray(report.result("merge").data)

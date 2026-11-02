@@ -1,6 +1,89 @@
 import warnings
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices import (
+    DeviceId,
+    DeviceLifecycleAction,
+    DeviceLifecycleCapabilities,
+    DeviceLifecycleNotSupportedError,
+    DeviceLifecycleResult,
+    HardwareDeviceId,
+)
+
+
+class _ThorlabsMFFLifecycle:
+    """Lifecycle adapter for one physical Thorlabs MFF flip mirror."""
+
+    capabilities = DeviceLifecycleCapabilities(reconnect=True)
+
+    def __init__(self, manager):
+        self._manager = manager
+        self._hardware_id = HardwareDeviceId(
+            category="flip_mirror", key=f"flip_mirror:{manager.name}"
+        )
+
+    @property
+    def hardware_id(self):
+        return self._hardware_id
+
+    def _unsupported(self, action):
+        raise DeviceLifecycleNotSupportedError(
+            f"Thorlabs MFF lifecycle does not yet support {action.value}."
+        )
+
+    def connect(self):
+        return self._unsupported(DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self):
+        return self._unsupported(DeviceLifecycleAction.DISCONNECT)
+
+    def probe(self):
+        return self._unsupported(DeviceLifecycleAction.PROBE)
+
+    def shutdown(self):
+        return self._unsupported(DeviceLifecycleAction.SHUTDOWN)
+
+    def reconnect(self):
+        manager = self._manager
+        device_id = DeviceId("flip_mirror", manager.name)
+
+        manager.close()
+        manager._connect()
+        if not manager.is_connected():
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.RECONNECT,
+                success=False,
+                summary=f"Flip mirror {manager.name} reconnect failed",
+                details=manager.get_last_error(),
+                affected_device_ids=(device_id,),
+            )
+
+        try:
+            state = manager.get_state()
+        except Exception as exc:
+            # Opening the vendor handle is not sufficient proof that this
+            # particular device is usable. Treat a failed state query as a
+            # failed reconnect and leave the manager disconnected.
+            manager.close()
+            manager._last_error = str(exc)
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.RECONNECT,
+                success=False,
+                summary=f"Flip mirror {manager.name} reconnect verification failed",
+                details=str(exc),
+                affected_device_ids=(device_id,),
+            )
+
+        return DeviceLifecycleResult(
+            hardware_id=self.hardware_id,
+            action=DeviceLifecycleAction.RECONNECT,
+            success=True,
+            summary=f"Flip mirror {manager.name} reconnected",
+            details=f"Current physical state: {state}",
+            affected_device_ids=(device_id,),
+        )
 
 
 class ThorlabsMFFManager:
@@ -25,6 +108,8 @@ class ThorlabsMFFManager:
         self._device = None
         self._connected = False
         self._last_error = None
+        self._last_state = None
+        self._lifecycle = _ThorlabsMFFLifecycle(self)
 
         self._connect()
 
@@ -75,6 +160,7 @@ class ThorlabsMFFManager:
                 f"{self.name}: failed to connect to Thorlabs MFF "
                 f"serial {self.serial_number}: {e}"
             )
+
     def _normalize_state_names(self, state_names):
         default = {0: "0", 1: "1"}
 
@@ -86,11 +172,18 @@ class ThorlabsMFFManager:
             1: str(state_names.get("1", state_names.get(1, "1"))),
         }
 
+    def getDeviceLifecycle(self):
+        return self._lifecycle
+
     def is_connected(self):
         return self._connected and self._device is not None
 
     def get_last_error(self):
         return self._last_error
+
+    def get_cached_state(self):
+        """Return the last successfully observed/commanded logical state."""
+        return self._last_state
 
     def _to_hw_state(self, state):
         state = int(state)
@@ -106,14 +199,18 @@ class ThorlabsMFFManager:
         if not self.is_connected():
             raise RuntimeError(f"{self.name}: flip mirror is not connected")
 
+        state = int(state)
         hw_state = self._to_hw_state(state)
         self._device.move_to_state(hw_state)
+        self._last_state = state
 
     def get_state(self):
         if not self.is_connected():
             raise RuntimeError(f"{self.name}: flip mirror is not connected")
 
-        return self._from_hw_state(self._device.get_state())
+        state = self._from_hw_state(self._device.get_state())
+        self._last_state = state
+        return state
 
     def get_state_names(self):
         return dict(self.state_names)
@@ -127,11 +224,6 @@ class ThorlabsMFFManager:
 
         self._device = None
         self._connected = False
-
-    def reset_connection(self):
-        self.close()
-        self._connect()
-        return self.is_connected()
 
     def finalize(self):
         self.close()

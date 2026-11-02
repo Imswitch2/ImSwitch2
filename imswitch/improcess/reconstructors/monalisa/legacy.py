@@ -71,6 +71,7 @@ class LegacyMonalisaReconstructor(Reconstructor):
 
     name = "MoNaLISA (classic)"
     id = "monalisa-legacy"
+    output_kind = "image"
     file_extensions = ["hdf5", "tiff", "zarr"]
     supports_consolidation = True
     params_version = 1

@@ -49,6 +49,14 @@
         "code:default:number",
         "code:optional(get)"
       ]
+    },
+    "useMockOnFailure": {
+      "description": "When the hardware cannot be opened, install a simulation instead of leaving the device not connected (the default: the error shows in Hardware status, commands are refused, Reconnect brings it back).",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "required": [

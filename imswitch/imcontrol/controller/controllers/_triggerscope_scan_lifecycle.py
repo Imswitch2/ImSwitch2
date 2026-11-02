@@ -170,12 +170,14 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             self._commChannel.sigStartRecording.emit()
 
         devices = list(dict.fromkeys(laserDevices or ()))
+        self._raiseIfLaserScanPreparationFailed()
         # Membership must be published before detector acquisition and before
         # the firmware command. LaserController hands each selected gate to the
         # firmware and locks its on/off control in this slot.
         self.emitScanSignal(
             self._commChannel.sigScanDevicesResolved, devices
         )
+        self._raiseIfLaserScanPreparationFailed()
         # Preserve the public notification for plugins that observe scan build
         # boundaries. It is no longer the laser-arming authority.
         self.emitScanSignal(self._commChannel.sigScanBuilt, devices)

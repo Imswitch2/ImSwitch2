@@ -20,6 +20,7 @@ class FRCProcessor(Processor):
 
     name = "FRC Resolution"
     id = "frc"
+    output_kind = "curve"
     category = "Measurement"
     #: Two-image FRC compares either two planes of one result or one plane
     #: from each of two results — comparing two separate reconstructions is

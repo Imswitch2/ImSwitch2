@@ -59,6 +59,7 @@ class WidefieldStarssReconstructor(Reconstructor):
 
     name = "WidefieldSTARSS analysis"
     id = "widefield-starss"
+    output_kind = "image"
     file_extensions = ["tiff", "tif"]
     description = "Polarization demux, anisotropy maps, and per-region WFS metrics"
 

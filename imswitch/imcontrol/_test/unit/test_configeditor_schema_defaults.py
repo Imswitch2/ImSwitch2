@@ -732,3 +732,22 @@ class TestBoolAutoTriState:
         )
         assert "smoothScan" not in merged["managerProperties"]
         assert merged["managerProperties"]["custom"] == 7
+
+
+def test_laser_category_settings_template_is_separate_from_device_templates():
+    """Category-wide laser policy is declarative and does not pollute lasers."""
+    category_template = _BUILTIN_TEMPLATES / "categories" / "lasers.json"
+    assert category_template.exists()
+    data = json.loads(category_template.read_text(encoding="utf-8"))
+
+    assert data["category"] == "lasers"
+    fields = {field["key"]: field for field in data["fields"]}
+    power_mode = fields["powerMode"]
+    assert power_mode["type"] == "select"
+    assert power_mode["default"] == "coupled"
+    assert power_mode["opts"] == ["coupled", "separated"]
+    assert power_mode["show_in_header"] is True
+
+    # The category schema lives in its own namespace; manager-template scans
+    # must continue treating builtin_templates/lasers as name->device schemas.
+    assert not (_BUILTIN_TEMPLATES / "lasers" / "powerMode.json").exists()

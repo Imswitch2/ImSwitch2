@@ -16,6 +16,7 @@ import time
 
 import pytest
 
+from imswitch.imcontrol.model.devices import DeviceLifecycleBlockedError
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 from imswitch.imcontrol.model.managers.MultiManager import NoSuchSubManagerError
 from imswitch.imcontrol.model.managers._acquisition_leases import (
@@ -339,6 +340,65 @@ def test_a_faulted_detector_does_not_break_the_others(manager):
     assert manager['CAM'].stopCalls == 1  # CAM still stopped cleanly
 
 
+# --------------------------------------------------------------------------- #
+# Lifecycle maintenance boundary                                               #
+# --------------------------------------------------------------------------- #
+
+def test_detector_lifecycle_maintenance_requires_zero_leases(manager):
+    handle = manager.acquire(['CAM'], LeasePurpose.RECORDING)
+
+    with pytest.raises(DeviceLifecycleBlockedError, match='currently in use'):
+        with manager.detectorLifecycleMaintenance('CAM'):
+            pass
+
+    manager.release(handle)
+
+
+def test_detector_lifecycle_maintenance_blocks_new_acquire_until_exit(manager):
+    entered = threading.Event()
+    releaseMaintenance = threading.Event()
+    acquired = []
+
+    def maintain():
+        with manager.detectorLifecycleMaintenance('CAM'):
+            entered.set()
+            assert releaseMaintenance.wait(2)
+
+    maintenanceThread = threading.Thread(target=maintain, daemon=True)
+    maintenanceThread.start()
+    assert entered.wait(2)
+
+    acquireThread = threading.Thread(
+        target=lambda: acquired.append(
+            manager.acquire(['CAM'], LeasePurpose.RECORDING)
+        ),
+        daemon=True,
+    )
+    acquireThread.start()
+    acquireThread.join(0.05)
+    assert acquireThread.is_alive()
+
+    releaseMaintenance.set()
+    maintenanceThread.join(2)
+    acquireThread.join(2)
+    assert not maintenanceThread.is_alive()
+    assert not acquireThread.is_alive()
+    manager.release(acquired[0])
+
+
+def test_hardware_replacement_clears_stale_stop_quarantine(manager):
+    manager['APD'].failStop = True
+    handle = manager.acquire(['APD'], LeasePurpose.SCAN)
+    manager.release(handle)
+    assert manager.isDetectorFaulted('APD')
+
+    with manager.detectorLifecycleMaintenance('APD'):
+        manager.clearFaultAfterHardwareReplacement('APD')
+
+    assert not manager.isDetectorFaulted('APD')
+    assert manager['APD']._hardwareFaulted is False
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #
@@ -354,3 +414,20 @@ def test_a_faulted_detector_does_not_break_the_others(manager):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_an_absent_detector_is_refused_by_name_for_scans_recordings_and_live_view(manager):
+    """P-2: a detector that is not connected never acquires; the refusal
+    names it instead of starting on nothing."""
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+    from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
+
+    manager._subManagers['CAM'].isUsable = False
+    with pytest.raises(DeviceNotConnectedError, match='Not connected: CAM'):
+        manager.acquire(['CAM', 'APD'], LeasePurpose.SCAN)
+    with pytest.raises(DeviceNotConnectedError, match='CAM'):
+        manager.startAcquisition(liveView=True, detectorNames=['CAM'])
+    assert manager._subManagers['CAM'].startCalls == 0
+    handle = manager.acquire(['APD'], LeasePurpose.SCAN)      # the others still do
+    manager.release(handle)
+

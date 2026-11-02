@@ -8,7 +8,11 @@ from typing import Dict, Any
 import numpy as np
 from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
-from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model import (
+    LaserScanPowerControl,
+    LaserScanState,
+    getWidgetStatePersistence,
+)
 from imswitch.imcontrol.model.scan_parameters import (
     seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
@@ -191,10 +195,7 @@ class ScanControllerAdvanced(SuperScanController):
         ttl_des = self._get_ttl_designer()
 
         # --- stage / analog ---
-        stage_param = copy.deepcopy(getattr(self._setupInfo.scan, "scanDesignerParams", {}))
-        stage_param.update(scanParameters)
-        stage_param["n_linesteps"] = int(TTLParameters.get("n_linesteps", 1))
-        self._copy_positioner_line_program_to_stage_params(stage_param, TTLParameters)
+        stage_param = self._stage_parameters(scanParameters, TTLParameters)
 
         # optional guard (like PointScan)
         if hasattr(scan_des, "signalLengthRefusal"):
@@ -401,13 +402,36 @@ class ScanControllerAdvanced(SuperScanController):
 
         return out
 
-    def _make_scan_only(self, scanParameters, TTLParameters):
-        scan_des = self._get_scan_designer()
+    def _stage_parameters(self, scanParameters, TTLParameters):
+        """What the scan designer receives: the setup's designer params, the
+        analog scan parameters, the line-step count and the positioner line
+        program. Building, plotting and estimating a scan all start here."""
         stage_param = copy.deepcopy(getattr(self._setupInfo.scan, "scanDesignerParams", {}))
         stage_param.update(scanParameters)
         stage_param["n_linesteps"] = int((TTLParameters or {}).get("n_linesteps", 1))
         self._copy_positioner_line_program_to_stage_params(stage_param, TTLParameters)
+        return stage_param
+
+    def _make_scan_only(self, scanParameters, TTLParameters):
+        scan_des = self._get_scan_designer()
+        stage_param = self._stage_parameters(scanParameters, TTLParameters)
         return scan_des.make_signal(stage_param, self._setupInfo)
+
+    def estimateScanTimeS(self):
+        """Seconds one frame of the current scan takes, from the scan
+        designer's estimate, or ``None`` when the designer cannot estimate.
+
+        Nothing is built at full size and no hardware is touched, so this is
+        cheap enough to follow a slider. Raises ScanDesignRefusedError, with
+        the reason, for a design the designer would refuse.
+        """
+        self.getParameters()
+        return self._get_scan_designer().estimateScanTime(
+            self._stage_parameters(
+                self._analogParameterDict, self._digitalParameterDict
+            ),
+            self._setupInfo,
+        )
 
     def plotScanCurves(self):
         """Build and plot analog scan curves without starting hardware tasks."""
@@ -434,9 +458,14 @@ class ScanControllerAdvanced(SuperScanController):
                     scanSignalsDict = signalDict.get("scanSignalsDict", {})
                     ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
                 else:
-                    scanSignalsDict, _, scanInfoDict = self._make_scan_only(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
+                    # The speed rule (P0) can refuse the scan-only design too.
+                    try:
+                        scanSignalsDict, _, scanInfoDict = self._make_scan_only(
+                            self._analogParameterDict, self._digitalParameterDict
+                        )
+                    except ScanDesignRefusedError as error:
+                        self._logger.warning(f"Nothing to plot: {error}")
+                        return
             if not scanSignalsDict:
                 self._logger.warning("No scan curves to plot")
                 return
@@ -642,6 +671,12 @@ class ScanControllerAdvanced(SuperScanController):
             )
         return counts
 
+    def getNumScanPositions(self):
+        """Scan positions of the current parameters (a recording asks this
+        before anything else has rebuilt the dicts from the widget or cloak)."""
+        self.getParameters()
+        return super().getNumScanPositions()
+
     def getNumCamTTL(self):
         """Return the exact uniform detector-frame multiplier when expressible."""
         self.getParameters()
@@ -726,6 +761,7 @@ class ScanControllerAdvanced(SuperScanController):
         self._digitalParameterDict = self._buildDigitalParameterDict(
             self._analogParameterDict
         )
+        self._publishLaserScanState()
 
     def _buildAnalogParameterDict(self):
         """Serialize PointScan-compatible analog scan parameters from the widget."""
@@ -740,6 +776,78 @@ class ScanControllerAdvanced(SuperScanController):
         return self._scanParams.build_digital(
             self._widget, analogParameterDict, self.positioners, self.TTLDevices
         )
+
+    def _laserScanStateFromParameters(self, parameters=None):
+        """Build semantic laser participation/AO ownership from scan state.
+
+        ``target_device`` is the canonical Advanced Scan participation model:
+        the serializer includes a TTL device when at least one line step (or
+        an explicit pulse program) uses it.  A declared ``powerDevice`` is
+        reported as part of the same active optical path even though it does
+        not itself appear in the TTL target list.
+        """
+        parameters = parameters if parameters is not None else getattr(
+            self, '_digitalParameterDict', {}
+        )
+        laserInfos = getattr(self._setupInfo, 'lasers', {}) or {}
+        states = {}
+
+        activeTargets = {
+            str(name) for name in (parameters.get('target_device', ()) or ())
+            if name in laserInfos
+        }
+        advancedMode = bool(parameters.get('advanced_mode', False))
+        powerEnabled = parameters.get('linestep_power_enabled', {}) or {}
+        powerPercent = parameters.get('linestep_power_percent', {}) or {}
+
+        def powerControlFor(name):
+            info = laserInfos.get(name)
+            analogChannel = getattr(info, 'analogChannel', None) if info else None
+            ownsAO = (
+                advancedMode
+                and name in powerPercent
+                and analogChannel not in (None, 'None')
+                # Missing flag is enabled for backward compatibility with
+                # scans saved before the checkbox existed.
+                and bool(powerEnabled.get(name, True))
+            )
+            return (
+                LaserScanPowerControl.AO
+                if ownsAO else LaserScanPowerControl.DIRECT
+            )
+
+        for name in laserInfos:
+            states[name] = LaserScanState(
+                active_for_scan=False,
+                power_control=powerControlFor(name),
+            )
+
+        for name in activeTargets:
+            states[name] = LaserScanState(
+                active_for_scan=True,
+                power_control=powerControlFor(name),
+            )
+
+            info = laserInfos.get(name)
+            powerDevice = getattr(info, 'powerDevice', None) if info else None
+            if powerDevice and powerDevice in states:
+                # The gate is the TTL participant; the declared partner owns
+                # the actual optical power and therefore belongs to the active
+                # path too. If that partner independently participates as a
+                # TTL target, its own AO state is resolved in the loop.
+                states[powerDevice] = LaserScanState(
+                    active_for_scan=True,
+                    power_control=powerControlFor(powerDevice),
+                )
+
+        return states
+
+    def _publishLaserScanState(self):
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        publish = getattr(workflow, 'publish_laser_scan_state', None)
+        if not callable(publish):
+            return
+        publish(self._laserScanStateFromParameters())
 
     # ---------------------------------------------------------------------
     # Parameters: dicts -> UI (used by loadScan)

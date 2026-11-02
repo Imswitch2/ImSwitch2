@@ -8,8 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.model import memory_limits
+from imswitch.imcontrol.model.scan_frame import with_frame_geometry
 
 
 @dataclass
@@ -140,10 +142,16 @@ class ChunkPayload:
     publishes a display frame at every boundary — once per Z plane — but its
     raw volume is only whole when the scan ends, and handing out a
     half-written one is worse than handing out nothing.
+
+    ``display_geometry`` is the scan geometry of the ``display`` frames, when
+    the scan that produced them carries one (``scan_frame.FrameGeometry``).
+    The display latch re-attaches it, so a frame shown from the latch keeps
+    it. ``None`` for every scan without one, and for cameras.
     """
 
     display: Any
     raw: Any = None
+    display_geometry: Any = None
 
     def of(self, kind: 'ChunkKind'):
         if kind is ChunkKind.RAW:
@@ -208,7 +216,7 @@ class RawFrameUnavailableError(RuntimeError):
     """
 
 
-class DetectorManager(SignalInterface):
+class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
     """ Abstract base class for managers that control detectors. Each type of
     detector corresponds to a manager derived from this class. """
 
@@ -416,6 +424,20 @@ class DetectorManager(SignalInterface):
     def model(self) -> str:
         """ Detector model name. """
         return self.__model
+
+    def _setModel(self, model: str) -> None:
+        """Update cached model identity after an in-place backend replacement."""
+        self.__model = model
+
+    def _setFullShape(self, fullShape: Tuple[int, ...]) -> None:
+        """Update cached sensor geometry after an in-place backend replacement.
+
+        Lifecycle implementations may replace a mock backend with real hardware
+        whose authoritative sensor dimensions differ from the startup fallback.
+        Ordinary detector code should continue treating ``fullShape`` as
+        read-only.
+        """
+        self.__fullShape = tuple(fullShape)
 
     @property
     def binning(self) -> int:
@@ -798,7 +820,9 @@ class DetectorManager(SignalInterface):
         # last decided what everyone saw next.
         display = payload.of(ChunkKind.DISPLAY)
         if display is not None and len(display) > 0:
-            self.__image = np.asarray(display[-1])
+            self.__image = with_frame_geometry(
+                np.asarray(display[-1]), payload.display_geometry
+            )
             # A frame nobody on the display path has taken yet.
             self.__dict__['_chunkLatchConsumed'] = False
         raw = payload.of(ChunkKind.RAW)
@@ -984,6 +1008,22 @@ class DetectorManager(SignalInterface):
     def finalize(self) -> None:
         """ Close/cleanup detector. """
         pass
+
+    def _lifecycleReinitialise(self) -> None:
+        """ After the camera backend was replaced (device-reconnect-2.0 R-3):
+        put every ImSwitch-owned parameter back on the new camera. The
+        acquisition stays stopped; the first parameter that cannot be
+        re-applied fails the reconnect with its name. """
+        errors = []
+        for name, parameter in list(self.parameters.items()):
+            if not getattr(parameter, 'editable', True):
+                continue
+            try:
+                self.setParameter(name, parameter.value)
+            except Exception as exc:
+                errors.append(f'{name}: {exc}')
+        if errors:
+            raise RuntimeError('parameters not re-applied: ' + '; '.join(errors))
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

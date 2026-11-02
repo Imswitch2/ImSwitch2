@@ -30,12 +30,18 @@ class PyMicroscopeLaserManager(LaserManager):
             )
             self.__laser = getattr(package, driver[1])(self.__port)
             self.__logger.info(f"[{self.__port}] {self.__driver} initialized. ")
+            self._setConnected("Python Microscope laser initialized")
         except Exception as e:
             self._isMock = True
             self.__logger.warning(
                 f'Failed to initialize PyMicroscope hardware, running in mock mode: {e}'
             )
             self.__laser = None
+            self._setConnectionError(
+                e,
+                summary="Python Microscope laser initialization failed; mock fallback active",
+                mock_active=True,
+            )
         
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=1)
         self.__maxPower = float(laserInfo.valueRangeMax)
@@ -68,3 +74,4 @@ class PyMicroscopeLaserManager(LaserManager):
         
         self.__logger.info(f"[{self.__port}] {self.__driver} closed.")
         self.__laser.shutdown()
+        self._setFinalizedStatus()

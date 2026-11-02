@@ -6,7 +6,8 @@
       "cameraHost": "example",
       "cameraPixelSizeUm": null,
       "cameraPort": 1,
-      "picam": {}
+      "picam": {},
+      "useMockOnFailure": true
     }
   }
 }

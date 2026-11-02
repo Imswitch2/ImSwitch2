@@ -29,6 +29,7 @@ class SubtractBackgroundProcessor(Processor):
 
     name = "Subtract background"
     id = "subtract-background"
+    output_kind = "image"
     category = "Restoration"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.
@@ -58,8 +59,8 @@ class SubtractBackgroundProcessor(Processor):
         from imswitch.improcess.processors.base import OutputSpec
 
         if (params or {}).get("output_background", False):
-            return OutputSpec(ports=("signal", "background"))
-        return OutputSpec(ports=("out",))
+            return OutputSpec(ports=("signal", "background"), kind=self.output_kind)
+        return OutputSpec(ports=("out",), kind=self.output_kind)
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

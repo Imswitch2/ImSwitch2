@@ -1,0 +1,11 @@
+{
+  "category": "instruments",
+  "device": {
+    "managerName": "MockPowerMeterManager",
+    "managerProperties": {
+      "noiseW": 1.5,
+      "powerW": 1.5,
+      "serial": "example"
+    }
+  }
+}
