@@ -328,9 +328,11 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "math",
     "multicolor-apply",
     "multicolor-registration",
+    "pick",
     "projection",
     "psf-resolution",
     "python",
+    "regionprops",
     "resize",
     "segmentation",
     "smlm-drift",
@@ -343,6 +345,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "stack-subset",
     "subtract-background",
     "table-to-localizations",
+    "threshold",
     "transform",
 ]
 
