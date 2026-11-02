@@ -131,7 +131,6 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
                 'limits': limits,
                 'mode': OVERVIEW,
                 'overviewChannel': 0,
-                'overheadS': 0.0,
                 # The overview's size: the panel's slider, the setup's
                 # default (60 µm) until it moves.
                 'overviewFieldUm': limits.overview_default_field_um(),
@@ -380,20 +379,16 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
     # ------------------------------------------------------------------
 
     def framePeriodsMeasured(self, periods):
-        state = self._simple()
+        """Shown, never planned on: the overview is the Size slider's alone.
+
+        The measured period adds the re-arm between frames to the scan (the
+        estimate leaves it out, and says so). Re-planning the overview to fit
+        that inside the frame budget changed its pixels by itself, between
+        runs, and on a rig whose re-arm takes most of a second collapsed every
+        size to the smallest overview.
+        """
         measured = sum(periods) / len(periods)
         self._view.setMeasuredRate(1.0 / measured if measured > 0 else None)
-        if state['mode'] != OVERVIEW or len(periods) < 3:
-            return
-        target = float(state['limits'].config['overviewFrameTimeS'])
-        overview = state['overview']
-        if measured > 1.1 * target and overview.met:
-            overhead = max(0.0, measured - overview.estimate_s)
-            if overhead > state['overheadS'] + 0.01:
-                state['overheadS'] = overhead
-                state['overview'] = self._planOverview()
-                self._clearFramePeriods()
-                self._pushToView()
 
     # ------------------------------------------------------------------
     # Overview planning (D6)
@@ -424,9 +419,8 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             analog, digital = planFor(field, pixels, step, dwell)
             return not self._voltageRefusal(analog, digital)
 
-        budget = float(limits.config['overviewFrameTimeS']) - state['overheadS']
         return plan_overview(limits, estimate=estimate, fits=fits,
-                             budget_s=max(0.05, budget),
+                             budget_s=float(limits.config['overviewFrameTimeS']),
                              field_um=state['overviewFieldUm'])
 
     def setOverviewField(self, sizeUm: float):

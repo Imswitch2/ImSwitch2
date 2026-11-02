@@ -671,6 +671,12 @@ class ScanControllerAdvanced(SuperScanController):
             )
         return counts
 
+    def getNumScanPositions(self):
+        """Scan positions of the current parameters (a recording asks this
+        before anything else has rebuilt the dicts from the widget or cloak)."""
+        self.getParameters()
+        return super().getNumScanPositions()
+
     def getNumCamTTL(self):
         """Return the exact uniform detector-frame multiplier when expressible."""
         self.getParameters()
