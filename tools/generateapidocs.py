@@ -27,6 +27,8 @@ import importlib
 import inspect
 import os
 import sys
+import types
+import typing
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -72,8 +74,56 @@ def _signature(func):
         signature = inspect.signature(func)
     except (TypeError, ValueError):
         return '(...)'
-    parameters = [p for name, p in signature.parameters.items() if name != 'self']
-    return str(signature.replace(parameters=parameters))
+    parameters = [p.replace(annotation=_Shown(p.annotation))
+                  for name, p in signature.parameters.items() if name != 'self']
+    return str(signature.replace(parameters=parameters,
+                                 return_annotation=_Shown(signature.return_annotation)))
+
+
+class _Shown:
+    """An annotation as the pages show it, the same on every Python.
+
+    ``inspect`` prints ``Optional[float]`` on 3.10 but ``float | None`` from
+    3.14 on, so pages generated on a newer Python would fail CI's --check.
+    Unions are spelled the 3.10 way here; everything else as ``inspect`` does.
+    """
+
+    def __new__(cls, annotation):
+        if annotation is inspect.Parameter.empty:
+            return annotation
+        shown = super().__new__(cls)
+        shown.text = _annotation(annotation)
+        return shown
+
+    def __repr__(self):
+        return self.text
+
+
+def _isUnion(annotation):
+    origin = typing.get_origin(annotation)
+    return origin is typing.Union or origin is getattr(types, 'UnionType', None)
+
+
+def _hasUnion(annotation):
+    return _isUnion(annotation) or any(
+        _hasUnion(arg) for arg in typing.get_args(annotation)
+        if not isinstance(arg, (list, str, int, bool)))
+
+
+def _annotation(annotation):
+    if isinstance(annotation, list):                  # Callable's parameters
+        return '[' + ', '.join(_annotation(a) for a in annotation) + ']'
+    if not _hasUnion(annotation):
+        return inspect.formatannotation(annotation)
+    args = typing.get_args(annotation)
+    if _isUnion(annotation):
+        others = [a for a in args if a is not type(None)]
+        if len(others) == 1 and len(args) == 2:
+            return f'Optional[{_annotation(others[0])}]'
+        return 'Union[' + ', '.join(
+            'NoneType' if a is type(None) else _annotation(a) for a in args) + ']'
+    name = getattr(annotation, '_name', None) or typing.get_origin(annotation).__name__
+    return f'{name}[' + ', '.join(_annotation(a) for a in args) + ']'
 
 
 def _exported(cls):
@@ -271,14 +321,14 @@ def main(argv):
         return
     os.makedirs(apiDocsDir, exist_ok=True)
     for name, text in pages.items():
-        with open(os.path.join(apiDocsDir, name), 'w') as file:
+        with open(os.path.join(apiDocsDir, name), 'w', encoding='utf-8') as file:
             file.write(text)
     print(f'api.imcontrol.rst: {pages["api.imcontrol.rst"].count(".. method::")} methods')
 
 
 def _read(path):
     try:
-        with open(path) as file:
+        with open(path, encoding='utf-8') as file:
             return file.read()
     except FileNotFoundError:
         return None

@@ -589,6 +589,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport(runOnUIThread=True)
     def loadLaserPreset(self, name: str, context=LaserPowerContext.LIVE.value) -> bool:
+        """ Applies the laser preset ``name`` and selects it in the Laser
+        widget. In separated power mode the preset goes to ``context``
+        (``'live'`` or ``'scan'``) and must be visible there; otherwise it
+        sets the live powers. Returns False when there is no such preset. """
         self._requireLaserEditsAllowed()
         storedContext, preset = self._presetDefinition(name)
         if preset is None:
@@ -636,6 +640,8 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport(runOnUIThread=True)
     def deleteLaserPreset(self, name: str, context=LaserPowerContext.LIVE.value) -> bool:
+        """ Deletes the laser preset ``name`` from the setup file. Returns
+        False when there is no such preset. """
         self._requireLaserEditsAllowed()
         if name not in getattr(self._setupInfo, 'laserPresets', {}):
             return False
@@ -652,6 +658,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     @APIExport(runOnUIThread=True)
     def renameLaserPreset(self, oldName: str, newName: str, context=LaserPowerContext.LIVE.value) -> bool:
+        """ Renames the laser preset ``oldName`` to ``newName`` in the setup
+        file; a preset already called ``newName`` is replaced. Returns False
+        when there is no preset ``oldName`` or ``newName`` is empty. """
         self._requireLaserEditsAllowed()
         presets = getattr(self._setupInfo, 'laserPresets', {})
         if oldName not in presets or not newName:
