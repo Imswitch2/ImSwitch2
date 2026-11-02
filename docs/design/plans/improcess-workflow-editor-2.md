@@ -605,7 +605,7 @@ Each phase leaves the suite green and ships something usable.
 All five change what a file means and need a `schema: 2` decision; none is
 needed for Phases 0–3. The first two, exposed controls and bypass, are
 designed in [improcess-workflow-schema-2.md](improcess-workflow-schema-2.md)
-(draft, 2026-10-28).
+(draft 2, 2026-11-02, after review 1).
 
 ### Effort
 
