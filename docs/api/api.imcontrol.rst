@@ -316,10 +316,10 @@ api.imcontrol
 
       Needs *Laser* in ``availableWidgets``.
 
-   .. method:: getLaserValue(laserName: str) -> float
+   .. method:: getLaserValue(laserName: str)
 
-      Returns the value the laser is set to, in the units it uses
-      (getLaserInfo), as the Laser widget shows it.
+      The value the specified laser was last set to, in its own units
+      (a % setpoint when it uses a calibration LUT).
 
       Needs *Laser* in ``availableWidgets``.
 

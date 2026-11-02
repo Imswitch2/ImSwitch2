@@ -5,6 +5,9 @@ import logging
 
 import pytest
 
+from imswitch.imcommon.model import (
+    CancelToken, OperationCancelled, checkpoint, clearCurrentCancelToken, setCurrentCancelToken,
+)
 from imswitch.imscripting.model import getActionsScope
 
 
@@ -20,6 +23,7 @@ class _Imcontrol:
         self.failOn = None
 
     def _log(self, *call):
+        checkpoint()        # as every api.imcontrol call does before dispatch
         self.calls.append(call)
         if self.failOn and call[0] == self.failOn:
             raise RuntimeError(f'{call[0]} refused')
@@ -153,3 +157,28 @@ def test_every_step_is_tried_when_one_fails(imc, helpers):
             imc.angles['HWP'] = 5.0
             imc.stages['XY']['X'] = 7.0
     assert imc.angles['HWP'] == 10.0                            # still put back
+
+
+@pytest.fixture
+def token():
+    token = CancelToken()
+    setCurrentCancelToken(token)
+    yield token
+    clearCurrentCancelToken()
+
+
+def test_a_stop_not_yet_noticed_when_the_block_ends_still_restores_everything(imc, helpers, token):
+    with pytest.raises(OperationCancelled):
+        with helpers['temporaryLaserSettings']({'488': {'value': 5.0, 'on': True},
+                                                '405': {'on': False}}):
+            token.requestStop()             # the block ends before any checkpoint
+    assert imc.lasers == {'488': [False, 0.0], '405': [True, None]}
+
+
+def test_every_step_is_tried_after_the_cleanup_time_ran_out(imc, helpers, token, caplog):
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(OperationCancelled):
+            with helpers['returningToPositions'](stages=['XY'], rotators=['HWP']):
+                imc.angles['HWP'] = 5.0
+                token.expireNow()
+    assert 'XY X' in caplog.text and 'HWP' in caplog.text

@@ -1797,12 +1797,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         return bool(self._widget.isLaserActive(laserName))
 
     @APIExport(runOnUIThread=True)
-    def getLaserValue(self, laserName: str) -> float:
-        """ Returns the value the laser is set to, in the units it uses
-        (getLaserInfo), as the Laser widget shows it. """
-        return self._widget.getValue(laserName)
-
-    @APIExport(runOnUIThread=True)
     def isLaserActive(self, laserName: str) -> bool:
         """ Whether the laser is switched on. """
         return bool(self._widget.isLaserActive(laserName))
