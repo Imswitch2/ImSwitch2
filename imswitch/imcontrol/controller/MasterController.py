@@ -5,6 +5,7 @@ from imswitch.imcontrol.model import (
     RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
 from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
+from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.model.managers._scan_execution import (
     getSharedScanExecutionCoordinator,
 )
@@ -107,21 +108,29 @@ class MasterController:
 
         # Generate scanManager type according to setupInfo
         if self.__setupInfo.scan:
-            if self.__setupInfo.scan.scanWidgetType == "PointScan":
+            # scanWidgetType is always the real scan backend.  A cloak only
+            # changes the frontend selected by the main view/controller.
+            try:
+                scanType = resolve_scan_info(self.__setupInfo.scan).backend_type
+            except ValueError as error:
+                self.__logger.error(str(error))
+                return
+            if scanType == "PointScan":
                 self.scanManager = ScanManagerPointScan(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "Base":
+            elif scanType == "Base":
                 self.scanManager = ScanManagerBase(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "MoNaLISA":
+            elif scanType == "MoNaLISA":
                 self.scanManager = ScanManagerMoNaLISA(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "Advanced":
+            elif scanType == "Advanced":
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "TriggerScope":
+            elif scanType == "TriggerScope":
                 self.scanManager = ScanManagerTriggerScope(self.__setupInfo,
                                                            self.triggerScopeManager)
             else:
+                known = ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"]
                 self.__logger.error(
-                    'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the following:'
-                    ' ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"].'
+                    'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the '
+                    f'following: {known}.'
                 )
                 return
 

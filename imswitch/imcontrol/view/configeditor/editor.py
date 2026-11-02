@@ -272,9 +272,10 @@ def _load_section_schemas() -> dict:
     """Load singleton-section schemas from builtin_templates/sections/.
 
     Returns a dict keyed by the top-level JSON key (e.g. ``"focusLock"``,
-    ``"scan"``). Each value has the same shape as a device schema but with a
-    flat ``fields`` list (no ``top``/``props``/``nested``), plus ``section``,
-    ``group`` (``"system"`` or ``"extras"``), and optional ``legacy`` flags.
+    ``"scan"``). Section schemas use ``fields`` for direct children and may
+    also use the same ``nested`` mapping as device schemas for structured
+    child dictionaries. They additionally carry ``section``, ``group``
+    (``"system"`` or ``"extras"``), and optional ``legacy`` flags.
     """
     sections: dict = {}
     base = Path(__file__).resolve().parent / "builtin_templates" / "sections"
@@ -353,9 +354,12 @@ def _resolve_section_dynamic_options(schema: dict) -> None:
     """Replace supported option placeholders with runtime-discovered values."""
     global PLUGIN_DISCOVERY_ERROR
 
+    from imswitch.imcontrol.model.scan_cloak import SCAN_CLOAKS
+
     resolved = {
         "__improcess_reconstructors__": list(IMPROCESS_RECONSTRUCTOR_FALLBACK),
         "__improcess_processors__": list(IMPROCESS_PROCESSOR_FALLBACK),
+        "__scan_cloaks__": [None, *sorted(SCAN_CLOAKS)],
     }
     try:
         from imswitch.improcess.reconstructors import available_reconstructor_ids
@@ -2286,6 +2290,8 @@ def _parse_freeform_value(text: str):
 # FieldWidget – single editable field row
 # =============================================================================
 class FieldWidget(QWidget):
+    sig_edited = pyqtSignal()   # the operator changed the value (never on construction)
+
     def __init__(self, field_def: dict, current_value, parent=None, device_pool: dict | None = None):
         super().__init__(parent)
         self._def = field_def
@@ -2332,6 +2338,27 @@ class FieldWidget(QWidget):
             # typed stays as typed, and Apply reads it as a number when it is
             # one and warns when it is not.
             self._w = QLineEdit("" if value is None else str(value))
+        elif tp == "float_pair":
+            # Two related numeric values stored as one two-element JSON list.
+            # This is intentionally a small generic widget rather than a scan-
+            # specific editor (e.g. manual FOV is naturally X × Y).
+            values = value if isinstance(value, (list, tuple)) else ()
+            if len(values) == 0 and value not in (None, ""):
+                values = (value, value)
+            left = values[0] if len(values) > 0 else None
+            right = values[1] if len(values) > 1 else left
+            self._pair_edits = (
+                QLineEdit("" if left is None else str(left)),
+                QLineEdit("" if right is None else str(right)),
+            )
+            pair = QWidget()
+            pair_lay = QHBoxLayout(pair)
+            pair_lay.setContentsMargins(0, 0, 0, 0)
+            pair_lay.setSpacing(5)
+            pair_lay.addWidget(self._pair_edits[0])
+            pair_lay.addWidget(QLabel("×"))
+            pair_lay.addWidget(self._pair_edits[1])
+            self._w = pair
         elif tp == "select":
             self._w = QComboBox()
             options = self._def.get("opts", [])
@@ -2417,6 +2444,8 @@ class FieldWidget(QWidget):
         lay.addWidget(self._w)
         if self._def.get("tip"):
             self._w.setToolTip(self._def["tip"])
+            for edit in getattr(self, "_pair_edits", ()):
+                edit.setToolTip(self._def["tip"])
 
     def _watch_for_edits(self):
         """Mark the field touched on user interaction, never on construction.
@@ -2428,6 +2457,12 @@ class FieldWidget(QWidget):
         """
         def touch(*_args):
             self._touched = True
+            self.sig_edited.emit()
+
+        if self._def.get("type") == "float_pair":
+            for edit in self._pair_edits:
+                edit.textEdited.connect(touch)
+            return
 
         w = self._w
         if isinstance(w, QCheckBox):
@@ -2450,6 +2485,7 @@ class FieldWidget(QWidget):
         if path:
             self._w.setText(path)
             self._touched = True
+            self.sig_edited.emit()
 
     def get_value(self):
         if not self._touched:
@@ -2461,6 +2497,8 @@ class FieldWidget(QWidget):
             return self._w.currentData()  # None (Automatic) / True / False
         if tp in ("int", "float"):
             return _parse_number(self._w.text())
+        if tp == "float_pair":
+            return [_parse_number(edit.text()) for edit in self._pair_edits]
         if tp == "select":
             return self._w.currentData()
         if tp == "multiselect":
@@ -3867,6 +3905,11 @@ class SectionEditorDialog(QDialog):
     ``current`` that the schema does not define, in a "Custom" tab, and
     offers "Add property" to add more; Apply writes them back with the
     schema fields instead of dropping them.
+
+    Section schemas may also expose structured child dictionaries through
+    ``nested``.  Nested fields follow the same important editing contract as
+    device ``managerProperties``: untouched absent containers stay absent and
+    unknown/unexposed keys are preserved when an exposed child is edited.
     """
 
     def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None, *,
@@ -3875,6 +3918,7 @@ class SectionEditorDialog(QDialog):
         self._key = key
         self._schema = schema
         self._data = data  # reference, used to populate ref combos
+        self._current = copy.deepcopy(current) if isinstance(current, dict) else {}
         self._result: dict = {}
         self._allow_custom = allow_custom_fields
         self._custom_widgets: dict = {}  # key → QLineEdit
@@ -3924,10 +3968,17 @@ class SectionEditorDialog(QDialog):
         tabs.setDocumentMode(True)
         lay.addWidget(tabs, 1)
 
-        self._field_widgets: dict = {}  # key → FieldWidget
+        # Keys are ("field", key) for direct children and
+        # ("nested:<container>", key) for structured child dictionaries.
+        self._field_widgets: dict = {}
+        self._tab_sections: dict = {}   # tab index -> {"field" | "nested:<container>"}
+        self._shown_when = schema.get("nested_shown_when", {})
         groups: dict[str, list] = {}
         for f in schema.get("fields", []):
-            groups.setdefault(f.get("grp", "Basic"), []).append(f)
+            groups.setdefault(f.get("grp", "Basic"), []).append(("field", f))
+        for nest_key, nest_fields in schema.get("nested", {}).items():
+            for f in nest_fields:
+                groups.setdefault(f.get("grp", "Basic"), []).append((f"nested:{nest_key}", f))
         ordered = sorted(groups.keys(), key=lambda g: (0 if g == "Basic" else 2 if g == "Advanced" else 1))
 
         for grp in ordered:
@@ -3939,8 +3990,13 @@ class SectionEditorDialog(QDialog):
             form.setContentsMargins(8, 8, 8, 8)
             form.setSpacing(6)
             form.setLabelAlignment(Qt.AlignRight)
-            for f in groups[grp]:
-                cur = (current or {}).get(f["key"], _MISSING)
+            for section, f in groups[grp]:
+                if section == "field":
+                    cur = self._current.get(f["key"], _MISSING)
+                else:
+                    nest_key = section.split(":", 1)[1]
+                    container = self._current.get(nest_key)
+                    cur = container.get(f["key"], _MISSING) if isinstance(container, dict) else _MISSING
                 if cur is _MISSING:
                     cur = _field_default(f)
                     # Normalize the template's null sentinel.
@@ -3954,9 +4010,21 @@ class SectionEditorDialog(QDialog):
                 lbl.setTextFormat(Qt.RichText)
                 lbl.setToolTip(f.get("tip", ""))
                 form.addRow(lbl, fw)
-                self._field_widgets[f["key"]] = fw
+                self._field_widgets[(section, f["key"])] = fw
             scroll.setWidget(inner)
-            tabs.addTab(scroll, grp)
+            index = tabs.addTab(scroll, grp)
+            self._tab_sections[index] = {section for section, _f in groups[grp]}
+
+        # A nested container that only matters for one choice (the scan
+        # cloak's options) shows its tab only while that choice is made.
+        self._tab_widget = tabs
+        for alternatives in self._shown_when.values():
+            for condition in alternatives:
+                for key in condition:
+                    fw = self._field_widgets.get(("field", key))
+                    if fw is not None:
+                        fw.sig_edited.connect(self._update_conditional_tabs)
+        self._update_conditional_tabs()
 
         # ── Custom tab: keys the schema does not define ──
         if self._allow_custom:
@@ -3973,7 +4041,7 @@ class SectionEditorDialog(QDialog):
             )
             self._custom_empty_lbl.setTextFormat(Qt.RichText)
             self._custom_form.addRow(self._custom_empty_lbl)
-            known = {f["key"] for f in schema.get("fields", [])}
+            known = self._schema_keys()
             for k, v in (current or {}).items():
                 if k not in known:
                     self._add_custom_row(k, v)
@@ -4014,17 +4082,79 @@ class SectionEditorDialog(QDialog):
         btns.addWidget(ok_btn)
         lay.addLayout(btns)
 
+    def _nested_shown(self, nest_key) -> bool:
+        """Whether a nested container applies to the values the form shows now.
+
+        ``nested_shown_when`` lists alternatives, each a {field: value} dict
+        that must match entirely; a container it does not name always shows.
+        """
+        alternatives = self._shown_when.get(nest_key)
+        if not alternatives:
+            return True
+        for condition in alternatives:
+            if all(self._form_value(key) == value for key, value in condition.items()):
+                return True
+        return False
+
+    def _form_value(self, key):
+        fw = self._field_widgets.get(("field", key))
+        return fw.get_value() if fw is not None else self._current.get(key)
+
+    def _update_conditional_tabs(self):
+        """Hide a tab whose every field belongs to a container that does not apply.
+
+        Hiding is display only: an untouched container is applied exactly as
+        the file had it, so switching the choice back and forth loses nothing.
+        """
+        for index, sections in self._tab_sections.items():
+            shown = any(
+                section == "field" or self._nested_shown(section.split(":", 1)[1])
+                for section in sections
+            )
+            self._tab_widget.setTabVisible(index, shown)
+
     def _try_apply(self):
-        out: dict = {}
+        # Start from the file's section, not a blank dict.  This is what makes
+        # a curated section form safe for plugin/future keys it does not know.
+        out: dict = copy.deepcopy(self._current)
         missing: list = []
+
+        # Preserve historical section-editor behaviour for direct fields:
+        # applying the form materializes their displayed defaults.
         for f in self._schema.get("fields", []):
-            fw = self._field_widgets.get(f["key"])
+            fw = self._field_widgets.get(("field", f["key"]))
             if fw is None:
                 continue
             val = fw.get_value()
             if f.get("req") and (val is None or val == "" or val == []):
                 missing.append(f["label"])
             out[f["key"]] = val
+
+        # Nested containers are deliberately different: they are optional
+        # structured configuration. Merely opening/applying a section must not
+        # create simplePointScan/simpleMoNaLISA (or seed their defaults). Only
+        # operator edits materialize absent children; existing unknown keys are
+        # retained by modifying a copy of the original container in place.
+        for nest_key, nest_fields in self._schema.get("nested", {}).items():
+            original_container = self._current.get(nest_key)
+            container = copy.deepcopy(original_container) if isinstance(original_container, dict) else None
+            touched_any = False
+            for f in nest_fields:
+                fw = self._field_widgets.get((f"nested:{nest_key}", f["key"]))
+                if fw is None:
+                    continue
+                if not fw.is_touched():
+                    continue
+                touched_any = True
+                val = fw.get_value()
+                if f.get("req") and (val is None or val == "" or val == []):
+                    missing.append(f["label"])
+                if container is None:
+                    container = {}
+                container[f["key"]] = val
+            if touched_any:
+                out[nest_key] = container
+
         if missing:
             self._err_lbl.setText(
                 "Missing required: " + ", ".join(missing)
@@ -4039,6 +4169,13 @@ class SectionEditorDialog(QDialog):
         self._result = out
         self.accept()
 
+    def _schema_keys(self) -> set:
+        """The keys the form itself edits: its fields and its nested
+        containers. ``_field_widgets`` is keyed by ``(section, key)``, so a
+        name is looked up here; a custom property may not take one."""
+        return ({f["key"] for f in self._schema.get("fields", [])}
+                | set(self._schema.get("nested", {})))
+
     def add_custom_field(self, key: str, value) -> str:
         """Add a custom key; returns an error message, or "" on success."""
         if not self._allow_custom:
@@ -4046,7 +4183,7 @@ class SectionEditorDialog(QDialog):
         key = key.strip()
         if not key:
             return "Key name is empty."
-        if key in self._field_widgets or key in self._custom_widgets:
+        if key in self._schema_keys() or key in self._custom_widgets:
             return f"'{key}' already exists in these settings."
         self._add_custom_row(key, value)
         self._tabs.setCurrentWidget(self._custom_tab)
