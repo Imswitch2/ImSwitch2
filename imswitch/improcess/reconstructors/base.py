@@ -636,7 +636,7 @@ class RawInfo:
 class Contract:
     """What a reconstructor needs from the stream to reconstruct an entry."""
 
-    init_frames: int  # frames needed before streaming starts; 0: no init
+    init_frames: int  # frames the session begins on; 0: no need (it begins on 1)
     chunk_frames: int  # frames per push: 1 frame by frame, prod(S) whole stacks
     params: dict[str, Any]  # resolved from the user's values and the RawInfo
 
@@ -710,8 +710,9 @@ class StreamingReconstructor(Reconstructor):
 
         ``params`` are the user's values; a value of None means "not set".
         Resolve every parameter you can from them and ``info`` (no pixels
-        are read yet), and leave the rest to :meth:`complete`. The default
-        accepts anything, needs no init, and takes frames one by one.
+        are read yet). What only the pixels can answer is left to the
+        session: its begin() receives the first ``init_frames`` frames. The
+        default accepts anything, needs no init, and takes frames one by one.
 
         A classmethod, so it works from its arguments alone: during a
         directory watch it runs on the stream thread, which has the class,
@@ -719,14 +720,6 @@ class StreamingReconstructor(Reconstructor):
         in through ``params``.
         """
         return Contract(init_frames=0, chunk_frames=1, params=dict(params))
-
-    def complete(self, params: dict, frames: np.ndarray) -> dict:
-        """Resolve the parameters the first ``init_frames`` frames answer.
-
-        Called only when the contract asked for init frames. The default
-        returns ``params`` unchanged.
-        """
-        return dict(params)
 
     @abstractmethod
     def make_session(self) -> StreamingSession:

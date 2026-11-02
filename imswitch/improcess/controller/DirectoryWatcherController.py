@@ -1230,10 +1230,42 @@ def _positive_int(value) -> int | None:
 
 
 class ProcessWorker(QtCore.QObject):
-    """Reconstructs one entry at a time: begins a session on the init frames,
-    pushes it every chunk after them, and sends its result to the viewer --
-    the whole result once, then one timepoint at a time, at most every
-    update_interval_s and whenever a timepoint completes."""
+    """Reconstructs one entry at a time with the active reconstructor, from the
+    items the StreamWorker sends, and sends the result to the viewer.
+
+    The PW holds the reconstructor instance; the StreamWorker only has its
+    class, for contract(). So the reconstruction itself runs on this worker's
+    thread alone, and no reconstructor instance is shared between threads.
+
+    For each entry the StreamWorker sends three kinds of item, in this order:
+
+    1. start(): the RawInfo, the contract and the init frames. The PW makes a
+       fresh session and begins it on the init frames, with the parameters
+       the contract resolved. begin() consumes those frames, so they are not
+       pushed again.
+    2. process(): one chunk of frames [start, end), any number of times, in
+       recording order. The PW pushes the frames that begin() hasn't already
+       consumed into the session.
+    3. finish(): the recording has ended and every chunk has been sent. The
+       PW finishes the session and sends the final result.
+
+    After every item, whatever came of it (an error included), the PW emits
+    sigDone. The StreamWorker sends the next item only then, so the PW is
+    never handed frames while it is busy, and frames never pile up in its
+    event queue.
+
+    While an entry is being reconstructed, the viewer is kept up to date:
+    the whole result on the first update, and from then on only the plane
+    of the timepoint being written, which costs the same however long the
+    recording runs. An update is sent at most every update_interval_s, and
+    at once when a timepoint made of a stack of frames is complete. A session
+    that can't give a single plane sends the whole result every time.
+
+    If the session fails to begin or a push fails, the error is logged and
+    the rest of the entry is ignored; the next entry starts afresh. When
+    monitoring stops, skip_queued() makes the PW ignore the items still in
+    its queue, and stop() closes the session once the thread has ended.
+    """
 
     sigResult = QtCore.Signal(object)  # ProcessingResult: the whole of it
     sigTimepoint = QtCore.Signal(int, object)  # (timepoint, plane)
@@ -1253,8 +1285,6 @@ class ProcessWorker(QtCore.QObject):
         self._reconstructor = reconstructor
         self._update_interval_s = update_interval_s
         self._raw_data_info: RawInfo | None = None
-        self._contract: Contract | None = None
-        self._params: dict | None = None
         self._session: StreamingSession | None = None
         self._skipping = False  # skip_queued(): stopping, process nothing more
         self._begun = 0  # frames begin() consumed: pushed from there on
@@ -1285,21 +1315,16 @@ class ProcessWorker(QtCore.QObject):
             self.sigDone.emit()
 
     def _start(self, raw_data_info: RawInfo, contract: Contract, init_frames: np.ndarray):
-        # a new entry: resolve the parameters the init frames answer, then
-        # begin a fresh session on them
+        # a new entry: begin a fresh session on the init frames
         self._raw_data_info = raw_data_info
-        self._contract = contract
         if self._session is not None:
             self._session.close()
             self._session = None
 
         self._begun = len(init_frames)
         try:
-            self._params = contract.params
-            if contract.init_frames:
-                self._params = self._reconstructor.complete(contract.params, init_frames)
             session = self._reconstructor.make_session()
-            session.begin(self._stream_init(init_frames), self._params)
+            session.begin(self._stream_init(init_frames), contract.params)
         except Exception as e:
             self._logger.error(f"{raw_data_info.name}: could not begin: {e}")
             return
