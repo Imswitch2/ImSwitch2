@@ -933,9 +933,55 @@ class FileIOController(ImProcessWidgetController):
         return data_obj, None
 
     def _addDataObjToWorkingSet(self, data_obj) -> None:
-        if getattr(data_obj, 'sourceKind', 'image') != 'image':
+        """Add a Loaded catalog source to Multi-data.
+
+        Multi-data stores ordinary image ``DataObj`` objects.  A Quick Load
+        timelapse, however, is represented by one logical metadata ``DataObj``
+        for lazy navigation.  Expand that logical source into its concrete
+        per-timepoint image sources, matching the existing Session ->
+        Multi-data behavior, rather than silently dropping it.
+        """
+        source_kind = str(getattr(data_obj, 'sourceKind', 'image') or 'image')
+        if source_kind == 'image':
+            self.multiDataFrameController.addDataObj(data_obj)
             return
-        self.multiDataFrameController.addDataObj(data_obj)
+        if source_kind != TIME_LAPSE_SOURCE_KIND:
+            return
+
+        index = getattr(data_obj, 'sourceMetadata', None)
+        if index is None:
+            return
+        try:
+            candidates = list(index.channel().candidates)
+        except Exception:
+            self._logger.warning(
+                "Could not expand Loaded timelapse into Multi-data",
+                exc_info=True,
+            )
+            return
+
+        for ref in candidates:
+            path = str(getattr(ref, 'path', '') or '')
+            dataset_name = getattr(ref, 'dataset', None)
+            if not path:
+                continue
+            if dataset_name in (None, ''):
+                try:
+                    names = list(DataObj.getDatasetNames(path))
+                except Exception:
+                    names = []
+                if len(names) != 1:
+                    self._logger.warning(
+                        "Could not add Loaded timelapse source to Multi-data "
+                        "without guessing a dataset: %s::%s",
+                        path,
+                        dataset_name,
+                    )
+                    continue
+                dataset_name = names[0]
+            self.multiDataFrameController.makeAndAddDataObj(
+                Path(path).name, str(dataset_name), path=path
+            )
 
     def _routeCatalogDataObj(
         self, data_obj, *, prefer_as_current: bool, add_to_multidata: bool

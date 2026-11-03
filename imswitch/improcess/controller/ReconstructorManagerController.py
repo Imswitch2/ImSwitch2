@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 
 from qtpy import QtCore
 
@@ -947,6 +948,45 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._publishPluginResult(result, displayName, reconstructor=reconstructor)
 
     @staticmethod
+    def _same_data_source(left, right) -> bool:
+        """Whether two DataObj-like values identify the same concrete source.
+
+        Auto-localization belongs to the Current-data source.  Detector identity
+        alone is not sufficient for Multi-data reuse: two acquisitions from the
+        same camera can require different localization.
+        """
+        if left is right and left is not None:
+            return True
+        if left is None or right is None:
+            return False
+
+        if str(getattr(left, "sourceKind", "image") or "image") != str(
+            getattr(right, "sourceKind", "image") or "image"
+        ):
+            return False
+
+        def normalized_path(obj):
+            path = getattr(obj, "dataPath", None)
+            if not path:
+                file_obj = getattr(obj, "_file", None)
+                path = getattr(file_obj, "filename", None)
+            if not path:
+                return None
+            try:
+                return os.path.normcase(os.path.abspath(os.fspath(path)))
+            except (TypeError, ValueError):
+                return str(path)
+
+        left_path = normalized_path(left)
+        right_path = normalized_path(right)
+        if left_path is None or right_path is None or left_path != right_path:
+            return False
+
+        return str(getattr(left, "datasetName", "") or "") == str(
+            getattr(right, "datasetName", "") or ""
+        )
+
+    @staticmethod
     def _default_memory_budget_bytes() -> int:
         """Reserve headroom for Qt, readers and one materialized input tile."""
         try:
@@ -986,18 +1026,28 @@ class ReconstructorManagerController(ImProcessWidgetController):
                         detector_identity,
                     )
 
-                    # Reuse once per detector, never across detectors.  The
-                    # normal timelapse case therefore still localizes exactly
-                    # once, while a mixed-detector batch remains physically safe.
-                    current_data = getattr(self._main, "_currentDataObj", None)
-                    current_detector = detector_identity(current_data) if current_data is not None else None
-                    current_payload = dict(first_params.get("auto_localization") or {})
-                    if current_payload and current_detector:
-                        shared_auto_localizations[current_detector] = current_payload
-
+                    # Reuse once per detector, never across detectors.  A
+                    # Current-data auto-localization is source-owned, though:
+                    # detector identity alone must not let localization from a
+                    # different acquisition seed this batch.
                     first_by_detector = {}
                     for item in data_objs:
                         first_by_detector.setdefault(detector_identity(item), item)
+
+                    current_data = getattr(self._main, "_currentDataObj", None)
+                    current_detector = (
+                        detector_identity(current_data)
+                        if current_data is not None
+                        else None
+                    )
+                    current_payload = dict(first_params.get("auto_localization") or {})
+                    current_first_item = first_by_detector.get(current_detector)
+                    if (
+                        current_payload
+                        and current_detector
+                        and self._same_data_source(current_data, current_first_item)
+                    ):
+                        shared_auto_localizations[current_detector] = current_payload
                     localizer = getattr(reconstructor, "localize", None)
                     for detector, first_item in first_by_detector.items():
                         if detector in shared_auto_localizations:
