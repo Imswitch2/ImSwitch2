@@ -49,6 +49,7 @@ class SmartPipelineController(ImConWidgetController):
         self._run = None
         self._source = None
         self._smartModeService = None
+        self._registry = None
         self._closing = False
         self._marshal = _UIThreadExecWrapper(lambda fn: fn())
 
@@ -151,16 +152,27 @@ class SmartPipelineController(ImConWidgetController):
         return any(isinstance(step, Process) for step in document.steps)
 
     def _improcessRegistry(self):
+        """ ImProcess's processors for the pipeline's steps: a registry of
+        every built-in and drop-in plugin, built once. The module's own
+        registry holds only what the setup's processing block enables for
+        its panels, which is not what a pipeline file may name. """
         if not self._moduleCommChannel.isModuleRegistered('improcess'):
             return None
+        if self._registry is not None:
+            return self._registry
         try:
-            from imswitch.improcess.reconstructors.registry import get_registry
+            from imswitch.improcess.workflows.runtime import bootstrap_registry
+
+            self._registry = bootstrap_registry(user_plugins=True)
         except Exception:
-            return None
-        try:
-            return get_registry()
-        except Exception:
-            return None
+            self.__logger.warning('Could not build the ImProcess plugin registry', exc_info=True)
+            try:
+                from imswitch.improcess.reconstructors.registry import get_registry
+
+                self._registry = get_registry()
+            except Exception:
+                return None
+        return self._registry
 
     def _stepRunner(self, document):
         registry = self._improcessRegistry()
