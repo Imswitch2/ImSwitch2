@@ -1,28 +1,19 @@
-"""Where workflow files live by default: ``~/ImSwitchConfig/improcess_workflows``.
+"""Where ImProcess's workflow files live by default: ``~/ImSwitchConfig/improcess_workflows``.
 
 A sibling of the drop-in plugins folder, so a user who has one has the
 other next to it. The editor's file list and its open/save dialogs start
-here; a workflow can of course be opened from anywhere.
+here; a workflow can of course be opened from anywhere. The folder logic is
+:mod:`imswitch.imcommon.model.workfloweditor.folders`; this names the folder.
 """
 
-import os
-
-from imswitch.imcommon.model import dirtools
+from imswitch.imcommon.model.workfloweditor.folders import workflows_directory as _workflows_directory
 
 _WORKFLOWS_SUBDIR = "improcess_workflows"
 
 
 def workflows_directory(*, create: bool = True) -> str:
     """The default workflow folder, created on first use when ``create``."""
-    directory = os.path.join(dirtools.UserFileDirs.Root, _WORKFLOWS_SUBDIR)
-    if create:
-        try:
-            os.makedirs(directory, exist_ok=True)
-        except OSError:
-            # A read-only home must not break the editor; dialogs then start
-            # wherever Qt starts them.
-            pass
-    return directory
+    return _workflows_directory(create=create, subdir=_WORKFLOWS_SUBDIR)
 
 
 __all__ = ["workflows_directory"]

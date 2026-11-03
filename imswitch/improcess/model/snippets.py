@@ -11,6 +11,20 @@ may name the step's output ports::
 The header is the only thing that is not the code itself; it is stripped on
 load, so what the panel shows is exactly what ``save_snippet`` was given.
 
+A port may say what it carries, ``name:kind``::
+
+    # ports: spots:points, score:value, hit:event
+
+The kinds are the result kinds (``points``, ``value``, ``event``, ``image``,
+``labels``, ``curve``, ...). The text goes to the step's *Output ports* field
+as it is: the step reads the kinds (``parse_port_kinds``), promises them to
+workflow validation when every port declares the same one, and refuses a run
+whose result on that port is of another kind. The code makes such results
+with ``make_points(coords, frame, **properties)``, ``make_value(x, unit)`` and
+``make_event(fired, **payload)``; a plain ``int``/``float`` on a port is a
+value, a ``bool`` an event. ``state`` is a dict the step keeps between runs
+of an interactive session (dropped when the step's parameters change).
+
 A comment line ``# curves: level, area`` among the leading comments says which
 of those ports are curves (one-dimensional outputs). It stays in the code, as
 a note to the reader, and :func:`snippet_curves` reads it: a workflow built
@@ -71,8 +85,9 @@ def list_snippets() -> list[str]:
 def load_snippet(name: str) -> tuple[str, str]:
     """``(code, ports)`` of the snippet ``name``.
 
-    A first line ``# ports: a, b`` gives the ports and is removed from the
-    code; without one the ports are the step's default. Raises
+    A first line ``# ports: a, b`` (or ``# ports: a:points, b:value``) gives
+    the ports and is removed from the code; without one the ports are the
+    step's default. Raises
     ``FileNotFoundError`` for a snippet that does not exist and ``ValueError``
     for a name that cannot be one.
     """

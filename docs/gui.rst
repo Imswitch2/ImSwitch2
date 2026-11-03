@@ -1571,6 +1571,93 @@ window fits:
    :width: 600px
 
 
+.. _imcontrol-smart-pipeline:
+
+Smart pipeline widget
+---------------------
+
+The **Smart Pipeline** panel (``availableWidgets: ["SmartPipeline"]``) arms
+and runs a *smart pipeline*: a workflow file whose steps go from a live
+detector through processing to a hardware action -- threshold a frame, pick
+a region's centroid, turn it into stage coordinates, move there. The file
+format is the workflow editor's (see :doc:`improcess-workflows`) with five
+more kinds of step (``live``, ``transform``, ``gate``, ``action``,
+``sink``); the design and the rules a pipeline must keep are in
+``docs/design/plans/smart-microscopy-pipeline-designer.md``.
+
+**Choose pipeline…** opens a file from ``smart_pipelines/`` in your ImSwitch
+folder (``threshold_move_demo.json`` is shipped for
+``example_no_hardware.json``); **Design…** opens it in the workflow editor
+(:ref:`workflows-editor`), where the palette's *Pipeline* group has the five
+pipeline steps, a live source offers the setup's detectors, a transform the
+calibrations in ``calibrations/``, an action the catalogue's actions, and the
+start page offers the recipe *Threshold → move*; save there and the panel
+reloads the file when the designer closes. The panel checks the file against
+the setup before anything can be armed: the detector the ``live`` step names must exist, the
+actions and their parameters must be in the catalogue (``move-to``, ``snap``,
+``log``), every ``transform`` must be a calibration file in
+``calibrations/*.json`` (one transform per file, as the ``identity`` and
+``scale-flip`` types write themselves), processing steps need the ImProcess
+module, and points may reach an action only through a ``transform`` whose
+target frame is the one the action takes. Problems are listed under the
+file name; **Reload** reads the file again after an edit.
+
+**Mode** decides what arming does:
+
+- *Visualize* -- actions are skipped; the processing runs and the log fills.
+- *Validate* -- the devices the actions name are reserved and every action
+  is checked and logged as ``would move-to … to (y, x)``; nothing moves.
+- *Experiment* -- actions are dispatched. The pipeline must name its
+  ``scouting`` and ``idle`` roles (setup modes applied at arm and at stop).
+
+**Arm** reserves the devices (while the pipeline holds a stage, the
+Positioner panel and scripts are refused for it), applies the ``scouting``
+mode in Experiment, takes an event-stream lease on the detector -- no live
+view is needed -- and runs the pipeline on its own thread, one tick per
+frame. The status line shows the state, the ticks, the frames dropped
+(a tick still running when the next frame came, a frame older than the
+last action's end), the actions completed and whether an action is still
+running. **Stop** ends the run: the ``idle`` mode is applied, the
+reservations and the lease are released. A ``move-to`` has a deadline; a
+stage that does not return within it is *quarantined*: the run stops with
+the reason and that stage stays reserved until it returns. Closing ImSwitch
+stops a running pipeline the same way.
+
+The **event log** lists every gate decision, action and sink of every tick
+and saves as CSV or JSON (**Save log…**). A ``sink`` of kind ``overlay``
+marks the points it receives (in the detector's pixels) on the live view
+while the pipeline runs.
+
+**Time.** A ``wait`` action does nothing for ``seconds`` (the chain goes on
+afterwards; the pipeline is busy meanwhile). A gate of rule ``delay`` starts
+a timer when a trigger arrives (a fired event, points that are there, any
+other input), opens on the first tick ``seconds`` after it, and then waits
+for the next trigger; ``min-interval`` is the other way round -- it opens at
+once and then not again for ``seconds``.
+
+**Scans.** On a point-scanning setup the ``run-scan`` action drives the Scan
+panel: an ``overview`` of ``field_um`` (the panel's overview page), or an
+``acquisition`` of ``length_um`` at ``pixel_um`` centred on the point it is
+given, with ``lasers`` as the channel that fires; it completes when the scan
+has. A ``live`` source on a scan-driven detector (an APD) gives one tick per
+completed scan, carrying that scan's geometry, and the ``scan-geometry``
+transform turns pixels of such a frame into scanner micrometres. An action
+with *Run on arm* set runs once before any frame -- the first overview. The
+shipped ``apd_scan_cells_demo.json`` does overview → segment → fine scan at
+the largest cell → overview on ``galvo_apd_simple_mock_scan_setup.json``.
+
+**Calibrations.** A ``transform`` step names a file in ``calibrations/`` in
+your ImSwitch folder: one JSON per transform, ``"type"`` ``identity``,
+``scale-flip`` (a pixel size per axis, an origin, swap, invert, offset, and
+``relative`` for a displacement) or ``polynomial3`` (etSTED's 20-coefficient
+polynomial with the setup's swap/invert flags; the etSTED calibration
+procedure writes one of these next to its own files). ``source_frame`` and
+``target_frame`` say what it reads and writes (``detector:<name>``,
+``stage:<name>``, ``scanner:<name>``); an optional ``calibrated_on`` records
+the detector grid (shape, binning, ROI offset) the calibration was made on,
+and arming on a different grid is refused.
+
+
 Alignment tools
 ===============
 

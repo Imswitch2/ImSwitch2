@@ -23,3 +23,10 @@ feat/config-editor-improcess       # ImProcess + System sections in Config Studi
 feat/micromanager-bridge           # pymmcore device bridge
 feat/improcess-workflow-editor-2   # after PR #81: save to Windows shares without hard links, schema 2 design
 fix/frc-pixel-size                 # FRC takes the pixel size from the data; PR to open
+smart-pipeline                     # smart microscopy pipeline designer, Phases 0-5 (point/value/event results,
+                                   #   editor and schema in imcommon, offline engine, SmartPipeline panel, designer,
+                                   #   calibrations, run-scan); carries main 0.4.0 (#85, #86); PR to open
+                                   #   (improcess's workfloweditor/document.py and workflows/steps.py are its shims:
+                                   #    fiji's from_result inputs/interactive and unbound_inputs/part_from_input
+                                   #    moved into them; changelog rebuilt: main's entries under v0.4.0, the
+                                   #    unmerged branches' under Unreleased; processor table keeps psf-bead-select)

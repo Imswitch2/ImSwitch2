@@ -155,6 +155,15 @@ def _fixture(pid, processor, tmp_path, monkeypatch):
         return [LocalizationResult("storm", _drifting_cloud(), pixel_size_nm=100.0)], {
             **params, "segments": 8, "render_pixel_size_nm": 10.0,
         }
+    if pid == "pick":
+        from imswitch.improcess.model import PointsResult
+
+        points = PointsResult("pts", np.array([[1.0, 2.0], [3.0, 4.0]]),
+                              frame="detector:Camera", properties={"area": np.array([5, 9])})
+        return [points], params
+    if pid == "regionprops":
+        # Labels first; the image is the optional second input.
+        return [_representative_results()["labels"], _image_2d()], params
     if pid == "table-to-localizations":
         from imswitch.improcess.model.points_table_result import PointsTableResult
 

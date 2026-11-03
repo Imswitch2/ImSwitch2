@@ -4,6 +4,8 @@
     python -m imswitch.improcess.workflows run WORKFLOW.yaml --input a.h5 b.h5 --out results/
     python -m imswitch.improcess.workflows run WORKFLOW.yaml --manifest inputs.csv --out results/
     python -m imswitch.improcess.workflows run WORKFLOW.yaml --bind raw=scan.h5::data --out results/
+    python -m imswitch.improcess.workflows run WORKFLOW.yaml --input a.h5 --out results/ --set radius=3
+    python -m imswitch.improcess.workflows controls WORKFLOW.yaml
     python -m imswitch.improcess.workflows list
 """
 
@@ -27,17 +29,89 @@ def _load(path: str):
     return Workflow.load(path)
 
 
+def _control_values(items) -> dict:
+    """``--set name=TEXT`` as raw control values (converted by the value
+    contract against each control's field when the run is prepared)."""
+    from imswitch.improcess.workflows.prepare import ControlText
+
+    values = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"--set expects name=value, got {item!r}")
+        name, text = item.split("=", 1)
+        values[name.strip()] = ControlText(text)
+    return values
+
+
 def cmd_validate(args) -> int:
-    from imswitch.improcess.workflows.steps import validate
+    from imswitch.improcess.workflows.prepare import ControlValueError, prepare_run, recipe_notes
+    from imswitch.improcess.workflows.steps import WorkflowError, validate
 
     workflow = _load(args.workflow)
-    issues = validate(workflow, _registry(args))
+    registry = _registry(args)
+    try:
+        values = _control_values(args.set)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if values:
+        try:
+            prepare_run(workflow, registry=registry, values=values)
+        except ControlValueError as exc:
+            print(f"  {exc}", file=sys.stderr)
+            print(f"{workflow.name}: the values cannot be used", file=sys.stderr)
+            return 1
+        except WorkflowError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        issues = []
+    else:
+        issues = validate(workflow, registry)
     if issues:
         for issue in issues:
             print(f"  {issue}", file=sys.stderr)
         print(f"{workflow.name}: {len(issues)} issue(s)", file=sys.stderr)
         return 1
+    for note in recipe_notes(workflow, registry):
+        print(f"note: {note}")
     print(f"{workflow.name}: OK ({len(workflow.steps)} steps)")
+    return 0
+
+
+def cmd_controls(args) -> int:
+    from imswitch.improcess.workflows.prepare import describe_controls, format_value
+
+    workflow = _load(args.workflow)
+    described = describe_controls(workflow, _registry(args))
+    if args.json:
+        print(json.dumps(described, indent=2, default=str))
+        return 0
+    if not described:
+        print(f"{workflow.name}: no controls")
+        return 0
+    for entry in described:
+        if not entry.get("active", True):
+            print(f"{entry['name']}: no effect while all its targets are inactive")
+            for target in entry.get("targets", []):
+                why = f" ({target['reason']})" if target.get("reason") else ""
+                print(f"    -> {target['target']}{why}")
+            continue
+        kind = entry.get("type", "?")
+        bounds = ""
+        if entry.get("options"):
+            bounds = " one of " + ", ".join(str(option) for option in entry["options"])
+        elif entry.get("min") is not None or entry.get("max") is not None:
+            low = entry.get("min") if entry.get("min") is not None else ""
+            high = entry.get("max") if entry.get("max") is not None else ""
+            bounds = f" {low}..{high}"
+        unit = f" {entry['unit']}" if entry.get("unit") else ""
+        value = format_value(entry["value"]) if "value" in entry else "?"
+        print(f"{entry['name']}: {kind}{bounds}{unit} = {value}")
+        if entry.get("label") and entry["label"] != entry["name"]:
+            print(f"    {entry['label']}" + (f": {entry['help']}" if entry.get("help") else ""))
+        for target in entry.get("targets", []):
+            why = f" ({target['reason']})" if target.get("reason") else ""
+            print(f"    -> {target['target']}{why}")
     return 0
 
 
@@ -72,16 +146,24 @@ def _print_row(row) -> None:
 def cmd_run(args) -> int:
     from imswitch.improcess.workflows.batch import (
         bindings_for_inputs,
-        bindings_from_manifest,
+        rows_from_manifest,
         run_over,
     )
     from imswitch.improcess.workflows.sources import parse_binding
+    from imswitch.improcess.workflows.steps import WorkflowError
 
     workflow = _load(args.workflow)
     source_root = args.source_root or str(Path(args.workflow).resolve().parent)
+    try:
+        values = _control_values(args.set)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     if args.manifest:
-        bindings_list = bindings_from_manifest(args.manifest, [s.id for s in workflow.sources()])
+        bindings_list = rows_from_manifest(args.manifest, workflow)
+        for warning in (bindings_list[0].warnings if bindings_list else []):
+            print(f"warning: {warning}", file=sys.stderr)
     elif args.input:
         bindings_list = bindings_for_inputs(workflow, args.input, source_id=args.source)
     else:
@@ -96,13 +178,19 @@ def cmd_run(args) -> int:
 
     # A factory, not the instance above: every row gets a fresh registry,
     # as the documentation promises, so no plugin state crosses rows.
-    batch = run_over(
-        workflow, bindings_list, registry=lambda: _registry(args), out_dir=args.out,
-        overwrite=args.overwrite, source_root=source_root,
-        mode=args.mode, allow_drift=args.allow_drift,
-        verify_hash=args.verify_hash, hash_sources=args.hash_sources,
-        on_row=_print_row,
-    )
+    try:
+        batch = run_over(
+            workflow, bindings_list, registry=lambda: _registry(args), out_dir=args.out,
+            overwrite=args.overwrite, source_root=source_root,
+            mode=args.mode, allow_drift=args.allow_drift,
+            verify_hash=args.verify_hash, hash_sources=args.hash_sources,
+            on_row=_print_row, controls=values or None,
+        )
+    except WorkflowError as exc:
+        # Refused before any row ran: run-wide values that cannot be used, or
+        # a manifest column setting a control with no active target.
+        print(str(exc), file=sys.stderr)
+        return 2
     summary = Path(args.out) / (args.summary or f"{workflow.name}_summary.csv")
     batch.write_summary(summary)
     print(f"{len(batch.rows)} run(s), {len(batch.failures)} failed; summary: {summary}")
@@ -183,7 +271,14 @@ def main(argv=None) -> int:
 
     p_validate = sub.add_parser("validate", help="check a workflow file against the installed plugins")
     p_validate.add_argument("workflow")
+    p_validate.add_argument("--set", action="append", metavar="NAME=VALUE",
+                            help="validate with this control value applied (repeatable)")
     p_validate.set_defaults(func=cmd_validate)
+
+    p_controls = sub.add_parser("controls", help="list a workflow's controls: type, value, targets")
+    p_controls.add_argument("workflow")
+    p_controls.add_argument("--json", action="store_true")
+    p_controls.set_defaults(func=cmd_controls)
 
     p_list = sub.add_parser("list", help="list plugins, their versions, ports and default params")
     p_list.add_argument("--json", action="store_true")
@@ -205,6 +300,9 @@ def main(argv=None) -> int:
     p_run.add_argument("--verify-hash", action="store_true",
                        help="in replay mode, require and check the recorded sha256 of every source")
     p_run.add_argument("--summary", help="summary CSV name inside --out")
+    p_run.add_argument("--set", action="append", metavar="NAME=VALUE",
+                       help="set a control for every run (repeatable); a manifest column named after the "
+                            "control overrides it per row")
     p_run.set_defaults(func=cmd_run)
 
     p_replay = sub.add_parser("replay", help="turn a saved result's provenance into a workflow, and optionally run it")

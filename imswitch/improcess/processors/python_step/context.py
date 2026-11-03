@@ -24,7 +24,9 @@ from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import finite_range
 from imswitch.improcess.model.curve_result import CurveResult
 from imswitch.improcess.model.labels_result import LabelsResult
-from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.points_result import PointsResult
+from imswitch.improcess.model.result import RESULT_KINDS, ProcessingResult
+from imswitch.improcess.model.value_result import EventResult, ValueResult
 from imswitch.improcess.processors._axis_split import (
     axis_labels_for_result,
     axis_scales_for_result,
@@ -34,8 +36,9 @@ DEFAULT_PORTS = "out"
 
 DEFAULT_CODE = '''\
 # Names you can use: np, data (the first input as an array), inputs, axes,
-# scales, unit, axis("Z"), results, make_result(...), make_labels(...).
-# print() output is shown below the editor.
+# scales, unit, axis("Z"), results, make_result(...), make_labels(...),
+# make_points(...), make_value(...), make_event(...), state (a dict kept
+# between runs of this step). print() output is shown below the editor.
 # Set `outputs` to {port: array} with one entry for each name in "Output ports".
 outputs = {"out": data}
 '''
@@ -49,6 +52,42 @@ _PORT_NAME = re.compile(r"^[A-Za-z0-9_\-]+$")
 _NUMERIC_KINDS = "biuf"
 #: Added to numpy's "... is read-only" when the code writes into an input.
 _READ_ONLY_HINT = " (the inputs are read-only: change a copy, data.copy())"
+#: Result kinds the code may hand over ready-made (``make_points`` and the
+#: others): a result of any other kind is an input, or something the step
+#: cannot vouch for, and its array is what the code outputs instead.
+_PASSED_THROUGH_KINDS = ("points", "value", "event")
+
+
+def _port_items(text) -> list[tuple[str, str | None]]:
+    """``(name, kind)`` per port in ``text``; ``kind`` is ``None`` when not declared.
+
+    A port is ``name`` or ``name:kind`` (``spots:points``), comma-separated,
+    blanks dropped. Empty text is the single port ``out``.
+    """
+    items = []
+    for part in str(text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, _colon, kind = part.partition(":")
+        name, kind = name.strip(), kind.strip()
+        if not _PORT_NAME.match(name):
+            raise ValueError(
+                f"output port {name!r} is not a valid name: use letters, digits, '_' or '-'"
+            )
+        if _colon and kind not in RESULT_KINDS:
+            raise ValueError(
+                f"output port {name!r} declares the kind {kind!r}; "
+                f"the kinds are {', '.join(RESULT_KINDS)}"
+            )
+        items.append((name, kind if _colon else None))
+    if not items:
+        return [(DEFAULT_PORTS, None)]
+    names = [name for name, _kind in items]
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        raise ValueError(f"output port {duplicated[0]!r} is listed more than once")
+    return items
 
 
 def parse_ports(text) -> tuple[str, ...]:
@@ -56,20 +95,21 @@ def parse_ports(text) -> tuple[str, ...]:
 
     Empty text is the single port ``out``. A name must be one a step
     reference can carry (letters, digits, ``_`` and ``-``), and may not repeat.
+    A port may declare what it carries, ``name:kind`` (``spots:points``,
+    ``score:value``); the kind is read by :func:`parse_port_kinds`, the name
+    alone is returned here.
     """
-    names = [part.strip() for part in str(text or "").split(",")]
-    names = [name for name in names if name]
-    if not names:
-        return (DEFAULT_PORTS,)
-    for name in names:
-        if not _PORT_NAME.match(name):
-            raise ValueError(
-                f"output port {name!r} is not a valid name: use letters, digits, '_' or '-'"
-            )
-    duplicated = sorted({name for name in names if names.count(name) > 1})
-    if duplicated:
-        raise ValueError(f"output port {duplicated[0]!r} is listed more than once")
-    return tuple(names)
+    return tuple(name for name, _kind in _port_items(text))
+
+
+def parse_port_kinds(text) -> dict[str, str]:
+    """``{port: kind}`` for the ports in ``text`` that declare one (``spots:points``).
+
+    A declared kind is what ``output_spec`` can promise before the run and
+    what the run checks the port's result against. A port without one is
+    left out: it carries whatever the code makes.
+    """
+    return {name: kind for name, kind in _port_items(text) if kind is not None}
 
 
 class ScriptError(RuntimeError):
@@ -164,6 +204,44 @@ def make_labels(array, *, axes=None, scales=None, name=None) -> ScriptOutput:
     return _described(array, axes, scales, name, "labels")
 
 
+#: The name a ``make_points`` / ``make_value`` / ``make_event`` result has
+#: until the step names it after its port.
+_UNNAMED = ""
+
+
+def make_points(coordinates, frame="unknown", *, frame_index=None, name=None, **properties) -> PointsResult:
+    """``(N, 2)`` or ``(N, 3)`` coordinates measured in ``frame``, with per-point properties.
+
+    ``frame`` names the frame of reference the coordinates are in
+    (``"detector:Camera"`` pixels, ``"stage:XYStage"`` micrometres); a later
+    step moves them between frames, a hardware action checks the frame before
+    it acts. ``frame_index`` is the source frame they were measured on. Each
+    extra keyword is a property column with one value per point
+    (``make_points(spots, "detector:Cam", area=areas)``).
+    """
+    return PointsResult(
+        _UNNAMED if name is None else str(name), coordinates,
+        frame=frame, frame_index=frame_index, properties=properties or None,
+    )
+
+
+def make_value(x, unit="", *, name=None) -> ValueResult:
+    """One number (a focus score, a count) with an optional ``unit``.
+
+    A plain ``int`` or ``float`` set on a port becomes this on its own;
+    the call is for a unit, or a numpy scalar / one-element array.
+    """
+    return ValueResult(_UNNAMED if name is None else str(name), x, unit=unit)
+
+
+def make_event(fired, *, name=None, **payload) -> EventResult:
+    """Whether something happened (``fired``), and what: each keyword is payload.
+
+    A plain ``bool`` set on a port becomes an event without a payload.
+    """
+    return EventResult(_UNNAMED if name is None else str(name), fired, payload=payload or None)
+
+
 def _in_memory_or_lazy(data):
     """``data`` as it is when it is an array already or a lazy view, else an array."""
     if isinstance(data, np.ndarray) or (hasattr(data, "shape") and hasattr(data, "__getitem__")):
@@ -224,13 +302,17 @@ def _make_axis_lookup(labels: list[str]):
     return axis
 
 
-def build_namespace(inputs, *, materialise: bool = True) -> dict:
+def build_namespace(inputs, *, materialise: bool = True, state: dict | None = None) -> dict:
     """The names the code starts with, and no others.
 
     ``inputs`` are the step's input results, in the order the step lists
     them. ``data`` is the first one's array (a lazy source is read into
     memory) and ``inputs`` all of them, as read-only views: code that wants to
     change values in place changes a copy (``data.copy()``), never the input.
+
+    ``state`` is the dict the code sees as ``state``: the runner hands the
+    same one to every run of a step, so the code can count or remember
+    across runs; without one the code starts from an empty dict.
 
     ``materialise=False`` leaves a result that is not in memory as the lazy
     array it is, for the console, which rebinds these names on every change
@@ -253,20 +335,28 @@ def build_namespace(inputs, *, materialise: bool = True) -> dict:
         "results": results,
         "make_result": make_result,
         "make_labels": make_labels,
+        "make_points": make_points,
+        "make_value": make_value,
+        "make_event": make_event,
+        "state": {} if state is None else state,
         "outputs": None,
         "out": None,
     }
 
 
 def run_script(
-    code: str, inputs, ports, *, step_name: str = "python"
+    code: str, inputs, ports, *, step_name: str = "python", state: dict | None = None,
+    port_kinds: dict | None = None,
 ) -> tuple[list[ProcessingResult], str]:
     """Run ``code`` over ``inputs`` and collect one result per declared port.
 
     Returns ``(results, stdout)``: the results in the order of ``ports``, and
     what the code printed (stdout and stderr together). Raises
     :class:`ScriptError` for a failure in the code and for outputs that do not
-    follow the rules.
+    follow the rules. ``state`` is the step's dict between runs (see
+    :func:`build_namespace`); ``port_kinds`` (``{port: kind}``, from
+    :func:`parse_port_kinds`) are kinds the ports promised, which the results
+    must have.
     """
     inputs = list(inputs)
     ports = tuple(ports)
@@ -275,7 +365,7 @@ def run_script(
     # A named step shows up by name in a traceback; the processor, which is
     # not told its step's id, uses the plain name.
     filename = SCRIPT_FILENAME if step_name == "python" else f"<python step '{step_name}'>"
-    namespace = build_namespace(inputs)
+    namespace = build_namespace(inputs, state=state)
     capture = _Capture(currentRoute())
     try:
         compiled = compile(code, filename, "exec")
@@ -290,7 +380,7 @@ def run_script(
         raise error from exc
     try:
         produced = _collect(namespace, ports)
-        results = _build_results(produced, ports, inputs)
+        results = _build_results(produced, ports, inputs, port_kinds or {})
     except ScriptError as error:
         error.stdout = capture.buffer.getvalue()
         raise
@@ -355,18 +445,25 @@ def _collect(namespace: dict, ports: tuple[str, ...]) -> dict:
     return produced
 
 
-def _build_results(produced: dict, ports: tuple[str, ...], inputs) -> list[ProcessingResult]:
+def _build_results(produced: dict, ports: tuple[str, ...], inputs, port_kinds: dict) -> list[ProcessingResult]:
     first = inputs[0]
-    return [
-        result_from_value(
+    results = []
+    for port in ports:
+        result = result_from_value(
             produced[port], first,
             what=f"output {port!r}",
             default_name=f"{first.name} ({port})",
             metadata={"operation": "python", "port": port},
             sources=[result.data for result in inputs],
         )
-        for port in ports
-    ]
+        promised = port_kinds.get(port)
+        if promised is not None and result.kind != promised:
+            raise ScriptError(
+                f"output {port!r} is declared as {promised!r} but the code produced "
+                f"a {result.kind!r} result"
+            )
+        results.append(result)
+    return results
 
 
 def result_from_value(
@@ -381,7 +478,7 @@ def result_from_value(
     metadata=None,
     sources=(),
 ) -> ProcessingResult:
-    """One result from an array or a :func:`make_result` / :func:`make_labels` output.
+    """One result from an array, a number, or a ``make_*`` output.
 
     ``reference`` is the result the array is taken to be derived from (the
     step's first input): an array of its dimensionality inherits its axes,
@@ -391,13 +488,34 @@ def result_from_value(
     the value in error messages. The array is copied when it is read-only or
     shares memory with ``reference`` or one of ``sources`` (the inputs' data),
     so a result made here never shares its pixels with an existing one.
+
+    A :func:`make_points` / :func:`make_value` / :func:`make_event` result is
+    passed through as it is, named after the port when the code did not name
+    it. A plain Python ``int`` or ``float`` becomes a value result, a ``bool``
+    an event; a numpy scalar or 0-d array is refused (say what it is with
+    ``make_value``), and a 1-D array is a curve.
     """
+    metadata = dict(metadata or {})
+    given_name = None if name is None else str(name)
+    if isinstance(value, ProcessingResult):
+        if value.kind not in _PASSED_THROUGH_KINDS or value is reference:
+            raise ScriptError(
+                f"{what} is a {value.kind!r} result, not an array: output its array "
+                f"(results[0].data), or a result made with make_points / make_value / make_event"
+            )
+        value.name = given_name or value.name or default_name or "python result"
+        value.metadata.update(metadata)
+        return value
+    if isinstance(value, bool):
+        return _named_row(make_event(value), given_name, default_name, metadata)
+    if isinstance(value, (int, float)):
+        return _named_row(make_value(value), given_name, default_name, metadata)
     described = value if isinstance(value, ScriptOutput) else ScriptOutput(array=value)
     array = _as_array(what, described)
     if array.ndim == 0:
         raise ScriptError(
             f"{what} is a single number, not an array: print() it, "
-            f"or output it as a one-element array"
+            f"output it as a one-element array, or make_value(x) for a value result"
         )
     if array.size == 0:
         # Almost always a selection that picked nothing (the wrong axis, a
@@ -450,8 +568,7 @@ def result_from_value(
         )
     if len(scale_values) != array.ndim:
         raise ScriptError(f"{what}: {len(scale_values)} scales for {array.ndim} dimensions")
-    result_name = described.name or (None if name is None else str(name)) or default_name or "python result"
-    metadata = dict(metadata or {})
+    result_name = described.name or given_name or default_name or "python result"
     if described.kind == "labels":
         return LabelsResult(
             result_name, _as_labels(what, array), labels,
@@ -469,6 +586,13 @@ def result_from_value(
         display_levels=finite_range(array),
         axis_scales=scale_values, scale_unit=unit, metadata=metadata,
     )
+
+
+def _named_row(result, given_name, default_name, metadata: dict):
+    """A value or event result made from a bare number, named and tagged like any output."""
+    result.name = given_name or default_name or "python result"
+    result.metadata.update(metadata)
+    return result
 
 
 def _as_array(what: str, described: ScriptOutput) -> np.ndarray:
@@ -500,8 +624,12 @@ __all__ = [
     "ScriptError",
     "ScriptOutput",
     "build_namespace",
+    "make_event",
     "make_labels",
+    "make_points",
     "make_result",
+    "make_value",
+    "parse_port_kinds",
     "parse_ports",
     "result_from_value",
     "run_script",

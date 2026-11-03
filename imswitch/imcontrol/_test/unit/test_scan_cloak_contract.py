@@ -497,7 +497,9 @@ def test_the_advanced_page_builds_what_the_backend_builds(rig):
         rig.scan, copy.deepcopy(analog), copy.deepcopy(digital))
     signals, info = rig.scan._make_full_scan(copy.deepcopy(analog), copy.deepcopy(digital))
 
-    assert FRAME_GEOMETRY_KEY not in info
+    # every Galvo-designed scan files its geometry now, the Advanced page's too
+    assert (FRAME_GEOMETRY_KEY in info) == (FRAME_GEOMETRY_KEY in ownInfo)
+    assert info.get(FRAME_GEOMETRY_KEY) == ownInfo.get(FRAME_GEOMETRY_KEY)
     assert sorted(info) == sorted(ownInfo)
     for kind in ('scanSignalsDict', 'TTLCycleSignalsDict'):
         assert sorted(signals[kind]) == sorted(ownSignals[kind])
@@ -519,16 +521,18 @@ def test_a_design_made_on_one_page_is_not_run_from_the_other(rig):
         rig.scan._analogParameterDict, rig.scan._digitalParameterDict = copy.deepcopy(dicts)
 
     rig.scan.getParameters = sameDicts
-    _, info = rig.scan._buildScanSignals()
-    assert FRAME_GEOMETRY_KEY in info
+    _, simple = rig.scan._buildScanSignals()
+    assert FRAME_GEOMETRY_KEY in simple
 
+    # Both pages file the geometry now; what tells the designs apart is
+    # that the page switch rebuilds rather than reusing the cached one.
     rig.scan.setScanPage('advanced')
-    _, info = rig.scan._buildScanSignals()
-    assert FRAME_GEOMETRY_KEY not in info
+    _, advanced = rig.scan._buildScanSignals()
+    assert advanced is not simple and FRAME_GEOMETRY_KEY in advanced
 
     rig.scan.setScanPage('simple')
-    _, info = rig.scan._buildScanSignals()
-    assert FRAME_GEOMETRY_KEY in info
+    _, again = rig.scan._buildScanSignals()
+    assert again is not advanced and FRAME_GEOMETRY_KEY in again
 
 
 def test_the_advanced_page_runs_with_its_own_repeat_box(rig):

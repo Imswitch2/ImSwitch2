@@ -1,138 +1,27 @@
-"""What the workflow editor can offer: every installed plugin, described.
+"""ImProcess's catalog for the workflow editor: every installed plugin, described.
 
-Built from the same registry a run uses (:func:`bootstrap_registry`), so a
-step the editor offers is one the runner will find, and read through the
-same declarations the runner validates against: ``default_params``,
-``param_keys``, ``output_spec``, the arity, and the headless contract
-(:func:`contract_problem`). The field specs come from ``param_spec()``
-(:mod:`imswitch.improcess.model.param_spec`). Nothing here imports Qt.
+The catalog types live in :mod:`imswitch.imcommon.model.workfloweditor.catalog`
+(re-exported here); :func:`build_catalog` fills one from the same registry a
+run uses (:func:`bootstrap_registry`), so a step the editor offers is one the
+runner will find, and read through the same declarations the runner validates
+against: ``default_params``, ``param_keys``, ``output_spec``, the arity, and
+the headless contract (:func:`contract_problem`). It also hands the editor
+what ImProcess offers beyond its plugins: the file filter for recordings, the
+Python-step recipes and the snippet store. Nothing here imports Qt.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-
-from imswitch.improcess.model.param_spec import ParamField, fields_by_key, spec_for
-
-PROCESSOR = "processor"
-RECONSTRUCTOR = "reconstructor"
-BUILTIN = "builtin"
-USER = "user"
-
-
-@dataclass(frozen=True)
-class PluginEntry:
-    """One plugin as the editor sees it.
-
-    ``fields`` is the parameter spec; ``extra_keys`` the keys permitted beyond
-    it (no default, so no field); ``accepts_any_key`` says the plugin takes
-    free-form parameters. ``gui_only`` is ``None`` when the plugin can run in
-    a workflow, otherwise why not (it is still listed, greyed, so the reason
-    is visible).
-    """
-
-    id: str
-    kind: str  # PROCESSOR | RECONSTRUCTOR
-    name: str
-    category: str
-    version: str
-    description: str
-    origin: str  # BUILTIN | USER
-    fields: tuple[ParamField, ...]
-    extra_keys: tuple[str, ...]
-    accepts_any_key: bool
-    min_inputs: int
-    max_inputs: int | None
-    accepted_kinds: tuple[str, ...]
-    supports_consolidation: bool
-    accepts_roi: bool
-    roi_modes: tuple[str, ...]
-    gui_only: str | None
-    plugin: Any = field(repr=False, compare=False, hash=False, default=None)
-
-    @property
-    def label(self) -> str:
-        return f"{self.name} ({self.id})"
-
-    @property
-    def is_processor(self) -> bool:
-        return self.kind == PROCESSOR
-
-    @property
-    def arity(self) -> str:
-        """``1``, ``2..2``, ``2..∞``: how many inputs one run takes."""
-        if self.max_inputs == self.min_inputs:
-            return str(self.min_inputs)
-        high = "∞" if self.max_inputs is None else str(self.max_inputs)
-        return f"{self.min_inputs}..{high}"
-
-    def defaults(self) -> dict:
-        return {f.key: f.default for f in self.fields}
-
-    def field(self, key: str) -> ParamField | None:
-        return fields_by_key(self.fields).get(key)
-
-    def param_keys(self) -> frozenset[str] | None:
-        """Keys a step may set, or ``None`` when any key is accepted."""
-        if self.accepts_any_key:
-            return None
-        return frozenset(f.key for f in self.fields) | frozenset(self.extra_keys)
-
-    def output_spec(self, params: dict | None = None):
-        """The processor's ports for ``params`` (defaults filled in); ``None``
-        for a reconstructor, whose one port is always ``out``."""
-        if self.plugin is None or self.kind != PROCESSOR:
-            return None
-        merged = {**self.defaults(), **dict(params or {})}
-        try:
-            from imswitch.improcess.processors.base import call_output_spec
-
-            return call_output_spec(self.plugin, merged)
-        except Exception:
-            return None
-
-
-@dataclass(frozen=True)
-class Catalog:
-    """Every plugin the editor may put in a step, plus the save vocabulary."""
-
-    registry: Any
-    processors: tuple[PluginEntry, ...]
-    reconstructors: tuple[PluginEntry, ...]
-    save_formats: tuple[str, ...]
-    path_placeholders: tuple[str, ...]
-
-    def get(self, kind: str, plugin_id: str) -> PluginEntry | None:
-        entries = self.processors if kind == PROCESSOR else self.reconstructors
-        for entry in entries:
-            if entry.id == plugin_id:
-                return entry
-        return None
-
-    def processor(self, plugin_id: str) -> PluginEntry | None:
-        return self.get(PROCESSOR, plugin_id)
-
-    def reconstructor(self, plugin_id: str) -> PluginEntry | None:
-        return self.get(RECONSTRUCTOR, plugin_id)
-
-    def categories(self) -> tuple[str, ...]:
-        """Processor categories, alphabetical, ``Other`` last."""
-        names = sorted({entry.category for entry in self.processors})
-        if "Other" in names:
-            names.remove("Other")
-            names.append("Other")
-        return tuple(names)
-
-    def processors_in(self, category: str) -> tuple[PluginEntry, ...]:
-        return tuple(entry for entry in self.processors if entry.category == category)
-
-    def consolidators(self) -> tuple[PluginEntry, ...]:
-        return tuple(entry for entry in self.reconstructors if entry.supports_consolidation)
-
-    def runnable(self, kind: str) -> tuple[PluginEntry, ...]:
-        entries = self.processors if kind == PROCESSOR else self.reconstructors
-        return tuple(entry for entry in entries if entry.gui_only is None)
+from imswitch.imcommon.model.workfloweditor.catalog import *  # noqa: F401,F403
+from imswitch.imcommon.model.workfloweditor.catalog import (
+    BUILTIN,
+    PROCESSOR,
+    RECONSTRUCTOR,
+    USER,
+    Catalog,
+    PluginEntry,
+)
+from imswitch.imcommon.model.param_spec import spec_for
 
 
 def _description(plugin) -> str:
@@ -171,13 +60,25 @@ def _entry(plugin, kind: str, origin: str) -> PluginEntry:
     )
 
 
+def _source_file_filter() -> str | None:
+    """The recordings dialog's name filter, or None when it cannot be made."""
+    try:
+        from imswitch.improcess.model.dataset_sources import SOURCE_SPECS, file_dialog_filter
+
+        return file_dialog_filter(SOURCE_SPECS)
+    except Exception:  # noqa: BLE001 - the dialog then offers every file
+        return None
+
+
 def build_catalog(registry=None, *, user_plugins: bool = True) -> Catalog:
     """Describe every plugin in ``registry``; a fresh full registry when None.
 
     Built when the editor opens rather than at import, because drop-in
     plugins can change between sessions and the registry stamps versions.
     """
+    from imswitch.improcess.model import snippets
     from imswitch.improcess.model.save_protocol import FORMAT_ALIASES
+    from imswitch.improcess.model.workfloweditor.recipes import installed_recipes
     from imswitch.improcess.processors import available_processor_specs
     from imswitch.improcess.reconstructors import builtin_reconstructor_ids
     from imswitch.improcess.workflows.runner import PATH_PLACEHOLDERS
@@ -206,6 +107,9 @@ def build_catalog(registry=None, *, user_plugins: bool = True) -> Catalog:
         reconstructors=reconstructors,
         save_formats=formats,
         path_placeholders=tuple(PATH_PLACEHOLDERS),
+        source_file_filter=_source_file_filter(),
+        recipes=installed_recipes,
+        snippets=snippets,
     )
 
 

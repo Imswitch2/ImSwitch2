@@ -1,12 +1,11 @@
 """The ImProcess workflow editor window.
 
-A non-modal window over a Qt-free document
-(:mod:`imswitch.improcess.model.workfloweditor`): the patcher canvas
-(:mod:`.canvas`) or the card list (:mod:`.listview`) in the middle, the
-palette on the left, the inspector (:mod:`.inspector`, with the run output
-of :mod:`.outputpanel`) on the right, and the start page (:mod:`.startpage`).
-Import the window lazily, from the controller that opens it, so ImProcess
-does not pay for pyqtgraph's parameter tree until someone asks for the editor.
+The window lives in :mod:`imswitch.imcommon.view.workfloweditor` (shared
+with ImControl's pipeline designer); :class:`MainWindow` here is that window
+with ImProcess's defaults (its catalog, workflow folder and options file)
+when none are given. Import it lazily, from the controller that opens it, so
+ImProcess does not pay for pyqtgraph's parameter tree until someone asks for
+the editor.
 """
 
 from .editor import MainWindow

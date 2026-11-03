@@ -1,14 +1,23 @@
-"""The patcher canvas: a step per box, a cable per reference.
+"""Now :mod:`imswitch.imcommon.view.workfloweditor.canvas`; re-exported here unchanged."""
 
-:class:`WorkflowScene` draws a :class:`~imswitch.improcess.model.workfloweditor.WorkflowDocument`
-and turns gestures into requests; :class:`CanvasView` is the widget around
-it (zoom, pan, overlays, palette drops); :class:`QuickAddPopup` the search
-that opens when a cable is dropped in empty space.
-"""
+from imswitch.imcommon.view.workfloweditor.canvas import *  # noqa: F401,F403
+from imswitch.imcommon.view.workfloweditor.canvas import __all__ as _ALL  # noqa: F401
 
-from .items import EdgeItem, NodeItem, PortItem, RunView
-from .quickadd import QuickAddPopup
-from .scene import WorkflowScene
-from .view import STEP_MIME, CanvasView
+__all__ = list(_ALL)
 
-__all__ = ["STEP_MIME", "CanvasView", "EdgeItem", "NodeItem", "PortItem", "QuickAddPopup", "RunView", "WorkflowScene"]
+
+# Copyright (C) 2020-2026 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

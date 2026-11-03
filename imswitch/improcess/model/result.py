@@ -11,44 +11,19 @@ from imswitch.imcommon.algorithms.spatial_frame import mint_uid
 
 from .plotting import PlotPayload
 
-#: Semantic result kinds. ``data`` alone cannot distinguish a microscope
-#: image from a metrics table with a 2D array — the kind says what the
-#: values MEAN, so processors and UI can filter on semantics instead of
-#: shape alone.
-#:
-#: - ``"image"`` — calibrated intensity image/stack (the default);
-#: - ``"labels"`` — integer segmentation label mask;
-#: - ``"table"`` — tabular metrics (rows x named metric columns);
-#: - ``"curve"`` — sampled function values (e.g. FRC over frequency);
-#: - ``"localization"`` — point-emitter coordinate table with render;
-#: - ``"rgb"`` — autoscaled uint8 visualization/export product, not
-#:   quantitative intensities;
-#: - ``"composite"`` — multi-channel intensity stack with independently
-#:   scaled display channels.
-RESULT_KINDS = (
-    "image",
-    "labels",
-    "table",
-    "curve",
-    "localization",
-    "rgb",
-    "composite",
+#: The kind vocabulary lives in :mod:`imswitch.imcommon.model.kinds` (shared
+#: with the workflow schema and editor); re-exported here unchanged.
+from imswitch.imcommon.model.kinds import (  # noqa: E402
+    ANY_KIND,
+    EVENT_KIND,
+    POINTS_KIND,
+    PORT_KINDS,
+    RECORDING_KIND,
+    RESULT_KINDS,
+    UNKNOWN_KIND,
+    VALUE_KIND,
+    result_kind,
 )
-
-
-#: What a workflow *port* may carry, beyond the result kinds: a Source's
-#: recording (before any reconstruction), ``any`` for a step that declares its
-#: output depends on the run (the Python step), and ``unknown`` for a plugin
-#: that declares nothing. Only a declared result kind is ever checked.
-RECORDING_KIND = "recording"
-ANY_KIND = "any"
-UNKNOWN_KIND = "unknown"
-PORT_KINDS = RESULT_KINDS + (RECORDING_KIND, ANY_KIND, UNKNOWN_KIND)
-
-
-def result_kind(result) -> str:
-    """Semantic kind of ``result``; duck-typed/legacy results count as images."""
-    return str(getattr(result, "kind", "image") or "image")
 
 
 @dataclass

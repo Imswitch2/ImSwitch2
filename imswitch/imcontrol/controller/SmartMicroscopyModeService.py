@@ -70,6 +70,12 @@ class SmartMicroscopyModeService:
         self._laserPowerThresholdMw = laserPowerThresholdMw
         self._logger = logger if logger is not None else initLogger(self)
 
+    @property
+    def setupModeController(self):
+        """The controller setup modes are applied through (a pipeline run
+        applies its own role -> mode mapping with it)."""
+        return self._setupModeController
+
     def updateConfig(self, roleConfig, policyConfig=None):
         """Replace role and policy mappings used by future role operations."""
         self._roleConfig = roleConfig or {}

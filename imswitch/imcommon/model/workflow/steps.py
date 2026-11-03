@@ -1,0 +1,852 @@
+"""A workflow: sources, reconstructions, processing steps and saves, in order.
+
+Python-first, as the imcontrol cookbooks are: a workflow is a list of step
+dataclasses, and YAML/JSON is how it is written down (and what replay
+emits). Every step has an id; later steps refer to earlier ones as
+``"<id>"`` (that step's only, or first, output port) or ``"<id>.<port>"``.
+
+Ports are what make a workflow a graph rather than a chain: a channel
+split has one port per channel, a background subtraction can have
+``signal`` and ``background``, and a merge lists the ports it consumes in
+order. Ports that depend on the data (``C0, C1, …``) are validated against
+the processor's declared pattern before the run and against the ports
+actually produced after it.
+
+Schema 2 adds two things a file may use (``docs/design/plans/
+improcess-workflow-schema-2.md``): **controls**, parameters a run may set by
+name (the value stays in the step), and **bypass** on a processing or Save
+step. A file is written at the lowest schema that holds it, and read
+strictly: a schema-1 file with either key is refused. Such a file (the
+*recipe*) is never run as it is: :func:`~imswitch.imcommon.model.workflow.prepare.prepare_run`
+turns it into the plain workflow a run executes.
+"""
+
+from __future__ import annotations
+
+import functools
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
+
+from imswitch.imcommon.model.kinds import RECORDING_KIND, RESULT_KINDS, UNKNOWN_KIND
+from imswitch.imcommon.model.workflow.output_spec import call_output_spec
+from imswitch.imcommon.model.workflow.sources import SourceSpec
+
+#: The newest schema this ImSwitch reads and writes.
+SCHEMA_VERSION = 2
+#: What a file that names no schema is read as.
+DEFAULT_SCHEMA = 1
+
+_ID = r"[A-Za-z0-9_\-]+"
+_ID_PATTERN = re.compile(rf"^{_ID}$")
+_REF_PATTERN = re.compile(rf"^(?P<step>{_ID})(?:\.(?P<port>{_ID}))?$")
+_TARGET_PATTERN = re.compile(rf"^(?P<step>{_ID})\.(?P<param>{_ID})$")
+#: A control's name: what ``--set name=…`` and a manifest column use.
+CONTROL_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+SOURCE_PORT = "data"
+DEFAULT_PORT = "out"
+
+DEFAULT_SAVE_TEMPLATE = "{out_dir}/{source_stem}_{step}{ext}"
+
+
+class WorkflowError(ValueError):
+    """The workflow is malformed."""
+
+
+@dataclass(frozen=True)
+class Ref:
+    step: str
+    port: str | None = None
+
+    def __str__(self) -> str:
+        return self.step if self.port is None else f"{self.step}.{self.port}"
+
+
+def parse_ref(text) -> Ref:
+    if isinstance(text, Ref):
+        return text
+    match = _REF_PATTERN.match(str(text))
+    if not match:
+        raise WorkflowError(f"bad step reference {text!r}; expected 'step' or 'step.port'")
+    return Ref(match.group("step"), match.group("port"))
+
+
+def parse_target(text) -> tuple[str, str] | None:
+    """``(step, param)`` of a control target ``"step.param"``, or ``None``."""
+    match = _TARGET_PATTERN.match(str(text))
+    return (match.group("step"), match.group("param")) if match else None
+
+
+def _check_bypass(step_id: str, value) -> bool:
+    # Never truthiness: the string "false" must not become a bypass.
+    if not isinstance(value, bool):
+        raise WorkflowError(f"step {step_id!r}: bypass must be true or false, got {value!r}")
+    return value
+
+
+def _check_id(step_id) -> str:
+    step_id = str(step_id or "")
+    if not _ID_PATTERN.match(step_id):
+        raise WorkflowError(f"bad step id {step_id!r}; use letters, digits, '_' and '-'")
+    return step_id
+
+
+# --------------------------------------------------------------------------
+# steps
+# --------------------------------------------------------------------------
+
+@dataclass
+class Source:
+    """A raw input. Its single port is ``data``."""
+
+    id: str
+    source: SourceSpec = field(default_factory=SourceSpec)
+
+    def __init__(self, id: str, source: SourceSpec | None = None, *, path=None, dataset=None, source_kind: str = "auto"):
+        self.id = _check_id(id)
+        if source is None:
+            source = SourceSpec(path=str(path) if path else None, dataset=dataset, source_kind=source_kind)
+        self.source = source
+
+    kind = "source"
+
+    def to_dict(self) -> dict:
+        return {"step": "source", "id": self.id, **self.source.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Source":
+        source = SourceSpec.from_dict({k: v for k, v in data.items() if k != "id"})
+        return cls(data.get("id"), source)
+
+
+@dataclass
+class Reconstruct:
+    """Run a reconstructor over one source. Its single port is ``out``."""
+
+    id: str
+    reconstructor: str
+    params: dict = field(default_factory=dict)
+    inputs: list[Ref] = field(default_factory=list)
+
+    kind = "reconstruct"
+
+    def __post_init__(self):
+        self.id = _check_id(self.id)
+        self.inputs = [parse_ref(r) for r in (self.inputs or [])]
+
+    def to_dict(self) -> dict:
+        return {"step": "reconstruct", "id": self.id, "reconstructor": self.reconstructor,
+                "params": dict(self.params), "inputs": [str(r) for r in self.inputs]}
+
+
+@dataclass
+class Consolidate:
+    """Merge several reconstructions of one reconstructor. Port ``out``."""
+
+    id: str
+    reconstructor: str
+    inputs: list[Ref] = field(default_factory=list)
+    params: dict = field(default_factory=dict)
+
+    kind = "consolidate"
+
+    def __post_init__(self):
+        self.id = _check_id(self.id)
+        self.inputs = [parse_ref(r) for r in (self.inputs or [])]
+
+    def to_dict(self) -> dict:
+        return {"step": "consolidate", "id": self.id, "reconstructor": self.reconstructor,
+                "inputs": [str(r) for r in self.inputs], "params": dict(self.params)}
+
+
+@dataclass
+class Process:
+    """Run a processor over one or more results. Ports per the processor.
+
+    ``restriction`` is an ROI restriction in the form the provenance records
+    it (``ROIRestriction.encode_provenance()``): the run is narrowed to
+    those regions the way the GUI's "apply within ROI" narrows it, and the
+    processor never sees the ROIs themselves.
+    """
+
+    id: str
+    processor: str
+    params: dict = field(default_factory=dict)
+    inputs: list[Ref] = field(default_factory=list)
+    restriction: dict | None = None
+    #: Schema 2: taken out of the run, whatever read it reads its input.
+    bypass: bool = False
+
+    kind = "process"
+
+    def __post_init__(self):
+        self.id = _check_id(self.id)
+        self.inputs = [parse_ref(r) for r in (self.inputs or [])]
+        if self.restriction is not None and not isinstance(self.restriction, dict):
+            raise WorkflowError(f"{self.id}: restriction must be an object")
+        self.bypass = _check_bypass(self.id, self.bypass)
+
+    def to_dict(self) -> dict:
+        payload = {"step": "process", "id": self.id, "processor": self.processor,
+                   "params": dict(self.params), "inputs": [str(r) for r in self.inputs]}
+        if self.restriction:
+            payload["restriction"] = dict(self.restriction)
+        if self.bypass:
+            payload["bypass"] = True
+        return payload
+
+
+@dataclass
+class Save:
+    """Write one result. Produces no port."""
+
+    id: str
+    input: Ref
+    fmt: str = "tiff"
+    path_template: str = DEFAULT_SAVE_TEMPLATE
+    #: Schema 2: writes nothing.
+    bypass: bool = False
+
+    kind = "save"
+
+    def __post_init__(self):
+        self.id = _check_id(self.id)
+        self.input = parse_ref(self.input)
+        self.bypass = _check_bypass(self.id, self.bypass)
+
+    def to_dict(self) -> dict:
+        payload = {"step": "save", "id": self.id, "input": str(self.input), "fmt": self.fmt,
+                   "path_template": self.path_template}
+        if self.bypass:
+            payload["bypass"] = True
+        return payload
+
+
+Step = Source | Reconstruct | Consolidate | Process | Save
+
+
+@dataclass
+class Control:
+    """A parameter a run may set by name (schema 2).
+
+    The value lives in the target steps' ``params``; a control only names it
+    (``name`` for ``--set name=…`` and manifest columns), says which
+    parameters it sets (``targets``, each ``"step.param"``), and how to show
+    it (``label``, ``help``). Whether the targets exist and fit together is
+    for :func:`validate` to say, so the editor can show it.
+    """
+
+    name: str
+    targets: list[str] = field(default_factory=list)
+    label: str = ""
+    help: str = ""
+
+    _KEYS = ("name", "targets", "label", "help")
+
+    def to_dict(self) -> dict:
+        payload = {"name": self.name, "targets": list(self.targets)}
+        if self.label:
+            payload["label"] = self.label
+        if self.help:
+            payload["help"] = self.help
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> "Control":
+        if not isinstance(payload, dict):
+            raise WorkflowError(f"a control must be an object, got {payload!r}")
+        unknown = sorted(str(key) for key in payload if key not in cls._KEYS)
+        if unknown:
+            raise WorkflowError(
+                f"control {payload.get('name')!r}: unknown key(s) {unknown} (a control has {list(cls._KEYS)})"
+            )
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            raise WorkflowError(f"a control needs a name, got {name!r}")
+        targets = payload.get("targets")
+        if not isinstance(targets, list) or not targets or not all(isinstance(t, str) for t in targets):
+            raise WorkflowError(f"control {name!r}: targets must be a non-empty list of 'step.param'")
+        texts = {}
+        for key in ("label", "help"):
+            value = payload.get(key, "")
+            if value is None:
+                value = ""
+            if not isinstance(value, str):
+                raise WorkflowError(f"control {name!r}: {key} must be text")
+            texts[key] = value
+        return cls(name=name, targets=list(targets), **texts)
+
+
+# --------------------------------------------------------------------------
+# step-type registry
+# --------------------------------------------------------------------------
+#
+# The kinds a workflow file may name (``step: process``) are an open set: a
+# package that adds a kind registers its class here, and ``step_from_dict``,
+# the runner and the editor find it by its ``kind``. The five built-ins are
+# registered at import, so a file written before this registry existed loads
+# exactly as it did.
+
+_STEP_REGISTRY: dict[str, type] = {}
+_STEP_RUNNERS: dict[str, Any] = {}
+_BUILTIN_KINDS: tuple[str, ...] = ()
+
+#: Read-only view of the registered kinds (kind -> class), kept for callers
+#: that read the former closed dict.
+_STEP_TYPES = MappingProxyType(_STEP_REGISTRY)
+
+
+def register_step_type(kind: str, cls, *, run=None):
+    """Make ``kind`` a step kind a workflow may contain; returns ``cls``.
+
+    ``cls`` is built from a step's dict by ``cls.from_dict(data)`` when it
+    has one, else ``cls(**data)`` (``data`` is the step's mapping without its
+    ``step``/``kind`` key). It must have an ``id`` and, for the editor's sake,
+    inputs as ``inputs`` (a list of refs) if it consumes anything. The class
+    is told its ``kind`` if it does not name one; one that names another is
+    refused. ``run``, for a kind the runner does not know, is
+    ``run(step, *, report, registry, logger) -> {port: result}``: what the
+    step produced, which the runner records as ``"<id>.<port>"``.
+    """
+    kind = str(kind or "").lower()
+    if not _ID_PATTERN.match(kind):
+        raise WorkflowError(f"bad step kind {kind!r}; use letters, digits, '_' and '-'")
+    if not isinstance(cls, type):
+        raise TypeError(f"a step type must be a class, got {cls!r}")
+    declared = getattr(cls, "kind", None)
+    if declared is None:
+        cls.kind = kind
+    elif str(declared) != kind:
+        raise WorkflowError(f"{cls.__name__} says its kind is {declared!r}, not {kind!r}")
+    _STEP_REGISTRY[kind] = cls
+    if run is not None:
+        _STEP_RUNNERS[kind] = run
+    else:
+        _STEP_RUNNERS.pop(kind, None)
+    return cls
+
+
+def unregister_step_type(kind: str) -> None:
+    """Forget a registered kind; the built-ins cannot be forgotten."""
+    kind = str(kind or "").lower()
+    if kind in _BUILTIN_KINDS:
+        raise WorkflowError(f"{kind!r} is a built-in step kind")
+    _STEP_REGISTRY.pop(kind, None)
+    _STEP_RUNNERS.pop(kind, None)
+
+
+def step_type(kind: str) -> type:
+    """The class registered for ``kind``; :class:`WorkflowError` if none is."""
+    try:
+        return _STEP_REGISTRY[str(kind or "").lower()]
+    except KeyError:
+        raise WorkflowError(f"unknown step kind {kind!r} (known: {', '.join(step_kinds())})") from None
+
+
+def step_kinds() -> tuple[str, ...]:
+    """Every registered kind, built-ins first, in registration order."""
+    return tuple(_STEP_REGISTRY)
+
+
+def step_runner(kind: str):
+    """The ``run`` callable registered with ``kind``, or ``None``."""
+    return _STEP_RUNNERS.get(str(kind or "").lower())
+
+
+def step_from_dict(payload: dict):
+    if not isinstance(payload, dict):
+        raise WorkflowError(f"a step must be an object, got {type(payload).__name__}")
+    kind = str(payload.get("step") or payload.get("kind") or "").lower()
+    if kind not in _STEP_REGISTRY:
+        raise WorkflowError(f"unknown step kind {kind!r} (id {payload.get('id')!r})")
+    data = {k: v for k, v in payload.items() if k not in ("step", "kind")}
+    if "bypass" in data and kind not in ("process", "save"):
+        raise WorkflowError(
+            f"step {data.get('id')!r}: only process and save steps can be bypassed; a {kind} step "
+            "has nothing to pass through"
+        )
+    cls = _STEP_REGISTRY[kind]
+    builder = getattr(cls, "from_dict", None)
+    try:
+        if callable(builder):
+            return builder(data)
+        return cls(**data)
+    except TypeError as exc:
+        raise WorkflowError(f"step {data.get('id')!r}: {exc}") from exc
+
+
+for _cls in (Source, Reconstruct, Consolidate, Process, Save):
+    register_step_type(_cls.kind, _cls)
+_BUILTIN_KINDS = step_kinds()
+del _cls
+
+
+# --------------------------------------------------------------------------
+# workflow
+# --------------------------------------------------------------------------
+
+@dataclass
+class Workflow:
+    name: str
+    steps: list = field(default_factory=list)
+    schema: int = SCHEMA_VERSION
+    description: str = ""
+    #: Free-form, carried through serialisation: replay records here which
+    #: provenance node each step came from and what the recorded run was.
+    metadata: dict = field(default_factory=dict)
+    #: Schema 2: parameters a run may set by name.
+    controls: list = field(default_factory=list)
+
+    def __post_init__(self):
+        seen = set()
+        for step in self.steps:
+            if step.id in seen:
+                raise WorkflowError(f"duplicate step id {step.id!r}")
+            seen.add(step.id)
+
+    def step(self, step_id: str):
+        for step in self.steps:
+            if step.id == step_id:
+                return step
+        raise KeyError(step_id)
+
+    def sources(self) -> list[Source]:
+        return [s for s in self.steps if isinstance(s, Source)]
+
+    def control(self, name: str) -> Control:
+        for control in self.controls:
+            if control.name == name:
+                return control
+        raise KeyError(name)
+
+    @property
+    def required_schema(self) -> int:
+        """The lowest schema that holds this workflow: 2 when it has a
+        control or a bypassed step, else 1, so a file needs a newer ImSwitch
+        only when its content does."""
+        if self.controls or any(getattr(step, "bypass", False) for step in self.steps):
+            return 2
+        return 1
+
+    # -- serialisation ------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        payload = {"name": self.name, "schema": self.required_schema}
+        if self.description:
+            payload["description"] = self.description
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
+        if self.controls:
+            payload["controls"] = [control.to_dict() for control in self.controls]
+        payload["steps"] = [step.to_dict() for step in self.steps]
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> "Workflow":
+        if not isinstance(payload, dict):
+            raise WorkflowError("a workflow must be an object")
+        schema = _read_schema(payload.get("schema"))
+        raw_steps = payload.get("steps") or []
+        if schema < 2:
+            # Read strictly: a hand edit must not make a file that an older
+            # ImSwitch would run differently (it would ignore a bypass).
+            if "controls" in payload:
+                raise WorkflowError("'controls' needs schema: 2")
+            for item in raw_steps:
+                if isinstance(item, dict) and "bypass" in item:
+                    raise WorkflowError(f"step {item.get('id')!r}: 'bypass' needs schema: 2")
+        raw_controls = payload.get("controls")
+        if raw_controls is None:
+            raw_controls = []
+        if not isinstance(raw_controls, list):
+            raise WorkflowError("'controls' must be a list")
+        controls = [Control.from_dict(item) for item in raw_controls]
+        steps = [step_from_dict(item) for item in raw_steps]
+        return cls(name=str(payload.get("name") or "workflow"), steps=steps, schema=schema,
+                   description=str(payload.get("description") or ""),
+                   metadata=dict(payload.get("metadata") or {}), controls=controls)
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False, default=str)
+
+    @classmethod
+    def from_json(cls, text: str) -> "Workflow":
+        return cls.from_dict(json.loads(text))
+
+    def to_yaml(self) -> str:
+        import yaml
+
+        return yaml.dump(
+            self.to_dict(), Dumper=_block_style_dumper(), sort_keys=False, allow_unicode=True,
+        )
+
+    @classmethod
+    def from_yaml(cls, text: str) -> "Workflow":
+        import yaml
+
+        return cls.from_dict(yaml.safe_load(text))
+
+    def save(self, path) -> Path:
+        path = Path(path)
+        if path.suffix.lower() in (".yaml", ".yml"):
+            path.write_text(self.to_yaml(), encoding="utf-8")
+        else:
+            path.write_text(self.to_json(), encoding="utf-8")
+        return path
+
+    @classmethod
+    def load(cls, path) -> "Workflow":
+        path = Path(path)
+        text = path.read_text(encoding="utf-8")
+        if path.suffix.lower() in (".yaml", ".yml"):
+            return cls.from_yaml(text)
+        return cls.from_json(text)
+
+
+def _read_schema(raw) -> int:
+    """The schema a file declares: omitted (or empty) is 1; otherwise a whole
+    number of at least 1, never a boolean (Python reads ``true`` as 1)."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_SCHEMA
+    if isinstance(raw, str) and raw.strip().isdigit():
+        raw = int(raw.strip())
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise WorkflowError(f"schema must be a whole number of at least 1, got {raw!r}")
+    if raw > SCHEMA_VERSION:
+        raise WorkflowError(f"workflow schema {raw} is newer than this ImSwitch understands")
+    return raw
+
+
+@functools.lru_cache(maxsize=1)
+def _block_style_dumper():
+    """A ``SafeDumper`` that writes multi-line strings in block style (``|``).
+
+    A parameter that holds code (a Python step's ``code``) then reads in the
+    file as the lines it is, not as one quoted line full of ``\\n``. Strings
+    without a newline keep the default style. PyYAML falls back to a quoted
+    scalar for text it cannot write as a block (a tab, trailing spaces), so a
+    value always loads back equal. A subclass, so ``yaml.safe_dump`` elsewhere
+    is unaffected.
+    """
+    import yaml
+
+    class BlockStyleDumper(yaml.SafeDumper):
+        pass
+
+    def represent_str(dumper, value):
+        style = "|" if "\n" in value else None
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+    BlockStyleDumper.add_representer(str, represent_str)
+    return BlockStyleDumper
+
+
+# --------------------------------------------------------------------------
+# static validation
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Issue:
+    step: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.step}: {self.message}"
+
+
+def _port_ok(step, port: str | None, registry) -> tuple[bool, str]:
+    """Whether ``port`` is one ``step`` can produce (statically)."""
+    if isinstance(step, Source):
+        return (port in (None, SOURCE_PORT)), SOURCE_PORT
+    if isinstance(step, (Reconstruct, Consolidate)):
+        return (port in (None, DEFAULT_PORT)), DEFAULT_PORT
+    if isinstance(step, Process):
+        processor = registry.get_processor(step.processor, raise_on_missing=False) if registry else None
+        if processor is None:
+            return True, "?"
+        params = {**_defaults(processor), **step.params}
+        spec = call_output_spec(processor, params)
+        if port is None:
+            return (spec.ports is not None and len(spec.ports) >= 1) or spec.pattern is not None, spec.describe()
+        if spec.matches(port):
+            return True, spec.describe()
+        # A single-input processor run over several inputs yields one result
+        # per input; the second one onwards is the port with the input's
+        # position appended (out1, out2, ...).
+        fan_out = len(step.inputs) > 1 and getattr(processor, "max_inputs", 1) == 1
+        if fan_out:
+            match = re.fullmatch(r"(.+?)(\d+)", str(port))
+            if match and spec.matches(match.group(1)) and 0 < int(match.group(2)) < len(step.inputs):
+                return True, spec.describe()
+        return False, spec.describe()
+    ports = getattr(step, "ports", None)
+    if ports is None:
+        # A registered kind that does not declare its ports: nothing to check
+        # against, so any reference to it stands (the run says otherwise).
+        return True, "?"
+    ports = tuple(str(p) for p in ports)
+    if not ports:
+        return False, "(no ports)"
+    return (port in ports or (port is None and len(ports) >= 1)), ", ".join(ports)
+
+
+def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
+    """What each step produces, as declared (step id -> a ``PORT_KINDS`` value).
+
+    A Source produces a recording; a reconstruction or a processor what it
+    declares (a processor's ``output_spec`` is told its inputs' kinds); an
+    unknown plugin, or one that declares nothing, ``"unknown"``; a registered
+    step kind what its ``declared_kind(kinds)`` says. Save steps produce
+    nothing and are left out. Never raises: a plugin whose ``output_spec``
+    fails counts as ``"unknown"``.
+    """
+    kinds: dict[str, str] = {}
+    for step in workflow.steps:
+        if isinstance(step, Save):
+            continue
+        if isinstance(step, Source):
+            kinds[step.id] = RECORDING_KIND
+            continue
+        kind = UNKNOWN_KIND
+        if registry is not None and isinstance(step, (Reconstruct, Consolidate)):
+            plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
+            kind = getattr(plugin, "output_kind", None) or UNKNOWN_KIND
+        elif registry is not None and isinstance(step, Process):
+            plugin = registry.get_processor(step.processor, raise_on_missing=False)
+            if plugin is not None:
+                inputs = tuple(kinds.get(ref.step, UNKNOWN_KIND) for ref in step.inputs)
+                try:
+                    kind = call_output_spec(plugin, {**_defaults(plugin), **step.params}, inputs).kind
+                except Exception:
+                    kind = UNKNOWN_KIND
+        elif not isinstance(step, (Reconstruct, Consolidate, Process)):
+            # A registered kind says what it makes, given what its inputs
+            # carry so far (``declared_kind(kinds)``); one that says nothing
+            # is unknown.
+            declare = getattr(step, "declared_kind", None)
+            if callable(declare):
+                try:
+                    kind = declare(dict(kinds))
+                except Exception:
+                    kind = UNKNOWN_KIND
+        kinds[step.id] = str(kind or UNKNOWN_KIND)
+    return kinds
+
+
+def _kind_issues(step, processor, kinds: dict[str, str]) -> list[Issue]:
+    """An input whose *declared* kind the processor does not accept.
+
+    Only a declared result kind counts: "any" (the Python step), "unknown"
+    (a plugin that declares nothing) and a raw recording are never refused
+    here, so a workflow that runs today is not refused on a guess.
+    """
+    accepted = tuple(getattr(processor, "kinds", ()) or ())
+    issues = []
+    for ref in step.inputs:
+        kind = kinds.get(ref.step)
+        if accepted and kind in RESULT_KINDS and kind not in accepted:
+            issues.append(Issue(
+                step.id,
+                f"{step.processor!r} does not accept {kind} results, which {ref.step!r} produces "
+                f"(it takes {', '.join(accepted)})",
+            ))
+    return issues
+
+
+def _defaults(plugin) -> dict:
+    getter = getattr(type(plugin), "default_params", None)
+    try:
+        return dict(getter()) if callable(getter) else {}
+    except Exception:
+        return {}
+
+
+def _unknown_params(step, plugin, contract_problem=None) -> list[Issue]:
+    """Parameter keys the plugin does not declare (``param_keys``).
+
+    Checked whenever the plugin declares a key set, including an empty one:
+    a plugin with no parameters accepts none, and a typo must fail before
+    the run rather than being ignored by ``params.get(...)``.
+    ``contract_problem(plugin)`` is the host's headless-contract check (see
+    :func:`validate`); without one, no contract is checked.
+    """
+    problem = contract_problem(plugin) if callable(contract_problem) else None
+    if problem:
+        # No declaration (or a widget that contradicts it) means the
+        # headless defaults are not the effective ones: refuse, rather than
+        # run with parameters the record could not vouch for.
+        return [Issue(step.id, f"{problem}; it cannot run in a workflow")]
+    getter = getattr(type(plugin), "param_keys", None)
+    try:
+        allowed = getter() if callable(getter) else None
+    except Exception:
+        allowed = None
+    if allowed is None:
+        return []
+    unknown = sorted(set(step.params) - set(allowed))
+    if not unknown:
+        return []
+    plugin_id = getattr(plugin, "id", type(plugin).__name__)
+    return [Issue(step.id, f"unknown parameter(s) for {plugin_id!r}: {unknown} (accepted: {sorted(allowed) or 'none'})")]
+
+
+def validate(workflow: Workflow, registry=None, *, contract_problem=None, normalize_format=None) -> list[Issue]:
+    """Everything wrong with ``workflow`` that can be known before running.
+
+    With a registry: plugin ids, arity and ports are checked too. Without,
+    only structure (ids, references, order). A schema-2 recipe is checked as
+    a recipe (its controls and bypasses), then as the plain workflow it
+    prepares to (see :func:`~imswitch.imcommon.model.workflow.prepare.check_recipe`).
+
+    Two checks are the host's to define, and are taken from the registry
+    when it has them (duck-typed) or from the keyword arguments:
+    ``contract_problem(plugin) -> str | None`` says why a plugin cannot run
+    headless; ``normalize_format(fmt) -> str`` spells a Save's format
+    canonically and raises ``ValueError`` for one the host cannot write.
+    Without either, that check is skipped. ImProcess's ``PluginRegistry``
+    supplies both, and ``imswitch.improcess.workflows.steps.validate``
+    defaults them to ImProcess's even without a registry.
+    """
+    if contract_problem is None:
+        contract_problem = getattr(registry, "contract_problem", None)
+    if normalize_format is None:
+        normalize_format = getattr(registry, "normalize_format", None)
+    from imswitch.imcommon.model.workflow.prepare import check_recipe
+
+    return check_recipe(workflow, registry, contract_problem=contract_problem,
+                        normalize_format=normalize_format)
+
+
+def validate_plain(workflow: Workflow, registry=None, *, contract_problem=None,
+                   normalize_format=None) -> list[Issue]:
+    """:func:`validate` for a workflow with no controls and no bypass: what
+    a prepared (execution) workflow is checked with. The two host hooks are
+    :func:`validate`'s."""
+    if contract_problem is None:
+        contract_problem = getattr(registry, "contract_problem", None)
+    if normalize_format is None:
+        normalize_format = getattr(registry, "normalize_format", None)
+    issues: list[Issue] = []
+    by_id: dict[str, Any] = {}
+    kinds = declared_kinds(workflow, registry) if registry else {}
+    for step in workflow.steps:
+        if isinstance(step, Source):
+            by_id[step.id] = step
+            continue
+        refs = [step.input] if isinstance(step, Save) else list(getattr(step, "inputs", None) or [])
+        for ref in refs:
+            target = by_id.get(ref.step)
+            if target is None:
+                issues.append(Issue(step.id, f"references {ref!r} which is not an earlier step"))
+                continue
+            if isinstance(target, Save):
+                issues.append(Issue(step.id, f"references save step {ref.step!r}, which produces nothing"))
+                continue
+            ok, described = _port_ok(target, ref.port, registry)
+            if not ok:
+                issues.append(Issue(step.id, f"port {ref.port!r} is not one {ref.step!r} produces ({described})"))
+
+        if isinstance(step, Reconstruct):
+            if len(step.inputs) != 1:
+                issues.append(Issue(step.id, "a reconstruction takes exactly one source"))
+            elif not isinstance(by_id.get(step.inputs[0].step), Source):
+                issues.append(Issue(step.id, "a reconstruction's input must be a source step"))
+            if registry:
+                plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
+                if plugin is None:
+                    issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
+                else:
+                    issues.extend(_unknown_params(step, plugin, contract_problem))
+        elif isinstance(step, Consolidate):
+            if not step.inputs:
+                issues.append(Issue(step.id, "a consolidation needs at least one input"))
+            if step.params:
+                issues.append(Issue(step.id, f"a consolidation takes no parameters; got {sorted(step.params)}"))
+            for ref in step.inputs:
+                target = by_id.get(ref.step)
+                if target is not None and not isinstance(target, Reconstruct):
+                    issues.append(Issue(step.id, f"consolidation input {ref.step!r} is not a reconstruction"))
+                elif target is not None and target.reconstructor != step.reconstructor:
+                    issues.append(Issue(step.id, f"{ref.step!r} was made by {target.reconstructor!r}, not {step.reconstructor!r}"))
+            if registry:
+                plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
+                if plugin is None:
+                    issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
+                elif not getattr(plugin, "supports_consolidation", False):
+                    issues.append(Issue(step.id, f"{step.reconstructor!r} does not support consolidation"))
+        elif isinstance(step, Process):
+            if not step.inputs:
+                issues.append(Issue(step.id, "a processing step needs at least one input"))
+            if registry:
+                processor = registry.get_processor(step.processor, raise_on_missing=False)
+                if processor is None:
+                    issues.append(Issue(step.id, f"unknown processor {step.processor!r}"))
+                else:
+                    count = len(step.inputs)
+                    low = int(getattr(processor, "min_inputs", 1) or 1)
+                    high = getattr(processor, "max_inputs", 1)
+                    if high == 1 and count > 1:
+                        pass   # a single-input processor over several inputs runs once per input
+                    elif count < low or (high is not None and count > high):
+                        issues.append(Issue(step.id, f"{step.processor!r} takes {low}..{high if high is not None else '∞'} inputs, got {count}"))
+                    issues.extend(_unknown_params(step, processor, contract_problem))
+                    issues.extend(_kind_issues(step, processor, kinds))
+        elif isinstance(step, Save) and callable(normalize_format):
+            try:
+                normalize_format(step.fmt)
+            except ValueError as exc:
+                issues.append(Issue(step.id, str(exc)))
+        by_id[step.id] = step
+    return issues
+
+
+__all__ = [
+    "CONTROL_NAME_PATTERN",
+    "DEFAULT_PORT",
+    "DEFAULT_SAVE_TEMPLATE",
+    "DEFAULT_SCHEMA",
+    "Consolidate",
+    "Control",
+    "Issue",
+    "Process",
+    "Reconstruct",
+    "Ref",
+    "SCHEMA_VERSION",
+    "SOURCE_PORT",
+    "Save",
+    "Source",
+    "Step",
+    "Workflow",
+    "WorkflowError",
+    "parse_ref",
+    "parse_target",
+    "register_step_type",
+    "step_from_dict",
+    "step_kinds",
+    "step_runner",
+    "step_type",
+    "unregister_step_type",
+    "validate",
+    "validate_plain",
+]
+
+
+# Copyright (C) 2020-2026 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

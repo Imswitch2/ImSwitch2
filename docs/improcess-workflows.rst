@@ -106,7 +106,18 @@ Steps and references
 A reference is ``"step"`` (the step's only, or first, port) or
 ``"step.port"``. Step ids use letters, digits, ``_`` and ``-``. In a
 workflow file each step names its type with ``step:`` (``kind:`` is
-accepted as well).
+accepted as well). The five kinds above are the built-ins of a **step-type
+registry** (``register_step_type`` in ``imswitch.imcommon.model.workflow.steps``,
+where the schema lives since it is shared with the workflow editor and
+ImControl; ``imswitch.improcess.workflows.steps`` re-exports it, as
+``imswitch.improcess.model.workfloweditor`` and
+``imswitch.improcess.view.workfloweditor`` re-export the editor from
+``imswitch.imcommon.model.workfloweditor`` and ``imswitch.imcommon.view.workfloweditor``):
+another package may register a kind of its own, with the class that
+represents it and a callable the runner hands such a step to, and
+``step_kinds()`` lists what is known. A file naming a kind nobody
+registered is refused when it is loaded, with the known kinds in the
+message.
 
 Parameters and defaults
 -----------------------
@@ -145,11 +156,19 @@ A processor declares its output ports through ``output_spec(params)``:
 * a **pattern** when the ports depend on the data (``stack-split`` and
   ``channel-split`` yield one port per slice, as many as the input has,
   named after the split axis and the index along it: ``C0, C1, …`` for
-  channels, ``Z0, Z1, …`` for a Z split).
+  channels, ``Z0, Z1, …`` for a Z split). With an explicit ``axis`` the
+  pattern names that axis (``axis: C`` declares ``C0``, ``C1`` … and
+  nothing else, ignoring case), so a reference to ``split.C0`` from a
+  split along Z is refused before anything runs; ``axis: Auto`` lets the
+  data choose and declares any letter-and-number port. Whether ``C3``
+  exists when the data has two channels is still only known once the
+  split has run, and is reported at the reference that needs it.
 
 Every port also has a **kind**, declared by the plugin (``output_kind``): a
 Source's port carries the recording; the others carry ``image``, ``labels``,
-``table``, ``curve``, ``localization``, ``rgb`` or ``composite`` results, or
+``table``, ``curve``, ``localization``, ``rgb`` or ``composite`` results,
+``points`` (coordinates tagged with the frame of reference they are measured
+in), ``value`` (one number) or ``event`` (a yes/no with a payload), or
 ``any`` when it depends on the run (the Python step).  ``validate`` refuses a
 step whose input has a *declared* kind the processor does not accept (FRC's
 curve into a filter); a port of kind ``any`` or ``unknown`` (a plugin that
@@ -272,7 +291,11 @@ and ``run_over`` runs them:
    for row in batch.failures:
        print(row.bindings, row.failed_step, row.error)
 
-One failing input is one row in the summary; the others still run.
+One failing input is one row in the summary; the others still run. A
+manifest column that is neither a source id, ``<id>.dataset`` nor a
+control (:ref:`workflows-controls`) is ignored, as notes columns are, and
+said once on the console and in the summary's warnings, so a typo in a
+header does not pass unnoticed.
 
 Runs and reports
 ================
@@ -327,6 +350,258 @@ directories listed in ``SaveReceipt.leftovers`` and a warning logged. Partial fi
 are complete, receipted files of an earlier step), and the summary CSV
 carries the ``partial`` column so nobody has to guess whether a failed row
 left anything behind.
+
+.. _workflows-controls:
+
+Controls and bypass
+===================
+
+Two optional features make a workflow file **schema 2**: *controls*, named
+values a run can set without editing the file, and *bypass*, a step kept in
+the file but left out of the run. A file that uses neither is written as
+schema 1, exactly as before, so editing an old file does not make it
+unreadable on an older ImSwitch.
+
+Controls
+--------
+
+A control names one value and the step parameters it sets:
+
+.. code-block:: yaml
+
+   name: split-process-merge
+   schema: 2
+   controls:
+     - name: radius
+       targets: [smooth.radius, sharp.radius]
+       label: Filter radius
+       help: Radius of both channel filters, in pixels
+     - name: method
+       targets: [smooth.method]
+   steps:
+     - {step: source, id: raw}
+     - {step: reconstruct, id: rec, reconstructor: view-only, inputs: [raw]}
+     - {step: process, id: split, processor: stack-split, params: {axis: C}, inputs: [rec]}
+     - {step: process, id: smooth, processor: filter, params: {method: gaussian, radius: 2.0}, inputs: [split.C0]}
+     - {step: process, id: sharp, processor: filter, params: {method: median, radius: 2.0}, inputs: [split.C1]}
+     - {step: process, id: merge, processor: channel-merge, inputs: [smooth, sharp]}
+     - {step: save, id: out, input: merge, fmt: hdf5, path_template: "{out_dir}/{source_stem}_diamond{ext}"}
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 86
+
+   * - Key
+     - Meaning
+   * - ``name``
+     - What the value is set by: ``--set radius=3``, a manifest column
+       ``radius``, the run dialog. Letters, digits and ``_``, not starting
+       with a digit; unique; not the id of a step (a manifest column could
+       not tell them apart).
+   * - ``targets``
+     - A non-empty list of ``step.param``, parameters of ``reconstruct`` or
+       ``process`` steps.
+   * - ``label``, ``help``
+     - Optional; shown in dialogs and by ``controls``. Default: the first
+       target's field label and help.
+
+Any other key in a control (``target``, ``default`` …) is refused, so a typo
+is not ignored. The list's order is the order dialogs show.
+
+**The value lives in the steps.** A control has no default of its own: its
+value is the value its targets hold in ``params``. Dropping ``controls`` from
+a file changes nothing it computes. The targets must agree, and validation
+names each value when they do not (``its targets disagree (smooth.radius =
+2.0, sharp.radius = 1.0); a control has one value``).
+
+**What a control may target.** A parameter the plugin declares, of field type
+``int``, ``float``, ``bool``, ``text``, ``select`` or ``path`` (not ``code``,
+``json`` or ``multiselect``), and not a Python step's ``ports``, which are its
+outputs. A parameter is the target of at most one control. Sources are set by
+bindings and Save paths by ``--out``, so neither can be a target.
+
+**The control's field** combines its targets' fields: the same type and, for
+a ``select``, the same choices; the same unit; bounds that all of them
+accept (the largest minimum, the smallest maximum); ``null`` only if every
+target allows it; the most decimals and the smallest step of any target; a
+reset value only when the targets share a default. Targets that cannot
+share one value (two units, two choice lists, bounds that do not overlap) are
+refused.
+
+**Active and inactive targets.** A target on a bypassed step is *inactive*:
+its value is not compared and it takes no part in the field. So is a target
+in a step the run does not run: the reconstruction that *Run workflow on
+selected results…* replaces by the selected result, or a step outside a
+partial run. A control whose targets are all inactive in the file is a note
+(``control 'method' has no effect while smooth is bypassed``), not an error;
+a value given for it in a run is an error, because it would change nothing::
+
+   control 'method': has no active target in this run, so a value would change nothing: smooth.method (bypassed)
+
+Setting values
+--------------
+
+Values come from three places, each overriding the one before: the file
+(the targets' values) → values for the whole run (``--set``, the run dialog,
+``controls=`` in Python) → a manifest row (a cell). An empty cell is no
+value, so the run-wide value applies.
+
+.. code-block:: bash
+
+   python -m imswitch.improcess.workflows controls wf.yaml            # what can be set
+   python -m imswitch.improcess.workflows validate wf.yaml --set radius=3
+   python -m imswitch.improcess.workflows run wf.yaml --input a.h5 b.h5 --out results/ --set radius=3 --set method=median
+
+   # per-file values: a column per control beside the source columns
+   #   raw,radius
+   #   a.h5,2.5
+   #   b.h5,
+   python -m imswitch.improcess.workflows run wf.yaml --manifest runs.csv --out results/ --set radius=3
+
+In the last example ``a.h5`` runs with radius 2.5 and ``b.h5`` with 3.
+
+**In ImProcess**, **Workflows → Run workflow…**, **Run workflow on selected
+results…** and **Run workflow over files…** ask for a file's controls before
+running it (after the question about Python code, when it has some): one
+field per control, from its combined field, with its label and help, filled
+with the file's values. The values hold for that run, or for every file of a
+run over files, and are not written to the file; **Cancel** runs nothing. A
+control that has no effect in that run is listed greyed with the reason and
+sends no value: its steps are bypassed, or, on selected results, it sets the
+reconstruction the selected result replaces. The status line names the
+values the run used. A file without controls opens no dialog, and runs
+started from the editor do not ask (there a control's value is in its
+steps).
+
+.. image:: ./images/workflow-editor/run_dialog.png
+   :alt: The values dialog for a workflow with two controls, one greyed because its step is bypassed
+
+``--set`` takes ``name=TEXT`` (everything after the first ``=``); a manifest
+cell is the same text, and both are read by the **target field's type**, not
+as YAML, so ``001`` stays text in a text field and ``on`` is no boolean:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 42 40
+
+   * - Field
+     - Accepts
+     - Becomes
+   * - ``int``
+     - ``[+-]?[0-9]+``
+     - an integer (``007`` → 7)
+   * - ``float``
+     - a decimal or scientific number (``2``, ``2.5``, ``-1e-3``); ``nan``
+       and ``inf`` are refused
+     - a float (``3`` → 3.0)
+   * - ``bool``
+     - ``true`` or ``false``, any case (``on``, ``yes``, ``1`` are refused)
+     - a boolean
+   * - ``select``
+     - the text of exactly one choice
+     - that choice, typed (``1`` matches the choice 1, an integer)
+   * - ``text``, ``path``
+     - anything
+     - the text as written
+
+Three special forms: ``null`` is no value at all (``None``), allowed only
+when the control's field allows it; ``''`` is the empty text; and a value in
+single quotes is literal text (``'null'`` is the word *null*; ``''`` inside
+quotes is one quote), for ``text``, ``path`` and ``select`` fields only.
+``--set radius=`` with nothing after ``=`` is refused (``no value; write ''
+for empty text or null for none``). The converted value is then checked
+against the control's field and each target's own checks.
+
+What a run writes into the steps, records in the provenance of its results
+and lists in the summary is the converted value: ``3`` and ``3.0`` given to
+a float field are the same run.
+
+**Errors.** A bad ``--set`` (unknown name, a value that does not convert, a
+control with no active target) refuses the whole run before anything is
+opened (exit status 2 for ``run``, 1 for ``validate``). In a manifest, a
+column whose control has no active target refuses the batch as soon as one
+of its cells is filled; a bad cell fails only its row, without running it::
+
+   line 2, column radius: 'abc' is not a number (nan and inf are not accepted)
+
+**Summary.** The batch summary has a ``control:<name>`` column per control,
+holding the value each row ran with (the file's when none was given, empty
+for an inactive control), and a ``bypassed`` column.
+
+**From Python**:
+
+.. code-block:: python
+
+   from imswitch.improcess.workflows import prepare_run, rows_from_manifest, run, run_over
+
+   with run(wf, registry=registry, out_dir="results", controls={"radius": 3.0}) as report:
+       print(report.controls)                     # {'radius': 3.0}
+
+   rows = rows_from_manifest("runs.csv", wf)      # bindings and cells, line by line
+   batch = run_over(wf, rows, registry=registry, out_dir="results", controls={"radius": 3.0})
+
+   prepared = prepare_run(wf, registry=registry, values={"radius": 3.0})
+   prepared.workflow                              # what will run: schema 1, values in its steps
+
+Typed values (``3.0``, ``True``) are checked against the field as they are;
+``ControlText("3")`` is read by the rules above, as ``--set`` is.
+``describe_controls(wf, registry)`` returns what ``controls --json`` prints.
+
+**Provenance and replay.** A result records the parameters it was made with,
+so a control's value is recorded as the parameter it set. Replay and
+*Export workflow of current result…* write a schema-1 workflow with the
+values in its steps and no controls: the record says what ran.
+
+Bypass
+------
+
+``bypass: true`` on a ``process`` or ``save`` step keeps the step in the
+file, parameters and cables included, but leaves it out of the run:
+
+.. code-block:: yaml
+
+   - {step: process, id: smooth, processor: filter, params: {method: gaussian, radius: 2.0},
+      inputs: [split.C0], bypass: true}
+   - {step: save, id: preview, input: merge, fmt: tiff, bypass: true}
+
+* A bypassed ``process`` step is taken out before the run, and every step
+  that read it reads its input instead (through several bypassed steps in a
+  row). The kinds are then checked against the real producer: a step that
+  takes labels is refused when the step that would have made them is
+  bypassed.
+* A bypassed ``save`` writes nothing.
+* A ``save`` that reads a bypassed step saves its input; ``{input_step}`` in
+  its path template names the step that made the data.
+* A bypassed step's plugin need not be installed, and its parameters are not
+  checked: it never runs.
+
+What may be bypassed: only ``process`` and ``save`` steps; a ``process`` step
+with exactly one input; and only when every step reading it reads its main
+port (``smooth`` or ``smooth.out``). A split's ``C0`` or a Python step's named
+outputs have nothing to stand for them (``split: cannot be bypassed:
+'smooth' reads its port 'C0', which nothing would stand for``). A binding
+cannot name a bypassed step; bind the step it passes through instead.
+
+``bypass`` must be ``true`` or ``false``: any other value (``"false"``,
+``0``, ``null``) is refused naming the step, so nothing becomes a bypass by
+accident. ``RunReport.bypassed`` lists the steps that were left out; their
+results are in no report and no provenance graph, so replaying a result
+made with a bypassed step gives a workflow without it.
+
+The schema version
+------------------
+
+* ``schema: 2`` is written when a workflow has a control or a bypassed step,
+  ``schema: 1`` otherwise; ``controls: []`` and ``bypass: false`` are dropped
+  when writing.
+* A file without ``schema`` is schema 1. The version is a whole number of at
+  least 1 (a string of digits is accepted); ``true`` is refused.
+* A schema-1 file with a ``controls`` key or a ``bypass`` key, even an empty
+  or false one, is refused (``'controls' needs schema: 2``): an older
+  ImSwitch would run it differently.
+* An ImSwitch that predates schema 2 refuses such a file before reading a
+  step (``workflow schema 2 is newer than this ImSwitch understands``), so it
+  never runs one without its bypasses.
 
 Testing a workflow
 ==================
@@ -454,6 +729,52 @@ lists what stops it; clicking an issue selects its step.
 **List** (Ctrl+2) shows the same workflow as cards in run order, with who
 feeds whom drawn in the gutter; selection, the inspector and undo are
 shared with the graph (Ctrl+1). The editor remembers which you used last.
+
+.. _workflows-editor-controls:
+
+Controls and bypass in the editor
+---------------------------------
+
+.. image:: ./images/workflow-editor/bypass.png
+   :alt: The diamond with its first filter bypassed: the box is dimmed, and a dashed line shows the data passing through
+
+* **Bypass** (**B** on the canvas, the step's context menu, or *Edit →
+  Bypass*) keeps a processing or save step in the file but out of the run
+  (:ref:`workflows-controls`). Its box is dimmed, with a grey header and a
+  *BYPASSED* strip, and a dashed line from its input to its output shows the
+  path the data takes; its output is what it passes on, as the step before it
+  made it. List mode greys its card. The inspector says what reads through it
+  ("*merge* reads *split.C0* through this step unchanged"), with **Stop
+  bypassing**. **B** again, or the button, switches it back on. The action is
+  greyed, with the reason as its tooltip, for a step that cannot be bypassed
+  (one with several inputs, or one read by a port such as a split's ``C0``).
+  Bypassing a step outdates what follows it; switching it back on finds the
+  earlier results again while the cache holds them.
+* **Expose as control…** in a parameter's context menu (right-click its row
+  in the inspector) asks for the control's name, by default the parameter's,
+  or offers to add the parameter to an existing control that can take it; the
+  parameter then takes that control's value. An exposed row is marked
+  ``⇄ name``, and the step's box shows the same mark on its parameter line.
+  Editing an exposed parameter sets the control, so every parameter it sets
+  changes together; its row's reset is the control's, and *Reset all to
+  defaults* leaves it alone.
+* **The Controls panel**: with nothing selected (click the canvas
+  background), the inspector shows the workflow's name, description and
+  controls. Each control has its field, the parameters it sets (click one to
+  select its step), **Reset** (to the default its parameters share; greyed
+  with the reason when they have different defaults), **Rename…**,
+  **Label…** (what the run dialog shows) and **Stop exposing** (the
+  parameters keep their value). A control whose parameters are all on
+  bypassed steps says it has no effect while they are bypassed, and stays
+  editable.
+
+  .. image:: ./images/workflow-editor/controls.png
+     :alt: The Controls panel: a radius shared by both filters, and a control with no effect while its step is bypassed
+* Runs in the editor take no control values: there a control's value is its
+  parameters' value. A partial run (*Run to selected*) never trips over a
+  control whose other parameters are outside it.
+* The first save that makes a file schema 2 says so in the status bar: the
+  file now opens only in this version of ImSwitch or later.
 
 .. _workflows-editor-runs:
 
@@ -761,7 +1082,13 @@ plugins from the user plugins folder.
    * - Command
      - Options
    * - ``validate WORKFLOW``
-     - Prints every issue that can be known before running.
+     - Prints every issue that can be known before running, and notes
+       (a control with no effect). ``--set NAME=VALUE`` (repeatable)
+       validates the run those values would make.
+   * - ``controls WORKFLOW``
+     - Lists each control: its type, bounds or choices, unit, value,
+       label, help and targets, and which targets are inactive and why.
+       ``--json`` for the machine-readable form.
    * - ``list``
      - ``--json`` for the machine-readable catalogue: every plugin's id,
        version, defaults, ports and ``fields`` (each parameter's type,
@@ -773,7 +1100,9 @@ plugins from the user plugins folder.
        ``--source-root DIR``; ``--overwrite``; ``--mode run|replay``
        (default ``run``); ``--allow-drift``; ``--hash-sources``;
        ``--verify-hash``; ``--summary NAME`` (the summary CSV inside
-       ``--out``, default ``<workflow name>_summary.csv``).
+       ``--out``, default ``<workflow name>_summary.csv``);
+       ``--set NAME=VALUE`` (repeatable; a control's value for every run,
+       see :ref:`workflows-controls`).
    * - ``replay FILE``
      - ``--out-workflow PATH`` (``.yaml`` or ``.json``; default: print the
        YAML); ``--fmt FMT`` (format of the replayed save, default the

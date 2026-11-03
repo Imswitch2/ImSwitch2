@@ -333,10 +333,12 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "math",
     "multicolor-apply",
     "multicolor-registration",
+    "pick",
     "projection",
     "psf-bead-select",
     "psf-resolution",
     "python",
+    "regionprops",
     "resize",
     "segmentation",
     "smlm-drift",
@@ -349,6 +351,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "stack-subset",
     "subtract-background",
     "table-to-localizations",
+    "threshold",
     "transform",
 ]
 
@@ -4759,6 +4762,7 @@ def _load_widget_registry() -> dict:
         # Advanced
         "SLMs": "Advanced",
         "SLM": "Advanced",          # Docstring uses SLM (singular)
+        "SmartPipeline": "Advanced",
         "EtSTED": "Advanced",
         "EtMonalisa": "Advanced",
         "Tiling": "Advanced",
@@ -4802,6 +4806,7 @@ def _load_widget_registry() -> dict:
         ],
         "Advanced": [
             ("SLM",        "SLM control (single)"),
+            ("SmartPipeline", "Arm and run a smart-microscopy pipeline"),
             ("SLMs",       "SLM control (multi)"),
             ("EtSTED",     "EtSTED widget"),
             ("EtMonalisa", "EtMonalisa widget"),

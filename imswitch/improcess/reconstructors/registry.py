@@ -60,6 +60,36 @@ class PluginRegistry:
             self.__logger.debug(f"Unregistered reconstructor: {plugin_id}")
         return plugin
 
+    # -- what the workflow schema and editor ask of a registry (duck-typed) ------
+    #
+    # ``imswitch.imcommon.model.workflow.steps.validate`` and the editor's
+    # ``RunSession`` must not import ImProcess; what they need of it they ask
+    # the registry they are handed, and skip when it has no such method.
+
+    def contract_problem(self, plugin) -> 'str | None':
+        """Why ``plugin`` cannot run headless (``None`` when it can)."""
+        from imswitch.improcess.model.plugin_contract import contract_problem
+
+        return contract_problem(plugin)
+
+    def normalize_format(self, fmt) -> str:
+        """Canonical save format for ``fmt``; ``ValueError`` when unknown."""
+        from imswitch.improcess.model.save_protocol import normalize_format
+
+        return normalize_format(fmt)
+
+    def close_source(self, handle) -> None:
+        """Release a source handle a run opened."""
+        from imswitch.improcess.workflows.sources import close_source
+
+        close_source(handle)
+
+    def source_stem_of(self, path) -> str:
+        """The name a run's files are named after, for a source at ``path``."""
+        from imswitch.improcess.workflows.runner import source_stem_of
+
+        return source_stem_of(path)
+
     def clear(self) -> None:
         """Remove all registered plugins before applying a new setup config."""
         self._reconstructors.clear()

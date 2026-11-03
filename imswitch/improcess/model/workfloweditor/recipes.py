@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from imswitch.improcess.workflows.steps import Process, Reconstruct, Save, Source, Workflow
+from imswitch.imcommon.model.workflow.steps import Process, Reconstruct, Save, Source, Workflow
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,11 @@ class Recipe:
     @property
     def summary(self) -> str:
         return self.about[0] if self.about else ""
+
+    def workflow(self) -> Workflow:
+        """The workflow this recipe makes (what the editor's start page opens);
+        ``ValueError`` as :func:`recipe_workflow` raises it."""
+        return recipe_workflow(self.name, self.code, self.ports)
 
 
 def snippet_about(code: str) -> list[str]:
@@ -87,9 +92,9 @@ def installed_recipes() -> list[Recipe]:
 
 def recipe_document(recipe: Recipe, catalog):
     """A new editor document for ``recipe``."""
-    from imswitch.improcess.model.workfloweditor.document import WorkflowDocument
+    from imswitch.imcommon.model.workfloweditor.document import WorkflowDocument
 
-    return WorkflowDocument(recipe_workflow(recipe.name, recipe.code, recipe.ports), catalog=catalog)
+    return WorkflowDocument(recipe.workflow(), catalog=catalog)
 
 
 __all__ = ["Recipe", "installed_recipes", "recipe_document", "recipe_workflow", "snippet_about"]

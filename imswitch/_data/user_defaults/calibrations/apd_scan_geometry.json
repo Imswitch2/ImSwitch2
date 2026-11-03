@@ -1,0 +1,6 @@
+{
+  "type": "scan-geometry",
+  "id": "apd_scan_geometry",
+  "source_frame": "detector:APD",
+  "target_frame": "scanner:galvo"
+}

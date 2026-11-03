@@ -1,12 +1,26 @@
-"""The workflow editor's model: what it can offer, and what it is editing.
+"""The workflow editor's model, as ImProcess uses it.
 
-Qt-free. :mod:`catalog` describes every installed plugin the way the runner
-sees it; :mod:`document` holds the workflow being edited and the operations
-an editor needs on it, each answered with what is now wrong.
+The model lives in :mod:`imswitch.imcommon.model.workfloweditor` (shared
+with ImControl's pipeline designer); this package re-exports it under the
+path ImProcess always used and adds what is ImProcess's own:
+:func:`build_catalog` (:mod:`.catalog`), a document from a result's
+provenance (:mod:`.document`), :func:`execute` (:mod:`.session`), the
+recipes (:mod:`.recipes`), and ImProcess's workflow folder and options file
+(:mod:`.folders`, :mod:`.preferences`).
 """
 
-from .catalog import PROCESSOR, RECONSTRUCTOR, Catalog, PluginEntry, build_catalog
-from .document import DocumentError, PortOption, WorkflowDocument
+from imswitch.imcommon.model.workfloweditor import (
+    PROCESSOR,
+    RECONSTRUCTOR,
+    Catalog,
+    DocumentError,
+    PluginEntry,
+    PortOption,
+    WorkflowDocument,
+)
+
+from . import document as _document  # noqa: F401 - gives WorkflowDocument.from_result
+from .catalog import build_catalog
 
 __all__ = [
     "PROCESSOR",

@@ -217,11 +217,12 @@ def test_the_step_hint_for_a_one_dimensional_output_shows_the_call_to_make():
     assert 'make_result(array, axes=["Frame"])' in message
 
 
-def test_a_single_number_is_not_an_output_and_the_message_says_what_to_do():
+def test_a_numpy_scalar_is_not_an_output_and_the_message_says_what_to_do():
+    # A plain Python float is a value result since 2026-11-02; a 0-d array still is not an output.
     with pytest.raises(ScriptError) as caught:
-        run_script("out = float(data.mean())", [_stack()], ("out",))
+        run_script("out = data.mean()", [_stack()], ("out",))
     message = str(caught.value)
-    assert "'out' is a single number" in message and "print()" in message
+    assert "'out' is a single number" in message and "print()" in message and "make_value" in message
 
 
 def test_the_step_applies_to_a_stack_and_returns_a_curve_through_the_processor():
@@ -271,7 +272,9 @@ def test_the_console_publishes_a_curve_and_can_read_one_back():
     session = ConsoleSession(selected=lambda: shown, current=lambda: curve, publish=lambda result, name: made.append(result))
     assert session.namespace["data"].shape == (6,) and session.namespace["axes"] == ["Frame"]
     with pytest.raises(ScriptError, match="single number"):
-        session.publish(float(np.asarray(session.namespace["data"]).max()))
+        session.publish(np.asarray(session.namespace["data"]).max())      # a numpy scalar, not an array
+    published = session.publish(float(np.asarray(session.namespace["data"]).max()), name="peak")
+    assert published.kind == "value" and published.name == "peak"       # a Python float is a value result
 
 
 def test_a_step_given_a_curve_stops_the_run_and_says_why(tmp_path):

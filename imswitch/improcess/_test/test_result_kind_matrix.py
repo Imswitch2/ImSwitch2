@@ -131,7 +131,7 @@ LOCALIZATION_PROCESSOR_IDS = {
 #: ``python`` is here because its code decides what the values mean: it is the
 #: escape hatch for the transformation no processor covers, and ``make_labels``
 #: exists so its outputs can be labels too.
-LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator", "python"}
+LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator", "python", "regionprops"}
 
 
 def test_non_image_results_are_never_offered_to_image_processors():
