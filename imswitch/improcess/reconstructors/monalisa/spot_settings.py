@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 GAUSSIAN_FWHM_TO_SIGMA = 2.3548200450309493
-DEFAULT_SPOT_FWHM_NM = 220.0
+DEFAULT_SPOT_FWHM_NM = 320.0
 
 
 def fwhm_to_sigma_px(value: float, unit: str, pixel_size_nm: float | None) -> float:
