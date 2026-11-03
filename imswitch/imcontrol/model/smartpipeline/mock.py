@@ -146,6 +146,8 @@ class MockActions:
         if request.action == "snap":
             self.snaps.append(str(request.params.get("detector") or ""))
             return {"snapped": True, "detector": request.params.get("detector")}
+        if request.action == "wait":
+            return {"waited": float(request.params.get("seconds") or 0.0)}
         if request.action == "run-scan":
             centre = None
             if request.inputs:

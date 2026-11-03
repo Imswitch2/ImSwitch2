@@ -336,6 +336,8 @@ class _Pending:
 class _GateState:
     fired: int = 0
     last_t: float | None = None
+    #: A delay gate: when its trigger arrived, while it waits.
+    triggered_t: float | None = None
 
 
 class Engine:
@@ -686,6 +688,24 @@ class Engine:
         elif step.rule == "busy":
             open_ = self._pending is None
             reason = "idle" if open_ else f"busy with {self._pending.step.id}"
+        elif step.rule == "delay":
+            seconds = float(params.get("seconds", DEFAULT_INTERVAL_S))
+            kind = kind_of(value)
+            triggered = (bool(fired_of(value)) if kind == "event" else
+                         int(points_of(value).shape[0]) > 0 if kind == "points" else value is not None)
+            if state.triggered_t is None:
+                if triggered:
+                    state.triggered_t = now
+                    reason = f"triggered, opens in {seconds:g} s"
+                else:
+                    reason = "no trigger"
+                open_ = False
+            else:
+                waited = now - state.triggered_t
+                open_ = waited >= seconds
+                reason = f"{waited:.3f} s after the trigger" if open_ else f"{waited:.3f} of {seconds:g} s"
+                if open_:
+                    state.triggered_t = None
         else:
             raise CoordinateError(f"unknown gate rule {step.rule!r}")
         if open_:

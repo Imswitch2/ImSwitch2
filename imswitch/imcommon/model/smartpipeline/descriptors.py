@@ -54,6 +54,10 @@ _GATE_FIELDS = {
     "count-limit": (
         ParamField("count", "int", 1, label="Times", help="Opens this many times, then stays closed", min=1),
     ),
+    "delay": (
+        ParamField("seconds", "float", 1.0, label="After", suffix="s", min=1e-3, decimals=3,
+                   help="Opens on the first tick this long after a trigger (a fired event, points, any input)"),
+    ),
     "once": (),
     "busy": (),
 }

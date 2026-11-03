@@ -363,6 +363,35 @@ def test_min_interval_once_and_count_limit_gates_use_the_engine_clock():
     assert eng.run().gates_fired == 3 and len(eng.log.events("would", step="mv")) == 3
 
 
+def test_a_delay_gate_opens_once_the_time_after_its_trigger_has_passed():
+    clock = sleep_clock()
+    frames = [FRAMES[0]] * 6
+    document = pipeline(gate=Gate("g", "delay", {"seconds": 2.0}, inputs=["c"]), chain=("move",))
+    eng = engine(document, frames=frames, clock=clock)
+    eng.arm()
+    events = []
+    for index, image in enumerate(frames):
+        eng.tick(Frame(image, "Camera", index, float(index)))
+        events.append(eng.log.events(step="g")[-1].event)
+        clock.advance(1.0)
+    # t=0 trigger; t=1 waiting; t=2 opens; t=3 trigger again; t=4 waiting; t=5 opens
+    assert events == ["closed", "closed", "open", "closed", "closed", "open"]
+    assert "triggered" in eng.log.events(step="g")[0].detail["why"]
+    assert len(eng.log.events("would", step="mv")) == 2
+
+
+def test_a_wait_action_holds_the_chain_for_its_seconds():
+    from imswitch.imcontrol.model.smartpipeline.live_actions import WaitAdapter
+    from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest
+
+    request = ActionRequest(step_id="w", action="wait", params={"seconds": 0.05}, inputs=[], mode="experiment",
+                            tick=1, epoch=1)
+    completion = WaitAdapter().start(request, None)
+    assert not completion.done and completion.wait(1) and completion.result == {"waited": 0.05}
+    early = WaitAdapter().start(ActionRequest("w", "wait", {"seconds": 5.0}, [], "experiment", 1, 1), None)
+    assert early.abort() and early.outcome == "cancelled"
+
+
 def test_condition_gates_on_values_and_events():
     document = SmartPipelineDocument(Workflow("p", [
         Live("cam", detector="Camera"),

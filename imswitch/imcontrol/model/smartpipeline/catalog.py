@@ -46,7 +46,12 @@ RUN_SCAN = ActionSpec(
                 "are the lasers of its one channel; dwell_s 0 keeps the plan's dwell.",
 )
 
-ACTION_SPECS = (MOVE_TO, SNAP, LOG, RUN_SCAN)
+WAIT = ActionSpec(
+    "wait", label="Wait", accepts=("any",), params={"seconds": 1.0}, hardware=False,
+    description="Do nothing for 'seconds' (the chain goes on afterwards; the pipeline is busy meanwhile).",
+)
+
+ACTION_SPECS = (MOVE_TO, SNAP, LOG, RUN_SCAN, WAIT)
 
 
 def catalog() -> ActionCatalog:
@@ -84,7 +89,7 @@ def axis_targets(params: dict) -> list[tuple[str, str]]:
     return targets
 
 
-__all__ = ["ACTION_SPECS", "LOG", "MOVE_TO", "RUN_SCAN", "SNAP", "axis_targets", "catalog"]
+__all__ = ["ACTION_SPECS", "LOG", "MOVE_TO", "RUN_SCAN", "SNAP", "WAIT", "axis_targets", "catalog"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -25,7 +25,7 @@ from imswitch.imcommon.model.workflow.steps import (
 )
 
 LIVE_MODES = ("live", "clock")
-GATE_RULES = ("condition", "min-interval", "once", "count-limit", "busy")
+GATE_RULES = ("condition", "min-interval", "once", "count-limit", "busy", "delay")
 SINK_KINDS = ("event-log", "overlay")
 
 #: The port a gate's yes/no leaves on.
@@ -127,7 +127,10 @@ class Gate:
     opens when the condition does not hold),
     ``min-interval`` (at most once per ``seconds``), ``once`` (the first
     time only, until re-armed), ``count-limit`` (``count`` times), ``busy``
-    (not while an action of this pipeline is still running).
+    (not while an action of this pipeline is still running), ``delay`` (a
+    trigger -- an event that fired, points that are there, any other input
+    -- starts a timer; the gate opens on the first tick ``seconds`` after
+    it, then waits for the next trigger).
     """
 
     id: str
@@ -145,10 +148,10 @@ class Gate:
             raise WorkflowError(f"{self.id}: gate rule must be one of {GATE_RULES}, got {self.rule!r}")
         self.params = dict(self.params or {})
         self.inputs = _refs(self.inputs)
-        if self.rule == "min-interval":
+        if self.rule in ("min-interval", "delay"):
             # seconds defaults to 1 (DEFAULT_INTERVAL_S); given, it must be above 0
             if _non_negative(self.id, "seconds", self.params.get("seconds", DEFAULT_INTERVAL_S)) <= 0:
-                raise WorkflowError(f"{self.id}: a min-interval gate needs seconds above 0")
+                raise WorkflowError(f"{self.id}: a {self.rule} gate needs seconds above 0")
         elif self.rule == "count-limit":
             try:
                 count = int(self.params.get("count", DEFAULT_COUNT))

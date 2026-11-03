@@ -1507,6 +1507,13 @@ and saves as CSV or JSON (**Save log…**). A ``sink`` of kind ``overlay``
 marks the points it receives (in the detector's pixels) on the live view
 while the pipeline runs.
 
+**Time.** A ``wait`` action does nothing for ``seconds`` (the chain goes on
+afterwards; the pipeline is busy meanwhile). A gate of rule ``delay`` starts
+a timer when a trigger arrives (a fired event, points that are there, any
+other input), opens on the first tick ``seconds`` after it, and then waits
+for the next trigger; ``min-interval`` is the other way round -- it opens at
+once and then not again for ``seconds``.
+
 **Scans.** On a point-scanning setup the ``run-scan`` action drives the Scan
 panel: an ``overview`` of ``field_um`` (the panel's overview page), or an
 ``acquisition`` of ``length_um`` at ``pixel_um`` centred on the point it is

@@ -25,7 +25,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec, points_of
-from imswitch.imcontrol.model.smartpipeline.catalog import LOG, MOVE_TO, RUN_SCAN, SNAP, axis_targets, catalog
+from imswitch.imcontrol.model.smartpipeline.catalog import LOG, MOVE_TO, RUN_SCAN, SNAP, WAIT, axis_targets, catalog
 from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest, SimpleCompletion
 
 
@@ -51,6 +51,24 @@ class LogAdapter:
     def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
         message = str(request.params.get("message") or "")
         return SimpleCompletion(request.epoch, result={"logged": True, "message": message}, done=True)
+
+
+class WaitAdapter:
+    """``wait``: a completion that settles after ``seconds``; abort ends it early."""
+
+    spec = WAIT
+
+    def resources(self, params: dict) -> set[str]:
+        return set()
+
+    def start(self, request: ActionRequest, token: str | None) -> SimpleCompletion:
+        completion = SimpleCompletion(request.epoch)
+        seconds = max(0.0, float(request.params.get("seconds") or 0.0))
+        timer = threading.Timer(seconds, lambda: completion.complete({"waited": seconds}))
+        timer.daemon = True
+        completion.abort_hook = lambda: (timer.cancel(), True)[1]
+        timer.start()
+        return completion
 
 
 class SnapAdapter:
@@ -352,6 +370,7 @@ def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, 
         MoveToAdapter(positionersManager, executor=executor, logger=logger),
         SnapAdapter(snap, marshal),
         LogAdapter(),
+        WaitAdapter(),
     ]
     if scan is not None:
         adapters.append(RunScanAdapter(scan.get("controllers"), scan.get("workflow"), marshal=marshal,
@@ -360,7 +379,7 @@ def live_backend(positionersManager, *, snap=None, marshal=None, executor=None, 
 
 
 __all__ = ["ActionAdapter", "LiveActionBackend", "LogAdapter", "MoveToAdapter", "RunScanAdapter", "SnapAdapter",
-           "live_backend"]
+           "WaitAdapter", "live_backend"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
