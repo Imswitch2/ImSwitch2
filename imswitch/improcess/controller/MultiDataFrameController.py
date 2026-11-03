@@ -14,6 +14,7 @@ class MultiDataFrameController(ImProcessWidgetController):
 
         self._loadingData = False
         self._dataFolder = None
+        self._addDataDelegate = None
 
         self._moduleCommChannel.memoryRecordings.sigDataSet.connect(self.memoryDataSet)
         self._moduleCommChannel.memoryRecordings.sigDataSavedToDisk.connect(
@@ -84,22 +85,34 @@ class MultiDataFrameController(ImProcessWidgetController):
                 if dataObj._file is not None and dataObj._file.filename == expectedFilename:
                     yield dataObj
 
+    def addDataObj(self, dataObj):
+        """Reference an existing DataObj in the Working Set without copying it."""
+        for existingDataObj in self._widget.getAllDataObjs():
+            if dataObj is existingDataObj or dataObj.describesSameAs(existingDataObj):
+                return existingDataObj
+
+        self._widget.addDataObj(dataObj.name, dataObj.datasetName, dataObj)
+        self._widget.setDataObjMemoryFlag(dataObj, dataObj.dataPath is None)
+        self.updateInfo()
+        return dataObj
+
     def makeAndAddDataObj(self, name, datasetName, path=None, file=None):
         dataObj = DataObj(name, datasetName, path=path, file=file)
-        for existingDataObj in self._widget.getAllDataObjs():
-            if dataObj.describesSameAs(existingDataObj):
-                return  # Already added
-
-        self._widget.addDataObj(name, datasetName, dataObj)
-        self._widget.setDataObjMemoryFlag(dataObj, path is None)
-        self.updateInfo()
+        return self.addDataObj(dataObj)
 
     def _normalizedPathAndName(self, path):
         source = resolve_dataset_source(path)
         normalized = str(source.path)
         return normalized, os.path.basename(normalized) or normalized
 
+    def setAddDataDelegate(self, callback) -> None:
+        """Let FileIO own the picker while preserving the Working Set action."""
+        self._addDataDelegate = callback
+
     def addDataClicked(self):
+        if callable(self._addDataDelegate):
+            self._addDataDelegate()
+            return
         paths = self._widget.requestFilePathsFromUser(self._dataFolder)
         for path in paths:
             path, name = self._normalizedPathAndName(path)

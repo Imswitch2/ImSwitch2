@@ -15,6 +15,9 @@ from imswitch.improcess.model.runtime_tools import (
 )
 from imswitch.improcess.model.luts import IMAGE_LUTS
 from .DataFrame import DataFrame
+from .DataWorkspaceFrame import DataWorkspaceFrame
+from .LoadedDataFrame import LoadedDataFrame
+from .ProcessingQueueFrame import ProcessingQueueFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
@@ -336,11 +339,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.shortcutsMenu.addSeparator()
 
         self.dataFrame = DataFrame()
+        self.loadedDataFrame = LoadedDataFrame()
         self.multiDataFrame = MultiDataFrame()
         self.directoryWatcherFrame = DirectoryWatcherFrame()
         self.processingSessionFrame = ProcessingSessionFrame()
+        self.processingQueueFrame = ProcessingQueueFrame()
+        self.dataWorkspaceFrame = DataWorkspaceFrame(
+            self.loadedDataFrame,
+            self.processingSessionFrame,
+            self.processingQueueFrame,
+            self.multiDataFrame,
+            show_session=showSessionPanel,
+            show_multidata=showMultiDataPanel,
+        )
         self.dataFrame.sigOpenDataClicked.connect(self.sigQuickLoadData)
         self.dataFrame.sigProcessCurrentClicked.connect(self.sigReconstuctCurrent)
+        self.loadedDataFrame.sigQuickLoadRequested.connect(self.sigQuickLoadData)
         self.multiDataFrame.sigProcessIndividualRequested.connect(
             self.sigReconstructMultiIndividual
         )
@@ -501,37 +515,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         # state into a session whose setup JSON no longer asks for them.
         self._runtimeAnalysisToolIds: set[str] = set()
 
-        # --- Left column: workspace-first data workflow ---
-        # Keep the historic dock object names for saved-layout compatibility,
-        # while presenting the new user-facing hierarchy.
-        self.processingSessionDock = Dock('Session', size=(2, 5))
-        self.processingSessionDock.addWidget(self.processingSessionFrame)
-        self.dockArea.addDock(self.processingSessionDock, 'left')
-        self.docks['Session'] = self.processingSessionDock
-        if getattr(self.processingSessionDock, 'label', None) is not None:
-            self.processingSessionDock.label.setText('Session / Workspace')
-        if not showSessionPanel:
-            self.processingSessionDock.hide()
-
-        self.currentDataDock = Dock('Current data', size=(2, 3))
-        self.currentDataDock.addWidget(self.dataFrame)
-        self.dockArea.addDock(self.currentDataDock, 'bottom', self.processingSessionDock)
-        self.docks['Current data'] = self.currentDataDock
-        if not showCurrentDataPanel:
-            self.currentDataDock.hide()
-
-        self.multiDataDock = Dock('Multidata management', size=(2, 3))
-        self.multiDataDock.addWidget(self.multiDataFrame)
-        self.dockArea.addDock(self.multiDataDock, 'bottom', self.currentDataDock)
-        self.docks['Multidata management'] = self.multiDataDock
-        if getattr(self.multiDataDock, 'label', None) is not None:
-            self.multiDataDock.label.setText('Working set')
-        if not showMultiDataPanel:
-            self.multiDataDock.hide()
-
+        # --- Left column: reconstructor -> data workspace -> actions -> current data ---
         parametersDock = Dock('Parameters', size=(2, 5))
         parametersDock.addWidget(parameterFrame)
-        self.dockArea.addDock(parametersDock, 'bottom', self.multiDataDock)
+        self.dockArea.addDock(parametersDock, 'left')
         self.docks['Parameters'] = parametersDock
         self.parameterDock = parametersDock
         if getattr(parametersDock, 'label', None) is not None:
@@ -539,19 +526,33 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if not showParameterPanel:
             parametersDock.hide()
 
-        # Legacy/global controls stay available during UX validation, but are
-        # placed after the primary workspace panels.
+        self.dataWorkspaceDock = Dock('Data', size=(2, 5))
+        self.dataWorkspaceDock.addWidget(self.dataWorkspaceFrame)
+        self.dockArea.addDock(self.dataWorkspaceDock, 'bottom', parametersDock)
+        self.docks['Data'] = self.dataWorkspaceDock
+        # Compatibility aliases: controller code historically raises these
+        # panels as separate docks. They now select a tab in the shared DATA dock.
+        self.processingSessionDock = self.dataWorkspaceDock
+        self.multiDataDock = self.dataWorkspaceDock
+
         actionsDock = Dock('Actions', size=(2, 1))
         actionsDock.addWidget(btnFrame)
-        self.dockArea.addDock(actionsDock, 'bottom', parametersDock)
+        self.dockArea.addDock(actionsDock, 'bottom', self.dataWorkspaceDock)
         self.docks['Actions'] = actionsDock
         if not showActionsPanel:
             actionsDock.hide()
 
+        self.currentDataDock = Dock('Current data', size=(2, 4))
+        self.currentDataDock.addWidget(self.dataFrame)
+        self.dockArea.addDock(self.currentDataDock, 'bottom', actionsDock)
+        self.docks['Current data'] = self.currentDataDock
+        if not showCurrentDataPanel:
+            self.currentDataDock.hide()
+
         self._showFileWatcherPanel = bool(showFileWatcherPanel)
         self.directoryWatcherDock = Dock('Directory watcher', size=(2, 3))
         self.directoryWatcherDock.addWidget(self.directoryWatcherFrame)
-        self.dockArea.addDock(self.directoryWatcherDock, 'bottom', actionsDock)
+        self.dockArea.addDock(self.directoryWatcherDock, 'bottom', self.currentDataDock)
         self.docks['Directory watcher'] = self.directoryWatcherDock
         if not showFileWatcherPanel:
             self.directoryWatcherDock.hide()
@@ -626,8 +627,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._viewMenu = viewMenu
         self._dockVisibilityActions: dict[str, QtWidgets.QAction] = {}
         dock_menu_titles = {
-            'Session': 'Session / Workspace',
-            'Multidata management': 'Working set',
             'Parameters': 'Reconstructor',
         }
         for title, dock in self.docks.items():
@@ -1764,7 +1763,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if hasattr(btnFrame, 'reconCurrBtn'):
             btnFrame.reconCurrBtn.setVisible(bool(reconstruct_current))
         if hasattr(self, 'dataFrame'):
-            self.dataFrame.setProcessCurrentVisible(bool(reconstruct_current))
+            # Current data remains an inspector; processing lives in Actions.
+            self.dataFrame.setProcessCurrentVisible(False)
         if hasattr(btnFrame, 'updateBtn'):
             btnFrame.updateBtn.setVisible(bool(update_reconstruction))
         if hasattr(btnFrame, 'reconMultiBtn'):
@@ -1790,14 +1790,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 consolidated.setToolTip(tooltip)
                 consolidated.setStatusTip(tooltip)
         if hasattr(self, 'multiDataFrame'):
-            self.multiDataFrame.setProcessActionsVisible(
-                bool(reconstruct_multidata),
-                consolidate=multidata_consolidate,
-                labels=(
-                    ('Load set ▾', 'Load data items to viewer')
-                    if multidata_labels is not None else None
-                ),
-            )
+            # Working Set owns collection management only in the integrated DATA
+            # workspace. The common Actions dock owns processing commands.
+            self.multiDataFrame.setProcessActionsVisible(False)
 
     def setReconstructionJobState(
         self, running: bool, *, progress=None, status: str = ""
@@ -1918,10 +1913,27 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.sigActiveReconstructorChanged.emit(str(plugin_id))
 
     def raiseCurrentDataDock(self):
-        self.currentDataDock.raiseDock()
+        self._safeRaiseDock(self.currentDataDock)
 
     def raiseMultiDataDock(self):
-        self.multiDataDock.raiseDock()
+        if hasattr(self, 'dataWorkspaceFrame'):
+            self.dataWorkspaceFrame.selectMultiData()
+        self._safeRaiseDock(self.dataWorkspaceDock)
+
+    def raiseLoadedDataDock(self):
+        if hasattr(self, 'dataWorkspaceFrame'):
+            self.dataWorkspaceFrame.selectLoaded()
+        self._safeRaiseDock(self.dataWorkspaceDock)
+
+    def raiseSessionDock(self):
+        if hasattr(self, 'dataWorkspaceFrame'):
+            self.dataWorkspaceFrame.selectSession()
+        self._safeRaiseDock(self.dataWorkspaceDock)
+
+    def raiseProcessingQueueDock(self):
+        if hasattr(self, 'dataWorkspaceFrame'):
+            self.dataWorkspaceFrame.selectQueue()
+        self._safeRaiseDock(self.dataWorkspaceDock)
 
     def getLayoutState(self) -> dict:
         """Return passive GUI layout state for persistence.

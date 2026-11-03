@@ -89,6 +89,15 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.processingSessionController.setProcessingQueueController(
             self.processingQueueController
         )
+        queue_frame = getattr(self._widget, 'processingQueueFrame', None)
+        if queue_frame is not None:
+            queue_frame.sigPauseRequested.connect(self.processingQueueController.pause)
+            queue_frame.sigResumeRequested.connect(self.processingQueueController.resume)
+            queue_frame.sigSkipCurrentRequested.connect(self.processingQueueController.skipCurrent)
+            self.processingQueueController.sigQueueChanged.connect(
+                queue_frame.setProcessingQueue
+            )
+            queue_frame.setProcessingQueue(self.processingQueueController.queueSnapshot())
 
         self._currentDataObj = None
 

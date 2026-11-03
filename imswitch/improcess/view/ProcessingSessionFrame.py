@@ -652,11 +652,13 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.refreshBtn.setText("↻")
         self.refreshBtn.setToolTip("Refresh Session")
         self.refreshBtn.setAutoRaise(True)
-        self.livePlaceholderBtn = QtWidgets.QToolButton()
-        self.livePlaceholderBtn.setText("● Watching")
-        self.livePlaceholderBtn.setToolTip("DirectoryWatcher is monitoring the active Session folder")
-        self.livePlaceholderBtn.setEnabled(False)
-        self.livePlaceholderBtn.setAutoRaise(True)
+        # Watching is Session state, not an action. The old disabled
+        # "● Watching" tool button looked actionable while doing nothing.
+        self.livePlaceholderBtn = QtWidgets.QLabel("● Watching")
+        self.livePlaceholderBtn.setToolTip(
+            "DirectoryWatcher is monitoring the active Session folder"
+        )
+        self.livePlaceholderBtn.setStyleSheet("color: palette(mid);")
         self.actionsBtn = QtWidgets.QToolButton()
         self.actionsBtn.setText("Actions")
         self.actionsBtn.setToolTip("Session actions")
@@ -904,8 +906,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.queueSummaryLabel = _ElidingLabel("Queue idle")
         self.queueSummaryLabel.setStyleSheet('color: palette(mid);')
         auto_row.addWidget(self.autoProcessCheck)
-        auto_row.addWidget(self.queueSummaryLabel, 1)
+        auto_row.addStretch(1)
         processing_layout.addLayout(auto_row)
+        self.queueSummaryLabel.hide()
 
         queue_actions = QtWidgets.QHBoxLayout()
         queue_actions.setContentsMargins(0, 0, 0, 0)
@@ -921,6 +924,9 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         queue_actions.addStretch(1)
         queue_actions.addWidget(self.queueToggleBtn)
         processing_layout.addLayout(queue_actions)
+        self.pauseResumeBtn.hide()
+        self.skipCurrentBtn.hide()
+        self.queueToggleBtn.hide()
 
         self.queueList = QtWidgets.QTreeWidget()
         self.queueList.setColumnCount(3)
@@ -932,6 +938,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         self.queueList.setMaximumHeight(130)
         self.queueList.setVisible(False)
         processing_layout.addWidget(self.queueList)
+        self.queueList.hide()
         root.addWidget(processing_box)
 
         self.statusLabel = _ElidingLabel("No session active")

@@ -91,6 +91,8 @@ class DataFrame(QtWidgets.QFrame):
         self.processCurrentBtn = BetterPushButton('Process current')
         self.processCurrentBtn.setToolTip('Process the currently inspected data with the active reconstructor')
         self.processCurrentBtn.clicked.connect(self.sigProcessCurrentClicked)
+        self.openDataBtn.hide()
+        self.processCurrentBtn.hide()
 
         self.showMeanBtn = BetterPushButton()
         self.showMeanBtn.setText('Show mean image')

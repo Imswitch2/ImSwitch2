@@ -132,10 +132,9 @@ def test_set_widget_state_swallows_restore_exceptions():
 
 
 def test_schema_version_bumped():
-    """Patch 4 resets old saved dock layouts so the workspace-first order
-    becomes visible instead of being overwritten by the previous layout."""
+    """The integrated DATA dock invalidates older separate Session/Working Set layouts."""
     adapter = _GuiLayoutStateAdapter(_make_view_stub())
-    assert adapter.getStateSchemaVersion() == 3
+    assert adapter.getStateSchemaVersion() == 4
 
 
 def test_startup_hidden_docks_are_rehidden_after_layout_restore():

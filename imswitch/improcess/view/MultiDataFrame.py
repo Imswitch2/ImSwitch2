@@ -4,6 +4,7 @@ from .guitools import BetterPushButton
 
 
 class MultiDataFrame(QtWidgets.QFrame):
+    sigCountChanged = QtCore.Signal(int)
     # Signals
     sigAddDataClicked = QtCore.Signal()
     sigLoadCurrentDataClicked = QtCore.Signal()
@@ -195,6 +196,7 @@ class MultiDataFrame(QtWidgets.QFrame):
         listItem.setText(self.getTextForItem(listItem))
         self.dataList.addItem(listItem)
         self.dataList.setCurrentItem(listItem)
+        self.sigCountChanged.emit(self.dataList.count())
 
     def setDataObjMemoryFlag(self, dataObj, inMemory):
         for i in range(self.dataList.count()):
@@ -242,6 +244,7 @@ class MultiDataFrame(QtWidgets.QFrame):
         for i in reversed(range(self.dataList.count())):
             if self.dataList.item(i) is not None and self.dataList.item(i).data(1) is dataObj:
                 self.dataList.takeItem(i)
+        self.sigCountChanged.emit(self.dataList.count())
 
     def setCurrentRowHighlighted(self, highlighted):
         self.dataList.currentItem().setBackground(

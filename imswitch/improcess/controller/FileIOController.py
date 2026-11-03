@@ -31,6 +31,8 @@ from imswitch.improcess.model.folder_preferences import (
     FolderPreferences,
     load_folder_preferences,
     save_folder_preferences,
+    load_quick_load_source,
+    save_quick_load_source,
 )
 from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
@@ -105,6 +107,14 @@ class FileIOController(ImProcessWidgetController):
         self.multiDataFrameController = self._factory.createController(
             MultiDataFrameController, self._widget.multiDataFrame
         )
+        self.multiDataFrameController.setAddDataDelegate(self.addDataToWorkingSet)
+        self._loadedDataObjs = []
+        loaded_frame = getattr(self._widget, "loadedDataFrame", None)
+        if loaded_frame is not None:
+            loaded_frame.setSourceMode(load_quick_load_source())
+            loaded_frame.sigSourceChanged.connect(save_quick_load_source)
+            loaded_frame.sigSetCurrentRequested.connect(self.setLoadedAsCurrent)
+        self._commChannel.sigCurrentDataChanged.connect(self._currentDataChanged)
         self.pickDatasetsController = self._factory.createController(
             PickDatasetsController, self._widget.pickDatasetsDialog
         )
@@ -113,10 +123,77 @@ class FileIOController(ImProcessWidgetController):
             self._commChannel.sigDataFolderChanged.emit(self._dataFolder)
 
     def quickLoadData(self):
-        dataPath = self._requestLoadPath()
-        if dataPath:
+        """Quick Load one or many sources into the ad-hoc Loaded catalog.
+
+        One source keeps the historic fluid behaviour and becomes Current data
+        immediately. With several sources every selected dataset is catalogued
+        and only the first one is promoted to Current data.
+        """
+        paths = self._requestQuickLoadPaths()
+        if not paths:
+            return
+        promoted = False
+        for dataPath in paths:
             self._logger.debug(f'Loading data at: {dataPath}')
-            self._loadFromPath(dataPath, prefer_as_current=True)
+            outcome = self._loadFromPath(
+                dataPath,
+                prefer_as_current=not promoted,
+                route_to_loaded=True,
+            )
+            if outcome == 'current':
+                promoted = True
+        if hasattr(self._widget, 'raiseLoadedDataDock'):
+            self._widget.raiseLoadedDataDock()
+
+    def _requestQuickLoadPaths(self):
+        frame = getattr(self._widget, "loadedDataFrame", None)
+        mode = frame.sourceMode() if frame is not None else "files"
+        if mode == "zarr":
+            path = guitools.askForFolderPath(
+                self._widget, caption='Quick Load Zarr', defaultFolder=self._dataFolder
+            )
+            return [path] if path else []
+
+        specs = self._activeSourceSpecs()
+        file_specs = [
+            spec for spec in (specs or [])
+            if spec.locator != LOCATOR_DIRECTORY
+        ]
+        paths = guitools.askForFilePath(
+            self._widget,
+            caption='Quick Load data',
+            defaultFolder=self._dataFolder,
+            nameFilter=file_dialog_filter(file_specs or specs),
+            multiFiles=True,
+        )
+        return list(paths or [])
+
+    def addDataToWorkingSet(self):
+        """Preserve Working Set -> Add data through the common file loader.
+
+        The historic Working Set action remains a multi-file action. External
+        sources are also registered in Loaded, but Current data is not changed.
+        """
+        specs = self._activeSourceSpecs()
+        file_specs = [
+            spec for spec in (specs or []) if spec.locator != LOCATOR_DIRECTORY
+        ]
+        paths = guitools.askForFilePath(
+            self._widget,
+            caption='Add data to Working Set',
+            defaultFolder=self._dataFolder,
+            nameFilter=file_dialog_filter(file_specs or specs),
+            multiFiles=True,
+        ) or []
+        for dataPath in paths:
+            self._loadFromPath(
+                dataPath,
+                prefer_as_current=False,
+                route_to_loaded=True,
+                add_to_multidata=True,
+            )
+        if paths and hasattr(self._widget, 'raiseMultiDataDock'):
+            self._widget.raiseMultiDataDock()
 
     def quickLoadVirtualData(self):
         dataPath = self._requestLoadPath(caption_prefix='Open virtual')
@@ -228,6 +305,8 @@ class FileIOController(ImProcessWidgetController):
         *,
         prefer_as_current: bool = False,
         virtual_current: bool = False,
+        route_to_loaded: bool = False,
+        add_to_multidata: bool = False,
     ) -> str:
         """Unified loader for one file path.
 
@@ -242,6 +321,10 @@ class FileIOController(ImProcessWidgetController):
                 is added to the multi-data list.
             virtual_current: When promoting a single dataset, open only the
                 lazy source handle instead of materializing the full data array.
+            route_to_loaded: Register ordinary image sources in the Quick Load
+                catalog instead of routing multi-selection to MultiData.
+            add_to_multidata: Also reference catalogued sources from the
+                Working Set; does not change Current data.
 
         Returns:
             ``'current'``     — routed to the current DataObj (and raised),
@@ -274,11 +357,22 @@ class FileIOController(ImProcessWidgetController):
                 return self._loadMetadataAsCurrent(source)
             lapseItemToPick = False
             if _accepts_time_lapse(getattr(self._main, '_activeReconstructor', None)):
-                outcome = self._loadTimeLapseAsCurrent(source)
-                if outcome == _PICK_A_LAPSE_ITEM:
-                    lapseItemToPick = True
-                elif outcome is not None:
-                    return outcome
+                if route_to_loaded:
+                    lapse_obj = self._timeLapseDataObj(source)
+                    if lapse_obj == _PICK_A_LAPSE_ITEM:
+                        lapseItemToPick = True
+                    elif lapse_obj is not None:
+                        return self._routeCatalogDataObj(
+                            lapse_obj,
+                            prefer_as_current=prefer_as_current,
+                            add_to_multidata=add_to_multidata,
+                        )
+                else:
+                    outcome = self._loadTimeLapseAsCurrent(source)
+                    if outcome == _PICK_A_LAPSE_ITEM:
+                        lapseItemToPick = True
+                    elif outcome is not None:
+                        return outcome
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
@@ -301,7 +395,17 @@ class FileIOController(ImProcessWidgetController):
         if lapseItemToPick and len(datasetsToRoute) == 1:
             # The file holds several lapses; the item picked says which one.
             try:
-                outcome = self._loadTimeLapseAsCurrent(source, datasetsToRoute[0])
+                if route_to_loaded:
+                    lapse_obj = self._timeLapseDataObj(source, datasetsToRoute[0])
+                    if lapse_obj is not None and lapse_obj != _PICK_A_LAPSE_ITEM:
+                        return self._routeCatalogDataObj(
+                            lapse_obj,
+                            prefer_as_current=prefer_as_current,
+                            add_to_multidata=add_to_multidata,
+                        )
+                    outcome = None
+                else:
+                    outcome = self._loadTimeLapseAsCurrent(source, datasetsToRoute[0])
             except Exception as exc:
                 self._logger.error(
                     f"Could not open the time lapse of {datasetsToRoute[0]}: {exc}"
@@ -309,6 +413,18 @@ class FileIOController(ImProcessWidgetController):
                 outcome = None
             if outcome is not None:
                 return outcome
+
+        if route_to_loaded:
+            made_current = False
+            for datasetName in datasetsToRoute:
+                data_obj = DataObj(name, datasetName, path=dataPath)
+                outcome = self._routeCatalogDataObj(
+                    data_obj,
+                    prefer_as_current=bool(prefer_as_current and not made_current),
+                    add_to_multidata=add_to_multidata,
+                )
+                made_current = made_current or outcome == 'current'
+            return 'current' if made_current else ('multidata' if add_to_multidata else 'loaded')
 
         if prefer_as_current and len(datasetsToRoute) == 1:
             try:
@@ -482,23 +598,8 @@ class FileIOController(ImProcessWidgetController):
 
         return _route_as_current(self, data_obj)
 
-    def _loadTimeLapseAsCurrent(self, source, dataset=None):
-        """Open the whole lapse ``source`` belongs to, or return None.
-
-        Only asked while a reconstructor that takes lapses is active, as the
-        tiling manifest is only resolved for one that takes manifests. Opening
-        the lapse reads the picked item's attributes and lists its siblings;
-        no sibling is opened. A file that is not a lapse -- a single recording,
-        a tiling tile -- returns None and opens as the image it is, with the
-        reason logged, so choosing the reconstructor never makes a file
-        unopenable.
-
-        The lapse is the one of the item picked: ``dataset``, or the path
-        picked inside the container (``lapse.zarr/scan4/Camera``). Where only
-        the file was picked and it holds more than one lapse, returns
-        ``_PICK_A_LAPSE_ITEM`` and the caller asks which item, rather than
-        opening the first lapse and leaving the others unreachable.
-        """
+    def _timeLapseDataObj(self, source, dataset=None):
+        """Resolve a logical lapse without routing it to Current data."""
         if dataset is None:
             dataset = _picked_dataset(source)
         try:
@@ -527,7 +628,181 @@ class FileIOController(ImProcessWidgetController):
             originalPath=source.original_path,
         )
         self._logger.info(index.describe())
+        return data_obj
+
+    def _loadTimeLapseAsCurrent(self, source, dataset=None):
+        """Open the whole lapse ``source`` belongs to, or return None."""
+        data_obj = self._timeLapseDataObj(source, dataset)
+        if data_obj in (None, _PICK_A_LAPSE_ITEM):
+            return data_obj
         return _route_as_current(self, data_obj)
+
+    @staticmethod
+    def _formatBytes(value) -> str:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return ""
+        amount = float(max(0, value))
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if amount < 1024.0 or unit == "TB":
+                if unit == "B":
+                    return f"{int(amount)} {unit}"
+                return f"{amount:.1f} {unit}" if amount < 10 else f"{amount:.0f} {unit}"
+            amount /= 1024.0
+        return ""
+
+    def _loadedDataDescription(self, data_obj) -> tuple[str, str]:
+        """Describe a catalog entry without opening an otherwise-idle source.
+
+        Session already performs its richer catalog inspection off the GUI
+        thread. Quick Load must stay lightweight too: ordinary entries are
+        enriched only after they are actually opened as Current data.
+        """
+        if getattr(data_obj, 'sourceKind', 'image') == TIME_LAPSE_SOURCE_KIND:
+            index = getattr(data_obj, 'sourceMetadata', None)
+            count = (
+                int(getattr(index, 'planned_count', 0) or 0)
+                if index is not None else 0
+            )
+            shape = (
+                tuple(getattr(index, 'anchor_shape', ()) or ())
+                if index is not None else ()
+            )
+            spatial = f"{max(2, len(shape) - 1)}D" if shape else "Time-lapse"
+            acquisition = f"{spatial} · T={count}" if count else spatial
+            tooltip = (
+                index.describe()
+                if index is not None and hasattr(index, 'describe')
+                else acquisition
+            )
+            return acquisition, str(tooltip)
+
+        if not bool(getattr(data_obj, 'sourceReady', False)):
+            return "", ""
+        try:
+            handle = data_obj.data_handle
+            shape = tuple(int(x) for x in getattr(handle, 'shape', ()) or ())
+            labels = tuple(
+                str(x) for x in (getattr(data_obj, 'axis_labels', ()) or ())
+            )
+            nbytes = data_obj.decodedBytes()
+        except Exception:
+            shape, labels, nbytes = (), (), None
+        spatial = ""
+        if labels:
+            spatial_labels = [
+                label.upper()
+                for label in labels
+                if label.upper() in {"X", "Y", "Z"}
+            ]
+            spatial = f"{len(spatial_labels)}D" if spatial_labels else ""
+        if not spatial and shape:
+            spatial = f"{min(3, max(2, len(shape)))}D"
+        bits = [bit for bit in (spatial, self._formatBytes(nbytes)) if bit]
+        acquisition = " · ".join(bits)
+        tooltip = f"Shape: {shape}" if shape else ""
+        return acquisition, tooltip
+
+    def _matchingSessionDataset(self, data_obj):
+        controller = getattr(self._main, 'processingSessionController', None)
+        session = getattr(controller, 'session', None) if controller is not None else None
+        if session is None:
+            return None
+        path = getattr(data_obj, 'dataPath', None)
+        dataset_name = getattr(data_obj, 'datasetName', None)
+        for dataset in session.datasets:
+            if dataset.matches_source(path, dataset_name):
+                return dataset
+        return None
+
+    def _registerLoadedDataObj(self, data_obj):
+        match = self._matchingSessionDataset(data_obj)
+        if match is not None:
+            return data_obj, match
+        for existing in self._loadedDataObjs:
+            try:
+                same = data_obj.describesSameAs(existing)
+            except Exception:
+                same = False
+            if same:
+                return existing, None
+        self._loadedDataObjs.append(data_obj)
+        acquisition, tooltip = self._loadedDataDescription(data_obj)
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        if frame is not None:
+            frame.addOrUpdateDataObj(
+                data_obj, acquisition=acquisition, status='Loaded', tooltip=tooltip
+            )
+        return data_obj, None
+
+    def _addDataObjToWorkingSet(self, data_obj) -> None:
+        if getattr(data_obj, 'sourceKind', 'image') != 'image':
+            return
+        self.multiDataFrameController.addDataObj(data_obj)
+
+    def _routeCatalogDataObj(
+        self, data_obj, *, prefer_as_current: bool, add_to_multidata: bool
+    ) -> str:
+        data_obj, session_dataset = self._registerLoadedDataObj(data_obj)
+        if add_to_multidata:
+            if session_dataset is not None:
+                controller = getattr(self._main, 'processingSessionController', None)
+                helper = getattr(controller, '_multidata_source', None)
+                source = helper(
+                    session_dataset.primary_path, session_dataset.primary_dataset
+                ) if callable(helper) else None
+                if source is not None:
+                    path, dataset_name = source
+                    self.multiDataFrameController.makeAndAddDataObj(
+                        os.path.basename(path) or path, dataset_name, path=path
+                    )
+            else:
+                self._addDataObjToWorkingSet(data_obj)
+        if prefer_as_current:
+            if session_dataset is not None:
+                controller = getattr(self._main, 'processingSessionController', None)
+                if controller is not None:
+                    controller._widget.selectDataset(session_dataset.id)
+            return self.setLoadedAsCurrent(data_obj)
+        return 'multidata' if add_to_multidata else 'loaded'
+
+    def setLoadedAsCurrent(self, data_obj) -> str:
+        if data_obj is None:
+            return 'empty'
+        if getattr(data_obj, 'sourceKind', 'image') == 'image':
+            if self._main._currentDataObj is not data_obj:
+                current = self._main._currentDataObj
+                if current is not None:
+                    current.checkAndUnloadData()
+                self._main._currentDataObj = data_obj
+            data_obj.checkAndLoadData()
+            ready = data_obj.dataLoaded
+        else:
+            current = self._main._currentDataObj
+            if current is not None and current is not data_obj:
+                current.checkAndUnloadData()
+            self._main._currentDataObj = data_obj
+            ready = bool(getattr(data_obj, 'sourceReady', False))
+        if ready:
+            self._commChannel.sigCurrentDataChanged.emit(data_obj)
+            self._widget.raiseCurrentDataDock()
+            return 'current'
+        return 'empty'
+
+    def _currentDataChanged(self, data_obj=None) -> None:
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        if frame is None:
+            return
+        if data_obj in self._loadedDataObjs:
+            acquisition, tooltip = self._loadedDataDescription(data_obj)
+            frame.addOrUpdateDataObj(
+                data_obj,
+                acquisition=acquisition,
+                status='Loaded',
+                tooltip=tooltip,
+            )
+        frame.setCurrentDataObj(data_obj)
 
     def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
