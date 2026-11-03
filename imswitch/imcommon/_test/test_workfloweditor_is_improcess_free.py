@@ -7,10 +7,15 @@ boundary's business."""
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 _FORBIDDEN = ("imswitch.improcess", "imswitch.imcontrol", "napari")
+
+#: The checkout this test file is in: the probe runs there, so it imports
+#: this ``imswitch`` and not whichever one the environment has installed.
+_REPO = Path(__file__).resolve().parents[3]
 
 _PROBE = """
 import json, sys
@@ -23,8 +28,8 @@ print(json.dumps(loaded))
 
 def _imports_of(module, forbidden):
     completed = subprocess.run(
-        [sys.executable, "-I", "-c", _PROBE.format(module=module, forbidden=forbidden)],
-        capture_output=True, text=True, timeout=120,
+        [sys.executable, "-E", "-s", "-c", _PROBE.format(module=module, forbidden=forbidden)],
+        capture_output=True, text=True, timeout=120, cwd=str(_REPO),
     )
     assert completed.returncode == 0, completed.stderr[-3000:]
     return json.loads(completed.stdout.strip().splitlines()[-1])
@@ -35,8 +40,10 @@ def _imports_of(module, forbidden):
     "imswitch.imcommon.model.param_spec",
     "imswitch.imcommon.model.workflow.steps",
     "imswitch.imcommon.model.workflow.sources",
+    "imswitch.imcommon.model.workflow.prepare",
     "imswitch.imcommon.model.workfloweditor",
     "imswitch.imcommon.model.workfloweditor.session",
+    "imswitch.imcommon.model.smartpipeline",
 ])
 def test_the_model_side_imports_no_improcess(module):
     assert _imports_of(module, _FORBIDDEN) == []

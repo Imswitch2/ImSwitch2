@@ -599,9 +599,10 @@ def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
 
     A Source produces a recording; a reconstruction or a processor what it
     declares (a processor's ``output_spec`` is told its inputs' kinds); an
-    unknown plugin, or one that declares nothing, ``"unknown"``. Save steps
-    produce nothing and are left out. Never raises: a plugin whose
-    ``output_spec`` fails counts as ``"unknown"``.
+    unknown plugin, or one that declares nothing, ``"unknown"``; a registered
+    step kind what its ``declared_kind(kinds)`` says. Save steps produce
+    nothing and are left out. Never raises: a plugin whose ``output_spec``
+    fails counts as ``"unknown"``.
     """
     kinds: dict[str, str] = {}
     for step in workflow.steps:
@@ -620,6 +621,16 @@ def declared_kinds(workflow: Workflow, registry) -> dict[str, str]:
                 inputs = tuple(kinds.get(ref.step, UNKNOWN_KIND) for ref in step.inputs)
                 try:
                     kind = call_output_spec(plugin, {**_defaults(plugin), **step.params}, inputs).kind
+                except Exception:
+                    kind = UNKNOWN_KIND
+        elif not isinstance(step, (Reconstruct, Consolidate, Process)):
+            # A registered kind says what it makes, given what its inputs
+            # carry so far (``declared_kind(kinds)``); one that says nothing
+            # is unknown.
+            declare = getattr(step, "declared_kind", None)
+            if callable(declare):
+                try:
+                    kind = declare(dict(kinds))
                 except Exception:
                     kind = UNKNOWN_KIND
         kinds[step.id] = str(kind or UNKNOWN_KIND)

@@ -43,6 +43,10 @@ class PointsResult(PointsTableResult):
         coords = np.asarray(coordinates, dtype=np.float64)
         if coords.ndim == 1 and coords.size in (2, 3):
             coords = coords.reshape(1, -1)  # one point, given flat
+        if coords.ndim == 1 and coords.size == 0:
+            # No detection is a normal outcome, not an error: an empty list
+            # is an empty set of 2-D points (an empty (0, 3) stays as given).
+            coords = coords.reshape(0, 2)
         if coords.ndim != 2 or coords.shape[1] not in (2, 3):
             raise ValueError(
                 f"points are (N, 2) or (N, 3) coordinates, got shape {coords.shape}"

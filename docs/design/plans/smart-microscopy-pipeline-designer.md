@@ -1,7 +1,7 @@
 # Smart Microscopy Pipeline Designer
 
-Status: **Accepted 2026-11-02** — all five open decisions in §9 taken as proposed. Phase 0 implemented on `feat/workflow-model-open`, Phase E on `feat/workflow-editor-imcommon` (stacked); next: Phase 1 (document + engine, offline).
-Branch: none yet. Related: `improcess-workflow-editor-2.md`,
+Status: **Accepted 2026-11-02; revised 2026-11-03 after an external review** (§11: execution and action contracts tightened, the coordinate contract pulled into the offline phase, v1 control flow made explicit). Phase 0 implemented on `feat/workflow-model-open`, Phase E on `feat/workflow-editor-imcommon`, Phase 1 on `feat/smart-pipeline-phase1` (stacked, and merged with workflow schema 2); next: Phase 2 (live run).
+Branch: `feat/smart-pipeline-phase1`. Related: `improcess-workflow-editor-2.md`,
 `smart-microscopy-mode-switching.md`, `tiled-target-timelapse-smart-events.md`,
 `etsted-2-0.md`, `etmonalisa-2-0.md`, `scanner-calibration-widget.md`.
 
@@ -169,6 +169,56 @@ a `frame` tag and the source frame index), `value` (scalar with unit),
 - **Never per frame:** mode roles, laser power, reservations. Those are arm /
   action / stop events — the smart-mode plan's rule, kept.
 
+### 3.2a v1 control flow, as implemented in Phase 1
+
+The review (§11, finding 4) asked for the graph's semantics to be written
+down before anything moved. v1 is: **one source, a processing DAG, one
+sequential action chain, sinks anywhere.**
+
+- A tick runs the steps in file order. A step whose input is missing — a
+  gate upstream did not open, or the step that made it failed — is
+  *suppressed* for the tick; a processing failure is logged and the tick
+  goes on (overlays keep drawing). A gate always emits its `fired` event,
+  so a sink on it logs the "no" ticks too.
+- The **action chain** is the action steps in file order. The first one whose
+  inputs are there starts and the tick ends; the pipeline is *busy* until its
+  completion settles, then the next action starts with the values the tick
+  had when the chain started (an action may read the `done` event of the
+  one before it), and so on. While busy, ticks still run their processing and
+  sinks, a `busy` gate closes, and an action that would start is counted as
+  *dropped-busy*. A failed, cancelled, timed-out or refused action **stops the
+  pipeline**: failure enters cleanup, never the next tick.
+- **Completion contract** (finding 2): a started action returns a completion
+  with `done` (outcome final: ok / failed / cancelled / timeout), `ended`
+  (nothing still executing on the hardware), `wait`, `abort()` (asks, and
+  says whether it can) and the run *epoch* it was started in. Stop aborts the
+  pending completion and drains, bounded by a cleanup budget; an action that
+  did not end is reported in the summary as `unfinished_action` (Phase 2
+  keeps its devices reserved, the control executor's quarantine). A completion
+  from an earlier arm is ignored. Per-step `timeout_s` is a timeout.
+- **Freshness** (finding 6): a `Frame` envelope carries the detector, a
+  sequence number, a timestamp, the exposure and the pixel grid
+  (`FrameIdentity`: shape, binning, ROI offset, axis order). Ingress is a
+  one-slot *coalescing inbox* — latest wins, duplicates and late sequences
+  refused, a maximum age, drops counted — that the producer never blocks on
+  and never runs a step in. After a chain completes, frames with a sequence
+  not above the last one seen are stale and dropped. A frame whose grid
+  differs from the one the pipeline was armed on stops the pipeline.
+- **Run modes** (finding 5), one effects table (`MODE_EFFECTS`): *Visualize*
+  never dispatches (actions logged as skipped, the chain continues at once),
+  applies no roles, reserves nothing; *Validate* checks every action — its
+  catalogue entry, parameters, the coordinate contract — and logs it as
+  "would …", dispatching nothing; *Experiment* dispatches. Outside Visualize a
+  pipeline with hardware actions must name its `scouting` and `idle`
+  roles or it does not arm. The generic `call-api` action is **dropped from
+  v1**; `run-script` needs an explicit resource and lifecycle contract before
+  it exists.
+- **Clock and state** (finding 7): gates keep their clocks on the engine's
+  injectable clock; arming resets every step's state, the gate counters and
+  the chain; a replay source stamps `t = index × interval`, so a replay is
+  deterministic and the ImProcess editor's cached partial runs are not what a
+  pipeline replay is. An empty set of points is a normal tick.
+
 ### 3.3 Offline first
 
 Because `source: replay` is an ImProcess `Source`, a pipeline opens in the
@@ -204,7 +254,18 @@ inputs. Everything in this list exists today; nothing new on the hardware side.
 
 ## 5. The transform slot
 
-Defined here, implemented by you. A protocol in `imcommon`:
+Defined here, implemented by you. **The coordinate contract landed in Phase 1
+(finding 3)**, not Phase 4: `imcommon.model.smartpipeline.frames` has the
+frame tags (`detector:Camera`, `stage:XYStage`, `scanner:galvo`), the
+`FrameIdentity` that makes a detector tag a coordinate system (shape,
+binning, offset, axis order), and `check_points` — the check every action
+runs at dispatch, on Python-produced values too: coordinates present, 2 or 3
+columns, finite, the frame tag *exactly* the one the action takes, bounds
+when known, the grid the one armed on. `transforms.py` has the protocol,
+`identity` and `scale-flip` (pixel size, origin, swap, invert, offset, and a
+`relative` flag that makes the result a displacement rather than a
+position); the EtSTED polynomial wrapper and calibration files remain Phase
+4. The protocol as planned:
 
 ```python
 class CoordinateTransform(Protocol):
@@ -296,11 +357,11 @@ without a `scouting`/`idle` pair it arms only in Visualize.
 | Phase | Deliverable | Where | Done when |
 |---|---|---|---|
 | **0 — Open the workflow model** (implemented 2026-11-02, `feat/workflow-model-open` 067889bc) | step-type registry instead of `_STEP_TYPES`; kinds `points` / `value` / `event`; Python step emits them + `state`; `threshold`, `regionprops`, `pick` processors | ImProcess | an ImProcess workflow thresholds a recording and shows a points table; existing workflow files load unchanged |
-| **1 — Document + engine, offline** | `SmartPipelineDocument`, `Engine` with mock ports, replay source, gates, event log, run modes; tests on a mock recording | imcommon / imcontrol model | a pipeline replays a recording and logs "would move to (x, y)" per detected event |
-| **2 — Live run in ImControl** | live source (lease + bounded queue + worker), `ActionCatalog` over the API, reservation/preflight/roles, `SmartPipeline` panel (Choose / Arm / Stop / mode / status / log) | imcontrol | on `example_mock.json`: threshold → centroid → `setPositioner` moves the mock stage; Stop and app close leave hardware idle |
+| **1 — Document + engine, offline** (implemented 2026-11-03, `feat/smart-pipeline-phase1`) | `imcommon.model.smartpipeline` (step kinds `live`/`transform`/`gate`/`action`/`sink` in the registry, `SmartPipelineDocument`, `validate_pipeline`, frames and the coordinate contract, `identity`/`scale-flip`, `ActionSpec`/`ActionCatalog`); `imcontrol.model.smartpipeline` (`Engine`, ports, `CoalescingInbox`, `SimpleCompletion`, `EventLog`, mocks); `improcess.workflows.smartpipeline` (`ProcessorStepRunner`, `RecordingFrameSource`) | imcommon / imcontrol model / improcess | `test_smartpipeline_replay.py`: a recording replays through threshold → regionprops → pick → gate → scale-flip → `move-to` and logs "would move-to XYStage to (y, x)" per detected cell; Experiment mode moves the mock stage |
+| **2 — Live run in ImControl** | live source (`EVENT_STREAM` lease → `CoalescingInbox` → one worker), **owner-aware action adapters** (finding 1: each adapter carries the pipeline's reservation token into the manager-level call, declares completion / failure / timeout / abort / ended, and what it reserves; forms generated from the API signatures, execution curated), reservation/preflight/roles, `SmartPipeline` panel (Choose / Arm / Stop / mode / status / ticks-and-drops / log) | imcontrol | on `example_mock.json`: threshold → centroid → `move-to` moves the mock stage; Stop and app close leave hardware idle; a reserved device refuses the GUI while armed |
 | **E — Editor to imcommon** (implemented 2026-11-02, `feat/workflow-editor-imcommon`, stacked on Phase 0) | the split in §6; ImProcess re-exports; no behaviour change | imcommon / ImProcess | every ImProcess workflow-editor test passes unchanged against the new paths; `imswitch.improcess` is not imported by `imcommon` |
 | **3 — Designer** | editor opened from the panel with the pipeline catalog and host; overlay sink on the live view; recipes "threshold → move", "Et-style triggered scan" | shared / imcontrol | design, dry-run on a recording, arm live, without leaving the GUI |
-| **4 — Transform slot** | protocol, `identity`, `scale-flip`, Et polynomial wrapper, frame-tag validation, calibration files | imcommon / imcontrol | a pipeline with a camera→stage transform arms; one without is refused with the reason |
+| **4 — Transform slot** | Et polynomial wrapper, calibration files under `<ImSwitchConfig>/calibrations/`, the detector's real `FrameIdentity` from the camera (ROI, binning), "save as calibration" at the end of the calibration procedures (the protocol, `identity`, `scale-flip` and frame-tag validation landed in Phase 1) | imcommon / imcontrol | a pipeline with a camera→stage transform arms; one without is refused with the reason |
 | **5 — Et on the engine** | EtSTED recipe = source → Et-function adapter → polynomial → busy gate → `run-scan` with roles; behind a rollout flag like `smartMicroscopyModeSwitchingEnabled` | imcontrol | EtSTED's Validate mode produces the same event log as the legacy controller on the same recording; rig validation pending |
 
 Phases 0, 1 and E are independent of each other; 3 needs all three.
@@ -321,7 +382,18 @@ scope.
    target frames match (convenient)? Proposed: strict, with `identity` one
    click away.
 5. **Decided: run EtSTED on the engine behind the flag.** Scope of Phase 5: recipe only, or actually run EtSTED on the engine behind
-   the flag.
+   the flag. The review suggests keeping the recipe/parity work apart from
+   enabling the engine on a rig: two steps inside Phase 5.
+6. **Decided (review): hand-written action adapters, generated forms.** The
+   catalogue's *forms* come from the `@APIExport` signatures; the *execution*
+   of each action is a curated adapter with an explicit resource and
+   lifecycle contract (3.2a). No generic `call-api` in v1.
+7. **Kept strict after the review.** The reviewer favours an implicit
+   identity when the complete coordinate frames match; the frames now *are*
+   complete (tag plus `FrameIdentity`), so the engine could allow it. Kept
+   strict for v1: a `transform` step is the one place a reader of a pipeline
+   sees that a coordinate changes hands. Revisit when the designer (Phase 3)
+   can add the identity step itself.
 
 ## 10. Main risks
 
@@ -335,3 +407,21 @@ scope.
   that drifts. Hence Phase 0 opens the *existing* model instead of copying it.
 - **Safety of generated actions.** Allow-list plus hardware-critical flags plus
   Validate mode; still, the first rig run of any new pipeline is Validate.
+
+## 11. Review record
+
+External review of the accepted plan, 2026-11-03 (seven findings, in the
+reviewer's priority order), and what Phase 1 did about each:
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Reservations would block the pipeline's own actions: `setPositioner` reaches the manager without a token, `reserve()` takes waveform outputs by default, scan admission carries no token | Phase 2's scope is now *owner-aware action adapters* (phase table), designed before the catalogue is generated; each adapter carries the reservation and declares what it reserves. Nothing in Phase 1 calls hardware. |
+| 2 | Completion, cancellation and hardware stopping are different contracts; `autoFocus` returns `None`, `ScanRunHandle` cannot cancel | The completion contract in 3.2a: `done`, `ended`, `abort()`, timeout, epoch; stop drains bounded and reports an action that did not end. Tested with a completion that is cancelled but not ended. |
+| 3 | Coordinate validation must precede the first live movement; `detector:Camera` is not a coordinate identity; displacement vs. position | Frames and `check_points` in Phase 1 (§5); `FrameIdentity` on every frame, refused at tick when it changes; `scale-flip` has `relative`; every dispatch checks Python-produced values too. Phase 2 moves nothing that did not pass through this. |
+| 4 | Control-flow semantics undefined | 3.2a: one source, a DAG, one sequential action chain; suppression; failure enters cleanup; the engine owns the loop. |
+| 5 | Validate mode and unrestricted actions weaken the guarantees; `applyRole` changes hardware; `call-api` and `run-script` have unknown resource use | `MODE_EFFECTS` table; Validate applies no roles and dispatches nothing; `call-api` dropped from v1; `run-script` deferred until it has a contract (decision 6). |
+| 6 | The frame queue needs a freshness contract; `sigUpdateImage` has no sequence or exposure; `grab_fresh_frame` is not unconditional | `Frame` envelope and `CoalescingInbox` in Phase 1 (duplicates, late sequences, max age, replaced frames all counted); stale-after-chain rule. Phase 2 stamps sequence and exposure at the lease and refines the boundary with the completion time. |
+| 7 | Editor reuse needs step descriptors; replay needs a clock and a reset policy; empty point sets were refused | Step kinds declare `ports` and `declared_kind(kinds)` and the schema's `declared_kinds` asks them (the inspector's class dispatch is Phase 3's descriptor work); the engine clock is injectable, arm resets, the replay source stamps simulated time; `PointsResult` accepts an empty set and `regionprops`/`pick` return one. |
+
+The reviewer's preferences on the open decisions are in §9 (6 and 7).
+
