@@ -6,7 +6,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from imswitch.imcommon.framework import Signal, FrameworkUtils
 from imswitch.imcommon.model import (
-    APIExport, cancellableSleep, checkpoint, generateAPI, initLogger,
+    APIExport, OperationCancelled, cancellableSleep, checkpoint, generateAPI, initLogger,
 )
 
 
@@ -371,10 +371,10 @@ class _Actions:
 class _Restoring:
     """A ``with`` block that applies something on entry and restores on
     exit. ``restore()`` returns the steps to take, ``(what, callable)``; each
-    runs even when an earlier one failed. When the block itself raised (or
-    was stopped), a failed restore is logged and the block's exception goes
-    on; otherwise a failed restore raises RuntimeError naming what was not
-    put back."""
+    runs even when an earlier one failed, or the script's cleanup time ran
+    out. When the block itself raised (or was stopped), a failed restore is
+    logged and the block's exception goes on; otherwise a failed restore
+    raises RuntimeError naming what was not put back."""
 
     def __init__(self, apply, restore, what, logger):
         self._apply, self._restore, self._what, self._logger = apply, restore, what, logger
@@ -392,24 +392,32 @@ class _Restoring:
         return False
 
     def _restoreAll(self, *, raised):
+        # A Stop pressed while the block was running but not yet noticed
+        # would be delivered by the first restore call and skip the rest:
+        # deliver it here, restore in the cleanup window, then stop.
+        stopped = None
+        try:
+            checkpoint()
+        except OperationCancelled as cancelled:
+            stopped, raised = cancelled, True
         failed = []
         try:
             steps = self._restore()
-        except Exception as error:
+        except (Exception, OperationCancelled) as error:
             steps, failed = [], [(self._what, error)]
         for what, step in steps:
             try:
                 step()
-            except Exception as error:
+            except (Exception, OperationCancelled) as error:
                 failed.append((what, error))
-        if not failed:
-            return
-        message = (f'Could not put back {self._what}: '
-                   + '; '.join(f'{what} ({error})' for what, error in failed))
-        if raised:
+        if failed:
+            message = (f'Could not put back {self._what}: '
+                       + '; '.join(f'{what} ({error})' for what, error in failed))
+            if not raised:
+                raise RuntimeError(message) from failed[0][1]
             self._logger.error(message)
-        else:
-            raise RuntimeError(message) from failed[0][1]
+        if stopped is not None:
+            raise stopped
 
 
 def getActionsScope(otherScope, scriptPath=None):

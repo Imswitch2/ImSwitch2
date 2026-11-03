@@ -11,7 +11,7 @@ claude/monalisa-reconstruction-math-af9btj   # PR #69: MoNaLISA XZ/XYZ, fast Gau
                                    #   (the worker adds monalisa:spot_fwhm_nm after main's build_recording_attrs;
                                    #    AUTO_SATURATED_PERCENT comes from improcess.model.contrast (fiji's windows);
                                    #    the multi-data column: relocalize box, buttons, live-recon's memory policy)
-feat/imcontrol-live-recon          # live MoNaLISA recon in ImControl, bleach compensation; carries #71
+feat/imcontrol-live-recon          # live MoNaLISA recon in ImControl, bleach compensation; carried #71 (on main since 2026-11-03)
                                    #   (its recordScanToMemory/recordFramesToMemory replace scan-engines' older one)
 feat/psf-bead-analysis             # PR #79: bead PSF measurement, data lists; merged again 2026-11-03 for the
                                    #   output_kind declarations (any, table without average_psf); changelog kept dev's
@@ -23,7 +23,6 @@ feat/config-editor-improcess       # ImProcess + System sections in Config Studi
                                    #    scanDesigner/TTLCycleDesigner optional for the Expert panel)
 feat/micromanager-bridge           # pymmcore device bridge
 feat/improcess-workflow-editor-2   # after PR #81: save to Windows shares without hard links, schema 2 design
-fix/frc-pixel-size                 # FRC takes the pixel size from the data; PR to open
 smart-pipeline                     # smart microscopy pipeline designer, Phases 0-5 (point/value/event results,
                                    #   editor and schema in imcommon, offline engine, SmartPipeline panel, designer,
                                    #   calibrations, run-scan); carries main 0.4.0 (#85, #86); PR to open

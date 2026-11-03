@@ -158,74 +158,6 @@ def test_two_image_frc_across_results_rejects_mismatched_sizes():
     assert "64x64" in reason and "32x32" in reason
 
 
-def _calibrated(name="cal", scales=(0.05, 0.05), unit="um"):
-    noisy = _spot_image() + np.random.default_rng(0).normal(0, 0.05, (64, 64))
-    return MinimalResult(name=name, data=noisy.astype(np.float32), axis_labels=["Y", "X"],
-                         axis_scales=list(scales), scale_unit=unit)
-
-
-def _single(result, **params):
-    return FRCProcessor().apply(result, {**FRCProcessor.default_params(), **params}).analysis
-
-
-def test_frc_takes_the_pixel_size_from_the_metadata():
-    calibrated = _single(_calibrated())
-    in_pixels = _single(_calibrated(), resolution_unit="px")
-
-    assert calibrated.pixel_size == pytest.approx(50.0)
-    assert calibrated.resolution_unit == "nm"
-    assert calibrated.metadata["pixel_size_from"] == "metadata"
-    assert np.isfinite(in_pixels.resolution)
-    assert calibrated.resolution == pytest.approx(in_pixels.resolution * 50.0)
-
-
-def test_frc_reports_micrometres_when_asked():
-    analysis = _single(_calibrated(), resolution_unit="um")
-
-    assert analysis.pixel_size == pytest.approx(0.05)
-    assert analysis.frequency_unit == "cycles/um"
-
-
-def test_a_set_pixel_size_wins_over_the_metadata():
-    analysis = _single(_calibrated(), pixel_size=20.0)
-
-    assert analysis.pixel_size == 20.0
-    assert analysis.metadata["pixel_size_from"] == "parameter"
-
-
-def test_uncalibrated_data_is_analysed_in_pixels_and_says_so():
-    analysis = _single(_calibrated(unit="px", scales=(1.0, 1.0)))
-
-    assert analysis.pixel_size == 1.0
-    assert analysis.resolution_unit == "px"
-    assert analysis.metadata["pixel_size_from"] == "none"
-
-
-def test_non_square_pixels_need_a_set_pixel_size():
-    anisotropic = _calibrated(scales=(0.1, 0.05))
-
-    with pytest.raises(ValueError, match="non-square"):
-        _single(anisotropic)
-    assert _single(anisotropic, pixel_size=50.0).pixel_size == 50.0
-
-
-def test_two_inputs_on_different_pixel_grids_are_refused():
-    first, second = _calibrated("a"), _calibrated("b", scales=(0.1, 0.1))
-
-    with pytest.raises(ValueError, match="one pixel grid"):
-        FRCProcessor().apply(first, {**FRCProcessor.default_params(), "mode": "two-image",
-                                     "results": [first, second]})
-
-
-def test_the_results_row_names_the_pixel_size_used():
-    result = FRCProcessor().apply(_calibrated(), FRCProcessor.default_params())
-
-    (row,) = result.table_records()
-    assert row["pixel_size"] == pytest.approx(50.0)
-    assert row["pixel_size_from"] == "metadata"
-    assert row["resolution_unit"] == "nm"
-
-
 def test_frc_result_saves_hdf5(tmp_path):
     analysis = frc_two_image(_spot_image(), _spot_image(), window="hann")
     result = FRCResult("frc", analysis, params={"mode": "test"})
@@ -237,3 +169,91 @@ def test_frc_result_saves_hdf5(tmp_path):
         assert {"frequency", "frc", "threshold"}.issubset(h5.keys())
         assert h5.attrs["mode"] == "test"
         assert h5.attrs["resolution_unit"] == "px"
+
+
+def _noisy_spots(seed=0):
+    rng = np.random.default_rng(seed)
+    return (_spot_image() + 0.05 * rng.random((64, 64))).astype(np.float32)
+
+
+def _calibrated(name="cal", scale=65.0, unit="nm", data=None, scales=None):
+    data = _noisy_spots() if data is None else data
+    return MinimalResult(
+        name=name,
+        data=data,
+        axis_labels=["Y", "X"],
+        axis_scales=list(scales or (scale, scale)),
+        scale_unit=unit,
+    )
+
+
+def _frc(result, **params):
+    return FRCProcessor().apply(result, {**FRCProcessor.default_params(), **params}).analysis
+
+
+def test_frc_defaults_take_the_pixel_size_and_unit_from_the_image():
+    in_px = _frc(MinimalResult(name="raw", data=_noisy_spots(), axis_labels=["Y", "X"]))
+    in_nm = _frc(_calibrated(scale=65.0, unit="nm"))
+
+    assert (in_px.pixel_size, in_px.resolution_unit) == (1.0, "px")
+    assert (in_nm.pixel_size, in_nm.resolution_unit) == (65.0, "nm")
+    assert in_nm.frequency_unit == "cycles/nm"
+    assert np.isfinite(in_px.resolution)
+    assert in_nm.resolution == pytest.approx(in_px.resolution * 65.0)
+
+
+def test_frc_converts_the_image_calibration_to_the_chosen_unit():
+    image_unit = _frc(_calibrated(scale=0.065, unit="µm"))
+    in_nm = _frc(_calibrated(scale=0.065, unit="µm"), resolution_unit="nm")
+
+    assert (image_unit.pixel_size, image_unit.resolution_unit) == (0.065, "um")
+    assert in_nm.pixel_size == pytest.approx(65.0)
+    assert in_nm.resolution == pytest.approx(image_unit.resolution * 1000.0)
+
+
+def test_frc_explicit_pixel_size_and_unit_win_over_the_calibration():
+    explicit = _frc(_calibrated(scale=0.065, unit="um"), pixel_size=50.0, resolution_unit="nm")
+    in_px = _frc(_calibrated(scale=65.0, unit="nm"), resolution_unit="px")
+    in_image_unit = _frc(_calibrated(scale=65.0, unit="nm"), pixel_size=80.0)
+
+    assert (explicit.pixel_size, explicit.resolution_unit) == (50.0, "nm")
+    assert (in_px.pixel_size, in_px.resolution_unit) == (1.0, "px")
+    assert (in_image_unit.pixel_size, in_image_unit.resolution_unit) == (80.0, "nm")
+
+
+def test_frc_in_a_physical_unit_needs_a_pixel_size_for_an_uncalibrated_image():
+    raw = MinimalResult(name="raw", data=_noisy_spots(), axis_labels=["Y", "X"])
+
+    with pytest.raises(ValueError, match="'raw' has no physical pixel size.*set Pixel size"):
+        _frc(raw, resolution_unit="nm")
+    assert _frc(raw, pixel_size=65.0, resolution_unit="nm").pixel_size == 65.0
+
+
+def test_frc_refuses_non_square_pixels_unless_a_pixel_size_is_given():
+    rect = _calibrated(name="rect", scales=(100.0, 65.0), unit="nm")
+
+    with pytest.raises(ValueError, match="square pixels: 'rect' has 100 x 65 nm"):
+        _frc(rect)
+    assert _frc(rect, pixel_size=65.0).pixel_size == 65.0
+
+
+def test_two_image_frc_refuses_inputs_calibrated_differently():
+    first = _calibrated(name="recA", scale=65.0)
+    second = _calibrated(name="recB", scale=130.0, data=_noisy_spots(1))
+    params = {"mode": "two-image", "results": [first, second]}
+
+    with pytest.raises(ValueError, match="'recA' has 65 nm pixels but 'recB' has 130 nm"):
+        _frc(first, **params)
+    same = _frc(first, **{**params, "results": [first, _calibrated(name="recC", data=_noisy_spots(1))]})
+    assert (same.pixel_size, same.resolution_unit) == (65.0, "nm")
+
+
+def test_frc_params_recorded_before_calibration_keep_meaning_pixels():
+    processor = FRCProcessor()
+
+    assert FRCProcessor.params_version == 2
+    migrated = processor.migrate_params({"mode": "single-image"}, 1)
+    assert (migrated["pixel_size"], migrated["resolution_unit"]) == (1.0, "px")
+    explicit = {"pixel_size": 50.0, "resolution_unit": "nm"}
+    assert processor.migrate_params(explicit, 1) == explicit
+    assert processor.migrate_params({"mode": "single-image"}, 2) == {"mode": "single-image"}

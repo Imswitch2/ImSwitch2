@@ -17,7 +17,7 @@ Setup
                 scan.
   Your own microscope: as 01_run_a_scan.py, plus the Recording widget.
 
-Next: measurement/01_polarisation_map.py -- instruments and measurement
+Next: ../measurement/01_polarisation_map.py -- instruments and measurement
       runs. The workflows folder has complete acquisitions for real
       microscopes.
 """

@@ -126,7 +126,7 @@ api.imcontrol
 
    .. method:: deleteLaserPreset(name: str, context='live') -> bool
 
-      Delete the saved preset ``name`` from the setup file. Returns
+      Deletes the laser preset ``name`` from the setup file. Returns
       False when there is no such preset.
 
       Needs *Laser* in ``availableWidgets``.
@@ -528,9 +528,10 @@ api.imcontrol
 
    .. method:: loadLaserPreset(name: str, context='live') -> bool
 
-      Apply the saved preset ``name`` to the lasers (in ``context`` when
-      Live and Scan powers are separate). Returns False when there is no
-      such preset, or it is not visible in that context.
+      Applies the laser preset ``name`` and selects it in the Laser
+      widget. In separated power mode the preset goes to ``context``
+      (``'live'`` or ``'scan'``) and must be visible there; otherwise it
+      sets the live powers. Returns False when there is no such preset.
 
       Needs *Laser* in ``availableWidgets``.
 
@@ -695,9 +696,9 @@ api.imcontrol
 
    .. method:: renameLaserPreset(oldName: str, newName: str, context='live') -> bool
 
-      Rename the saved preset ``oldName`` to ``newName`` in the setup
-      file. Returns False when there is no such preset or ``newName`` is
-      empty.
+      Renames the laser preset ``oldName`` to ``newName`` in the setup
+      file; a preset already called ``newName`` is replaced. Returns False
+      when there is no preset ``oldName`` or ``newName`` is empty.
 
       Needs *Laser* in ``availableWidgets``.
 

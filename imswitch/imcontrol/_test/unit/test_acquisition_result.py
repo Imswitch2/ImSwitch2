@@ -3,6 +3,7 @@ from the recording's HDF5 bytes. The files here have the structure of the
 two real ones (dumped from the mock scan setups): a Base camera scan that
 records only its plan, and an Advanced point scan that records its layout."""
 import io
+import os
 import json
 from datetime import datetime
 
@@ -142,7 +143,7 @@ def test_several_detectors_show_and_save(tmp_path):
         ('scan: Camera', (0.15, 0.15)), ('scan: APD', (0.15, 0.15))]
 
     paths = result.save(str(tmp_path / 'out'))
-    assert sorted(p.split('/')[-1] for p in paths) == ['a_APD.hdf5', 'a_Camera.hdf5']
+    assert sorted(os.path.basename(p) for p in paths) == ['a_APD.hdf5', 'a_Camera.hdf5']
     with h5py.File(paths[0], 'r') as f:                  # every attribute kept
         assert 'recording:completion_outcome' in f[list(f)[0]]['data'].attrs
     with pytest.raises(FileExistsError):

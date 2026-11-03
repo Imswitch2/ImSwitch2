@@ -111,7 +111,7 @@ def _findings():
                             seen.add(callee)
                             frontier.append((callee, depth + 1))
                 if chain is not None:
-                    key = f'{path.relative_to(ROOT)}::{className}.{methodName}'
+                    key = f'{path.relative_to(ROOT).as_posix()}::{className}.{methodName}'
                     if key not in ALLOWED:
                         findings.append((key, chain))
     return findings

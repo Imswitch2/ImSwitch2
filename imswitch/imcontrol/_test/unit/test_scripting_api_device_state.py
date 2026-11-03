@@ -73,12 +73,15 @@ def test_rotator_names_position_and_moves():
 # --- lasers -----------------------------------------------------------------
 
 def test_laser_value_state_and_info():
-    widget = SimpleNamespace(getValue=lambda n: {'488': 12.5}[n],
+    # The widget shows the Scan setpoint (separated power mode, Scan context);
+    # getLaserValue is the Live one, which setLaserValue sets.
+    widget = SimpleNamespace(getValue=lambda n: {'488': 40.0}[n],
                              isLaserActive=lambda n: {'488': True}[n])
     laser = SimpleNamespace(wavelength=488, valueUnits='mW', valueRangeMin=0,
                             valueRangeMax=100, valueRangeStep=0.5, isBinary=False)
     ctrl = _bare(LaserController, _widget=widget,
-                 _master=SimpleNamespace(lasersManager={'488': laser}))
+                 _master=SimpleNamespace(lasersManager={'488': laser}),
+                 _commChannel=SimpleNamespace(sharedAttrs={('Laser', '488', 'Value'): 12.5}))
     assert ctrl.getLaserValue('488') == 12.5
     assert ctrl.isLaserActive('488') is True
     assert ctrl.getLaserInfo('488') == {'wavelength': 488, 'units': 'mW', 'min': 0,

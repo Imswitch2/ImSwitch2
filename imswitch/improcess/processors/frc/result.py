@@ -44,8 +44,6 @@ class FRCResult(ProcessingResult):
             "resolution_unit",
             "cutoff_frequency",
             "frequency_unit",
-            "pixel_size",
-            "pixel_size_from",
             "window",
         ]
 
@@ -61,8 +59,6 @@ class FRCResult(ProcessingResult):
                 "resolution_unit": str(analysis.resolution_unit),
                 "cutoff_frequency": float(analysis.cutoff_frequency),
                 "frequency_unit": str(analysis.frequency_unit),
-                "pixel_size": float(analysis.pixel_size),
-                "pixel_size_from": str(analysis.metadata.get("pixel_size_from", "")),
                 "window": str(self.params.get("window", "")),
             }
         ]
