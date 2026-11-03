@@ -450,3 +450,54 @@ def test_zarr_lapse_source_streams_only_requested_timepoint_range(tmp_zarr_path)
     assert chunks[-1].end == 2 * frames_per_stack
     assert int(chunks[0].data.flat[0]) >= 1000
     source.close()
+
+
+def test_zarr_nonzero_origin_scope_not_complete_between_bounded_polls(
+    tmp_zarr_path, monkeypatch,
+):
+    """Physical scan5 must not count as logical T2 before scan6/7 are read."""
+    from imswitch.improcess.live import sources
+
+    frames_per_stack = 4
+    frame_shape = (2, 3)
+    chunk_size = 2
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    for scan_idx in range(8):
+        det_group = root.create_group(f"scan{scan_idx}").create_group("CAM")
+        data = np.arange(
+            frames_per_stack * np.prod(frame_shape), dtype=np.uint16
+        ).reshape(frames_per_stack, *frame_shape) + scan_idx * 1000
+        array = ZarrStorer._create_array(
+            det_group, "data", data=data, chunks=(chunk_size, *frame_shape),
+        )
+        array.attrs["detector_name"] = "CAM"
+        array.attrs["writing"] = False
+        array.attrs["recording:frames_per_stack"] = frames_per_stack
+        array.attrs["recording:num_timepoints"] = 3 if scan_idx >= 5 else 5
+        array.attrs["recording:single_lapse_file"] = True
+        array.attrs["recording:dataset_path"] = f"/scan{scan_idx}/CAM/data"
+
+    chunk_bytes = chunk_size * np.prod(frame_shape) * np.dtype("uint16").itemsize
+    monkeypatch.setattr(sources, "LIVE_POLL_MAX_BYTES", chunk_bytes)
+    source = ZarrLapseSource(
+        detector_name="CAM", chunk_size=chunk_size,
+        timepoint_start=5, timepoint_stop=8,
+    )
+    try:
+        info = source.open(tmp_zarr_path)
+        assert info.expected_frames == 3 * frames_per_stack
+        chunks = []
+        for _ in range(6):
+            assert not source.is_complete(), "Scope ended before all 3 scan groups"
+            polled = source.poll()
+            assert len(polled) == 1
+            chunks.extend(polled)
+        assert source.is_complete()
+        assert [(chunk.start, chunk.end) for chunk in chunks] == [
+            (i, i + chunk_size) for i in range(0, 12, chunk_size)
+        ]
+        assert [int(chunk.data[0, 0, 0]) for chunk in chunks] == [
+            5000, 5012, 6000, 6012, 7000, 7012
+        ]
+    finally:
+        source.close()

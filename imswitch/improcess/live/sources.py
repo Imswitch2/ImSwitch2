@@ -1248,7 +1248,10 @@ class ZarrLapseSource(LiveSource):
                     self._frames_per_stack or self._current_array.shape[0],
                 )
                 return bool(not self._writing and self._local_cursor >= readable_length)
-        
+            # A scoped stream must not fall through to completion rules that
+            # compare physical scan-group indices with logical lapse counts.
+            return False
+
         # If we know the total expected frames, check against global cursor
         if self._num_timepoints is not None and self._frames_per_stack is not None:
             expected_total = self._num_timepoints * self._frames_per_stack
@@ -2099,7 +2102,10 @@ class Hdf5LapseSource(LiveSource):
                     self._frames_per_stack or self._current_dataset.shape[0],
                 )
                 return bool(not self._writing and self._local_cursor >= readable_length)
-        
+            # Keep the interrupted-acquisition termination behavior, but do
+            # not use unscoped physical-group completion rules for this scope.
+            return self._stopped_early_group_is_drained()
+
         # If we know the total expected frames, check against global cursor
         if self._num_timepoints is not None and self._frames_per_stack is not None:
             expected_total = self._num_timepoints * self._frames_per_stack
