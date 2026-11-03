@@ -24,9 +24,19 @@ Quick use::
 from imswitch.improcess.workflows.batch import (
     BatchReport,
     BatchRow,
+    ManifestRow,
     bindings_for_inputs,
     bindings_from_manifest,
+    rows_from_manifest,
     run_over,
+)
+from imswitch.improcess.workflows.prepare import (
+    ControlText,
+    ControlValueError,
+    PreparedRun,
+    check_recipe,
+    describe_controls,
+    prepare_run,
 )
 from imswitch.improcess.workflows.replay import (
     ReplayError,
@@ -39,6 +49,7 @@ from imswitch.improcess.workflows.runtime import bootstrap_registry, describe_re
 from imswitch.improcess.workflows.sources import SourceError, SourceSpec, open_source, parse_binding
 from imswitch.improcess.workflows.steps import (
     Consolidate,
+    Control,
     Issue,
     Process,
     Reconstruct,
@@ -54,7 +65,12 @@ __all__ = [
     "BatchReport",
     "BatchRow",
     "Consolidate",
+    "Control",
+    "ControlText",
+    "ControlValueError",
     "Issue",
+    "ManifestRow",
+    "PreparedRun",
     "Process",
     "Reconstruct",
     "Ref",
@@ -71,9 +87,13 @@ __all__ = [
     "bindings_for_inputs",
     "bindings_from_manifest",
     "bootstrap_registry",
+    "check_recipe",
+    "describe_controls",
     "describe_registry",
     "open_source",
     "parse_binding",
+    "prepare_run",
+    "rows_from_manifest",
     "run",
     "run_over",
     "validate",

@@ -11,6 +11,12 @@ decides whether a value is worth writing (it drops the defaults).
 Nullable numbers and free-form JSON are text: an empty text is ``None``,
 anything else must parse, and until it does the form says so and hands
 nothing on.
+
+A parameter a workflow control owns (schema 2) is marked with the control's
+name (``⇄ radius``); its row's reset is the control's (none when the
+control's targets have different defaults), and *Reset all to defaults*
+leaves it alone. Each row's context menu offers *Expose as control…* or
+*Stop exposing* (``sigContextAction``); the window does the rest.
 """
 
 from __future__ import annotations
@@ -40,6 +46,11 @@ class ParamForm(QtWidgets.QWidget):
     sigValueChanged = QtCore.Signal(str, object)
     #: An optional key (no default) was emptied: the step must not set it.
     sigValueCleared = QtCore.Signal(str)
+    #: A row's context menu was used: ``(key, "expose" | "unexpose")``.
+    sigContextAction = QtCore.Signal(str, str)
+
+    #: Field types a control can take (``prepare.CONTROL_FIELD_TYPES``).
+    EXPOSABLE = ("int", "float", "bool", "text", "select", "path")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,6 +62,9 @@ class ParamForm(QtWidgets.QWidget):
         self._extra: set[str] = set()
         self._problems: dict[str, str] = {}
         self._updating = False
+        #: key -> (control name, its reset value or None when it has none)
+        self._exposed: dict[str, tuple] = {}
+        self._actions = False
 
         self._empty = QtWidgets.QLabel("This step has no parameters.")
         self._empty.setEnabled(False)
@@ -60,20 +74,33 @@ class ParamForm(QtWidgets.QWidget):
         self._problem_label.hide()
         self._reset = QtWidgets.QPushButton("Reset all to defaults")
         self._reset.clicked.connect(self.reset_all)
+        self._exposed_note = QtWidgets.QLabel(
+            "Exposed parameters (⇄) keep their control's value; reset them in the Controls panel "
+            "(click the canvas background).")
+        self._exposed_note.setWordWrap(True)
+        self._exposed_note.setEnabled(False)
+        self._exposed_note.hide()
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._tree, 1)
         layout.addWidget(self._empty)
         layout.addWidget(self._problem_label)
+        layout.addWidget(self._exposed_note)
         layout.addWidget(self._reset, 0, QtCore.Qt.AlignRight)
         self.set_plugin(None, {})
 
     # -- building ---------------------------------------------------------------
 
-    def set_plugin(self, entry, values) -> None:
-        """Show ``entry``'s fields with ``values`` (missing keys at default)."""
+    def set_plugin(self, entry, values, *, exposed=None, actions: bool = False) -> None:
+        """Show ``entry``'s fields with ``values`` (missing keys at default).
+
+        ``exposed`` maps a key a control owns to ``(control, reset value or
+        None)``; ``actions`` adds the rows' *Expose as control…* menu.
+        """
         values = dict(values or {})
+        self._exposed = dict(exposed or {})
+        self._actions = bool(actions)
         self._fields = {}
         self._params = {}
         self._keys = {}
@@ -90,13 +117,36 @@ class ParamForm(QtWidgets.QWidget):
             self._root = Parameter.create(name="params", type="group", children=children)
             self._tree.setParameters(self._root, showTop=False)
             self._root.sigTreeStateChanged.connect(self._on_tree_changed)
+            for param in self._params.values():
+                param.sigContextMenu.connect(self._on_context)
         finally:
             self._updating = False
         has_fields = bool(self._fields)
         self._tree.setVisible(has_fields)
         self._empty.setVisible(not has_fields)
-        self._reset.setVisible(has_fields)
+        self._reset.setVisible(has_fields and any(key not in self._exposed for key in self._fields))
+        self._exposed_note.setVisible(bool(self._exposed))
         self._show_problems()
+
+    def exposed(self) -> dict:
+        return dict(self._exposed)
+
+    def set_reset_visible(self, visible: bool) -> None:
+        """Show or hide the *Reset all to defaults* button (a single-value form
+        has its own Reset)."""
+        self._reset.setVisible(bool(visible) and bool(self._fields))
+
+    def context_actions(self, key: str) -> dict:
+        """What a row's context menu offers (``name -> title``)."""
+        field = self._fields.get(key)
+        if field is None or key in self._extra:
+            return {}
+        return self.context_actions_for(field)
+
+    def _on_context(self, param, name) -> None:
+        key = self._keys.get(id(param))
+        if key is not None:
+            self.sigContextAction.emit(key, str(name))
 
     def _children_for(self, entry, values) -> list:
         if entry is None:
@@ -136,6 +186,16 @@ class ParamForm(QtWidgets.QWidget):
         }
         if field.help:
             opts["tip"] = field.help
+        if field.key in self._exposed:
+            control, reset = self._exposed[field.key]
+            opts["title"] = f"{field.title}  ⇄ {control}"
+            opts["tip"] = (f"Exposed as control '{control}': changing it changes every parameter the control "
+                           "sets." + (f"\n{field.help}" if field.help else ""))
+            # The row's reset is the control's: none when its targets' defaults differ.
+            opts["default"] = self._to_widget(field, reset) if reset is not None else None
+        actions = self.context_actions_for(field)
+        if actions:
+            opts["context"] = actions
         if kind in ("int", "float"):
             if field.min is not None or field.max is not None:
                 opts["limits"] = (field.min, field.max)
@@ -155,6 +215,15 @@ class ParamForm(QtWidgets.QWidget):
         elif kind == "checklist":
             opts["limits"] = list(field.options)
         return Parameter.create(**opts)
+
+    def context_actions_for(self, field: ParamField) -> dict:
+        if not self._actions:
+            return {}
+        if field.key in self._exposed:
+            return {"unexpose": f"Stop exposing (control '{self._exposed[field.key][0]}')"}
+        if field.type in self.EXPOSABLE:
+            return {"expose": "Expose as control…"}
+        return {}
 
     @staticmethod
     def _widget_kind(field: ParamField) -> str:
@@ -248,8 +317,11 @@ class ParamForm(QtWidgets.QWidget):
         param.setValue(self._to_widget(self._fields[key], value))
 
     def reset_all(self) -> None:
+        """Every field back to its default, except those a control owns
+        (they keep the control's value)."""
         for key, field in self._fields.items():
-            self.set_value(key, field.default)
+            if key not in self._exposed:
+                self.set_value(key, field.default)
 
     def problems(self) -> dict[str, str]:
         return dict(self._problems)

@@ -5,6 +5,7 @@ files on disk, the primary carries the provenance document, the document
 reads back with an equal graph, and multi-file saves are all-or-nothing.
 """
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -364,6 +365,31 @@ def test_publish_is_a_rename_within_the_directory(tmp_path, monkeypatch):
     result = DriftCorrectedResult("d", np.zeros((2, 4, 4), np.float32), ["T", "Y", "X"], np.zeros((2, 2)))
     result.save(tmp_path / "d.ome.tif", "tiff")
     assert [dst for _src, dst in seen] == ["d.ome.drift.npy", "d.ome.tif"]   # companion first, primary last
+
+
+@pytest.mark.parametrize("winerror", [1, 50])
+def test_a_windows_share_without_hard_links_falls_back_to_rename(tmp_path, monkeypatch, winerror):
+    """A network share answers ``os.link`` with WinError 1/50 (errno EINVAL)."""
+    def no_links(src, dst, *args, **kwargs):
+        exc = OSError(errno.EINVAL, "Incorrect function", str(src))
+        exc.winerror = winerror
+        raise exc
+
+    monkeypatch.setattr(os, "link", no_links)
+    result = DriftCorrectedResult("d", np.zeros((2, 4, 4), np.float32), ["T", "Y", "X"], np.zeros((2, 2)))
+    receipt = result.save(tmp_path / "d.ome.tif", "tiff")
+    assert receipt.leftovers == ()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["d.ome.drift.npy", "d.ome.tif"]
+
+
+def test_an_unrelated_einval_from_link_still_fails_the_save(tmp_path, monkeypatch):
+    def broken(src, dst, *args, **kwargs):
+        raise OSError(errno.EINVAL, "something else")
+
+    monkeypatch.setattr(os, "link", broken)
+    with pytest.raises(OSError, match="something else"):
+        _image().save(tmp_path / "x.ome.tif")
+    assert list(tmp_path.iterdir()) == []
 
 
 # --------------------------------------------------------------------------

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from collections.abc import Iterable
 
 import numpy as np
@@ -89,6 +91,25 @@ def split_result(result: ProcessingResult, axis: int, *, operation: str) -> tupl
             )
         )
     return tuple(outputs)
+
+
+#: The ports of a split whose axis the data picks (``Auto``).
+ANY_AXIS_PORTS = r"[A-Za-z]+\d+"
+
+
+def axis_port_pattern(axis) -> str:
+    """The ports a split declares for its ``axis`` parameter.
+
+    The ports are named after the data's label of the split axis
+    (:func:`split_port_keys`), and an explicit axis is matched to that label
+    exactly or ignoring case (:func:`_explicit_axis_index`); so for an
+    explicit axis the ports are that label, any case, and a number. ``Auto``
+    lets the data pick the axis: any label.
+    """
+    axis = str(axis or "Auto")
+    if axis == "Auto":
+        return ANY_AXIS_PORTS
+    return rf"(?i:{re.escape(axis)})\d+"
 
 
 def split_port_keys(outputs) -> tuple[str, ...]:

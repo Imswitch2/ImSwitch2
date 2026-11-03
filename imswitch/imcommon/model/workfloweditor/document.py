@@ -17,6 +17,13 @@ order of Source and Save steps), a loop is refused, a Save never loses its
 input, and positions live in ``metadata.editor``. ``history`` undoes and redoes
 any edit made inside ``history.edit(label)``.
 
+**Controls** (schema 2) name parameters a run may set; their value lives in
+the target steps' ``params``, always written explicitly, and the control owns
+it: editing a target's parameter sets the control (every target), resetting
+it resets the control, and bulk edits leave targets alone unless they set
+them. **Bypass** keeps a process or save step in the file but out of the run.
+The rules are in ``docs/design/plans/improcess-workflow-schema-2.md`` (8.1).
+
 Qt-free, so the same object serves a test, a command line and a window.
 """
 
@@ -35,10 +42,12 @@ from imswitch.imcommon.model.workfloweditor.commands import DocumentHistory
 from imswitch.imcommon.model.workfloweditor.graph import CycleError, ancestors, is_ordered, stable_order
 from imswitch.imcommon.model.workflow.sources import SourceSpec
 from imswitch.imcommon.model.workflow.steps import (
+    CONTROL_NAME_PATTERN,
     DEFAULT_PORT,
     DEFAULT_SAVE_TEMPLATE,
     SOURCE_PORT,
     Consolidate,
+    Control,
     Issue,
     Process,
     Reconstruct,
@@ -48,6 +57,7 @@ from imswitch.imcommon.model.workflow.steps import (
     Workflow,
     WorkflowError,
     parse_ref,
+    parse_target,
     step_from_dict,
     validate,
 )
@@ -138,6 +148,11 @@ class WorkflowDocument:
         self.notes: list[str] = []
         #: Undo/redo of edits made inside ``history.edit(label)``.
         self.history = DocumentHistory(self)
+        #: The schema of the file as last read or written (None: no file yet).
+        self._file_schema = int(getattr(self.workflow, "schema", 1) or 1) if self.path else None
+        #: Set by :meth:`save` when that save made the file schema 2: the
+        #: editor says once that it now needs this version of ImSwitch.
+        self.schema_raised = False
 
     # -- files ------------------------------------------------------------------
 
@@ -151,6 +166,9 @@ class WorkflowDocument:
             raise DocumentError("no file name to save to")
         self._prune_empty_editor_state()
         written = self.workflow.save(target)
+        schema = self.workflow.required_schema
+        self.schema_raised = schema > 1 and (self._file_schema or 1) < schema
+        self._file_schema = schema
         self.path = written
         self.dirty = False
         return written
@@ -279,6 +297,8 @@ class WorkflowDocument:
         placeholders = set(self.catalog.path_placeholders) if self.catalog is not None else None
         saves_seen: dict[tuple, Save] = {}
         for step in self.steps:
+            if getattr(step, "bypass", False):
+                continue        # it never runs: its parameters and file are not checked (plan 5.3)
             if isinstance(step, (Reconstruct, Process)):
                 entry = self.entry_for(step)
                 if entry is None:
@@ -376,6 +396,7 @@ class WorkflowDocument:
     def remove_step(self, step_id: str):
         """Remove a step. References to it are left in place and reported."""
         removed = self.steps.pop(self.index_of(step_id))
+        self._drop_targets({step_id})
         self._touch()
         return removed
 
@@ -409,6 +430,9 @@ class WorkflowDocument:
         nodes = self.workflow.metadata.get("provenance_nodes")
         if isinstance(nodes, dict) and step_id in nodes:
             nodes[new_id] = nodes.pop(step_id)
+        for control in self.workflow.controls:
+            control.targets = [f"{new_id}.{parse_target(t)[1]}" if (parse_target(t) or ("",))[0] == step_id else t
+                               for t in control.targets]
         self._touch()
 
     def _check_free_id(self, step_id: str) -> str:
@@ -436,10 +460,15 @@ class WorkflowDocument:
 
     def set_param(self, step_id: str, key: str, value) -> None:
         """Set one parameter; a value equal to the plugin's default is removed
-        instead, so ``params`` keeps holding only what differs."""
+        instead, so ``params`` keeps holding only what differs. A parameter a
+        control owns is set through the control: every target takes it."""
         step = self.step(step_id)
         if not isinstance(step, (Reconstruct, Process)):
             raise DocumentError(f"{step_id} takes no parameters")
+        control = self.control_of(step_id, key)
+        if control is not None:
+            self.set_control_value(control.name, value)
+            return
         params = dict(step.params or {})
         defaults = self.defaults_for(step_id)
         if key in defaults and _same(defaults[key], value):
@@ -450,6 +479,11 @@ class WorkflowDocument:
         self._touch()
 
     def clear_param(self, step_id: str, key: str) -> None:
+        """Back to the default; for a parameter a control owns, the control's
+        reset (refused when its targets' defaults differ)."""
+        if self.control_of(step_id, key) is not None:
+            self.reset_control(self.control_of(step_id, key).name)
+            return
         step = self.step(step_id)
         params = dict(getattr(step, "params", {}) or {})
         params.pop(key, None)
@@ -458,15 +492,35 @@ class WorkflowDocument:
         self._touch()
 
     def set_params(self, step_id: str, params: Mapping[str, Any]) -> None:
-        """Replace every parameter; defaults are dropped as in :meth:`set_param`."""
+        """Replace every parameter; defaults are dropped as in :meth:`set_param`.
+
+        A parameter a control owns keeps its control's value unless ``params``
+        gives it another, which then sets the control; two of one control's
+        parameters given different new values are refused.
+        """
         step = self.step(step_id)
         if not isinstance(step, (Reconstruct, Process)):
             raise DocumentError(f"{step_id} takes no parameters")
+        params = dict(params)
+        owned = self.exposed(step_id)
+        changes: dict[str, list] = {}
+        current = dict(step.params or {})
+        for key, name in owned.items():
+            if key in params and not _same(params[key], current.get(key, _KEEP)):
+                changes.setdefault(name, []).append(params[key])
+        for name, values in changes.items():
+            if any(not _same(values[0], other) for other in values[1:]):
+                raise DocumentError(f"two parameters of control {name!r} were given different values; "
+                                    "a control has one value")
         defaults = self.defaults_for(step_id)
+        kept = {key: current[key] for key in owned if key in current}
         step.params = {
-            key: value for key, value in dict(params).items()
-            if not (key in defaults and _same(defaults[key], value))
+            **{key: value for key, value in params.items()
+               if key not in owned and not (key in defaults and _same(defaults[key], value))},
+            **kept,
         }
+        for name, values in changes.items():
+            self.set_control_value(name, values[0])
         self._touch()
 
     def minimize_params(self) -> int:
@@ -481,8 +535,9 @@ class WorkflowDocument:
             if not isinstance(step, (Reconstruct, Process)) or not step.params:
                 continue
             defaults = self.defaults_for(step.id)
+            owned = self.exposed(step.id)      # a control's value is always written
             kept = {key: value for key, value in step.params.items()
-                    if not (key in defaults and _same(defaults[key], value))}
+                    if key in owned or not (key in defaults and _same(defaults[key], value))}
             dropped += len(step.params) - len(kept)
             step.params = kept
         if dropped:
@@ -538,6 +593,316 @@ class WorkflowDocument:
             raise DocumentError(f"{step_id} is not a process step")
         step.restriction = dict(restriction) if restriction else None
         self._touch()
+
+    # -- controls (schema 2) ----------------------------------------------------
+
+    @property
+    def controls(self) -> list[Control]:
+        return list(self.workflow.controls)
+
+    def control(self, name: str) -> Control:
+        for control in self.workflow.controls:
+            if control.name == name:
+                return control
+        raise DocumentError(f"there is no control {name!r}")
+
+    def control_of(self, step_id: str, key: str) -> Control | None:
+        """The control that owns ``step_id.key``, if one does."""
+        target = f"{step_id}.{key}"
+        for control in self.workflow.controls:
+            if target in control.targets:
+                return control
+        return None
+
+    def exposed(self, step_id: str) -> dict[str, str]:
+        """``{key: control name}`` for the parameters of ``step_id`` a control owns."""
+        found = {}
+        for control in self.workflow.controls:
+            for target in control.targets:
+                parsed = parse_target(target)
+                if parsed is not None and parsed[0] == step_id:
+                    found[parsed[1]] = control.name
+        return found
+
+    def _registry(self):
+        return self.catalog.registry if self.catalog is not None else None
+
+    def control_state(self, name: str):
+        """The control's :class:`~imswitch.imcommon.model.workflow.prepare.ControlState`:
+        its targets (active unless bypassed), combined field and value. A
+        control whose targets are all bypassed is given the field its targets
+        would have, so it stays editable (it writes their parameters)."""
+        from imswitch.imcommon.model.workflow.prepare import control_states
+
+        control = self.control(name)
+        trial = Workflow(self.workflow.name, self.workflow.steps, controls=[control])
+        states, _issues = control_states(trial, self._registry())
+        state = states.get(name)
+        if state is not None and not state.active:
+            everything, _issues = control_states(trial, self._registry(), reason_for=lambda _sid: "")
+            inactive = everything.get(name)
+            if inactive is not None:
+                inactive.targets = list(state.targets)
+                state = inactive
+        return state
+
+    def control_value(self, name: str):
+        """The value the control's active targets hold (its first target's when
+        all are bypassed); ``None`` when no target holds one."""
+        targets = [parse_target(t) for t in self.control(name).targets]
+        targets = [t for t in targets if t is not None and self.has(t[0])]
+        active = [t for t in targets if not getattr(self.step(t[0]), "bypass", False)]
+        for step_id, key in active or targets:
+            params = self.effective_params(step_id)
+            if key in params:
+                return params[key]
+        return None
+
+    def _check_control_name(self, name: str, *, renaming: str | None = None) -> str:
+        name = str(name or "").strip()
+        if not CONTROL_NAME_PATTERN.match(name):
+            raise DocumentError(f"bad control name {name!r}: use letters, digits and '_', not starting with a digit")
+        if any(c.name == name for c in self.workflow.controls if c.name != renaming):
+            raise DocumentError(f"there already is a control named {name!r}")
+        if self.has(name):
+            raise DocumentError(f"{name!r} is the id of a step; a manifest column could not tell them apart")
+        return name
+
+    def _write_target(self, target: str, value) -> None:
+        """Write ``value`` into a target's ``params``, explicitly (even when it
+        equals the default: a control's value is always written)."""
+        parsed = parse_target(target)
+        if parsed is None or not self.has(parsed[0]):
+            return
+        step = self.step(parsed[0])
+        if isinstance(step, (Reconstruct, Process)):
+            step.params = {**dict(step.params or {}), parsed[1]: value}
+
+    def _target_problems(self, name: str) -> list[str]:
+        """What the target rules (plan 4.5) say about control ``name``."""
+        from imswitch.imcommon.model.workflow.prepare import control_states
+
+        _states, issues = control_states(self.workflow, self._registry())
+        return [issue.message for issue in issues if repr(name) in issue.message]
+
+    def _guarded(self, name: str, change) -> None:
+        """Make ``change`` and keep it only when control ``name`` still obeys
+        the target rules; otherwise put everything back and refuse."""
+        controls = copy.deepcopy(self.workflow.controls)
+        params = {step.id: dict(step.params or {}) for step in self.steps if hasattr(step, "params")}
+        try:
+            change()
+            problems = self._target_problems(name)
+        except BaseException:
+            problems = None
+            self._restore_controls(controls, params)
+            raise
+        if problems:
+            self._restore_controls(controls, params)
+            raise DocumentError(problems[0])
+
+    def _restore_controls(self, controls, params) -> None:
+        self.workflow.controls = controls
+        for step in self.steps:
+            if step.id in params:
+                step.params = params[step.id]
+
+    def add_control(self, name: str, target: str, *, label: str = "", help: str = "") -> Control:
+        """Expose ``target`` (``step.param``) as a new control; its value is the
+        target's current one, written into its ``params``."""
+        name = self._check_control_name(name)
+        if parse_target(target) is None:
+            raise DocumentError(f"bad target {target!r}; expected 'step.param'")
+        owner = self._owner(target)
+        if owner is not None:
+            raise DocumentError(f"{target} is already exposed as {owner!r}")
+        step_id, key = parse_target(target)
+        if not self.has(step_id):
+            raise DocumentError(f"there is no step {step_id!r}")
+        value = self.effective_params(step_id).get(key)
+        control = Control(name, [target], label=str(label or ""), help=str(help or ""))
+
+        def change():
+            self.workflow.controls.append(control)
+            self._write_target(target, value)
+
+        self._guarded(name, change)
+        self._touch()
+        return control
+
+    def _owner(self, target: str) -> str | None:
+        for control in self.workflow.controls:
+            if target in control.targets:
+                return control.name
+        return None
+
+    def add_target(self, name: str, target: str) -> None:
+        """Add ``target`` to control ``name``: it **adopts** the control's value.
+        Refused, with the reason, when it cannot share the control's field or
+        that value does not fit it."""
+        from imswitch.imcommon.model.workflow.prepare import control_value as checked_value
+
+        control = self.control(name)
+        if parse_target(target) is None:
+            raise DocumentError(f"bad target {target!r}; expected 'step.param'")
+        owner = self._owner(target)
+        if owner == name:
+            raise DocumentError(f"{target} is already a target of {name!r}")
+        if owner is not None:
+            raise DocumentError(f"{target} is already exposed as {owner!r}")
+        value = self.control_value(name)
+
+        def change():
+            control.targets.append(target)
+            self._write_target(target, value)
+            problems = self._target_problems(name)       # can they share a field at all?
+            if problems:
+                raise DocumentError(problems[0])
+            state = self.control_state(name)
+            if state is not None and state.spec is not None:
+                try:
+                    checked_value(value, state)
+                except ValueError as exc:
+                    raise DocumentError(f"{target} cannot take {name!r}'s value: {exc}") from None
+            self._check_field(target, value)
+
+        self._guarded(name, change)
+        self._touch()
+
+    def _check_field(self, target: str, value) -> None:
+        """A target's own field must take ``value`` (a bypassed target is not
+        in the combined field, but will run with the value once switched on)."""
+        parsed = parse_target(target)
+        if parsed is None or not self.has(parsed[0]):
+            return
+        entry = self.entry_for(self.step(parsed[0]))
+        field = entry.field(parsed[1]) if entry is not None else None
+        problem = field.problem_with(value) if field is not None else None
+        if problem:
+            raise DocumentError(f"{target} cannot take {value!r}: {problem}")
+
+    def remove_target(self, name: str, target: str) -> None:
+        """Stop ``target`` being set by ``name`` (its value stays); a control
+        left without targets goes."""
+        control = self.control(name)
+        if target not in control.targets:
+            raise DocumentError(f"{target} is not a target of {name!r}")
+        control.targets = [t for t in control.targets if t != target]
+        if not control.targets:
+            self.workflow.controls = [c for c in self.workflow.controls if c is not control]
+        self._touch()
+
+    def rename_control(self, old: str, new: str) -> None:
+        control = self.control(old)
+        if new == old:
+            return
+        control.name = self._check_control_name(new, renaming=old)
+        self._touch()
+
+    def set_control_label(self, name: str, label: str = "", help: str | None = None) -> None:
+        control = self.control(name)
+        control.label = str(label or "")
+        if help is not None:
+            control.help = str(help or "")
+        self._touch()
+
+    def remove_control(self, name: str) -> None:
+        """Stop exposing: the targets keep the value they hold."""
+        control = self.control(name)
+        self.workflow.controls = [c for c in self.workflow.controls if c is not control]
+        self._touch()
+
+    def set_control_value(self, name: str, value) -> None:
+        """Set the control: checked against its combined field (and each active
+        target's own field), then written into **every** target."""
+        from imswitch.imcommon.model.workflow.prepare import control_value as checked_value
+
+        control = self.control(name)
+        state = self.control_state(name)
+        if state is not None and state.spec is not None:
+            try:
+                value = checked_value(value, state)
+            except ValueError as exc:
+                raise DocumentError(f"control {name!r}: {exc}") from None
+        for target in control.targets:
+            self._write_target(target, value)
+        self._touch()
+
+    def control_reset(self, name: str) -> tuple[Any, str | None]:
+        """``(value, None)`` when the control's targets share a default, else
+        ``(None, why Reset is not offered)``."""
+        state = self.control_state(name)
+        if state is None or state.spec is None:
+            return None, f"control {name!r} has no field to reset"
+        if state.spec.has_reset:
+            return state.spec.reset, None
+        defaults = []
+        for target, field, _value in state.fields:
+            defaults.append(f"{target} defaults to {field.default!r}")
+        listed = ", ".join(defaults[:3]) if defaults else "its targets have no common default"
+        return None, f"{listed}: set a value instead"
+
+    def reset_control(self, name: str) -> None:
+        """Write the default the targets share into every target, explicitly;
+        refused when they have none in common."""
+        value, problem = self.control_reset(name)
+        if problem:
+            raise DocumentError(problem)
+        self.set_control_value(name, value)
+
+    def _drop_targets(self, step_ids) -> None:
+        gone = set(step_ids)
+        kept = []
+        for control in self.workflow.controls:
+            control.targets = [t for t in control.targets if (parse_target(t) or ("",))[0] not in gone]
+            if control.targets:
+                kept.append(control)
+        self.workflow.controls = kept
+
+    # -- bypass (schema 2) ------------------------------------------------------
+
+    def bypass_problem(self, step_id: str) -> str | None:
+        """Why ``step_id`` cannot be bypassed (plan 5.4), or None."""
+        step = self.step(step_id)
+        if isinstance(step, Save):
+            return None
+        if not isinstance(step, Process):
+            return f"a {_kind(step)} step cannot be bypassed: only processing and save steps can"
+        if len(step.inputs) != 1:
+            return (f"it reads {len(step.inputs)} inputs; a bypassed step passes exactly one through"
+                    if step.inputs else "it reads nothing, so there is nothing to pass through")
+        for other in self.steps:
+            for ref in _refs_of(other):
+                if ref.step == step_id and ref.port not in (None, DEFAULT_PORT):
+                    return f"{other.id!r} reads its port {ref.port!r}, which nothing would stand for"
+        return None
+
+    def set_bypass(self, step_id: str, on: bool) -> None:
+        """Bypass ``step_id`` (or stop). Switching it back on makes its targets
+        adopt their controls' values, so the active targets agree."""
+        step = self.step(step_id)
+        if not isinstance(step, (Process, Save)):
+            raise DocumentError(f"a {_kind(step)} step cannot be bypassed: only processing and save steps can")
+        on = bool(on)
+        if on == bool(step.bypass):
+            return
+        if on:
+            problem = self.bypass_problem(step_id)
+            if problem:
+                raise DocumentError(f"cannot bypass {step_id!r}: {problem}")
+        else:
+            for key, name in self.exposed(step_id).items():
+                others = [parse_target(t) for t in self.control(name).targets]
+                for other_id, other_key in [t for t in others if t is not None]:
+                    if other_id != step_id and self.has(other_id) and not getattr(self.step(other_id), "bypass", False):
+                        value = self.effective_params(other_id).get(other_key)
+                        self._write_target(f"{step_id}.{key}", value)
+                        break
+        step.bypass = on
+        self._touch()
+
+    def bypassed(self) -> list[str]:
+        return [step.id for step in self.steps if getattr(step, "bypass", False)]
 
     # -- graph operations -------------------------------------------------------
 
@@ -711,6 +1076,7 @@ class WorkflowDocument:
         if positions is not None:
             for removed in doomed:
                 positions.pop(removed, None)
+        self._drop_targets(doomed)
         self._touch()
         return [step_id] + sorted(doomed - {step_id})
 

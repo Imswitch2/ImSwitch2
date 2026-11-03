@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from imswitch.imcommon.model import OperationCancelled
+from imswitch.imcommon.model.workflow.prepare import (  # noqa: F401 - re-exported
+    is_result_binding,
+    steps_replaced_by_bindings,
+)
 from imswitch.improcess.workflows.sources import (
     SourceError,
     SourceSpec,
@@ -46,7 +50,6 @@ from imswitch.improcess.workflows.steps import (
     Workflow,
     WorkflowError,
     step_runner,
-    validate,
 )
 
 MODES = ("run", "replay")
@@ -94,6 +97,10 @@ class RunReport:
     #: exception has them ``line``, ``traceback`` and ``stdout`` (a Python step's
     #: line in the user's code, its trimmed traceback, what it printed).
     failure: dict | None = None
+    #: Schema 2: steps taken out of the run because they are bypassed.
+    bypassed: list[str] = field(default_factory=list)
+    #: Schema 2: every active control's canonical value in this run.
+    controls: dict[str, Any] = field(default_factory=dict)
     _sources: list = field(default_factory=list, repr=False)
     _closed: bool = field(default=False, repr=False)
 
@@ -237,6 +244,7 @@ def run(
     write_saves: bool = True,
     source_stem: str | None = None,
     step_state: dict[str, dict] | None = None,
+    controls: Mapping[str, Any] | None = None,
 ) -> RunReport:
     """Execute ``workflow`` and return its :class:`RunReport`.
 
@@ -275,15 +283,25 @@ def run(
     what it stores there is what it finds on the next run. The key is handed
     to ``apply`` only: the step's params, the provenance the results carry
     and the report never contain it. Without ``step_state`` no such key exists.
+
+    ``workflow`` may be a schema-2 recipe: it is prepared first
+    (:func:`~imswitch.imcommon.model.workflow.prepare.prepare_run`), with
+    ``controls`` as this run's control values (raw ``ControlText`` from a
+    command line, or typed); bypassed steps are taken out and listed in
+    ``report.bypassed``, the values used in ``report.controls``.
     """
     if mode not in MODES:
         raise WorkflowError(f"unknown mode {mode!r}; expected one of {MODES}")
-    issues = validate(workflow, registry)
-    if issues:
-        raise WorkflowError("workflow is invalid:\n  " + "\n  ".join(str(i) for i in issues))
+    from imswitch.imcommon.model.workflow.prepare import prepare_run
+
+    # Validates the recipe and the plain workflow it prepares to; raises
+    # before anything runs.
+    prepared = prepare_run(workflow, registry=registry, values=controls, bindings=bindings)
+    workflow = prepared.workflow
     logger = logger or _log()
     out_dir = (Path(out_dir) if out_dir is not None else Path.cwd()).resolve()
-    report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir)
+    report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir,
+                       bypassed=list(prepared.bypassed), controls=dict(prepared.values))
     bindings = dict(bindings or {})
     explicit_stem = bool(source_stem)
     source_stem = str(source_stem) if explicit_stem else "result"
@@ -552,21 +570,6 @@ def _with_state(plugin, state: dict):
     return view
 
 
-def _is_result(value) -> bool:
-    return (
-        not isinstance(value, (str, SourceSpec))
-        and hasattr(value, "axis_labels")
-        and hasattr(value, "data")
-    )
-
-
-def is_result_binding(value) -> bool:
-    """Whether a binding value is an in-memory result (or a ``{port: result}``
-    mapping of them) rather than a source spec."""
-    if isinstance(value, Mapping):
-        return bool(value) and all(isinstance(port, str) and _is_result(item) for port, item in value.items())
-    return _is_result(value)
-
 
 def _bound_ports(value) -> dict:
     """``{port: result}`` for a binding: a mapping as given (its order kept),
@@ -592,28 +595,6 @@ def failure_details(step_id: str, exc: BaseException) -> dict:
             details[key] = value
     return details
 
-
-def steps_replaced_by_bindings(workflow, bound_ids) -> set:
-    """The bound steps plus every step that only exists to feed them.
-
-    A source whose only consumer is a bound reconstruction is not opened;
-    a step with any consumer that still runs is kept.
-    """
-    consumers: dict[str, set] = {step.id: set() for step in workflow.steps}
-    for step in workflow.steps:
-        for ref in getattr(step, "inputs", ()) or ():
-            consumers.setdefault(ref.step, set()).add(step.id)
-        ref = getattr(step, "input", None)
-        if ref is not None:
-            consumers.setdefault(ref.step, set()).add(step.id)
-    skipped = set(bound_ids)
-    for step in reversed(workflow.steps):
-        if step.id in skipped:
-            continue
-        users = consumers.get(step.id, set())
-        if users and users <= skipped and not isinstance(step, Save):
-            skipped.add(step.id)
-    return skipped
 
 
 def _log():

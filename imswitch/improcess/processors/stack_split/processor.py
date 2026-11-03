@@ -63,7 +63,10 @@ class StackSplitProcessor(Processor):
 
     def output_spec(self, params: dict | None = None, input_specs=None):
         """One port per slice, named ``<axis label><index>`` (``Z0, Z1, …``);
-        how many depends on the data."""
+        how many depends on the data. An explicit ``axis`` declares only that
+        axis's label (any case); ``Auto`` any label."""
+        from imswitch.improcess.processors._axis_split import axis_port_pattern
         from imswitch.improcess.processors.base import OutputSpec
 
-        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+", kind=self.output_kind)
+        axis = (params or {}).get("axis", "Auto")
+        return OutputSpec(ports=None, pattern=axis_port_pattern(axis), kind=self.output_kind)

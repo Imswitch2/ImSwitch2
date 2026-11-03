@@ -58,6 +58,7 @@ _SHORTCUTS = (
     ("Ctrl+Z, Ctrl+Shift+Z", "Undo, redo"),
     ("F5 / F6 / Esc", "Run / Run to selected / Stop"),
     ("F / H", "Fit everything / tidy up"),
+    ("B", "Bypass the selected steps (or stop bypassing): kept in the file, left out of the run"),
     ("Wheel, middle button, Space+drag", "Zoom, pan"),
     ("Ctrl+1 / Ctrl+2", "Graph / List"),
 )
@@ -206,6 +207,7 @@ class MainWindow(QtWidgets.QMainWindow):
         page.sigOpenDialog.connect(lambda: self.open_file())
         self.inspector.sigMessage.connect(self.show_status)
         self.inspector.sigRenamed.connect(self._on_renamed)
+        self.inspector.sigSelectStep.connect(lambda step_id: self.document.has(step_id) and self.select_step(step_id))
         output = self.inspector.output
         output.sigRunToHere.connect(self.run_to_selected)
         output.sigShowInViewer.connect(lambda port: self.show_in_viewer(port=port))
@@ -257,6 +259,8 @@ class MainWindow(QtWidgets.QMainWindow):
         a("select_all", "Select all", self.select_all, QtGui.QKeySequence.SelectAll, context=canvas)
         a("fit", "Fit to window", self.view.fit, "F", "Show the whole workflow", context=canvas)
         a("tidy", "Tidy up", self.tidy_up, "H", "Lay the steps out left to right", context=canvas)
+        a("bypass", "Bypass", self.toggle_bypass, "B",
+          "Keep the selected steps in the file but leave them out of the run (B again: run them)", context=canvas)
         a("zoom_in", "Zoom in", lambda: self.view.zoom_by(1.2), QtGui.QKeySequence.ZoomIn, context=canvas)
         a("zoom_out", "Zoom out", lambda: self.view.zoom_by(1 / 1.2), QtGui.QKeySequence.ZoomOut, context=canvas)
         a("quick_add", "Add a step…", lambda: self._on_quick_add(None, self._canvas_point()), None,
@@ -303,7 +307,7 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addAction(self._actions["close"])
         edit_menu = menus.addMenu("&Edit")
         for name in ("undo", "redo", None, "cut", "copy", "paste", "duplicate", "delete", None, "select_all",
-                     "quick_add", "frame"):
+                     "quick_add", "frame", "bypass"):
             edit_menu.addSeparator() if name is None else edit_menu.addAction(self._actions[name])
         view_menu = menus.addMenu("&View")
         for name in ("graph", "list", None, "fit", "tidy", "zoom_in", "zoom_out"):
@@ -528,7 +532,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         self.preferences.add_recent_file(written)
         self._update_title()
-        self.show_status(f"Saved {written.name}.")
+        if self.document.schema_raised:
+            self.show_status(f"Saved {written.name}. It uses controls or bypass (workflow schema 2), so it now "
+                             "opens only in this version of ImSwitch or later.", 15000)
+        else:
+            self.show_status(f"Saved {written.name}.")
         return True
 
     def save_as(self) -> bool:
@@ -736,6 +744,49 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.edit("Tidy up", action, inspector=False):
             self.view.fit()
 
+    def _bypassable(self) -> tuple[list[str], str]:
+        """The selected steps a Bypass would act on, and why it cannot ("")."""
+        steps = [sid for sid in self.selected_step_ids() if self.document.has(sid)]
+        if not steps:
+            return [], "Select a processing or save step to bypass"
+        if all(getattr(self.document.step(sid), "bypass", False) for sid in steps):
+            return steps, ""
+        for sid in steps:
+            if getattr(self.document.step(sid), "bypass", False):
+                continue
+            problem = self.document.bypass_problem(sid)
+            if problem:
+                return steps, f"Cannot bypass {sid!r}: {problem}"
+        return steps, ""
+
+    def _update_bypass_action(self) -> None:
+        action = self._actions.get("bypass")
+        if action is None:
+            return
+        steps, problem = self._bypassable()
+        on = bool(steps) and all(getattr(self.document.step(sid), "bypass", False) for sid in steps)
+        action.setText("Stop bypassing" if on else "Bypass")
+        action.setEnabled(bool(steps) and not problem)
+        action.setToolTip(problem or ("Run the selected steps again" if on else
+                                      "Keep the selected steps in the file but leave them out of the run"))
+
+    def toggle_bypass(self) -> bool:
+        """Bypass the selected steps, or, when all of them are bypassed, stop."""
+        steps, problem = self._bypassable()
+        if problem:
+            self.show_status(problem)
+            return False
+        on = not all(getattr(self.document.step(sid), "bypass", False) for sid in steps)
+
+        def action():
+            for sid in steps:
+                self.document.set_bypass(sid, on)
+
+        label = ("Bypass " if on else "Stop bypassing ") + ", ".join(steps)
+        done = self.edit(label, action, select=steps)
+        self._update_bypass_action()
+        return done
+
     def undo(self) -> None:
         history = self.document.history
         if not history.can_undo:
@@ -921,6 +972,8 @@ class MainWindow(QtWidgets.QMainWindow):
         pin.setEnabled(held)
         pin.triggered.connect(lambda: self.pin(step_id))
         menu.addSeparator()
+        self._update_bypass_action()
+        menu.addAction(self._actions["bypass"])
         menu.addAction(self._actions["duplicate"])
         menu.addAction(self._actions["copy"])
         menu.addAction(self._actions["delete"])
@@ -971,6 +1024,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._show_selected()
 
     def _show_selected(self) -> None:
+        self._update_bypass_action()
         current = self.selected_step_id()
         if current != self.inspector.step_id:
             # Typing into another step's fields is another undo entry.
@@ -1090,9 +1144,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return True
         if self._issues_for(targets):
             return False
-        plan = self.session.plan(self.document, targets, write_saves=False, out_dir=self._out_dir,
-                                 source_root=self._source_root())
-        if plan.empty:
+        plan = self._plan(targets, write_saves=False, out_dir=self._out_dir, source_root=self._source_root())
+        if plan is None or plan.empty:
             return False
         steps = [self.document.step(sid) for sid in plan.to_run if self.document.has(sid)]
         if not self._python_trusted and any(getattr(step, "processor", "") == "python" for step in steps):
@@ -1139,12 +1192,23 @@ class MainWindow(QtWidgets.QMainWindow):
             self._queued = (list(dict.fromkeys(list(queued) + list(targets))),)
 
     def _issues_for(self, targets) -> list:
+        """What stops a run to ``targets``: issues of the steps it needs, and
+        those of no step (a control's), which every run is prepared through."""
         if not targets:
             return list(self._issues)
         needed = set(targets)
         for target in targets:
             needed |= ancestors(self.document.steps, target)
-        return [issue for issue in self._issues if issue.step in needed]
+        return [issue for issue in self._issues if issue.step in needed or not self.document.has(issue.step)]
+
+    def _plan(self, targets, **kwargs):
+        """The session's plan, or None (and why, in the status bar) when the
+        workflow cannot be prepared for this run."""
+        try:
+            return self.session.plan(self.document, targets, **kwargs)
+        except WorkflowError as exc:
+            self.show_status(f"Cannot run: {str(exc).replace(chr(10), ' ')}")
+            return None
 
     def _start_run(self, targets, *, explicit: bool = False) -> bool:
         if self.host is None or not callable(getattr(self.host, "runInteractive", None)):
@@ -1160,11 +1224,14 @@ class MainWindow(QtWidgets.QMainWindow):
         issues = self._issues_for(targets)
         if issues:
             self.show_status(f"Cannot run: {issues[0]}")
-            self.select_step(issues[0].step)
+            if self.document.has(issues[0].step):
+                self.select_step(issues[0].step)
             return False
         root = self._source_root()
-        plan = self.session.plan(self.document, targets, write_saves=self._write_files, out_dir=self._out_dir,
-                                 overwrite=self._overwrite, source_root=root)
+        plan = self._plan(targets, write_saves=self._write_files, out_dir=self._out_dir,
+                          overwrite=self._overwrite, source_root=root)
+        if plan is None:
+            return False
         if plan.empty:
             self.show_status("Everything you asked for is up to date.")
             return False
@@ -1254,6 +1321,9 @@ class MainWindow(QtWidgets.QMainWindow):
             entry = state.entry
             if not state.status and not state.bound and entry is None:
                 continue
+            if state.status == "bypassed":
+                views[step_id] = self._bypassed_view(state)
+                continue
             thumbnail = self._thumbnail(entry) if entry is not None and state.status != "running" else None
             footer = ""
             if entry is not None and state.status in ("done", "outdated"):
@@ -1288,6 +1358,22 @@ class MainWindow(QtWidgets.QMainWindow):
                                      summary=summary, kinds=kinds, tips=tips,
                                      line=state.error.get("line") if state.error else None)
         return views
+
+    def _bypassed_view(self, state) -> RunView:
+        """A bypassed box: the output of what it passes through, dimmed, and
+        a footer that says so."""
+        entry = state.entry
+        port = state.passes.split(".", 1)[1] if "." in state.passes else ""
+        thumbnail = None
+        if entry is not None and entry.previews:
+            preview = entry.previews.get(port) if port else None
+            previews = {port: preview} if preview is not None else entry.previews
+            key = (entry.key, entry.run_id, "bypassed", port)
+            if key not in self._pixmaps:
+                self._pixmaps[key] = box_pixmap(previews)
+            thumbnail = self._pixmaps[key]
+        footer = f"bypassed · passes {state.passes} on" if state.passes else "bypassed · writes nothing"
+        return RunView(status="bypassed", thumbnail=thumbnail, footer=footer)
 
     def _thumbnail(self, entry):
         key = (entry.key, entry.run_id)

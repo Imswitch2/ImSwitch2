@@ -8,11 +8,18 @@ Below sits the output of the last run (Phase 2: filled by the window).
 Every widget edit goes through the window's ``editor`` callable, which makes
 it one undoable document edit and refreshes the views; the inspector is only
 rebuilt when the edit changed its own shape (another plugin, other inputs).
+
+With nothing selected it shows the workflow itself: its name, description
+and **controls** (schema 2), each with its field, its targets (click one to
+select its step), Reset, Rename… and Stop exposing. A parameter row's context
+menu exposes it as a control or adds it to one; a bypassed step says what it
+passes through, with *Stop bypassing*.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from qtpy import QtCore, QtWidgets
 
@@ -78,6 +85,8 @@ class Inspector(QtWidgets.QScrollArea):
 
     sigMessage = QtCore.Signal(str)
     sigRenamed = QtCore.Signal(str, str)
+    #: A control's target was clicked in the Controls panel: select that step.
+    sigSelectStep = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,6 +97,9 @@ class Inspector(QtWidgets.QScrollArea):
         self._editor = None
         self._step_id: str | None = None
         self._param_form: ParamForm | None = None
+        #: The Controls panel's forms, by control name (nothing selected).
+        self.control_forms: dict[str, ParamForm] = {}
+        self.control_buttons: dict[str, dict[str, QtWidgets.QPushButton]] = {}
         self._python = None
         #: The code box holds typing the document has not seen yet.
         self._code_dirty = False
@@ -152,11 +164,15 @@ class Inspector(QtWidgets.QScrollArea):
         self._step_id = step_id if step_id and document is not None and document.has(step_id) else None
         self._param_form = None
         self._python = None
+        self.control_forms = {}
+        self.control_buttons = {}
         body = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(body)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
         if self._step_id is None:
+            if document is not None and (document.steps or document.controls):
+                self._build_workflow(layout)
             help_text = QtWidgets.QLabel(_HELP)
             help_text.setWordWrap(True)
             help_text.setTextFormat(QtCore.Qt.RichText)
@@ -164,6 +180,8 @@ class Inspector(QtWidgets.QScrollArea):
         else:
             step = document.step(self._step_id)
             self._build_header(layout, step)
+            if getattr(step, "bypass", False):
+                self._build_bypassed(layout, step)
             form = QtWidgets.QFormLayout()
             form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
             layout.addLayout(form)
@@ -600,20 +618,243 @@ class Inspector(QtWidgets.QScrollArea):
         form.addRow(_muted(f"Placeholders: {placeholders}."))
 
     def _add_param_form(self, layout, step) -> None:
-        entry = self._document.entry_for(step)
+        document = self._document
+        entry = document.entry_for(step)
         layout.addWidget(_section("Parameters"))
         form = ParamForm()
-        form.set_plugin(entry, step.params)
+        exposed = {}
+        for key, name in document.exposed(step.id).items():
+            reset, _problem = document.control_reset(name)
+            exposed[key] = (name, reset)
+        form.set_plugin(entry, step.params, exposed=exposed, actions=True)
         form.sigValueChanged.connect(self._set_param)
         form.sigValueCleared.connect(self._clear_param)
+        form.sigContextAction.connect(self._param_action)
         form.setMinimumHeight(160)
         self._param_form = form
         layout.addWidget(form, 1)
 
+    # -- bypass ------------------------------------------------------------------------
+
+    def _build_bypassed(self, layout, step) -> None:
+        from imswitch.imcommon.model.workflow.prepare import bypass_upstream
+
+        document = self._document
+        stand_in = bypass_upstream(document.workflow).get(step.id)
+        if isinstance(step, Save):
+            words = "Bypassed: this save writes nothing when the workflow runs."
+        elif stand_in is not None:
+            through = str(stand_in)
+            readers = [other.id for other in document.steps
+                       if any(ref.step == step.id for ref in ([other.input] if isinstance(other, Save)
+                                                              else list(getattr(other, "inputs", []) or [])))]
+            who = f"<b>{readers[0]}</b> reads" if len(readers) == 1 else (
+                "the steps after it read" if readers else "anything connected after it reads")
+            words = f"Bypassed: {who} <b>{through}</b> through this step unchanged."
+        else:
+            words = "Bypassed, but it cannot pass anything on (see the warning above): the workflow will not run."
+        frame = QtWidgets.QFrame()
+        frame.setObjectName("bypassBanner")
+        frame.setStyleSheet("QFrame#bypassBanner { background: #3a4048; border-radius: 6px; }"
+                            "QFrame#bypassBanner QLabel { color: #eef1f4; }")
+        row = QtWidgets.QHBoxLayout(frame)
+        row.setContentsMargins(10, 6, 6, 6)
+        label = QtWidgets.QLabel(words)
+        label.setWordWrap(True)
+        label.setTextFormat(QtCore.Qt.RichText)
+        row.addWidget(label, 1)
+        button = QtWidgets.QPushButton("Stop bypassing")
+        button.setToolTip("Run this step again (B)")
+        sid = step.id
+        button.clicked.connect(lambda: self._edit(f"Stop bypassing {sid}", lambda: self._document.set_bypass(sid, False),
+                                                  structural=True))
+        self.stop_bypass_button = button
+        row.addWidget(button)
+        layout.addWidget(frame)
+
+    # -- controls ----------------------------------------------------------------------
+
+    def _param_action(self, key: str, action: str) -> None:
+        if action == "expose":
+            self._ask_expose(key)
+        elif action == "unexpose":
+            name = self._document.exposed(self._step_id).get(key)
+            if name:
+                target = f"{self._step_id}.{key}"
+                self._edit(f"Stop exposing {target}", lambda: self._document.remove_target(name, target),
+                           structural=True)
+
+    def compatible_controls(self, key: str) -> list[str]:
+        """Controls ``step.key`` could join (a dry run of ``add_target``)."""
+        import copy
+
+        document = self._document
+        target = f"{self._step_id}.{key}"
+        found = []
+        for control in document.controls:
+            trial = type(document)(copy.deepcopy(document.workflow), catalog=document.catalog)
+            try:
+                trial.add_target(control.name, target)
+            except Exception:  # noqa: BLE001 - it just does not fit
+                continue
+            found.append(control.name)
+        return found
+
+    def expose_param(self, key: str, name: str | None = None, *, join: str | None = None) -> bool:
+        """Expose ``key`` of the shown step: as a new control ``name`` (default
+        the key), or as another target of control ``join`` (adopting its value)."""
+        target = f"{self._step_id}.{key}"
+        if join:
+            return self._edit(f"Add {target} to {join}", lambda: self._document.add_target(join, target),
+                              structural=True)
+        name = name or key
+        return self._edit(f"Expose {target} as {name}", lambda: self._document.add_control(name, target),
+                          structural=True)
+
+    def _ask_expose(self, key: str) -> None:
+        joinable = self.compatible_controls(key)
+        if joinable:
+            new_item = f"A new control named '{key}'…"
+            items = [new_item] + [f"Add to control '{name}' (takes its value)" for name in joinable]
+            choice, accepted = QtWidgets.QInputDialog.getItem(
+                self, "Expose as control", f"Expose {self._step_id}.{key} as:", items, 0, False)
+            if not accepted:
+                return
+            if choice != new_item:
+                self.expose_param(key, join=joinable[items.index(choice) - 1])
+                return
+        name, accepted = QtWidgets.QInputDialog.getText(
+            self, "Expose as control",
+            f"Name of the control for {self._step_id}.{key}\n(what --set, a manifest column and the run dialog use):",
+            text=key)
+        if accepted and name.strip():
+            self.expose_param(key, name.strip())
+
+    def _build_workflow(self, layout) -> None:
+        """The workflow's own panel: name, description, controls."""
+        document = self._document
+        layout.addWidget(_section("Workflow"))
+        form = QtWidgets.QFormLayout()
+        name = QtWidgets.QLineEdit(document.name)
+        name.editingFinished.connect(lambda e=name: e.text().strip() != document.name and self._edit(
+            "Rename the workflow", lambda: document.set_name(e.text().strip()), need_step=False))
+        form.addRow("Name", name)
+        description = QtWidgets.QLineEdit(document.workflow.description or "")
+        description.setPlaceholderText("What it is for")
+        description.editingFinished.connect(lambda e=description: e.text() != (document.workflow.description or "")
+                                            and self._edit("Describe the workflow",
+                                                           lambda: document.set_description(e.text()),
+                                                           need_step=False))
+        form.addRow("Description", description)
+        layout.addLayout(form)
+        layout.addWidget(_section("Controls"))
+        if not document.controls:
+            layout.addWidget(_muted(
+                "No controls. Right-click a step's parameter and choose Expose as control… to set it by name "
+                "when the workflow runs (--set, a manifest column, the run dialog)."))
+            return
+        for control in document.controls:
+            layout.addWidget(self._control_card(control))
+
+    def _control_card(self, control) -> QtWidgets.QWidget:
+        from imswitch.imcommon.model.param_spec import ParamField
+
+        document = self._document
+        name = control.name
+        state = document.control_state(name)
+        card = QtWidgets.QFrame()
+        card.setObjectName("controlCard")
+        card.setStyleSheet("QFrame#controlCard { border: 1px solid #2e3e4f; border-radius: 6px; }")
+        box = QtWidgets.QVBoxLayout(card)
+        box.setContentsMargins(8, 6, 8, 6)
+        spec = state.spec if state is not None else None
+        title = QtWidgets.QLabel(f"<b>{(spec.label if spec is not None else '') or control.label or name}</b>"
+                                 f" &nbsp;<span style='font-family: monospace;'>⇄ {name}</span>")
+        title.setTextFormat(QtCore.Qt.RichText)
+        box.addWidget(title)
+        if spec is not None:
+            field = ParamField(name, spec.type, spec.reset if spec.has_reset else document.control_value(name),
+                               label=spec.label or name, help=spec.help, options=spec.options, min=spec.min,
+                               max=spec.max, step=spec.step, decimals=spec.decimals, suffix=spec.suffix,
+                               nullable=spec.nullable)
+            form = ParamForm()
+            form.set_plugin(SimpleNamespace(fields=[field], extra_keys=()), {name: document.control_value(name)})
+            form.set_reset_visible(False)
+            form.setFixedHeight(36)
+            form.sigValueChanged.connect(lambda _key, value, n=name: self._edit(
+                f"Set {n}", lambda: document.set_control_value(n, value), merge=("control", n), need_step=False))
+            self.control_forms[name] = form
+            box.addWidget(form)
+        else:
+            box.addWidget(_muted("Its targets cannot share one field: see the issues."))
+        links = []
+        for target in (state.targets if state is not None else []):
+            why = f" ({target.reason})" if target.reason else ""
+            links.append(f"<a href='{target.step}'>{target.target}</a>{why}")
+        known = {t.target for t in state.targets} if state is not None else set()
+        links += [f"{t} (missing)" for t in control.targets if t not in known]
+        targets = QtWidgets.QLabel("Sets " + ", ".join(links))
+        targets.setTextFormat(QtCore.Qt.RichText)
+        targets.setWordWrap(True)
+        targets.linkActivated.connect(self.sigSelectStep.emit)
+        box.addWidget(targets)
+        if state is not None and not state.active and state.targets:
+            steps = sorted({t.step for t in state.targets})
+            box.addWidget(_muted(f"No effect while {', '.join(steps)} {'is' if len(steps) == 1 else 'are'} "
+                                 "bypassed; a value set here is written for when it runs again."))
+        row = QtWidgets.QHBoxLayout()
+        reset_value, reset_problem = document.control_reset(name)
+        reset = QtWidgets.QPushButton("Reset")
+        reset.setEnabled(reset_problem is None)
+        reset.setToolTip(reset_problem or f"Back to the default its targets share ({reset_value!r})")
+        reset.clicked.connect(lambda _c=False, n=name: self._edit(f"Reset {n}", lambda: document.reset_control(n),
+                                                                  structural=True, need_step=False))
+        rename = QtWidgets.QPushButton("Rename…")
+        rename.clicked.connect(lambda _c=False, n=name: self._ask_rename_control(n))
+        label = QtWidgets.QPushButton("Label…")
+        label.setToolTip("The label and help the run dialog shows")
+        label.clicked.connect(lambda _c=False, n=name: self._ask_label_control(n))
+        stop = QtWidgets.QPushButton("Stop exposing")
+        stop.setToolTip("Remove the control; its parameters keep their value")
+        stop.clicked.connect(lambda _c=False, n=name: self._edit(f"Stop exposing {n}",
+                                                                 lambda: document.remove_control(n),
+                                                                 structural=True, need_step=False))
+        # Two rows: the inspector is narrow, and a wider body would clip
+        # everything else it shows.
+        second = QtWidgets.QHBoxLayout()
+        for layout_row, buttons in ((row, (reset, rename)), (second, (label, stop))):
+            for button in buttons:
+                layout_row.addWidget(button)
+            layout_row.addStretch(1)
+            box.addLayout(layout_row)
+        self.control_buttons[name] = {"reset": reset, "rename": rename, "label": label, "stop": stop}
+        return card
+
+    def _ask_rename_control(self, name: str) -> None:
+        new, accepted = QtWidgets.QInputDialog.getText(self, "Rename control", "New name:", text=name)
+        if accepted and new.strip() and new.strip() != name:
+            self.rename_control(name, new.strip())
+
+    def rename_control(self, old: str, new: str) -> bool:
+        return self._edit(f"Rename {old}", lambda: self._document.rename_control(old, new), structural=True,
+                          need_step=False)
+
+    def _ask_label_control(self, name: str) -> None:
+        control = self._document.control(name)
+        label, accepted = QtWidgets.QInputDialog.getText(self, "Control label", f"Label for '{name}':",
+                                                         text=control.label)
+        if not accepted:
+            return
+        help_text, accepted = QtWidgets.QInputDialog.getText(self, "Control help", f"Help for '{name}':",
+                                                             text=control.help)
+        if accepted:
+            self._edit(f"Label {name}", lambda: self._document.set_control_label(name, label, help_text),
+                       structural=True, need_step=False)
+
     # -- edits --------------------------------------------------------------------------
 
-    def _edit(self, label, action, *, structural: bool = False, merge=None) -> bool:
-        if self._silent or self._editor is None or self._document is None or self._step_id is None:
+    def _edit(self, label, action, *, structural: bool = False, merge=None, need_step: bool = True) -> bool:
+        if self._silent or self._editor is None or self._document is None or (need_step and self._step_id is None):
             return False
         return bool(self._editor(label, action, structural=structural, merge=merge))
 
