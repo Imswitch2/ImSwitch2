@@ -1,0 +1,17 @@
+{
+  "role": "monalisa_reconstruction",
+  "title": "MoNaLISA reconstruction",
+  "applies_to": "detectors",
+  "consumer": "imswitch.improcess.reconstructors.monalisa",
+  "when": {},
+  "requires": [],
+  "reads": [
+    {"key": "monalisaSpotFwhmNm", "fallback": "the MoNaLISA application default"}
+  ],
+  "properties": {
+    "monalisaSpotFwhmNm": {
+      "x-imswitch-kind": "number",
+      "description": "Default Gaussian MoNaLISA spot FWHM for this detector/path, in nm. Recorded with new acquisitions so offline reconstruction keeps the value that was configured at acquisition time."
+    }
+  }
+}

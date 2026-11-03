@@ -166,6 +166,43 @@ class MonalisaProcessingResult(ProcessingResult):
         self.placement = placement
         self.acquisition_projection = _projection_metadata(placement)
 
+    def initial_view_mode_name(self) -> str:
+        """Choose the first useful orthogonal view from the acquired scan axes.
+
+        The reconstructed array can contain X/Y pixels from the uLens grid even
+        when that stage axis was not scanned, so output-array shape is not an
+        acquisition-plane detector.  Prefer ``LayoutPlacement`` when present:
+        its rows/cols/slices are the actual Y/X/Z scan counts before the uLens
+        lattice expands the reconstructed image.  Older/fallback results use
+        the recorded scan-parameter counts.
+        """
+        placement = getattr(self, "placement", None)
+        if placement is not None:
+            try:
+                x = int(placement.cols) > 1
+                y = int(placement.rows) > 1
+                z = int(placement.slices) > 1
+            except (TypeError, ValueError, AttributeError):
+                x = y = z = False
+        else:
+            try:
+                dims = list(self.scan_params["dimensions"])
+                steps = list(self.scan_params["steps"])
+                counts = {dim: int(float(step)) for dim, step in zip(dims, steps)}
+                x = counts.get(self.axis_label_map["r_l_text"], 1) > 1
+                y = counts.get(self.axis_label_map["u_d_text"], 1) > 1
+                z = counts.get(self.axis_label_map["b_f_text"], 1) > 1
+            except (KeyError, TypeError, ValueError):
+                return "Standard"
+
+        # Volumes default to the familiar top-down view.  Pure orthogonal
+        # scans start side-on so their scanned plane is visible immediately.
+        if y and z and not x:
+            return "Left"      # displayed plane: Z, Y
+        if x and z and not y:
+            return "Bottom"    # displayed plane: Z, X
+        return "Standard"      # XY and XYZ (plus degenerate/fallback cases)
+
     @classmethod
     def from_coeffs(
         cls,

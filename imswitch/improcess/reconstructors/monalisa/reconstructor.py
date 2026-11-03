@@ -12,17 +12,32 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
+from imswitch.improcess.reconstructors.base import DetectionPreview, StreamInit, StreamingReconstructor
 from .coeffs_to_image import (
     linestep_conditions_interleave_per_line,
     placement_from_layout,
 )
+from .calibration import PatternLocalization, ScanOrientation
+from .calibration_frames import most_modulated_indices
 from .live_session import MonalisaLiveSession
+from .localization_settings import LocalizationSettings
+from .params import (
+    LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL,
+    LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL,
+    ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL,
+    PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE,
+    PRESET_FAST, PRESET_LEGACY, PRESETS,
+    SPOT_AUTO, SPOT_MANUAL, default_params as unified_default_params,
+)
+from .pipeline import PipelineParams, find_localization, needs_modulation_frame
+from .spot_settings import fwhm_to_sigma_px, sigma_px_to_fwhm
 from .orientation import auto_detect_scan_orientation
+from .scan_frame import ORIENTATIONS
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
 from .result import MonalisaProcessingResult
 from .signal_extractor import SignalExtractor
+from .session_registry import MonalisaSessionRegistry, detector_identity
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -53,78 +68,97 @@ class MonalisaReconstructor(StreamingReconstructor):
     name = "MoNaLISA"
     id = "monalisa"
     output_kind = "image"
-    file_extensions = ["hdf5", "zarr"]
+    file_extensions = ["hdf5", "h5", "zarr", "tiff"]
     # One timepoint must be a whole nx*ny scan: the pattern reassignment has
     # nothing to reassemble from a single frame. Independent of being a
     # timelapse -- a camera lapse is many timepoints of one frame each.
     requires_frame_stacks = True
-    description = "Point-scanning SIM reconstruction with pattern-based signal extraction"
+    description = "Unified Gaussian MoNaLISA reconstruction for rectangular, staggered and general lattices"
+    execution_policy = "worker"
     supports_streaming = True
     supports_consolidation = True
+    # The fixed unified Gaussian parameter contract replaces the former
+    # internal Fast/Legacy method selector. Old v1 dictionaries remain
+    # accepted by process() during the migration window.
+    params_version = 5
 
     @classmethod
     def default_params(cls) -> dict:
-        return {   'pixel_size_nm': 77,
-        'reconstruction_method': 'Fast Gauss MoNaLISA',
-        'device': 'GPU',
-        'row_offset': 9.89,
-        'col_offset': 10.4,
-        'row_period': 11.05,
-        'col_period': 11.05,
-        'psf_fwhm_nm': 220,
-        'bg_modelling': 'Constant',
-        'bg_gaussian_size_nm': 500,
-        'bleaching_correction': False,
-        'auto_scan_orientation': True}
+        return unified_default_params()
 
     @classmethod
     def param_spec(cls) -> tuple:
+        defaults = cls.default_params()
         return (
-            ParamField('pixel_size_nm', 'float', 77, label='Pixel size', suffix='nm'),
-            ParamField(
-                'reconstruction_method', 'select', 'Fast Gauss MoNaLISA',
-                label='Reconstruction method',
-                help='Fast Gauss MoNaLISA (default) uses the low-latency Gaussian reassignment path that live reconstruction always uses. MoNaLISA runs the full post-acquisition SignalExtractor path.',
-                options=('Fast Gauss MoNaLISA', 'MoNaLISA'),
-            ),
-            ParamField('device', 'select', 'GPU', label='CPU/GPU', options=('GPU', 'CPU')),
-            ParamField(
-                'row_offset', 'float', 9.89, label='Row-offset', min=0, max=9999, group='Pattern',
-            ),
-            ParamField(
-                'col_offset', 'float', 10.4, label='Col-offset', min=0, max=9999, group='Pattern',
-            ),
-            ParamField(
-                'row_period', 'float', 11.05, label='Row-period', min=0, max=9999,
-                group='Pattern',
-            ),
-            ParamField(
-                'col_period', 'float', 11.05, label='Col-period', min=0, max=9999,
-                group='Pattern',
-            ),
-            ParamField(
-                'psf_fwhm_nm', 'float', 220, label='PSF FWHM', min=0, max=9999, suffix='nm',
-                group='Reconstruction options',
-            ),
-            ParamField(
-                'bg_modelling', 'select', 'Constant', label='BG modelling',
-                options=('Constant', 'Gaussian', 'No background'), group='Reconstruction options',
-            ),
-            ParamField(
-                'bg_gaussian_size_nm', 'float', 500, label='BG Gaussian size', suffix='nm',
-                group='Reconstruction options',
-            ),
-            ParamField('bleaching_correction', 'bool', False, label='Bleaching correction'),
-            ParamField(
-                'auto_scan_orientation', 'bool', True, label='Auto-detect scan orientation',
-                help='Override the scan-params dialog by picking the fast/slow axis and pos/neg direction that minimize total variation of the reconstructed image — ported from Mini_Recon.',
-            ),
+            ParamField('preset', 'select', defaults['preset'], label='Mode', options=tuple(PRESETS)),
+            ParamField('device', 'select', defaults['device'], label='CPU/GPU', options=('GPU', 'CPU'), group='Advanced', advanced=True),
+            ParamField('pixel_size_nm', 'float', defaults['pixel_size_nm'], label='Camera pixel', suffix='nm', min=0.0, group='Advanced', advanced=True),
+            ParamField('localization_mode', 'select', defaults['localization_mode'], label='Mode',
+                       options=(LOCALIZATION_AUTO, LOCALIZATION_LOCKED, LOCALIZATION_MANUAL), group='Localization'),
+            ParamField('auto_localization', 'json', defaults['auto_localization'],
+                       label='Resolved Auto localization', group='Localization', advanced=True),
+            ParamField('locked_localization_id', 'str', defaults['locked_localization_id'],
+                       label='Locked localization id', group='Localization', advanced=True),
+            ParamField('locked_localization_name', 'str', defaults['locked_localization_name'],
+                       label='Locked localization name', group='Localization', advanced=True),
+            ParamField('locked_localization', 'json', defaults['locked_localization'],
+                       label='Resolved Locked localization', group='Localization', advanced=True),
+            ParamField('localization_refinement', 'select', defaults['localization_refinement'],
+                       label='Localization refinement',
+                       options=(LOCALIZATION_REFINEMENT_FAST, LOCALIZATION_REFINEMENT_FULL),
+                       group='Localization', advanced=True),
+            ParamField('manual_offset_x_px', 'float', defaults['manual_offset_x_px'], label='Offset X', suffix='px', group='Localization'),
+            ParamField('manual_offset_y_px', 'float', defaults['manual_offset_y_px'], label='Offset Y', suffix='px', group='Localization'),
+            ParamField('manual_period_x_px', 'float', defaults['manual_period_x_px'], label='Period X', suffix='px', min=0.001, group='Localization'),
+            ParamField('manual_period_y_px', 'float', defaults['manual_period_y_px'], label='Period Y', suffix='px', min=0.001, group='Localization'),
+            ParamField('stagger_axis', 'select', defaults['stagger_axis'], label='Stagger axis', options=('None', 'X', 'Y'), group='Localization'),
+            ParamField('stagger', 'float', defaults['stagger'], label='Stagger', group='Localization',
+                       help='Signed fraction of the period along the stagger axis'),
+            ParamField('localization_settings', 'json', defaults['localization_settings'],
+                       label='Localization settings', group='Localization', advanced=True),
+            ParamField('orientation_mode', 'select', defaults['orientation_mode'], label='Mode',
+                       options=(ORIENTATION_AUTO, ORIENTATION_LOCKED, ORIENTATION_MANUAL), group='Scanning'),
+            ParamField('orientation', 'select', defaults['orientation'], label='Orientation',
+                       options=tuple(ORIENTATIONS), group='Scanning'),
+            ParamField('locked_orientation', 'str', defaults['locked_orientation'],
+                       label='Locked orientation', group='Scanning', advanced=True),
+            ParamField('spot_width_mode', 'select', defaults['spot_width_mode'], label='Mode',
+                       options=(SPOT_MANUAL, SPOT_AUTO), group='Spot model'),
+            ParamField('spot_fwhm', 'float', defaults['spot_fwhm'], label='FWHM', min=0.001, group='Spot model'),
+            ParamField('spot_fwhm_unit', 'select', defaults['spot_fwhm_unit'], label='FWHM unit', options=('nm', 'px'), group='Spot model'),
+            ParamField('background', 'select', defaults['background'], label='Background', options=('constant', 'none', 'auto'), group='Spot model'),
+            ParamField('legacy_bleaching_correction', 'bool', defaults['legacy_bleaching_correction'],
+                       label='Bleaching correction', group='Legacy DLL'),
+            ParamField('legacy_bg_modelling', 'select', defaults['legacy_bg_modelling'],
+                       label='Background', options=('Constant', 'Gaussian', 'No background'), group='Legacy DLL'),
+            ParamField('legacy_bg_gaussian_size_nm', 'float', defaults['legacy_bg_gaussian_size_nm'],
+                       label='Gaussian background size', suffix='nm', min=0.001, group='Legacy DLL'),
+            ParamField('intensity_correction', 'bool', defaults['intensity_correction'], label='Intensity correction', group='Corrections',
+                       help='Correct smooth frame-to-frame intensity variations, e.g. bleaching or illumination drift'),
+            ParamField('cell_offsets', 'bool', defaults['cell_offsets'], label='Cell offsets', group='Corrections'),
+            ParamField('reassignment', 'select', defaults['reassignment'], label='Reassignment', options=('off', 'auto', 'fixed'), group='ISM'),
+            ParamField('shift_factor', 'float', defaults['shift_factor'], label='Shift factor', min=0.0, max=1.0, group='ISM'),
+            ParamField('reassignment_asymmetric', 'bool', defaults['reassignment_asymmetric'], label='Asymmetric', group='ISM'),
+            ParamField('shift_factor_x', 'float', defaults['shift_factor_x'], label='Shift factor X', min=0.0, max=1.0, group='ISM'),
+            ParamField('shift_factor_y', 'float', defaults['shift_factor_y'], label='Shift factor Y', min=0.0, max=1.0, group='ISM'),
+            ParamField('placement_mode', 'select', defaults['placement_mode'], label='Mode', options=(PLACEMENT_AUTO, PLACEMENT_DIRECT, PLACEMENT_INTERPOLATE), group='Advanced', advanced=True),
+            ParamField('commensurate_tolerance', 'float', defaults['commensurate_tolerance'], label='Direct tolerance', suffix='px', min=0.0, max=1.0, group='Advanced', advanced=True),
+            ParamField('variance_weighting', 'bool', defaults['variance_weighting'], label='Variance weighting', group='Advanced', advanced=True),
+            ParamField('sharpen', 'bool', defaults['sharpen'], label='Sharpened image', group='Output'),
+            ParamField('sharpen_sigma_px', 'float', defaults['sharpen_sigma_px'], label='Sharpening blur', suffix='px', min=0.1, group='Advanced', advanced=True),
+            ParamField('sharpen_regularization', 'float', defaults['sharpen_regularization'], label='Sharpening regularization', min=0.001, group='Advanced', advanced=True),
+            ParamField('pinhole_stack', 'bool', defaults['pinhole_stack'], label='Pinhole stack', group='ISM'),
+            ParamField('scan_steps_fast', 'int', defaults['scan_steps_fast'], label='Steps, fast axis', min=0, group='Scanning', advanced=True),
+            ParamField('scan_steps_slow', 'int', defaults['scan_steps_slow'], label='Steps, slow axis', min=0, group='Scanning', advanced=True),
+            ParamField('scan_step_nm', 'float', defaults['scan_step_nm'], label='Step', suffix='nm', min=0.0, group='Scanning', advanced=True),
         )
 
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
+        self.session_registry = MonalisaSessionRegistry()
         self._pattern_finder = PatternFinder()
         self._signal_extractor = None  # Lazy-loaded on first use (Windows-only)
+        self._legacy_adapter = None
         self._axis_labels = {
             'r_l_text': 'Right-Left',
             'u_d_text': 'Up-Down',
@@ -147,7 +181,7 @@ class MonalisaReconstructor(StreamingReconstructor):
     
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         """Create and return the MoNaLISA parameter widget."""
-        return MonalisaParamsWidget(parent)
+        return MonalisaParamsWidget(parent, session_registry=self.session_registry)
     
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         """
@@ -205,6 +239,546 @@ class MonalisaReconstructor(StreamingReconstructor):
             )
         return params
 
+    @staticmethod
+    def _manual_localization(params: dict) -> PatternLocalization | None:
+        mode = str(params.get("localization_mode", LOCALIZATION_AUTO))
+        if mode == LOCALIZATION_AUTO:
+            return None
+        if mode != LOCALIZATION_MANUAL:
+            raise ValueError(f"Localization mode {mode!r} is not Manual")
+        axis = str(params.get("stagger_axis", "None"))
+        return PatternLocalization.manual_grid(
+            period_x=float(params["manual_period_x_px"]),
+            period_y=float(params["manual_period_y_px"]),
+            offset_x=float(params["manual_offset_x_px"]),
+            offset_y=float(params["manual_offset_y_px"]),
+            stagger_axis=None if axis.lower() == "none" else axis.lower(),
+            stagger=float(params.get("stagger", 0.0)),
+            source="manual",
+        )
+
+    @classmethod
+    def _resolved_localization(cls, params: dict) -> PatternLocalization | None:
+        """The explicit localization carried by the current settings, if any."""
+        mode = str(params.get("localization_mode", LOCALIZATION_AUTO))
+        if mode == LOCALIZATION_MANUAL:
+            return cls._manual_localization(params)
+        if mode == LOCALIZATION_AUTO:
+            return PatternLocalization.from_dict(params.get("auto_localization"))
+        if mode == LOCALIZATION_LOCKED:
+            localization = PatternLocalization.from_dict(params.get("locked_localization"))
+            if localization is None:
+                raise ValueError("Localization is Locked but no locked localization is selected")
+            return localization
+        raise ValueError(f"Unknown localization mode {mode!r}")
+
+    @staticmethod
+    def _spot_sigma_for_params(params: dict) -> float | None:
+        if str(params.get("spot_width_mode", SPOT_MANUAL)) != SPOT_MANUAL:
+            return None
+        return fwhm_to_sigma_px(
+            params["spot_fwhm"], params["spot_fwhm_unit"], params.get("pixel_size_nm")
+        )
+
+    @classmethod
+    def _localization_pipeline_params(cls, params: dict) -> PipelineParams:
+        return PipelineParams(
+            spot_sigma_px=cls._spot_sigma_for_params(params),
+            localization_refinement=str(
+                params.get("localization_refinement", LOCALIZATION_REFINEMENT_FAST)
+            ),
+            localization_settings=LocalizationSettings.from_dict(
+                params.get("localization_settings")
+            ),
+        )
+
+    @staticmethod
+    def _calibration_frames(data_obj, frames: np.ndarray, params: dict) -> np.ndarray:
+        """One representative in-plane scan for Auto localization/calibration.
+
+        A recording may contain Z planes, timepoints or conditions.  Their
+        intensity/defocus differences are not scan modulation and must not be
+        folded into the temporal variance used to estimate the Gaussian spot.
+        Prefer the resolved acquisition layout; older recordings fall back to
+        the legacy scan metadata.
+        """
+        from imswitch.improcess.reconstructors.monalisa_lattice.scan import (
+            layout_scan, recorded_scan,
+        )
+
+        num_frames = int(np.asarray(frames).shape[0])
+        groups = None
+        try:
+            scan = layout_scan(getattr(data_obj, "acquisition_layout", None), num_frames)
+        except ValueError:
+            # A declared incompatible layout should keep its normal explicit
+            # failure during reconstruction; localization itself can still be
+            # attempted from the frames rather than mixing arbitrary stacks.
+            scan = None
+        if scan is not None:
+            groups = [scan.frames_of(stack) for stack in range(scan.num_stacks)]
+        else:
+            attrs = dict(getattr(data_obj, "attrs", None) or {})
+            try:
+                legacy = recorded_scan(
+                    attrs, num_frames,
+                    num_fast=int(params.get("scan_steps_fast", 0) or 0),
+                    num_slow=int(params.get("scan_steps_slow", 0) or 0),
+                    step_nm=float(params.get("scan_step_nm", 0.0) or 0.0),
+                )
+            except ValueError:
+                legacy = None
+            if legacy is not None and legacy.num_stacks > 1:
+                size = legacy.frames_per_stack
+                groups = [
+                    np.arange(stack * size, (stack + 1) * size, dtype=int)
+                    for stack in range(legacy.num_stacks)
+                ]
+
+        if not groups or len(groups) == 1:
+            return np.asarray(frames)
+        chosen = most_modulated_indices(frames, groups)
+        return np.asarray(frames)[chosen]
+
+    def localize(self, data_obj, params: dict | None = None) -> tuple[PatternLocalization, str, dict]:
+        """Compute one Auto localization without mutating session state.
+
+        The GUI may call this explicitly or from a background Auto-localization
+        request.  The caller owns acceptance/commit so a stale worker cannot
+        overwrite calibration for a newer dataset or parameter state.
+        """
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        preloaded = bool(getattr(data_obj, "dataLoaded", True))
+        try:
+            data_obj.checkAndLoadData()
+            frames = np.asarray(data_obj.data)
+        finally:
+            if not preloaded and hasattr(data_obj, "checkAndUnloadData"):
+                data_obj.checkAndUnloadData()
+        if frames.ndim != 3:
+            raise ValueError(f"Expected (frames, rows, cols), got {frames.shape}")
+        pipeline_params = self._localization_pipeline_params(merged)
+        calibration_frames = self._calibration_frames(data_obj, frames, merged)
+        finding = find_localization(
+            calibration_frames.mean(axis=0, dtype=np.float64),
+            calibration_frames.var(axis=0, dtype=np.float64)
+            if needs_modulation_frame(pipeline_params) else None,
+            pipeline_params,
+        )
+        source = (
+            "auto-fast" if finding.calibration.name.endswith("-fast") else "auto"
+        )
+        localization = PatternLocalization.from_lattice(
+            finding.lattice, source=source, dataset=getattr(data_obj, "name", "")
+        )
+        return localization, finding.describe(), {
+            "spot_sigma_px": float(finding.spot.shared_sigma),
+        }
+
+    @staticmethod
+    def _orientation_literal(params: dict):
+        mode = str(params.get("orientation_mode", ORIENTATION_AUTO))
+        if mode == ORIENTATION_AUTO:
+            return None
+        if mode == ORIENTATION_MANUAL:
+            value = str(params.get("orientation", "+x+y"))
+        elif mode == ORIENTATION_LOCKED:
+            value = str(params.get("locked_orientation") or "")
+            if not value:
+                raise ValueError("Orientation is Locked but no detector orientation is locked")
+        else:
+            raise ValueError(f"Unknown orientation mode {mode!r}")
+        return ScanOrientation.from_literal(value).to_literal()
+
+    @classmethod
+    def _fast_update_signature(
+        cls, params: dict, *, localization: PatternLocalization | None = None,
+        spot_sigma_px: float | None = None,
+    ) -> dict:
+        """Canonical state that must stay unchanged for placement-only update."""
+        if localization is None:
+            localization = cls._resolved_localization(params)
+        if spot_sigma_px is None:
+            spot_sigma_px = cls._spot_sigma_for_params(params)
+        return {
+            "localization": None if localization is None else localization.to_dict(),
+            "spot_sigma_px": None if spot_sigma_px is None else float(spot_sigma_px),
+            "pixel_size_nm": float(params.get("pixel_size_nm", 0.0) or 0.0),
+            "background": str(params.get("background", "constant")),
+            "scan_steps_fast": int(params.get("scan_steps_fast", 0) or 0),
+            "scan_steps_slow": int(params.get("scan_steps_slow", 0) or 0),
+            "scan_step_nm": float(params.get("scan_step_nm", 0.0) or 0.0),
+            "placement_mode": str(params.get("placement_mode", PLACEMENT_AUTO)),
+            "commensurate_tolerance": float(params.get("commensurate_tolerance", 0.05)),
+            "variance_weighting": bool(params.get("variance_weighting", False)),
+            "intensity_correction": bool(params.get("intensity_correction", False)),
+            "cell_offsets": bool(params.get("cell_offsets", False)),
+            "reassignment": str(params.get("reassignment", "off")),
+            "pinhole_stack": bool(params.get("pinhole_stack", False)),
+            "sharpen": bool(params.get("sharpen", False)),
+        }
+
+    def update_reconstruction(self, result, params: dict):
+        """Fast placement-only refresh, primarily for visual orientation checks."""
+        from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
+            MonalisaLatticeReconstructor,
+        )
+
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        if str(merged.get("preset", "Fast")) != "Fast":
+            raise ValueError(
+                "Update reconstruction is currently available only in Fast mode."
+            )
+        expected = getattr(result, "_monalisa_fast_update_signature", None)
+        if expected is None or not hasattr(result, "_fast_placement_cache"):
+            raise ValueError(
+                "This result has no retained Fast extraction. Run Fast reconstruction first."
+            )
+        current = self._fast_update_signature(merged)
+        if current != expected:
+            raise ValueError(
+                "Localization, spot model, scan or extraction settings changed. "
+                "Run a full reconstruction before using Update reconstruction."
+            )
+
+        orientation = self._orientation_literal(merged)
+        if orientation is None:
+            orientation = str(
+                (getattr(result, "diagnostics", {}) or {}).get("resolved_orientation")
+                or (getattr(result, "diagnostics", {}) or {}).get("orientation")
+                or merged.get("orientation", "+x+y")
+            )
+        updated = MonalisaLatticeReconstructor.update_fast_placement(
+            result, orientation
+        )
+        updated.name = result.name
+        updated.params = dict(merged)
+        updated._monalisa_fast_update_signature = copy.deepcopy(expected)
+
+        snapshot = dict(
+            ((getattr(result, "metadata", {}) or {}).get("monalisa_calibration") or {})
+        )
+        snapshot.update(
+            orientation_source=str(merged.get("orientation_mode", ORIENTATION_AUTO)),
+            resolved_orientation=str(orientation),
+            placement_mode_used=str(updated.diagnostics.get("placement_method") or ""),
+            placement_residual_px=updated.diagnostics.get("placement_residual_px"),
+        )
+        updated.params["calibration_snapshot"] = copy.deepcopy(snapshot)
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        metadata["monalisa_calibration"] = copy.deepcopy(snapshot)
+        updated.metadata = metadata
+        return updated
+
+    def _legacy_reconstructor(self):
+        """Return the classic DLL adapter without loading the DLL until process()."""
+        if self._legacy_adapter is None:
+            from .legacy import LegacyMonalisaReconstructor
+
+            self._legacy_adapter = LegacyMonalisaReconstructor()
+        return self._legacy_adapter
+
+    @staticmethod
+    def _legacy_pattern_from_localization(localization: PatternLocalization) -> tuple[float, float, float, float]:
+        """Convert a rectangular localization to SignalExtractor's pattern tuple.
+
+        The classic DLL accepts only an axis-aligned rectangular grid.  Reject
+        staggered/general lattices explicitly rather than approximating them.
+        """
+        if len(localization.motif) != 1:
+            raise ValueError(
+                "Legacy DLL supports only a rectangular non-staggered localization; "
+                "the current localization has a multi-point motif."
+            )
+        try:
+            period_x, offset_x, period_y, offset_y = localization.lattice.to_grid_params(tol=0.02)
+        except ValueError as exc:
+            raise ValueError(
+                "Legacy DLL supports only an axis-aligned rectangular localization. "
+                "Use Fast/Robust/Custom for rotated or staggered patterns."
+            ) from exc
+        return (float(offset_y), float(offset_x), float(period_y), float(period_x))
+
+    def _process_legacy_dll(self, data_obj, params: dict, context=None):
+        """Run the classic SignalExtractor through the unified MoNaLISA UI."""
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+
+        localization = self._resolved_localization(merged)
+        localization_status = ""
+        if localization is None:
+            # Auto may not have completed yet. process() already runs on the
+            # reconstruction worker, so resolving it here is safe and keeps
+            # Auto semantically automatic.
+            localization, localization_status, _ = self.localize(data_obj, merged)
+        if localization is None:
+            raise ValueError("Legacy DLL requires a resolved localization")
+        pattern = self._legacy_pattern_from_localization(localization)
+
+        pixel_nm = float(merged.get("pixel_size_nm", 0.0) or 0.0)
+        if pixel_nm <= 0:
+            raise ValueError("Legacy DLL requires a positive camera pixel size")
+        fwhm = float(merged.get("spot_fwhm", 0.0) or 0.0)
+        if fwhm <= 0:
+            raise ValueError("Legacy DLL requires a positive PSF FWHM")
+        unit = str(merged.get("spot_fwhm_unit", "nm")).lower()
+        if unit == "px":
+            fwhm_nm = fwhm * pixel_nm
+        elif unit == "nm":
+            fwhm_nm = fwhm
+        else:
+            raise ValueError(f"Unsupported FWHM unit for Legacy DLL: {unit!r}")
+
+        scan_params = merged.get("scan_params")
+        if scan_params is None:
+            raise ValueError("Legacy DLL requires recorded scan parameters")
+
+        from .legacy import default_axis_label_map
+
+        legacy_params = {
+            "bleaching_correction": bool(merged.get("legacy_bleaching_correction", False)),
+            "psf_fwhm_nm": [float(fwhm_nm)],
+            "bg_modelling": str(merged.get("legacy_bg_modelling", "Constant")),
+            "bg_gaussian_size_nm": float(merged.get("legacy_bg_gaussian_size_nm", 1000.0)),
+            "pixel_size_nm": pixel_nm,
+            "device": str(merged.get("device", "CPU")),
+            "pattern": pattern,
+            "scan_params": copy.deepcopy(scan_params),
+            "axis_label_map": default_axis_label_map(),
+        }
+        result = self._legacy_reconstructor().process(data_obj, legacy_params, context=context)
+        result.name = f"{data_obj.name}_monalisa_legacy"
+
+        detector = detector_identity(data_obj)
+        if str(merged.get("localization_mode", LOCALIZATION_AUTO)) == LOCALIZATION_AUTO:
+            self.session_registry.set_current_localization(
+                detector, localization, source="auto",
+                source_dataset=str(getattr(data_obj, "name", "") or ""),
+                source_path=str(getattr(data_obj, "dataPath", "") or ""),
+                diagnostics={"status": localization_status or "Resolved for Legacy DLL"},
+            )
+
+        snapshot = {
+            "detector": detector,
+            "localization_source": str(merged.get("localization_mode", LOCALIZATION_AUTO)),
+            "resolved_localization": localization.to_dict(),
+            "preset": PRESET_LEGACY,
+            "legacy_dll": {
+                "device": legacy_params["device"],
+                "psf_fwhm_nm": float(fwhm_nm),
+                "bg_modelling": legacy_params["bg_modelling"],
+                "bg_gaussian_size_nm": legacy_params["bg_gaussian_size_nm"],
+                "bleaching_correction": legacy_params["bleaching_correction"],
+            },
+        }
+        result.params = dict(merged)
+        result.params["calibration_snapshot"] = copy.deepcopy(snapshot)
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        metadata["monalisa_calibration"] = copy.deepcopy(snapshot)
+        result.metadata = metadata
+        return result
+
+    def _process_unified_gaussian(self, data_obj, params: dict, context=None):
+        """Run the experimental/general lattice orchestration as the one Gaussian plugin.
+
+        ``MonalisaLatticeReconstructor`` is retained as a compatibility wrapper
+        during Patch 2; the mathematical pipeline it calls already lives under
+        ``reconstructors.monalisa``.  Patch 4 removes the wrapper after stored
+        settings have a migration path.
+        """
+        from imswitch.improcess.reconstructors.monalisa_lattice.params_widget import AUTO
+        from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
+            MonalisaLatticeReconstructor,
+        )
+
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        localization = self._resolved_localization(merged)
+        orientation = self._orientation_literal(merged)
+
+        spot_sigma_px = self._spot_sigma_for_params(merged)
+
+        placement = str(merged.get("placement_mode", PLACEMENT_AUTO)).lower()
+        if placement == "interpolate":
+            placement = "interpolate"
+        elif placement == "direct":
+            placement = "direct"
+        else:
+            placement = "auto"
+
+        lattice_params = {
+            **MonalisaLatticeReconstructor.default_params(),
+            # Internal execution hint: preserve the unified mathematical
+            # pipeline, but let the compatibility wrapper use the dedicated
+            # low-overhead Fast execution strategy when the user selected
+            # Fast.  Robust/Custom keep the full diagnostic extraction path.
+            "_fast_execution": str(merged.get("preset", PRESET_FAST)) == PRESET_FAST,
+            "scan_steps_fast": int(merged.get("scan_steps_fast", 0)),
+            "scan_steps_slow": int(merged.get("scan_steps_slow", 0)),
+            "scan_step_nm": float(merged.get("scan_step_nm", 0.0)),
+            "pixel_size_nm": float(merged.get("pixel_size_nm", 0.0)),
+            "orientation": AUTO if orientation is None else orientation,
+            "reuse_localization": False,
+            # Unified MoNaLISA owns reuse through the session registry; do not
+            # populate the experimental plugin's temporary single-entry cache.
+            "_cache_localization_reference": False,
+            "background": str(merged.get("background", "constant")),
+            "frame_gain": bool(merged.get("intensity_correction", False)),
+            "cell_offsets": bool(merged.get("cell_offsets", False)),
+            "reassignment": str(merged.get("reassignment", "off")),
+            "shift_factor": float(merged.get("shift_factor", 0.0)),
+            "reassignment_asymmetric": bool(merged.get("reassignment_asymmetric", False)),
+            "shift_factor_x": float(merged.get("shift_factor_x", merged.get("shift_factor", 0.0))),
+            "shift_factor_y": float(merged.get("shift_factor_y", merged.get("shift_factor", 0.0))),
+            "sharpen": bool(merged.get("sharpen", False)),
+            "sharpen_sigma_px": float(merged.get("sharpen_sigma_px", 1.5)),
+            "sharpen_regularization": float(merged.get("sharpen_regularization", 0.1)),
+            "pinhole_stack": bool(merged.get("pinhole_stack", False)),
+            "variance_weighting": bool(merged.get("variance_weighting", False)),
+            "commensurate_tolerance": float(merged.get("commensurate_tolerance", 0.05)),
+            "placement_mode": placement,
+            "device": str(merged.get("device", "GPU")),
+            "spot_sigma_px": spot_sigma_px,
+            "localization_refinement": str(
+                merged.get("localization_refinement", LOCALIZATION_REFINEMENT_FAST)
+            ),
+            "localization_settings": LocalizationSettings.from_dict(
+                merged.get("localization_settings")
+            ),
+            "_pattern_localization": (
+                None if localization is None else localization.to_dict()
+            ),
+        }
+        result = MonalisaLatticeReconstructor().process(data_obj, lattice_params, context=context)
+        result.name = f"{data_obj.name}_monalisa"
+
+        diagnostics = dict(getattr(result, "diagnostics", {}) or {})
+        resolved_localization = PatternLocalization.from_dict(
+            diagnostics.get("resolved_localization")
+        ) or localization
+        resolved_orientation = str(
+            diagnostics.get("resolved_orientation") or orientation or ""
+        )
+        detector = detector_identity(data_obj)
+        localization_mode = str(merged.get("localization_mode", LOCALIZATION_AUTO))
+        orientation_mode = str(merged.get("orientation_mode", ORIENTATION_AUTO))
+
+        if resolved_localization is not None and localization_mode == LOCALIZATION_AUTO:
+            self.session_registry.set_current_localization(
+                detector, resolved_localization, source="auto",
+                source_dataset=str(getattr(data_obj, "name", "") or ""),
+                source_path=str(getattr(data_obj, "dataPath", "") or ""),
+                diagnostics={"status": "Resolved during reconstruction"},
+            )
+        if resolved_orientation and orientation_mode == ORIENTATION_AUTO:
+            self.session_registry.set_current_orientation(
+                detector, resolved_orientation, source="auto",
+                source_dataset=str(getattr(data_obj, "name", "") or ""),
+                source_path=str(getattr(data_obj, "dataPath", "") or ""),
+            )
+
+        effective_sigma_px = (
+            float(diagnostics["resolved_spot_sigma_px"])
+            if diagnostics.get("resolved_spot_sigma_px") is not None
+            else (float(spot_sigma_px) if spot_sigma_px is not None else None)
+        )
+        resolved_fwhm_px = (
+            sigma_px_to_fwhm(effective_sigma_px, "px", None)
+            if effective_sigma_px is not None else None
+        )
+        pixel_nm = float(merged.get("pixel_size_nm", 0.0) or 0.0)
+        resolved_fwhm_nm = (
+            sigma_px_to_fwhm(effective_sigma_px, "nm", pixel_nm)
+            if effective_sigma_px is not None and pixel_nm > 0 else None
+        )
+
+        calibration_snapshot = {
+            "detector": detector,
+            "localization_source": localization_mode,
+            "resolved_localization": (
+                resolved_localization.to_dict() if resolved_localization is not None else {}
+            ),
+            "locked_localization_id": str(merged.get("locked_localization_id") or ""),
+            "locked_localization_name": str(merged.get("locked_localization_name") or ""),
+            "orientation_source": orientation_mode,
+            "resolved_orientation": resolved_orientation,
+            "spot_width_source": str(merged.get("spot_width_mode", SPOT_MANUAL)),
+            "spot_fwhm": float(merged.get("spot_fwhm", 0.0)),
+            "spot_fwhm_unit": str(merged.get("spot_fwhm_unit", "nm")),
+            "requested_spot_fwhm": float(merged.get("spot_fwhm", 0.0)),
+            "requested_spot_fwhm_unit": str(merged.get("spot_fwhm_unit", "nm")),
+            "resolved_spot_fwhm_px": resolved_fwhm_px,
+            "resolved_spot_fwhm_nm": resolved_fwhm_nm,
+            "effective_sigma_px": effective_sigma_px,
+            "resolved_shift_factor": diagnostics.get("resolved_shift_factor"),
+            "resolved_shift_factor_xy": diagnostics.get("resolved_shift_factor_xy"),
+            "preset": str(merged.get("preset", "")),
+            "placement_mode_requested": str(merged.get("placement_mode", PLACEMENT_AUTO)),
+            "placement_mode_used": str(diagnostics.get("placement_method") or ""),
+            "placement_residual_px": diagnostics.get("placement_residual_px"),
+            "placement_tolerance_px": float(merged.get("commensurate_tolerance", 0.05)),
+            "corrections": {
+                "intensity_correction": bool(merged.get("intensity_correction", False)),
+                "cell_offsets": bool(merged.get("cell_offsets", False)),
+                "reassignment": str(merged.get("reassignment", "off")),
+                "shift_factor": float(merged.get("shift_factor", 0.0)),
+                "reassignment_asymmetric": bool(merged.get("reassignment_asymmetric", False)),
+                "shift_factor_x": float(merged.get("shift_factor_x", merged.get("shift_factor", 0.0))),
+                "shift_factor_y": float(merged.get("shift_factor_y", merged.get("shift_factor", 0.0))),
+                "variance_weighting": bool(merged.get("variance_weighting", False)),
+                "sharpen": bool(merged.get("sharpen", False)),
+            },
+        }
+
+        # Keep the user-facing unified settings and an immutable calibration
+        # snapshot with the result.  The metadata copy is what generic result
+        # writers persist beside the pixels, so later profile renames/deletes
+        # cannot make an old reconstruction ambiguous.
+        result.params = dict(merged)
+        result.params["calibration_snapshot"] = copy.deepcopy(calibration_snapshot)
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        metadata["monalisa_calibration"] = copy.deepcopy(calibration_snapshot)
+        result.metadata = metadata
+        if str(merged.get("preset", "Fast")) == "Fast" and hasattr(
+            result, "_fast_placement_cache"
+        ):
+            result._monalisa_fast_update_signature = self._fast_update_signature(
+                merged, localization=resolved_localization,
+                spot_sigma_px=effective_sigma_px,
+            )
+        return result
+
+    def detection_preview(self, data_obj, displayed_image, params: dict):
+        """Overlay the exact localization the unified reconstructor will use."""
+        if data_obj is None:
+            return None
+        merged = unified_default_params()
+        merged.update(dict(params or {}))
+        image = np.asarray(displayed_image)
+        rows, cols = image.shape[-2:]
+        localization = self._resolved_localization(merged)
+        if localization is not None:
+            x, y = localization.points_in_frame(rows, cols)
+            if str(merged.get("localization_mode")) == LOCALIZATION_MANUAL:
+                stagger = str(merged.get("stagger_axis", "None"))
+                status = (
+                    f"Manual: {x.size} foci; X {merged['manual_period_x_px']:.3g} px, "
+                    f"Y {merged['manual_period_y_px']:.3g} px"
+                    + ("" if stagger == "None" else f", stagger {stagger} {merged.get('stagger', 0.0):+.3g}")
+                )
+            else:
+                status = str(localization.provenance.get("status") or "Auto localization")
+            return DetectionPreview(x, y, status, marker="point")
+        # Auto preview is intentionally passive.  Expensive localization only
+        # happens when the user presses Localize, or when reconstruction itself
+        # needs an unresolved Auto localization.
+        return DetectionPreview(
+            np.array([], dtype=float), np.array([], dtype=float),
+            "Auto: press Localize", marker="point",
+        )
+
     def process(
         self, data_obj: 'DataObj', params: dict, context=None
     ) -> MonalisaProcessingResult:
@@ -225,9 +799,18 @@ class MonalisaReconstructor(StreamingReconstructor):
                 - scan_params: dict with 'dimensions', 'directions', 'steps', 'step_sizes', 'unidirectional'
         
         Returns:
-            MonalisaProcessingResult containing reconstructed 6D image
+            Processing result containing the reconstructed image.
         """
-        # Extract scan parameters (required for MoNaLISA)
+        # New unified Gaussian parameter dictionaries have no internal
+        # ``reconstruction_method`` selector.  Keep accepting that key for the
+        # migration window so old Fast/Legacy saved settings still run until
+        # Patch 4 translates them explicitly.
+        if "reconstruction_method" not in params:
+            if str(params.get("preset", "")) == PRESET_LEGACY:
+                return self._process_legacy_dll(data_obj, params, context=context)
+            return self._process_unified_gaussian(data_obj, params, context=context)
+
+        # Extract scan parameters (required for the compatibility path)
         scan_params = params.get('scan_params')
         if scan_params is None:
             raise ValueError('MoNaLISA requires scan_params in params dict')
@@ -420,6 +1003,38 @@ class MonalisaReconstructor(StreamingReconstructor):
             return results[0]
 
         first = results[0]
+        # During the compatibility phase the unified Gaussian plugin reuses
+        # the lattice result container.  Consolidate it with the same general
+        # geometry-aware rules instead of forcing it through the old fixed-6D
+        # Fast-Gauss result contract.
+        try:
+            from imswitch.improcess.reconstructors.monalisa_lattice.result import (
+                MonalisaLatticeResult,
+            )
+        except Exception:
+            MonalisaLatticeResult = ()
+        if isinstance(first, MonalisaLatticeResult):
+            from imswitch.improcess.reconstructors.monalisa_lattice.reconstructor import (
+                MonalisaLatticeReconstructor,
+            )
+            merged = MonalisaLatticeReconstructor().consolidate(results)
+            snapshots = [
+                dict((getattr(result, "metadata", {}) or {}).get("monalisa_calibration") or {})
+                for result in results
+            ]
+            snapshots = [snapshot for snapshot in snapshots if snapshot]
+            if snapshots:
+                payload = (
+                    snapshots[0]
+                    if all(snapshot == snapshots[0] for snapshot in snapshots[1:])
+                    else {"per_data_item": snapshots}
+                )
+                metadata = dict(getattr(merged, "metadata", {}) or {})
+                metadata["monalisa_calibration"] = copy.deepcopy(payload)
+                merged.metadata = metadata
+                merged.params = dict(getattr(merged, "params", {}) or {})
+                merged.params["calibration_snapshot"] = copy.deepcopy(payload)
+            return merged
         for other in results[1:]:
             if other.data.shape[1:] != first.data.shape[1:]:
                 raise ValueError(

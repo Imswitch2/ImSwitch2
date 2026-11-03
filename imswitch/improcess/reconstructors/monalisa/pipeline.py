@@ -31,26 +31,31 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from .calibration import PatternLocalization
 from .cell_offsets import fit_cell_offsets
 from .frame_gain import fit_frame_gain
 from .extraction import (
     DEFAULT_MIN_PIXELS,
     DEFAULT_REACH_SIGMA,
     ExtractionOperator,
+    ExtractionResult,
     calibrate_haze_sigma,
 )
 from .lattice import Lattice, detect_lattice
+from .localization_settings import LocalizationSettings
 from .placement import (
     COMMENSURATE_TOLERANCE,
     DEFAULT_SMOOTHING,
     Coverage,
     OutputRaster,
+    PlacementPlan,
     PlacedImage,
     commensurability,
     coverage,
     lock_step_to_lattice,
     place,
     place_nearest,
+    prepare_placement,
     sample_positions,
 )
 from .quality import seam_contrast
@@ -103,6 +108,8 @@ class PipelineParams:
         commensurate_tolerance: Samples within this distance of a raster
             pixel, in raster pixels, are placed without interpolation.
         smoothing: Roughness penalty of the gridding.
+        placement_mode: ``"auto"``, ``"direct"`` or ``"interpolate"``.
+        device: Gaussian extraction backend, ``"CPU"`` or ``"GPU"``.
         reassignment: ``"auto"`` measures the shift factor and reassigns the
             pixels of the spots when the foci are not confined, ``"off"``
             places amplitudes, a number is the shift factor to reassign with.
@@ -112,6 +119,10 @@ class PipelineParams:
         cell_offsets: ``"seams"`` takes the offset of every focus off its
             amplitudes, read from the borders of the cells
             (:mod:`.cell_offsets`); ``"off"`` does not.
+        variance_weighting: Compute the extraction variance gain and use it
+            when duplicate direct-placement samples are combined. Kept on by
+            default for current lattice-result parity; Fast can disable it
+            without paying the variance solves.
         sharpen_sigma_px: When given, the result also holds the image
             sharpened by a Wiener filter that undoes a Gaussian blur of this
             many output pixels (:mod:`.sharpen`).
@@ -131,22 +142,40 @@ class PipelineParams:
     joint: bool = True
     spot_mode: str = "shared"
     spot_sigma_px: float | None = None
+    # ``fast`` detects the general lattice directly from the mean frame (the
+    # variance is only a fallback) and skips per-focus centre/width refinement
+    # when a spot width is already supplied. ``full`` keeps the experimental
+    # variance selection and robust focus refinement.
+    localization_refinement: str = "full"
     period_band_px: tuple[float, float] | None = None
+    localization_settings: LocalizationSettings | None = None
     lock_tolerance: float = 0.02
     commensurate_tolerance: float = COMMENSURATE_TOLERANCE
     smoothing: float = DEFAULT_SMOOTHING
-    reassignment: str | float = "auto"
+    placement_mode: str = "auto"
+    device: str = "CPU"
+    reassignment: str | float | tuple[float, float] = "auto"
     frame_gain: str = "smooth"
     cell_offsets: str = "seams"
+    variance_weighting: bool = True
     sharpen_sigma_px: float | None = None
     sharpen_regularization: float = 0.1
     pinhole_stack: str = "off"
+
+
+def needs_modulation_frame(params: PipelineParams) -> bool:
+    """Whether Auto preparation needs the temporal-variance image."""
+    return not (
+        str(params.localization_refinement).lower() == "fast"
+        and params.spot_sigma_px is not None
+    )
 
 
 @dataclass(frozen=True)
 class StackGeometry:
     """Everything that is fixed for a recording."""
 
+    localization: PatternLocalization
     lattice: Lattice
     spot_model: SpotModel
     operator: ExtractionOperator
@@ -184,6 +213,10 @@ class StackReconstruction:
     background: PlacedImage | None
     haze: PlacedImage | None
     noise_sigma: np.ndarray
+    # Runtime-only fitted coefficients retained so Fast mode can re-place an
+    # already extracted stack when only the scan orientation changes.  This
+    # is deliberately not part of any persisted result format.
+    extracted: ExtractionResult | None = field(default=None, repr=False, compare=False)
     owner: np.ndarray | None = None
     sharpened: np.ndarray | None = None
     pinholes: PinholeStack | None = None
@@ -315,6 +348,7 @@ def prepare_geometry(
     scan_index: np.ndarray,
     params: PipelineParams | None = None,
     lattice: Lattice | None = None,
+    localization: PatternLocalization | None = None,
     modulation_frame: np.ndarray | None = None,
     pixel_mask: np.ndarray | None = None,
     step_aspect: float | None = None,
@@ -343,19 +377,65 @@ def prepare_geometry(
             both but not the pixel size (:func:`complete_step`).
     """
     params = params or PipelineParams()
+    if params.localization_settings is not None and params.period_band_px is None:
+        settings = params.localization_settings
+        params = replace(params, period_band_px=settings.period_band_px())
     mean_frame = np.asarray(mean_frame, dtype=float)
     rows, cols = mean_frame.shape
-    finding = find_foci(mean_frame, modulation_frame, params, lattice=lattice)
-    calibration, lattice, first = finding.calibration, finding.lattice, finding.spot
-    image = calibration.image
-    modulation = calibration.name == "variance"
-    lattice_residual = finding.lattice_residual_px
+    if localization is None:
+        supplied_lattice = lattice is not None
+        finding = find_localization(mean_frame, modulation_frame, params, lattice=lattice)
+        calibration, lattice, first = finding.calibration, finding.lattice, finding.spot
+        localization = PatternLocalization.from_lattice(
+            lattice,
+            source=(
+                "supplied-lattice" if supplied_lattice
+                else "auto-fast" if calibration.name.endswith("-fast")
+                else "auto"
+            ),
+        )
+        image = calibration.image
+        modulation = calibration.name.startswith("variance")
+        lattice_residual = finding.lattice_residual_px
+    else:
+        lattice = localization.lattice
+        inner_x, inner_y = localization.points_in_frame(rows, cols)
+        if inner_x.size == 0:
+            raise ValueError("The supplied localization has no foci inside the frame")
+        if params.spot_sigma_px is not None:
+            # Manual localization + manual/default FWHM is the true Fast
+            # calibration path: use exactly what the user supplied.  Do not
+            # run the automatic shared-width/centre calibration merely to
+            # overwrite it afterwards.
+            image = mean_frame
+            modulation = False
+            first = SpotModel.uniform(inner_x, inner_y, float(params.spot_sigma_px))
+        else:
+            calibration = choose_calibration_image(
+                mean_frame, modulation_frame, params, lattice=lattice
+            )
+            image = calibration.image
+            modulation = calibration.name == "variance"
+            first = calibrate_spot_model(
+                image, inner_x, inner_y, None,
+                mode="measured", modulation=modulation,
+            )
+        lattice_residual = np.nan
 
-    margin = 3.0 * first.shared_sigma
-    x, y = lattice.points_in_frame(rows, cols, margin=margin)
-    spot_model = calibrate_spot_model(
-        image, x, y, first.shared_sigma, mode=params.spot_mode, modulation=modulation
+    final_sigma = (
+        float(params.spot_sigma_px)
+        if params.spot_sigma_px is not None
+        else float(first.shared_sigma)
     )
+    margin = 3.0 * final_sigma
+    x, y = localization.points_in_frame(rows, cols, margin=margin)
+    if params.spot_sigma_px is not None:
+        spot_model = SpotModel.uniform(x, y, final_sigma)
+        spot_model.diagnostics.update({"mode": "manual", "image": "configured"})
+    else:
+        spot_model = calibrate_spot_model(
+            image, x, y, first.shared_sigma, mode=params.spot_mode, modulation=modulation
+        )
     sigma = spot_model.sigma
     if params.spot_sigma_px is not None:
         sigma = np.full(x.shape, float(params.spot_sigma_px))
@@ -394,18 +474,25 @@ def prepare_geometry(
     lock_change = 0.0
     if params.lock_tolerance > 0:
         step, lock_change = lock_step_to_lattice(
-            lattice.matrix, step, params.lock_tolerance
+            lattice.matrix, step, params.lock_tolerance, scan_index=scan_index
         )
     index_matrix, residual = commensurability(lattice.matrix, step)
     cell_coverage = coverage(index_matrix, scan_index)
     raster = OutputRaster.covering((rows, cols), step, lattice.offset)
 
+    calibration_info = locals().get("calibration")
     diagnostics = {
         "lattice": lattice.describe(),
         "lattice_fit_residual_px": lattice_residual,
-        "calibration_image": calibration.name,
-        "calibration_contrast": dict(calibration.contrast),
-        "calibration_width_ratio": calibration.width_ratio,
+        "calibration_image": (
+            calibration_info.name if calibration_info is not None else "configured"
+        ),
+        "calibration_contrast": (
+            dict(calibration_info.contrast) if calibration_info is not None else {}
+        ),
+        "calibration_width_ratio": (
+            calibration_info.width_ratio if calibration_info is not None else None
+        ),
         "step_aspect": step_aspect,
         "spot_sigma_px": spot_model.shared_sigma,
         "spot_model": dict(spot_model.diagnostics),
@@ -426,6 +513,7 @@ def prepare_geometry(
         "coverage_overlaps": cell_coverage.overlaps,
     }
     return StackGeometry(
+        localization=localization,
         lattice=lattice,
         spot_model=spot_model,
         operator=operator,
@@ -465,7 +553,7 @@ def geometry_with_step(
     lock_change = 0.0
     if params.lock_tolerance > 0:
         step, lock_change = lock_step_to_lattice(
-            lattice.matrix, step, params.lock_tolerance
+            lattice.matrix, step, params.lock_tolerance, scan_index=scan_index
         )
     index_matrix, residual = commensurability(lattice.matrix, step)
     cell_coverage = coverage(index_matrix, scan_index)
@@ -549,7 +637,8 @@ def choose_calibration_image(
     :data:`VARIANCE_CONTRAST_RATIO` of the mean frame's.
     """
     params = params or PipelineParams()
-    band = params.period_band_px or (3.0, None)
+    settings = params.localization_settings or LocalizationSettings()
+    band = params.period_band_px or settings.period_band_px()
     mean_frame = np.asarray(mean_frame, dtype=float)
     candidates = []
     if modulation_frame is not None:
@@ -561,7 +650,9 @@ def choose_calibration_image(
     for name, image in candidates:
         try:
             found = lattice or detect_lattice(
-                image, min_period=band[0], max_period=band[1]
+                image, min_period=band[0], max_period=band[1],
+                num_candidate_peaks=int(settings.num_candidate_peaks),
+                min_peak_significance=float(settings.min_peak_significance),
             )
             x, y = found.points_in_frame(*image.shape)
             fit = shared_sigma_fit(image, x, y, radius=_default_radius(x, y, 2.0))
@@ -617,6 +708,12 @@ class FociFinding:
         a2 = np.linalg.norm(self.lattice.a2)
         rows, cols = self.calibration.image.shape
         count = self.points(rows, cols)[0].size
+        if self.calibration.name.endswith("-fast"):
+            return (
+                f"{count} foci on a lattice of {a1:.2f} x {a2:.2f} px; "
+                f"configured spot sigma {self.spot.shared_sigma:.2f} px; "
+                f"read from the {self.calibration.name.removesuffix('-fast')} frame"
+            )
         measured = self.spot.diagnostics.get("num_measured", 0)
         contrast = ", ".join(
             f"{name} {value:.2f}" for name, value in self.calibration.contrast.items()
@@ -677,6 +774,81 @@ def find_foci(
     return FociFinding(calibration, lattice, first, lattice_residual)
 
 
+def find_localization(
+    mean_frame: np.ndarray,
+    modulation_frame: np.ndarray | None = None,
+    params: PipelineParams | None = None,
+    lattice: Lattice | None = None,
+) -> FociFinding:
+    """Resolve Auto localization at the refinement level selected by ``params``.
+
+    ``fast`` is intentionally close to the historical Fast-Gauss contract:
+    detect the general lattice, use the configured spot width, and stop.  It
+    avoids per-focus centre/width fitting.  The mean frame is tried first;
+    variance is only a fallback when the lattice cannot be detected there.
+
+    ``full`` delegates to :func:`find_foci`, retaining the experimental
+    variance selection, per-focus measurement and lattice refinement.
+    """
+    params = params or PipelineParams()
+    fast = (
+        str(params.localization_refinement).lower() == "fast"
+        and params.spot_sigma_px is not None
+    )
+    if not fast:
+        return find_foci(mean_frame, modulation_frame, params, lattice=lattice)
+
+    mean_frame = np.asarray(mean_frame, dtype=float)
+    rows, cols = mean_frame.shape
+    settings = params.localization_settings or LocalizationSettings()
+    band = params.period_band_px or settings.period_band_px()
+    chosen_name = "mean-fast"
+    chosen_image = mean_frame
+    found = lattice
+    first_failure = None
+    if found is None:
+        try:
+            found = detect_lattice(
+                chosen_image,
+                min_period=band[0], max_period=band[1],
+                num_candidate_peaks=int(settings.num_candidate_peaks),
+                min_peak_significance=float(settings.min_peak_significance),
+            )
+        except ValueError as exc:
+            first_failure = exc
+            if modulation_frame is None:
+                raise
+            chosen_name = "variance-fast"
+            chosen_image = np.asarray(modulation_frame, dtype=float)
+            try:
+                found = detect_lattice(
+                    chosen_image,
+                    min_period=band[0], max_period=band[1],
+                    num_candidate_peaks=int(settings.num_candidate_peaks),
+                    min_peak_significance=float(settings.min_peak_significance),
+                )
+            except ValueError:
+                raise first_failure
+
+    x, y = found.points_in_frame(rows, cols)
+    if x.size == 0:
+        raise ValueError("The detected localization has no foci inside the frame")
+    sigma = float(params.spot_sigma_px)
+    spacing = found.nearest_spacing()
+    if spacing < 3.0 * sigma:
+        raise ValueError(
+            f"The lattice found has a period of {spacing:.2f} px, finer than "
+            f"configured spots of sigma {sigma:.2f} px allow: it is likely a "
+            "harmonic. Set an expected period/tolerance in Localization settings."
+        )
+    spot = SpotModel.uniform(x, y, sigma)
+    spot.diagnostics.update({"mode": "configured", "image": chosen_name})
+    calibration = CalibrationImage(
+        chosen_name, chosen_image, found, sigma, contrast={}, width_ratio=None
+    )
+    return FociFinding(calibration, found, spot, np.nan)
+
+
 def _oriented_aspect(aspect: float | None, orientation: str) -> float | None:
     """The x-over-y step ratio in camera axes for a stage-to-camera mapping."""
     if aspect is None or not np.isfinite(aspect) or aspect <= 0:
@@ -691,8 +863,41 @@ def _raster_coordinates(geometry: StackGeometry, scan_index: np.ndarray):
     return geometry.raster.coordinates(qx, qy)
 
 
-def _shift_factor_to_use(geometry: StackGeometry):
-    """The shift factor to reassign with, or ``None`` to place amplitudes."""
+def _scanned_camera_axes(geometry: StackGeometry, scan_index: np.ndarray) -> np.ndarray:
+    """Boolean camera X/Y mask for directions genuinely sampled by the scan."""
+    offsets = (
+        np.asarray(scan_index, dtype=float).reshape(-1, 2)
+        @ np.asarray(geometry.step, dtype=float).T
+    )
+    if offsets.size == 0:
+        return np.zeros(2, dtype=bool)
+    span = np.nanmax(offsets, axis=0) - np.nanmin(offsets, axis=0)
+    return np.isfinite(span) & (np.abs(span) > 1e-12)
+
+
+def _masked_reassignment(values, geometry: StackGeometry, scan_index: np.ndarray):
+    """Mask one or two camera-axis reassignment values to sampled directions."""
+    scanned = _scanned_camera_axes(geometry, scan_index)
+    if not np.any(scanned):
+        return None
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if values.size == 1:
+        values = np.repeat(values, 2)
+    elif values.size != 2:
+        raise ValueError("Reassignment factor must be one value or (x, y)")
+    values = np.where(scanned, values, 0.0)
+    return tuple(float(v) for v in values)
+
+
+def _shift_factor_to_use(geometry: StackGeometry, scan_index: np.ndarray):
+    """The camera-axis shift factor to reassign with.
+
+    Reassignment is meaningful only along camera-plane directions actually
+    sampled by the scan.  This matters for e.g. YZ data: an X displacement
+    must not be introduced merely because the detector image has an X axis.
+    Scalar manual factors are broadcast only onto scanned camera axes;
+    asymmetric factors are masked the same way.
+    """
     choice = geometry.params.reassignment
     if isinstance(choice, str):
         if choice == "off":
@@ -700,17 +905,53 @@ def _shift_factor_to_use(geometry: StackGeometry):
         if choice != "auto":
             raise ValueError(f"Unknown reassignment {choice!r}")
         factor = geometry.shift_factor
-        if factor is None or factor.alpha < CONFINED_SHIFT_FACTOR:
+        if factor is None:
             return None
-        return (factor.alpha_x, factor.alpha_y)
-    return float(choice)
+        values = _masked_reassignment(
+            (factor.alpha_x, factor.alpha_y), geometry, scan_index
+        )
+        if values is None:
+            return None
+        scanned_values = [abs(value) for value in values if abs(value) > 0.0]
+        if not scanned_values or max(scanned_values) < CONFINED_SHIFT_FACTOR:
+            return None
+        return values
+    return _masked_reassignment(choice, geometry, scan_index)
+
+
+def prepare_stack_placement(
+    geometry: StackGeometry, scan_index: np.ndarray
+) -> tuple[PlacementPlan, np.ndarray]:
+    """Prepare the invariant placement mapping of one in-plane scan.
+
+    Timepoints/Z planes of one recording normally traverse the same scan
+    positions.  The unified merger initially rebuilt this mapping for every
+    stack; mature Fast Gauss prepared the equivalent scatter map once.  Keep
+    the generic placement implementation, but make its reusable part explicit.
+    """
+    scan_index = np.asarray(scan_index, dtype=float).reshape(-1, 2)
+    gx, gy = _raster_coordinates(geometry, scan_index)
+    valid = geometry.operator.valid
+    gx, gy = gx[:, valid], gy[:, valid]
+    plan = prepare_placement(
+        gx, gy, geometry.raster.shape,
+        tolerance=geometry.params.commensurate_tolerance,
+        smoothing=geometry.params.smoothing,
+        mode=geometry.params.placement_mode,
+    )
+    focus = np.broadcast_to(np.flatnonzero(valid)[None, :], gx.shape)
+    owner = place_nearest(gx, gy, focus, geometry.raster.shape).image
+    owner = np.where(np.isfinite(owner), owner, -1).astype(np.int64)
+    return plan, owner
 
 
 def reconstruct_stack(
-    frames: np.ndarray,
+    frames: np.ndarray | None,
     geometry: StackGeometry,
     scan_index: np.ndarray,
     frame_gain: np.ndarray | None = None,
+    extracted: ExtractionResult | None = None,
+    prepared_placement: tuple[PlacementPlan, np.ndarray] | None = None,
 ) -> StackReconstruction:
     """Reconstruct one stack: the frames of one scan of the cell.
 
@@ -721,46 +962,65 @@ def reconstruct_stack(
             displaced by ``geometry.step @ scan_index[k]`` in frame ``k``.
         frame_gain: ``(frames,)`` gain of every frame; the amplitudes are
             divided by it.
+        extracted: An extraction already solved for ``frames``. Supplying it
+            makes reconstruction/corrections reuse that solve.
     """
-    frames = np.asarray(frames)
     scan_index = np.asarray(scan_index, dtype=float).reshape(-1, 2)
-    if scan_index.shape[0] != frames.shape[0]:
-        raise ValueError(
-            f"{frames.shape[0]} frames but {scan_index.shape[0]} scan positions"
-        )
     operator = geometry.operator
-    extracted = operator.apply(frames)
-    gx, gy = _raster_coordinates(geometry, scan_index)
+    params = geometry.params
+    if frames is None:
+        if extracted is None:
+            raise ValueError("Placement-only reconstruction requires retained extraction")
+        num_frames = int(extracted.amplitude.shape[0])
+    else:
+        frames = np.asarray(frames)
+        num_frames = int(frames.shape[0])
+        if extracted is None:
+            extracted = operator.apply_device(frames, params.device)
+    if scan_index.shape[0] != num_frames:
+        raise ValueError(
+            f"{num_frames} frames but {scan_index.shape[0]} scan positions"
+        )
+    if extracted.amplitude.shape[0] != num_frames:
+        raise ValueError(
+            f"{num_frames} frames but {extracted.amplitude.shape[0]} extracted rows"
+        )
     valid = operator.valid
-    gx, gy = gx[:, valid], gy[:, valid]
 
-    gain = np.ones(frames.shape[0])
+    gain = np.ones(num_frames)
     if frame_gain is not None:
-        gain = np.asarray(frame_gain, dtype=float).reshape(frames.shape[0])
+        gain = np.asarray(frame_gain, dtype=float).reshape(num_frames)
     amplitudes = extracted.amplitude / gain[:, None]
-    variance = (
-        (extracted.noise_sigma / gain)[:, None] ** 2
-        * operator.variance_gain[None, valid]
-    )
-    variance = np.where(variance > 0, variance, np.nan)
-    if not np.all(np.isfinite(variance)):
-        variance = None
+    alpha = _shift_factor_to_use(geometry, scan_index)
+    variance = None
+    # Variance is only consumed by direct amplitude placement. Reassigned
+    # images and diagnostic/background planes do not need the expensive
+    # inverse-normal diagonal.
+    if geometry.params.variance_weighting and alpha is None:
+        variance = (
+            (extracted.noise_sigma / gain)[:, None] ** 2
+            * operator.variance_gain[None, valid]
+        )
+        variance = np.where(variance > 0, variance, np.nan)
+        if not np.all(np.isfinite(variance)):
+            variance = None
+
+    if prepared_placement is None:
+        placement_plan, owner = prepare_stack_placement(geometry, scan_index)
+    else:
+        placement_plan, owner = prepared_placement
 
     def placed(values: np.ndarray | None, with_variance: bool) -> PlacedImage | None:
         if values is None:
             return None
-        return place(
-            gx, gy, values[:, valid], geometry.raster.shape,
-            variance=variance if with_variance else None,
-            tolerance=geometry.params.commensurate_tolerance,
-            smoothing=geometry.params.smoothing,
+        return placement_plan.place(
+            values[:, valid], variance=variance if with_variance else None
         )
 
-    focus = np.broadcast_to(np.flatnonzero(valid)[None, :], gx.shape)
-    owner = place_nearest(gx, gy, focus, geometry.raster.shape).image
-    owner = np.where(np.isfinite(owner), owner, -1).astype(np.int64)
     offsets, offset_share = None, None
     if geometry.params.cell_offsets == "seams":
+        gx, gy = _raster_coordinates(geometry, scan_index)
+        gx, gy = gx[:, valid], gy[:, valid]
         cells = place_nearest(gx, gy, amplitudes[:, valid], geometry.raster.shape)
         offsets, offset_share = fit_cell_offsets(
             cells.image, owner, operator.num_foci, return_share=True
@@ -769,18 +1029,21 @@ def reconstruct_stack(
     elif geometry.params.cell_offsets != "off":
         raise ValueError(f"Unknown cell offsets {geometry.params.cell_offsets!r}")
 
-    alpha = _shift_factor_to_use(geometry)
     if alpha is None:
         amplitude = placed(amplitudes, True)
     else:
+        if frames is None:
+            raise ValueError("Reassignment needs the raw frames; run a full reconstruction")
         model = geometry.spot_model
         amplitude = reassign(
             frames, operator, model.x, model.y,
             scan_index @ geometry.step.T, geometry.raster, alpha,
-            frame_gain=gain, focus_offset=offsets,
+            frame_gain=gain, focus_offset=offsets, extracted=extracted,
         )
     pinholes = None
     if geometry.params.pinhole_stack != "off":
+        if frames is None:
+            raise ValueError("Pinhole stacks need the raw frames; run a full reconstruction")
         if geometry.params.pinhole_stack not in ("raw", "shifted"):
             raise ValueError(
                 f"Unknown pinhole stack {geometry.params.pinhole_stack!r}"
@@ -789,9 +1052,13 @@ def reconstruct_stack(
         factor = geometry.shift_factor
         shift = None
         if geometry.params.pinhole_stack == "shifted":
-            shift = alpha if alpha is not None else (
-                (factor.alpha_x, factor.alpha_y) if factor is not None else 0.0
-            )
+            shift = alpha
+            if shift is None and factor is not None:
+                shift = _masked_reassignment(
+                    (factor.alpha_x, factor.alpha_y), geometry, scan_index
+                )
+            if shift is None:
+                shift = 0.0
         pinholes = pinhole_stack(
             frames, model.x[valid], model.y[valid],
             scan_index @ geometry.step.T, geometry.raster,
@@ -805,6 +1072,7 @@ def reconstruct_stack(
             amplitude.image, geometry.params.sharpen_sigma_px,
             geometry.params.sharpen_regularization,
         )
+    finite_noise = extracted.noise_sigma[np.isfinite(extracted.noise_sigma)]
     diagnostics = {
         "placement": amplitude.method,
         "shift_factor_used": alpha,
@@ -812,19 +1080,53 @@ def reconstruct_stack(
         "cell_offset_share": offset_share,
         "max_placement_residual": amplitude.max_residual,
         "holes": int(np.sum(~np.isfinite(amplitude.image))),
-        "noise_sigma_mean": float(np.mean(extracted.noise_sigma)),
+        "noise_sigma_mean": (
+            float(np.mean(finite_noise)) if finite_noise.size else None
+        ),
     }
     return StackReconstruction(
         amplitude=amplitude,
         background=placed(extracted.background, False),
         haze=placed(extracted.haze, False),
         noise_sigma=extracted.noise_sigma,
+        extracted=extracted,
         owner=owner,
         sharpened=sharpened,
         pinholes=pinholes,
         geometry=geometry,
         diagnostics=diagnostics,
     )
+
+
+def _choose_recorded_orientation(
+    scores: dict[str, float],
+    coverages: dict[str, Coverage],
+) -> tuple[str, tuple[str, ...]]:
+    """Choose a recorded scan orientation without letting image score
+    override known one-cell topology.
+
+    Coverage is a *validity filter*, not a general orientation score.  When
+    every finite candidate has the same topology (the usual symmetric XY
+    case), image/seam contrast decides exactly as before.  When at least one
+    candidate covers the measured cell exactly once and another does not, the
+    incomplete candidates are rejected and image contrast chooses only among
+    the exact candidates.  If no candidate is exact, coverage is deliberately
+    ignored rather than guessing that fewer holes means the right orientation.
+    """
+    finite = {name: score for name, score in scores.items() if np.isfinite(score)}
+    if not finite:
+        raise ValueError("No orientation produced an image")
+    exact = tuple(
+        name for name in finite
+        if name in coverages and coverages[name].exactly_once
+    )
+    if exact and len(exact) < len(finite):
+        eligible = {name: finite[name] for name in exact}
+        rejected = tuple(name for name in finite if name not in eligible)
+    else:
+        eligible = finite
+        rejected = ()
+    return min(eligible, key=eligible.get), rejected
 
 
 def reconstruct_scan(
@@ -834,12 +1136,15 @@ def reconstruct_scan(
     params: PipelineParams | None = None,
     orientation: str | None = None,
     lattice: Lattice | None = None,
+    localization: PatternLocalization | None = None,
     pixel_mask: np.ndarray | None = None,
     shift_factor: ShiftFactor | None = None,
     geometry: StackGeometry | None = None,
     scan_index: np.ndarray | None = None,
     gain_positions: tuple[np.ndarray, np.ndarray] | None = None,
     step_aspect: float | None = None,
+    extracted: ExtractionResult | None = None,
+    prepared_placement: tuple[PlacementPlan, np.ndarray] | None = None,
 ) -> StackReconstruction:
     """Reconstruct the frames of one raster scan, reading all it can from them.
 
@@ -908,7 +1213,10 @@ def reconstruct_scan(
             shift_factor = geometry.shift_factor
     else:
         mean_frame = frames.mean(axis=0, dtype=np.float64)
-        modulation_frame = frames.var(axis=0, dtype=np.float64)
+        modulation_frame = (
+            frames.var(axis=0, dtype=np.float64)
+            if needs_modulation_frame(params) else None
+        )
         first_index = (
             orient_recorded_index(scan_index, orientation or "+x+y") if recorded
             else raster_scan_index(num_fast, num_slow, orientation or "+x+y")
@@ -916,7 +1224,7 @@ def reconstruct_scan(
         first_step = orient_step_columns(step, orientation or "+x+y") if recorded else step
         geometry = prepare_geometry(
             mean_frame, first_step, first_index, params,
-            lattice=lattice, modulation_frame=modulation_frame,
+            lattice=lattice, localization=localization, modulation_frame=modulation_frame,
             pixel_mask=pixel_mask,
             step_aspect=_oriented_aspect(step_aspect, orientation or "+x+y") if recorded else None,
         )
@@ -924,7 +1232,17 @@ def reconstruct_scan(
     valid = operator.valid
     diagnostics = {}
 
-    amplitude = operator.apply(frames).amplitude[:, valid]
+    # One geometry-independent extraction backend for both the old Fast grid
+    # and general lattices.  The returned result is host-readable for the
+    # compact calibration/correction steps, while the expensive sparse solve
+    # uses the selected device.
+    if extracted is None:
+        extracted = operator.apply_device(frames, params.device)
+    elif extracted.amplitude.shape[0] != frames.shape[0]:
+        raise ValueError(
+            f"{frames.shape[0]} frames but {extracted.amplitude.shape[0]} extracted rows"
+        )
+    amplitude = extracted.amplitude[:, valid]
     gain = None
     if params.frame_gain == "smooth":
         try:
@@ -992,14 +1310,27 @@ def reconstruct_scan(
                     if np.unique(camera_index[:, axis]).size > 1
                 )
                 scores[name] = seam_contrast(image, owner, axes)
+            coverages = {
+                name: candidate.coverage
+                for name, (_camera_index, candidate) in candidates.items()
+            }
+            orientation, rejected = _choose_recorded_orientation(scores, coverages)
             finite = {name: score for name, score in scores.items() if np.isfinite(score)}
-            if not finite:
-                raise ValueError("No orientation produced an image")
-            orientation = min(finite, key=finite.get)
+            eligible_scores = [
+                score for name, score in finite.items() if name not in rejected
+            ]
             # Mappings that differ only along an axis of one position give
             # the same image; the lead is over the next distinct image.
-            ranked = sorted(set(np.round(list(finite.values()), 12)))
+            ranked = sorted(set(np.round(eligible_scores, 12)))
             diagnostics["orientation_scores"] = scores
+            diagnostics["orientation_topology"] = {
+                name: {
+                    "holes": int(coverages[name].holes),
+                    "overlaps": int(coverages[name].overlaps),
+                }
+                for name in candidates
+            }
+            diagnostics["orientation_topology_rejected"] = rejected
             diagnostics["orientation_margin"] = (
                 float((ranked[1] - ranked[0]) / max(ranked[-1] - ranked[0], 1e-30))
                 if len(ranked) > 1 else 0.0
@@ -1041,7 +1372,10 @@ def reconstruct_scan(
             diagnostics["shift_factor_xy"] = (factor.alpha_x, factor.alpha_y)
             diagnostics["shift_factor_spread"] = factor.spread
 
-    result = reconstruct_stack(frames, geometry, scan_index, frame_gain=gain)
+    result = reconstruct_stack(
+        frames, geometry, scan_index, frame_gain=gain, extracted=extracted,
+        prepared_placement=prepared_placement,
+    )
     geometry_diagnostics = dict(geometry.diagnostics)
     geometry_diagnostics.update(
         coverage_holes=geometry.coverage.holes,

@@ -1835,6 +1835,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._setDockVisible(dock, show)
         self._syncDockVisibilityActions()
 
+    def setUpdateReconstructionEnabled(self, enabled: bool, tooltip: str = "") -> None:
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is None or not hasattr(btnFrame, 'updateBtn'):
+            return
+        btnFrame.updateBtn.setEnabled(bool(enabled))
+        btnFrame.updateBtn.setToolTip(str(tooltip or ""))
+
     def setReconstructionActionsVisible(
         self,
         reconstruct_current: bool = True,

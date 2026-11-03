@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult
+from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
 
 
 def _levels(data: np.ndarray) -> tuple[float, float]:
@@ -68,6 +68,7 @@ class MonalisaLatticeResult(ProcessingResult):
         axis_labels: list[str] | None = None,
         plane_step_nm: float | None = None,
         condition_labels: tuple[str, ...] = (),
+        scanned_axes: tuple[str, ...] = (),
     ):
         """
         Args:
@@ -82,6 +83,10 @@ class MonalisaLatticeResult(ProcessingResult):
             plane_step_nm: The distance between Z planes, for the scale of
                 a ``Z`` axis.
             condition_labels: The names of the conditions along a ``C`` axis.
+            scanned_axes: Physical scan axes (``x``, ``y``, ``z``) when the
+                acquisition layout provides them. Used only to choose the first
+                viewer orientation; reconstructed X/Y lattice pixels are not
+                mistaken for stage-scanned axes.
         """
         image = np.asarray(image, dtype=np.float32)
         if axis_labels is None:
@@ -116,15 +121,27 @@ class MonalisaLatticeResult(ProcessingResult):
                 scales.append(float(plane_step_nm))
             else:
                 scales.append(1.0)
+        view_modes = None
+        if all(axis in axis_labels for axis in ("X", "Y", "Z")):
+            leading = [i for i, label in enumerate(axis_labels) if label not in ("X", "Y", "Z")]
+            x, y, z = (axis_labels.index(axis) for axis in ("X", "Y", "Z"))
+            view_modes = [
+                ViewMode("Standard", tuple([*leading, z, y, x])),
+                ViewMode("Bottom", tuple([*leading, y, z, x])),
+                ViewMode("Left", tuple([*leading, x, z, y])),
+            ]
+
         super().__init__(
             name=name,
             data=image,
             axis_labels=axis_labels,
+            view_modes=view_modes,
             display_levels=_levels(image),
             axis_scales=scales,
             scale_unit="nm" if calibrated else "px",
         )
         self.condition_labels = tuple(str(label) for label in condition_labels)
+        self.scanned_axes = tuple(str(axis).lower() for axis in scanned_axes)
         self.params = dict(params)
         self.diagnostics = dict(diagnostics)
         if not calibrated:
@@ -145,6 +162,14 @@ class MonalisaLatticeResult(ProcessingResult):
                     f"The pinhole stack has shape {self.pinholes.shape}, "
                     f"expected {expected}"
                 )
+
+    def initial_view_mode_name(self) -> str:
+        axes = set(self.scanned_axes)
+        if {"y", "z"} <= axes and "x" not in axes:
+            return "Left"
+        if {"x", "z"} <= axes and "y" not in axes:
+            return "Bottom"
+        return "Standard"
 
     def _like_image(self, plane):
         if plane is None:

@@ -11,8 +11,10 @@ from .gauss_processor import (
     measure_spot_sigma,
 )
 from .localizer import localization_from_pattern, localizer
+from .params import PRESET_LEGACY
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
+from .spot_settings import fwhm_to_sigma_px
 
 try:
     import cupy as cp
@@ -214,6 +216,7 @@ class MonalisaLiveSession(StreamingSession):
         data = init_obj.data
         attrs = init_obj.attrs
 
+        self._validate_unified_live_params(params)
         explicit_use_gpu = params.get("use_gpu")
         self.use_gpu = (
             bool(explicit_use_gpu)
@@ -334,7 +337,14 @@ class MonalisaLiveSession(StreamingSession):
         self.use_gpu = bool(self.processor.use_gpu)
 
         orientation_indices = self._condition_frame_indices(0)
-        if (
+        manual_orientation = (
+            str(params.get("orientation_mode", "Auto")) == "Manual"
+            and params.get("orientation")
+        )
+        if manual_orientation:
+            orientation = str(manual_orientation)
+            self._logger.info(f"Using manual scan orientation: {orientation}")
+        elif (
             orientation_indices.size < self.num_frames_per_condition
             or working_data.shape[0] <= int(orientation_indices[-1])
         ):
@@ -593,10 +603,61 @@ class MonalisaLiveSession(StreamingSession):
         dst.reshape(-1)[:] = cp.asnumpy(self._hot_plane)
         self._hot_plane_dirty = False
 
+    @staticmethod
+    def _validate_unified_live_params(params: dict) -> None:
+        """Reject unified options the legacy incremental Fast live path cannot honor.
+
+        Patch 2 keeps the existing low-latency Fast live implementation. The
+        fully general lattice/corrections live path is intentionally deferred;
+        failing explicitly is safer than displaying an image reconstructed with
+        options the user selected but the live path ignored.
+        """
+        if "preset" not in params:
+            return
+        if str(params.get("preset", "")) == PRESET_LEGACY:
+            raise ValueError(
+                "Legacy DLL mode is offline-only; live MoNaLISA reconstruction uses "
+                "the Fast-compatible Gaussian path."
+            )
+        unsupported = []
+        if params.get("intensity_correction", False):
+            unsupported.append("Intensity correction")
+        if params.get("cell_offsets", False):
+            unsupported.append("Cell offsets")
+        if str(params.get("reassignment", "off")).lower() != "off":
+            unsupported.append("Reassignment")
+        if str(params.get("placement_mode", "Auto")).lower() != "auto":
+            unsupported.append("forced placement mode")
+        if params.get("variance_weighting", False):
+            unsupported.append("Variance weighting")
+        if params.get("sharpen", False):
+            unsupported.append("Sharpening")
+        if (
+            str(params.get("localization_mode", "Auto")) == "Manual"
+            and str(params.get("stagger_axis", "None")).lower() != "none"
+            and abs(float(params.get("stagger", 0.0))) > 1e-12
+        ):
+            unsupported.append("manual stagger")
+        if unsupported:
+            raise ValueError(
+                "The current live MoNaLISA session supports the Fast-compatible "
+                "rectangular path only; " + ", ".join(unsupported) +
+                " require the general live pipeline planned for the live-integration pass."
+            )
+
     def _resolve_gaussian_sigma_px(self, params: dict, frames=None, localization=None) -> float:
         """Spot width in pixels: measured on the frames when they are given
         (:func:`.gauss_processor.measure_spot_sigma`), else from the optical
         PSF as the classic path has it, ``PSF_FWHM_nm / (2.355 * pixel_size_nm)``."""
+        # Unified manual/default spot width is authoritative. Auto keeps the
+        # existing live measurement behavior until the general live pipeline
+        # is introduced.
+        if str(params.get("spot_width_mode", "")).lower().startswith("manual"):
+            return fwhm_to_sigma_px(
+                params.get("spot_fwhm", 220.0),
+                params.get("spot_fwhm_unit", "nm"),
+                params.get("pixel_size_nm"),
+            )
         if frames is not None and localization is not None:
             measured = measure_spot_sigma(
                 frames, localization.xp, localization.xo, localization.yp,
@@ -645,6 +706,15 @@ class MonalisaLiveSession(StreamingSession):
         ``_monalisa_pattern_params`` so it follows the parameter widget in the
         same way as the full SignalExtractor path.
         """
+        if str(params.get("localization_mode", "Auto")) == "Manual":
+            return localization_from_pattern(
+                row_offset=float(params["manual_offset_y_px"]),
+                col_offset=float(params["manual_offset_x_px"]),
+                row_period=float(params["manual_period_y_px"]),
+                col_period=float(params["manual_period_x_px"]),
+                num_rows=data.shape[-2],
+                num_cols=data.shape[-1],
+            )
         pattern = params.get("_monalisa_pattern_params")
         if pattern:
             return localization_from_pattern(
@@ -660,7 +730,7 @@ class MonalisaLiveSession(StreamingSession):
     @staticmethod
     def _resolve_fit_background(params: dict) -> bool:
         """Whether to fit a constant background (False = pure matched filter)."""
-        bg = str(params.get("bg_modelling", "Constant")).strip().lower()
+        bg = str(params.get("background", params.get("bg_modelling", "Constant"))).strip().lower()
         return bg not in ("no background", "none")
 
     def _resolve_num_timepoints(self, metadata: dict, stack_info) -> int:

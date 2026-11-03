@@ -4193,6 +4193,17 @@ class RecordingWorker(Worker):
                 exposure_time_ms=self._exposureTimeFor(detectorName),
                 start_time=acquisition_start,
             )
+            # Persist the detector-scoped MoNaLISA spot-width default so
+            # offline reconstruction does not depend on whichever setup file
+            # happens to be active later.  Missing/invalid values are simply
+            # omitted and ImProcess follows its normal fallback chain.
+            try:
+                detector = self.__recordingManager.detectorsManager[detectorName]
+                fwhm_nm = detector.monalisaSpotFwhmNm
+                if fwhm_nm is not None:
+                    augmented[detectorName]['monalisa:spot_fwhm_nm'] = float(fwhm_nm)
+            except (AttributeError, TypeError, ValueError, KeyError):
+                pass
         return augmented
 
     def _isScanDrivenDetector(self, detectorName) -> bool:

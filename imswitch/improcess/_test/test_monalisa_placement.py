@@ -19,6 +19,7 @@ from imswitch.improcess.reconstructors.monalisa.placement import (
     lock_step_to_lattice,
     place,
     place_nearest,
+    prepare_placement,
     sample_positions,
 )
 from imswitch.improcess.reconstructors.monalisa.scan_geometry import get_1d_indices
@@ -135,6 +136,47 @@ class TestStepLock:
         np.testing.assert_allclose(locked, step, atol=1e-12)
         assert commensurability(lattice, locked)[1] < 1e-9
 
+
+    def test_one_cell_lock_uses_the_acquired_phase_count(self):
+        """21 acquired phases stay 21 even when 35 nm is nearer 22 subdivisions.
+
+        The lattice period is 756 nm.  The recorded 35 nm is approximate; the
+        one-cell topology says 21 phase positions, so the effective step is
+        756 / 21 = 36 nm and coverage has no artificial hole.
+        """
+        pixel_nm = 77.0
+        period_nm = 756.0
+        lattice = np.diag([10.0, period_nm / pixel_nm])
+        nominal = np.diag([10.0, 35.0 / pixel_nm])
+        scan_index = np.column_stack([np.zeros(21, dtype=int), np.arange(21)])
+
+        locked, change = lock_step_to_lattice(
+            lattice, nominal, scan_index=scan_index
+        )
+        index_matrix, residual = commensurability(lattice, locked)
+
+        assert locked[1, 1] * pixel_nm == pytest.approx(36.0)
+        assert change == pytest.approx(1.0 / 35.0)
+        assert residual < 1e-12
+        assert abs(round(np.linalg.det(index_matrix))) == 21
+        assert coverage(index_matrix, scan_index).exactly_once
+
+    def test_nineteen_positions_of_nominal_40_nm_are_also_one_cell(self):
+        pixel_nm = 77.0
+        period_nm = 756.0
+        lattice = np.diag([10.0, period_nm / pixel_nm])
+        nominal = np.diag([10.0, 40.0 / pixel_nm])
+        scan_index = np.column_stack([np.zeros(19, dtype=int), np.arange(19)])
+
+        locked, _ = lock_step_to_lattice(
+            lattice, nominal, scan_index=scan_index
+        )
+        index_matrix, residual = commensurability(lattice, locked)
+
+        assert locked[1, 1] * pixel_nm == pytest.approx(period_nm / 19.0)
+        assert residual < 1e-12
+        assert coverage(index_matrix, scan_index).exactly_once
+
     def test_large_axis_does_not_hide_excessive_change_on_small_axis(self):
         """The 6.5 px X pitch must not mask a 5 % correction of Y."""
         lattice = np.array([[6.493, -6.520], [4.903, 4.920]])
@@ -229,6 +271,19 @@ class TestExactPlacement:
         )
         assert np.isnan(placed.image[0, 0])
         assert placed.image[0, 1] == 2.0
+
+    def test_prepared_direct_plan_preserves_holes_and_duplicate_weighting(self):
+        gx = np.array([1.0, 1.0, 2.0])
+        gy = np.array([1.0, 1.0, 0.0])
+        values = np.array([10.0, 20.0, 5.0])
+        variance = np.array([1.0, 3.0, 2.0])
+        plan = prepare_placement(gx, gy, (3, 4))
+        assert plan.method == "exact"
+        expected = place_nearest(gx, gy, values, (3, 4), variance=variance)
+        actual = plan.place(values, variance=variance)
+        np.testing.assert_allclose(actual.image, expected.image, equal_nan=True)
+        np.testing.assert_array_equal(actual.count, expected.count)
+        np.testing.assert_allclose(actual.variance, expected.variance, equal_nan=True)
 
 
 class TestGridding:
@@ -352,3 +407,26 @@ class TestOutputRaster:
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_placement_mode_can_force_interpolation_or_require_direct():
+    from imswitch.improcess.reconstructors.monalisa.placement import prepare_placement
+
+    gx = np.array([[0.10, 1.10]])
+    gy = np.array([[0.0, 0.0]])
+    forced = prepare_placement(gx, gy, (2, 3), tolerance=0.05, mode="interpolate")
+    assert forced.method == "gridded"
+    with pytest.raises(ValueError, match="Direct placement requested"):
+        prepare_placement(gx, gy, (2, 3), tolerance=0.05, mode="direct")
+
+
+def test_direct_mode_still_uses_exact_holes_and_duplicate_semantics():
+    from imswitch.improcess.reconstructors.monalisa.placement import prepare_placement
+
+    gx = np.array([[0.0, 0.0, 2.0]])
+    gy = np.zeros_like(gx)
+    plan = prepare_placement(gx, gy, (1, 3), mode="direct")
+    placed = plan.place(np.array([[10.0, 20.0, 30.0]]))
+    assert placed.image[0, 0] == pytest.approx(15.0)
+    assert np.isnan(placed.image[0, 1])
+    assert placed.image[0, 2] == pytest.approx(30.0)

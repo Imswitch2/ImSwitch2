@@ -7,7 +7,10 @@
 
 fix/simple-scan-once-recording     # Scan once -> REC on the Simple panel; PR to open
 feat/scan-engines                  # Expert panel + Simple view, scan timing, Lifetime 2.0
-claude/monalisa-reconstruction-math-af9btj   # PR #69: MoNaLISA XZ/XYZ, fast Gauss joint fit
+claude/monalisa-reconstruction-math-af9btj   # PR #69: MoNaLISA XZ/XYZ, fast Gauss joint fit; unified Gaussian recon, presets
+                                   #   (the worker adds monalisa:spot_fwhm_nm after main's build_recording_attrs;
+                                   #    AUTO_SATURATED_PERCENT comes from improcess.model.contrast (fiji's windows);
+                                   #    the multi-data column: relocalize box, buttons, live-recon's memory policy)
 feat/imcontrol-live-recon          # live MoNaLISA recon in ImControl, bleach compensation; carries #71
                                    #   (its recordScanToMemory/recordFramesToMemory replace scan-engines' older one)
 feat/psf-bead-analysis             # PR #79: bead PSF measurement, data lists

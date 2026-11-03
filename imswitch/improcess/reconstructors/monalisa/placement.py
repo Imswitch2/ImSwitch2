@@ -155,32 +155,8 @@ def commensurability(
     return integer.astype(int), float(np.max(np.abs(ratio - integer)))
 
 
-def lock_step_to_lattice(
-    lattice_matrix: np.ndarray, step: np.ndarray, tolerance: float = 0.02
-) -> tuple[np.ndarray, float]:
-    """The step closest to ``step`` that subdivides the lattice exactly.
-
-    A scan is set up to subdivide the illumination period, but its step and
-    the pixel size are only known to a percent or so, and a mismatch of 0.3 %
-    already costs a tenth of the image in error when the samples are placed
-    as if they were on the raster. The lattice is measured to 0.01 px, so
-    when the nominal step is within ``tolerance`` of subdividing it, the
-    subdividing step is the better estimate of the real one.
-
-    Returns ``(step, change)``: the locked step, or the input when locking
-    would change it by more than ``tolerance``, and the largest relative
-    change requested for either scan-axis vector.
-    """
-    lattice_matrix = np.asarray(lattice_matrix, dtype=float).reshape(2, 2)
-    step = np.asarray(step, dtype=float).reshape(2, 2)
-    integer, _ = commensurability(lattice_matrix, step)
-    if int(round(abs(np.linalg.det(integer)))) == 0:
-        return step, float("inf")
-    locked = lattice_matrix @ np.linalg.inv(integer)
-
-    # Judge the correction per scan axis.  A large raster pitch on one axis
-    # must not hide an excessive relative correction of the smaller step on
-    # the other axis (notably YZ scans of staggered lattices).
+def _relative_step_change(step: np.ndarray, locked: np.ndarray) -> float:
+    """Largest relative change of either scan-axis vector."""
     step_norm = np.linalg.norm(step, axis=0)
     delta_norm = np.linalg.norm(locked - step, axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -189,7 +165,92 @@ def lock_step_to_lattice(
             delta_norm / step_norm,
             np.where(delta_norm <= 1e-12, 0.0, np.inf),
         )
-    change = float(np.max(axis_change))
+    return float(np.max(axis_change))
+
+
+def _cell_count_integer(
+    lattice_matrix: np.ndarray, step: np.ndarray, scan_index: np.ndarray
+) -> np.ndarray | None:
+    """Nearest commensurate index matrix with one class per acquired position.
+
+    A MoNaLISA in-plane scan enumerates one illumination cell.  If it contains
+    ``P`` distinct positions, the quotient of the scan raster by the lattice
+    therefore has exactly ``P`` phase classes, i.e. ``|det N| == P`` for
+    ``N = step^-1 lattice``.  The recorded metric step is only an approximate
+    scale and must not silently change that topology (21 acquired phases into
+    22 expected phases, for example).
+    """
+    scan_index = np.rint(np.asarray(scan_index)).astype(np.int64).reshape(-1, 2)
+    positions = int(np.unique(scan_index, axis=0).shape[0])
+    if positions < 1:
+        return None
+
+    ratio = np.linalg.solve(step, lattice_matrix)
+    centre = np.rint(ratio).astype(int)
+    if int(round(abs(np.linalg.det(centre)))) == positions:
+        return centre
+
+    # Nominal stage/pixel calibration is normally only a few percent away, so
+    # the correct integer topology is close to the independently rounded one.
+    # Searching a small neighbourhood also handles rotated/staggered cells
+    # whose index matrix has off-diagonal entries.
+    best = None
+    best_score = None
+    ranges = [range(int(value) - 3, int(value) + 4) for value in centre.ravel()]
+    for a in ranges[0]:
+        for b in ranges[1]:
+            for c in ranges[2]:
+                for d in ranges[3]:
+                    candidate = np.array([[a, b], [c, d]], dtype=int)
+                    det = int(round(np.linalg.det(candidate)))
+                    if abs(det) != positions:
+                        continue
+                    try:
+                        locked = lattice_matrix @ np.linalg.inv(candidate)
+                    except np.linalg.LinAlgError:
+                        continue
+                    change = _relative_step_change(step, locked)
+                    distance = float(np.linalg.norm(ratio - candidate))
+                    score = (change, distance)
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best = candidate
+    return best
+
+
+def lock_step_to_lattice(
+    lattice_matrix: np.ndarray,
+    step: np.ndarray,
+    tolerance: float = 0.02,
+    scan_index: np.ndarray | None = None,
+) -> tuple[np.ndarray, float]:
+    """Lock the scan step to the measured illumination lattice.
+
+    With ``scan_index`` the acquisition itself says how many periodic phases
+    were sampled: a MoNaLISA scan is one illumination cell, so the locked
+    raster is constrained to have exactly one phase class per distinct scan
+    position.  This count/topology outranks the approximate metric step stored
+    in metadata.  The returned ``change`` still reports how far the effective
+    lattice-derived step is from that nominal value.
+
+    Without ``scan_index`` this keeps the historical behaviour: choose the
+    nearest integer subdivision and accept it only within ``tolerance``.
+    """
+    lattice_matrix = np.asarray(lattice_matrix, dtype=float).reshape(2, 2)
+    step = np.asarray(step, dtype=float).reshape(2, 2)
+
+    if scan_index is not None:
+        integer = _cell_count_integer(lattice_matrix, step, scan_index)
+        if integer is None or int(round(abs(np.linalg.det(integer)))) == 0:
+            return step, float("inf")
+        locked = lattice_matrix @ np.linalg.inv(integer)
+        return locked, _relative_step_change(step, locked)
+
+    integer, _ = commensurability(lattice_matrix, step)
+    if int(round(abs(np.linalg.det(integer)))) == 0:
+        return step, float("inf")
+    locked = lattice_matrix @ np.linalg.inv(integer)
+    change = _relative_step_change(step, locked)
     if change > tolerance:
         return step, change
     return locked, change
@@ -273,6 +334,76 @@ class PlacedImage:
     method: str = "exact"
 
 
+@dataclass(frozen=True)
+class PlacementPlan:
+    """Prepared placement geometry, reusable for any values on the samples.
+
+    ``method`` is decided from coordinates once.  For exact/direct placement
+    ``flat_pixel`` contains the precomputed output pixel of every sample
+    (``-1`` outside the raster), so amplitude/background/haze do not repeat
+    coordinate rounding and bounds work.
+    """
+
+    gx: np.ndarray
+    gy: np.ndarray
+    shape: tuple[int, int]
+    method: str
+    max_residual: float
+    smoothing: float = DEFAULT_SMOOTHING
+    flat_pixel: np.ndarray | None = None
+
+    def place(
+        self, values: np.ndarray, variance: np.ndarray | None = None
+    ) -> PlacedImage:
+        if self.method == "exact":
+            return _place_prepared_exact(self, values, variance)
+        return grid_bspline(
+            self.gx, self.gy, values, self.shape, variance, smoothing=self.smoothing
+        )
+
+    def place_device(self, values, variance=None):
+        """Direct placement on CuPy, preserving arrays on the device.
+
+        Interpolation deliberately remains the CPU/SciPy exceptional path.
+        """
+        if self.method != "exact":
+            raise RuntimeError("Device placement is only available for direct placement")
+        from .extraction import CUPY_AVAILABLE, cp
+
+        if not CUPY_AVAILABLE:
+            raise RuntimeError("CuPy is not available")
+        rows, cols = self.shape
+        values_array = cp.asarray(values)
+        if values_array.size != self.gx.size:
+            raise ValueError("values do not match the prepared placement samples")
+        variance_array = None
+        if variance is not None:
+            variance_array = cp.broadcast_to(cp.asarray(variance), values_array.shape)
+        values = values_array.reshape(-1)
+        variance = None if variance_array is None else variance_array.reshape(-1)
+        flat_pixel = cp.asarray(self.flat_pixel)
+        keep = (flat_pixel >= 0) & cp.isfinite(values)
+        weight = cp.ones(values.size, dtype=cp.float64)
+        if variance is not None:
+            keep = keep & cp.isfinite(variance) & (variance > 0)
+            weight = cp.where(keep, 1.0 / cp.where(keep, variance, 1.0), 0.0)
+        index = flat_pixel[keep]
+        size = rows * cols
+        total_weight = cp.bincount(index, weights=weight[keep], minlength=size)
+        total = cp.bincount(index, weights=(weight * values)[keep], minlength=size)
+        count = cp.bincount(index, minlength=size)
+        image = cp.where(count > 0, total / total_weight, cp.nan).reshape(rows, cols)
+        pixel_variance = None
+        if variance is not None:
+            pixel_variance = cp.where(
+                count > 0, 1.0 / total_weight, cp.nan
+            ).reshape(rows, cols)
+        return PlacedImage(
+            image=image, count=count.reshape(rows, cols), variance=pixel_variance,
+            max_residual=self.max_residual, method="exact",
+        )
+
+
 def _flatten_samples(gx, gy, values, variance):
     values = np.asarray(values, dtype=float)
     if variance is not None:
@@ -290,6 +421,97 @@ def _flatten_samples(gx, gy, values, variance):
         keep &= np.isfinite(variance) & (variance > 0)
         weight = np.where(keep, 1.0 / np.where(keep, variance, 1.0), 0.0)
     return gx[keep], gy[keep], values[keep], weight[keep]
+
+
+def prepare_placement(
+    gx: np.ndarray,
+    gy: np.ndarray,
+    shape: tuple[int, int],
+    tolerance: float = COMMENSURATE_TOLERANCE,
+    smoothing: float = DEFAULT_SMOOTHING,
+    mode: str = "auto",
+) -> PlacementPlan:
+    """Prepare placement once.
+
+    ``mode`` is ``"auto"`` (direct when within ``tolerance``), ``"direct"``
+    (require direct placement) or ``"interpolate"`` (always grid).
+    """
+    rows, cols = int(shape[0]), int(shape[1])
+    gx = np.asarray(gx, dtype=float)
+    gy = np.asarray(gy, dtype=float)
+    if gx.shape != gy.shape:
+        raise ValueError("gx and gy must have the same shape")
+    fx, fy = gx.ravel(), gy.ravel()
+    finite = np.isfinite(fx) & np.isfinite(fy)
+    component_residual = np.maximum(
+        np.abs(fx[finite] - np.rint(fx[finite])),
+        np.abs(fy[finite] - np.rint(fy[finite])),
+    )
+    compatible = component_residual.size == 0 or float(component_residual.max()) <= tolerance
+    mode = str(mode).strip().lower()
+    if mode not in ("auto", "direct", "interpolate"):
+        raise ValueError(f"Unknown placement mode {mode!r}")
+    if mode == "direct" and not compatible:
+        largest = float(component_residual.max()) if component_residual.size else 0.0
+        raise ValueError(
+            f"Direct placement requested, but samples are {largest:.4g} raster pixels "
+            f"off-grid (tolerance {float(tolerance):.4g})"
+        )
+    direct = compatible if mode == "auto" else mode == "direct"
+    euclidean = np.hypot(
+        fx[finite] - np.rint(fx[finite]), fy[finite] - np.rint(fy[finite])
+    )
+    max_residual = float(euclidean.max()) if euclidean.size else 0.0
+    flat_pixel = None
+    if direct:
+        ix = np.rint(fx).astype(np.int64)
+        iy = np.rint(fy).astype(np.int64)
+        inside = finite & (ix >= 0) & (ix < cols) & (iy >= 0) & (iy < rows)
+        flat_pixel = np.full(fx.size, -1, dtype=np.int64)
+        flat_pixel[inside] = iy[inside] * cols + ix[inside]
+    return PlacementPlan(
+        gx=gx, gy=gy, shape=(rows, cols),
+        method="exact" if direct else "gridded",
+        max_residual=max_residual, smoothing=float(smoothing), flat_pixel=flat_pixel,
+    )
+
+
+def _place_prepared_exact(
+    plan: PlacementPlan, values: np.ndarray, variance: np.ndarray | None = None
+) -> PlacedImage:
+    rows, cols = plan.shape
+    values_array = np.asarray(values, dtype=float)
+    if values_array.size != plan.gx.size:
+        raise ValueError("values do not match the prepared placement samples")
+    variance_array = None
+    if variance is not None:
+        variance_array = np.broadcast_to(
+            np.asarray(variance, dtype=float), values_array.shape
+        )
+    values = values_array.ravel()
+    variance = None if variance_array is None else variance_array.ravel()
+    flat_pixel = np.asarray(plan.flat_pixel, dtype=np.int64)
+    keep = (flat_pixel >= 0) & np.isfinite(values)
+    weight = np.ones(values.size)
+    if variance is not None:
+        keep &= np.isfinite(variance) & (variance > 0)
+        weight = np.where(keep, 1.0 / np.where(keep, variance, 1.0), 0.0)
+    flat = flat_pixel[keep]
+    size = rows * cols
+    total_weight = np.bincount(flat, weights=weight[keep], minlength=size)
+    total = np.bincount(flat, weights=(weight * values)[keep], minlength=size)
+    count = np.bincount(flat, minlength=size)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        image = np.where(count > 0, total / total_weight, np.nan)
+        pixel_variance = (
+            np.where(count > 0, 1.0 / total_weight, np.nan)
+            if variance is not None else None
+        )
+    return PlacedImage(
+        image=image.reshape(rows, cols), count=count.reshape(rows, cols),
+        variance=None if pixel_variance is None else pixel_variance.reshape(rows, cols),
+        max_residual=plan.max_residual, method="exact",
+    )
 
 
 def place_nearest(
@@ -507,16 +729,9 @@ def place(
     geometry: measured focus centres and a scan step that is a fraction of a
     percent off both move samples off the raster.
     """
-    fx = np.asarray(gx, dtype=float).ravel()
-    fy = np.asarray(gy, dtype=float).ravel()
-    finite = np.isfinite(fx) & np.isfinite(fy)
-    residual = np.maximum(
-        np.abs(fx[finite] - np.rint(fx[finite])),
-        np.abs(fy[finite] - np.rint(fy[finite])),
-    )
-    if residual.size == 0 or float(residual.max()) <= tolerance:
-        return place_nearest(gx, gy, values, shape, variance)
-    return grid_bspline(gx, gy, values, shape, variance, smoothing=smoothing)
+    return prepare_placement(
+        gx, gy, shape, tolerance=tolerance, smoothing=smoothing
+    ).place(values, variance)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

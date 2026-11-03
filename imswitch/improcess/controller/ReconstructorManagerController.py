@@ -1,4 +1,5 @@
 import copy
+import json
 
 from qtpy import QtCore
 
@@ -7,6 +8,12 @@ from .reconstruction_worker import (
     ReconstructionWorkerFailure,
     ReconstructionWorkerJob,
     ReconstructionWorkerOutcome,
+)
+from .localization_worker import (
+    LocalizationWorker,
+    LocalizationWorkerFailure,
+    LocalizationWorkerJob,
+    LocalizationWorkerOutcome,
 )
 from .basecontrollers import ImProcessWidgetController
 
@@ -27,6 +34,12 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._reconstructionThread = None
         self._reconstructionWorker = None
         self._reconstructionWorkerReconstructor = None
+        self._localizationThread = None
+        self._localizationWorker = None
+        self._localizationActiveJob = None
+        self._localizationPendingJob = None
+        self._localizationRequestCounter = 0
+        self._localizationExpectedRequestId = None
 
     def initActiveReconstructor(self):
         """Select, install, and publish the default reconstructor. Called once
@@ -195,6 +208,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
         """Select a compatible plugin and pass it a metadata-only inspection."""
         from imswitch.improcess.reconstructors.registry import get_registry
 
+        # Any in-flight localization belongs to the previous current source.
+        # It is allowed to finish in its worker thread, but its result is no
+        # longer eligible to mutate the UI/session state.
+        self._invalidate_localization_requests()
         active = self._main._activeReconstructor
         if active is None or not self._accepts_current_source(active):
             compatible = [
@@ -214,6 +231,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         self._publishReconstructorChoices()
         self._inspect_current_source()
+        self._defer_auto_localization(data_obj)
 
     def _inspect_current_source(self) -> None:
         reconstructor = self._main._activeReconstructor
@@ -391,6 +409,17 @@ class ReconstructorManagerController(ImProcessWidgetController):
         return True
 
     def _install_reconstructor_params(self, reconstructor):
+        # Multi-data relocalization is orchestration state, not a MoNaLISA
+        # reconstruction parameter. Keep it beside the list it governs and
+        # expose it only for the unified MoNaLISA plugin.
+        try:
+            multi = self._widget.multiDataFrame
+            is_monalisa = reconstructor.id == "monalisa"
+            multi.setRelocalizeEachDataItemVisible(is_monalisa)
+            multi.setRelocalizeEachDataItemEnabled(is_monalisa)
+        except Exception:
+            pass
+
         # Always reflect the active reconstructor in the Parameters dock so
         # the user can tell at a glance which plugin's parameters they are
         # editing — even for plugins that keep the legacy parameter tree.
@@ -400,8 +429,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
             pass
 
         # Switching reconstructors must not leave a stale detection-preview
-        # overlay on the raw-data viewer: the new widget's box starts unchecked.
+        # overlay on the raw-data viewer. The newly installed widget decides
+        # whether its preview should start visible.
         if getattr(self, '_previewWidget', None) is not None:
+            self._invalidate_localization_requests()
             self._previewWidget = None
             try:
                 import numpy as np
@@ -416,8 +447,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # - 'Reconstruct current' is ceremonial for pass-through plugins
         #   (process() is a no-op wrap), so hide it; currentDataChanged
         #   auto-routes the data to the viewer in that case.
-        # - 'Update reconstruction' re-applies MoNaLISA scan parameters and
-        #   only makes sense for the MoNaLISA plugin.
+        # - 'Update reconstruction' reuses retained MoNaLISA coefficients.
+        #   Legacy has its classic coefficient re-render; unified MoNaLISA
+        #   exposes the placement-only Fast path for quick orientation checks.
         # - The multidata button stays visible for every plugin. Pass-through
         #   plugins get it relabeled as a batch 'load to viewer' action with
         #   the consolidate entry hidden; plugins without consolidation
@@ -433,7 +465,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         try:
             self._widget.setReconstructionActionsVisible(
                 reconstruct_current=not is_pass_through,
-                update_reconstruction=(reconstructor.id == 'monalisa'),
+                update_reconstruction=(reconstructor.id in ('monalisa', 'monalisa-legacy')),
                 reconstruct_multidata=True,
                 multidata_consolidate=(
                     'hidden' if is_pass_through
@@ -462,12 +494,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 'Could not update Directory watcher availability', exc_info=True
             )
 
-        # NOTE: Special-case by ID retained because MoNaLISA uses a legacy parameter
-        # tree that differs fundamentally from the standard plugin widget API.
-        # This will remain until the scan-params/find-pattern path is migrated.
-        if reconstructor.id == "monalisa":
+        # The classic SignalExtractor path remains on the legacy parameter tree
+        # until its standalone UI is completed.  The unified Gaussian MoNaLISA
+        # plugin now uses the normal plugin-owned fixed parameter widget.
+        if reconstructor.id == "monalisa-legacy":
             try:
                 self._widget.setLegacyMonalisaParameterWidget()
+                self._widget.setUpdateReconstructionEnabled(True)
             except Exception:
                 pass
             return
@@ -495,6 +528,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
+        if reconstructor.id == "monalisa" and hasattr(widget, "sigModeChanged"):
+            try:
+                widget.sigModeChanged.connect(self._set_monalisa_update_enabled)
+                self._set_monalisa_update_enabled(
+                    widget.get_values().get("preset", "Fast")
+                )
+            except Exception:
+                pass
+
         # Live detection preview wiring, for any plugin whose widget has the
         # preview checkbox (the SMLM localizer, the MoNaLISA lattice
         # reconstructor): what is drawn comes from the plugin's
@@ -505,6 +547,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
         if hasattr(widget, "sigPreviewToggled"):
             try:
                 widget.sigPreviewToggled.connect(self._handlePreviewToggled)
+                if hasattr(widget, "sigLocalizeRequested"):
+                    widget.sigLocalizeRequested.connect(self._localizeCurrent)
                 if hasattr(widget, "sigDetectionParamsChanged"):
                     widget.sigDetectionParamsChanged.connect(self._updatePreview)
                 if not getattr(self, '_previewFrameSignalConnected', False):
@@ -513,8 +557,107 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     )
                     self._previewFrameSignalConnected = True
                 self._previewWidget = widget
+                preview_checkbox = getattr(widget, "previewCheckbox", None)
+                if preview_checkbox is not None and preview_checkbox.isChecked():
+                    self._handlePreviewToggled(True)
+                if hasattr(widget, "sigLocalizationModeChanged"):
+                    widget.sigLocalizationModeChanged.connect(
+                        self._set_monalisa_relocalize_enabled
+                    )
+                    try:
+                        mode = widget.get_values().get("localization_mode", "Auto")
+                        self._set_monalisa_relocalize_enabled(mode)
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
+        if reconstructor.id == "monalisa":
+            self._defer_auto_localization(
+                getattr(self._main, "_currentDataObj", None)
+            )
+
+    @QtCore.Slot(str)
+    def _set_monalisa_update_enabled(self, mode):
+        try:
+            fast = str(mode) == "Fast"
+            placement_only = fast
+            reason = "Update reconstruction is currently available only in Fast mode."
+            if fast:
+                widget = getattr(self, "_previewWidget", None)
+                values = widget.get_values() if widget is not None and hasattr(widget, "get_values") else {}
+                corrected = bool(values.get("intensity_correction", False)) or bool(
+                    values.get("cell_offsets", False)
+                )
+                placement_only = not corrected
+                reason = (
+                    "Re-place the retained Fast extraction after changing scan orientation."
+                    if placement_only
+                    else "Fast corrections require a full reconstruction; placement-only update is unavailable."
+                )
+            self._widget.setUpdateReconstructionEnabled(placement_only, reason)
+        except Exception:
+            pass
+
+    @QtCore.Slot(str)
+    def _set_monalisa_relocalize_enabled(self, mode):
+        auto = str(mode) == "Auto"
+        try:
+            self._widget.multiDataFrame.setRelocalizeEachDataItemEnabled(auto)
+        except Exception:
+            pass
+        if not auto:
+            self._invalidate_localization_requests()
+            return
+        self._defer_auto_localization(
+            getattr(self._main, "_currentDataObj", None)
+        )
+
+    def _monalisa_relocalize_each_data_item(self) -> bool:
+        try:
+            return bool(self._widget.multiDataFrame.relocalizeEachDataItem())
+        except Exception:
+            return False
+
+    def updateReconstruction(self):
+        """Refresh the active MoNaLISA result without repeating extraction."""
+        reconstructor = self._main._activeReconstructor
+        if reconstructor is None:
+            return
+        if reconstructor.id == "monalisa-legacy":
+            self._main.monalisaController.updateScanParams(applyOnCurrentRecon=True)
+            return
+        updater = getattr(reconstructor, "update_reconstruction", None)
+        if not callable(updater):
+            return
+        result = self._main.reconstructionController.getActiveResult()
+        if result is None:
+            self._set_reconstruction_job_state(
+                False, status="No reconstruction is selected to update."
+            )
+            return
+        try:
+            params = self._params_for_data_obj(reconstructor)
+            updated = updater(result, params)
+        except Exception as exc:
+            self._logger.warning(f"Could not update reconstruction: {exc}")
+            self._set_reconstruction_job_state(False, status=str(exc))
+            return
+        self._commChannel.sigResultReplaced.emit(
+            result, updated, getattr(updated, "name", "reconstruction")
+        )
+        widget = getattr(self, "_previewWidget", None)
+        sync = getattr(widget, "sync_reconstruction_results", None)
+        if callable(sync):
+            try:
+                sync([updated])
+            except Exception:
+                self._logger.debug(
+                    "Could not refresh MoNaLISA controls after update", exc_info=True
+                )
+        self._set_reconstruction_job_state(
+            False, status="Reconstruction placement updated from retained Fast extraction."
+        )
 
     def reconstructCurrent(self):
         if self._main._currentDataObj is None:
@@ -526,21 +669,16 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
 
     def reconstruct(self, dataObjs, consolidate):
-        # NOTE: Special-case by ID retained because MoNaLISA uses a separate legacy
-        # reconstruction path (MoNaLISAController) that differs from the generic
-        # plugin process() API.
         if self._main._activeReconstructor is None:
             return
-        if self._main._activeReconstructor.id != "monalisa":
-            self._reconstruct_with_plugin(dataObjs, consolidate)
+        # The classic SignalExtractor is already registered as its own plugin,
+        # but its standalone parameter widget/controller cleanup belongs to the
+        # Legacy consolidation pass.  Preserve the proven legacy execution path
+        # while allowing ``monalisa`` itself to use the normal plugin API now.
+        if self._main._activeReconstructor.id == "monalisa-legacy":
+            self._main.monalisaController.runLegacyReconstruct(dataObjs, consolidate)
             return
-        params = self._widget.getReconstructionParams()
-        if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
-            self._reconstruct_with_plugin(dataObjs, consolidate)
-            return
-
-        # Legacy MoNaLISA reconstruction path — delegate to MoNaLISAController.
-        self._main.monalisaController.runLegacyReconstruct(dataObjs, consolidate)
+        self._reconstruct_with_plugin(dataObjs, consolidate)
 
     def _reconstruct_with_plugin(self, dataObjs, consolidate):
         reconstructor = self._main._activeReconstructor
@@ -632,9 +770,73 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
 
         budget = self._default_memory_budget_bytes()
+        shared_auto_localizations = {}
+        relocalize_each = False
+        if reconstructor.id == "monalisa" and len(data_objs) > 1:
+            first_params = self._params_for_data_obj(reconstructor)
+            if str(first_params.get("localization_mode", "Auto")) == "Auto":
+                relocalize_each = self._monalisa_relocalize_each_data_item()
+                if not relocalize_each:
+                    from imswitch.improcess.reconstructors.monalisa.session_registry import (
+                        detector_identity,
+                    )
+
+                    # Reuse once per detector, never across detectors.  The
+                    # normal timelapse case therefore still localizes exactly
+                    # once, while a mixed-detector batch remains physically safe.
+                    current_data = getattr(self._main, "_currentDataObj", None)
+                    current_detector = detector_identity(current_data) if current_data is not None else None
+                    current_payload = dict(first_params.get("auto_localization") or {})
+                    if current_payload and current_detector:
+                        shared_auto_localizations[current_detector] = current_payload
+
+                    first_by_detector = {}
+                    for item in data_objs:
+                        first_by_detector.setdefault(detector_identity(item), item)
+                    localizer = getattr(reconstructor, "localize", None)
+                    for detector, first_item in first_by_detector.items():
+                        if detector in shared_auto_localizations:
+                            continue
+                        if not callable(localizer):
+                            continue
+                        self._setPreviewStatus(
+                            f"Localizing first {detector} data item for multi-data reuse..."
+                        )
+                        localize_params = dict(first_params)
+                        localize_params["auto_localization"] = {}
+                        try:
+                            localized = localizer(first_item, localize_params)
+                            localization, status = localized[:2]
+                            details = localized[2] if len(localized) > 2 else {}
+                        except Exception as exc:
+                            self._logger.error(f"MoNaLISA localization failed: {exc}")
+                            self._setPreviewStatus(f"Localization failed: {exc}")
+                            return
+                        shared_auto_localizations[detector] = localization.to_dict()
+                        if first_item is current_data:
+                            widget = getattr(self, "_previewWidget", None)
+                            setter = getattr(widget, "set_auto_localization", None)
+                            if callable(setter):
+                                setter(localization, status)
+                            set_spot = getattr(widget, "set_auto_spot_sigma_px", None)
+                            if callable(set_spot) and isinstance(details, dict):
+                                set_spot(details.get("spot_sigma_px"))
+
         jobs = []
         for data_obj in data_objs:
             params = self._params_for_data_obj(reconstructor)
+            if reconstructor.id == "monalisa" and len(data_objs) > 1:
+                if relocalize_each:
+                    params = dict(params)
+                    params["auto_localization"] = {}
+                elif shared_auto_localizations:
+                    from imswitch.improcess.reconstructors.monalisa.session_registry import (
+                        detector_identity,
+                    )
+                    shared = shared_auto_localizations.get(detector_identity(data_obj))
+                    if shared is not None:
+                        params = dict(params)
+                        params["auto_localization"] = dict(shared)
             try:
                 validator = getattr(reconstructor, "validate_source", None)
                 if callable(validator):
@@ -735,6 +937,20 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 self._publishPluginResult(
                     result, result.name, reconstructor=reconstructor
                 )
+        widget = getattr(self, "_previewWidget", None)
+        sync = getattr(widget, "sync_current_transient", None)
+        if reconstructor is not None and reconstructor.id == "monalisa":
+            sync_spot = getattr(widget, "sync_reconstruction_results", None)
+            if callable(sync_spot):
+                try:
+                    sync_spot(outcome.results)
+                except Exception as exc:
+                    self._logger.debug(f"Could not refresh MoNaLISA spot width: {exc}")
+            if callable(sync):
+                try:
+                    sync()
+                except Exception as exc:
+                    self._logger.debug(f"Could not refresh MoNaLISA session calibration: {exc}")
         self._set_reconstruction_job_state(
             False, progress=1.0, status="Reconstruction complete."
         )
@@ -772,10 +988,14 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
     def closeEvent(self):
         self.cancelReconstruction()
+        self._invalidate_localization_requests()
         return self.shutdownComplete()
 
     def shutdownComplete(self):
-        return self._reconstructionThread is None
+        return (
+            self._reconstructionThread is None
+            and self._localizationThread is None
+        )
 
     def _publishPluginResult(self, result, displayName, reconstructor=None):
         self._commChannel.sigResultProduced.emit(result, displayName)
@@ -810,6 +1030,223 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 np.array([]), np.array([])
             )
             self._setPreviewStatus("")
+
+    _LOCALIZATION_SIGNATURE_KEYS = (
+        "localization_mode",
+        "localization_refinement",
+        "localization_settings",
+        "spot_width_mode",
+        "spot_fwhm",
+        "spot_fwhm_unit",
+        "pixel_size_nm",
+        "scan_steps_fast",
+        "scan_steps_slow",
+        "scan_step_nm",
+    )
+
+    @classmethod
+    def _localization_signature(cls, params: dict) -> str:
+        payload = {
+            key: params.get(key)
+            for key in cls._LOCALIZATION_SIGNATURE_KEYS
+        }
+        return json.dumps(
+            payload, sort_keys=True, default=str, separators=(",", ":")
+        )
+
+    def _defer_auto_localization(self, data_obj) -> None:
+        if data_obj is None:
+            return
+        QtCore.QTimer.singleShot(
+            0, lambda source=data_obj: self._auto_localize_loaded_data(source)
+        )
+
+    def _auto_localize_loaded_data(self, data_obj) -> None:
+        """Start Auto localization only after source loading/metadata UI settles."""
+        if getattr(self._main, "_currentDataObj", None) is not data_obj:
+            return
+        reconstructor = self._main._activeReconstructor
+        widget = getattr(self, "_previewWidget", None)
+        if (
+            reconstructor is None
+            or reconstructor.id != "monalisa"
+            or widget is None
+        ):
+            return
+        try:
+            params = widget.get_values()
+        except Exception:
+            return
+        if str(params.get("localization_mode", "Auto")) != "Auto":
+            return
+        has_current = getattr(
+            widget, "has_auto_localization_for_current_data", None
+        )
+        if callable(has_current) and has_current():
+            return
+        self._queue_localization(data_obj, params=params, automatic=True)
+
+    def _localizeCurrent(self):
+        """Queue explicit localization without blocking the Qt/UI thread."""
+        reconstructor = self._main._activeReconstructor
+        data_obj = getattr(self._main, "_currentDataObj", None)
+        widget = getattr(self, "_previewWidget", None)
+        if reconstructor is None or data_obj is None or widget is None:
+            return
+        if reconstructor.id != "monalisa":
+            return
+        try:
+            params = widget.get_values()
+        except Exception as exc:
+            self._setPreviewStatus(f"Localization failed: {exc}")
+            return
+        if str(params.get("localization_mode", "Auto")) != "Auto":
+            return
+        self._queue_localization(data_obj, params=params, automatic=False)
+
+    def _queue_localization(self, data_obj, *, params: dict, automatic: bool) -> None:
+        reconstructor = self._main._activeReconstructor
+        if (
+            reconstructor is None
+            or reconstructor.id != "monalisa"
+            or not callable(getattr(reconstructor, "localize", None))
+        ):
+            return
+        params = dict(params)
+        # Never let a previously resolved Auto value turn the localization
+        # request into implicit reuse. The worker is explicitly computing one.
+        params["auto_localization"] = {}
+        signature = self._localization_signature(params)
+
+        for existing in (self._localizationActiveJob, self._localizationPendingJob):
+            if (
+                existing is not None
+                and existing.data_obj is data_obj
+                and existing.signature == signature
+            ):
+                return
+
+        self._localizationRequestCounter += 1
+        job = LocalizationWorkerJob(
+            request_id=self._localizationRequestCounter,
+            data_obj=data_obj,
+            params=params,
+            signature=signature,
+            automatic=bool(automatic),
+        )
+        self._localizationExpectedRequestId = job.request_id
+
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if self._localizationThread is not None:
+            # One expensive localization lane only: browsing through files
+            # replaces the pending request instead of spawning work for every
+            # intermediate dataset.
+            self._localizationPendingJob = job
+            if callable(state):
+                state(True, "Auto localization queued…" if automatic else "Localization queued…")
+            return
+        self._start_localization_job(job)
+
+    def _start_localization_job(self, job: LocalizationWorkerJob) -> None:
+        if not self._localization_job_is_current(job):
+            return
+        reconstructor = self._main._activeReconstructor
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(True, "Auto: localizing…" if job.automatic else "Localizing…")
+
+        thread = QtCore.QThread()
+        worker = LocalizationWorker(reconstructor, job)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_localization_finished)
+        worker.failed.connect(self._on_localization_failed)
+        for signal in (worker.finished, worker.failed):
+            signal.connect(worker.deleteLater)
+            signal.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(
+            lambda: self._clear_localization_worker_refs(thread)
+        )
+
+        self._localizationThread = thread
+        self._localizationWorker = worker
+        self._localizationActiveJob = job
+        thread.start()
+
+    def _localization_job_is_current(self, job: LocalizationWorkerJob) -> bool:
+        if self._localizationExpectedRequestId != job.request_id:
+            return False
+        if getattr(self._main, "_currentDataObj", None) is not job.data_obj:
+            return False
+        reconstructor = self._main._activeReconstructor
+        widget = getattr(self, "_previewWidget", None)
+        if reconstructor is None or reconstructor.id != "monalisa" or widget is None:
+            return False
+        try:
+            current = widget.get_values()
+        except Exception:
+            return False
+        if str(current.get("localization_mode", "Auto")) != "Auto":
+            return False
+        current = dict(current)
+        current["auto_localization"] = {}
+        return self._localization_signature(current) == job.signature
+
+    @QtCore.Slot(object)
+    def _on_localization_finished(self, outcome: LocalizationWorkerOutcome):
+        job = outcome.job
+        if not self._localization_job_is_current(job):
+            return
+        widget = getattr(self, "_previewWidget", None)
+        setter = getattr(widget, "set_auto_localization", None)
+        if not callable(setter):
+            return
+        setter(outcome.localization, outcome.status)
+        set_spot = getattr(widget, "set_auto_spot_sigma_px", None)
+        if callable(set_spot):
+            set_spot(outcome.details.get("spot_sigma_px"))
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(False)
+        self._localizationExpectedRequestId = None
+        self._updatePreview()
+
+    @QtCore.Slot(object)
+    def _on_localization_failed(self, failure: LocalizationWorkerFailure):
+        if not self._localization_job_is_current(failure.job):
+            return
+        self._logger.error(
+            f"Localization failed: {failure.message}\n{failure.traceback}"
+        )
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(False, f"Localization failed: {failure.message}")
+        else:
+            self._setPreviewStatus(f"Localization failed: {failure.message}")
+        self._localizationExpectedRequestId = None
+
+    def _clear_localization_worker_refs(self, thread) -> None:
+        if self._localizationThread is not thread:
+            return
+        self._localizationThread = None
+        self._localizationWorker = None
+        self._localizationActiveJob = None
+        pending = self._localizationPendingJob
+        self._localizationPendingJob = None
+        if pending is not None and self._localization_job_is_current(pending):
+            self._start_localization_job(pending)
+
+    def _invalidate_localization_requests(self) -> None:
+        self._localizationExpectedRequestId = None
+        self._localizationPendingJob = None
+        widget = getattr(self, "_previewWidget", None)
+        state = getattr(widget, "set_localization_job_state", None)
+        if callable(state):
+            state(False)
 
     def _setPreviewStatus(self, text):
         widget = getattr(self, '_previewWidget', None)

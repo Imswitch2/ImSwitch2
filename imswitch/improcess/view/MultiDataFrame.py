@@ -37,6 +37,13 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.dataLoadedStatus.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
         self.dataLoadedStatus.setStyleSheet('color: palette(mid); font-size: 9pt;')
 
+        self.relocalizeEachDataItemCheck = QtWidgets.QCheckBox('Relocalize each data item')
+        self.relocalizeEachDataItemCheck.setChecked(False)
+        self.relocalizeEachDataItemCheck.setToolTip(
+            'MoNaLISA multidata only. Off reuses one Auto localization across all data items.'
+        )
+        self.relocalizeEachDataItemCheck.setVisible(False)
+
         # Standalone actions (no Selected/All twin)
         self.addDataBtn = BetterPushButton('Add data')
         self.addDataBtn.clicked.connect(self.sigAddDataClicked)
@@ -101,15 +108,16 @@ class MultiDataFrame(QtWidgets.QFrame):
         layout.addWidget(self.dataList, 0, 0, -1, 1)
 
         layout.addWidget(self.dataLoadedStatus, 0, 1)
-        layout.addWidget(self.addDataBtn, 1, 1)
-        layout.addWidget(self.setDataBtn, 2, 1)
-        layout.addWidget(loadBtn, 3, 1)
-        layout.addWidget(saveBtn, 4, 1)
-        layout.addWidget(unloadBtn, 5, 1)
-        layout.addWidget(removeBtn, 6, 1)
-        layout.addWidget(self.memoryPolicyLabel, 7, 1)
-        layout.addWidget(self.memoryPolicyCombo, 8, 1)
-        layout.setRowStretch(9, 1)
+        layout.addWidget(self.relocalizeEachDataItemCheck, 1, 1)
+        layout.addWidget(self.addDataBtn, 2, 1)
+        layout.addWidget(self.setDataBtn, 3, 1)
+        layout.addWidget(loadBtn, 4, 1)
+        layout.addWidget(saveBtn, 5, 1)
+        layout.addWidget(unloadBtn, 6, 1)
+        layout.addWidget(removeBtn, 7, 1)
+        layout.addWidget(self.memoryPolicyLabel, 8, 1)
+        layout.addWidget(self.memoryPolicyCombo, 9, 1)
+        layout.setRowStretch(10, 1)
         layout.setColumnStretch(0, 1)
 
     def _makeMenuButton(self, title, label_a, signal_a, label_b, signal_b):
@@ -150,6 +158,15 @@ class MultiDataFrame(QtWidgets.QFrame):
             self.memoryPolicyCombo.setCurrentIndex(index)
         finally:
             self.memoryPolicyCombo.blockSignals(False)
+
+    def setRelocalizeEachDataItemVisible(self, visible):
+        self.relocalizeEachDataItemCheck.setVisible(bool(visible))
+
+    def setRelocalizeEachDataItemEnabled(self, enabled):
+        self.relocalizeEachDataItemCheck.setEnabled(bool(enabled))
+
+    def relocalizeEachDataItem(self):
+        return bool(self.relocalizeEachDataItemCheck.isChecked())
 
     def requestFilePathsFromUser(self, defaultFolder=None):
         return QtWidgets.QFileDialog().getOpenFileNames(directory=defaultFolder)[0]

@@ -261,6 +261,7 @@ class UserFileDirs(FileDirs):
     """ Catalog of directories that contain user configuration files. """
     Root = _baseUserFilesDir
     Config = os.path.join(_baseUserFilesDir, 'config')
+    Sessions = os.path.join(_baseUserFilesDir, 'sessions')
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
