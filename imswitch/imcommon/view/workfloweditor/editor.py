@@ -502,8 +502,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         if not self.load_document(document, trusted=True):
             return False
-        self.select_step("script")
-        self.show_status(f"Recipe '{recipe.title}': drop a recording on 'raw', then Run (F5).")
+        self.select_step(str(getattr(recipe, "select", "") or "script"))
+        hint = str(getattr(recipe, "hint", "") or "")
+        self.show_status(hint or f"Recipe '{recipe.title}': drop a recording on 'raw', then Run (F5).")
         return True
 
     def open_file(self, path=None) -> bool:
@@ -645,6 +646,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _candidate_title(self, kind: str, plugin_id: str) -> str:
         if kind in ("source", "save"):
             return "Recording" if kind == "source" else "Save"
+        descriptor = self.catalog.step(kind) if hasattr(self.catalog, "step") else None
+        if descriptor is not None:
+            return descriptor.name
         entry = self.catalog.processor(plugin_id) if kind == "process" else self.catalog.reconstructor(plugin_id)
         return entry.name if entry is not None else plugin_id
 
@@ -1212,7 +1216,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_run(self, targets, *, explicit: bool = False) -> bool:
         if self.host is None or not callable(getattr(self.host, "runInteractive", None)):
-            self.show_status("Runs need ImProcess: open the editor from ImProcess (Workflows → Workflow editor…).")
+            refusal = getattr(self.host, "runRefusal", None)
+            self.show_status(str(refusal()) if callable(refusal) else
+                             "Runs need ImProcess: open the editor from ImProcess (Workflows → Workflow editor…).")
             return False
         if self._running:
             # Edits made meanwhile only mark steps outdated; one queued re-run

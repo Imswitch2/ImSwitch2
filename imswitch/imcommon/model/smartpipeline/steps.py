@@ -32,6 +32,10 @@ SINK_KINDS = ("event-log", "overlay")
 FIRED_PORT = "fired"
 #: The port an action's completion leaves on.
 DONE_PORT = "done"
+#: A min-interval gate's seconds and a count-limit gate's count when the
+#: file does not say.
+DEFAULT_INTERVAL_S = 1.0
+DEFAULT_COUNT = 1
 
 
 def _refs(values) -> list[Ref]:
@@ -141,16 +145,18 @@ class Gate:
         self.params = dict(self.params or {})
         self.inputs = _refs(self.inputs)
         if self.rule == "min-interval":
-            if _non_negative(self.id, "seconds", self.params.get("seconds", 0)) <= 0:
+            # seconds defaults to 1 (DEFAULT_INTERVAL_S); given, it must be above 0
+            if _non_negative(self.id, "seconds", self.params.get("seconds", DEFAULT_INTERVAL_S)) <= 0:
                 raise WorkflowError(f"{self.id}: a min-interval gate needs seconds above 0")
         elif self.rule == "count-limit":
             try:
-                count = int(self.params.get("count", 0))
+                count = int(self.params.get("count", DEFAULT_COUNT))
             except (TypeError, ValueError):
                 raise WorkflowError(f"{self.id}: count must be a whole number") from None
             if count < 1:
                 raise WorkflowError(f"{self.id}: a count-limit gate needs a count of at least 1")
-            self.params["count"] = count
+            if "count" in self.params:
+                self.params["count"] = count
         elif self.rule == "condition":
             for key in ("min", "max"):
                 if self.params.get(key) is not None:

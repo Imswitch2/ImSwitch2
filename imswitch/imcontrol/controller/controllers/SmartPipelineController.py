@@ -17,11 +17,13 @@ from imswitch.imcontrol.model.smartpipeline.mock import FunctionStepRunner
 from imswitch.imcontrol.model.smartpipeline.run import (
     ARMED, RUNNING, STOPPING, PipelineRun,
 )
+from imswitch.imcontrol.model.smartpipeline.designer import pipeline_catalog
 from ..basecontrollers import ImConWidgetController
 
 _pipelinesFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'smart_pipelines')
 _calibrationsFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'calibrations')
 _stateFilePath = os.path.join(dirtools.UserFileDirs.Config, 'smart_pipeline.json')
+_editorPreferencesPath = os.path.join(dirtools.UserFileDirs.Config, 'smart_pipeline_editor.json')
 
 _STATUS_PERIOD_MS = 500
 _CLOSE_JOIN_S = 5.0
@@ -50,6 +52,7 @@ class SmartPipelineController(ImConWidgetController):
         self._source = None
         self._smartModeService = None
         self._registry = None
+        self._editor = None
         self._closing = False
         self._marshal = _UIThreadExecWrapper(lambda fn: fn())
 
@@ -59,6 +62,7 @@ class SmartPipelineController(ImConWidgetController):
 
         self._widget.sigBrowseClicked.connect(self.browse)
         self._widget.sigReloadClicked.connect(self.reload)
+        self._widget.sigDesignClicked.connect(self.openDesigner)
         self._widget.sigArmClicked.connect(self.arm)
         self._widget.sigStopClicked.connect(self.stop)
         self._widget.sigSaveLogClicked.connect(self.saveLog)
@@ -203,6 +207,58 @@ class SmartPipelineController(ImConWidgetController):
         from imswitch.imcontrol.model.smartpipeline.catalog import catalog
 
         return catalog()
+
+    # ------------------------------------------------------------------ #
+    # The designer                                                        #
+    # ------------------------------------------------------------------ #
+    def designerCatalog(self):
+        """ The editor's catalogue for this setup: ImProcess's processors (when
+        that module is loaded), the pipeline step kinds with the setup's
+        detectors, the calibrations and the actions, and the recipes. """
+        detectors = list(self._master.detectorsManager.getAllDeviceNames())
+        try:
+            transforms = self._transforms().ids()
+        except ValueError:
+            transforms = ()
+        positioners = list(self._master.positionersManager.getAllDeviceNames())
+        axes = []
+        for name in positioners:
+            for axis in getattr(self._master.positionersManager[name], 'axes', ()) or ():
+                axes.append(f'{name}:{axis}')
+        defaults = {'axes': axes[:2] if axes else ['Y', 'X']}
+        return pipeline_catalog(registry=self._improcessRegistry(), detectors=detectors, transforms=transforms,
+                                actions=self._catalog(), recipe_defaults=defaults)
+
+    def openDesigner(self):
+        """ Opens the workflow editor on the chosen pipeline (or a new one). """
+        from imswitch.imcommon.model.workfloweditor.preferences import EditorPreferences
+        from imswitch.imcommon.view.workfloweditor.editor import MainWindow
+
+        editor = self._editor
+        if editor is not None:
+            editor.show()
+            editor.raise_()
+            editor.activateWindow()
+            return editor
+        os.makedirs(_pipelinesFolderPath, exist_ok=True)
+        editor = MainWindow(self.designerCatalog(), start_folder=_pipelinesFolderPath,
+                            preferences=EditorPreferences(_editorPreferencesPath),
+                            title='Smart pipeline designer')
+        editor.host = _DesignerHost(self)
+        editor.sig_closed.connect(self._onDesignerClosed)
+        self._editor = editor
+        if self._path and os.path.isfile(self._path):
+            editor.open_file(self._path)
+        editor.show()
+        return editor
+
+    def _onDesignerClosed(self):
+        editor, self._editor = self._editor, None
+        if editor is None:
+            return
+        saved = getattr(editor.document, 'path', None)
+        if saved:
+            self.setPipelinePath(str(saved))      # the file as the designer left it
 
     # ------------------------------------------------------------------ #
     # Arm / stop                                                          #
@@ -374,6 +430,13 @@ class SmartPipelineController(ImConWidgetController):
     def closeEvent(self):
         self._closing = True
         self._statusTimer.stop()
+        editor, self._editor = self._editor, None
+        if editor is not None:
+            try:
+                editor.sig_closed.disconnect(self._onDesignerClosed)
+            except (TypeError, RuntimeError):
+                pass
+            editor.close()
         run = self._run
         if run is not None:
             run.stop()
@@ -389,6 +452,16 @@ class SmartPipelineController(ImConWidgetController):
         if source is not None and source.release_pending:
             return source.retry_release()
         return True
+
+
+class _DesignerHost:
+    """ What the editor asks its host for; the designer runs nothing itself. """
+
+    def __init__(self, controller):
+        self._controller = controller
+
+    def runRefusal(self):
+        return 'The designer does not run pipelines: save, then Arm from the Smart Pipeline panel.'
 
 
 def _loadState():

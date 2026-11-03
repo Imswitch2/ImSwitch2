@@ -290,11 +290,16 @@ class RunSession:
             return {"kind": "save", "fmt": step.fmt, "template": step.path_template, "inputs": inputs}
         entry = document.entry_for(step)
         plugin = getattr(step, "processor", None) or getattr(step, "reconstructor", "")
-        return {
+        base = {
             "kind": step.kind, "plugin": plugin, "version": entry.version if entry is not None else "",
             "params": document.effective_params(step.id) if document.has(step.id) else dict(step.params),
             "restriction": getattr(step, "restriction", None), "inputs": inputs,
         }
+        if entry is None and not isinstance(step, (Reconstruct, Consolidate, Process)):
+            # A registered kind: its own fields are part of what it does.
+            base["attributes"] = {k: v for k, v in step.to_dict().items()
+                                  if k not in ("step", "kind", "id", "inputs", "params")}
+        return base
 
     def _fingerprint(self, document, step, prints, source_root, nonces, upstream=None) -> str:
         upstream = bypass_upstream(document.workflow) if upstream is None else upstream

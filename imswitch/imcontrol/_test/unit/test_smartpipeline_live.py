@@ -88,6 +88,7 @@ class FakePositioner:
 
     def __init__(self, name, axis, registry, *, delay_s=0.0):
         self.name, self.axis, self._registry = name, axis, registry
+        self.axes = [axis]
         self.position = {axis: 0.0}
         self.calls = []
         self.delay_s = delay_s
@@ -109,7 +110,8 @@ class FakePositioner:
 
 
 class FakePositioners(dict):
-    pass
+    def getAllDeviceNames(self):
+        return list(self)
 
 
 def centroid(inputs, params, state):

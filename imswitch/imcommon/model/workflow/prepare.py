@@ -177,7 +177,7 @@ def _refs(step) -> list[Ref]:
         return []
     if isinstance(step, Save):
         return [step.input]
-    return list(step.inputs)
+    return list(getattr(step, "inputs", None) or [])
 
 
 def _default_port(ref: Ref) -> bool:

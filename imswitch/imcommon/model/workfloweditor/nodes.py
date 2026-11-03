@@ -110,15 +110,9 @@ def kinds_of(document) -> dict[str, str]:
     from imswitch.imcommon.model.workflow.prepare import bypass_upstream
 
     registry = document.catalog.registry if document.catalog is not None else None
-    if registry is None:
-        found = {}
-        for step in document.steps:
-            if isinstance(step, Source):
-                found[step.id] = RECORDING_KIND
-            elif not isinstance(step, Save):
-                found[step.id] = UNKNOWN_KIND
-    else:
-        found = dict(declared_kinds(document.workflow, registry))
+    # declared_kinds without a registry: a Source makes a recording, a
+    # plugin step is unknown, a registered kind says (declared_kind).
+    found = dict(declared_kinds(document.workflow, registry))
     for step_id, through in bypass_upstream(document.workflow).items():
         found[step_id] = found.get(through.step, UNKNOWN_KIND)
     return found
@@ -170,6 +164,14 @@ def _summary(document, step, entry) -> tuple[tuple[str, ...], tuple[str, ...]]:
         count = len(step.inputs)
         return (f"merges {count} reconstruction{'s' if count != 1 else ''}",), ()
     params = dict(getattr(step, "params", {}) or {})
+    descriptor = _descriptor(document, step)
+    if descriptor is not None:
+        labels = {f.key: (f.label or f.key) for f in descriptor.attributes + descriptor.params_fields(step)}
+        shown = [(f.key, getattr(step, f.key, None)) for f in descriptor.attributes]
+        shown += [(key, value) for key, value in params.items()]
+        lines = tuple(f"{labels.get(key, key)}  {_fmt(value)}" for key, value in shown
+                      if value not in (None, "", [], {}))
+        return (lines[:4] if lines else ("defaults",)), ()
     if isinstance(step, Process) and step.processor == "python":
         code = [line.rstrip() for line in str(params.get("code", "")).splitlines()]
         shown = tuple(line for line in code if line.strip() and not line.lstrip().startswith("#"))[:4]
@@ -193,8 +195,31 @@ def title_of(document, step) -> str:
     entry = document.entry_for(step)
     if entry is not None:
         return entry.name
+    descriptor = _descriptor(document, step)
+    if descriptor is not None:
+        what = _descriptor_subtitle(step)
+        return f"{descriptor.name} · {what}" if what else descriptor.name
     plugin = getattr(step, "processor", None) or getattr(step, "reconstructor", "")
     return f"{plugin} (not installed)"
+
+
+def _descriptor(document, step):
+    """The catalog's descriptor of ``step``'s kind, for a kind the editor
+    does not know by class."""
+    catalog = getattr(document, "catalog", None)
+    if catalog is None or isinstance(step, (Source, Reconstruct, Consolidate, Process, Save)):
+        return None
+    return catalog.step(step_kind(step))
+
+
+def _descriptor_subtitle(step) -> str:
+    """What a registered step is set to, for its title (the action, the
+    rule, the detector): the first attribute that names a choice."""
+    for key in ("action", "rule", "transform", "sink", "detector"):
+        value = getattr(step, key, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _members_used(document, step_id: str) -> list[str]:
@@ -233,13 +258,30 @@ def next_member(document, step, spec, used: list[str]) -> str:
     return candidate
 
 
-def _outputs(document, step, kind: str) -> tuple[OutputSlot, ...]:
+def _outputs(document, step, kind: str, kinds=None) -> tuple[OutputSlot, ...]:
     if isinstance(step, Save):
         return ()
     if isinstance(step, Source):
         return (OutputSlot(SOURCE_PORT, step.id, "", kind),)
     if isinstance(step, (Reconstruct, Consolidate)):
         return (OutputSlot(DEFAULT_PORT, step.id, "", kind),)
+    descriptor = _descriptor(document, step)
+    if descriptor is not None:
+        ports = descriptor.ports_of(step)
+        if not ports or not descriptor.produces:
+            return ()
+        port_kind = getattr(step, "port_kind", None)
+        slots = []
+        for index, port in enumerate(ports):
+            this_kind = kind
+            if callable(port_kind):
+                try:
+                    this_kind = str(port_kind(port, dict(kinds or {})))
+                except Exception:  # noqa: BLE001
+                    this_kind = kind
+            lone = len(ports) == 1
+            slots.append(OutputSlot(port, step.id if lone else f"{step.id}.{port}", "" if lone else port, this_kind))
+        return tuple(slots)
     entry = document.entry_for(step)
     spec = entry.output_spec(step.params) if entry is not None else None
     ports = tuple(spec.ports or ()) if spec is not None else (DEFAULT_PORT,)
@@ -272,6 +314,9 @@ def _accepted_kind(document, step) -> str:
     """What an empty input of ``step`` expects (for the colour of its stub)."""
     if isinstance(step, Reconstruct):
         return RECORDING_KIND
+    descriptor = _descriptor(document, step)
+    if descriptor is not None:
+        return descriptor.accepted_kinds[0] if descriptor.accepted_kinds else UNKNOWN_KIND
     entry = document.entry_for(step)
     if isinstance(step, Process) and entry is not None and entry.accepted_kinds:
         return entry.accepted_kinds[0]
@@ -281,6 +326,9 @@ def _accepted_kind(document, step) -> str:
 def _takes_several(document, step) -> bool:
     if isinstance(step, Consolidate):
         return True
+    descriptor = _descriptor(document, step)
+    if descriptor is not None:
+        return descriptor.max_inputs is None or descriptor.max_inputs > 1
     if not isinstance(step, Process):
         return False
     entry = document.entry_for(step)
@@ -297,7 +345,10 @@ def code_name(index: int) -> str:
 def _inputs(document, step, kinds) -> tuple[InputSlot, ...]:
     if isinstance(step, Source):
         return ()
-    refs = [step.input] if isinstance(step, Save) else list(step.inputs)
+    descriptor = _descriptor(document, step)
+    if descriptor is not None and descriptor.is_source:
+        return ()
+    refs = [step.input] if isinstance(step, Save) else list(getattr(step, "inputs", None) or [])
     python = isinstance(step, Process) and step.processor == "python"
 
     def code(index):
@@ -311,6 +362,8 @@ def _inputs(document, step, kinds) -> tuple[InputSlot, ...]:
     needed = 1
     if isinstance(step, Process) and entry is not None:
         needed = max(1, entry.min_inputs)
+    elif descriptor is not None:
+        needed = max(1, descriptor.min_inputs)
     for index in range(len(slots), needed):
         slots.append(InputSlot(index, None, "", _accepted_kind(document, step), required=True, code=code(index)))
     if _takes_several(document, step) and len(slots) >= needed:
@@ -338,17 +391,20 @@ def node_infos(document, issues=None) -> dict[str, NodeInfo]:
         elif bypassed and isinstance(step, Save):
             passes = str(resolve_ref(step.input, upstream))
         exposed = tuple(document.exposed(step.id).items()) if hasattr(document, "exposed") else ()
+        descriptor = _descriptor(document, step)
         infos[step.id] = NodeInfo(
             id=step.id,
             step_kind=step_kind(step),
             title=title_of(document, step),
             plugin_id=str(getattr(step, "processor", None) or getattr(step, "reconstructor", None) or ""),
-            category=entry.category if entry is not None else "",
-            description=(entry.description if entry is not None else "") or _STEP_WORDS.get(step_kind(step), ""),
+            category=entry.category if entry is not None else (descriptor.category if descriptor else ""),
+            description=(entry.description if entry is not None else
+                         descriptor.description if descriptor is not None else "")
+            or _STEP_WORDS.get(step_kind(step), ""),
             summary=summary,
             code=code,
             inputs=_inputs(document, step, kinds),
-            outputs=_outputs(document, step, kinds.get(step.id, UNKNOWN_KIND)),
+            outputs=_outputs(document, step, kinds.get(step.id, UNKNOWN_KIND), kinds),
             issues=tuple(by_step.get(step.id, ())),
             bypassed=bypassed,
             passes=passes,
@@ -385,6 +441,12 @@ def can_feed(document, producer_id: str, target_id: str, kinds=None) -> bool:
     producer, target = document.step(producer_id), document.step(target_id)
     if isinstance(producer, Save) or isinstance(target, Source):
         return False
+    producing = _descriptor(document, producer)
+    if producing is not None and not producing.produces:
+        return False
+    taking = _descriptor(document, target)
+    if taking is not None and taking.is_source:
+        return False
     if target_id in ancestors(document.steps, producer_id):
         return False
     kinds = kinds if kinds is not None else kinds_of(document)
@@ -395,6 +457,8 @@ def can_feed(document, producer_id: str, target_id: str, kinds=None) -> bool:
         return isinstance(producer, Reconstruct) and producer.reconstructor == target.reconstructor
     if isinstance(target, Save):
         return kind != RECORDING_KIND
+    if taking is not None:
+        return kind_fits(kind, taking)
     return kind_fits(kind, document.entry_for(target))
 
 
@@ -445,6 +509,15 @@ def candidates(catalog, kind: str | None = None, *, producer=None) -> list[Candi
                 continue
             found.append(Candidate("process", entry.id, entry.name, entry.category, entry.description))
         found.append(Candidate("save", "", "Save", "Steps", _STEP_WORDS["save"]))
+    for descriptor in getattr(catalog, "steps", ()):
+        if descriptor.is_source:
+            if kind is None:
+                found.append(Candidate(descriptor.kind, "", descriptor.name, descriptor.category,
+                                       descriptor.description))
+            continue
+        if kind is not None and not kind_fits(kind, descriptor):
+            continue
+        found.append(Candidate(descriptor.kind, "", descriptor.name, descriptor.category, descriptor.description))
     return found
 
 

@@ -115,7 +115,8 @@ def test_step_parameters_are_checked_when_made():
     with pytest.raises(WorkflowError, match="gate rule"):
         Gate("g", "maybe", inputs=["x"])
     with pytest.raises(WorkflowError, match="seconds above 0"):
-        Gate("g", "min-interval", inputs=["x"])
+        Gate("g", "min-interval", {"seconds": 0}, inputs=["x"])
+    assert Gate("g", "min-interval", inputs=["x"]).params == {}       # one second by default
     with pytest.raises(WorkflowError, match="count of at least 1"):
         Gate("g", "count-limit", {"count": 0}, inputs=["x"])
     with pytest.raises(WorkflowError, match="names an action"):
@@ -190,6 +191,22 @@ def test_points_reach_an_action_only_through_a_transform():
                              Action("mv", "move-to", {"frame": "somewhere"}, inputs=["tf"])])
     messages = [str(i) for i in validate_pipeline(bad_tag, actions=CATALOG)]
     assert any("bad frame tag 'somewhere'" in m for m in messages)
+
+
+def test_the_points_frame_tag_must_match_the_source_and_the_transform():
+    other_detector = Workflow("p", [Live("cam", detector="Camera"),
+                                   Process("rp", "regionprops", {"frame": "detector:Other"}, inputs=["cam"]),
+                                   Transform("tf", "cam2stage", inputs=["rp"])])
+    messages = [str(i) for i in validate_pipeline(other_detector, transforms=transforms())]
+    assert any("measured in 'detector:Other', but the source is detector 'Camera'" in m for m in messages)
+
+    other_frame = Workflow("p", [Live("cam", detector="Camera"),
+                                Process("rp", "regionprops", {"frame": "stage:XY"}, inputs=["cam"]),
+                                Gate("g", "once", inputs=["rp"]), Process("pk", "pick", {}, inputs=["g"]),
+                                Transform("tf", "cam2stage", inputs=["pk"])])
+    messages = [str(i) for i in validate_pipeline(other_frame, transforms=transforms())]
+    assert any("'cam2stage' reads 'detector:Camera', but the points are measured in 'stage:XY'" in m
+               for m in messages)
 
 
 def test_an_action_input_of_the_wrong_kind_is_refused():

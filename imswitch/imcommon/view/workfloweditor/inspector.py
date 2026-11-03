@@ -195,6 +195,8 @@ class Inspector(QtWidgets.QScrollArea):
                 self._build_process(layout, form, step)
             elif isinstance(step, Save):
                 self._build_save(form, step)
+            elif document.descriptor_for(step) is not None:
+                self._build_descriptor(layout, form, step)
             if isinstance(step, (Source, Reconstruct, Process)):
                 layout.insertWidget(1, self.binding_area)
             layout.addWidget(self.output_area)
@@ -262,11 +264,12 @@ class Inspector(QtWidgets.QScrollArea):
         self.id_edit.editingFinished.connect(self._rename)
         row.addWidget(self.id_edit, 1)
         box.addLayout(row)
+        descriptor = self._document.descriptor_for(step)
         words = entry.description if entry is not None and entry.description else {
             "source": "A recording: a file, or the one bound when the workflow runs.",
             "save": "Writes one result to a file.",
             "consolidate": "Merges the reconstructions it reads into one result.",
-        }.get(step.kind, "")
+        }.get(step.kind, descriptor.description if descriptor is not None else "")
         if words:
             description = QtWidgets.QLabel(words)
             description.setWordWrap(True)
@@ -299,6 +302,14 @@ class Inspector(QtWidgets.QScrollArea):
             return f"takes {takes} ({entry.arity} input{'s' if entry.arity != '1' else ''}) · makes {makes_words}"
         if isinstance(step, Reconstruct):
             return f"reads a recording · makes {makes_words}"
+        descriptor = self._document.descriptor_for(step)
+        if descriptor is not None:
+            if descriptor.is_source:
+                return f"makes {makes_words}" if makes else "the pipeline's source"
+            takes = ", ".join(st.KIND_WORDS.get(k, k) for k in descriptor.accepted_kinds) or "anything"
+            if not descriptor.produces:
+                return f"takes {takes} · makes nothing"
+            return f"takes {takes} · makes {makes_words}" if makes else f"takes {takes}"
         return f"makes {makes_words}" if makes else ""
 
     def _plugin_combo(self, entries, current: str, *, by_category: bool = False) -> QtWidgets.QComboBox:
@@ -418,6 +429,9 @@ class Inspector(QtWidgets.QScrollArea):
         refs = [str(ref) for ref in step.inputs]
         entry = document.entry_for(step)
         several = entry is not None and (entry.max_inputs is None or entry.max_inputs > 1)
+        descriptor = document.descriptor_for(step)
+        if descriptor is not None:
+            several = descriptor.max_inputs is None or descriptor.max_inputs > 1
         python = isinstance(step, Process) and step.processor == "python"
         for index, ref in enumerate(refs):
             row = QtWidgets.QHBoxLayout()
@@ -617,9 +631,49 @@ class Inspector(QtWidgets.QScrollArea):
         placeholders = ", ".join("{%s}" % name for name in (catalog.path_placeholders if catalog else ()))
         form.addRow(_muted(f"Placeholders: {placeholders}."))
 
+    def _build_descriptor(self, layout, form, step) -> None:
+        """A registered step kind: its own fields, what it reads, its params."""
+        document = self._document
+        descriptor = document.descriptor_for(step)
+        if descriptor.attributes:
+            attributes = ParamForm()
+            values = {field.key: getattr(step, field.key, field.default) for field in descriptor.attributes}
+            attributes.set_plugin(SimpleNamespace(fields=descriptor.attributes, extra_keys=()), values)
+            attributes.sigValueChanged.connect(self._set_attribute)
+            attributes.sigValueCleared.connect(self._clear_attribute)
+            attributes.setMinimumHeight(min(160, 40 * len(descriptor.attributes) + 20))
+            layout.addWidget(attributes)
+        if not descriptor.is_source:
+            layout.addWidget(_section("Reads"))
+            layout.addWidget(self._inputs_editor(step))
+        if descriptor.params_fields(step):
+            self._add_param_form(layout, step)
+
+    def _set_attribute(self, key: str, value) -> None:
+        step_id = self._step_id
+        if step_id is None or self._silent:
+            return
+        document = self._document
+        label = f"Set {key} of {step_id}"
+        if self._edit(label, lambda: document.set_attribute(step_id, key, value), merge=("attribute", step_id, key)):
+            self.show_step(step_id)   # the params may depend on the field
+
+    def _clear_attribute(self, key: str) -> None:
+        step_id = self._step_id
+        if step_id is None:
+            return
+        descriptor = self._document.descriptor_for(self._document.step(step_id))
+        field = descriptor.attribute(key) if descriptor is not None else None
+        if field is not None:
+            self._set_attribute(key, field.default)
+
     def _add_param_form(self, layout, step) -> None:
         document = self._document
         entry = document.entry_for(step)
+        if entry is None:
+            descriptor = document.descriptor_for(step)
+            if descriptor is not None:
+                entry = SimpleNamespace(fields=descriptor.params_fields(step), extra_keys=())
         layout.addWidget(_section("Parameters"))
         form = ParamForm()
         exposed = {}

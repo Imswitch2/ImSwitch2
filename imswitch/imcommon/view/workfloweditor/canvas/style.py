@@ -75,6 +75,7 @@ CATEGORY_COLOURS = {
     "Segmentation": "#5ea85a",
     "Transform": "#7d7fd8",
     "Visualization": "#cf6fb4",
+    "Pipeline": "#b5563b",
 }
 OTHER_COLOUR = "#7a8794"
 

@@ -98,6 +98,60 @@ class PluginEntry:
 
 
 @dataclass(frozen=True)
+class StepDescriptor:
+    """A registered step kind, as the editor needs to know it.
+
+    The five built-in kinds the editor knows by class; any other kind a
+    package registers (``register_step_type``) is shown, added, edited and
+    connected through one of these. ``attributes`` are the step's own fields
+    (``step.<key>``: a live source's detector, a gate's rule), ``fields`` its
+    ``params`` -- or ``fields_for(step)`` when they depend on the attributes
+    (a gate's parameters depend on its rule). ``max_inputs == 0`` is a source
+    kind; ``produces`` is False for a kind with no output port (a sink).
+    ``ports`` are the kind's output ports, or ``None`` to read ``step.ports``.
+    ``make(step_id, refs)`` builds a fresh, valid step reading ``refs``.
+    """
+
+    kind: str
+    name: str
+    category: str = "Steps"
+    description: str = ""
+    attributes: tuple[ParamField, ...] = ()
+    fields: tuple[ParamField, ...] = ()
+    min_inputs: int = 1
+    max_inputs: int | None = 1
+    accepted_kinds: tuple[str, ...] = ()
+    ports: tuple[str, ...] | None = None
+    produces: bool = True
+    make: Callable[[str, list], Any] | None = field(default=None, compare=False)
+    fields_for: Callable[[Any], tuple[ParamField, ...]] | None = field(default=None, compare=False)
+
+    @property
+    def is_source(self) -> bool:
+        return self.max_inputs == 0
+
+    def params_fields(self, step=None) -> tuple[ParamField, ...]:
+        """The fields of ``step.params`` (``fields_for(step)`` when given)."""
+        if self.fields_for is not None and step is not None:
+            try:
+                return tuple(self.fields_for(step))
+            except Exception:  # noqa: BLE001 - a broken descriptor shows no form
+                return ()
+        return self.fields
+
+    def ports_of(self, step=None) -> tuple[str, ...]:
+        if self.ports is not None:
+            return self.ports
+        return tuple(str(port) for port in (getattr(step, "ports", None) or ()))
+
+    def defaults(self, step=None) -> dict:
+        return {field.key: field.default for field in self.params_fields(step)}
+
+    def attribute(self, key: str) -> ParamField | None:
+        return next((field for field in self.attributes if field.key == key), None)
+
+
+@dataclass(frozen=True)
 class Catalog:
     """Every plugin the editor may put in a step, plus the save vocabulary.
 
@@ -124,6 +178,8 @@ class Catalog:
     #: A snippet store for Python steps: ``list_snippets() -> [name]`` and
     #: ``load_snippet(name) -> (code, ports)``. ImProcess passes its module.
     snippets: Any = field(default=None, compare=False)
+    #: Registered step kinds the editor may add beyond the five built-ins.
+    steps: tuple[StepDescriptor, ...] = ()
 
     @classmethod
     def empty(cls) -> "Catalog":
@@ -145,6 +201,20 @@ class Catalog:
 
     def processor(self, plugin_id: str) -> PluginEntry | None:
         return self.get(PROCESSOR, plugin_id)
+
+    def step(self, kind: str) -> StepDescriptor | None:
+        """The descriptor of a registered step kind, or ``None``."""
+        for descriptor in self.steps:
+            if descriptor.kind == kind:
+                return descriptor
+        return None
+
+    def step_categories(self) -> tuple[str, ...]:
+        names = []
+        for descriptor in self.steps:
+            if descriptor.category not in names:
+                names.append(descriptor.category)
+        return tuple(names)
 
     def reconstructor(self, plugin_id: str) -> PluginEntry | None:
         return self.get(RECONSTRUCTOR, plugin_id)

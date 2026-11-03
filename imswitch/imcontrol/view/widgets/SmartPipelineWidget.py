@@ -21,6 +21,7 @@ class SmartPipelineWidget(Widget):
 
     sigBrowseClicked = QtCore.Signal()
     sigReloadClicked = QtCore.Signal()
+    sigDesignClicked = QtCore.Signal()
     sigArmClicked = QtCore.Signal()
     sigStopClicked = QtCore.Signal()
     sigSaveLogClicked = QtCore.Signal()
@@ -34,6 +35,8 @@ class SmartPipelineWidget(Widget):
                                          QtWidgets.QSizePolicy.Preferred)
         self.browseButton = guitools.BetterPushButton('Choose pipeline…')
         self.reloadButton = guitools.BetterPushButton('Reload')
+        self.designButton = guitools.BetterPushButton('Design…')
+        self.designButton.setToolTip('Open the pipeline in the workflow editor (a new one when none is chosen)')
 
         self.summaryLabel = QtWidgets.QLabel()
         self.summaryLabel.setWordWrap(True)
@@ -66,6 +69,7 @@ class SmartPipelineWidget(Widget):
         fileRow.addWidget(self.pipelineLabel, 1)
         fileRow.addWidget(self.browseButton)
         fileRow.addWidget(self.reloadButton)
+        fileRow.addWidget(self.designButton)
 
         runRow = QtWidgets.QHBoxLayout()
         runRow.addWidget(QtWidgets.QLabel('Mode:'))
@@ -91,6 +95,7 @@ class SmartPipelineWidget(Widget):
 
         self.browseButton.clicked.connect(self.sigBrowseClicked)
         self.reloadButton.clicked.connect(self.sigReloadClicked)
+        self.designButton.clicked.connect(self.sigDesignClicked)
         self.armButton.clicked.connect(self.sigArmClicked)
         self.stopButton.clicked.connect(self.sigStopClicked)
         self.saveLogButton.clicked.connect(self.sigSaveLogClicked)
@@ -137,6 +142,11 @@ class SmartPipelineWidget(Widget):
 
     def setModeEnabled(self, enabled):
         self.modeBox.setEnabled(enabled)
+
+    def setDesignEnabled(self, enabled, toolTip=''):
+        self.designButton.setEnabled(enabled)
+        if toolTip:
+            self.designButton.setToolTip(toolTip)
 
     def setArmEnabled(self, enabled, toolTip=''):
         self.armButton.setEnabled(enabled)

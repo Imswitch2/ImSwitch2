@@ -214,6 +214,38 @@ def ref_kind(workflow: Workflow, ref: Ref, kinds: dict[str, str]) -> str:
     return str(kinds.get(ref.step, UNKNOWN_KIND))
 
 
+def _parse_tag(tag: str):
+    try:
+        return FrameTag.parse(tag)
+    except CoordinateError:
+        return None
+
+
+def declared_frame(workflow: Workflow, ref: Ref) -> str:
+    """The frame tag the points on ``ref`` are measured in, as the step that
+    made them declares it (a ``frame`` parameter, as regionprops has), looking
+    through gates and picks; "" when nothing declares one."""
+    seen = set()
+    while ref.step not in seen:
+        seen.add(ref.step)
+        try:
+            step = workflow.step(ref.step)
+        except KeyError:
+            return ""
+        if isinstance(step, Gate) and ref.port != FIRED_PORT and step.inputs:
+            ref = step.inputs[0]
+            continue
+        if isinstance(step, Process):
+            frame = (step.params or {}).get("frame")
+            if isinstance(frame, str) and frame and frame != "unknown":
+                return frame
+            if step.processor == "pick" and step.inputs:
+                ref = step.inputs[0]
+                continue
+        return ""
+    return ""
+
+
 def _points_producer(workflow: Workflow, ref: Ref):
     """The step whose points ``ref`` ultimately carries, looking through
     gates (which pass their input on) and pick-like processing steps (which
@@ -273,6 +305,17 @@ def validate_pipeline(workflow: Workflow, *, registry=None, actions: ActionCatal
                 issues.append(Issue(step.id, f"a transform takes points; {step.inputs[0]} carries {kind}"))
             if transforms is not None and step.transform not in transforms:
                 issues.append(Issue(step.id, f"unknown transform {step.transform!r} (known: {', '.join(transforms.ids()) or 'none'})"))
+            tag = declared_frame(workflow, step.inputs[0])
+            transform = transforms.get(step.transform) if transforms is not None else None
+            if tag and transform is not None and str(transform.source_frame) != tag:
+                issues.append(Issue(step.id, f"{step.transform!r} reads {transform.source_frame!r}, but the points "
+                                             f"are measured in {tag!r}"))
+            source = source_step_of(workflow)
+            if tag and isinstance(source, Live) and source.detector:
+                parsed = _parse_tag(tag)
+                if parsed is not None and parsed.kind == "detector" and parsed.name != source.detector:
+                    issues.append(Issue(step.id, f"the points are measured in {tag!r}, but the source is "
+                                                 f"detector {source.detector!r}"))
         elif isinstance(step, Action):
             issues.extend(_action_issues(workflow, step, kinds, actions, transforms))
     if action_chain(workflow) and not settings.arms_live:

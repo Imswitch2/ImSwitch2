@@ -107,7 +107,9 @@ class StepPalette(QtWidgets.QWidget):
         for entry in catalog.processors:
             entries[("process", entry.id)] = entry
 
-        recent = [key for key in self._recent if key in entries or key in (("source", ""), ("save", ""))]
+        descriptors = {(descriptor.kind, ""): descriptor for descriptor in getattr(catalog, "steps", ())}
+        recent = [key for key in self._recent
+                  if key in entries or key in descriptors or key in (("source", ""), ("save", ""))]
         if recent:
             node = self._root("Recent")
             for key in recent[:6]:
@@ -115,6 +117,8 @@ class StepPalette(QtWidgets.QWidget):
                     self._source(node)
                 elif key == ("save", ""):
                     self._save(node)
+                elif key in descriptors:
+                    self._descriptor_leaf(node, descriptors[key])
                 else:
                     self._plugin_leaf(node, key[0], entries[key])
 
@@ -132,6 +136,11 @@ class StepPalette(QtWidgets.QWidget):
             for entry in catalog.processors_in(category):
                 if entry.origin != USER:
                     self._plugin_leaf(node, "process", entry)
+        for category in getattr(catalog, "step_categories", lambda: ())():
+            node = self._root(category, colour=st.CATEGORY_COLOURS.get(category, st.OTHER_COLOUR))
+            for descriptor in catalog.steps:
+                if descriptor.category == category:
+                    self._descriptor_leaf(node, descriptor)
         dropins = [e for e in catalog.processors + catalog.reconstructors if e.origin == USER]
         if dropins:
             node = self._root("Drop-in plugins")
@@ -165,6 +174,14 @@ class StepPalette(QtWidgets.QWidget):
 
     def _save(self, parent) -> None:
         self._leaf(parent, "Save to a file", "save", "", "Write one result to a file", st.STEP_COLOURS["save"], "save")
+
+    def _descriptor_leaf(self, parent, descriptor) -> None:
+        tooltip = descriptor.description or descriptor.name
+        if not descriptor.is_source:
+            takes = ", ".join(descriptor.accepted_kinds) or "anything"
+            tooltip += f"\nTakes: {takes}"
+        colour = st.CATEGORY_COLOURS.get(descriptor.category, st.OTHER_COLOUR)
+        self._leaf(parent, descriptor.name, descriptor.kind, "", tooltip, colour, descriptor.category)
 
     def _plugin_leaf(self, parent, kind: str, entry, title: str | None = None) -> None:
         tooltip = entry.description or entry.name

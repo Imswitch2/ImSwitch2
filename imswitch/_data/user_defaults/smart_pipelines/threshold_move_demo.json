@@ -1,7 +1,7 @@
 {
   "name": "threshold and move (mock demo)",
   "schema": 1,
-  "description": "The shipped demo for example_no_hardware.json: the mock camera's frames are thresholded, the brightest region's centroid is turned into mock-stage coordinates and the two single-axis mock stages are moved there, at most once every two seconds. Run it in Visualize or Validate as it is; for Experiment, create the two setup modes the roles name (Setup Modes panel) or edit the roles.",
+  "description": "The shipped demo for example_no_hardware.json: the mock camera's frames are thresholded at 250 counts (its noise sits around 100, a peak up to 3000; Otsu would split the noise itself), the brightest region's centroid is turned into mock-stage coordinates and the two single-axis mock stages are moved there, at most once every two seconds. Run it in Visualize or Validate as it is; for Experiment, create the two setup modes the roles name (Setup Modes panel) or edit the roles.",
   "metadata": {
     "smart_pipeline": {
       "roles": {
@@ -21,7 +21,8 @@
       "id": "thr",
       "processor": "threshold",
       "params": {
-        "method": "otsu",
+        "method": "absolute",
+        "value": 250.0,
         "min_area": 20
       },
       "inputs": [

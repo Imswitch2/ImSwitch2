@@ -233,9 +233,25 @@ class WorkflowDocument:
             return self.catalog.processor(step.processor)
         return None
 
+    def descriptor_for(self, step):
+        """The catalogue's descriptor of a registered step kind (one the
+        editor does not know by class), or ``None``."""
+        if self.catalog is None or isinstance(step, (Source, Reconstruct, Consolidate, Process, Save)):
+            return None
+        return self.catalog.step(_kind(step))
+
+    def _takes_params(self, step) -> bool:
+        if isinstance(step, (Reconstruct, Process)):
+            return True
+        return self.descriptor_for(step) is not None and hasattr(step, "params")
+
     def defaults_for(self, step_id: str) -> dict:
-        entry = self.entry_for(self.step(step_id))
-        return entry.defaults() if entry is not None else {}
+        step = self.step(step_id)
+        entry = self.entry_for(step)
+        if entry is not None:
+            return entry.defaults()
+        descriptor = self.descriptor_for(step)
+        return descriptor.defaults(step) if descriptor is not None else {}
 
     def effective_params(self, step_id: str) -> dict:
         """What the run will use: the defaults with the step's params over them."""
@@ -244,7 +260,7 @@ class WorkflowDocument:
 
     def new_id(self, kind: str) -> str:
         """The first free ``src1``, ``rec1``, ``cons1``, ``proc1`` or ``save1``."""
-        prefix = _ID_PREFIX[kind]
+        prefix = _ID_PREFIX.get(kind, re.sub(r"[^a-z0-9]", "", str(kind).lower())[:4] or "step")
         taken = {step.id for step in self.steps}
         number = 1
         while f"{prefix}{number}" in taken:
@@ -254,7 +270,8 @@ class WorkflowDocument:
     def producers_before(self, step_id: str | None) -> list:
         """Earlier steps that produce a port (every kind but ``Save``)."""
         stop = self.index_of(step_id) if step_id is not None else len(self.steps)
-        return [step for step in self.steps[:stop] if not isinstance(step, Save)]
+        return [step for step in self.steps[:stop]
+                if not isinstance(step, Save) and getattr(self.descriptor_for(step), "produces", True)]
 
     def port_options(self, step_id: str | None) -> list[PortOption]:
         """Every port a step placed at ``step_id`` (or at the end) may reference."""
@@ -278,6 +295,15 @@ class WorkflowDocument:
                             options.append(PortOption(step.id, f"{port}{position}", f"{step.id}.{port}{position}"))
                 if spec is not None and spec.pattern:
                     options.append(PortOption(step.id, spec.pattern, f"{step.id}.<{spec.pattern}>", pattern=True))
+            else:
+                descriptor = self.descriptor_for(step)
+                if descriptor is None:
+                    continue
+                ports = descriptor.ports_of(step)
+                for index, port in enumerate(ports):
+                    lone = len(ports) == 1
+                    options.append(PortOption(step.id, None if lone else port,
+                                              f"{step.id} ({port})" if lone else f"{step.id}.{port}"))
         return options
 
     # -- issues -----------------------------------------------------------------
@@ -363,14 +389,30 @@ class WorkflowDocument:
         of its ``inputs``. A process or save step given no inputs takes the
         step it follows as its input when that step produces a port.
         """
-        if kind not in STEP_KINDS:
+        descriptor = self.catalog.step(kind) if self.catalog is not None and kind not in STEP_KINDS else None
+        if kind not in STEP_KINDS and descriptor is None:
             raise DocumentError(f"unknown step kind {kind!r}")
         step_id = self._check_free_id(step_id) if step_id else self.new_id(kind)
         refs = [parse_ref(ref) for ref in inputs]
-        if not refs and after is not None and kind in ("process", "save"):
+        takes_input = kind in ("process", "save") or (descriptor is not None and not descriptor.is_source)
+        if not refs and after is not None and takes_input:
             previous = self.step(after)
-            if not isinstance(previous, Save):
+            if not isinstance(previous, Save) and getattr(self.descriptor_for(previous), "produces", True):
                 refs = [Ref(previous.id)]
+        if descriptor is not None:
+            if descriptor.make is None:
+                raise DocumentError(f"the editor cannot make a {kind!r} step")
+            try:
+                step = descriptor.make(step_id, refs if not descriptor.is_source else [])
+            except (ValueError, TypeError) as exc:
+                raise DocumentError(f"cannot make a {kind!r} step: {exc}") from exc
+            index = self.index_of(after) + 1 if after is not None else len(self.steps)
+            for ref in refs:
+                if self.has(ref.step):
+                    index = max(index, self.index_of(ref.step) + 1)
+            self.steps.insert(index, step)
+            self._touch()
+            return step
         if kind in ("reconstruct", "consolidate", "process") and not plugin_id:
             raise DocumentError(f"a {kind} step needs a plugin id")
         if kind == "source":
@@ -463,7 +505,7 @@ class WorkflowDocument:
         instead, so ``params`` keeps holding only what differs. A parameter a
         control owns is set through the control: every target takes it."""
         step = self.step(step_id)
-        if not isinstance(step, (Reconstruct, Process)):
+        if not self._takes_params(step):
             raise DocumentError(f"{step_id} takes no parameters")
         control = self.control_of(step_id, key)
         if control is not None:
@@ -499,7 +541,7 @@ class WorkflowDocument:
         parameters given different new values are refused.
         """
         step = self.step(step_id)
-        if not isinstance(step, (Reconstruct, Process)):
+        if not self._takes_params(step):
             raise DocumentError(f"{step_id} takes no parameters")
         params = dict(params)
         owned = self.exposed(step_id)
@@ -532,7 +574,7 @@ class WorkflowDocument:
         """
         dropped = 0
         for step in self.steps:
-            if not isinstance(step, (Reconstruct, Process)) or not step.params:
+            if not self._takes_params(step) or not step.params:
                 continue
             defaults = self.defaults_for(step.id)
             owned = self.exposed(step.id)      # a control's value is always written
@@ -544,10 +586,36 @@ class WorkflowDocument:
             self._touch()
         return dropped
 
+    def set_attribute(self, step_id: str, key: str, value) -> None:
+        """Set one of a registered step's own fields (``step.<key>``), as its
+        descriptor declares them; the step checks the value as it does when
+        loaded. When the step's parameters depend on the field (a gate's on
+        its rule), the ones the new value does not take are dropped and the
+        missing ones take their defaults."""
+        step = self.step(step_id)
+        descriptor = self.descriptor_for(step)
+        if descriptor is None or descriptor.attribute(key) is None:
+            raise DocumentError(f"{step_id} has no field {key!r}")
+        before = dict(step.__dict__)
+        setattr(step, key, value)
+        if descriptor.fields_for is not None and hasattr(step, "params"):
+            fields = descriptor.params_fields(step)
+            keys = {field.key for field in fields}
+            kept = {k: v for k, v in dict(step.params or {}).items() if k in keys}
+            step.params = kept
+        check = getattr(step, "__post_init__", None)
+        try:
+            if callable(check):
+                check()
+        except ValueError as exc:
+            step.__dict__.update(before)
+            raise DocumentError(str(exc)) from exc
+        self._touch()
+
     def set_inputs(self, step_id: str, refs: Iterable) -> None:
         step = self.step(step_id)
         parsed = [parse_ref(ref) for ref in refs]
-        if isinstance(step, Source):
+        if isinstance(step, Source) or getattr(self.descriptor_for(step), "is_source", False):
             raise DocumentError("a source has no inputs")
         if isinstance(step, Save):
             if len(parsed) != 1:
@@ -999,7 +1067,9 @@ class WorkflowDocument:
         producer = self.step(ref.step)
         if isinstance(producer, Save):
             raise DocumentError(f"{ref.step!r} is a save step and produces nothing to connect")
-        if isinstance(target, Source):
+        if not getattr(self.descriptor_for(producer), "produces", True):
+            raise DocumentError(f"{ref.step!r} produces nothing to connect")
+        if isinstance(target, Source) or getattr(self.descriptor_for(target), "is_source", False):
             raise DocumentError("a source has no inputs")
         if ref.step == step_id or step_id in ancestors(self.steps, ref.step):
             raise DocumentError(f"connecting {ref} to {step_id!r} would make a loop")
@@ -1066,7 +1136,7 @@ class WorkflowDocument:
         doomed = {step_id} | {step.id for step in self.steps
                               if isinstance(step, Save) and step.input.step == step_id}
         for step in self.steps:
-            if step.id in doomed or isinstance(step, (Source, Save)):
+            if step.id in doomed or isinstance(step, (Source, Save)) or not hasattr(step, "inputs"):
                 continue
             kept = [ref for ref in step.inputs if ref.step not in doomed]
             if len(kept) != len(step.inputs):
@@ -1130,7 +1200,7 @@ class WorkflowDocument:
                     if step.input.step not in renamed:
                         continue
                     step.input = Ref(renamed[step.input.step], step.input.port)
-                elif not isinstance(step, Source):
+                elif not isinstance(step, Source) and hasattr(step, "inputs"):
                     step.inputs = [Ref(renamed[ref.step], ref.port) for ref in step.inputs if ref.step in renamed]
                 step.id = renamed[old_id]
                 added.append(step)
@@ -1149,6 +1219,9 @@ class WorkflowDocument:
         return [step.id for step in added]
 
     def _takes_several(self, step) -> bool:
+        descriptor = self.descriptor_for(step)
+        if descriptor is not None:
+            return descriptor.max_inputs is None or descriptor.max_inputs > 1
         entry = self.entry_for(step)
         return entry is not None and (entry.max_inputs is None or entry.max_inputs > 1)
 

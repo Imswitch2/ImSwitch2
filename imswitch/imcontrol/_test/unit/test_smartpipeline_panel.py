@@ -210,6 +210,38 @@ def test_experiment_mode_moves_the_stage_and_applies_the_roles(panel, folders):
     assert controller.shutdownComplete()
 
 
+def test_design_opens_the_editor_on_the_pipeline_with_the_setup_s_choices(panel, folders):
+    controller, widget = panel.controller, panel.widget
+    controller.setPipelinePath(_pipeline_file(folders))
+    editor = controller.openDesigner()
+    try:
+        assert editor.windowTitle().endswith('Smart pipeline designer')
+        assert [s.id for s in editor.document.steps] == ['cam', 'thr', 'rp', 'pk', 'found', 'tf', 'mv', 'log']
+        catalog = editor.catalog
+        assert [d.kind for d in catalog.steps] == ['live', 'transform', 'gate', 'action', 'sink']
+        assert catalog.step('live').attribute('detector').options == ('Camera',)
+        assert catalog.step('transform').attribute('transform').options == ('cam2stage',)
+        assert catalog.step('action').attribute('action').options == ('move-to', 'snap', 'log')
+        assert ('live', '') in editor.palette.all_choices()
+        assert editor.catalog.processor('threshold') is not None
+        recipes = catalog.recipes()
+        assert [r.title for r in recipes] == ['Threshold → move']
+        recipe = recipes[0].workflow()
+        assert recipe.step('cam').detector == 'Camera' and recipe.step('tf').transform == 'cam2stage'
+        assert recipe.step('mv').params['axes'] == ['Mock X:X', 'Mock Y:Y']
+        editor.select_step('found')
+        editor.inspector.show_step('found')
+        assert controller.openDesigner() is editor           # one designer at a time
+        # the editor saves under a new name: the panel follows it when the designer closes
+        new_path = str(folders / 'designed.json')
+        assert editor.save(new_path)
+    finally:
+        editor.close()
+    _waitFor(lambda: controller._editor is None)
+    assert controller._path == new_path and controller._document is not None
+    assert not widget.issuesLabel.isVisible() or widget.issuesLabel.text() == ''
+
+
 def test_experiment_without_roles_or_with_a_missing_mode_does_not_arm(panel, folders):
     controller, widget = panel.controller, panel.widget
     controller.setPipelinePath(_pipeline_file(folders))

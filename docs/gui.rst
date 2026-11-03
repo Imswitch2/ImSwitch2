@@ -1466,8 +1466,13 @@ more kinds of step (``live``, ``transform``, ``gate``, ``action``,
 
 **Choose pipeline…** opens a file from ``smart_pipelines/`` in your ImSwitch
 folder (``threshold_move_demo.json`` is shipped for
-``example_no_hardware.json``). The panel checks it against the setup before
-anything can be armed: the detector the ``live`` step names must exist, the
+``example_no_hardware.json``); **Design…** opens it in the workflow editor
+(:ref:`workflows-editor`), where the palette's *Pipeline* group has the five
+pipeline steps, a live source offers the setup's detectors, a transform the
+calibrations in ``calibrations/``, an action the catalogue's actions, and the
+start page offers the recipe *Threshold → move*; save there and the panel
+reloads the file when the designer closes. The panel checks the file against
+the setup before anything can be armed: the detector the ``live`` step names must exist, the
 actions and their parameters must be in the catalogue (``move-to``, ``snap``,
 ``log``), every ``transform`` must be a calibration file in
 ``calibrations/*.json`` (one transform per file, as the ``identity`` and

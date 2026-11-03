@@ -77,7 +77,7 @@ from imswitch.imcommon.model.smartpipeline import (
     value_of,
 )
 from imswitch.imcommon.model.smartpipeline.frames import finite_value
-from imswitch.imcommon.model.smartpipeline.steps import DONE_PORT, FIRED_PORT
+from imswitch.imcommon.model.smartpipeline.steps import DEFAULT_COUNT, DEFAULT_INTERVAL_S, DONE_PORT, FIRED_PORT
 from imswitch.imcommon.model.workflow.steps import DEFAULT_PORT, SOURCE_PORT, Ref, Save, Source, Workflow
 from imswitch.imcontrol.model.smartpipeline.ports import (
     CANCELLED,
@@ -650,14 +650,14 @@ class Engine:
                 open_ = bool(value is not None)
                 reason = kind
         elif step.rule == "min-interval":
-            seconds = float(params.get("seconds", 0))
+            seconds = float(params.get("seconds", DEFAULT_INTERVAL_S))
             open_ = state.last_t is None or now - state.last_t >= seconds
             reason = f"{now - state.last_t:.3f} s since last" if state.last_t is not None else "first"
         elif step.rule == "once":
             open_ = state.fired == 0
             reason = "first" if open_ else "already fired"
         elif step.rule == "count-limit":
-            limit = int(params.get("count", 1))
+            limit = int(params.get("count", DEFAULT_COUNT))
             open_ = state.fired < limit
             reason = f"{state.fired}/{limit}"
         elif step.rule == "busy":
