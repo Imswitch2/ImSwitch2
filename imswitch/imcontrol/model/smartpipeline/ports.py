@@ -129,8 +129,17 @@ class SimpleCompletion:
         self.result = result
         self.error: str | None = None
         self.abort_requested = False
+        self._callbacks: list = []
         if done:
             self.complete(result)
+
+    def add_done_callback(self, callback) -> None:
+        """``callback(completion)`` once settled -- at once when it already is."""
+        with self._lock:
+            if not self._done.is_set():
+                self._callbacks.append(callback)
+                return
+        callback(self)
 
     @property
     def done(self) -> bool:
@@ -148,6 +157,12 @@ class SimpleCompletion:
             self._done.set()
             if ended:
                 self._ended.set()
+            callbacks, self._callbacks = list(self._callbacks), []
+        for callback in callbacks:
+            try:
+                callback(self)
+            except Exception:  # noqa: BLE001 - a listener's failure is its own
+                pass
 
     def complete(self, result: Any = None, *, ended: bool = True) -> None:
         self._settle(OK, result=result, ended=ended)

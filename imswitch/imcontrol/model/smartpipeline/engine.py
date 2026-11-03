@@ -772,8 +772,22 @@ class Engine:
             self.log.append(tick, now, step.id, "started", **summary)
             completion = self.actions.start(request)
         self.summary.actions_started += 1
-        self._pending = _Pending(step, completion, now, tick, values, chain_index)
+        pending = _Pending(step, completion, now, tick, values, chain_index)
+        self._pending = pending
+        # Wake on the completion itself: between ticks nothing else polls
+        # (a scan-driven source ticks only when a scan ran), and a wait or a
+        # scan settles on its own thread.
+        subscribe = getattr(completion, "add_done_callback", None)
+        if callable(subscribe):
+            subscribe(lambda _completion: self._on_settled(pending))
         self._poll_completion()
+
+    def _on_settled(self, pending: "_Pending") -> None:
+        """A completion settled (any thread): continue the chain if it is
+        still the pending one."""
+        with self._lock:
+            if self._pending is pending and not self._stop.is_set():
+                self._poll_completion()
 
     def _poll_completion(self, *, force_timeout: bool = False) -> None:
         """Settle a pending completion that is done (or timed out) and
@@ -791,6 +805,7 @@ class Engine:
         if not completion.done and not timed_out:
             return
         if not completion.done:
+            self._pending = None   # before the abort: its settlement must not re-enter here
             try:
                 completion.abort()
             except Exception:

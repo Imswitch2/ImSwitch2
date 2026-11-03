@@ -159,9 +159,10 @@ class MockActions:
         return {"logged": True}
 
     def settle_all(self) -> None:
-        for completion in list(self.pending):
-            completion.complete({"settled": True})
-        self.pending.clear()
+        """Complete every pending action, including those the chain starts
+        while this settles the earlier ones."""
+        while self.pending:
+            self.pending.pop(0).complete({"settled": True})
 
 
 def sleep_clock(start: float = 0.0):

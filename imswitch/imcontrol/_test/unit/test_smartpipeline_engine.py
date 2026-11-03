@@ -224,12 +224,12 @@ def test_while_an_action_runs_the_next_tick_drops_its_action_and_a_busy_gate_clo
     assert eng.summary.dropped_busy == 1
     busy_events = [e.detail["why"] for e in eng.log.events(step="b")]
     assert busy_events == ["idle", "busy with mv"]
-    actions.settle_all()           # the move completes: the chain goes on to snap, which also waits
+    actions.settle_all()           # the move completes: the chain starts the snap at once, settled too
+    assert not eng.busy and eng.summary.actions_completed == 2 and eng.log.events("chain-done")
     third = eng.tick(Frame(FRAMES[2], "Camera", 2, 2.0))
-    assert eng.busy and eng.summary.actions_completed == 1 and third.dropped_action == "mv"
+    assert third.started == "mv" and eng.busy           # a new chain, now that the pipeline is free
     actions.settle_all()
-    eng.tick(Frame(FRAMES[2], "Camera", 3, 3.0))
-    assert eng.summary.actions_completed == 2 and eng.log.events("chain-done")
+    assert eng.summary.actions_completed == 4
 
 
 def test_frames_taken_before_the_chain_ended_are_stale():
@@ -361,6 +361,19 @@ def test_min_interval_once_and_count_limit_gates_use_the_engine_clock():
     document = pipeline(gate=Gate("g", "count-limit", {"count": 3}, inputs=["c"]), chain=("move",))
     eng = engine(document, frames=frames)
     assert eng.run().gates_fired == 3 and len(eng.log.events("would", step="mv")) == 3
+
+
+def test_the_chain_goes_on_when_a_completion_settles_with_no_tick_in_between():
+    actions = MockActions(latency_s=0.05)           # completes on a timer thread, not on a tick
+    eng = engine(mode="experiment", actions=actions, wait_actions=False)
+    eng.arm()
+    eng.tick(Frame(FRAMES[0], "Camera", 0, 0.0))
+    assert eng.busy and eng.summary.actions_started == 1
+    deadline = time.monotonic() + 2.0
+    while eng.summary.actions_completed < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not eng.busy and eng.summary.actions_completed == 2      # move, then snap, without another frame
+    assert [r.action for r in actions.requests] == ["move-to", "snap"] and eng.log.events("chain-done")
 
 
 def test_a_delay_gate_opens_once_the_time_after_its_trigger_has_passed():
