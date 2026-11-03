@@ -25,7 +25,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from imswitch.imcommon.model.smartpipeline import pipeline_settings
+from imswitch.imcommon.model.smartpipeline import Transform, pipeline_settings
 from imswitch.imcontrol.model.smartpipeline.engine import MODE_EFFECTS, ArmError, Engine, EventLog, RunMode
 
 IDLE = "idle"
@@ -184,11 +184,32 @@ class PipelineRun:
             if effects["roles"]:
                 self._apply_role("scouting", required=True)
             self.source.start()
+            problems = self._grid_problems()
+            if problems:
+                raise ArmError("the pipeline cannot be armed:\n  " + "\n  ".join(problems))
             self.engine.arm()
         except Exception:
             self._cleanup(after_engine=False)
             raise
         self.state = ARMED
+
+    def _grid_problems(self) -> list[str]:
+        """The transforms the pipeline uses, against the grid the source
+        delivers (finding 3): a calibration made on another ROI or binning
+        does not apply."""
+        from imswitch.imcontrol.model.smartpipeline.calibrations import identity_problems
+
+        identity = getattr(self.source, "identity", None)
+        if identity is None:
+            return []
+        problems: list[str] = []
+        for step in self.document.workflow.steps:
+            if not isinstance(step, Transform):
+                continue
+            transform = self.engine.transforms.get(step.transform)
+            if transform is not None:
+                problems.extend(f"{step.id}: {reason}" for reason in identity_problems(transform, identity))
+        return problems
 
     def start(self) -> None:
         """Run the engine on a worker thread (after :meth:`arm`)."""

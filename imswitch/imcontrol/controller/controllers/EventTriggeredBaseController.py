@@ -2199,6 +2199,30 @@ class EventTriggeredCoordTransformHelper:
     def getTransformCoeffs(self) -> np.ndarray:
         return self.__transformCoeffs
 
+    def _saveAsPipelineCalibration(self, name: str) -> None:
+        """The calibration as a smart-pipeline transform too: a ``polynomial3``
+        file under ``calibrations/``, from this detector's pixels into the
+        scan coordinates, with the setup's swap/invert flags."""
+        try:
+            from imswitch.imcontrol.model.smartpipeline.calibrations import et_polynomial, save_calibration
+
+            parent = self._parent
+            detector = str(getattr(parent, 'detectorFast', '') or '')
+            if not detector:
+                return
+            flags = getattr(getattr(parent, '_setupInfo', None), 'etSTED', None)
+            modality = str(getattr(parent, 'MODALITY_LABEL', '') or 'scan')
+            transform = et_polynomial(
+                f'{modality.lower()}_{name}', self.__transformCoeffs, detector=detector,
+                target_frame=f'scanner:{modality}', swap_xy=getattr(flags, 'swapXY', False),
+                invert_x=getattr(flags, 'invertX', False), invert_y=getattr(flags, 'invertY', False),
+            )
+            save_calibration(transform)
+        except Exception:
+            logger = getattr(self._parent, '_logger', None)
+            if logger is not None:
+                logger.warning('The calibration was not saved as a pipeline transform', exc_info=True)
+
     def calibrationLaunch(self) -> None:
         self._parent._widget.launchHelpWidget(
             self._parent._widget.coordTransformWidget, init=True
@@ -2242,6 +2266,7 @@ class EventTriggeredCoordTransformHelper:
             )
             for el in self.__transformCoeffs:
                 writer.writerow([str(el)])
+        self._saveAsPipelineCalibration(name_long)
 
         # Show transformed lo-res points on the hi-res image for verification.
         transformed = []

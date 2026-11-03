@@ -98,6 +98,7 @@ class ScaleFlip:
     invert: tuple[bool, ...] = (False, False)
     offset: tuple[float, ...] = (0.0, 0.0)
     relative: bool = False
+    calibrated_on: dict | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "source_frame", str(FrameTag.parse(self.source_frame)))
@@ -125,10 +126,13 @@ class ScaleFlip:
         return out
 
     def to_dict(self) -> dict:
-        return {"type": "scale-flip", "id": self.id, "source_frame": self.source_frame,
-                "target_frame": self.target_frame, "pixel_size": list(self.pixel_size),
-                "origin": list(self.origin), "swap_xy": self.swap_xy, "invert": list(self.invert),
-                "offset": list(self.offset), "relative": self.relative}
+        payload = {"type": "scale-flip", "id": self.id, "source_frame": self.source_frame,
+                   "target_frame": self.target_frame, "pixel_size": list(self.pixel_size),
+                   "origin": list(self.origin), "swap_xy": self.swap_xy, "invert": list(self.invert),
+                   "offset": list(self.offset), "relative": self.relative}
+        if self.calibrated_on:
+            payload["calibrated_on"] = dict(self.calibrated_on)
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict) -> "ScaleFlip":
@@ -137,6 +141,7 @@ class ScaleFlip:
             pixel_size=tuple(payload.get("pixel_size", (1.0, 1.0))), origin=tuple(payload.get("origin", (0.0, 0.0))),
             swap_xy=bool(payload.get("swap_xy", False)), invert=tuple(payload.get("invert", (False, False))),
             offset=tuple(payload.get("offset", (0.0, 0.0))), relative=bool(payload.get("relative", False)),
+            calibrated_on=payload.get("calibrated_on"),
         )
 
 
@@ -145,7 +150,96 @@ def _padded(values, length: int, fill):
     return (values + [fill] * length)[:length]
 
 
-_TYPES = {"identity": Identity, "scale-flip": ScaleFlip}
+#: The 20 coefficients of EtSTED's third-order polynomial, in its order.
+POLYNOMIAL3_COEFFICIENTS = 20
+
+
+def polynomial3_apply(coefficients, c1, c2):
+    """EtSTED's third-order polynomial: ``(c1, c2) -> (out1, out2)``, vectorised."""
+    a = coefficients
+    out1 = (a[0] * c1**3 + a[1] * c2**3 + a[2] * c2 * c1**2 + a[3] * c1 * c2**2
+            + a[4] * c1**2 + a[5] * c2**2 + a[6] * c1 * c2 + a[7] * c1 + a[8] * c2 + a[9])
+    out2 = (a[10] * c1**3 + a[11] * c2**3 + a[12] * c2 * c1**2 + a[13] * c1 * c2**2
+            + a[14] * c1**2 + a[15] * c2**2 + a[16] * c1 * c2 + a[17] * c1 + a[18] * c2 + a[19])
+    return out1, out2
+
+
+@dataclass(frozen=True)
+class Polynomial3:
+    """EtSTED's calibrated transform: a third-order polynomial from one
+    detector's pixels to the scan (or stage) coordinates, with the setup's
+    ``swapXY`` / ``invertX`` / ``invertY`` applied before it, as
+    ``EtSTEDTransformService.prepare_input_coords`` does.
+
+    The polynomial reads a point as ``(c1, c2)`` -- EtSTED's ``(x, y)`` --
+    while a points result's columns are ``(row, col)`` = ``(y, x)``; the
+    transform takes the columns in the order ``columns`` says (``"yx"``:
+    column 1 is x) and writes its two outputs back in the same places.
+    ``calibrated_on`` is the pixel grid the calibration was made on
+    (:class:`~.frames.FrameIdentity` as a dict); a run on another grid is
+    refused at arm.
+    """
+
+    id: str
+    source_frame: str
+    target_frame: str
+    coefficients: tuple[float, ...]
+    swap_xy: bool = False
+    invert_x: bool = False
+    invert_y: bool = False
+    columns: str = "yx"
+    calibrated_on: dict | None = None
+
+    def __post_init__(self):
+        object.__setattr__(self, "source_frame", str(FrameTag.parse(self.source_frame)))
+        object.__setattr__(self, "target_frame", str(FrameTag.parse(self.target_frame)))
+        coefficients = tuple(float(c) for c in np.asarray(self.coefficients, dtype=float).reshape(-1))
+        if len(coefficients) != POLYNOMIAL3_COEFFICIENTS:
+            raise CoordinateError(f"transform {self.id!r}: a third-order polynomial has "
+                                  f"{POLYNOMIAL3_COEFFICIENTS} coefficients, got {len(coefficients)}")
+        object.__setattr__(self, "coefficients", coefficients)
+        if self.columns not in ("yx", "xy"):
+            raise CoordinateError(f"transform {self.id!r}: columns must be 'yx' or 'xy'")
+
+    def apply(self, points, context=None) -> np.ndarray:
+        array = np.array(points, dtype=np.float64, copy=True)
+        if array.size == 0:
+            return array
+        if array.shape[1] < 2:
+            raise CoordinateError(f"transform {self.id!r} needs two coordinate columns")
+        x_col, y_col = (1, 0) if self.columns == "yx" else (0, 1)
+        x, y = array[:, x_col].copy(), array[:, y_col].copy()
+        if self.swap_xy:
+            x, y = y, x
+        if self.invert_x:
+            x = -x
+        if self.invert_y:
+            y = -y
+        out1, out2 = polynomial3_apply(self.coefficients, x, y)
+        out = array.copy()
+        out[:, x_col], out[:, y_col] = out1, out2
+        return out
+
+    def to_dict(self) -> dict:
+        payload = {"type": "polynomial3", "id": self.id, "source_frame": self.source_frame,
+                   "target_frame": self.target_frame, "coefficients": list(self.coefficients),
+                   "swap_xy": self.swap_xy, "invert_x": self.invert_x, "invert_y": self.invert_y,
+                   "columns": self.columns}
+        if self.calibrated_on:
+            payload["calibrated_on"] = dict(self.calibrated_on)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "Polynomial3":
+        return cls(
+            id=str(payload["id"]), source_frame=payload["source_frame"], target_frame=payload["target_frame"],
+            coefficients=tuple(payload["coefficients"]), swap_xy=bool(payload.get("swap_xy", False)),
+            invert_x=bool(payload.get("invert_x", False)), invert_y=bool(payload.get("invert_y", False)),
+            columns=str(payload.get("columns", "yx")), calibrated_on=payload.get("calibrated_on"),
+        )
+
+
+_TYPES = {"identity": Identity, "scale-flip": ScaleFlip, "polynomial3": Polynomial3}
 
 
 def transform_from_dict(payload: dict):
@@ -216,9 +310,12 @@ def apply_transform(obj, transform, context: Mapping[str, Any] | None = None, *,
 
 
 __all__ = [
+    "POLYNOMIAL3_COEFFICIENTS",
     "CoordinateTransform",
     "Identity",
+    "Polynomial3",
     "ScaleFlip",
+    "polynomial3_apply",
     "TransformRegistry",
     "apply_transform",
     "transform_from_dict",

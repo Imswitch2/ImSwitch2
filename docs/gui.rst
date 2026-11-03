@@ -1503,7 +1503,20 @@ the reason and that stage stays reserved until it returns. Closing ImSwitch
 stops a running pipeline the same way.
 
 The **event log** lists every gate decision, action and sink of every tick
-and saves as CSV or JSON (**Save log…**).
+and saves as CSV or JSON (**Save log…**). A ``sink`` of kind ``overlay``
+marks the points it receives (in the detector's pixels) on the live view
+while the pipeline runs.
+
+**Calibrations.** A ``transform`` step names a file in ``calibrations/`` in
+your ImSwitch folder: one JSON per transform, ``"type"`` ``identity``,
+``scale-flip`` (a pixel size per axis, an origin, swap, invert, offset, and
+``relative`` for a displacement) or ``polynomial3`` (etSTED's 20-coefficient
+polynomial with the setup's swap/invert flags; the etSTED calibration
+procedure writes one of these next to its own files). ``source_frame`` and
+``target_frame`` say what it reads and writes (``detector:<name>``,
+``stage:<name>``, ``scanner:<name>``); an optional ``calibrated_on`` records
+the detector grid (shape, binning, ROI offset) the calibration was made on,
+and arming on a different grid is refused.
 
 
 Alignment tools

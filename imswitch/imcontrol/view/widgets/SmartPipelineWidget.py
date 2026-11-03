@@ -2,6 +2,7 @@ import os
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from imswitch.imcommon.view.guitools import naparitools
 from imswitch.imcontrol.view import guitools
 from .basewidgets import Widget
 
@@ -93,6 +94,11 @@ class SmartPipelineWidget(Widget):
         layout.addLayout(logRow)
         layout.addWidget(self.logView, 1)
 
+        # The overlay sink's marks on the live view (added to the viewer by
+        # the controller while a pipeline runs).
+        self.overlay = naparitools.VispyScatterVisual(color='yellow', symbol='o')
+        self.overlay.hide()
+
         self.browseButton.clicked.connect(self.sigBrowseClicked)
         self.reloadButton.clicked.connect(self.sigReloadClicked)
         self.designButton.clicked.connect(self.sigDesignClicked)
@@ -161,6 +167,14 @@ class SmartPipelineWidget(Widget):
 
     def appendLog(self, text):
         self.logView.appendPlainText(text)
+
+    def getOverlay(self):
+        return self.overlay
+
+    def setOverlayPoints(self, x, y):
+        """ Marks at the (x, y) detector pixels; empty lists clear them. """
+        self.overlay.setData(x=list(x), y=list(y))
+        self.overlay.setVisible(bool(len(x)))
 
     def clearLog(self):
         self.logView.clear()

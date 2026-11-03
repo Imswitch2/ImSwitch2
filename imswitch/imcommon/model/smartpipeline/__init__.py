@@ -52,6 +52,7 @@ from imswitch.imcommon.model.smartpipeline.steps import (
 from imswitch.imcommon.model.smartpipeline.transforms import (
     CoordinateTransform,
     Identity,
+    Polynomial3,
     ScaleFlip,
     TransformRegistry,
     apply_transform,
@@ -78,6 +79,7 @@ __all__ = [
     "PIPELINE_METADATA_KEY",
     "PipelineSettings",
     "Points",
+    "Polynomial3",
     "SINK_KINDS",
     "ScaleFlip",
     "Sink",

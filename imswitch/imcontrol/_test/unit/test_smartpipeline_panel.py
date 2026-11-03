@@ -56,10 +56,15 @@ def _waitFor(predicate, timeout=8.0):
 
 class _CommChannel(QtCore.QObject):
     sigUpdateImage = QtCore.Signal(str, object, bool, object, bool)
+    sigAddItemToVb = QtCore.Signal(object)
+    sigRemoveItemFromVb = QtCore.Signal(object)
 
     def __init__(self, controllers=None):
         super().__init__()
         self._controllers = controllers or {}
+        self.added, self.removed = [], []
+        self.sigAddItemToVb.connect(self.added.append)
+        self.sigRemoveItemFromVb.connect(self.removed.append)
 
     def controllerRegistry(self):
         return self._controllers
@@ -169,6 +174,7 @@ def test_validate_mode_logs_would_move_to_and_stop_releases_everything(panel, fo
     assert run is not None and run.state == RUNNING, widget.issuesLabel.text()
     assert not widget.armButton.isEnabled() and widget.stopButton.isEnabled()
     assert get_resource_registry().holder(positioner_key('Mock X')) is not None
+    assert panel.commChannel.added == [widget.getOverlay()]     # the overlay sink's marks on the live view
 
     for index, image in enumerate([_frame(20, 20), _frame(None, None), _frame(40, 10)]):
         panel.commChannel.sigUpdateImage.emit('Camera', image, False, [0.1, 0.1], True)
@@ -184,6 +190,7 @@ def test_validate_mode_logs_would_move_to_and_stop_releases_everything(panel, fo
     _waitFor(lambda: run.state == STOPPED and widget.armButton.isEnabled())   # the worker's hand-back ran
     assert get_resource_registry().holder(positioner_key('Mock X')) is None
     assert panel.detectors.leases == []
+    assert panel.commChannel.removed == [widget.getOverlay()]
     assert controller.shutdownComplete()
 
 

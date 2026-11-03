@@ -6,9 +6,7 @@ from qtpy import QtCore
 
 from imswitch.imcommon.model import dirtools, initLogger
 from imswitch.imcommon.model.api import _UIThreadExecWrapper
-from imswitch.imcommon.model.smartpipeline import (
-    Live, SmartPipelineDocument, TransformRegistry, transform_from_dict,
-)
+from imswitch.imcommon.model.smartpipeline import Live, SmartPipelineDocument
 from imswitch.imcommon.model.workflow.steps import Process, WorkflowError
 from imswitch.imcontrol.model.smartpipeline import ArmError, EventLog, RunMode
 from imswitch.imcontrol.model.smartpipeline.live_actions import live_backend
@@ -17,6 +15,7 @@ from imswitch.imcontrol.model.smartpipeline.mock import FunctionStepRunner
 from imswitch.imcontrol.model.smartpipeline.run import (
     ARMED, RUNNING, STOPPING, PipelineRun,
 )
+from imswitch.imcontrol.model.smartpipeline.calibrations import CalibrationError, load_calibrations
 from imswitch.imcontrol.model.smartpipeline.designer import pipeline_catalog
 from ..basecontrollers import ImConWidgetController
 
@@ -188,20 +187,10 @@ class SmartPipelineController(ImConWidgetController):
 
     @staticmethod
     def _transforms():
-        registry = TransformRegistry()
-        if not os.path.isdir(_calibrationsFolderPath):
-            return registry
-        for name in sorted(os.listdir(_calibrationsFolderPath)):
-            if not name.lower().endswith('.json'):
-                continue
-            path = os.path.join(_calibrationsFolderPath, name)
-            try:
-                with open(path, 'r', encoding='utf-8') as file:
-                    payload = json.load(file)
-                registry.register(transform_from_dict(payload))
-            except (OSError, ValueError) as e:
-                raise ValueError(f'calibration {name}: {e}') from e
-        return registry
+        try:
+            return load_calibrations(_calibrationsFolderPath)
+        except CalibrationError as e:
+            raise ValueError(str(e)) from e
 
     def _catalog(self):
         from imswitch.imcontrol.model.smartpipeline.catalog import catalog
@@ -286,6 +275,7 @@ class SmartPipelineController(ImConWidgetController):
             document, source=source, steps=steps, actions=actions, transforms=transforms, mode=mode,
             apply_mode=self._applyMode, owner=f'smart-pipeline:{document.name}', log=log,
             logger=self.__logger, registry=self._improcessRegistry(), on_finished=self._onRunFinished,
+            on_overlay=self._onOverlay,
         )
         self._widget.clearLog()
         try:
@@ -303,6 +293,7 @@ class SmartPipelineController(ImConWidgetController):
         self._run = run
         self._source = source
         self._commChannel.sigUpdateImage.connect(source.on_image)
+        self._showOverlay(True)
         run.start()
         self._statusTimer.start()
         self._updateButtons()
@@ -329,8 +320,38 @@ class SmartPipelineController(ImConWidgetController):
             except (TypeError, RuntimeError):
                 pass
         self._statusTimer.stop()
+        self._showOverlay(False)
         self._refreshStatus()
         self._updateButtons()
+
+    def _showOverlay(self, shown):
+        overlay = self._widget.getOverlay()
+        try:
+            if shown:
+                self._widget.setOverlayPoints([], [])
+                self._commChannel.sigAddItemToVb.emit(overlay)
+            else:
+                self._widget.setOverlayPoints([], [])
+                self._commChannel.sigRemoveItemFromVb.emit(overlay)
+        except Exception:
+            self.__logger.debug('Smart pipeline: the live view took no overlay', exc_info=True)
+
+    def _onOverlay(self, stepId, value):
+        """ The engine's overlay sink (worker thread): points in the detector's
+        pixels onto the live view. Points in another frame are not drawn. """
+        from imswitch.imcommon.model.smartpipeline import frame_of, points_of
+
+        coordinates = points_of(value)
+        if coordinates is None:
+            return
+        frame = frame_of(value)
+        if not frame.startswith('detector:'):
+            return
+        if coordinates.shape[0] and coordinates.shape[1] >= 2:
+            ys, xs = coordinates[:, 0].tolist(), coordinates[:, 1].tolist()
+        else:
+            ys, xs = [], []
+        self._invokeOnControllerThreadIfNeeded(lambda: self._widget.setOverlayPoints(xs, ys))
 
     def _onLogEntry(self, entry):
         text = str(entry)

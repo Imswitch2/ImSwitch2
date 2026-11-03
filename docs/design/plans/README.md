@@ -18,7 +18,7 @@ the rationale behind the current code stays discoverable.
 | [beadrec-2.0.md](beadrec-2.0.md) | Active — Phase 1 started 2026-05-25 | Bead reconstruction controller/widget rewrite |
 | [etsted-2-0.md](etsted-2-0.md) | Active | EtSTED scan controller rewrite |
 | [etmonalisa-2-0.md](etmonalisa-2-0.md) | Active | EtMonalisa rewrite |
-| [smart-microscopy-pipeline-designer.md](smart-microscopy-pipeline-designer.md) | Accepted 2026-11-02, revised 2026-11-03 after review — Phases 0, E, 1, 2 and 3 implemented, Phase 4 next | Live control loops (detector → processing → coordinate → hardware action) as workflow-editor graphs that ImControl arms and runs; transform slot; actions from the scripting API |
+| [smart-microscopy-pipeline-designer.md](smart-microscopy-pipeline-designer.md) | Accepted 2026-11-02, revised 2026-11-03 after review — Phases 0 to 4 implemented, Phase 5 next | Live control loops (detector → processing → coordinate → hardware action) as workflow-editor graphs that ImControl arms and runs; transform slot; actions from the scripting API |
 | [smart-microscopy-mode-switching.md](smart-microscopy-mode-switching.md) | Active — Phases 1-6 implemented in-repo, external Snouty validation pending | Role-based setup-mode switching for event-triggered smart microscopy |
 | [tiled-target-timelapse-smart-events.md](tiled-target-timelapse-smart-events.md) | Active — T1-T4 workflow foundations implemented, T5 UI/controller adapters pending | Tiled target timelapse, smart modes, and event-gated acquisition |
 | [config-editor-discovery-and-schema.md](config-editor-discovery-and-schema.md) | Proposed | Registry-backed config editor discovery, plugin templates, and shared setup validation |
