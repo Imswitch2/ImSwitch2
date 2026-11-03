@@ -215,60 +215,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         file.addAction(saveCoeffsAllAction)
         self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
 
-        file.addSeparator()
-        workflowEditorAction = QtWidgets.QAction('Workflow editor…', self)
-        workflowEditorAction.setToolTip(
-            'Build, edit, validate and run ImProcess workflow files; every installed '
-            'reconstructor and processor is offered with its parameters'
-        )
-        workflowEditorAction.triggered.connect(
-            lambda _checked=False: self.sigOpenWorkflowEditor.emit()
-        )
-        file.addAction(workflowEditorAction)
-        editWorkflowAction = QtWidgets.QAction('Edit workflow of current result…', self)
-        editWorkflowAction.setToolTip(
-            'Open the steps that made the current result in the workflow editor, '
-            'to change them and run them again'
-        )
-        editWorkflowAction.triggered.connect(
-            lambda _checked=False: self.sigEditWorkflowOfResultRequested.emit()
-        )
-        file.addAction(editWorkflowAction)
-        exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
-        exportWorkflowAction.setToolTip(
-            'Write the steps that made the current result as a workflow file '
-            '(YAML) that can be run again headlessly or on other data'
-        )
-        exportWorkflowAction.triggered.connect(
-            lambda _checked=False: self.sigExportWorkflowRequested.emit()
-        )
-        file.addAction(exportWorkflowAction)
-        runWorkflowAction = QtWidgets.QAction('Run workflow…', self)
-        runWorkflowAction.setToolTip(
-            'Run a workflow file; its results are added to the reconstruction list'
-        )
-        runWorkflowAction.triggered.connect(
-            lambda _checked=False: self.sigRunWorkflowRequested.emit()
-        )
-        file.addAction(runWorkflowAction)
-        runOnResultsAction = QtWidgets.QAction('Run workflow on selected results…', self)
-        runOnResultsAction.setToolTip(
-            'Apply the processing steps of a workflow file to every selected result: '
-            'its reconstruction step is replaced by each result in turn'
-        )
-        runOnResultsAction.triggered.connect(
-            lambda _checked=False: self.sigRunWorkflowOnResultsRequested.emit()
-        )
-        file.addAction(runOnResultsAction)
-        runOverFilesAction = QtWidgets.QAction('Run workflow over files…', self)
-        runOverFilesAction.setToolTip(
-            'Run a workflow file once per chosen recording; every result is added '
-            'to the reconstruction list'
-        )
-        runOverFilesAction.triggered.connect(
-            lambda _checked=False: self.sigRunWorkflowOverFilesRequested.emit()
-        )
-        file.addAction(runOverFilesAction)
 
         # Toolbars split along the result-unification invariant: Image holds
         # display-only actions (never publish a result), Image operations
@@ -279,6 +225,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._imageMenu = menuBar.addMenu('&Image')
         self._imageOpsMenu = menuBar.addMenu('&Operations')
         self._analysisMenu = menuBar.addMenu('&Tools')
+        self._workflowsMenu = menuBar.addMenu('&Workflows')
+        self._buildWorkflowsMenu(self._workflowsMenu)
         self._pluginsMenu = menuBar.addMenu('&Plugins')
         self._imageToolbar = self.addToolBar('Image')
         self._imageToolbar.setObjectName('ImProcessImageDisplayToolbar')
@@ -627,6 +575,65 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._connectResultPusher(self.roiManagerWidget)
         self._connectResultPusher(self.graphWidget)
         self._connectResultPusher(self.metadataWidget)
+
+    def _buildWorkflowsMenu(self, menu: QtWidgets.QMenu) -> None:
+        """The workflow commands, in a menu of their own: the editor, the
+        workflow of the current result, and the runs that publish results."""
+        workflowEditorAction = QtWidgets.QAction('Workflow editor…', self)
+        workflowEditorAction.setToolTip(
+            'Build, edit, validate and run ImProcess workflow files; every installed '
+            'reconstructor and processor is offered with its parameters'
+        )
+        workflowEditorAction.triggered.connect(
+            lambda _checked=False: self.sigOpenWorkflowEditor.emit()
+        )
+        menu.addAction(workflowEditorAction)
+        editWorkflowAction = QtWidgets.QAction('Edit workflow of current result…', self)
+        editWorkflowAction.setToolTip(
+            'Open the steps that made the current result in the workflow editor, '
+            'to change them and run them again'
+        )
+        editWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigEditWorkflowOfResultRequested.emit()
+        )
+        menu.addAction(editWorkflowAction)
+        menu.addSeparator()
+        exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
+        exportWorkflowAction.setToolTip(
+            'Write the steps that made the current result as a workflow file '
+            '(YAML) that can be run again headlessly or on other data'
+        )
+        exportWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigExportWorkflowRequested.emit()
+        )
+        menu.addAction(exportWorkflowAction)
+        menu.addSeparator()
+        runWorkflowAction = QtWidgets.QAction('Run workflow…', self)
+        runWorkflowAction.setToolTip(
+            'Run a workflow file; its results are added to the reconstruction list'
+        )
+        runWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowRequested.emit()
+        )
+        menu.addAction(runWorkflowAction)
+        runOnResultsAction = QtWidgets.QAction('Run workflow on selected results…', self)
+        runOnResultsAction.setToolTip(
+            'Apply the processing steps of a workflow file to every selected result: '
+            'its reconstruction step is replaced by each result in turn'
+        )
+        runOnResultsAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOnResultsRequested.emit()
+        )
+        menu.addAction(runOnResultsAction)
+        runOverFilesAction = QtWidgets.QAction('Run workflow over files…', self)
+        runOverFilesAction.setToolTip(
+            'Run a workflow file once per chosen recording; every result is added '
+            'to the reconstruction list'
+        )
+        runOverFilesAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOverFilesRequested.emit()
+        )
+        menu.addAction(runOverFilesAction)
 
     def _buildPreferencesMenu(self, menuBar) -> None:
         """Add Preferences, last of ImProcess's own menus: settings of this

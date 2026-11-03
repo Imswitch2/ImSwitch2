@@ -137,6 +137,35 @@ class _RunWorker(QtCore.QObject):
         self.sigDone.emit(finished, failed)
 
 
+class _InteractiveWorker(_RunWorker):
+    """One interactive run from the workflow editor, off the GUI thread.
+
+    The editor's :class:`RunSession` planned it; this runs it and reports each
+    step as it finishes, with its previews made here, never on the GUI
+    thread. Nothing is published: the editor keeps the results.
+    """
+
+    sigStep = QtCore.Signal(str, object, float, bool, object)   # step id, {port: result}, seconds, cached, previews
+    sigEnded = QtCore.Signal(object, object)                    # report or None, error message or None
+
+    def __init__(self, plan, registry, parent=None):
+        super().__init__(plan.workflow, registry, plan.out_dir, parent, overwrite=plan.overwrite)
+        self._plan = plan
+        self.source_root = plan.source_root
+
+    def _runAll(self) -> None:
+        from imswitch.improcess.model.workfloweditor.session import execute
+
+        report, error = execute(self._plan, self._registry, on_step=self.sigStep.emit, progress=self._progress,
+                                cancel=self._should_stop, interrupts=self._allow_interrupts)
+        self.sigEnded.emit(report, error)
+        self.sigDone.emit(0 if error else 1, 1 if error else 0)
+
+    def _allow_interrupts(self, allowed: bool) -> None:
+        # A finished step's previews and report are not a processor to interrupt.
+        self._interruptible = bool(allowed) and self._interruptible
+
+
 #: Workflow threads that did not stop within the shutdown wait; referenced
 #: here so they are not destroyed while running, released when they finish.
 _ORPHANED_RUNS: list = []
@@ -172,6 +201,8 @@ class WorkflowController(QtCore.QObject):
         self._batchFailures: list[str] = []
         # The workflow editor window, one at a time, opened on demand.
         self._editor = None
+        # The raw dataset ImProcess shows, for the editor's "use the open recording".
+        self._currentData = None
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
                            ("sigRunWorkflowRequested", self.runWorkflow),
                            ("sigRunWorkflowOnResultsRequested", self.runWorkflowOnResults),
@@ -184,6 +215,9 @@ class WorkflowController(QtCore.QObject):
         changed = getattr(commChannel, "sigResultsChanged", None)
         if changed is not None:
             changed.connect(self.releaseUnusedSources)
+        current = getattr(commChannel, "sigCurrentDataChanged", None)
+        if current is not None:
+            current.connect(self._onCurrentData)
         closing = getattr(mainView, "sigClosing", None)
         if closing is not None:
             closing.connect(self.shutdown)
@@ -249,6 +283,7 @@ class WorkflowController(QtCore.QObject):
             editor.sig_run_on_results_requested.connect(self.runWorkflowObjectOnResults)
             editor.sig_cancel_requested.connect(self.requestCancel)
             editor.sig_closed.connect(self._onEditorClosed)
+            editor.host = self
             editor.set_running(self._thread is not None)
             self._editor = editor
         if document is not None:
@@ -292,6 +327,83 @@ class WorkflowController(QtCore.QObject):
         self._editor = None
         if editor is not None:
             editor.deleteLater()
+
+    # -- the editor's interactive runs ---------------------------------------------
+
+    def runInteractive(self, plan, registry=None) -> bool:
+        """Run an editor :class:`RunPlan` on the worker: steps are reported to
+        the editor as they finish; nothing is published or retained here."""
+        if self._thread is not None:
+            self._status("A workflow is already running.")
+            return False
+        editor = self._editor
+        self._batchFailures = []
+        self._thread = QtCore.QThread()
+        self._worker = _InteractiveWorker(plan, registry if registry is not None else self._registry())
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        if editor is not None:
+            self._worker.sigProgress.connect(editor.on_run_progress)
+            self._worker.sigStep.connect(editor.on_run_step)
+            self._worker.sigEnded.connect(editor.on_run_ended)
+        self._worker.sigDone.connect(self._thread.quit)
+        self._thread.finished.connect(self._clear)
+        self._thread.start()
+        if editor is not None:
+            editor.set_running(True)
+        return True
+
+    def pinResult(self, result, name: str) -> None:
+        """Add an editor result to the reconstruction list, as any result is."""
+        self._commChannel.sigResultProduced.emit(result, str(name))
+
+    def showPreview(self, result, name: str) -> bool:
+        """Show an editor result in the viewer's preview slot (not the list)."""
+        if not hasattr(self._commChannel, "sigWorkflowPreview"):
+            return False
+        self._commChannel.sigWorkflowPreview.emit(result, str(name))
+        return True
+
+    def adoptHandles(self, handover) -> None:
+        """Keep the sources of the editor's pinned results open while those
+        results are loaded; closes them at once if ImSwitch is shutting down."""
+        handover = list(handover or [])
+        if self._shuttingDown:
+            for _uids, handles in handover:
+                self._closeHandles(handles)
+            return
+        for uids, handles in handover:
+            if handles:
+                self._retained.append((frozenset(uids), list(handles)))
+        if handover:
+            self.releaseUnusedSources()
+
+    def currentRecording(self):
+        """``(path, dataset)`` of the raw dataset ImProcess shows, or ``None``."""
+        data = self._currentData
+        path = getattr(data, "dataPath", None) if data is not None else None
+        if not path:
+            return None
+        dataset = getattr(data, "datasetName", None)
+        return str(path), (str(dataset) if dataset else None)
+
+    def selectedResults(self) -> list:
+        return self._selectedResults(None)
+
+    def activeResultName(self):
+        """The name of the result selected in the list, when it has a history to replay."""
+        from imswitch.improcess.model.provenance import graph_of
+
+        try:
+            result = self._reconstructionController.getActiveResult()
+        except Exception:  # noqa: BLE001 - a stand-in controller in tests
+            return None
+        if result is None or graph_of(result) is None:
+            return None
+        return str(getattr(result, "name", "") or "result")
+
+    def _onCurrentData(self, data) -> None:
+        self._currentData = data
 
     def runWorkflowObject(self, workflow, source_root=None, out_dir=None, overwrite=None):
         """Run an in-memory workflow (the editor's) as ``runWorkflow`` runs a file."""
@@ -706,6 +818,11 @@ class WorkflowController(QtCore.QObject):
         """
         self._shuttingDown = True
         stopped = self.cancelRun(wait_ms)
+        if stopped and self._editor is not None:
+            try:
+                self._editor.release_session()
+            except RuntimeError:  # the window is already gone
+                pass
         if not stopped:
             self._logger.warning("A workflow is still running after %d ms; its sources stay open", wait_ms)
             return False

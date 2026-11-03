@@ -62,6 +62,7 @@ class RichardsonLucyProcessor(Processor):
 
     name = "Deconvolve (Richardson-Lucy)"
     id = "deconvolve-rl"
+    output_kind = "image"
     category = "Restoration"
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.

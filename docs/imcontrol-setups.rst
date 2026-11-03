@@ -34,9 +34,10 @@ file holds the per-computer settings that are not part of any setup:
   **Preferences → Recordings folder…**
 * ``watcher.outputFolder``: the folder the **Watcher** panel starts on
   (default ``ImSwitchConfig/scripts``)
-* ``memory.writerQueueMB`` (512), ``memory.perDetectorQueueMB`` (256) and
-  ``memory.processingWorkingSetMB`` (1024): memory limits in MiB, editable
-  with **Preferences → Memory limits…** (see :ref:`improcess-memory-limits`)
+* ``memory.writerQueueMB`` (512), ``memory.perDetectorQueueMB`` (256),
+  ``memory.processingWorkingSetMB`` (1024) and ``memory.workflowCacheMB``
+  (4096): memory limits in MiB, editable with **Preferences → Memory
+  limits…** (see :ref:`improcess-memory-limits`)
 
 .. tip::
 

@@ -89,6 +89,7 @@ def describe_registry(registry) -> dict[str, Any]:
     """Plugin ids, names, versions, default params and fields, for ``--list``."""
     from imswitch.improcess.model.plugin_contract import contract_problem
     from imswitch.improcess.model.param_spec import spec_for
+    from imswitch.improcess.processors.base import call_output_spec
 
     out: dict[str, Any] = {"reconstructors": {}, "processors": {}}
     for plugin in registry.reconstructors():
@@ -96,6 +97,7 @@ def describe_registry(registry) -> dict[str, Any]:
             "name": plugin.name, "version": getattr(plugin, "version", ""),
             "params": type(plugin).default_params(),
             "fields": [field.to_dict() for field in spec_for(plugin)],
+            "output_kind": getattr(plugin, "output_kind", None) or "unknown",
             # ``None`` when the plugin can run in a workflow; otherwise why not.
             "gui_only": contract_problem(plugin),
         }
@@ -104,7 +106,8 @@ def describe_registry(registry) -> dict[str, Any]:
             "name": plugin.name, "version": getattr(plugin, "version", ""),
             "kinds": list(getattr(plugin, "kinds", ())),
             "inputs": [getattr(plugin, "min_inputs", 1), getattr(plugin, "max_inputs", 1)],
-            "ports": plugin.output_spec(type(plugin).default_params()).describe(),
+            "ports": call_output_spec(plugin, type(plugin).default_params()).describe(),
+            "output_kind": call_output_spec(plugin, type(plugin).default_params()).kind,
             "params": type(plugin).default_params(),
             "fields": [field.to_dict() for field in spec_for(plugin)],
             "gui_only": contract_problem(plugin),

@@ -272,6 +272,19 @@ class CommunicationChannel(SignalInterface):
         ResultProcessorController
     """
 
+    sigWorkflowPreview = Signal(object, str)
+    """Show a result from the workflow editor until the next preview. Payload:
+    ``(result, displayName)``.
+
+    A *temporary* display: the result is not added to the reconstruction
+    list, is never saved, and the next preview -- or selecting a list entry
+    -- replaces it. ``ReconstructionViewController`` draws an image; the
+    ``GraphController`` plots a curve (where its *Push to table* works on it).
+
+    Emitters: WorkflowController
+    Listeners: ReconstructionViewController, GraphController
+    """
+
     sigSmlmRenderSettingsChanged = Signal(object, object, object)
     """(result, gaussianOverrides, renderRange) — how to draw a point cloud.
 
