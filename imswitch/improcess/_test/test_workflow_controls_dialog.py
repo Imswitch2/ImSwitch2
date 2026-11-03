@@ -145,7 +145,8 @@ def test_a_control_on_a_bypassed_step_is_shown_disabled_with_why(tmp_path):
     dialog = rig.asked[0]
     label = dialog.inactive_labels["method"]
     assert not label.isEnabled() and "blur is bypassed" in label.text()
-    assert set(dialog.values()) == {"mode"}                       # the disabled one sends nothing
+    assert "method" not in dialog.form.keys()                     # the disabled one cannot send anything
+    assert dialog.values() == {}                                  # untouched: the file's values apply
     _wait(rig)
     assert any("bypassed: blur" in m for m in rig.log)
 
@@ -161,8 +162,34 @@ def test_on_selected_results_a_control_on_the_replaced_reconstruction_is_disable
     assert rig.controller.runWorkflowOnResults(str(path), out_dir=str(tmp_path / "out"), overwrite=False) is False
     dialog = rig.asked[0]
     assert "rec is replaced by the selected result" in dialog.inactive_labels["detector"].text()
-    assert set(dialog.values()) == {"radius"}
+    assert dialog.form.keys() == ["radius"]
     assert rig.controller._thread is None and any("Not run: chain was cancelled" in m for m in rig.log)
+
+
+def test_an_untouched_control_runs_with_exactly_the_files_value(tmp_path):
+    # 0.05 is below filter's minimum (0.1): the spin box shows 0.1, but the
+    # run must not quietly change what the file says; '' stays empty text.
+    rig = _controller(tmp_path)
+    workflow = _chain(_h5(tmp_path / "cells.h5"), controls=[Control("radius", ["blur.radius"])])
+    workflow.step("blur").params["radius"] = 0.05
+    path = workflow.save(tmp_path / "chain.yaml")
+    _answer(rig, {})
+    assert rig.controller.runWorkflow(str(path), out_dir=str(tmp_path / "out"), overwrite=False)
+    assert rig.asked[0].values() == {} and rig.controller._worker.controls is None
+    _wait(rig)
+    blurred = dict(rig.produced)["chain:blur.out"]
+    assert output_node(blurred)["params"]["radius"] == 0.05
+
+
+def test_a_value_of_the_wrong_type_is_refused_before_any_dialog(tmp_path):
+    rig = _controller(tmp_path)
+    workflow = _chain(_h5(tmp_path / "cells.h5"), controls=[Control("radius", ["blur.radius"])])
+    workflow.step("blur").params["radius"] = "2,5"                    # a hand edit
+    path = workflow.save(tmp_path / "chain.yaml")
+    _answer(rig, {})
+    assert rig.controller.runWorkflow(str(path), out_dir=str(tmp_path / "out"), overwrite=False) is False
+    assert rig.asked == []
+    assert any("Workflow invalid" in m and "'2,5', does not fit it" in m for m in rig.log)
 
 
 def test_over_files_every_control_is_offered(tmp_path):

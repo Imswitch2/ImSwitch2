@@ -1538,7 +1538,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if result is None or not callable(show):
             self.show_status("Run the step first: nothing to show yet.")
             return False
-        show(result, f"{step_id}{'.' + port if port else ''} (workflow preview)")
+        show(result, f"{self._published_ref(step_id, port)} (workflow preview)")
         self.show_status(f"Showing '{step_id}' in the viewer until the next preview; it is not in the results list.")
         return True
 
@@ -1551,9 +1551,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if result is None or not callable(publish):
             self.show_status("Run the step first: nothing to pin yet.")
             return False
-        publish(result, f"{self.document.name}:{step_id}{'.' + port if port else ''}")
+        publish(result, f"{self.document.name}:{self._published_ref(step_id, port)}")
         self.show_status(f"Pinned '{step_id}' to the results list.")
         return True
+
+    def _published_ref(self, step_id: str, port: str = "") -> str:
+        """``step.port`` as a published name; a bypassed step's output is
+        the result it passes on, named after the step that made it."""
+        through = self.session.passes_through(self.document, step_id)
+        if through is not None and not isinstance(self.document.step(step_id), Save):
+            return str(through)
+        return f"{step_id}{'.' + port if port else ''}"
 
     def set_write_files(self, on: bool, *, folder=None, overwrite=None) -> bool:
         """Turn *Write files* on (asking once for the folder) or off."""

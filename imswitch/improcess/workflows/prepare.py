@@ -616,6 +616,17 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
         return ""
 
     states, control_issues = control_states(recipe, registry, reason_for)
+    for state in states.values():
+        # The value the targets hold must be one the control's field can
+        # show and check: a hand-edited "2,5" for a number is the file's
+        # problem, said here, not a form's crash later.
+        if state.active and state.has_value and state.spec is not None:
+            try:
+                check_typed(state.value, state.spec)
+            except ValueError as exc:
+                first = next(t for t in state.targets if t.active)
+                control_issues.append(Issue(first.step, f"control {state.name!r}: the value its parameters hold, "
+                                                        f"{state.value!r}, does not fit it ({exc})"))
     recipe_issues.extend(control_issues)
     if subset:
         recipe_issues = [issue for issue in recipe_issues if issue.step in present or issue.step not in by_id]
@@ -676,7 +687,7 @@ def _prepare(recipe: Workflow, registry, values, bindings, bound, subset, *, str
             try:
                 final_values[name] = check_typed(state.value, state.spec)
             except ValueError:
-                final_values[name] = state.value
+                pass            # reported with the control's issues (stage 5)
     prepared = PreparedRun(
         workflow=execution, recipe=recipe, bypassed=tuple(bypassed), values=final_values,
         inactive={name: state.inactive_reasons for name, state in states.items() if not state.active},

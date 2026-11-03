@@ -611,7 +611,10 @@ class Inspector(QtWidgets.QScrollArea):
             "Change the file name", lambda: self._document.set_save(sid, path_template=e.text()),
             structural=True))
         form.addRow("File name", template)
-        form.addRow(_muted(f"Writes {save_file_name(step)} in the output folder."))
+        from imswitch.improcess.workflows.prepare import bypass_upstream, resolve_ref
+
+        made_by = resolve_ref(step.input, bypass_upstream(self._document.workflow)).step
+        form.addRow(_muted(f"Writes {save_file_name(step, made_by)} in the output folder."))
         placeholders = ", ".join("{%s}" % name for name in (catalog.path_placeholders if catalog else ()))
         form.addRow(_muted(f"Placeholders: {placeholders}."))
 
@@ -771,12 +774,23 @@ class Inspector(QtWidgets.QScrollArea):
         title.setTextFormat(QtCore.Qt.RichText)
         box.addWidget(title)
         if spec is not None:
-            field = ParamField(name, spec.type, spec.reset if spec.has_reset else document.control_value(name),
+            from imswitch.improcess.workflows.prepare import check_typed
+
+            held = document.control_value(name)
+            try:
+                value = check_typed(held, spec)
+            except ValueError as exc:
+                # A hand-edited value of the wrong type: say so, and show the
+                # field at its reset (nothing is written until it is edited).
+                box.addWidget(_muted(f"Its parameters hold {held!r}, which does not fit ({exc}); "
+                                     "set a value here."))
+                value = spec.reset if spec.has_reset else None
+            field = ParamField(name, spec.type, spec.reset if spec.has_reset else value,
                                label=spec.label or name, help=spec.help, options=spec.options, min=spec.min,
                                max=spec.max, step=spec.step, decimals=spec.decimals, suffix=spec.suffix,
                                nullable=spec.nullable)
             form = ParamForm()
-            form.set_plugin(SimpleNamespace(fields=[field], extra_keys=()), {name: document.control_value(name)})
+            form.set_plugin(SimpleNamespace(fields=[field], extra_keys=()), {name: value} if value is not None else {})
             form.set_reset_visible(False)
             form.setFixedHeight(36)
             form.sigValueChanged.connect(lambda _key, value, n=name: self._edit(

@@ -451,8 +451,10 @@ In the last example ``a.h5`` runs with radius 2.5 and ``b.h5`` with 3.
 results…** and **Run workflow over files…** ask for a file's controls before
 running it (after the question about Python code, when it has some): one
 field per control, from its combined field, with its label and help, filled
-with the file's values. The values hold for that run, or for every file of a
-run over files, and are not written to the file; **Cancel** runs nothing. A
+with the file's values. Only the values you change are sent: a control left
+as it is runs with exactly the file's value. The values hold for that run, or
+for every file of a run over files, and are not written to the file;
+**Cancel** runs nothing. A
 control that has no effect in that run is listed greyed with the reason and
 sends no value: its steps are bypassed, or, on selected results, it sets the
 reconstruction the selected result replaces. The status line names the
@@ -1045,8 +1047,8 @@ plugins from the user plugins folder.
        (default ``run``); ``--allow-drift``; ``--hash-sources``;
        ``--verify-hash``; ``--summary NAME`` (the summary CSV inside
        ``--out``, default ``<workflow name>_summary.csv``);
-       ``--set NAME=VALUE`` (repeatable; a control's value for every run,
-       see :ref:`workflows-controls`).
+       ``--set NAME=VALUE`` (repeatable, once per control; a control's value
+       for every run, see :ref:`workflows-controls`).
    * - ``replay FILE``
      - ``--out-workflow PATH`` (``.yaml`` or ``.json``; default: print the
        YAML); ``--fmt FMT`` (format of the replayed save, default the

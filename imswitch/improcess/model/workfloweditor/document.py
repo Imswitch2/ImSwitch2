@@ -245,7 +245,7 @@ class WorkflowDocument:
     def new_id(self, kind: str) -> str:
         """The first free ``src1``, ``rec1``, ``cons1``, ``proc1`` or ``save1``."""
         prefix = _ID_PREFIX[kind]
-        taken = {step.id for step in self.steps}
+        taken = {step.id for step in self.steps} | {control.name for control in self.workflow.controls}
         number = 1
         while f"{prefix}{number}" in taken:
             number += 1
@@ -441,6 +441,8 @@ class WorkflowDocument:
             raise DocumentError(f"bad step id {step_id!r}; use letters, digits, '_' and '-'")
         if self.has(step_id):
             raise DocumentError(f"a step named {step_id!r} already exists")
+        if any(control.name == step_id for control in self.workflow.controls):
+            raise DocumentError(f"{step_id!r} is the name of a control; a manifest column could not tell them apart")
         return step_id
 
     def set_plugin(self, step_id: str, plugin_id: str) -> None:
@@ -679,11 +681,14 @@ class WorkflowDocument:
             step.params = {**dict(step.params or {}), parsed[1]: value}
 
     def _target_problems(self, name: str) -> list[str]:
-        """What the target rules (plan 4.5) say about control ``name``."""
+        """What the target rules (plan 4.5) say about control ``name``, checked
+        on its own: another control's problems do not refuse an edit of this
+        one (names and ownership are checked by the operations themselves)."""
         from imswitch.improcess.workflows.prepare import control_states
 
-        _states, issues = control_states(self.workflow, self._registry())
-        return [issue.message for issue in issues if repr(name) in issue.message]
+        trial = Workflow(self.workflow.name, self.workflow.steps, controls=[self.control(name)])
+        _states, issues = control_states(trial, self._registry())
+        return [issue.message for issue in issues]
 
     def _guarded(self, name: str, change) -> None:
         """Make ``change`` and keep it only when control ``name`` still obeys
@@ -823,6 +828,13 @@ class WorkflowDocument:
             try:
                 value = checked_value(value, state)
             except ValueError as exc:
+                raise DocumentError(f"control {name!r}: {exc}") from None
+        # A bypassed target is not in the combined field, but runs with this
+        # value once switched back on: its own field must take it too.
+        for target in control.targets:
+            try:
+                self._check_field(target, value)
+            except DocumentError as exc:
                 raise DocumentError(f"control {name!r}: {exc}") from None
         for target in control.targets:
             self._write_target(target, value)
@@ -1112,7 +1124,7 @@ class WorkflowDocument:
         if len({step.id for step in steps}) != len(steps):
             raise DocumentError("not a workflow fragment: two steps share an id")
         renamed: dict[str, str] = {}
-        taken = {step.id for step in self.steps}
+        taken = {step.id for step in self.steps} | {control.name for control in self.workflow.controls}
         for step in steps:
             new_id = step.id
             number = 2

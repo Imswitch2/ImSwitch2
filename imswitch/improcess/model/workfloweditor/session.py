@@ -299,12 +299,16 @@ class RunSession:
         for step in document.steps:
             key = prints[step.id]
             if self._bypassed(step, upstream):
-                # Not run: it shows what it passes through, as that step has it.
-                through = self.passes_through(document, step.id)
-                state = StepState(status="bypassed", passes=str(through) if through is not None else "")
-                if isinstance(step, Process) and through is not None:
+                # Not run. A processing step shows what it passes on: the one
+                # port of the step before it, while that result is current. A
+                # Save writes nothing.
+                state = StepState(status="bypassed")
+                through = self.passes_through(document, step.id) if isinstance(step, Process) else None
+                if through is not None:
+                    state.passes = str(through)
                     producer = found.get(through.step)
-                    state.entry = producer.entry if producer is not None else None
+                    if producer is not None and producer.status == "done" and producer.entry is not None:
+                        state.entry = _one_port(producer.entry, through.port)
                 found[step.id] = state
                 continue
             state = StepState(cached=step.id in self._cached_last)
@@ -791,6 +795,20 @@ def execute(plan: RunPlan, registry, *, on_step=None, progress=None, cancel=None
     except Exception as exc:  # noqa: BLE001 - reported in the editor
         return None, str(exc)
     return report, None
+
+
+def _one_port(entry: Entry, port: str | None) -> Entry:
+    """``entry`` narrowed to ``port`` (its first one when ``None``): what a
+    bypassed step reading that port passes on."""
+    from dataclasses import replace
+
+    previews = entry.previews or {}
+    ports = entry.ports or {}
+    port = port if port in previews or port in ports else next(iter(ports or previews), None)
+    if port is None:
+        return entry
+    narrowed_ports = None if entry.ports is None else ({port: ports[port]} if port in ports else {})
+    return replace(entry, previews={port: previews[port]} if port in previews else {}, ports=narrowed_ports)
 
 
 def _digest(payload) -> str:

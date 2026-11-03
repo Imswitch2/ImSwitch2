@@ -135,8 +135,9 @@ def _fmt(value) -> str:
     return text if len(text) <= 40 else text[:39] + "…"
 
 
-def save_file_name(step: Save) -> str:
-    """The file a Save writes, as words: ``‹recording›_diamond.h5``."""
+def save_file_name(step: Save, input_step: str | None = None) -> str:
+    """The file a Save writes, as words: ``‹recording›_diamond.h5``.
+    ``input_step`` is the step that made the data (through bypassed steps)."""
     from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
 
     template = str(step.path_template or "")
@@ -148,7 +149,7 @@ def save_file_name(step: Save) -> str:
     extension = {"hdf5": ".h5", "tiff": ".tif", "zarr": ".zarr", "csv": ".csv"}.get(str(fmt), f".{fmt}")
     text = (template.replace("{source_stem}", "‹recording›").replace("{ext}", extension)
             .replace("{fmt}", str(fmt)).replace("{step}", step.id)
-            .replace("{input_step}", step.input.step).replace("{name}", "‹result›"))
+            .replace("{input_step}", input_step or step.input.step).replace("{name}", "‹result›"))
     return text
 
 
@@ -163,7 +164,10 @@ def _summary(document, step, entry) -> tuple[tuple[str, ...], tuple[str, ...]]:
             lines.append(f"dataset {spec.dataset}")
         return tuple(lines), ()
     if isinstance(step, Save):
-        return (f"→ {save_file_name(step)}",), ()
+        from imswitch.improcess.workflows.prepare import bypass_upstream, resolve_ref
+
+        made_by = resolve_ref(step.input, bypass_upstream(document.workflow)).step
+        return (f"→ {save_file_name(step, made_by)}",), ()
     if isinstance(step, Consolidate):
         count = len(step.inputs)
         return (f"merges {count} reconstruction{'s' if count != 1 else ''}",), ()
@@ -318,7 +322,7 @@ def _inputs(document, step, kinds) -> tuple[InputSlot, ...]:
 
 def node_infos(document, issues=None) -> dict[str, NodeInfo]:
     """One :class:`NodeInfo` per step, in file order."""
-    from imswitch.improcess.workflows.prepare import bypass_upstream, resolve_ref
+    from imswitch.improcess.workflows.prepare import bypass_upstream
 
     kinds = kinds_of(document)
     upstream = bypass_upstream(document.workflow)
@@ -332,9 +336,7 @@ def node_infos(document, issues=None) -> dict[str, NodeInfo]:
         bypassed = bool(getattr(step, "bypass", False))
         passes = ""
         if bypassed and step.id in upstream:
-            passes = str(upstream[step.id])
-        elif bypassed and isinstance(step, Save):
-            passes = str(resolve_ref(step.input, upstream))
+            passes = str(upstream[step.id])          # a bypassed Save passes nothing on: it writes nothing
         exposed = tuple(document.exposed(step.id).items()) if hasattr(document, "exposed") else ()
         infos[step.id] = NodeInfo(
             id=step.id,
