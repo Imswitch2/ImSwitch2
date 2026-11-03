@@ -113,7 +113,7 @@ def test_the_same_pipeline_moves_the_mock_stage_in_experiment_mode(registry, tmp
 
     assert summary.ok and summary.actions_completed == 3
     assert [r.action for r in actions.requests] == ["move-to"] * 3
-    assert actions.position == {"XYStage": [2.0, 2.0]}
+    assert actions.position == {"XYStage": {"Y": 2.0, "X": 2.0}}
     # the points the backend received were in the stage frame, with the
     # source frame index the detection was made on
     moved = actions.requests[1].inputs[0]

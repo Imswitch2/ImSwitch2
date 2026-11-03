@@ -3690,6 +3690,7 @@ def _load_widget_registry() -> dict:
         # Advanced
         "SLMs": "Advanced",
         "SLM": "Advanced",          # Docstring uses SLM (singular)
+        "SmartPipeline": "Advanced",
         "EtSTED": "Advanced",
         "EtMonalisa": "Advanced",
         "Tiling": "Advanced",
@@ -3732,6 +3733,7 @@ def _load_widget_registry() -> dict:
         ],
         "Advanced": [
             ("SLM",        "SLM control (single)"),
+            ("SmartPipeline", "Arm and run a smart-microscopy pipeline"),
             ("SLMs",       "SLM control (multi)"),
             ("EtSTED",     "EtSTED widget"),
             ("EtMonalisa", "EtMonalisa widget"),

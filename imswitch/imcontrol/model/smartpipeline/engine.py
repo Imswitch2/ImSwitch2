@@ -26,9 +26,10 @@ no action is dispatched (logged as skipped, the chain continues at once);
 in *Validate* every action is checked -- its catalogue entry, parameters,
 the coordinate contract -- and logged as "would …", nothing is dispatched;
 in *Experiment* it is dispatched to the backend. Roles, reservations and
-the live source are Phase 2's; what this engine does when armed in Validate
-or Experiment is refuse a pipeline with hardware actions and no
-``scouting``/``idle`` roles, as the plan says.
+the live source are the run's (:mod:`.run`); what this engine does when
+armed in Experiment is refuse a pipeline with hardware actions and no
+``scouting``/``idle`` roles, as the plan says (Validate applies no role, so
+it needs none).
 
 **Clock and state.** Gates keep their clocks on the engine's ``clock``
 (injectable, so a replay is deterministic); every step's state, the gate
@@ -400,10 +401,11 @@ class Engine:
             return problems or ["no source step"]
         effects = MODE_EFFECTS[self.mode]
         hardware = [step for step in self._chain if self._hardware(step)]
-        if effects["actions"] != "skip" and hardware and not self.settings.arms_live:
+        if effects["roles"] and hardware and not self.settings.arms_live:
             problems.append(
                 f"{self.mode.value} mode with hardware actions ({', '.join(s.id for s in hardware)}) needs the "
-                "pipeline to name its 'scouting' and 'idle' roles; without them it arms in visualize mode only"
+                "pipeline to name its 'scouting' and 'idle' roles; without them it arms in visualize or "
+                "validate mode only"
             )
         return problems
 
@@ -758,6 +760,11 @@ class Engine:
             self.summary.actions_failed += 1
             self.log.append(pending.tick, now, pending.step.id, outcome, error=error or outcome,
                             seconds=now - pending.started_at)
+            if not getattr(completion, "ended", True):
+                # Settled, but the hardware has not stopped (a quarantined
+                # stage): the run says so, and keeps the device protected.
+                self.summary.unfinished_action = pending.step.id
+                self.log.append(pending.tick, now, pending.step.id, "still-running", outcome=outcome)
             self._fail(pending.step.id, f"action {pending.step.action!r} {outcome}: {error or outcome}")
             return
         self.summary.actions_completed += 1

@@ -1,0 +1,106 @@
+{
+  "name": "threshold and move (mock demo)",
+  "schema": 1,
+  "description": "The shipped demo for example_no_hardware.json: the mock camera's frames are thresholded, the brightest region's centroid is turned into mock-stage coordinates and the two single-axis mock stages are moved there, at most once every two seconds. Run it in Visualize or Validate as it is; for Experiment, create the two setup modes the roles name (Setup Modes panel) or edit the roles.",
+  "metadata": {
+    "smart_pipeline": {
+      "roles": {
+        "scouting": "pipeline-scouting",
+        "idle": "pipeline-idle"
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": "live",
+      "id": "cam",
+      "detector": "Mock Camera"
+    },
+    {
+      "step": "process",
+      "id": "thr",
+      "processor": "threshold",
+      "params": {
+        "method": "otsu",
+        "min_area": 20
+      },
+      "inputs": [
+        "cam"
+      ]
+    },
+    {
+      "step": "process",
+      "id": "rp",
+      "processor": "regionprops",
+      "params": {
+        "frame": "detector:Mock Camera"
+      },
+      "inputs": [
+        "thr",
+        "cam"
+      ]
+    },
+    {
+      "step": "process",
+      "id": "pk",
+      "processor": "pick",
+      "params": {
+        "rule": "brightest"
+      },
+      "inputs": [
+        "rp"
+      ]
+    },
+    {
+      "step": "gate",
+      "id": "found",
+      "rule": "condition",
+      "inputs": [
+        "pk"
+      ]
+    },
+    {
+      "step": "gate",
+      "id": "settle",
+      "rule": "min-interval",
+      "inputs": [
+        "found"
+      ],
+      "params": {
+        "seconds": 2.0
+      }
+    },
+    {
+      "step": "transform",
+      "id": "tf",
+      "transform": "camera_to_mock_xy",
+      "inputs": [
+        "settle"
+      ]
+    },
+    {
+      "step": "action",
+      "id": "mv",
+      "action": "move-to",
+      "params": {
+        "axes": [
+          "Mock Y:Y",
+          "Mock X:X"
+        ],
+        "frame": "stage:Mock XY",
+        "deadline_s": 5.0
+      },
+      "inputs": [
+        "tf"
+      ]
+    },
+    {
+      "step": "sink",
+      "id": "log",
+      "sink": "event-log",
+      "inputs": [
+        "pk"
+      ]
+    }
+  ]
+}

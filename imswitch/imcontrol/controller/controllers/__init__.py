@@ -46,6 +46,7 @@ _CONTROLLER_MODULES = {
     "SetupStatusController": "SetupStatusController",
     "SetupModesController": "SetupModesController",
     "SLMController": "SLMController",
+    "SmartPipelineController": "SmartPipelineController",
     "SLMsController": "SLMsController",
     "TilingController": "TilingController",
     "TriggerScopeRasterController": "TriggerScopeRasterController",

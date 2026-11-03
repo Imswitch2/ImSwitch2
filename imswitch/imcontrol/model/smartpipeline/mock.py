@@ -1,11 +1,9 @@
 """Mock ports: frames from an array, steps from functions, actions that log.
 
 For the engine's tests and for an offline run of a pipeline against a
-recording with the hardware stubbed. :data:`MOCK_CATALOG` names the three
-actions a Phase 1 pipeline may use -- ``move-to`` (points in the frame its
-``frame`` parameter names, to a positioner), ``snap`` (a detector, on an
-event) and ``log`` (anything) -- with the same ids the live catalogue will
-give them in Phase 2.
+recording with the hardware stubbed. :data:`MOCK_CATALOG` is the v1
+catalogue (:mod:`.catalog`: ``move-to``, ``snap``, ``log``), the same specs
+the live backend performs for real.
 """
 
 from __future__ import annotations
@@ -17,26 +15,12 @@ from typing import Any, Callable
 
 import numpy as np
 
-from imswitch.imcommon.model.smartpipeline import ActionCatalog, ActionSpec, Frame, FrameIdentity, points_of
+from imswitch.imcommon.model.smartpipeline import Frame, FrameIdentity, points_of
 from imswitch.imcommon.model.workflow.steps import DEFAULT_PORT, Process
+from imswitch.imcontrol.model.smartpipeline.catalog import axis_targets, catalog
 from imswitch.imcontrol.model.smartpipeline.ports import ActionRequest, SimpleCompletion, StepError
 
-MOCK_CATALOG = ActionCatalog([
-    ActionSpec(
-        "move-to", label="Move to", accepts=("points",),
-        params={"positioner": "", "frame": "", "axes": "yx", "relative": False},
-        frame_param="frame", hardware=True,
-        description="Move a positioner to the first point (columns mapped to axes by 'axes').",
-    ),
-    ActionSpec(
-        "snap", label="Snap", accepts=("event",), params={"detector": ""}, hardware=True,
-        description="Take one image with a detector when the input event fired.",
-    ),
-    ActionSpec(
-        "log", label="Log", accepts=("any",), params={"message": ""}, hardware=False,
-        description="Write the input to the event log.",
-    ),
-])
+MOCK_CATALOG = catalog()
 
 
 class ArrayFrameSource:
@@ -122,7 +106,7 @@ class MockActions:
         self.refuse_on = set(refuse_on)
         self.requests: list[ActionRequest] = []
         self.pending: list[SimpleCompletion] = []
-        self.position: dict[str, list[float]] = {}
+        self.position: dict[str, dict[str, float]] = {}   # positioner -> axis -> value
         self.snaps: list[str] = []
 
     def start(self, request: ActionRequest) -> SimpleCompletion:
@@ -148,13 +132,16 @@ class MockActions:
             coordinates = points_of(request.inputs[0])
             if coordinates.shape[0] == 0:
                 return {"moved": False, "reason": "no points"}
-            target = [float(v) for v in coordinates[0]]
-            name = str(request.params.get("positioner") or "positioner")
-            if request.params.get("relative"):
-                current = self.position.get(name, [0.0] * len(target))
-                target = [c + d for c, d in zip(current, target)]
-            self.position[name] = target
-            return {"moved": True, "positioner": name, "position": target}
+            point = [float(v) for v in coordinates[0]]
+            targets = axis_targets(request.params)
+            moved: dict[str, dict[str, float]] = {}
+            for (positioner, axis), value in zip(targets, point):
+                axes = self.position.setdefault(positioner, {})
+                if request.params.get("relative"):
+                    value = axes.get(axis, 0.0) + value
+                axes[axis] = value
+                moved.setdefault(positioner, {})[axis] = value
+            return {"moved": True, "relative": bool(request.params.get("relative")), "position": moved}
         if request.action == "snap":
             self.snaps.append(str(request.params.get("detector") or ""))
             return {"snapped": True, "detector": request.params.get("detector")}

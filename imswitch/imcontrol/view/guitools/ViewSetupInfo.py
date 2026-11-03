@@ -99,6 +99,9 @@ class ViewSetupInfo(SetupInfo):
     - ``Autofocus`` (autofocus widget; requires ``focusLock`` field to be
       defined)      
     - ``SLM`` (SLM widget; requires ``slm`` field to be defined)
+    - ``SmartPipeline`` (arms and runs a smart-microscopy pipeline file
+      against the live detector and the positioners; processing steps
+      need the ImProcess module)
     - ``Laser`` (laser control widget)
     - ``Positioner`` (positioners widget)
     - ``Scan`` (scan widget; requires ``scan`` field to be defined)

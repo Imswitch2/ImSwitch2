@@ -140,7 +140,7 @@ def test_visualize_skips_actions_and_experiment_dispatches_them():
     summary = eng.run()
     assert summary.ok
     assert [r.action for r in eng.actions.requests] == ["move-to", "snap", "move-to", "snap"]
-    assert eng.actions.position == {"XY": [20.0, 5.0]} and eng.actions.snaps == ["Camera", "Camera"]
+    assert eng.actions.position == {"XY": {"Y": 20.0, "X": 5.0}} and eng.actions.snaps == ["Camera", "Camera"]
     # the snap started after the move completed, with the move's done event
     assert eng.actions.requests[1].inputs[0].fired and eng.actions.requests[1].inputs[0].payload["moved"] is True
     events = [(e.step, e.event) for e in eng.log.events(step="mv") + eng.log.events(step="sn") if e.tick == 1]
@@ -155,15 +155,14 @@ def test_run_modes_parse():
 
 # -- arming --------------------------------------------------------------------------
 
-def test_hardware_actions_need_roles_outside_visualize():
+def test_hardware_actions_need_roles_in_experiment_mode():
     bare = pipeline(roles=False)
     with pytest.raises(ArmError, match="'scouting' and 'idle' roles"):
-        engine(bare, mode="validate").arm()
-    with pytest.raises(ArmError, match="roles"):
         engine(bare, mode="experiment").arm()
-    eng = engine(bare, mode="visualize")
-    eng.arm()
-    assert eng.armed and eng.arm_problems() == []
+    for mode in ("visualize", "validate"):   # nothing is applied: no roles needed
+        eng = engine(bare, mode=mode)
+        eng.arm()
+        assert eng.armed and eng.arm_problems() == []
 
 
 def test_points_without_a_transform_are_refused_at_arm():

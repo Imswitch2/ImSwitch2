@@ -48,6 +48,7 @@ _WIDGET_MODULES = {
     "SetupStatusWidget": "SetupStatusWidget",
     "SetupModesWidget": "SetupModesWidget",
     "SLMWidget": "SLMWidget",
+    "SmartPipelineWidget": "SmartPipelineWidget",
     "SLMsWidget": "SLMsWidget",
     "TilingWidget": "TilingWidget",
     "TriggerScopeLSXYRWidget": "TriggerScopeLSXYRWidget",
