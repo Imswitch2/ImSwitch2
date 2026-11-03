@@ -501,7 +501,8 @@ def test_the_advanced_page_builds_what_the_backend_builds(rig):
         rig.scan, copy.deepcopy(analog), copy.deepcopy(digital))
     signals, info = rig.scan._make_full_scan(copy.deepcopy(analog), copy.deepcopy(digital))
 
-    assert FRAME_GEOMETRY_KEY not in info
+    # every Galvo-designed scan files its geometry now, the Advanced page's too
+    assert FRAME_GEOMETRY_KEY in info and info[FRAME_GEOMETRY_KEY] == ownInfo[FRAME_GEOMETRY_KEY]
     assert sorted(info) == sorted(ownInfo)
     for kind in ('scanSignalsDict', 'TTLCycleSignalsDict'):
         assert sorted(signals[kind]) == sorted(ownSignals[kind])

@@ -13,6 +13,7 @@ from imswitch.imcontrol.model import (
     LaserScanState,
     getWidgetStatePersistence,
 )
+from imswitch.imcontrol.model.scan_frame import FRAME_GEOMETRY_KEY, frame_geometry_from_scan
 from imswitch.imcontrol.model.scan_parameters import (
     seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
@@ -262,6 +263,17 @@ class ScanControllerAdvanced(SuperScanController):
         self._lastSignalDict = signalDict
         self._lastTTLCycleSignalsDict = signalDict.get("TTLCycleSignalsDict", None)
         self._lastTTLParameters = copy.deepcopy(TTLParameters)
+
+        # Where the pixels of this scan are, for the scan-driven detectors'
+        # frames (a smart pipeline maps detections back to scanner positions
+        # with it). A design the helper cannot describe files none.
+        if FRAME_GEOMETRY_KEY not in scanInfoDict:
+            try:
+                scanInfoDict[FRAME_GEOMETRY_KEY] = frame_geometry_from_scan(
+                    scanParameters, scanInfoDict
+                ).to_dict()
+            except Exception:  # noqa: BLE001 - geometry is a convenience, never a refusal
+                pass
 
         return signalDict, scanInfoDict
 
