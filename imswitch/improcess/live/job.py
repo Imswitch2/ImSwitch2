@@ -21,9 +21,11 @@ from enum import Enum
 from pathlib import Path
 
 from imswitch.improcess.model.hdf5_access import RawHdf5AccessConflict
+from imswitch.improcess.model.timepoint_scope import coerce_timepoint_scope
 
 from .discovery import DiscoveredJob, JobQueue
 from .source_factory import make_live_source
+from .source_type import LAYOUT_SINGLE_LAPSE_FILE
 from .source_type import RawSourceType, probe_source_type
 
 
@@ -49,12 +51,28 @@ class PreparedLiveJob:
     def seed_path(self) -> str:
         return self.discovered.seed_path
 
-    def make_source(self, *, detector_name=None):
-        """Build the reader from the already-probed source type."""
+    def make_source(
+        self, *, detector_name=None, timepoint_scope=None, total_timepoints=None,
+        timepoint_origin: int = 0,
+    ):
+        """Build the reader from the already-probed source type.
+
+        Scope is translated into reader bounds here, keeping reconstructors and
+        the generic live controller unaware of UI/job selection semantics.
+        """
+        scope = coerce_timepoint_scope(timepoint_scope)
+        start, stop = scope.bounds(total_timepoints)
+        if self.source_type.layout == LAYOUT_SINGLE_LAPSE_FILE:
+            origin = max(0, int(timepoint_origin or 0))
+            start += origin
+            if stop is not None:
+                stop += origin
         return make_live_source(
             self.seed_path,
             self.source_type,
             detector_name=detector_name,
+            timepoint_start=start,
+            timepoint_stop=stop,
         )
 
 
@@ -125,6 +143,9 @@ def start_prepared_live_job(
     params: dict,
     *,
     name: str,
+    timepoint_scope=None,
+    total_timepoints=None,
+    timepoint_origin: int = 0,
 ) -> bool:
     """Construct the source and start the shared live controller.
 
@@ -132,7 +153,12 @@ def start_prepared_live_job(
     function, so source construction and the seed passed as ``source_arg``
     cannot drift between the two orchestration paths.
     """
-    source = prepared.make_source(detector_name=None)
+    source = prepared.make_source(
+        detector_name=None,
+        timepoint_scope=timepoint_scope,
+        total_timepoints=total_timepoints,
+        timepoint_origin=timepoint_origin,
+    )
     return bool(
         live_controller.start(
             reconstructor,

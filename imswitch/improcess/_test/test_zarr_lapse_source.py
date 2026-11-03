@@ -416,3 +416,37 @@ def test_zarr_lapse_poll_stops_at_the_byte_budget_and_resumes(tmp_zarr_path, mon
     chunks = [chunk for poll in polls for chunk in poll]
     assert [(c.start, c.end) for c in chunks] == [(i, i + 2) for i in range(0, 12, 2)]
     assert int(chunks[2].data[0, 0, 0]) == 1000  # the second timepoint, read on the second poll
+
+
+def test_zarr_lapse_source_streams_only_requested_timepoint_range(tmp_zarr_path):
+    frames_per_stack = 4
+    frame_shape = (3, 5)
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    for scan_idx in range(3):
+        scan_group = root.create_group(f'scan{scan_idx}')
+        det_group = scan_group.create_group('CAM')
+        data = np.arange(
+            frames_per_stack * frame_shape[0] * frame_shape[1], dtype=np.uint16
+        ).reshape(frames_per_stack, *frame_shape) + (scan_idx * 1000)
+        array = ZarrStorer._create_array(det_group, 'data', data=data, chunks=(2, *frame_shape))
+        array.attrs['detector_name'] = 'CAM'
+        array.attrs['writing'] = False
+        array.attrs['recording:frames_per_stack'] = frames_per_stack
+        array.attrs['recording:num_timepoints'] = 3
+        array.attrs['recording:single_lapse_file'] = True
+        array.attrs['recording:dataset_path'] = f'/scan{scan_idx}/CAM/data'
+
+    source = ZarrLapseSource(
+        detector_name='CAM', chunk_size=2, timepoint_start=1, timepoint_stop=3
+    )
+    info = source.open(tmp_zarr_path)
+    assert info.planned_timepoints == 2
+    assert info.expected_frames == 2 * frames_per_stack
+
+    chunks = []
+    while not source.is_complete():
+        chunks.extend(source.poll())
+    assert chunks[0].start == 0
+    assert chunks[-1].end == 2 * frames_per_stack
+    assert int(chunks[0].data.flat[0]) >= 1000
+    source.close()

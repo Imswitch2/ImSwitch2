@@ -2175,15 +2175,41 @@ class ProcessingSessionController(ImProcessWidgetController):
             )
 
     def isDatasetProcessed(self, dataset_id: str) -> bool:
-        """Whether Session already knows any derived result for ``dataset_id``."""
+        """Whether Session has a complete derived result for ``dataset_id``.
+
+        A partial timelapse result (Current T / range) is useful and remains in
+        Session, but must not suppress whole-lapse Auto-reconstruction. Legacy
+        timelapse results without scope provenance are treated as whole-lapse.
+        """
         if self._session is None:
             return False
         dataset = self._session.dataset_by_id(str(dataset_id))
         if dataset is None:
             return False
-        if dataset.saved_reconstructions:
-            return True
-        return bool(self._loaded_reconstructions_for_dataset(dataset))
+        if str(getattr(dataset, "kind", "")) != "time-lapse":
+            if dataset.saved_reconstructions:
+                return True
+            return bool(self._loaded_reconstructions_for_dataset(dataset))
+
+        from imswitch.improcess.model.timepoint_scope import (
+            coerce_timepoint_scope,
+            graph_has_full_timepoint_scope,
+        )
+
+        total = getattr(dataset, "planned_timepoints", None)
+        for saved in dataset.saved_reconstructions:
+            payload = getattr(saved, "timepoint_scope", None)
+            if payload is None:
+                return True  # pre-scope Session result
+            try:
+                if coerce_timepoint_scope(payload).is_full(total or payload.get("total")):
+                    return True
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+        for _name, result in self._loaded_reconstructions_for_dataset(dataset):
+            if graph_has_full_timepoint_scope(graph_of(result), total=total, legacy_full=True):
+                return True
+        return False
 
     def setProcessingQueueController(self, controller) -> None:
         old = getattr(self, "_processingQueueController", None)

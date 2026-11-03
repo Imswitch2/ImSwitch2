@@ -78,6 +78,8 @@ def make_live_source(
     fmt: str | None = None,
     detector_name: str | None = None,
     chunk_size: int | None = None,
+    timepoint_start: int = 0,
+    timepoint_stop: int | None = None,
 ) -> LiveSource:
     """Create the reader for the recording at ``path``.
 
@@ -91,6 +93,8 @@ def make_live_source(
             instead of reading it off the suffix.
         detector_name: Detector to read; ``None`` auto-detects (the first).
         chunk_size: Override the poll chunk size.
+        timepoint_start: Zero-based logical timepoint to start at for lapse readers.
+        timepoint_stop: Exclusive logical timepoint bound for lapse readers.
 
     Without a ``source_type`` the store is probed, and a store that cannot be
     read -- it does not exist yet, or is still being written -- falls back to
@@ -121,7 +125,15 @@ def make_live_source(
         # classification's count is only what existed at probe time. Handing
         # it over would cap a still-growing acquisition at however many files
         # happened to be on disk when the watcher first looked.
-        return reader(path, detector_name=detector_name, chunk_size=chunk_size)
+        return reader(
+            path, detector_name=detector_name, chunk_size=chunk_size,
+            timepoint_start=timepoint_start, timepoint_stop=timepoint_stop,
+        )
+    if source_type.layout == LAYOUT_SINGLE_LAPSE_FILE:
+        return reader(
+            detector_name=detector_name, chunk_size=chunk_size,
+            timepoint_start=timepoint_start, timepoint_stop=timepoint_stop,
+        )
     return reader(detector_name=detector_name, chunk_size=chunk_size)
 
 

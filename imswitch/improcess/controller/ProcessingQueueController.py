@@ -31,6 +31,7 @@ from imswitch.improcess.model.DataObj import DataObj
 from imswitch.improcess.model.lapse_source import TIME_LAPSE_SOURCE_KIND
 from imswitch.improcess.model.timepoint_scope import (
     TimepointScope,
+    annotate_result_timepoint_scope,
     coerce_timepoint_scope,
 )
 from imswitch.improcess.model.processing_queue import (
@@ -71,6 +72,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._offlineThread = None
         self._offlineWorker = None
         self._offlineDataObjs: list[DataObj] = []
+        self._offlineResultScopes: list[TimepointScope | None] = []
         # Worker terminal signals arrive before QThread.finished. Keep the queue
         # slot occupied until the thread itself is gone so a following job can
         # never overwrite the only strong references to a still-running QThread.
@@ -83,6 +85,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._liveFinalResult = None
         self._currentProgress = {}
         self._currentPlannedTimepoints = None
+        self._currentSourceTimepoints = None
         self._lastTerminalStatus = {}
         self._skipRequested = False
 
@@ -459,6 +462,7 @@ class ProcessingQueueController(ImProcessWidgetController):
             "status": "Starting…",
         }
         self._currentPlannedTimepoints = None
+        self._currentSourceTimepoints = None
         self._emit_changed()
         self._emit_progress_changed()
 
@@ -512,11 +516,37 @@ class ProcessingQueueController(ImProcessWidgetController):
             return getattr(index, "planned_count", None) if index is not None else None
         return getattr(source, "planned_timepoints", None)
 
+    @staticmethod
+    def _timepoint_origin(source) -> int:
+        if isinstance(source, DataObj):
+            index = getattr(source, "sourceMetadata", None)
+            if index is not None:
+                try:
+                    return max(0, int(index.anchor.ordinal) - int(index.anchor_index))
+                except Exception:
+                    return 0
+            return 0
+        return max(0, int(getattr(source, "timepoint_origin", 0) or 0))
+
     def _streaming_job_path(self, source) -> str | None:
         if isinstance(source, DataObj):
+            if self._source_kind(source) == "time-lapse":
+                index = getattr(source, "sourceMetadata", None)
+                if index is not None:
+                    try:
+                        channel = index.channel(index.anchor_detector)
+                        target = next(
+                            (item for item in channel.candidates
+                             if int(item.ordinal) - int(index.anchor.ordinal) + int(index.anchor_index) == 0),
+                            None,
+                        )
+                        if target is not None:
+                            return str(target.path)
+                    except Exception:
+                        pass
             return str(
-                getattr(source, "sourceOriginalPath", "")
-                or getattr(source, "dataPath", "")
+                getattr(source, "dataPath", "")
+                or getattr(source, "sourceOriginalPath", "")
                 or ""
             ) or None
         path = str(getattr(source, "primary_path", "") or "")
@@ -539,7 +569,15 @@ class ProcessingQueueController(ImProcessWidgetController):
         )
 
     def _start_live(self, job, source, reconstructor, *, prepared=None) -> bool:
-        self._currentPlannedTimepoints = self._planned_timepoints(source)
+        total_timepoints = self._planned_timepoints(source)
+        scope = coerce_timepoint_scope(getattr(job, "timepoint_scope", None))
+        try:
+            scoped_count = scope.count(total_timepoints)
+        except (IndexError, TypeError, ValueError) as exc:
+            self._finish_current(error=str(exc))
+            return True
+        self._currentSourceTimepoints = total_timepoints
+        self._currentPlannedTimepoints = scoped_count or total_timepoints
         if not getattr(reconstructor, "supports_streaming", False):
             return False
         if prepared is None:
@@ -554,7 +592,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         source_type = prepared.source_type
         self._logger.info(
             "Processing dataset %s: kind=%s origin=%s source=%s runner=streaming "
-            "job=%s seed=%s raw=%s/%s timepoints=%s",
+            "job=%s seed=%s raw=%s/%s timepoints=%s scope=%s",
             job.label,
             self._source_kind(source),
             getattr(job.origin, "value", str(job.origin)),
@@ -563,7 +601,8 @@ class ProcessingQueueController(ImProcessWidgetController):
             prepared.seed_path,
             getattr(source_type, "format_id", "?"),
             getattr(source_type, "layout", "?"),
-            self._planned_timepoints(source),
+            total_timepoints,
+            scope.label(total_timepoints),
         )
         try:
             started = start_prepared_live_job(
@@ -572,6 +611,9 @@ class ProcessingQueueController(ImProcessWidgetController):
                 reconstructor,
                 dict(job.params),
                 name=job.label,
+                timepoint_scope=scope,
+                total_timepoints=total_timepoints,
+                timepoint_origin=self._timepoint_origin(source),
             )
         except Exception as exc:
             self._logger.exception("Could not start queued live reconstruction")
@@ -595,7 +637,13 @@ class ProcessingQueueController(ImProcessWidgetController):
             )
             return
 
-        data_objs = self._data_objs_for_source(source)
+        self._currentSourceTimepoints = self._planned_timepoints(source)
+        scope = coerce_timepoint_scope(getattr(job, "timepoint_scope", None))
+        scoped_count = scope.count(self._currentSourceTimepoints)
+        self._currentPlannedTimepoints = scoped_count or self._currentSourceTimepoints
+        data_objs = self._data_objs_for_source(
+            source, timepoint_scope=scope
+        )
         if not data_objs:
             self._finish_current(error="No readable source units found")
             return
@@ -653,13 +701,54 @@ class ProcessingQueueController(ImProcessWidgetController):
         thread.finished.connect(thread.deleteLater)
 
         self._offlineDataObjs = data_objs
+        self._offlineResultScopes = [
+            getattr(data_obj, "_improcess_timepoint_scope", None) for data_obj in data_objs
+        ]
         self._offlineThread = thread
         self._offlineWorker = worker
         thread.start()
 
-    def _data_objs_for_source(self, source) -> list[DataObj]:
+    def _data_objs_for_source(self, source, *, timepoint_scope=None) -> list[DataObj]:
+        scope = coerce_timepoint_scope(timepoint_scope)
+        total = self._planned_timepoints(source)
+        try:
+            start, stop = scope.bounds(total)
+        except (IndexError, TypeError, ValueError):
+            return []
+
         if isinstance(source, DataObj):
-            if str(getattr(source, "sourceKind", "image") or "image") != "image":
+            source_kind = str(getattr(source, "sourceKind", "image") or "image")
+            if source_kind == TIME_LAPSE_SOURCE_KIND:
+                index = getattr(source, "sourceMetadata", None)
+                if index is None:
+                    return []
+                try:
+                    channel = index.channel(index.anchor_detector)
+                except Exception:
+                    return []
+                out = []
+                for item in channel.candidates:
+                    logical_index = (
+                        int(item.ordinal) - int(index.anchor.ordinal) + int(index.anchor_index)
+                    )
+                    if logical_index < start or (stop is not None and logical_index >= stop):
+                        continue
+                    dataset_name = item.dataset
+                    if dataset_name in (None, ""):
+                        try:
+                            names = list(DataObj.getDatasetNames(str(item.path)))
+                        except Exception:
+                            continue
+                        if len(names) != 1:
+                            continue
+                        dataset_name = names[0]
+                    data_obj = DataObj(
+                        Path(str(item.path)).name, str(dataset_name), path=str(item.path)
+                    )
+                    data_obj._improcess_timepoint_scope = TimepointScope.single(logical_index)
+                    out.append(data_obj)
+                return out
+            if source_kind != "image":
                 return []
             path = getattr(source, "dataPath", None)
             dataset_name = getattr(source, "datasetName", None)
@@ -672,18 +761,22 @@ class ProcessingQueueController(ImProcessWidgetController):
                     if len(names) != 1:
                         return []
                     dataset_name = names[0]
-                # Use a fresh lazy DataObj so a queued batch cannot unload or
-                # mutate the catalog/current object the operator is inspecting.
                 return [DataObj(Path(str(path)).name, str(dataset_name), path=str(path))]
-            # Shared queued processing is intentionally disk-backed so worker
-            # cleanup can never unload/mutate the catalog or Current-data object.
             return []
 
         refs = list(getattr(source, "source_refs", ()) or ())
-        if self._source_kind(source) != "time-lapse":
+        is_lapse = self._source_kind(source) == "time-lapse"
+        if not is_lapse:
             refs = refs[:1]
         out = []
-        for ref in refs:
+        for fallback_index, ref in enumerate(refs):
+            if is_lapse:
+                logical_index = getattr(ref, "timepoint_index", None)
+                if logical_index is None:
+                    logical_index = fallback_index
+                logical_index = int(logical_index)
+                if logical_index < start or (stop is not None and logical_index >= stop):
+                    continue
             dataset_name = ref.dataset
             if dataset_name in (None, ""):
                 try:
@@ -693,7 +786,10 @@ class ProcessingQueueController(ImProcessWidgetController):
                 if len(names) != 1:
                     continue
                 dataset_name = names[0]
-            out.append(DataObj(Path(ref.path).name, str(dataset_name), path=str(ref.path)))
+            data_obj = DataObj(Path(ref.path).name, str(dataset_name), path=str(ref.path))
+            if is_lapse:
+                data_obj._improcess_timepoint_scope = TimepointScope.single(logical_index)
+            out.append(data_obj)
         return out
 
     def _claim_current_result(self, result) -> None:
@@ -737,6 +833,11 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     @QtCore.Slot(object, object)
     def _on_offline_result(self, result, reconstructor) -> None:
+        result_scope = self._offlineResultScopes.pop(0) if self._offlineResultScopes else None
+        if result_scope is not None:
+            annotate_result_timepoint_scope(
+                result, result_scope, total=self._currentSourceTimepoints
+            )
         self._claim_current_result(result)
         self._reconstructorManager.publishQueuedResult(
             result,
@@ -779,6 +880,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         )
         self._release_data_objs(self._offlineDataObjs)
         self._offlineDataObjs = []
+        self._offlineResultScopes = []
         self._offlineThread = None
         self._offlineWorker = None
         self._offlinePendingOutcome = None
@@ -805,8 +907,17 @@ class ProcessingQueueController(ImProcessWidgetController):
 
     @QtCore.Slot(object)
     def _on_live_final_result(self, result) -> None:
-        # sigFinalResult is emitted before sigResultFinalized, so claim exact
-        # Session ownership here while the queue still holds the current job.
+        # sigFinalResult is emitted before sigResultFinalized, so snapshot scope
+        # provenance and claim exact Session ownership while the queue still holds
+        # the current job.
+        job = self.queue.current
+        if job is not None and self._source_kind(self._resolve_job_source(job)) == "time-lapse":
+            source = self._resolve_job_source(job)
+            annotate_result_timepoint_scope(
+                result,
+                getattr(job, "timepoint_scope", None),
+                total=self._planned_timepoints(source),
+            )
         self._claim_current_result(result)
         self._liveFinalResult = result
 
@@ -862,6 +973,7 @@ class ProcessingQueueController(ImProcessWidgetController):
         self._liveFinalResult = None
         self._currentProgress = {}
         self._currentPlannedTimepoints = None
+        self._currentSourceTimepoints = None
         self._emit_changed()
         self._emit_progress_changed()
         if not self._closing and not self.queue.paused:

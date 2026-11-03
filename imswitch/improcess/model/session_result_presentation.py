@@ -49,9 +49,27 @@ def reconstruction_presentation(
     if plugin_label and preset:
         session_label = f"{plugin_label} - {preset}"
 
+    scope_label = ""
+    if graph is not None:
+        from imswitch.improcess.model.timepoint_scope import (
+            coerce_timepoint_scope,
+            scope_payload_from_graph,
+        )
+        payload = scope_payload_from_graph(graph)
+        if payload is not None:
+            try:
+                scope = coerce_timepoint_scope(payload)
+                scope_label = scope.label(payload.get("total"))
+            except (KeyError, TypeError, ValueError, IndexError):
+                scope_label = ""
+    if scope_label:
+        session_label = f"{session_label} · {scope_label}"
+
     object_name = str(artifact.get("result_name") or fallback_name or session_label)
 
     lines = [session_label]
+    if scope_label:
+        lines.append(f"Timepoints: {scope_label}")
     if plugin_label:
         lines.append(f"Reconstructor: {plugin_label}")
     if preset:

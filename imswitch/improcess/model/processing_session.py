@@ -117,6 +117,9 @@ class SourceRef:
     path: str
     dataset: str | None = None
     relative_path: str | None = None
+    # Zero-based logical timepoint when this ref belongs to a lapse. ``None``
+    # keeps ordinary/legacy Session manifests backward compatible.
+    timepoint_index: int | None = None
 
     @property
     def normalized_path(self) -> str:
@@ -136,6 +139,9 @@ class SavedReconstruction:
     # metadata-only in this pass; future Auto UX may explicitly compare these
     # against the current recipe without reopening result pixels.
     recipe_ids: tuple[str, ...] = ()
+    # Input extent for logical timelapse results. ``None`` is legacy metadata
+    # and is treated as a whole-lapse result for backward compatibility.
+    timepoint_scope: dict | None = None
 
 
 @dataclass
@@ -151,6 +157,9 @@ class SessionDataset:
     source_key: str = ""
     source_refs: list[SourceRef] = field(default_factory=list)
     planned_timepoints: int | None = None
+    # Physical scan-group offset for a logical lapse stored alongside earlier
+    # lapses in one HDF5/Zarr container. Logical scope indices remain zero-based.
+    timepoint_origin: int = 0
     # Lightweight source metadata used by the Session list.  These are derived
     # from array headers/layout metadata and never require materialising pixels.
     scan_label: str = ""
@@ -284,11 +293,14 @@ class ProcessingSession:
         text = relative.as_posix()
         return text or "."
 
-    def _source_ref(self, path: str | Path, dataset: str | None) -> SourceRef:
+    def _source_ref(
+        self, path: str | Path, dataset: str | None, *, timepoint_index: int | None = None
+    ) -> SourceRef:
         return SourceRef(
             str(path),
             dataset,
             relative_path=self._relative_source_path(path),
+            timepoint_index=(None if timepoint_index is None else int(timepoint_index)),
         )
 
     def _entry_is_results(self, path: str | Path) -> bool:
@@ -420,7 +432,14 @@ class ProcessingSession:
                         continue
                     seen_logical.add(logical)
                     refs = [
-                        self._source_ref(item.path, item.dataset)
+                        self._source_ref(
+                            item.path,
+                            item.dataset,
+                            timepoint_index=(
+                                int(item.ordinal) - int(lapse.anchor.ordinal)
+                                + int(lapse.anchor_index)
+                            ),
+                        )
                         for item in channel.candidates
                     ]
                     label = str(lapse.name)
@@ -440,6 +459,7 @@ class ProcessingSession:
                         source_key=source_key,
                         source_refs=refs,
                         planned_timepoints=int(lapse.planned_count),
+                        timepoint_origin=max(0, int(lapse.anchor.ordinal) - int(lapse.anchor_index)),
                         scan_label=scan_label,
                         decoded_bytes=decoded_bytes,
                     ))
@@ -585,12 +605,15 @@ class ProcessingSession:
             session_name, display_name, tooltip = self._result_presentation(path, document)
             from imswitch.improcess.model.provenance import recipe_ids_from_graph
 
+            from imswitch.improcess.model.timepoint_scope import scope_payload_from_graph
+            graph = getattr(document, "graph", None)
             dataset.saved_reconstructions.append(SavedReconstruction(
                 path=str(path.resolve()),
                 name=session_name,
                 display_name=display_name,
                 tooltip=tooltip,
-                recipe_ids=recipe_ids_from_graph(getattr(document, "graph", None)),
+                recipe_ids=recipe_ids_from_graph(graph),
+                timepoint_scope=scope_payload_from_graph(graph),
             ))
 
     def reconcile_results(self, *, save_manifest: bool = True) -> None:
@@ -655,14 +678,17 @@ class ProcessingSession:
             session_name, object_name, tooltip = self._result_presentation(path, document)
             from imswitch.improcess.model.provenance import recipe_ids_from_graph
 
-            recipe_ids = recipe_ids_from_graph(getattr(document, "graph", None))
+            graph = getattr(document, "graph", None)
+            recipe_ids = recipe_ids_from_graph(graph)
 
+        from imswitch.improcess.model.timepoint_scope import scope_payload_from_graph
         saved = SavedReconstruction(
             path=str(path),
             name=session_name,
             display_name=object_name,
             tooltip=tooltip,
             recipe_ids=recipe_ids,
+            timepoint_scope=scope_payload_from_graph(graph),
         )
         dataset.saved_reconstructions.append(saved)
         if save_manifest:
@@ -877,6 +903,11 @@ class ProcessingSession:
                             if ref.get("relative_path") not in (None, "")
                             else self._relative_source_path(str(ref.get("path", "")))
                         ),
+                        timepoint_index=(
+                            int(ref.get("timepoint_index"))
+                            if ref.get("timepoint_index") is not None
+                            else None
+                        ),
                     )
                     for ref in entry.get("source_refs", [])
                     if isinstance(ref, dict) and ref.get("path")
@@ -897,6 +928,7 @@ class ProcessingSession:
                     source_key=source_key,
                     source_refs=refs,
                     planned_timepoints=entry.get("planned_timepoints"),
+                    timepoint_origin=max(0, int(entry.get("timepoint_origin", 0) or 0)),
                     scan_label=_canonical_spatial_tag(entry.get("scan_label")),
                     decoded_bytes=entry.get("decoded_bytes"),
                     raw_deleted=True,

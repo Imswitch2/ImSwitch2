@@ -37,3 +37,27 @@ def test_scope_validation_and_mapping_roundtrip():
     scope = coerce_timepoint_scope({"mode": "range", "first": 2, "last": 5})
     assert scope.mode == TimepointScopeMode.RANGE
     assert scope == TimepointScope.range(2, 5)
+
+
+def test_scope_provenance_is_outside_recipe_params_and_reports_fullness():
+    from types import SimpleNamespace
+    from imswitch.improcess.model.timepoint_scope import (
+        annotate_result_timepoint_scope,
+        graph_has_full_timepoint_scope,
+        scope_payload_from_graph,
+    )
+
+    result = SimpleNamespace(metadata={
+        "provenance": {
+            "output": {"node": "step", "port": "out"},
+            "nodes": {"step": {"op": "reconstruct", "params": {"preset": "Fast"}}},
+        }
+    })
+    assert annotate_result_timepoint_scope(result, TimepointScope.range(3, 11), total=20)
+    graph = result.metadata["provenance"]
+    assert graph["nodes"]["step"]["params"] == {"preset": "Fast"}
+    assert scope_payload_from_graph(graph)["count"] == 9
+    assert not graph_has_full_timepoint_scope(graph, total=20)
+
+    legacy = {"output": {"node": "step"}, "nodes": {"step": {"params": {}}}}
+    assert graph_has_full_timepoint_scope(legacy, total=20, legacy_full=True)

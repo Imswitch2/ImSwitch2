@@ -135,4 +135,75 @@ __all__ = [
     "TimepointScope",
     "TimepointScopeMode",
     "coerce_timepoint_scope",
+    "TIMEPOINT_SCOPE_PROVENANCE_KEY",
+    "scope_payload_from_graph",
+    "scope_from_graph",
+    "annotate_result_timepoint_scope",
+    "graph_has_full_timepoint_scope",
 ]
+
+TIMEPOINT_SCOPE_PROVENANCE_KEY = "timepoint_scope"
+
+
+def scope_payload_from_graph(graph: dict | None) -> dict | None:
+    """Return scope metadata from the producing provenance node, if recorded."""
+    if not isinstance(graph, dict):
+        return None
+    output = graph.get("output") or {}
+    node_id = output.get("node")
+    node = (graph.get("nodes") or {}).get(node_id) if node_id else None
+    if not isinstance(node, dict):
+        return None
+    payload = node.get(TIMEPOINT_SCOPE_PROVENANCE_KEY)
+    return dict(payload) if isinstance(payload, dict) else None
+
+
+def scope_from_graph(graph: dict | None) -> TimepointScope | None:
+    payload = scope_payload_from_graph(graph)
+    if payload is None:
+        return None
+    try:
+        return coerce_timepoint_scope(payload)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def annotate_result_timepoint_scope(result, scope, *, total: int | None = None) -> bool:
+    """Record input timepoint scope on the output provenance node.
+
+    The field deliberately lives beside, not inside, ``params`` so it describes
+    which input extent was selected without changing the reconstruction recipe.
+    """
+    from copy import deepcopy
+    from imswitch.improcess.model.provenance import graph_of, set_graph
+
+    graph = graph_of(result)
+    if not isinstance(graph, dict):
+        return False
+    output = graph.get("output") or {}
+    node_id = output.get("node")
+    if not node_id or node_id not in (graph.get("nodes") or {}):
+        return False
+    updated = deepcopy(graph)
+    node = updated["nodes"].get(node_id)
+    if not isinstance(node, dict):
+        return False
+    node[TIMEPOINT_SCOPE_PROVENANCE_KEY] = coerce_timepoint_scope(scope).to_dict(total)
+    return bool(set_graph(result, updated))
+
+
+def graph_has_full_timepoint_scope(
+    graph: dict | None, *, total: int | None = None, legacy_full: bool = True
+) -> bool:
+    """Whether a result represents the complete logical lapse.
+
+    Missing scope metadata is treated as full for backward compatibility with
+    pre-scope timelapse results, which necessarily represented the whole lapse.
+    """
+    payload = scope_payload_from_graph(graph)
+    if payload is None:
+        return bool(legacy_full)
+    try:
+        return coerce_timepoint_scope(payload).is_full(total or payload.get("total"))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False

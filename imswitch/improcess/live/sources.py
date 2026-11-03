@@ -870,15 +870,21 @@ class ZarrMultiFileLapseSource(LiveSource):
         detector_name=None,
         chunk_size=None,
         num_timepoints=None,
+        timepoint_start=0,
+        timepoint_stop=None,
     ) -> None:
         self._first_path = str(first_path)
         self._detector_name = detector_name
         self._chunk_size = chunk_size
         self._num_timepoints = num_timepoints
+        self._scope_start = max(0, int(timepoint_start or 0))
+        self._scope_stop = (
+            None if timepoint_stop is None else max(self._scope_start + 1, int(timepoint_stop))
+        )
         self._inner: ZarrLiveSource | None = None
         self._template = None
         self._first_index = 0
-        self._position = 0  # 0-based TRUE timepoint index (gaps preserved)
+        self._position = self._scope_start  # TRUE logical position in the original lapse
         self._frames_per_stack = 1
         self._logger = initLogger(self, tryInheritParent=False)
 
@@ -887,10 +893,13 @@ class ZarrMultiFileLapseSource(LiveSource):
         self._first_path = first
         self._template = _lapse_index_template(first)
         self._first_index = self._template[4] if self._template else 0
-        self._position = 0
+        self._position = self._scope_start
 
+        selected_path = self._build_path(self._scope_start) if self._scope_start else first
+        if not selected_path:
+            selected_path = first
         self._inner = ZarrLiveSource(self._detector_name, self._chunk_size)
-        info = self._inner.open(first)
+        info = self._inner.open(selected_path)
         self._frames_per_stack = int(info.frames_per_stack or info.expected_frames or 1)
 
         num_tp = (
@@ -901,7 +910,11 @@ class ZarrMultiFileLapseSource(LiveSource):
             or self._count_present_timepoints()
         )
         self._num_timepoints = max(1, int(num_tp or 1))
-        expected_total = self._frames_per_stack * self._num_timepoints
+        stop = self._scope_stop if self._scope_stop is not None else self._num_timepoints
+        stop = min(max(self._scope_start + 1, int(stop)), self._num_timepoints)
+        self._scope_stop = stop
+        scoped_count = max(1, stop - self._scope_start)
+        expected_total = self._frames_per_stack * scoped_count
 
         return StackInfo(
             frame_shape=info.frame_shape,
@@ -909,7 +922,7 @@ class ZarrMultiFileLapseSource(LiveSource):
             attrs=dict(info.attrs),
             expected_frames=expected_total,
             frames_per_stack=self._frames_per_stack,
-            planned_timepoints=self._num_timepoints,
+            planned_timepoints=scoped_count,
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "ZARR",
@@ -920,7 +933,7 @@ class ZarrMultiFileLapseSource(LiveSource):
         if self._inner is None:
             return []
 
-        offset = self._position * self._frames_per_stack
+        offset = (self._position - self._scope_start) * self._frames_per_stack
         chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
 
         # Current timepoint fully read: advance to the next file once it is
@@ -932,7 +945,7 @@ class ZarrMultiFileLapseSource(LiveSource):
         # permanently — the HDF5 sibling can advance on existence because SWMR
         # flush ordering makes shape-visible imply data-visible, but Zarr
         # cannot.
-        if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
+        if self._inner.is_complete() and self._position + 1 < int(self._scope_stop):
             nxt = self._next_available_position()
             if nxt is not None:
                 if nxt != self._position + 1:
@@ -961,7 +974,7 @@ class ZarrMultiFileLapseSource(LiveSource):
         (mid-write without a commit barrier), wait for it rather than looking
         further ahead: it is the next real timepoint, just not ready.
         """
-        for position in range(self._position + 1, self._num_timepoints):
+        for position in range(self._position + 1, int(self._scope_stop)):
             path = self._build_path(position)
             if path is None or not os.path.exists(path):
                 continue
@@ -976,7 +989,7 @@ class ZarrMultiFileLapseSource(LiveSource):
         if not self._inner.is_complete():
             return False
         # On the last expected timepoint with its file fully read -> done.
-        if self._position + 1 >= self._num_timepoints:
+        if self._position + 1 >= int(self._scope_stop):
             return True
         # Otherwise wait for the next timepoint file (live). If it isn't going
         # to appear, the user stops live mode; we don't guess completion here.
@@ -1009,14 +1022,23 @@ class ZarrLapseSource(LiveSource):
 
     idles_between_stacks = True  # Single file with multiple scan{N} groups; worker idles while recorder prepares next timepoint.
 
-    def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
+    def __init__(
+        self, detector_name: str | None = None, chunk_size: int | None = None,
+        timepoint_start: int = 0, timepoint_stop: int | None = None,
+    ):
         """
         Args:
             detector_name: Detector name inside scan groups. If None, auto-detect.
             chunk_size: Override chunk size for polling. If None, use array.chunks[0].
+            timepoint_start: Zero-based first logical scan group to stream.
+            timepoint_stop: Exclusive logical scan-group bound.
         """
         self._detector_name = detector_name
         self._chunk_size_override = chunk_size
+        self._scope_start = max(0, int(timepoint_start or 0))
+        self._scope_stop = (
+            None if timepoint_stop is None else max(self._scope_start + 1, int(timepoint_stop))
+        )
         self._path: str | None = None
         self._root = None
         self._scan_groups: list[str] = []
@@ -1035,7 +1057,7 @@ class ZarrLapseSource(LiveSource):
         """Open the Zarr store and return stack metadata."""
         self._global_cursor = 0
         self._local_cursor = 0
-        self._current_group_index = 0
+        self._current_group_index = self._scope_start
         
         self._root = self._open_root(path_or_handle)
         
@@ -1051,13 +1073,21 @@ class ZarrLapseSource(LiveSource):
         if not self._scan_groups:
             raise ValueError("No scan{N} groups found in Zarr store")
         
-        # Open scan0 to detect detector and read metadata
-        scan0 = self._root[self._scan_groups[0]]
-        self._resolved_detector_name = self._detector_name or self._auto_detect_detector(scan0)
+        if self._scope_start >= len(self._scan_groups):
+            raise ValueError(
+                f"Timepoint {self._scope_start + 1} is not available yet"
+            )
+        selected_group_name = self._scan_groups[self._scope_start]
+        selected_group = self._root[selected_group_name]
+        self._resolved_detector_name = (
+            self._detector_name or self._auto_detect_detector(selected_group)
+        )
         
-        # Open the detector array in scan0
-        self._current_array, attrs = self._open_detector_array(scan0, self._resolved_detector_name)
-        self._current_array_path = (self._scan_groups[0], self._resolved_detector_name, 'data')
+        # Open the selected logical timepoint directly; earlier groups are never read.
+        self._current_array, attrs = self._open_detector_array(
+            selected_group, self._resolved_detector_name
+        )
+        self._current_array_path = (selected_group_name, self._resolved_detector_name, 'data')
         
         if self._current_array.ndim != 3:
             raise ValueError(f"Expected 3D array (T, Y, X), got shape {self._current_array.shape}")
@@ -1091,14 +1121,27 @@ class ZarrLapseSource(LiveSource):
         )
         declared_timepoints = _declared_timepoints(attrs, resolved)
         self._num_timepoints = declared_timepoints
-        planned_timepoints = _logical_timepoint_hint(
+        source_planned = _logical_timepoint_hint(
             attrs, resolved, observed=len(self._scan_groups)
         )
+        if self._scope_stop is not None:
+            requested_count = int(self._scope_stop) - self._scope_start
+            if source_planned is not None:
+                requested_count = min(requested_count, int(source_planned))
+                self._scope_stop = self._scope_start + requested_count
+            if requested_count <= 0:
+                raise IndexError("selected timepoint scope is empty")
+            planned_timepoints = requested_count
+        else:
+            planned_timepoints = source_planned
         self._refresh_state_from_attrs(attrs)
 
         expected_frames = None
-        if declared_timepoints is not None and self._frames_per_stack is not None:
-            expected_frames = declared_timepoints * self._frames_per_stack
+        if self._frames_per_stack is not None:
+            if self._scope_stop is not None:
+                expected_frames = planned_timepoints * self._frames_per_stack
+            elif declared_timepoints is not None:
+                expected_frames = declared_timepoints * self._frames_per_stack
 
         return StackInfo(
             frame_shape=frame_shape,
@@ -1136,7 +1179,10 @@ class ZarrLapseSource(LiveSource):
             
             if self._local_cursor >= readable_length:
                 # Current group is fully read, try to advance to next
-                if self._current_group_index + 1 < len(self._scan_groups):
+                if (
+                    self._current_group_index + 1 < len(self._scan_groups)
+                    and (self._scope_stop is None or self._current_group_index + 1 < self._scope_stop)
+                ):
                     # Check if next group exists
                     next_group_name = self._scan_groups[self._current_group_index + 1]
                     if next_group_name in self._root:
@@ -1162,8 +1208,9 @@ class ZarrLapseSource(LiveSource):
                 break
             
             # Calculate GLOBAL indices
-            start_global = self._current_group_index * (self._frames_per_stack or 0) + start_local
-            end_global = self._current_group_index * (self._frames_per_stack or 0) + end_local
+            scoped_index = self._current_group_index - self._scope_start
+            start_global = scoped_index * (self._frames_per_stack or 0) + start_local
+            end_global = scoped_index * (self._frames_per_stack or 0) + end_local
             
             data = self._current_array[start_local:end_local]
             chunks.append(Chunk(data=data, start=start_global, end=end_global))
@@ -1184,6 +1231,23 @@ class ZarrLapseSource(LiveSource):
         """Return whether all timepoints have been fully consumed."""
         if self._current_array is None:
             return True
+
+        if self._scope_stop is not None:
+            scoped_count = int(self._scope_stop) - self._scope_start
+            if self._frames_per_stack is not None:
+                expected_total = scoped_count * self._frames_per_stack
+                if self._global_cursor >= expected_total:
+                    return True
+            if self._current_group_index >= int(self._scope_stop) - 1:
+                self._refresh_current_array()
+                current_group = self._root[self._scan_groups[self._current_group_index]]
+                _, attrs = self._open_detector_array(current_group, self._resolved_detector_name)
+                self._refresh_state_from_attrs(attrs)
+                readable_length = min(
+                    self._current_array.shape[0],
+                    self._frames_per_stack or self._current_array.shape[0],
+                )
+                return bool(not self._writing and self._local_cursor >= readable_length)
         
         # If we know the total expected frames, check against global cursor
         if self._num_timepoints is not None and self._frames_per_stack is not None:
@@ -1664,16 +1728,27 @@ class Hdf5MultiFileLapseSource(LiveSource):
     # stall watchdog must not treat that gap as a crashed writer.
     idles_between_stacks = True
 
-    def __init__(self, first_path, detector_name=None, chunk_size=None,
-                 num_timepoints=None):
+    def __init__(
+        self,
+        first_path,
+        detector_name=None,
+        chunk_size=None,
+        num_timepoints=None,
+        timepoint_start=0,
+        timepoint_stop=None,
+    ):
         self._first_path = str(first_path)
         self._detector_name = detector_name
         self._chunk_size = chunk_size
         self._num_timepoints = num_timepoints
+        self._scope_start = max(0, int(timepoint_start or 0))
+        self._scope_stop = (
+            None if timepoint_stop is None else max(self._scope_start + 1, int(timepoint_stop))
+        )
         self._inner: Hdf5LiveSource | None = None
         self._template = None
         self._first_index = 0
-        self._position = 0  # 0-based TRUE timepoint index (gaps preserved)
+        self._position = self._scope_start  # TRUE logical position in the original lapse
         self._frames_per_stack = 1
         self._logger = initLogger(self, tryInheritParent=False)
 
@@ -1682,10 +1757,13 @@ class Hdf5MultiFileLapseSource(LiveSource):
         self._first_path = first
         self._template = _lapse_index_template(first)
         self._first_index = self._template[4] if self._template else 0
-        self._position = 0
+        self._position = self._scope_start
 
+        selected_path = self._build_path(self._scope_start) if self._scope_start else first
+        if not selected_path:
+            selected_path = first
         self._inner = Hdf5LiveSource(self._detector_name, self._chunk_size)
-        info = self._inner.open(first)
+        info = self._inner.open(selected_path)
         self._frames_per_stack = int(info.frames_per_stack or info.expected_frames or 1)
 
         num_tp = (
@@ -1696,7 +1774,11 @@ class Hdf5MultiFileLapseSource(LiveSource):
             or self._count_present_timepoints()
         )
         self._num_timepoints = max(1, int(num_tp or 1))
-        expected_total = self._frames_per_stack * self._num_timepoints
+        stop = self._scope_stop if self._scope_stop is not None else self._num_timepoints
+        stop = min(max(self._scope_start + 1, int(stop)), self._num_timepoints)
+        self._scope_stop = stop
+        scoped_count = max(1, stop - self._scope_start)
+        expected_total = self._frames_per_stack * scoped_count
 
         return StackInfo(
             frame_shape=info.frame_shape,
@@ -1704,7 +1786,7 @@ class Hdf5MultiFileLapseSource(LiveSource):
             attrs=dict(info.attrs),
             expected_frames=expected_total,
             frames_per_stack=self._frames_per_stack,
-            planned_timepoints=self._num_timepoints,
+            planned_timepoints=scoped_count,
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "HDF5",
@@ -1715,13 +1797,13 @@ class Hdf5MultiFileLapseSource(LiveSource):
         if self._inner is None:
             return []
 
-        offset = self._position * self._frames_per_stack
+        offset = (self._position - self._scope_start) * self._frames_per_stack
         chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
 
         # Current timepoint fully read: advance to the next file that exists.
         # A skipped timepoint is jumped over (see the Zarr sibling); its slot
         # stays blank because its true index is never streamed.
-        if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
+        if self._inner.is_complete() and self._position + 1 < int(self._scope_stop):
             nxt = self._next_available_position()
             if nxt is not None:
                 if nxt != self._position + 1:
@@ -1743,7 +1825,7 @@ class Hdf5MultiFileLapseSource(LiveSource):
         ordering makes a shape-visible HDF5 dataset data-visible too, so there
         is no separate streamability gate to clear.
         """
-        for position in range(self._position + 1, self._num_timepoints):
+        for position in range(self._position + 1, int(self._scope_stop)):
             path = self._build_path(position)
             if path is not None and os.path.exists(path):
                 return position
@@ -1755,7 +1837,7 @@ class Hdf5MultiFileLapseSource(LiveSource):
         if not self._inner.is_complete():
             return False
         # On the last expected timepoint with its file fully read -> done.
-        if self._position + 1 >= self._num_timepoints:
+        if self._position + 1 >= int(self._scope_stop):
             return True
         # Otherwise wait for the next timepoint file (live). If it isn't going
         # to appear, the user stops live mode; we don't guess completion here.
@@ -1786,14 +1868,23 @@ class Hdf5LapseSource(LiveSource):
 
     idles_between_stacks = True  # Single file with multiple scan{N} groups; worker idles while recorder prepares next timepoint.
 
-    def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
+    def __init__(
+        self, detector_name: str | None = None, chunk_size: int | None = None,
+        timepoint_start: int = 0, timepoint_stop: int | None = None,
+    ):
         """
         Args:
             detector_name: Detector name inside scan groups. If None, auto-detect.
             chunk_size: Override chunk size for polling. If None, use dataset.chunks[0].
+            timepoint_start: Zero-based first logical scan group to stream.
+            timepoint_stop: Exclusive logical scan-group bound.
         """
         self._detector_name = detector_name
         self._chunk_size_override = chunk_size
+        self._scope_start = max(0, int(timepoint_start or 0))
+        self._scope_stop = (
+            None if timepoint_stop is None else max(self._scope_start + 1, int(timepoint_stop))
+        )
         self._path: str | None = None
         self._file = None
         self._scan_groups: list[str] = []
@@ -1813,7 +1904,7 @@ class Hdf5LapseSource(LiveSource):
         """Open the HDF5 file in SWMR mode and return stack metadata."""
         self._global_cursor = 0
         self._local_cursor = 0
-        self._current_group_index = 0
+        self._current_group_index = self._scope_start
         
         if isinstance(path_or_handle, h5py.File):
             self._file = path_or_handle
@@ -1835,13 +1926,19 @@ class Hdf5LapseSource(LiveSource):
         if not self._scan_groups:
             raise ValueError("No scan{N} groups found in HDF5 file")
         
-        # Open scan0 to detect detector and read metadata
-        scan0 = self._file[self._scan_groups[0]]
-        self._resolved_detector_name = self._detector_name or self._auto_detect_detector(scan0)
+        if self._scope_start >= len(self._scan_groups):
+            raise ValueError(f"Timepoint {self._scope_start + 1} is not available yet")
+        selected_group_name = self._scan_groups[self._scope_start]
+        selected_group = self._file[selected_group_name]
+        self._resolved_detector_name = (
+            self._detector_name or self._auto_detect_detector(selected_group)
+        )
         
-        # Open the detector dataset in scan0
-        self._current_dataset, attrs = self._open_detector_dataset(scan0, self._resolved_detector_name)
-        self._current_dataset_path = f'/{self._scan_groups[0]}/{self._resolved_detector_name}/data'
+        # Open the selected logical timepoint directly; earlier groups are never read.
+        self._current_dataset, attrs = self._open_detector_dataset(
+            selected_group, self._resolved_detector_name
+        )
+        self._current_dataset_path = f'/{selected_group_name}/{self._resolved_detector_name}/data'
         
         if self._current_dataset.ndim != 3:
             raise ValueError(f"Expected 3D dataset (T, Y, X), got shape {self._current_dataset.shape}")
@@ -1875,14 +1972,27 @@ class Hdf5LapseSource(LiveSource):
         )
         declared_timepoints = _declared_timepoints(attrs, resolved)
         self._num_timepoints = declared_timepoints
-        planned_timepoints = _logical_timepoint_hint(
+        source_planned = _logical_timepoint_hint(
             attrs, resolved, observed=len(self._scan_groups)
         )
+        if self._scope_stop is not None:
+            requested_count = int(self._scope_stop) - self._scope_start
+            if source_planned is not None:
+                requested_count = min(requested_count, int(source_planned))
+                self._scope_stop = self._scope_start + requested_count
+            if requested_count <= 0:
+                raise IndexError("selected timepoint scope is empty")
+            planned_timepoints = requested_count
+        else:
+            planned_timepoints = source_planned
         self._refresh_state_from_attrs(attrs)
 
         expected_frames = None
-        if declared_timepoints is not None and self._frames_per_stack is not None:
-            expected_frames = declared_timepoints * self._frames_per_stack
+        if self._frames_per_stack is not None:
+            if self._scope_stop is not None:
+                expected_frames = planned_timepoints * self._frames_per_stack
+            elif declared_timepoints is not None:
+                expected_frames = declared_timepoints * self._frames_per_stack
 
         return StackInfo(
             frame_shape=frame_shape,
@@ -1920,7 +2030,10 @@ class Hdf5LapseSource(LiveSource):
             
             if self._local_cursor >= readable_length:
                 # Current group is fully read, try to advance to next
-                if self._current_group_index + 1 < len(self._scan_groups):
+                if (
+                    self._current_group_index + 1 < len(self._scan_groups)
+                    and (self._scope_stop is None or self._current_group_index + 1 < self._scope_stop)
+                ):
                     # Check if next group exists
                     next_group_name = self._scan_groups[self._current_group_index + 1]
                     if next_group_name in self._file:
@@ -1946,8 +2059,9 @@ class Hdf5LapseSource(LiveSource):
                 break
             
             # Calculate GLOBAL indices
-            start_global = self._current_group_index * (self._frames_per_stack or 0) + start_local
-            end_global = self._current_group_index * (self._frames_per_stack or 0) + end_local
+            scoped_index = self._current_group_index - self._scope_start
+            start_global = scoped_index * (self._frames_per_stack or 0) + start_local
+            end_global = scoped_index * (self._frames_per_stack or 0) + end_local
             
             data = self._current_dataset[start_local:end_local]
             chunks.append(Chunk(data=data, start=start_global, end=end_global))
@@ -1968,6 +2082,23 @@ class Hdf5LapseSource(LiveSource):
         """Return whether all timepoints have been fully consumed."""
         if self._current_dataset is None:
             return True
+
+        if self._scope_stop is not None:
+            scoped_count = int(self._scope_stop) - self._scope_start
+            if self._frames_per_stack is not None:
+                expected_total = scoped_count * self._frames_per_stack
+                if self._global_cursor >= expected_total:
+                    return True
+            if self._current_group_index >= int(self._scope_stop) - 1:
+                self._refresh_current_dataset()
+                current_group = self._file[self._scan_groups[self._current_group_index]]
+                _, attrs = self._open_detector_dataset(current_group, self._resolved_detector_name)
+                self._refresh_state_from_attrs(attrs)
+                readable_length = min(
+                    self._current_dataset.shape[0],
+                    self._frames_per_stack or self._current_dataset.shape[0],
+                )
+                return bool(not self._writing and self._local_cursor >= readable_length)
         
         # If we know the total expected frames, check against global cursor
         if self._num_timepoints is not None and self._frames_per_stack is not None:

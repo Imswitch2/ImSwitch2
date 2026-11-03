@@ -468,3 +468,34 @@ def test_loaded_running_job_does_not_block_session_close():
     ))
     queue.take_next()
     assert not ProcessingQueueController.canCloseSession(fake)
+
+
+def test_partial_timelapse_result_does_not_mark_session_dataset_fully_processed():
+    dataset = SimpleNamespace(
+        kind="time-lapse",
+        planned_timepoints=20,
+        saved_reconstructions=[
+            SimpleNamespace(timepoint_scope={"mode": "single", "first": 6, "last": 6})
+        ],
+    )
+    fake = SimpleNamespace(
+        _session=SimpleNamespace(dataset_by_id=lambda _dataset_id: dataset),
+        _loaded_reconstructions_for_dataset=lambda _dataset: [],
+    )
+    assert not ProcessingSessionController.isDatasetProcessed(fake, "lapse")
+
+    dataset.saved_reconstructions[0].timepoint_scope = {"mode": "all", "total": 20}
+    assert ProcessingSessionController.isDatasetProcessed(fake, "lapse")
+
+
+def test_legacy_timelapse_result_still_counts_as_fully_processed():
+    dataset = SimpleNamespace(
+        kind="time-lapse",
+        planned_timepoints=20,
+        saved_reconstructions=[SimpleNamespace(timepoint_scope=None)],
+    )
+    fake = SimpleNamespace(
+        _session=SimpleNamespace(dataset_by_id=lambda _dataset_id: dataset),
+        _loaded_reconstructions_for_dataset=lambda _dataset: [],
+    )
+    assert ProcessingSessionController.isDatasetProcessed(fake, "lapse")
