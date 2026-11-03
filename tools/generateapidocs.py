@@ -14,6 +14,11 @@ Run from the repository root::
 
     HOME=$(mktemp -d) python tools/generateapidocs.py
 
+after adding, removing or re-documenting an exported method, and commit the
+result. ``--check`` writes nothing and fails when a page is stale or when an
+exported method has no docstring; imscripting/_test/test_scripting_api_docs.py
+runs it.
+
 (Importing ImSwitch2 syncs the user folder in ``HOME``; a throwaway one keeps
 the run from touching your own ``ImSwitchConfig``.)
 """
@@ -21,6 +26,9 @@ the run from touching your own ``ImSwitchConfig``.)
 import importlib
 import inspect
 import os
+import sys
+import types
+import typing
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -54,7 +62,9 @@ def _rst(docstring):
         from sphinx.ext.napoleon import Config
         from sphinx.ext.napoleon.docstring import GoogleDocstring
     except ImportError:
-        return docstring
+        # Without the conversion the pages come out different, so a run
+        # without Sphinx would rewrite them, or fail --check, for nothing.
+        sys.exit('tools/generateapidocs.py needs Sphinx: pip install "sphinx>=7,<9"')
     return str(GoogleDocstring(docstring, Config(napoleon_use_param=True, napoleon_use_rtype=True)))
 
 
@@ -64,8 +74,56 @@ def _signature(func):
         signature = inspect.signature(func)
     except (TypeError, ValueError):
         return '(...)'
-    parameters = [p for name, p in signature.parameters.items() if name != 'self']
-    return str(signature.replace(parameters=parameters))
+    parameters = [p.replace(annotation=_Shown(p.annotation))
+                  for name, p in signature.parameters.items() if name != 'self']
+    return str(signature.replace(parameters=parameters,
+                                 return_annotation=_Shown(signature.return_annotation)))
+
+
+class _Shown:
+    """An annotation as the pages show it, the same on every Python.
+
+    ``inspect`` prints ``Optional[float]`` on 3.10 but ``float | None`` from
+    3.14 on, so pages generated on a newer Python would fail CI's --check.
+    Unions are spelled the 3.10 way here; everything else as ``inspect`` does.
+    """
+
+    def __new__(cls, annotation):
+        if annotation is inspect.Parameter.empty:
+            return annotation
+        shown = super().__new__(cls)
+        shown.text = _annotation(annotation)
+        return shown
+
+    def __repr__(self):
+        return self.text
+
+
+def _isUnion(annotation):
+    origin = typing.get_origin(annotation)
+    return origin is typing.Union or origin is getattr(types, 'UnionType', None)
+
+
+def _hasUnion(annotation):
+    return _isUnion(annotation) or any(
+        _hasUnion(arg) for arg in typing.get_args(annotation)
+        if not isinstance(arg, (list, str, int, bool)))
+
+
+def _annotation(annotation):
+    if isinstance(annotation, list):                  # Callable's parameters
+        return '[' + ', '.join(_annotation(a) for a in annotation) + ']'
+    if not _hasUnion(annotation):
+        return inspect.formatannotation(annotation)
+    args = typing.get_args(annotation)
+    if _isUnion(annotation):
+        others = [a for a in args if a is not type(None)]
+        if len(others) == 1 and len(args) == 2:
+            return f'Optional[{_annotation(others[0])}]'
+        return 'Union[' + ', '.join(
+            'NoneType' if a is type(None) else _annotation(a) for a in args) + ']'
+    name = getattr(annotation, '_name', None) or typing.get_origin(annotation).__name__
+    return f'{name}[' + ', '.join(_annotation(a) for a in args) + ']'
 
 
 def _exported(cls):
@@ -132,7 +190,8 @@ def _availability(providers):
     return 'Needs ' + ' or '.join(parts) + ' in ``availableWidgets``.'
 
 
-def writeImcontrol():
+def renderImcontrol():
+    """The text of api.imcontrol.rst, and the number of methods on it."""
     exports = _imcontrolExports()
     title = 'api.imcontrol'
     lines = ['*' * len(title), title, '*' * len(title), '',
@@ -153,17 +212,23 @@ def writeImcontrol():
             lines.append('')
         lines.append(_indent(_availability(providers), 6))
         lines.append('')
-    with open(os.path.join(apiDocsDir, f'{title}.rst'), 'w') as file:
-        file.write('\n'.join(lines).rstrip() + '\n')
-    return len(exports)
+    return '\n'.join(lines).rstrip() + '\n', len(exports)
 
 
-def writeDocs(cls, isClass=True, displayName=None):
+def undocumentedExports():
+    """The exported names a script can call that have no docstring."""
+    names = [name for name, (func, _p) in _imcontrolExports().items()
+             if not (inspect.getdoc(func) or '').strip()]
+    names += [f'{name} (helper)' for name, func in _exported(_Actions)
+              if not (inspect.getdoc(func) or '').strip()]
+    return sorted(names)
+
+
+def renderDocs(cls, isClass=True, displayName=None):
     def fixIndent(docstring, indent):
-        lines = docstring.splitlines()
-        for i in range(len(lines)):
-            lines[i] = f'{" " * indent}{lines[i].lstrip()}'
-        return '\n'.join(lines)
+        # inspect.cleandoc keeps the docstring's own relative indentation,
+        # which its literal blocks (``::``) need; napoleon renders Args:.
+        return _indent(_rst(inspect.cleandoc(docstring)).rstrip(), indent)
 
     rst = ''
     indent = 0
@@ -207,15 +272,13 @@ def writeDocs(cls, isClass=True, displayName=None):
     if isClass:
         indent -= 3
 
-    # Write rst file
-    with open(os.path.join(apiDocsDir, f'{cls.__name__}.rst'), 'w') as file:
-        file.write(rst)
+    return rst
 
 
-def main():
-    os.makedirs(apiDocsDir, exist_ok=True)
-    count = writeImcontrol()
-    print(f'api.imcontrol.rst: {count} methods')
+def renderPages():
+    """{file name in docs/api: its text}."""
+    pages = {}
+    pages['api.imcontrol.rst'], _count = renderImcontrol()
 
     # Global-level functions
     class _actions:
@@ -227,7 +290,8 @@ def main():
         if hasattr(subObj, '_APIExport') and subObj._APIExport:
             setattr(_actions, subObjName, subObj)
 
-    writeDocs(_actions, isClass=False, displayName='Global-level functions')
+    pages['_actions.rst'] = renderDocs(_actions, isClass=False,
+                                       displayName='Global-level functions')
 
     # mainWindow
     class mainWindow:
@@ -239,11 +303,39 @@ def main():
         if hasattr(subObj, '_APIExport') and subObj._APIExport:
             setattr(mainWindow, subObjName, subObj)
 
-    writeDocs(mainWindow)
+    pages['mainWindow.rst'] = renderDocs(mainWindow)
+    return pages
+
+
+def main(argv):
+    pages = renderPages()
+    if '--check' in argv:
+        problems = [f'docs/api/{name} is stale' for name, text in pages.items()
+                    if _read(os.path.join(apiDocsDir, name)) != text]
+        problems += [f'{name} is exported without a docstring'
+                     for name in undocumentedExports()]
+        if problems:
+            sys.exit('\n'.join(problems)
+                     + '\nWrite the docstrings, then run python tools/generateapidocs.py')
+        print('docs/api is current')
+        return
+    os.makedirs(apiDocsDir, exist_ok=True)
+    for name, text in pages.items():
+        with open(os.path.join(apiDocsDir, name), 'w', encoding='utf-8') as file:
+            file.write(text)
+    print(f'api.imcontrol.rst: {pages["api.imcontrol.rst"].count(".. method::")} methods')
+
+
+def _read(path):
+    try:
+        with open(path, encoding='utf-8') as file:
+            return file.read()
+    except FileNotFoundError:
+        return None
 
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -144,6 +144,7 @@
         "Recording",
         "Image",
         "Positioner",
+        "Rotator",
         "ViewerTools",
         "LineProfile"
     ],

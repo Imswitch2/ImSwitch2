@@ -5,7 +5,28 @@ Changelog
 Unreleased
 ==========
 
-**Fixes**
+**New Features**
+
+- **Scripting: structured results and settings for one block.** ``recordScanToMemory`` and ``recordFramesToMemory`` take ``structured=True`` and then return an ``AcquisitionResult``, read from the recording's file before it is dropped: per detector the data, axes, pixel size, completion (frames recorded and expected), the settings the recording wrote down, and which scan position each frame was taken at -- ``'recorded'`` when the scan records its acquisition layout, ``'plan'`` when it is reconstructed from the scan plan with ImProcess's resolver (the Base scan) -- with ``show()`` at the pixel size and ``save(folder)``, which writes the recording's own HDF5 files. The arrays stay the default. New script helpers ``temporaryDetectorSettings``, ``temporaryScanParameters`` and ``temporaryLaserSettings`` put back what they set when their ``with`` block ends, also on an error or Stop; ``returningToPositions`` is the separate one that moves stages and rotators back. Tutorial ``scanning/08_structured_results.py``.
+- **Scripting: File > New script from current settings** (Ctrl+Shift+N) opens a script that sets the detectors, lasers and scan as ImControl has them and acquires as the Recording widget is set (the scan once, or its number of frames, into memory), in cells. Stage and rotator positions are written down but moved to only when the script's ``MOVE_TO_POSITIONS`` is set; calibrations the setup file owns, such as the camera pixel size, are left to the setup. ``getDetectorParameters`` now flags those (``configOwned``), and ``getRecordingSettings()`` returns what the Recording widget is set to. Tested by running copied scripts inside the app on two mock setups after changing the settings they must restore.
+- **Scripting: work interactively.** *Run cell* (Ctrl+Enter, cells separated by ``# %%``; Shift+Enter moves on) and *Run selection* (F9; the current line when nothing is selected) now run in a session whose variables live on between runs, and the console works in that session: acquire once, analyse, change a number, analyse again. *Run all* still starts from a fresh namespace every time. The console is labelled for inspection and disabled while a script runs; a new **Variables** panel lists the session's data with shape, dtype and size; **Reset session** forgets it (not while a script runs). ``show(array, name)`` puts an array into ImControl's image view, replacing the layer of that name when it exists; double-clicking an array in the Variables panel does the same. Tracebacks of the editor's code name the editor's own line numbers and text. Tutorial ``basic/11_work_interactively.py``.
+- **Scripting: frames as arrays, the microscope readable.** ``api.imcontrol.recordScanToMemory(detector)`` runs the scan the Scan widget holds and returns its frames as a NumPy array without writing a file; ``recordFramesToMemory(detector, numFrames)`` does the same for a camera without a scan, and ``getLiveFrame(detector)`` returns the newest live-view frame. Scripts can now read what they could only set: ``getLaserValue`` / ``isLaserActive`` / ``getLaserInfo``, ``getPositionerPosition`` / ``getPositionerAxes``, ``getDetectorPixelSize``, and the rotators get ``getRotatorNames`` / ``getRotatorPosition`` / ``setRotatorPosition`` / ``moveRotator`` (``moveAbs`` stays). ``getScanParameters()`` / ``setScanParameters()`` are the scan's settings as a dict, and the focus lock is scriptable: ``getFocusLockState``, ``isFocusLocked``, ``setFocusLocked``, ``setFocusCameraActive``, ``waitForFocusLock``. Four new tutorials (basic 09 rotators, basic 10 frames into memory, scanning 06 a scan into memory, scanning 07 scan settings as a dict; ``example_no_hardware.json`` now loads the Rotator widget for its three mock mounts). The scripting API reference (:doc:`api/api.imcontrol`) is regenerated with all of these; every exported function now carries a docstring, and ``tools/generateapidocs.py --check``, run by a test, fails when the reference is older than the code or an export has no docstring.
+
+**Behaviour Changes**
+
+- **FRC reports its resolution in the image's own unit.** The ``frc``
+  processor's *Pixel size* now defaults to 0 (*From image*) and *Resolution
+  unit* to ``auto``: a calibrated image (a 65 nm Y/X pixel, say) gives its
+  resolution in nm or µm without any setting, and an uncalibrated one stays in
+  px as before. A unit chosen by hand converts the calibration to it (µm to
+  nm); an explicit pixel size wins over the calibration. Inputs that are not
+  square-pixelled, or two inputs calibrated differently, are refused with the
+  way out (set *Pixel size*); a physical unit for an uncalibrated image needs a
+  pixel size. The parameters are ``params_version`` 2: a recorded run of the
+  old form replays with the 1 px it meant, but a workflow file that left both
+  keys out now measures a calibrated image in its own unit.
+
+**Bug Fixes**
 
 - The Beta stage designer drives rigs with one or two scanning stages. It
   refused anything but three ``forScanning`` positioners, although the 1D and
