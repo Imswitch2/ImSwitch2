@@ -260,6 +260,51 @@ def test_the_adapter_waits_for_the_panel_to_be_idle_before_setting_a_plan():
     assert completion.wait(8) and completion.outcome == "failed" and "stayed busy" in completion.error
 
 
+def test_the_advanced_scan_panel_is_driven_through_its_fields():
+    class _Widget:
+        def __init__(self):
+            self.steps, self.dwell, self.lines = {}, None, {}
+
+        def setScanStepSize(self, name, step):
+            self.steps[name] = step
+
+        def setSeqTimePar(self, seconds):
+            self.dwell = seconds
+
+        def setLineStepEnabled(self, device, index, enabled):
+            self.lines[device] = enabled
+
+    class _Advanced:
+        """No applyAcquisitionPlan: the Advanced panel's controller."""
+
+        def __init__(self):
+            self._widget, self.centres, self.sizes = _Widget(), {}, {}
+            self._setupInfo = SimpleNamespace(lasers={"488 (EXC)": None, "561 (EXC)": None})
+
+        def changeScanCenterPos(self, name, value):
+            self.centres[name] = value
+
+        def changeScanSize(self, name, size):
+            self.sizes[name] = size
+
+    panel, workflow = _Advanced(), _Workflow()
+    adapter = RunScanAdapter(lambda: {"Scan": panel}, workflow)
+    completion = adapter.start(_request({"mode": "overview", "field_um": 60.0, "lasers": ["488 (EXC)"]}), None)
+    workflow.next_scan().finish()
+    assert completion.wait(2) and completion.result["panel"] == "advanced"
+    assert panel.centres == {"Y": 0.0, "X": 0.0} and panel.sizes == {"Y": 60.0, "X": 60.0}
+    assert panel._widget.lines == {"488 (EXC)": True, "561 (EXC)": False}
+
+    cell = Points([[2.5, -4.0]], frame=GALVO)
+    completion = adapter.start(_request({"mode": "acquisition", "length_um": 12.0, "pixel_um": 0.05,
+                                         "dwell_s": 0.0001, "lasers": ["561 (EXC)"]}, [cell]), None)
+    workflow.next_scan().finish()
+    assert completion.wait(2) and completion.outcome == "ok"
+    assert panel.centres == {"Y": 2.5, "X": -4.0} and panel.sizes == {"Y": 12.0, "X": 12.0}
+    assert panel._widget.steps == {"Y": 0.05, "X": 0.05} and panel._widget.dwell == 0.0001
+    assert panel._widget.lines == {"488 (EXC)": False, "561 (EXC)": True}
+
+
 def test_aborting_a_running_scan_asks_the_workflow_to_abort_it():
     panel, workflow = _ScanPanel(), _Workflow()
     adapter = RunScanAdapter(lambda: {"Scan": panel}, workflow)

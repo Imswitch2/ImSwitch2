@@ -225,6 +225,43 @@ class RunScanAdapter:
             rows = rows[:limit]
         return [{axis: float(value) for axis, value in zip(axes, row)} for row in rows]
 
+    def _prepare_advanced(self, controller, request: ActionRequest, centre: dict | None, mode: str,
+                          lasers: list, dwell) -> dict:
+        """The Advanced scan panel: its fields, through the controller's
+        setters and its widget's. The scanned axes are the step's ``axes``
+        (the positioners' names); an overview is ``field_um`` around 0, an
+        acquisition ``length_um`` at ``pixel_um`` around the centre given."""
+        params = request.params
+        axes = [str(a) for a in (params.get("axes") or RUN_SCAN.params["axes"])]
+        widget = getattr(controller, "_widget", None)
+        if mode == "overview":
+            size, step = float(params.get("field_um") or 0.0) or None, None
+            centre = {axis: 0.0 for axis in axes}
+        else:
+            size = float(params.get("length_um") or 0.0) or None
+            step = float(params.get("pixel_um") or 0.0) or None
+        for axis in axes:
+            if centre and axis in centre:
+                controller.changeScanCenterPos(axis, float(centre[axis]))
+            if size:
+                controller.changeScanSize(axis, size)
+            if step and widget is not None and hasattr(widget, "setScanStepSize"):
+                widget.setScanStepSize(axis, step)
+        if dwell and widget is not None and hasattr(widget, "setSeqTimePar"):
+            widget.setSeqTimePar(dwell)
+        applied_lasers = []
+        if lasers and widget is not None and hasattr(widget, "setLineStepEnabled"):
+            known = list(getattr(getattr(controller, "_setupInfo", None), "lasers", {}) or {})
+            for name in known:
+                try:
+                    widget.setLineStepEnabled(name, 0, name in lasers)
+                    if name in lasers:
+                        applied_lasers.append(name)
+                except Exception:  # noqa: BLE001 - a laser the panel does not list
+                    pass
+        return {"mode": mode, "centre_um": dict(centre or {}), "size_um": size, "pixel_um": step,
+                "lasers": applied_lasers or lasers, "panel": "advanced"}
+
     def _prepare(self, request: ActionRequest, centre: dict | None = None) -> dict:
         """On the GUI thread: put the Scan panel's plan as the step says."""
         params = request.params
@@ -233,6 +270,8 @@ class RunScanAdapter:
         mode = str(params.get("mode") or "acquisition").lower()
         lasers = [str(name) for name in (params.get("lasers") or [])]
         dwell = float(params.get("dwell_s") or 0.0) or None
+        if not hasattr(controller, "applyAcquisitionPlan"):
+            return self._prepare_advanced(controller, request, centre, mode, lasers, dwell)
         if mode == "overview":
             field = float(params.get("field_um") or 0.0)
             controller.applyOverviewPlan(field_um=field or None, lasers=lasers or None)

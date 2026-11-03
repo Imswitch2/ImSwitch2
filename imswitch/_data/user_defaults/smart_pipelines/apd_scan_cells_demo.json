@@ -1,7 +1,7 @@
 {
   "name": "scan the cells (mock APD demo)",
   "schema": 1,
-  "description": "The shipped demo for galvo_apd_simple_mock_scan_setup.json: an overview scan of the synthetic sample (60 um, the 488 laser) on arm; the frame is smoothed (Gaussian, 3 px) and thresholded (Otsu), and every cell found is scanned finely, one after the other (12 um at 50 nm, the 561 laser), centred on its centroid; then an overview again, and so on. With no cell found, the overview repeats. Run it in Experiment after creating the two setup modes the roles name (Validate only logs the first overview).",
+  "description": "The shipped demo for galvo_apd_simple_mock_scan_setup.json: an overview scan of the synthetic sample (60 um, the 488 laser) on arm; the frame is smoothed (Gaussian, 3 px) and thresholded (Otsu), the overview is shown for three seconds (a wait action), and every cell found is scanned finely, one after the other (12 um at 50 nm, the 561 laser), centred on its centroid; then an overview again, and so on. With no cell found, the overview repeats. Run it in Experiment after creating the two setup modes the roles name (Validate only logs the first overview).",
   "metadata": {
     "smart_pipeline": {
       "roles": {
@@ -81,6 +81,17 @@
     },
     {
       "step": "action",
+      "id": "look",
+      "action": "wait",
+      "params": {
+        "seconds": 3.0
+      },
+      "inputs": [
+        "found"
+      ]
+    },
+    {
+      "step": "action",
       "id": "fine",
       "action": "run-scan",
       "params": {
@@ -94,7 +105,8 @@
         "points": "all"
       },
       "inputs": [
-        "tf"
+        "tf",
+        "look.done"
       ]
     },
     {
