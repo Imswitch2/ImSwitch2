@@ -94,6 +94,12 @@ class ImProcessMainViewController(ImProcessWidgetController):
             queue_frame.sigPauseRequested.connect(self.processingQueueController.pause)
             queue_frame.sigResumeRequested.connect(self.processingQueueController.resume)
             queue_frame.sigSkipCurrentRequested.connect(self.processingQueueController.skipCurrent)
+            queue_frame.sigRemoveWaitingRequested.connect(
+                self.processingQueueController.removeWaiting
+            )
+            queue_frame.sigMoveWaitingRequested.connect(
+                self.processingQueueController.moveWaiting
+            )
             self.processingQueueController.sigQueueChanged.connect(
                 queue_frame.setProcessingQueue
             )

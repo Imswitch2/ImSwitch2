@@ -209,6 +209,38 @@ class ProcessingQueueController(ImProcessWidgetController):
             return
         self._finish_current(skipped=True)
 
+    def removeWaiting(self, job_ids) -> int:
+        """Remove selected waiting jobs; the running job is never affected."""
+        removed = self.queue.remove_waiting(job_ids or ())
+        if not removed:
+            return 0
+        self._emit_changed()
+        if not self.queue.paused:
+            QtCore.QTimer.singleShot(0, self._process_next)
+        return len(removed)
+
+    def moveWaiting(self, job_ids, direction: int) -> bool:
+        """Move selected waiting jobs one position earlier/later."""
+        changed = self.queue.move_waiting(job_ids or (), direction=int(direction))
+        if changed:
+            self._emit_changed()
+        return bool(changed)
+
+    def removeAutoWaitingDatasets(self, dataset_ids) -> int:
+        """Drop queued AUTO jobs for explicitly auto-excluded Session datasets.
+
+        Manual jobs remain intentional requests and are deliberately untouched.
+        A running AUTO job is also left alone; the user may use ``Skip current``
+        if they want to stop that already-started work.
+        """
+        wanted = {str(dataset_id) for dataset_id in (dataset_ids or ())}
+        job_ids = [
+            job.id
+            for job in self.queue.waiting
+            if str(job.dataset_id) in wanted and job.origin == ProcessingOrigin.AUTO
+        ]
+        return self.removeWaiting(job_ids)
+
     # ------------------------------------------------------------------ queue feed
 
     @QtCore.Slot(object)

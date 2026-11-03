@@ -213,6 +213,63 @@ class ProcessingQueue:
         self._waiting.clear()
         return removed
 
+    def remove_waiting(self, job_ids: Iterable[str]) -> tuple[ProcessingJob, ...]:
+        """Remove selected *waiting* jobs without touching the running job.
+
+        Jobs are addressed by stable queue IDs rather than UI row positions.
+        Removed jobs are recorded as skipped so queue history remains truthful,
+        and their logical datasets immediately become eligible for a later
+        explicit/manual submission.
+        """
+        wanted = {str(job_id) for job_id in job_ids}
+        if not wanted:
+            return ()
+
+        kept: list[ProcessingJob] = []
+        removed: list[ProcessingJob] = []
+        for job in self._waiting:
+            if str(job.id) not in wanted:
+                kept.append(job)
+                continue
+            job.state = ProcessingJobState.SKIPPED
+            self._history.append(job)
+            self._active_dataset_ids.discard(str(job.dataset_id))
+            self._changed_dataset_ids.add(str(job.dataset_id))
+            removed.append(job)
+        self._waiting = kept
+        return tuple(removed)
+
+    def move_waiting(self, job_ids: Iterable[str], *, direction: int) -> bool:
+        """Move selected waiting jobs by one slot while preserving their order.
+
+        ``direction`` must be ``-1`` (up / earlier) or ``+1`` (down / later).
+        The running job is stored separately and can therefore never be moved.
+        """
+        if direction not in {-1, 1}:
+            raise ValueError("direction must be -1 or +1")
+        wanted = {str(job_id) for job_id in job_ids}
+        if not wanted or len(self._waiting) < 2:
+            return False
+
+        changed = False
+        if direction < 0:
+            indices = range(1, len(self._waiting))
+            for index in indices:
+                current = self._waiting[index]
+                previous = self._waiting[index - 1]
+                if str(current.id) in wanted and str(previous.id) not in wanted:
+                    self._waiting[index - 1], self._waiting[index] = current, previous
+                    changed = True
+        else:
+            indices = range(len(self._waiting) - 2, -1, -1)
+            for index in indices:
+                current = self._waiting[index]
+                following = self._waiting[index + 1]
+                if str(current.id) in wanted and str(following.id) not in wanted:
+                    self._waiting[index], self._waiting[index + 1] = following, current
+                    changed = True
+        return changed
+
     def dataset_states(self) -> dict[str, str]:
         states = {str(job.dataset_id): "waiting" for job in self._waiting}
         if self._current is not None:
@@ -255,6 +312,8 @@ class AutoProcessPolicy:
         if not self.enabled or dataset is None or reconstructor is None:
             return False
         if getattr(dataset, "raw_deleted", False):
+            return False
+        if getattr(dataset, "auto_process_ignored", False):
             return False
         if processed is None:
             processed = bool(getattr(dataset, "saved_reconstructions", None))

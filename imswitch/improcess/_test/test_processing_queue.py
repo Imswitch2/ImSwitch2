@@ -95,6 +95,21 @@ def test_auto_policy_uses_shared_processed_state_and_queue_state():
     assert not policy.eligible(dataset, queue=queue, reconstructor=reconstructor, processed=False)
 
 
+def test_auto_policy_respects_explicit_session_exclusion():
+    queue = ProcessingQueue()
+    policy = AutoProcessPolicy()
+    policy.enabled = True
+    dataset = SimpleNamespace(
+        id="scan",
+        raw_deleted=False,
+        auto_process_ignored=True,
+        saved_reconstructions=[],
+    )
+    reconstructor = SimpleNamespace(result_role="derived", supports_streaming=True)
+
+    assert not policy.eligible(dataset, queue=queue, reconstructor=reconstructor, processed=False)
+
+
 def test_auto_policy_rejects_inspection_and_non_streaming_v1_plugins():
     queue = ProcessingQueue()
     policy = AutoProcessPolicy()
@@ -139,6 +154,36 @@ def test_active_dataset_index_tracks_finish_and_clear():
 
     queue.clear_waiting()
     assert not queue.contains_dataset("b")
+
+
+def test_remove_waiting_uses_job_ids_and_never_touches_running_job():
+    queue = ProcessingQueue()
+    jobs = [_job("a"), _job("b"), _job("c")]
+    queue.enqueue_many(jobs)
+    running = queue.take_next()
+
+    removed = queue.remove_waiting([running.id, jobs[1].id])
+
+    assert [job.dataset_id for job in removed] == ["b"]
+    assert queue.current is running
+    assert [job.dataset_id for job in queue.waiting] == ["c"]
+    assert not queue.contains_dataset("b")
+    assert queue.contains_dataset("a")
+    assert queue.contains_dataset("c")
+
+
+def test_move_waiting_moves_selected_block_one_slot_preserving_relative_order():
+    queue = ProcessingQueue()
+    jobs = [_job("a"), _job("b"), _job("c"), _job("d")]
+    queue.enqueue_many(jobs)
+
+    assert queue.move_waiting([jobs[1].id, jobs[2].id], direction=1)
+    assert [job.dataset_id for job in queue.waiting] == ["a", "d", "b", "c"]
+
+    assert queue.move_waiting([jobs[1].id, jobs[2].id], direction=-1)
+    assert [job.dataset_id for job in queue.waiting] == ["a", "b", "c", "d"]
+
+    assert not queue.move_waiting([jobs[0].id], direction=-1)
 
 
 def test_changed_dataset_ids_are_incremental_not_full_queue_snapshots():

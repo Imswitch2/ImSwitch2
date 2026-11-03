@@ -9,6 +9,8 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
     sigPauseRequested = QtCore.Signal()
     sigResumeRequested = QtCore.Signal()
     sigSkipCurrentRequested = QtCore.Signal()
+    sigRemoveWaitingRequested = QtCore.Signal(object)
+    sigMoveWaitingRequested = QtCore.Signal(object, int)
     sigQueueCountChanged = QtCore.Signal(int)
 
     def __init__(self, *args, **kwargs):
@@ -31,7 +33,7 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         self.queueList.setHeaderLabels(["Dataset", "State", "Origin"])
         self.queueList.setRootIsDecorated(False)
         self.queueList.setUniformRowHeights(True)
-        self.queueList.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.queueList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.queueList.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.queueList.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         self.queueList.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
@@ -42,13 +44,32 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         actions.setSpacing(4)
         self.pauseResumeBtn = QtWidgets.QPushButton("Pause")
         self.skipCurrentBtn = QtWidgets.QPushButton("Skip current")
+        self.removeWaitingBtn = QtWidgets.QPushButton("Remove")
+        self.removeWaitingBtn.setToolTip("Remove selected waiting job(s) from the queue")
+        self.moveUpBtn = QtWidgets.QToolButton()
+        self.moveUpBtn.setText("↑")
+        self.moveUpBtn.setToolTip("Move selected waiting job(s) earlier")
+        self.moveDownBtn = QtWidgets.QToolButton()
+        self.moveDownBtn.setText("↓")
+        self.moveDownBtn.setToolTip("Move selected waiting job(s) later")
         actions.addWidget(self.pauseResumeBtn)
         actions.addWidget(self.skipCurrentBtn)
+        actions.addWidget(self.removeWaitingBtn)
+        actions.addWidget(self.moveUpBtn)
+        actions.addWidget(self.moveDownBtn)
         actions.addStretch(1)
         root.addLayout(actions)
 
         self.pauseResumeBtn.clicked.connect(self._pause_resume_clicked)
         self.skipCurrentBtn.clicked.connect(self.sigSkipCurrentRequested)
+        self.removeWaitingBtn.clicked.connect(self._remove_selected_waiting)
+        self.moveUpBtn.clicked.connect(
+            lambda: self.sigMoveWaitingRequested.emit(self._selected_waiting_ids(), -1)
+        )
+        self.moveDownBtn.clicked.connect(
+            lambda: self.sigMoveWaitingRequested.emit(self._selected_waiting_ids(), 1)
+        )
+        self.queueList.itemSelectionChanged.connect(self._update_waiting_actions)
         self.setProcessingQueue({})
 
     def _pause_resume_clicked(self) -> None:
@@ -61,7 +82,35 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
     def _value(value) -> str:
         return str(getattr(value, "value", value) or "")
 
+    def _selected_waiting_ids(self) -> tuple[str, ...]:
+        out = []
+        for item in self.queueList.selectedItems():
+            if item.data(0, QtCore.Qt.UserRole + 1) != "waiting":
+                continue
+            job_id = item.data(0, QtCore.Qt.UserRole)
+            if job_id:
+                out.append(str(job_id))
+        return tuple(out)
+
+    def _remove_selected_waiting(self) -> None:
+        ids = self._selected_waiting_ids()
+        if ids:
+            self.sigRemoveWaitingRequested.emit(ids)
+
+    def _update_waiting_actions(self) -> None:
+        selected = set(self._selected_waiting_ids())
+        waiting = list((self._lastSnapshot or {}).get("waiting", ()) or ())
+        waiting_ids = [str(getattr(job, "id", "")) for job in waiting]
+        indices = [index for index, job_id in enumerate(waiting_ids) if job_id in selected]
+        has_selection = bool(indices)
+        self.removeWaitingBtn.setEnabled(has_selection)
+        self.moveUpBtn.setEnabled(bool(indices) and min(indices) > 0)
+        self.moveDownBtn.setEnabled(
+            bool(indices) and max(indices) < len(waiting_ids) - 1
+        )
+
     def setProcessingQueue(self, snapshot: dict | None) -> None:
+        selected_ids = set(self._selected_waiting_ids())
         snapshot = dict(snapshot or {})
         self._lastSnapshot = snapshot
         self._paused = bool(snapshot.get("paused", False))
@@ -72,15 +121,25 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         self.queueList.clear()
         jobs = ([current] if current is not None else []) + waiting
         for job in jobs:
+            state = self._value(getattr(job, "state", ""))
             item = QtWidgets.QTreeWidgetItem([
                 str(getattr(job, "label", "")),
-                self._value(getattr(job, "state", "")).upper(),
+                state.upper(),
                 self._value(getattr(job, "origin", "")).replace("_", " ").title(),
             ])
+            job_id = str(getattr(job, "id", ""))
+            item.setData(0, QtCore.Qt.UserRole, job_id)
+            item.setData(0, QtCore.Qt.UserRole + 1, state)
+            if state != "waiting":
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsSelectable)
             self.queueList.addTopLevelItem(item)
+            if state == "waiting" and job_id in selected_ids:
+                item.setSelected(True)
         hidden = max(0, waiting_count - len(waiting))
         if hidden:
-            self.queueList.addTopLevelItem(QtWidgets.QTreeWidgetItem([f"… {hidden} more", "", ""]))
+            item = QtWidgets.QTreeWidgetItem([f"… {hidden} more", "", ""])
+            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsSelectable)
+            self.queueList.addTopLevelItem(item)
 
         if current is not None:
             label = str(getattr(current, "label", "processing"))
@@ -98,4 +157,5 @@ class ProcessingQueueFrame(QtWidgets.QFrame):
         self.pauseResumeBtn.setText("Resume" if self._paused else "Pause")
         self.pauseResumeBtn.setEnabled(bool(current or waiting_count or self._paused))
         self.skipCurrentBtn.setEnabled(bool(current))
+        self._update_waiting_actions()
         self.sigQueueCountChanged.emit(waiting_count + (1 if current is not None else 0))

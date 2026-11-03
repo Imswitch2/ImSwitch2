@@ -160,6 +160,9 @@ class SessionDataset:
     raw_deleted: bool = False
     # User curation state: this acquisition is worth keeping/revisiting.
     favorite: bool = False
+    # Explicit Session policy override. Manual processing remains available;
+    # only automatic submission skips this logical dataset.
+    auto_process_ignored: bool = False
     saved_reconstructions: list[SavedReconstruction] = field(default_factory=list)
 
     @property
@@ -219,7 +222,7 @@ class SessionDataset:
 class ProcessingSession:
     """Persistent catalog of raw acquisitions and saved reconstructions."""
 
-    schema = 5
+    schema = 6
 
     def __init__(self, raw_root: str | Path, results_root: str | Path):
         self.raw_root = Path(raw_root).expanduser().resolve()
@@ -248,12 +251,21 @@ class ProcessingSession:
         payload = self._read_manifest_payload()
         remembered_favorites = self._favorite_ids_from_payload(payload)
         remembered_favorite_keys = self._favorite_source_keys_from_payload(payload)
+        remembered_auto_ignored = self._auto_ignored_ids_from_payload(payload)
+        remembered_auto_ignored_keys = self._auto_ignored_source_keys_from_payload(payload)
         remembered_deleted = self._deleted_datasets_from_payload(payload)
         self.datasets = self._discover_raw_datasets()
         for dataset in self.datasets:
             dataset.favorite = (
                 dataset.id in remembered_favorites
                 or bool(dataset.source_key and dataset.source_key in remembered_favorite_keys)
+            )
+            dataset.auto_process_ignored = (
+                dataset.id in remembered_auto_ignored
+                or bool(
+                    dataset.source_key
+                    and dataset.source_key in remembered_auto_ignored_keys
+                )
             )
         discovered_ids = {dataset.id for dataset in self.datasets}
         self.datasets.extend(
@@ -508,6 +520,7 @@ class ProcessingSession:
             previous = existing_by_key.get(dataset.source_key)
             if previous is not None:
                 dataset.favorite = previous.favorite
+                dataset.auto_process_ignored = previous.auto_process_ignored
 
         retained = [
             dataset
@@ -825,6 +838,30 @@ class ProcessingSession:
             and bool(entry.get("favorite", False))
         }
 
+    @staticmethod
+    def _auto_ignored_ids_from_payload(payload: dict) -> set[str]:
+        if not isinstance(payload, dict):
+            return set()
+        return {
+            str(entry.get("id"))
+            for entry in payload.get("datasets", [])
+            if isinstance(entry, dict)
+            and entry.get("id")
+            and bool(entry.get("auto_process_ignored", False))
+        }
+
+    @staticmethod
+    def _auto_ignored_source_keys_from_payload(payload: dict) -> set[str]:
+        if not isinstance(payload, dict):
+            return set()
+        return {
+            str(entry.get("source_key"))
+            for entry in payload.get("datasets", [])
+            if isinstance(entry, dict)
+            and entry.get("source_key")
+            and bool(entry.get("auto_process_ignored", False))
+        }
+
     def _deleted_datasets_from_payload(self, payload: dict) -> list[SessionDataset]:
         out: list[SessionDataset] = []
         for entry in payload.get("datasets", []) if isinstance(payload, dict) else []:
@@ -864,6 +901,7 @@ class ProcessingSession:
                     decoded_bytes=entry.get("decoded_bytes"),
                     raw_deleted=True,
                     favorite=bool(entry.get("favorite", False)),
+                    auto_process_ignored=bool(entry.get("auto_process_ignored", False)),
                 ))
             except (KeyError, TypeError, ValueError):
                 continue
@@ -918,6 +956,21 @@ class ProcessingSession:
         for dataset in self.datasets:
             if dataset.id in wanted and dataset.favorite != bool(favorite):
                 dataset.favorite = bool(favorite)
+                changed = True
+        if changed:
+            self.save_manifest()
+
+    def set_auto_process_ignored(
+        self, dataset_ids: Iterable[str], ignored: bool
+    ) -> None:
+        wanted = {str(item) for item in dataset_ids}
+        changed = False
+        for dataset in self.datasets:
+            if (
+                dataset.id in wanted
+                and dataset.auto_process_ignored != bool(ignored)
+            ):
+                dataset.auto_process_ignored = bool(ignored)
                 changed = True
         if changed:
             self.save_manifest()

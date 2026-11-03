@@ -117,6 +117,9 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.sigDeleteRawRequested.connect(self.deleteSelectedRaw)
         self._widget.sigFavoriteDatasetRequested.connect(self.setDatasetFavorite)
         self._widget.sigSetSelectedFavoriteRequested.connect(self.setSelectedDatasetsFavorite)
+        self._widget.sigSetSelectedAutoIgnoredRequested.connect(
+            self.setSelectedDatasetsAutoIgnored
+        )
         self._widget.sigReconstructionWorkspaceToggleRequested.connect(
             self.toggleReconstructionWorkspace
         )
@@ -927,6 +930,9 @@ class ProcessingSessionController(ImProcessWidgetController):
             "current": dataset.id == self._currentDatasetId,
             "raw_deleted": bool(getattr(dataset, "raw_deleted", False)),
             "favorite": bool(getattr(dataset, "favorite", False)),
+            "auto_process_ignored": bool(
+                getattr(dataset, "auto_process_ignored", False)
+            ),
             "saved_count": len(dataset.saved_reconstructions),
             "panel_count": loaded_count,
             "panel_link": bool(loaded_count),
@@ -1337,6 +1343,33 @@ class ProcessingSessionController(ImProcessWidgetController):
         self._widget.setStatus(
             f"{'Favorited' if favorite else 'Removed favorite from'} "
             f"{len(dataset_ids)} dataset{'s' if len(dataset_ids) != 1 else ''}"
+        )
+        self._render()
+
+    def setSelectedDatasetsAutoIgnored(self, ignored: bool) -> None:
+        if self._session is None:
+            return
+        dataset_ids = self._selected_dataset_ids()
+        if not dataset_ids:
+            return
+        self._session.set_auto_process_ignored(dataset_ids, bool(ignored))
+
+        controller = self._processingQueueController or getattr(
+            self._main, "processingQueueController", None
+        )
+        if controller is not None:
+            if ignored:
+                controller.removeAutoWaitingDatasets(dataset_ids)
+            elif bool(getattr(controller.autoPolicy, "enabled", False)):
+                controller.enqueueAutoEligible(dataset_ids)
+
+        self._widget.setStatus(
+            (
+                "Excluded " if ignored else "Included "
+            )
+            + f"{len(dataset_ids)} dataset{'s' if len(dataset_ids) != 1 else ''} "
+            + ("from" if ignored else "in")
+            + " auto-processing"
         )
         self._render()
 

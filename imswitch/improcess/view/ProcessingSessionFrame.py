@@ -114,7 +114,7 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(5)
+        self.setColumnCount(6)
         self.setHeaderHidden(True)
         self.setRootIsDecorated(False)
         self.setItemsExpandable(False)
@@ -136,10 +136,12 @@ class _CompactDatasetTree(QtWidgets.QTreeWidget):
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
         header.setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
+        header.setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)
         header.resizeSection(0, 24)
         header.resizeSection(2, 118)
         header.resizeSection(3, 92)
         header.resizeSection(4, 24)
+        header.resizeSection(5, 22)
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
     def minimumSizeHint(self):
@@ -609,6 +611,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
     sigDeleteRawRequested = QtCore.Signal()
     sigFavoriteDatasetRequested = QtCore.Signal(object, bool)
     sigSetSelectedFavoriteRequested = QtCore.Signal(bool)
+    sigSetSelectedAutoIgnoredRequested = QtCore.Signal(bool)
     sigReconstructionWorkspaceToggleRequested = QtCore.Signal(object)
     sigDiscardReconstructionRequested = QtCore.Signal(object)
     sigDiscardSelectedRequested = QtCore.Signal()
@@ -1228,7 +1231,11 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             )
 
     def _dataset_double_clicked(self, item, column):
-        if item is None or int(column) == 0 or bool(item.data(0, QtCore.Qt.UserRole + 2)):
+        if (
+            item is None
+            or int(column) in {0, 5}
+            or bool(item.data(0, QtCore.Qt.UserRole + 2))
+        ):
             return
         if self.datasetList.currentItem() is not item:
             self.datasetList.setCurrentItem(item)
@@ -1267,6 +1274,22 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             )
             unfavorite.triggered.connect(
                 lambda _checked=False: self.sigSetSelectedFavoriteRequested.emit(False)
+            )
+        if any(not bool(entry.get("auto_process_ignored", False)) for entry in selected_entries):
+            ignore_auto = menu.addAction(
+                "Ignore selected in auto-processing"
+                if len(selected_items) > 1 else "Ignore in auto-processing"
+            )
+            ignore_auto.triggered.connect(
+                lambda _checked=False: self.sigSetSelectedAutoIgnoredRequested.emit(True)
+            )
+        if any(bool(entry.get("auto_process_ignored", False)) for entry in selected_entries):
+            include_auto = menu.addAction(
+                "Include selected in auto-processing"
+                if len(selected_items) > 1 else "Include in auto-processing"
+            )
+            include_auto.triggered.connect(
+                lambda _checked=False: self.sigSetSelectedAutoIgnoredRequested.emit(False)
             )
         if selected_entries:
             menu.addSeparator()
@@ -1660,6 +1683,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
                 str(entry.get("info", "")),
                 str(entry.get("status", "")),
                 "●" if entry.get("panel_link") else "",
+                "⊘" if entry.get("auto_process_ignored") else "",
             ])
             item.setData(0, QtCore.Qt.UserRole, dataset_id)
             item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
@@ -1668,7 +1692,15 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
             item.setToolTip(1, str(entry.get("tooltip") or entry.get("search", label)))
             item.setToolTip(2, str(entry.get("info_tooltip") or entry.get("info", "")))
             item.setToolTip(3, str(entry.get("status", "")))
+            if entry.get("auto_process_ignored"):
+                item.setToolTip(
+                    5,
+                    "Ignored by Session auto-processing. Manual processing remains available.",
+                )
+            else:
+                item.setToolTip(5, "")
             item.setTextAlignment(0, QtCore.Qt.AlignCenter)
+            item.setTextAlignment(5, QtCore.Qt.AlignCenter)
             panel_count = int(entry.get("panel_count", 0) or 0)
             if panel_count:
                 item.setToolTip(
@@ -1710,6 +1742,7 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         item.setText(2, str(entry.get("info", "")))
         item.setText(3, str(entry.get("status", "")))
         item.setText(4, "●" if entry.get("panel_link") else "")
+        item.setText(5, "⊘" if entry.get("auto_process_ignored") else "")
         item.setData(0, QtCore.Qt.UserRole, dataset_id)
         item.setData(0, QtCore.Qt.UserRole + 1, dict(entry))
         item.setData(0, QtCore.Qt.UserRole + 2, bool(entry.get("raw_deleted", False)))
@@ -1717,7 +1750,15 @@ class ProcessingSessionFrame(QtWidgets.QFrame):
         item.setToolTip(1, str(entry.get("tooltip") or entry.get("search", label)))
         item.setToolTip(2, str(entry.get("info_tooltip") or entry.get("info", "")))
         item.setToolTip(3, str(entry.get("status", "")))
+        if entry.get("auto_process_ignored"):
+            item.setToolTip(
+                5,
+                "Ignored by Session auto-processing. Manual processing remains available.",
+            )
+        else:
+            item.setToolTip(5, "")
         item.setTextAlignment(0, QtCore.Qt.AlignCenter)
+        item.setTextAlignment(5, QtCore.Qt.AlignCenter)
         panel_count = int(entry.get("panel_count", 0) or 0)
         if panel_count:
             item.setToolTip(

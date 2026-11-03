@@ -201,6 +201,25 @@ def test_favorite_can_restore_from_relative_source_identity(tmp_path):
     assert reopened.datasets[0].favorite is True
 
 
+def test_auto_exclusion_can_restore_from_relative_source_identity(tmp_path):
+    raw_root = tmp_path / "raw"
+    _h5_image(raw_root / "scan01.h5")
+    results = tmp_path / "results"
+
+    session = ProcessingSession(raw_root, results)
+    session.refresh()
+    dataset = session.datasets[0]
+    session.set_auto_process_ignored([dataset.id], True)
+
+    payload = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+    payload["datasets"][0]["id"] = "legacy-or-moved-id"
+    session.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reopened = ProcessingSession(raw_root, results)
+    reopened.refresh()
+    assert reopened.datasets[0].auto_process_ignored is True
+
+
 def test_reconcile_path_adds_new_dataset_without_losing_curation(tmp_path):
     raw_root = tmp_path / "raw"
     first_path = _h5_image(raw_root / "first.h5")
@@ -208,6 +227,7 @@ def test_reconcile_path_adds_new_dataset_without_losing_curation(tmp_path):
     session.refresh()
     first = session.datasets[0]
     session.set_favorite([first.id], True)
+    session.set_auto_process_ignored([first.id], True)
 
     second_path = _h5_image(raw_root / "second.h5")
     assert session.reconcile_path(second_path) is True
@@ -215,6 +235,7 @@ def test_reconcile_path_adds_new_dataset_without_losing_curation(tmp_path):
     assert {dataset.label for dataset in session.datasets} == {"first.h5", "second.h5"}
     refreshed_first = next(dataset for dataset in session.datasets if dataset.label == "first.h5")
     assert refreshed_first.favorite is True
+    assert refreshed_first.auto_process_ignored is True
     assert Path(refreshed_first.primary_path) == first_path
 
 
@@ -237,7 +258,7 @@ def test_legacy_final_metadata_is_ignored_and_removed_on_refresh(tmp_path):
     assert reopened.datasets[0].status == "reconstructed"
     assert len(reopened.datasets[0].saved_reconstructions) == 1
     migrated = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
-    assert migrated["schema"] == 5
+    assert migrated["schema"] == 6
     assert "final" not in migrated["datasets"][0]["saved_reconstructions"][0]
 
 
@@ -732,9 +753,33 @@ def test_dataset_favorite_persists_across_refresh_and_reopen(tmp_path):
     reopened.refresh()
     assert reopened.dataset_by_id(good.id).favorite is True
     payload = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
-    assert payload["schema"] == 5
+    assert payload["schema"] == 6
     manifest_good = next(entry for entry in payload["datasets"] if entry["id"] == good.id)
     assert manifest_good["favorite"] is True
+
+
+def test_auto_process_exclusion_persists_across_refresh_and_reopen(tmp_path):
+    raw = tmp_path / "raw"
+    _h5_image(raw / "ignored.h5")
+    _h5_image(raw / "normal.h5")
+    results = tmp_path / "results"
+
+    session = ProcessingSession(raw, results)
+    session.refresh()
+    ignored = next(dataset for dataset in session.datasets if dataset.label == "ignored.h5")
+    session.set_auto_process_ignored([ignored.id], True)
+
+    session.refresh()
+    assert session.dataset_by_id(ignored.id).auto_process_ignored is True
+
+    reopened = ProcessingSession(raw, results)
+    reopened.refresh()
+    assert reopened.dataset_by_id(ignored.id).auto_process_ignored is True
+    payload = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
+    manifest_ignored = next(
+        entry for entry in payload["datasets"] if entry["id"] == ignored.id
+    )
+    assert manifest_ignored["auto_process_ignored"] is True
 
 
 def test_raw_cleanup_plan_skips_nonfavorite_dataset_sharing_container_with_kept_data(tmp_path):
