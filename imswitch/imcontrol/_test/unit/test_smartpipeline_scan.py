@@ -293,6 +293,7 @@ def test_the_advanced_scan_panel_is_driven_through_its_fields():
     workflow.next_scan().finish()
     assert completion.wait(2) and completion.result["panel"] == "advanced"
     assert panel.centres == {"Y": 0.0, "X": 0.0} and panel.sizes == {"Y": 60.0, "X": 60.0}
+    assert panel._widget.steps == {"Y": 0.25, "X": 0.25}        # the overview's own pixel size
     assert panel._widget.lines == {"488 (EXC)": True, "561 (EXC)": False}
 
     cell = Points([[2.5, -4.0]], frame=GALVO)

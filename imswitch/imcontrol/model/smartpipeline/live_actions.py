@@ -235,7 +235,8 @@ class RunScanAdapter:
         axes = [str(a) for a in (params.get("axes") or RUN_SCAN.params["axes"])]
         widget = getattr(controller, "_widget", None)
         if mode == "overview":
-            size, step = float(params.get("field_um") or 0.0) or None, None
+            size = float(params.get("field_um") or 0.0) or None
+            step = float(params.get("overview_pixel_um") or 0.0) or None
             centre = {axis: 0.0 for axis in axes}
         else:
             size = float(params.get("length_um") or 0.0) or None
