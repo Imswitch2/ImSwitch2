@@ -498,3 +498,28 @@ def test_hdf5_lapse_source_detects_handle_appearing_after_stream_start(tmp_hdf5_
     finally:
         loaded_handle.close()
         source.close()
+
+
+def test_materialized_timepoint_does_not_block_lapse_reader(tmp_hdf5_path):
+    """Loading one timepoint fully must detach before whole-lapse streaming starts."""
+    from imswitch.improcess.model import DataObj
+    from imswitch.improcess.model.hdf5_access import raw_hdf5_open_handle_count
+
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        for scan_idx in range(2):
+            _write_hdf5_scan_group(
+                f, scan_idx, 'CAM', frames_per_stack=4, frame_shape=(3, 5),
+                num_timepoints=2, is_writing=False,
+            )
+        f.flush()
+        f.swmr_mode = True
+
+    data_obj = DataObj(tmp_hdf5_path.name, 'scan1/CAM', path=str(tmp_hdf5_path))
+    data_obj.checkAndLoadData()
+    assert data_obj.dataLoaded
+    assert raw_hdf5_open_handle_count(tmp_hdf5_path) == 0
+
+    source = Hdf5LapseSource(detector_name='CAM')
+    info = source.open(tmp_hdf5_path)
+    assert info.frames_per_stack == 4
+    source.close()

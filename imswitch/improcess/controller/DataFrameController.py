@@ -231,6 +231,19 @@ class DataFrameController(ImProcessWidgetController):
 
     def unloadData(self):
         self._invalidateTimepointRequests(clear_context=True)
+
+        file_io = getattr(self._main, 'fileIOController', None) if self._main else None
+        clear_current = getattr(file_io, 'clearCurrentData', None)
+        if callable(clear_current):
+            clear_current()
+            return
+
+        # Compatibility fallback for minimal/older controller assemblies.
+        # Release the object rather than only clearing this view's reference.
+        if self._dataObj is not None:
+            self._dataObj.checkAndUnloadData()
+        if self._main is not None:
+            self._main._currentDataObj = None
         self._dataObj = None
         self._displayedImage = None
         self.showMean()

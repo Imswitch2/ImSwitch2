@@ -1047,6 +1047,20 @@ class FileIOController(ImProcessWidgetController):
             return 'current'
         return 'empty'
 
+    def clearCurrentData(self) -> None:
+        """Release the authoritative Current Data object and publish None.
+
+        The Current Data view is only a presentation of ``_currentDataObj``;
+        clearing the widget alone leaves the DataObj (and any backing source)
+        alive.  Keep ownership changes here so every listener observes the
+        same transition and resource release.
+        """
+        current = getattr(self._main, '_currentDataObj', None)
+        if current is not None:
+            current.checkAndUnloadData()
+        self._main._currentDataObj = None
+        self._commChannel.sigCurrentDataChanged.emit(None)
+
     def _currentDataChanged(self, data_obj=None) -> None:
         frame = getattr(self._widget, 'loadedDataFrame', None)
         if frame is None:

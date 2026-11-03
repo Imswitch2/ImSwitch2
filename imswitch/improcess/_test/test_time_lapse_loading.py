@@ -21,6 +21,7 @@ import pytest
 
 from imswitch.improcess._test._lapse_recordings import FRAME_SHAPE, record_lapse, record_point
 from imswitch.improcess.controller.FileIOController import FileIOController
+from imswitch.improcess.controller.DataFrameController import DataFrameController
 from imswitch.improcess.controller.ReconstructionViewController import (
     ReconstructionViewController,
 )
@@ -491,3 +492,36 @@ def test_current_reconstruction_is_blocked_while_lazy_timepoint_is_pending():
 
     assert reconstructed == []
     assert statuses == [(False, {"status": "Current data is still loading."})]
+
+
+def test_clear_current_data_releases_authoritative_data_obj():
+    """Current Data unload must release the model object, not only blank the view."""
+    released = []
+    emitted = []
+    data_obj = SimpleNamespace(checkAndUnloadData=lambda: released.append(True))
+    io = FileIOController.__new__(FileIOController)
+    io._main = SimpleNamespace(_currentDataObj=data_obj)
+    io._commChannel = SimpleNamespace(
+        sigCurrentDataChanged=SimpleNamespace(emit=emitted.append)
+    )
+
+    io.clearCurrentData()
+
+    assert released == [True]
+    assert io._main._currentDataObj is None
+    assert emitted == [None]
+
+
+def test_current_data_unload_delegates_to_authoritative_owner():
+    calls = []
+    controller = DataFrameController.__new__(DataFrameController)
+    controller._main = SimpleNamespace(
+        fileIOController=SimpleNamespace(clearCurrentData=lambda: calls.append('clear'))
+    )
+    controller._invalidateTimepointRequests = lambda **kwargs: calls.append(
+        ('invalidate', kwargs)
+    )
+
+    controller.unloadData()
+
+    assert calls == [('invalidate', {'clear_context': True}), 'clear']
