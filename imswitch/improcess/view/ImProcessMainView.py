@@ -1794,6 +1794,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             # workspace. The common Actions dock owns processing commands.
             self.multiDataFrame.setProcessActionsVisible(False)
 
+    def setCurrentDataProcessingEnabled(self, enabled: bool) -> None:
+        """Enable Current-data processing only when the displayed source is stable."""
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is not None:
+            btnFrame.setCurrentDataProcessingEnabled(bool(enabled))
+        if hasattr(self, 'dataFrame'):
+            self.dataFrame.setProcessCurrentEnabled(bool(enabled))
+
     def setReconstructionJobState(
         self, running: bool, *, progress=None, status: str = ""
     ) -> None:
@@ -1803,7 +1811,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 running, progress=progress, status=status
             )
         if hasattr(self, 'dataFrame'):
-            self.dataFrame.setProcessCurrentEnabled(not bool(running))
+            ready = bool(
+                getattr(btnFrame, '_currentDataProcessingEnabled', True)
+                if btnFrame is not None else True
+            )
+            self.dataFrame.setProcessCurrentEnabled(ready and not bool(running))
         if hasattr(self, 'multiDataFrame'):
             self.multiDataFrame.processBtn.setEnabled(not bool(running))
 
@@ -2361,6 +2373,8 @@ class BtnFrame(QtWidgets.QFrame):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._reconstructionRunning = False
+        self._currentDataProcessingEnabled = True
 
         self.reconCurrBtn = BetterPushButton('Reconstruct current')
         self.reconCurrBtn.clicked.connect(self.sigReconstuctCurrent)
@@ -2412,12 +2426,22 @@ class BtnFrame(QtWidgets.QFrame):
         layout.addWidget(self.reconstructionStatus, 4, 0, 1, 2)
         layout.addWidget(self.cancelReconstructionBtn, 5, 0, 1, 2)
 
+    def _syncProcessingEnabled(self) -> None:
+        self.reconCurrBtn.setEnabled(
+            bool(self._currentDataProcessingEnabled and not self._reconstructionRunning)
+        )
+        self.reconMultiBtn.setEnabled(not self._reconstructionRunning)
+
+    def setCurrentDataProcessingEnabled(self, enabled: bool) -> None:
+        self._currentDataProcessingEnabled = bool(enabled)
+        self._syncProcessingEnabled()
+
     def setReconstructionJobState(
         self, running: bool, *, progress=None, status: str = ""
     ) -> None:
         running = bool(running)
-        self.reconCurrBtn.setEnabled(not running)
-        self.reconMultiBtn.setEnabled(not running)
+        self._reconstructionRunning = running
+        self._syncProcessingEnabled()
         self.cancelReconstructionBtn.setVisible(running)
         if progress is not None:
             value = max(0.0, min(1.0, float(progress)))

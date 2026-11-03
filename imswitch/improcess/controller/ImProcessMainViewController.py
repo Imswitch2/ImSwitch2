@@ -20,7 +20,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         super().__init__(*args, **kwargs)
 
         self.dataFrameController = self._factory.createController(
-            DataFrameController, self._widget.dataFrame
+            DataFrameController, self._widget.dataFrame, mainController=self
         )
         self.reconstructionController = self._factory.createController(
             ReconstructionViewController, self._widget.reconstructionWidget

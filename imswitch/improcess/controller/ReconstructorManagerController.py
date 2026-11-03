@@ -695,6 +695,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
         )
 
     def reconstructCurrent(self):
+        data_controller = getattr(self._main, 'dataFrameController', None)
+        ready = getattr(data_controller, 'currentDataReadyForProcessing', None)
+        if callable(ready) and not ready():
+            self._set_reconstruction_job_state(
+                False, status='Current data is still loading.'
+            )
+            return
         if self._main._currentDataObj is None:
             return
 

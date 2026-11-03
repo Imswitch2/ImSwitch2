@@ -356,23 +356,28 @@ class FileIOController(ImProcessWidgetController):
             if source.format_id == TILING_MANIFEST_SPEC.id:
                 return self._loadMetadataAsCurrent(source)
             lapseItemToPick = False
-            if _accepts_time_lapse(getattr(self._main, '_activeReconstructor', None)):
-                if route_to_loaded:
-                    lapse_obj = self._timeLapseDataObj(source)
-                    if lapse_obj == _PICK_A_LAPSE_ITEM:
-                        lapseItemToPick = True
-                    elif lapse_obj is not None:
-                        return self._routeCatalogDataObj(
-                            lapse_obj,
-                            prefer_as_current=prefer_as_current,
-                            add_to_multidata=add_to_multidata,
-                        )
-                else:
-                    outcome = self._loadTimeLapseAsCurrent(source)
-                    if outcome == _PICK_A_LAPSE_ITEM:
-                        lapseItemToPick = True
-                    elif outcome is not None:
-                        return outcome
+            accepts_lapse = _accepts_time_lapse(
+                getattr(self._main, '_activeReconstructor', None)
+            )
+            if route_to_loaded:
+                # Quick Load is a data-management action, so recognise a
+                # recorded logical lapse independently of the active
+                # reconstructor. Discovery reads only the selected item's
+                # metadata; the potentially expensive sibling/header scan is
+                # deferred to Current data's timepoint worker.
+                lapse_obj = self._timeLapseDataObj(source, check_multiple=False)
+                if lapse_obj is not None:
+                    return self._routeCatalogDataObj(
+                        lapse_obj,
+                        prefer_as_current=prefer_as_current,
+                        add_to_multidata=add_to_multidata,
+                    )
+            elif accepts_lapse:
+                outcome = self._loadTimeLapseAsCurrent(source)
+                if outcome == _PICK_A_LAPSE_ITEM:
+                    lapseItemToPick = True
+                elif outcome is not None:
+                    return outcome
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
@@ -598,13 +603,21 @@ class FileIOController(ImProcessWidgetController):
 
         return _route_as_current(self, data_obj)
 
-    def _timeLapseDataObj(self, source, dataset=None):
-        """Resolve a logical lapse without routing it to Current data."""
+    def _timeLapseDataObj(self, source, dataset=None, *, check_multiple=True):
+        """Resolve a logical lapse without routing it to Current data.
+
+        ``check_multiple=False`` is the Quick Load fast path: it deliberately
+        avoids scanning every sibling header on the GUI thread. Current data
+        performs the full plan/header read asynchronously when the first
+        timepoint is requested.
+        """
+        picked = _picked_dataset(source)
+        explicit_run = dataset is not None or picked is not None
         if dataset is None:
-            dataset = _picked_dataset(source)
+            dataset = picked
         try:
             index = discover_time_lapse(source.path, dataset)
-            if dataset is None:
+            if dataset is None and check_multiple:
                 lapses = lapses_in_file(index)
                 if lapses > 1:
                     self._logger.info(
@@ -627,8 +640,67 @@ class FileIOController(ImProcessWidgetController):
             index,
             originalPath=source.original_path,
         )
+        data_obj._timeLapseRunExplicit = bool(explicit_run)
         self._logger.info(index.describe())
         return data_obj
+
+    def chooseTimeLapseRun(self, source_obj, dataset_choices):
+        """Ask which logical lapse in a shared container Quick Load should open.
+
+        The expensive per-group header scan has already happened in Current
+        data's worker.  The GUI thread only presents one representative item
+        per detected lapse, then re-runs cheap discovery anchored on the item
+        the operator selected.
+        """
+        choices = [str(choice) for choice in (dataset_choices or ()) if choice]
+        if source_obj is None or len(choices) < 2:
+            return source_obj
+
+        dialog = getattr(self._widget, 'pickDatasetsDialog', None)
+        picker = getattr(dialog, 'datasetsPicker', None)
+        old_mode = picker.selectionMode() if picker is not None else None
+        try:
+            if picker is not None:
+                picker.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+            path = str(
+                getattr(source_obj, 'dataPath', None)
+                or getattr(source_obj, 'sourceOriginalPath', '')
+                or ''
+            )
+            self.pickDatasetsController.setDatasets(path, choices)
+            if picker is not None and picker.count():
+                picker.clearSelection()
+                picker.setCurrentRow(0)
+                picker.item(0).setSelected(True)
+            if not self._widget.showPickDatasetsDialog(blocking=True):
+                return None
+            selected = list(self.pickDatasetsController.getSelectedDatasets())
+            if len(selected) != 1:
+                return None
+        finally:
+            if picker is not None and old_mode is not None:
+                picker.setSelectionMode(old_mode)
+
+        try:
+            index = discover_time_lapse(path, selected[0])
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not open the selected time lapse {selected[0]!r}: {exc}"
+            )
+            return None
+
+        source_obj.name = index.name
+        source_obj.dataPath = str(index.anchor.path)
+        source_obj.sourceMetadata = index
+        source_obj._timeLapseRunExplicit = True
+        acquisition, tooltip = self._loadedDataDescription(source_obj)
+        frame = getattr(self._widget, 'loadedDataFrame', None)
+        if frame is not None:
+            frame.addOrUpdateDataObj(
+                source_obj, acquisition=acquisition, status='Loaded', tooltip=tooltip
+            )
+            frame.setCurrentDataObj(source_obj)
+        return source_obj
 
     def _loadTimeLapseAsCurrent(self, source, dataset=None):
         """Open the whole lapse ``source`` belongs to, or return None."""
@@ -770,6 +842,21 @@ class FileIOController(ImProcessWidgetController):
     def setLoadedAsCurrent(self, data_obj) -> str:
         if data_obj is None:
             return 'empty'
+        if getattr(data_obj, 'sourceKind', 'image') == TIME_LAPSE_SOURCE_KIND:
+            # A logical lapse is a catalog/current-data navigation source, not
+            # the image object the active reconstructor should see. Let Current
+            # data load its first timepoint asynchronously and publish that
+            # ordinary image DataObj only when it is ready.
+            data_controller = getattr(self._main, 'dataFrameController', None)
+            opener = getattr(data_controller, 'openTimeLapseSource', None)
+            if not callable(opener):
+                return 'empty'
+            opener(data_obj)
+            frame = getattr(self._widget, 'loadedDataFrame', None)
+            if frame is not None:
+                frame.setCurrentDataObj(data_obj)
+            self._widget.raiseCurrentDataDock()
+            return 'current'
         if getattr(data_obj, 'sourceKind', 'image') == 'image':
             if self._main._currentDataObj is not data_obj:
                 current = self._main._currentDataObj
@@ -794,15 +881,17 @@ class FileIOController(ImProcessWidgetController):
         frame = getattr(self._widget, 'loadedDataFrame', None)
         if frame is None:
             return
-        if data_obj in self._loadedDataObjs:
-            acquisition, tooltip = self._loadedDataDescription(data_obj)
+        logical = getattr(data_obj, '_timeLapseParent', None)
+        catalog_obj = logical if logical is not None else data_obj
+        if catalog_obj in self._loadedDataObjs:
+            acquisition, tooltip = self._loadedDataDescription(catalog_obj)
             frame.addOrUpdateDataObj(
-                data_obj,
+                catalog_obj,
                 acquisition=acquisition,
                 status='Loaded',
                 tooltip=tooltip,
             )
-        frame.setCurrentDataObj(data_obj)
+        frame.setCurrentDataObj(catalog_obj)
 
     def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.

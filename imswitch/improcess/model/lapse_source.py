@@ -966,6 +966,37 @@ def _lapse_runs(headers: Sequence[LapseItemHeader]) -> list[list[LapseItemHeader
     return runs
 
 
+
+def lapse_run_representatives(
+    index: TimeLapseIndex, headers: LapseHeaders
+) -> tuple[str, ...]:
+    """One representative dataset path for each lapse stored in one file.
+
+    ``read_lapse_headers`` already did the potentially expensive per-group
+    metadata reads.  This helper only groups those headers using the same
+    monotonic-index rule as :func:`plan_time_lapse`, so callers can ask the
+    operator which logical lapse they meant without another header scan.
+
+    Multi-file lapses are unambiguous and therefore yield the anchor dataset
+    (when it has one).
+    """
+    if index.storage != STORAGE_ONE_GROUP_PER_ITEM:
+        dataset = index.anchor.dataset
+        return (str(dataset),) if dataset else ()
+    indexed = [
+        header for header in headers.headers
+        if header.lapse_index is not None
+    ]
+    runs = _lapse_runs(indexed)
+    representatives = []
+    for run in runs:
+        if not run:
+            continue
+        dataset = str(run[0].dataset or run[0].ref.dataset or '')
+        if dataset:
+            representatives.append(dataset)
+    return tuple(representatives)
+
 def lapses_in_file(index: TimeLapseIndex, detector: str | None = None) -> int:
     """How many lapses the file of a single-file lapse holds.
 
@@ -1486,6 +1517,7 @@ __all__ = [
     "discover_time_lapse",
     "is_time_lapse_item",
     "lapses_in_file",
+    "lapse_run_representatives",
     "open_time_lapse",
     "plan_time_lapse",
     "read_lapse_headers",

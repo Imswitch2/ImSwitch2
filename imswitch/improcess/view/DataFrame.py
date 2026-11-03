@@ -68,6 +68,7 @@ class DataFrame(QtWidgets.QFrame):
     sigProcessCurrentClicked = QtCore.Signal()
     sigFrameNumberChanged = QtCore.Signal(int)
     sigFrameSliderChanged = QtCore.Signal(int)
+    sigTimepointChanged = QtCore.Signal(int)
 
     # Methods
     def __init__(self, *args, **kwargs):
@@ -106,7 +107,23 @@ class DataFrame(QtWidgets.QFrame):
         self.unloadDataBtn.setText('Unload data')
         self.unloadDataBtn.clicked.connect(self.sigUnloadDataClicked)
 
-        frameLabel = QtWidgets.QLabel('Frame # ')
+        self.timepointLabel = QtWidgets.QLabel('T:')
+        self.timepointSpin = QtWidgets.QSpinBox()
+        self.timepointSpin.setMinimum(1)
+        self.timepointSpin.setMaximum(1)
+        self.timepointSpin.setValue(1)
+        self.timepointSpin.setKeyboardTracking(False)
+        self.timepointSpin.setFixedWidth(82)
+        self.timepointSpin.setToolTip(
+            'Select one timepoint to load. Timepoints are loaded lazily from disk.'
+        )
+        self.timepointSpin.valueChanged[int].connect(
+            lambda value: self.sigTimepointChanged.emit(max(0, int(value) - 1))
+        )
+        self.timepointLoading = QtWidgets.QLabel('Loading…')
+        self.timepointLoading.setStyleSheet('color: palette(mid);')
+
+        frameLabel = QtWidgets.QLabel('Frame:')
         self.frameNum = QtWidgets.QLineEdit('0')
         self.frameNum.textChanged.connect(lambda x: (x.isdigit() and
                                                      self.setCurrentFrame(int(x)) and
@@ -115,7 +132,7 @@ class DataFrame(QtWidgets.QFrame):
 
         self.dataName = _ElidingLabel('File:')
         self.datasetName = _ElidingLabel('Dataset:')
-        numFramesLabel = QtWidgets.QLabel('No. frames:')
+        self.frameCountSep = QtWidgets.QLabel('/')
         self.numFrames = QtWidgets.QLabel('')
 
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
@@ -157,18 +174,56 @@ class DataFrame(QtWidgets.QFrame):
         layout.addLayout(actionRow, 0, 0, 1, 6)
         layout.addWidget(self.dataName, 1, 0, 1, 4)
         layout.addWidget(self.datasetName, 1, 4, 1, 2)
-        layout.addWidget(self.showMeanBtn, 2, 0)
-        layout.addWidget(self.slider, 2, 1, 1, 3)
-        layout.addWidget(frameLabel, 2, 4)
-        layout.addWidget(self.frameNum, 2, 5)
-        layout.addWidget(self.adjustDataBtn, 3, 0)
-        layout.addWidget(self.unloadDataBtn, 3, 1)
-        layout.addWidget(numFramesLabel, 3, 4)
-        layout.addWidget(self.numFrames, 3, 5)
+
+        navRow = QtWidgets.QHBoxLayout()
+        navRow.setContentsMargins(0, 0, 0, 0)
+        navRow.setSpacing(4)
+        navRow.addWidget(self.timepointLabel)
+        navRow.addWidget(self.timepointSpin)
+        navRow.addWidget(self.timepointLoading)
+        navRow.addSpacing(6)
+        navRow.addWidget(frameLabel)
+        navRow.addWidget(self.frameNum)
+        navRow.addWidget(self.frameCountSep)
+        navRow.addWidget(self.numFrames)
+        navRow.addWidget(self.slider, 1)
+        layout.addLayout(navRow, 2, 0, 1, 6)
+
+        controlRow = QtWidgets.QHBoxLayout()
+        controlRow.setContentsMargins(0, 0, 0, 0)
+        controlRow.setSpacing(4)
+        controlRow.addWidget(self.showMeanBtn)
+        controlRow.addWidget(self.adjustDataBtn)
+        controlRow.addWidget(self.unloadDataBtn)
+        controlRow.addStretch(1)
+        layout.addLayout(controlRow, 3, 0, 1, 6)
         layout.addWidget(imageWidget, 4, 0, 1, -1)
 
+        self.setTimepointControls(0)
         self._showPattern = False
         self._showDetectionPreview = False
+
+
+    def setTimepointControls(self, total, current=0, loading=False):
+        """Show compact discrete T navigation for a logical time lapse."""
+        total = max(0, int(total or 0))
+        visible = total > 1
+        self.timepointLabel.setVisible(visible)
+        self.timepointSpin.setVisible(visible)
+        self.timepointLoading.setVisible(bool(visible and loading))
+        if not visible:
+            return
+        current = max(0, min(int(current or 0), total - 1))
+        with QtCore.QSignalBlocker(self.timepointSpin):
+            self.timepointSpin.setRange(1, total)
+            self.timepointSpin.setSuffix(f' / {total}')
+            self.timepointSpin.setValue(current + 1)
+        self.timepointSpin.setEnabled(not loading)
+
+    def setTimepointLoading(self, loading):
+        visible = self.timepointSpin.isVisible()
+        self.timepointSpin.setEnabled(bool(visible and not loading))
+        self.timepointLoading.setVisible(bool(visible and loading))
 
     def setShowPattern(self, value):
         self._showPattern = value
@@ -255,6 +310,8 @@ class DataFrame(QtWidgets.QFrame):
         self.adjustDataBtn.setEnabled(enabled)
         self.slider.setEnabled(enabled)
         self.frameNum.setEnabled(enabled)
+        # T navigation is controlled independently: changing it is what loads
+        # the next image source while the current one stays visible.
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
