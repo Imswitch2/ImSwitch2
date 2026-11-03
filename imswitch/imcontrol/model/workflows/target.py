@@ -147,6 +147,30 @@ class TargetList:
         """Return list of enabled targets in order."""
         return [t for t in self.targets if t.enabled]
 
+    def find(self, target_id: int) -> Optional[Target]:
+        """Return the target with this id, or None."""
+        for target in self.targets:
+            if target.id == int(target_id):
+                return target
+        return None
+
+    def remove(self, target_id: int) -> bool:
+        """Drop the target with this id. Returns whether one was removed.
+
+        The other ids are left alone: a target keeps its id for as long as it
+        exists, so a script holding one is never silently pointed at another.
+        """
+        before = len(self.targets)
+        self.targets = [t for t in self.targets if t.id != int(target_id)]
+        return len(self.targets) != before
+
+    def clear(self) -> None:
+        self.targets = []
+
+    def to_records(self) -> List[Dict[str, Any]]:
+        """Every target as a JSON-compatible dict, in order."""
+        return [t.to_dict() for t in self.targets]
+
     def _next_id(self) -> int:
         """Generate next stable ID."""
         if not self.targets:

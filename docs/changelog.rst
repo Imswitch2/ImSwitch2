@@ -25,6 +25,23 @@ Unreleased
   pixel size. The parameters are ``params_version`` 2: a recorded run of the
   old form replays with the 1 px it meant, but a workflow file that left both
   keys out now measures a calibrated image in its own unit.
+- **The tiling widget keeps a target list instead of detecting cells.** ``Tune
+  segmentation…`` and ``Detect cells`` are gone: they segmented the full
+  mosaic on the GUI thread, which hung the window for a large run, and their
+  result was an overlay that nothing in the GUI could act on. In their place
+  the overview's ``Click`` chooser can **add a target** (as well as move the
+  stage), and a **Targets** table under the overview lists stage positions
+  with enable/disable, ``Go to``, ``Remove``, ``Clear`` and ``Save…`` /
+  ``Load…`` as JSON. Targets are stage positions, so the list survives a new
+  run or a change of detector and its markers are drawn again on the current
+  overview. Scripts use the same list: ``api.imcontrol.getTargets()``,
+  ``setTargets``, ``addTarget``, ``removeTarget``, ``setTargetEnabled``,
+  ``goToTarget``, ``saveTargets`` and ``loadTargets`` replace
+  ``detectCellTargets()`` and ``runCellTargeting()``. Cell detection stays
+  available to scripts (``detect_cell_targets``,
+  ``TilingWorkflow.run_cell_targeting``) and to ImProcess, whose Segmentation
+  processor runs off the GUI thread; feed its positions to the list with
+  ``setTargets``. See :doc:`tiling`.
 
 v0.4.0 (2026-10-29)
 ===================

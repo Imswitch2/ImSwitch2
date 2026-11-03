@@ -351,7 +351,6 @@ Large arrays (images) are passed via POSIX shared memory through `SerNDArray` to
 | `WellPlateWidget` | Multi-well plate scanning |
 | `FlipMirrorWidget` | Flip mirror control |
 | `BSC203Widget` | Thorlabs BSC203 servo controller |
-| `SegmentationParamsWidget` | Segmentation parameter tuning |
 | `LightSheetMulticolorWidget` | Lightsheet multicolor control |
 | `TriggerScope*Widgets` | Family of 6 TriggerScope-synchronized lightsheet scan widgets (GalvoDetection, LSXYR, PLSR, PLSRMulticolor, Raster, Scan) |
 

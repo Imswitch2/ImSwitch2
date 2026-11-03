@@ -1211,53 +1211,6 @@ def test_beadrec_stale_drain_timer_cannot_finish_a_new_scan():
     assert completed == [2]
 
 
-def test_tiling_and_cell_targeting_are_mutually_exclusive():
-    ctrl = TilingController.__new__(TilingController)
-    ctrl._setupInfo = SimpleNamespace(tiling=object())
-    ctrl._scanning = False
-    ctrl._cellTargetingRunning = True
-    ctrl._closed = False
-    ctrl._logger = _Logger()
-
-    TilingController.startTiling(ctrl)
-
-    assert ctrl._scanning is False
-
-    ctrl._scanning = True
-    ctrl._cellTargetingRunning = False
-    ctrl._detectCellTargets = lambda: (_ for _ in ()).throw(
-        AssertionError('segmentation must not race an active tiling run')
-    )
-    TilingController.runCellTargeting(ctrl, move_only=True)
-
-
-def test_cell_target_callback_is_cancelled_after_stage_settle():
-    ctrl = TilingController.__new__(TilingController)
-    QtCore.QObject.__init__(ctrl)
-    ctrl._closed = False
-    ctrl._cellTargetingRunning = True
-    ctrl._cellTargetThread = object()
-    ctrl._logger = _Logger()
-    cancel = threading.Event()
-    ctrl._cellTargetCancel = cancel
-
-    def move_and_cancel(_row, _col):
-        cancel.set()
-        return (1.0, 2.0)
-
-    ctrl._moveStageToPixel = move_and_cancel
-    seen = []
-
-    TilingController._iterateCells(
-        ctrl,
-        np.array([[1, 2]]),
-        {'area': np.array([3])},
-        lambda *args: seen.append(args),
-    )
-
-    assert seen == []
-
-
 def test_focus_calibration_is_cancellable_without_worker_widget_access():
     class _Controller:
         def __init__(self):

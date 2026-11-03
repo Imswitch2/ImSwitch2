@@ -1,7 +1,7 @@
 import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from qtpy import QtCore
@@ -18,6 +18,7 @@ from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers.RecordingManager import FailureKind
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import SPIRAL, tile_moves
+from imswitch.imcontrol.model.workflows.target import TargetList
 from imswitch.imcontrol.model.workflows.tile_dataset import (
     TileDataset,
     TileRecord,
@@ -30,6 +31,8 @@ from imswitch.imcontrol.model.workflows.tile_registration import (
     max_shift_for_step,
 )
 from imswitch.imcontrol.view.widgets.TilingWidget import (
+    CLICK_ADD_TARGET,
+    CLICK_NAVIGATE,
     MODE_FREE_RUNNING,
     MODE_TRIGGERED,
 )
@@ -43,7 +46,6 @@ _FRAME_POLL_S = 0.005
 _OVERVIEW_EMIT_INTERVAL_S = 0.2  # throttle live overview repaints
 _CHUNK_CONSUMER_KEY = 'tiling'
 _SCAN_TIMEOUT_S = 300.0  # generous: one tile is a whole scan
-CellFeatureCallback = Callable[[int, dict, Tuple[float, float]], None]
 
 
 class _FreeRunningTileSource:
@@ -447,9 +449,8 @@ class TilingController(ImConWidgetController):
     sigOverviewUpdated = QtCore.Signal(object)   # np.ndarray
     sigProgressUpdated = QtCore.Signal(int, int)  # current, total
     sigRunningChanged = QtCore.Signal(bool)       # routes setRunning across threads
-    sigShowCellMarkers = QtCore.Signal(object)    # (N, 2) row/col array
-    sigHighlightCell = QtCore.Signal(int)
-    sigCellTargetingEnabled = QtCore.Signal(bool)
+    sigTargetsChanged = QtCore.Signal(object)     # list of target dicts
+    sigTargetMarkers = QtCore.Signal(object)      # {target id: (row, col)}
     sigRegistrationSummary = QtCore.Signal(str)
 
     def __init__(self, *args, **kwargs):
@@ -461,14 +462,11 @@ class TilingController(ImConWidgetController):
         self._originXY: Optional[Tuple[float, float]] = None
         self._gridPositions: List[Tuple[int, int]] = []
         self._lastStepUm: float = 100.0
-        self._segParams: dict = {}
-        self._cellPositionsRC: Optional[np.ndarray] = None  # (N, 2) row/col in overview
-        self._cellProps: Optional[dict[str, np.ndarray]] = None
-        self._cellTargetingRunning = False
-        self._cellTargetCancel = threading.Event()
+        # Stage positions to come back to. Kept across runs: a target is a
+        # place on the sample, not a pixel of one particular overview.
+        self._targets = TargetList()
         self._activityLock = threading.Lock()
         self._scanThread: Optional[threading.Thread] = None
-        self._cellTargetThread: Optional[threading.Thread] = None
         self._scanAcqHandle = None
         self._closed = False
         self._registrationReport = None
@@ -510,15 +508,18 @@ class TilingController(ImConWidgetController):
 
         self._widget.sigStartTiling.connect(self.startTiling)
         self._widget.sigStopTiling.connect(self.stopTiling)
-        self._widget.sigClickOnOverview.connect(self._navigateToPixel)
-        self._widget.sigTuneSegmentation.connect(self._onTuneSegmentation)
-        self._widget.sigRunCellTargeting.connect(self.detectCellTargets)
+        self._widget.sigClickOnOverview.connect(self._onOverviewClicked)
+        self._widget.sigGoToTarget.connect(self.goToTarget)
+        self._widget.sigRemoveTarget.connect(self.removeTarget)
+        self._widget.sigClearTargets.connect(self.clearTargets)
+        self._widget.sigTargetEnabledChanged.connect(self.setTargetEnabled)
+        self._widget.sigSaveTargets.connect(self.saveTargets)
+        self._widget.sigLoadTargets.connect(self.loadTargets)
         self.sigOverviewUpdated.connect(self._widget.updateOverview)
         self.sigProgressUpdated.connect(self._widget.setProgress)
         self.sigRunningChanged.connect(self._widget.setRunning)
-        self.sigShowCellMarkers.connect(self._widget.showCellMarkers)
-        self.sigHighlightCell.connect(self._widget.highlightCurrentCell)
-        self.sigCellTargetingEnabled.connect(self._widget.setCellTargetingEnabled)
+        self.sigTargetsChanged.connect(self._widget.setTargets)
+        self.sigTargetMarkers.connect(self._widget.setTargetMarkers)
         self.sigRegistrationSummary.connect(self._widget.setRegistrationSummary)
         self._widget.sigModeChanged.connect(self._onModeChanged)
 
@@ -529,26 +530,17 @@ class TilingController(ImConWidgetController):
     @APIExport(runOnUIThread=True)
     def startTiling(self) -> None:
         """ Starts a tiling run with the Tiling widget's settings. Does
-        nothing on a setup without a ``tiling`` section, or while a run or
-        cell targeting is busy. """
+        nothing on a setup without a ``tiling`` section, or while a run is
+        busy. """
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
             return
         with self._getActivityLock():
-            busyWithCells = self._cellTargetingRunning
-            busy = (
-                self._scanning
-                or busyWithCells
-                or getattr(self, '_closed', False)
-            )
+            busy = self._scanning or getattr(self, '_closed', False)
             if not busy:
                 self._scanning = True
                 self._stopRequested = False
         if busy:
-            if busyWithCells:
-                self._logger.warning(
-                    'Tiling cannot start while cell targeting owns the stage'
-                )
             return
         try:
             n_tiles_x = self._widget.getNTilesX()
@@ -576,10 +568,9 @@ class TilingController(ImConWidgetController):
             self._widget.setRunning(True)
             self._widget.setProgress(0, n_tiles)
             self._widget.setRegistrationSummary('')
-            self._widget.clearCellMarkers()
-            self._widget.setCellTargetingEnabled(False)
-            self._cellPositionsRC = None
-            self._cellProps = None
+            # The markers belong to the overview being replaced; the targets
+            # themselves stay and are drawn again on the new one.
+            self._refreshTargets()
 
             # By keyword: this argument list is long enough that inserting one
             # in the middle would otherwise silently shift the rest along.
@@ -614,9 +605,8 @@ class TilingController(ImConWidgetController):
 
     @APIExport()
     def stopTiling(self) -> None:
-        """ Asks the running tiling run, or cell targeting, to stop. """
+        """ Asks the running tiling run to stop. """
         self._stopRequested = True
-        self._cellCancelEvent().set()
 
     def closeEvent(self) -> bool:
         """Request cancellation and wait briefly for owned workers.
@@ -628,15 +618,12 @@ class TilingController(ImConWidgetController):
         with self._getActivityLock():
             self._closed = True
             self._stopRequested = True
-        self._cellCancelEvent().set()
-        for name in ('_scanThread', '_cellTargetThread'):
-            thread = getattr(self, name, None)
-            if thread is None or thread is threading.current_thread():
-                continue
+        thread = getattr(self, '_scanThread', None)
+        if thread is not None and thread is not threading.current_thread():
             thread.join(_CLOSE_JOIN_TIMEOUT_S)
             if thread.is_alive():
                 self._logger.warning(
-                    f'{name[1:]} is still stopping after widget close; '
+                    'scanThread is still stopping after widget close; '
                     'owned hardware will be released when it exits.'
                 )
         super().closeEvent()
@@ -651,12 +638,8 @@ class TilingController(ImConWidgetController):
         with self._getActivityLock():
             return (
                 not self._threadIsAlive(self.__dict__.get('_scanThread'))
-                and not self._threadIsAlive(
-                    self.__dict__.get('_cellTargetThread')
-                )
                 and self.__dict__.get('_scanAcqHandle') is None
                 and not self.__dict__.get('_scanning', False)
-                and not self.__dict__.get('_cellTargetingRunning', False)
             )
 
     def _getActivityLock(self):
@@ -665,13 +648,6 @@ class TilingController(ImConWidgetController):
             lock = threading.Lock()
             self._activityLock = lock
         return lock
-
-    def _cellCancelEvent(self):
-        event = self.__dict__.get('_cellTargetCancel')
-        if event is None:
-            event = threading.Event()
-            self._cellTargetCancel = event
-        return event
 
     @APIExport(runOnUIThread=True)
     def setTileLabel(self, label: str) -> None:
@@ -1036,13 +1012,14 @@ class TilingController(ImConWidgetController):
                         exc_info=True,
                     )
 
-            if (
-                scan_completed
-                and origin_restored
-                and self._stitcher is not None
-                and not getattr(self, '_closed', False)
-            ):
-                self.sigCellTargetingEnabled.emit(True)
+            if not getattr(self, '_closed', False):
+                if scan_completed and not origin_restored:
+                    self._logger.warning(
+                        'Tiling: the stage did not return to the run origin; '
+                        'targets map to where the tiles were taken.'
+                    )
+                # The overview is final now, so targets can be placed on it.
+                self._refreshTargets()
 
             if acqHandle is not None:
                 try:
@@ -1980,10 +1957,7 @@ class TilingController(ImConWidgetController):
         self._stitcher = None
         self._originXY = None
         self._gridPositions = []
-        self._cellPositionsRC = None
-        self._cellProps = None
-        self._widget.clearCellMarkers()
-        self._widget.setCellTargetingEnabled(False)
+        self._refreshTargets()
         self._logger.info(
             'Tiling: detector changed, so the previous overview was discarded '
             '— its pixel size no longer applies.'
@@ -2092,7 +2066,7 @@ class TilingController(ImConWidgetController):
         # ``_scanning`` stays True, ``setRunning(False)`` never fires, Start
         # remains disabled and Stop becomes a no-op (the scan loop has already
         # exited, so flipping ``_stopRequested`` has nothing to react to).
-        if self._scanning or self._cellTargetingRunning:
+        if self._scanning:
             self._logger.info(
                 'Tiling click-to-navigate ignored: automated stage movement '
                 'is still in progress. Wait for it to finish.'
@@ -2130,175 +2104,209 @@ class TilingController(ImConWidgetController):
         target = self._canvasPixelToStage(row, col)
         if target is None:
             return None
+        return self._moveStageTo(*target)
+
+    def _moveStageTo(
+        self, stage_x: float, stage_y: float
+    ) -> Optional[Tuple[float, float]]:
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
             return None
-        stage_x, stage_y = target
         axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
         positioner = self._master.positionersManager[tilingInfo.xyPositioner]
         positioner.setPosition(stage_x, axes[0])
         positioner.setPosition(stage_y, axes[1])
         return stage_x, stage_y
 
+    @staticmethod
+    def _stageOffsetToImage(stage_dx: float, stage_dy: float, orientation):
+        """Inverse of :meth:`_imageOffsetToStage`: undo the swap, then the flips."""
+        flip_x, flip_y, swap_axes = orientation
+        if swap_axes:
+            stage_dx, stage_dy = stage_dy, stage_dx
+        dx_um = -stage_dx if flip_x else stage_dx
+        dy_um = -stage_dy if flip_y else stage_dy
+        return dx_um, dy_um
+
+    def _stageToCanvasPixel(
+        self, stage_x: float, stage_y: float
+    ) -> Optional[Tuple[float, float]]:
+        """Overview pixel ``(row, col)`` of a stage position, or None.
+
+        None without an overview to place it on, and for a position outside
+        the overview: a marker off the canvas would only drag the view out.
+        """
+        if self._stitcher is None or self._originXY is None or not self._gridPositions:
+            return None
+        orientation = self.__dict__.get('_orientation', (False, False, False))
+        dx_um, dy_um = self._stageOffsetToImage(
+            stage_x - self._originXY[0], stage_y - self._originXY[1], orientation
+        )
+        canvas_row0, canvas_col0 = self._stitcher.canvas_origin_px
+        tile_h, tile_w = self._stitcher.tile_shape_px
+        col = dx_um * self._stitcher.px_per_um_x + tile_w / 2 - canvas_col0
+        row = dy_um * self._stitcher.px_per_um_y + tile_h / 2 - canvas_row0
+        height, width = self._stitcher.canvas_shape_px
+        if not (0 <= row < height and 0 <= col < width):
+            return None
+        return row, col
+
     # ------------------------------------------------------------------
-    # Cell targeting
+    # Targets
     # ------------------------------------------------------------------
 
-    def _onTuneSegmentation(self) -> None:
-        if self._stitcher is None:
-            return
-        from imswitch.imcontrol.view.widgets.SegmentationParamsWidget import (
-            SegmentationParamsWidget,
-        )
-        overview = self._stitcher.get_overview()
-        pixel_size_um = 1.0 / self._stitcher.px_per_um_y
-        dlg = SegmentationParamsWidget(
-            image=np.asarray(overview, dtype=np.float32),
-            pixel_size_um=pixel_size_um,
-            initial_params=self._segParams or None,
-            parent=self._widget,
-        )
-        dlg.sigParamsAccepted.connect(self._onSegParamsAccepted)
-        dlg.exec_()
+    def _onOverviewClicked(self, row: int, col: int) -> None:
+        mode = self._widget.getClickMode()
+        if mode == CLICK_ADD_TARGET:
+            self._addTargetAtPixel(row, col)
+        elif mode == CLICK_NAVIGATE:
+            self._navigateToPixel(row, col)
 
-    def _onSegParamsAccepted(self, params: dict) -> None:
-        self._segParams = params
-        self._logger.info(f'Segmentation parameters updated: {params}')
+    def _addTargetAtPixel(self, row: int, col: int):
+        stage_xy = self._canvasPixelToStage(row, col)
+        if stage_xy is None:
+            self._logger.info('Tiling: no overview to place a target on yet')
+            return None
+        target = self._targets.add(
+            stage_xy=stage_xy, source='manual', row_col=(int(row), int(col))
+        )
+        self._refreshTargets()
+        return target
+
+    def _refreshTargets(self) -> None:
+        """Hand the list and its overview markers to the widget.
+
+        Through signals, so the scan worker can call it when the overview is
+        final without touching the widget from its own thread.
+        """
+        targets = list(self._targets.targets)
+        self.sigTargetsChanged.emit([t.to_dict() for t in targets])
+        markers = {}
+        for target in targets:
+            marker = self._stageToCanvasPixel(*target.stage_xy)
+            if marker is not None:
+                markers[target.id] = marker
+        self.sigTargetMarkers.emit(markers)
+
+    @staticmethod
+    def _targetKwargs(record: dict) -> dict:
+        """Lenient reading of one target dict from a script or a file."""
+        if 'stage_xy' in record:
+            x_um, y_um = record['stage_xy']
+        elif 'x' in record and 'y' in record:
+            x_um, y_um = record['x'], record['y']
+        else:
+            raise ValueError("A target needs 'stage_xy': (x_um, y_um)")
+        source = str(record.get('source', 'imported'))
+        if source not in ('manual', 'segmentation', 'imported'):
+            raise ValueError(
+                "Target source must be 'manual', 'segmentation' or "
+                f"'imported', not {source!r}"
+            )
+        row_col = record.get('row_col')
+        z_um = record.get('z_um')
+        return dict(
+            stage_xy=(float(x_um), float(y_um)),
+            source=source,
+            enabled=bool(record.get('enabled', True)),
+            row_col=None if row_col is None else (int(row_col[0]), int(row_col[1])),
+            z_um=None if z_um is None else float(z_um),
+            props=dict(record.get('props') or {}),
+        )
 
     @APIExport()
-    def detectCellTargets(self) -> np.ndarray:
-        """Segment cells in the current overview and show target markers.
+    def getTargets(self) -> List[dict]:
+        """The target list, one dict per target in acquisition order.
 
-        This GUI-safe path does not move the stage. It only updates the cached
-        target list and the overview marker overlay.
+        Each has ``id``, ``stage_xy`` (x, y in µm), ``enabled``, ``source``
+        (``manual`` for a click on the overview, ``segmentation``,
+        ``imported``), ``row_col`` (the overview pixel it was clicked at, or
+        None), ``z_um`` and ``props``. For a target workflow, build a
+        :class:`~imswitch.imcontrol.model.workflows.target.TargetList` with
+        ``TargetList([Target.from_dict(t) for t in api.imcontrol.getTargets()])``.
         """
-        if self.__dict__.get('_scanning', False) or getattr(self, '_closed', False):
-            self._logger.warning(
-                'Cell targeting cannot start while tiling owns the stage'
-            )
-            return np.empty((0, 2))
+        return self._targets.to_records()
 
-        positions, props = self._detectCellTargets()
-        self._cellPositionsRC = positions
-        self._cellProps = props
-        self.sigShowCellMarkers.emit(positions)
-        return positions
+    @APIExport(runOnUIThread=True)
+    def setTargets(self, targets: List[dict]) -> int:
+        """Replace the target list; returns how many targets it now holds.
 
-    @APIExport()
-    def runCellTargeting(
-        self,
-        feature_callback: Optional[CellFeatureCallback] = None,
-        move_only: bool = False,
-    ) -> None:
-        """Move through detected cells and optionally run a per-cell workflow.
-
-        Args:
-            feature_callback: Optional ``f(idx, props_for_cell, stage_xy)``
-                invoked after moving to each accepted cell.
-            move_only: If True, move through targets even without a callback.
-
-        If neither ``feature_callback`` nor ``move_only`` is supplied this
-        method behaves like ``detectCellTargets()`` and does not move hardware.
+        Each entry needs ``stage_xy`` (x, y in µm); ``enabled``, ``source``,
+        ``z_um`` and ``props`` are optional. Ids are assigned afresh.
         """
-        if self.__dict__.get('_scanning', False) or getattr(self, '_closed', False):
-            self._logger.warning(
-                'Cell targeting cannot start while tiling owns the stage'
-            )
-            return
-        positions, props = self._detectCellTargets()
-        self._cellPositionsRC = positions
-        self._cellProps = props
-        self.sigShowCellMarkers.emit(positions)
+        new = TargetList()
+        for record in targets or []:
+            new.add(**self._targetKwargs(record))
+        self._targets = new
+        self._refreshTargets()
+        return len(new)
 
-        if len(positions) == 0:
-            return
-        if feature_callback is None and not move_only:
+    @APIExport(runOnUIThread=True)
+    def addTarget(self, x_um: float, y_um: float, enabled: bool = True,
+                  source: str = 'imported') -> int:
+        """Append a target at a stage position and return its id."""
+        target = self._targets.add(**self._targetKwargs(
+            {'stage_xy': (x_um, y_um), 'enabled': enabled, 'source': source}
+        ))
+        self._refreshTargets()
+        return target.id
+
+    @APIExport(runOnUIThread=True)
+    def removeTarget(self, targetId: int) -> bool:
+        """Drop one target by id; returns whether it existed."""
+        removed = self._targets.remove(targetId)
+        if removed:
+            self._refreshTargets()
+        return removed
+
+    @APIExport(runOnUIThread=True)
+    def clearTargets(self) -> None:
+        """Empty the target list."""
+        self._targets.clear()
+        self._refreshTargets()
+
+    @APIExport(runOnUIThread=True)
+    def setTargetEnabled(self, targetId: int, enabled: bool) -> bool:
+        """Keep a target listed but include or skip it; False if no such id."""
+        target = self._targets.find(targetId)
+        if target is None:
+            return False
+        target.enabled = bool(enabled)
+        self._refreshTargets()
+        return True
+
+    @APIExport(runOnUIThread=True)
+    def goToTarget(self, targetId: int) -> Optional[Tuple[float, float]]:
+        """Drive the XY stage to a target; returns the position commanded.
+
+        Refused (None, with a log line) while a tiling run owns the stage.
+        """
+        target = self._targets.find(targetId)
+        if target is None:
+            raise ValueError(f'No target with id {targetId}')
+        if self.__dict__.get('_scanning', False):
             self._logger.info(
-                'Cell targets detected; no per-cell workflow requested, so stage iteration is skipped'
+                'Tiling: go-to-target ignored while a tiling run owns the stage'
             )
-            return
-        self._cellCancelEvent().clear()
-        with self._getActivityLock():
-            busy = (
-                self._cellTargetingRunning
-                or self.__dict__.get('_scanning', False)
-                or getattr(self, '_closed', False)
-            )
-            if not busy:
-                self._cellTargetingRunning = True
-        if busy:
-            self._logger.warning('Cell targeting already running; ignoring duplicate request')
-            return
+            return None
+        return self._moveStageTo(*target.stage_xy)
 
-        try:
-            self._cellTargetThread = threading.Thread(
-                target=self._iterateCells,
-                args=(positions, props, feature_callback),
-                daemon=True,
-            )
-            self._cellTargetThread.start()
-        except Exception as e:
-            with self._getActivityLock():
-                self._cellTargetingRunning = False
-                self._cellTargetThread = None
-            self._logger.error(
-                f'Cell-target worker could not start: {e}', exc_info=True
-            )
+    @APIExport()
+    def saveTargets(self, path: str) -> str:
+        """Write the target list as JSON; returns the path written."""
+        path = Path(path)
+        if not path.suffix:
+            path = path.with_suffix('.json')
+        self._targets.save_json(path)
+        self._logger.info(f'Tiling: {len(self._targets)} targets saved to {path}')
+        return str(path)
 
-    def _detectCellTargets(self) -> Tuple[np.ndarray, dict[str, np.ndarray]]:
-        if self._stitcher is None:
-            self._logger.warning('Cell targeting requested but no stitcher exists')
-            return np.empty((0, 2)), {}
-
-        from imswitch.imcontrol.model.workflows.segmentation import detect_cell_targets
-        overview = np.asarray(self._stitcher.get_overview(), dtype=np.float32)
-        pixel_size_um = 1.0 / self._stitcher.px_per_um_y
-
-        params = self._segParams
-        targets = detect_cell_targets(overview, pixel_size_um, params)
-        if not targets.props:
-            self._logger.info('No cells found in overview')
-            return np.empty((0, 2)), {}
-
-        self._logger.info(
-            f'Cell targeting: {targets.n_valid} / {targets.n_total} cells pass filters'
-        )
-
-        if targets.n_valid == 0:
-            return np.empty((0, 2)), targets.props
-
-        return targets.positions, targets.filtered_props
-
-    def _iterateCells(
-        self,
-        positions: np.ndarray,
-        props: dict[str, np.ndarray],
-        feature_callback: Optional[CellFeatureCallback],
-    ) -> None:
-        cancel = self._cellCancelEvent()
-        try:
-            for i, (row, col) in enumerate(positions):
-                if cancel.is_set() or getattr(self, '_closed', False):
-                    break
-                self.sigHighlightCell.emit(i)
-                stage_xy = self._moveStageToPixel(int(row), int(col))
-                if stage_xy is None:
-                    self._logger.warning(f'Cell {i}: stage coordinate conversion failed')
-                    continue
-                if cancel.wait(_SETTLE_S) or getattr(self, '_closed', False):
-                    break
-                if feature_callback is not None:
-                    try:
-                        cell_props = {key: value[i] for key, value in props.items()}
-                        feature_callback(i, cell_props, stage_xy)
-                    except Exception as exc:
-                        self._logger.warning(f'Cell {i}: feature_callback failed: {exc}')
-        finally:
-            with self._getActivityLock():
-                self._cellTargetingRunning = False
-                self._cellTargetThread = None
-            if not getattr(self, '_closed', False):
-                self.sigHighlightCell.emit(-1)
+    @APIExport(runOnUIThread=True)
+    def loadTargets(self, path: str) -> int:
+        """Replace the target list with one saved by :meth:`saveTargets`."""
+        self._targets = TargetList.load_json(path)
+        self._refreshTargets()
+        return len(self._targets)
 
     # ------------------------------------------------------------------
     # Helpers

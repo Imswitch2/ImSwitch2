@@ -98,6 +98,13 @@ class StitchedImage:
         """Virtual coordinate of canvas pixel (0, 0), as ``(row, col)``."""
         return (self._canvas_row0, self._canvas_col0)
 
+    @property
+    def canvas_shape_px(self) -> Tuple[int, int]:
+        """``(rows, cols)`` of what :meth:`get_overview` returns, without building it."""
+        if self._canvas_sum is None:
+            return (self.tile_size_px, self.tile_size_px)
+        return (int(self._canvas_sum.shape[0]), int(self._canvas_sum.shape[1]))
+
     def placement(self, grid_x: int, grid_y: int) -> Tuple[int, int] | None:
         """Where a placed tile actually sits, in virtual pixels."""
         return self._placements.get((grid_x, grid_y))

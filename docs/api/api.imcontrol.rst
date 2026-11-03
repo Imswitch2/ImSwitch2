@@ -30,6 +30,12 @@ api.imcontrol
 
       Needs *RotationScan* in ``availableWidgets``.
 
+   .. method:: addTarget(x_um: float, y_um: float, enabled: bool = True, source: str = 'imported') -> int
+
+      Append a target at a stage position and return its id.
+
+      Needs *Tiling* in ``availableWidgets``.
+
    .. method:: autoFocus(rangez: float = 100.0, resolutionz: float = 10.0) -> None
 
       Start an autofocus scan asynchronously.
@@ -117,6 +123,12 @@ api.imcontrol
 
       Needs the *Scan* widget (Advanced, PointScan, SimpleMoNaLISA, SimplePointScan) in ``availableWidgets``.
 
+   .. method:: clearTargets() -> None
+
+      Empty the target list.
+
+      Needs *Tiling* in ``availableWidgets``.
+
    .. method:: connectInstrument(name: 'str') -> 'dict'
 
       Connect an instrument (raises if it does not connect, or if a run
@@ -136,15 +148,6 @@ api.imcontrol
       Delete a saved setup mode. Returns True if a file was removed.
 
       Always available.
-
-   .. method:: detectCellTargets() -> numpy.ndarray
-
-      Segment cells in the current overview and show target markers.
-
-      This GUI-safe path does not move the stage. It only updates the cached
-      target list and the overview marker overlay.
-
-      Needs *Tiling* in ``availableWidgets``.
 
    .. method:: disconnectInstrument(name: 'str') -> 'dict'
 
@@ -480,6 +483,27 @@ api.imcontrol
 
       Needs *Tiling* in ``availableWidgets``.
 
+   .. method:: getTargets() -> List[dict]
+
+      The target list, one dict per target in acquisition order.
+
+      Each has ``id``, ``stage_xy`` (x, y in µm), ``enabled``, ``source``
+      (``manual`` for a click on the overview, ``segmentation``,
+      ``imported``), ``row_col`` (the overview pixel it was clicked at, or
+      None), ``z_um`` and ``props``. For a target workflow, build a
+      :class:`~imswitch.imcontrol.model.workflows.target.TargetList` with
+      ``TargetList([Target.from_dict(t) for t in api.imcontrol.getTargets()])``.
+
+      Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: goToTarget(targetId: int) -> Optional[Tuple[float, float]]
+
+      Drive the XY stage to a target; returns the position commanded.
+
+      Refused (None, with a log line) while a tiling run owns the stage.
+
+      Needs *Tiling* in ``availableWidgets``.
+
    .. method:: isFocusLocked() -> bool
 
       Whether the focus is locked right now.
@@ -553,6 +577,12 @@ api.imcontrol
       :returns: list of warning strings.
 
       Always available.
+
+   .. method:: loadTargets(path: str) -> int
+
+      Replace the target list with one saved by :meth:`saveTargets`.
+
+      Needs *Tiling* in ``availableWidgets``.
 
    .. method:: measureLaserPowerLut(laser: 'str', meter: 'str', drive_values: 'Sequence[float]', confirm_dark: 'Optional[Callable[[], bool]]' = None, folder: 'Optional[str]' = None, samples_per_point: 'int' = 5, settle_s: 'float' = 0.2, allow_unverified_timing: 'bool' = False, notes: 'str' = '', progress: 'Optional[Callable]' = None) -> 'LaserLutReport'
 
@@ -684,6 +714,12 @@ api.imcontrol
 
       Needs *Recording* in ``availableWidgets``.
 
+   .. method:: removeTarget(targetId: int) -> bool
+
+      Drop one target by id; returns whether it existed.
+
+      Needs *Tiling* in ``availableWidgets``.
+
    .. method:: renameLaserPreset(oldName: str, newName: str, context='live') -> bool
 
       Renames the laser preset ``oldName`` to ``newName`` in the setup
@@ -712,19 +748,6 @@ api.imcontrol
       control.
 
       Needs *Reservation* in ``availableWidgets``.
-
-   .. method:: runCellTargeting(feature_callback: Optional[Callable[[int, dict, Tuple[float, float]], NoneType]] = None, move_only: bool = False) -> None
-
-      Move through detected cells and optionally run a per-cell workflow.
-
-      :param feature_callback: Optional ``f(idx, props_for_cell, stage_xy)``
-                               invoked after moving to each accepted cell.
-      :param move_only: If True, move through targets even without a callback.
-
-      If neither ``feature_callback`` nor ``move_only`` is supplied this
-      method behaves like ``detectCellTargets()`` and does not move hardware.
-
-      Needs *Tiling* in ``availableWidgets``.
 
    .. method:: runScan(source: Optional[str] = None) -> imswitch.imcontrol.model.scan_request.ScanRunHandle
 
@@ -785,6 +808,12 @@ api.imcontrol
       :returns: dict with keys "mode" and "warnings".
 
       Always available.
+
+   .. method:: saveTargets(path: str) -> str
+
+      Write the target list as JSON; returns the path written.
+
+      Needs *Tiling* in ``availableWidgets``.
 
    .. method:: send_serial(payload: str) -> str
 
@@ -1032,6 +1061,21 @@ api.imcontrol
 
       Needs *Recording* in ``availableWidgets``.
 
+   .. method:: setTargetEnabled(targetId: int, enabled: bool) -> bool
+
+      Keep a target listed but include or skip it; False if no such id.
+
+      Needs *Tiling* in ``availableWidgets``.
+
+   .. method:: setTargets(targets: List[dict]) -> int
+
+      Replace the target list; returns how many targets it now holds.
+
+      Each entry needs ``stage_xy`` (x, y in µm); ``enabled``, ``source``,
+      ``z_um`` and ``props`` are optional. Ids are assigned afresh.
+
+      Needs *Tiling* in ``availableWidgets``.
+
    .. method:: setTileLabel(label: str) -> None
 
       Sets the label the Tiling widget puts into the tiles' names.
@@ -1080,8 +1124,8 @@ api.imcontrol
    .. method:: startTiling() -> None
 
       Starts a tiling run with the Tiling widget's settings. Does
-      nothing on a setup without a ``tiling`` section, or while a run or
-      cell targeting is busy.
+      nothing on a setup without a ``tiling`` section, or while a run is
+      busy.
 
       Needs *Tiling* in ``availableWidgets``.
 
@@ -1110,7 +1154,7 @@ api.imcontrol
 
    .. method:: stopTiling() -> None
 
-      Asks the running tiling run, or cell targeting, to stop.
+      Asks the running tiling run to stop.
 
       Needs *Tiling* in ``availableWidgets``.
 
