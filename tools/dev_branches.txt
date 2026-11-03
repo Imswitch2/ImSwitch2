@@ -13,7 +13,8 @@ claude/monalisa-reconstruction-math-af9btj   # PR #69: MoNaLISA XZ/XYZ, fast Gau
                                    #    the multi-data column: relocalize box, buttons, live-recon's memory policy)
 feat/imcontrol-live-recon          # live MoNaLISA recon in ImControl, bleach compensation; carries #71
                                    #   (its recordScanToMemory/recordFramesToMemory replace scan-engines' older one)
-feat/psf-bead-analysis             # PR #79: bead PSF measurement, data lists
+feat/psf-bead-analysis             # PR #79: bead PSF measurement, data lists; merged again 2026-11-03 for the
+                                   #   output_kind declarations (any, table without average_psf); changelog kept dev's
 feat/improcess-fiji                # PR #82: Fiji link, image windows
                                    #   (runner: a bound Source publishes on the data port, with main's port mapping;
                                    #    test_workflow_boundaries no longer imports editor 1.0's steplist)

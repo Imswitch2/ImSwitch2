@@ -20,6 +20,7 @@ from imswitch.improcess.processors.psf_resolution._params import SELECTION_FIELD
 from imswitch.improcess.processors.psf_resolution.processor import (
     PSFResolutionProcessor,
     measure,
+    psf_output_spec,
     reselect,
 )
 from imswitch.improcess.processors.psf_resolution.result import PSFMeasurementResult
@@ -32,6 +33,7 @@ class PSFBeadSelectProcessor(Processor):
     id = "psf-bead-select"
     category = "Measurement"
     kinds = ("table",)
+    output_kind = PSFResolutionProcessor.output_kind
 
     @classmethod
     def param_spec(cls) -> tuple:
@@ -44,8 +46,7 @@ class PSFBeadSelectProcessor(Processor):
     def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
         # The averaged PSF is recomputed only when the measurement asked for
         # one (its ``average_psf`` parameter, which a re-select inherits).
-        merged = {**PSFResolutionProcessor.default_params(), **(params or {})}
-        return OutputSpec(ports=("psf", "average_psf") if merged.get("average_psf") else ("psf",))
+        return psf_output_spec({**PSFResolutionProcessor.default_params(), **(params or {})})
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

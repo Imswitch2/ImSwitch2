@@ -44,7 +44,7 @@ from imswitch.improcess.analysis.bead_psf import (
 )
 from imswitch.improcess.analysis.psf_aberrations import ILLUMINATION_CHOICES
 from imswitch.improcess.model.param_spec import ParamField
-from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.result import ANY_KIND, ProcessingResult
 from imswitch.improcess.processors._extraction import extract_2d_plane, validate_axes
 from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorOutput
 
@@ -110,12 +110,23 @@ class BeadRun:
         return summarize(self.analysis, self.mask, self.selection)
 
 
+def psf_output_spec(params: dict) -> OutputSpec:
+    """The ports of a PSF fit or re-select with ``params``: the measurement,
+    and the averaged PSF image when ``average_psf`` is on."""
+    if params.get("average_psf"):
+        return OutputSpec(ports=("psf", "average_psf"), kind=ANY_KIND)
+    return OutputSpec(ports=("psf",), kind="table")
+
+
 class PSFResolutionProcessor(Processor):
     """Bead-based PSF / resolution measurement for 2-D images and 3-D stacks."""
 
     name = "PSF / Bead Resolution"
     id = "psf-resolution"
-    output_kind = "table"
+    #: A run publishes the measurement (a table) and the averaged PSF (an
+    #: image); a declared kind is per step, not per port, so it is "any"
+    #: unless the averaged PSF is off (see :func:`psf_output_spec`).
+    output_kind = ANY_KIND
     category = "Measurement"
     params_version = 2
     #: The ROI Manager panel passes its ROIs under this key.
@@ -202,8 +213,7 @@ class PSFResolutionProcessor(Processor):
         return migrated
 
     def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
-        merged = {**self.default_params(), **(params or {})}
-        return OutputSpec(ports=("psf", "average_psf") if merged.get("average_psf") else ("psf",))
+        return psf_output_spec({**self.default_params(), **(params or {})})
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
